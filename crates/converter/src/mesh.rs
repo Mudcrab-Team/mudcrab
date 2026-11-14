@@ -5,7 +5,7 @@ use crate::material::{
 use crate::texture::TextureSemantic;
 use color_eyre::{
     Result,
-    eyre::{WrapErr, ensure},
+    eyre::{WrapErr, bail, ensure},
 };
 use log::warn;
 use project_wormhole_esm::structs::strings::{SizedString8, SizedString32, StringN};
@@ -67,14 +67,60 @@ pub struct NifParseDiagnostics {
     pub parsed_block_count: usize,
     pub geometry_block_count: usize,
     pub scene_node_count: usize,
+    /// Longest parsed scene-node chain; zero for a cycle (see conversion refusals).
+    /// Geometry and other non-node blocks contribute zero.
     pub max_scene_depth: usize,
+    /// Bounded reasons conversion refuses this file while inspection retains its measurements.
+    pub conversion_refusals: Vec<String>,
     pub block_types: BTreeMap<String, usize>,
     pub fallback_blocks: BTreeMap<String, usize>,
     pub fallback_offsets: BTreeMap<String, Vec<usize>>,
+    /// Inspected material shapes; zero when material inspection is unavailable (see refusals).
     pub material_shape_count: usize,
     pub validated_material_shape_count: usize,
     pub excluded_material_shape_count: usize,
     pub material_exclusions: BTreeMap<String, usize>,
+    pub unparsed_regions: usize,
+    pub unparsed_bytes: usize,
+    pub unparsed_by_reason: BTreeMap<String, usize>,
+    /// At most eight regions, in physical file order. Counts above remain exact.
+    pub unparsed_samples: Vec<NifUnparsedRegion>,
+}
+
+/// Exact source coordinates make ignored tails and fallback blocks recoverable from the
+/// separately hashed input. Opaque bytes are not evidence of decoded or rendered support.
+#[derive(Debug, Clone, Serialize)]
+pub struct NifUnparsedRegion {
+    pub reason: &'static str,
+    pub block_index: Option<usize>,
+    pub block_type: Option<String>,
+    pub file_offset: usize,
+    pub byte_length: usize,
+    pub sha256: String,
+}
+
+impl NifParseDiagnostics {
+    fn record_unparsed(
+        &mut self,
+        reason: &'static str,
+        block: Option<(usize, &str)>,
+        file_offset: usize,
+        bytes: &[u8],
+    ) {
+        self.unparsed_regions += 1;
+        self.unparsed_bytes += bytes.len();
+        *self.unparsed_by_reason.entry(reason.into()).or_default() += 1;
+        if self.unparsed_samples.len() < 8 {
+            self.unparsed_samples.push(NifUnparsedRegion {
+                reason,
+                block_index: block.map(|(index, _)| index),
+                block_type: block.map(|(_, name)| name.to_owned()),
+                file_offset,
+                byte_length: bytes.len(),
+                sha256: crate::cache::hash_bytes(bytes),
+            });
+        }
+    }
 }
 
 impl MeshConverter {
@@ -113,8 +159,9 @@ impl MeshConverter {
     /// Converts using an explicitly resolved winning skeleton, without physical-neighbor fallback.
     ///
     /// `None` means the mesh is a self-contained rig: the vendor builds its bone
-    /// tree from the mesh's own joints. Unusable skins retain their geometry
-    /// as rigid nodes; valid shapes in the same NIF stay skinned.
+    /// tree from the mesh's own joints. Parsed skins with unusable bindings
+    /// retain rigid geometry; valid sibling skins stay skinned. An undecodable
+    /// declared skin instance refuses the model before either export path.
     pub fn convert_nif_to_glb_with_skeleton(
         nif_path: &Path,
         glb_output_path: &Path,
@@ -135,12 +182,12 @@ impl MeshConverter {
         skeleton_path: Option<&Path>,
         unresolved_skin: Option<&str>,
     ) -> Result<()> {
-        let (nif, diagnostics, material_contract) = open_nif_resilient(nif_path)?;
+        let (nif, diagnostics, material_contract) = open_nif_for_conversion(nif_path)?;
         let mut collision = collision::from_nif(nif_path, &nif)?;
-        let declares_skin = nif.declares_skin();
-        let skeleton = if nif.has_skeleton() {
+        let declares_skin = declares_skin_type(&diagnostics);
+        let skeleton = if declares_skin {
             match skeleton_path {
-                Some(skeleton_path) => Some(open_nif_resilient(skeleton_path)?.0),
+                Some(skeleton_path) => Some(open_nif_for_conversion(skeleton_path)?.0),
                 None => None,
             }
         } else {
@@ -166,7 +213,7 @@ impl MeshConverter {
                     );
                 }
                 (
-                    finish_skinned_model(&nif, nif_path, model, &material_contract)?,
+                    finish_skinned_model(&nif, nif_path, declares_skin, model, &material_contract)?,
                     false,
                 )
             }
@@ -188,7 +235,13 @@ impl MeshConverter {
                     .map_err(|error| color_eyre::eyre::eyre!("static NIF fallback failed: {error}"))
                     .wrap_err(primary_error)?;
                 (
-                    finish_skinned_model(&nif, nif_path, static_model, &material_contract)?,
+                    finish_skinned_model(
+                        &nif,
+                        nif_path,
+                        declares_skin,
+                        static_model,
+                        &material_contract,
+                    )?,
                     true,
                 )
             }
@@ -302,7 +355,7 @@ impl MeshConverter {
     /// Add NIF-authored collision to an already converted GLB without changing its render data.
     /// This supports upgrading a packaged world without repeating texture conversion.
     pub fn annotate_glb_collision(nif_path: &Path, glb_path: &Path) -> Result<CollisionAsset> {
-        let (nif, _, _) = open_nif_resilient(nif_path)?;
+        let (nif, _, _) = open_nif_for_conversion(nif_path)?;
         let mut collision = collision::from_nif(nif_path, &nif)?;
         let glb = fs::read(glb_path)?;
         if collision::gltf_node_index(&nif, NIF_ROOT_BLOCK as usize).is_ok_and(|node| node == 0) {
@@ -316,23 +369,29 @@ impl MeshConverter {
 
     /// The collision a NIF authors, without writing a GLB (used by the physics census example).
     pub fn extract_collision(nif_path: &Path) -> Result<CollisionAsset> {
-        let (nif, _, _) = open_nif_resilient(nif_path)?;
+        let (nif, _, _) = open_nif_for_conversion(nif_path)?;
         collision::from_nif(nif_path, &nif)
     }
 
+    /// Inspects parsed blocks and topology even when conversion refuses the file.
     pub fn inspect_nif(path: &Path) -> Result<NifParseDiagnostics> {
         open_nif_resilient(path).map(|(_, diagnostics, _)| diagnostics)
     }
 
+    /// Checks source eligibility before reusing an existing converted artifact.
+    pub fn validate_nif_for_conversion(path: &Path) -> Result<()> {
+        open_nif_for_conversion(path).map(|_| ())
+    }
+
     /// Loads a NIF and reports whether its declared geometry consists only of empty overlay templates.
     pub fn is_geometry_template(path: &Path) -> Result<bool> {
-        open_nif_resilient(path).map(|(nif, _, _)| is_geometry_template(&nif))
+        open_nif_for_conversion(path).map(|(nif, _, _)| is_geometry_template(&nif))
     }
 
     /// Extracts the validated per-shape NIF material contract without
     /// publishing glTF/PBR decisions that belong to the next pipeline stage.
     pub fn inspect_nif_materials(path: &Path) -> Result<Vec<NifShapeMaterial>> {
-        open_nif_resilient(path).map(|(_, _, contract)| contract)
+        open_nif_for_conversion(path).map(|(_, _, contract)| contract)
     }
 
     /// Reads the accessor bounds written to a GLB and applies the complete glTF
@@ -943,6 +1002,81 @@ pub(crate) fn clear_root_transform(model: &mut project_wormhole_nif::model::all:
     }
 }
 
+/// Block types that bind a mesh to a skeleton.
+///
+/// Whether a NIF is skinned is decided from these declared header block types,
+/// never from the parsed blocks: a skin block that fails to parse is replaced by
+/// `NifBlock::Unhandled`, which would otherwise make a skinned mesh
+/// indistinguishable from a static one.
+const SKIN_INSTANCE_BLOCKS: [&str; 3] = [
+    "BSSkin::Instance",
+    "NiSkinInstance",
+    "BSDismemberSkinInstance",
+];
+
+/// Identifies header type names whose instances carry mesh-to-skeleton bindings.
+fn is_declared_skin_block(block_type: &str) -> bool {
+    SKIN_INSTANCE_BLOCKS.contains(&block_type)
+}
+
+/// Whether the NIF header declares a skin instance block, parsed or not.
+fn declares_skin_type(diagnostics: &NifParseDiagnostics) -> bool {
+    diagnostics
+        .block_types
+        .keys()
+        .any(|block_type| is_declared_skin_block(block_type))
+}
+
+/// Offsets named in a skin-parse refusal before the rest are only counted.
+const MAX_REPORTED_SKIN_OFFSETS: usize = 8;
+
+/// Characters retained when an already refused file also has an invalid material contract.
+const MAX_REPORTED_MATERIAL_REFUSAL_CHARS: usize = 512;
+
+/// Refuses a NIF whose declared skin instance block did not parse.
+///
+/// Rescuing an unparsable block keeps the rest of the file readable, but for a
+/// skin instance the binding references are unavailable. This policy refuses
+/// the model, including any usable sibling shapes, rather than silently making
+/// its skin rigid. The ordinary pipeline records that asset's failure and keeps
+/// converting other assets. Parsed skins still use per-shape binding recovery.
+fn ensure_declared_skins_parsed(diagnostics: &NifParseDiagnostics, path: &Path) -> Result<()> {
+    for (block_type, count) in &diagnostics.fallback_blocks {
+        if !is_declared_skin_block(block_type) {
+            continue;
+        }
+        let all_offsets = diagnostics
+            .fallback_offsets
+            .get(block_type)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        // A crafted file can declare up to the header's block limit, so the
+        // message names the first few and counts the rest.
+        let mut offsets = all_offsets
+            .iter()
+            .take(MAX_REPORTED_SKIN_OFFSETS)
+            .map(|offset| {
+                if *offset == usize::MAX {
+                    "parser panicked".to_owned()
+                } else {
+                    format!("offset {offset}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = all_offsets.len().saturating_sub(MAX_REPORTED_SKIN_OFFSETS);
+        if more > 0 {
+            offsets.push_str(&format!(", and {more} more"));
+        }
+        bail!(
+            "NIF {} has {count} {block_type} block(s) that could not be parsed ({offsets}); \
+             refusing to convert a skinned mesh as static",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 /// Returns whether all declared geometry blocks are NiTriShape templates without geometry data.
 fn is_geometry_template(nif: &NifFile) -> bool {
     let mut templates = 0;
@@ -1381,9 +1515,26 @@ fn apply_vertex_color_contract(
     Ok(())
 }
 
+/// Enforces conversion eligibility before mesh export, skeleton use or collision extraction.
+/// Ordinary batch callers record this model's refusal and continue with usable assets.
+fn open_nif_for_conversion(
+    path: &Path,
+) -> Result<(NifFile, NifParseDiagnostics, Vec<NifShapeMaterial>)> {
+    let opened = open_nif_resilient(path)?;
+    ensure!(
+        opened.1.conversion_refusals.is_empty(),
+        "{}",
+        opened.1.conversion_refusals.join("; ")
+    );
+    Ok(opened)
+}
+
 /// Loads Skyrim NIF blocks within their declared sizes, recording parse failures as unhandled blocks.
 ///
-/// Returns the parsed file, diagnostics, and validated material contract.
+/// Returns parsed blocks, diagnostics and material contracts. Conversion refusals
+/// remain in diagnostics, so inspection can measure files beyond the export limit.
+/// Material errors on already refused inputs become bounded reasons with zero
+/// material counters. Material-only inspection failures retain their error path.
 fn open_nif_resilient(
     path: &Path,
 ) -> Result<(NifFile, NifParseDiagnostics, Vec<NifShapeMaterial>)> {
@@ -1410,6 +1561,7 @@ fn open_nif_resilient(
             "NIF block {index} is truncated in {}",
             path.display()
         );
+        let block_offset = bytes.len() - data.len();
         let (raw, remaining) = data.split_at(size);
         data = remaining;
         let block_type = header
@@ -1430,6 +1582,12 @@ fn open_nif_resilient(
         }));
         let block = match parsed {
             Ok(Ok((_, NifBlock::Unhandled))) => {
+                diagnostics.record_unparsed(
+                    "unhandled_block",
+                    Some((index, &block_type)),
+                    block_offset,
+                    raw,
+                );
                 diagnostics
                     .fallback_offsets
                     .entry(block_type.clone())
@@ -1438,7 +1596,15 @@ fn open_nif_resilient(
                 *diagnostics.fallback_blocks.entry(block_type).or_default() += 1;
                 NifBlock::Unhandled
             }
-            Ok(Ok((_, block))) => {
+            Ok(Ok((tail, block))) => {
+                if !tail.is_empty() {
+                    diagnostics.record_unparsed(
+                        "unparsed_block_tail",
+                        Some((index, &block_type)),
+                        block_offset + raw.len() - tail.len(),
+                        tail,
+                    );
+                }
                 diagnostics.parsed_block_count += 1;
                 if matches!(
                     &block,
@@ -1453,6 +1619,12 @@ fn open_nif_resilient(
                 block
             }
             Ok(Err(error)) => {
+                diagnostics.record_unparsed(
+                    "block_parse_failure",
+                    Some((index, &block_type)),
+                    block_offset,
+                    raw,
+                );
                 let offset = match error {
                     nom_derive::nom::Err::Error(error) | nom_derive::nom::Err::Failure(error) => {
                         raw.len().saturating_sub(error.input.len())
@@ -1468,6 +1640,12 @@ fn open_nif_resilient(
                 NifBlock::Unhandled
             }
             Err(_) => {
+                diagnostics.record_unparsed(
+                    "block_parser_panic",
+                    Some((index, &block_type)),
+                    block_offset,
+                    raw,
+                );
                 diagnostics
                     .fallback_offsets
                     .entry(block_type.clone())
@@ -1478,6 +1656,14 @@ fn open_nif_resilient(
             }
         };
         blocks.push(block);
+    }
+    if !data.is_empty() {
+        diagnostics.record_unparsed(
+            "unparsed_file_trailer",
+            None,
+            bytes.len() - data.len(),
+            data,
+        );
     }
     diagnostics.scene_node_count = blocks
         .iter()
@@ -1493,9 +1679,37 @@ fn open_nif_resilient(
                 )
         })
         .count();
-    diagnostics.max_scene_depth = nif_scene_depth(&blocks);
+    if let Err(error) = ensure_declared_skins_parsed(&diagnostics, path) {
+        diagnostics.conversion_refusals.push(format!("{error:#}"));
+    }
+    match nif_scene_depth(&blocks) {
+        Ok(depth) => {
+            diagnostics.max_scene_depth = depth;
+            if depth > MAX_SCENE_DEPTH {
+                diagnostics.conversion_refusals.push(format!(
+                    "NIF {} scene graph nests {depth} scene nodes, exceeding the {MAX_SCENE_DEPTH}-node limit",
+                    path.display()
+                ));
+            }
+        }
+        Err(error) => diagnostics
+            .conversion_refusals
+            .push(format!("invalid scene in {}: {error:#}", path.display())),
+    }
     let nif = NifFile { header, blocks };
-    let material_contract = build_nif_material_contract(&nif, path)?;
+    let material_contract = match build_nif_material_contract(&nif, path) {
+        Ok(contract) => contract,
+        Err(error) if !diagnostics.conversion_refusals.is_empty() => {
+            diagnostics.conversion_refusals.push(
+                format!("material inspection unavailable: {error:#}")
+                    .chars()
+                    .take(MAX_REPORTED_MATERIAL_REFUSAL_CHARS)
+                    .collect(),
+            );
+            Vec::new()
+        }
+        Err(error) => return Err(error),
+    };
     diagnostics.material_shape_count = material_contract.len();
     for shape in &material_contract {
         match &shape.disposition {
@@ -1543,8 +1757,9 @@ pub(crate) fn build_skinned_model_with_materials(
     nif_path: &Path,
     skeleton_path: &Path,
 ) -> Result<SkinnedModelBuild> {
-    let (nif, _diagnostics, material_contract) = open_nif_resilient(nif_path)?;
-    let skeleton = open_nif_resilient(skeleton_path)
+    let (nif, diagnostics, material_contract) = open_nif_for_conversion(nif_path)?;
+    let declares_skin = declares_skin_type(&diagnostics);
+    let skeleton = open_nif_for_conversion(skeleton_path)
         .wrap_err_with(|| format!("failed to open skeleton {}", skeleton_path.display()))?
         .0;
     let model = catch_unwind(AssertUnwindSafe(|| nif_to_model(&nif, Some(&skeleton))))
@@ -1557,7 +1772,7 @@ pub(crate) fn build_skinned_model_with_materials(
                 nif_path.display()
             )
         })?;
-    let model = finish_skinned_model(&nif, nif_path, model, &material_contract)?;
+    let model = finish_skinned_model(&nif, nif_path, declares_skin, model, &material_contract)?;
     let shape_blocks = exported_shape_blocks(&nif, &model, &material_contract)?;
     let exported_contract = shape_blocks
         .iter()
@@ -1580,16 +1795,17 @@ pub(crate) fn build_skinned_model_with_materials(
 }
 
 /// Applies the shared export contract: a declared skin must yield usable skinned
-/// or rigid geometry, and the model must validate and carry the runtime
-/// coordinate rotation and vertex-colour policy. Strict composition builds its
-/// skins before reaching this shared finishing step.
+/// or rigid geometry after its instance blocks have parsed. The model must
+/// validate and carry the runtime coordinate rotation and vertex-colour policy.
+/// Strict composition builds its skins before reaching this shared finishing step.
 fn finish_skinned_model(
     nif: &NifFile,
     nif_path: &Path,
+    declares_skin: bool,
     mut model: project_wormhole_nif::model::all::Model,
     material_contract: &[NifShapeMaterial],
 ) -> Result<project_wormhole_nif::model::all::Model> {
-    if nif.declares_skin() && model.skeletal_meshes.is_empty() && model.static_meshes.is_empty() {
+    if declares_skin && model.skeletal_meshes.is_empty() && model.static_meshes.is_empty() {
         let unclaimed = unclaimed_skin_instances(nif, &model);
         let detail = if unclaimed.is_empty() {
             "no skin instance blocks are present".to_owned()
@@ -1647,30 +1863,81 @@ pub(crate) fn write_glb_atomic(output: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn nif_scene_depth(blocks: &[NifBlock]) -> usize {
-    fn depth(index: usize, blocks: &[NifBlock], visiting: &mut Vec<usize>) -> usize {
-        if visiting.contains(&index) {
-            return 0;
-        }
-        let children = match blocks.get(index).map(NifBlock::as_node) {
-            Some(Ok(node)) => &node.children,
-            _ => return usize::from(index < blocks.len()),
-        };
-        visiting.push(index);
-        let child_depth = children
-            .iter()
-            .filter_map(|child| usize::try_from(*child).ok())
-            .map(|child| depth(child, blocks, visiting))
-            .max()
-            .unwrap_or(0);
-        visiting.pop();
-        1 + child_depth
-    }
+/// Deepest parsed scene-node chain eligible for conversion.
+///
+/// This engineering bound protects recursive model validation, GLB bounds and
+/// collision parent transforms. A 256-node chain with geometry and the export
+/// wrapper is exercised on default worker stacks; Windows main/std/Rayon stack
+/// measurements also cover those walks. Geometry leaves do not count. This is
+/// a conversion policy rather than a NIF format maximum, including for skeletons.
+///
+/// This bound and the unparsable-skin refusal add no `MESH_OUTPUT_CONTRACTS` name, so the `nif`
+/// settings proof is unchanged. Vanilla and Creation Club output is unchanged: 0 of 25,388
+/// shared NIFs nest deeper than 64 scene nodes (the deepest is 26) and 0 of 8,954 skinned NIFs
+/// have an unparsable skin (see the pull request text for #445). The only exposure is an old
+/// GLB of a third-party NIF deeper than 64 or with a bad skin. A normal conversion with an
+/// unchanged source hash and settings reuses it from the cache, so it stays in its pack until a
+/// forced rebuild or a change to the source or settings.
+pub(crate) const MAX_SCENE_DEPTH: usize = 256;
 
-    (0..blocks.len())
-        .map(|index| depth(index, blocks, &mut Vec::new()))
-        .max()
-        .unwrap_or(0)
+/// Deepest chain of scene nodes in the NIF's block graph.
+///
+/// The walk is iterative and memoises each block's depth, so it costs one visit
+/// per block and per child reference: a crafted file cannot overflow the stack
+/// with a long chain or take exponential time through a child list that repeats
+/// a shared subgraph. Cycles have no finite depth and return an error. Finite
+/// depths are measured without an export limit; conversion enforces that limit.
+fn nif_scene_depth(blocks: &[NifBlock]) -> Result<usize> {
+    // 0 = unvisited, PENDING = on the current path, 2 = depth known.
+    const PENDING: u8 = 1;
+    let mut state = vec![0u8; blocks.len()];
+    let mut depths = vec![0usize; blocks.len()];
+    let mut max_depth = 0;
+    for root in 0..blocks.len() {
+        if state[root] != 0 {
+            continue;
+        }
+        state[root] = PENDING;
+        // (block index, next child position, deepest child seen so far).
+        let mut stack = vec![(root, 0usize, 0usize)];
+        while let Some(&(index, next, best)) = stack.last() {
+            let node = match blocks.get(index).map(NifBlock::as_node) {
+                Some(Ok(node)) => Some(node),
+                _ => None,
+            };
+            let children = node.map_or(&[][..], |node| node.children.as_slice());
+            let top = stack.len() - 1;
+            if let Some(child) = children.get(next) {
+                stack[top].1 += 1;
+                let Ok(child) = usize::try_from(*child) else {
+                    continue;
+                };
+                if child >= blocks.len() {
+                    continue;
+                }
+                match state[child] {
+                    0 => {
+                        state[child] = PENDING;
+                        stack.push((child, 0, 0));
+                    }
+                    PENDING => bail!("NIF scene graph loops through block {child}"),
+                    _ => stack[top].2 = stack[top].2.max(depths[child]),
+                }
+            } else {
+                // Count only scene nodes: geometry and unrelated blocks do not
+                // consume a slot in the node-hierarchy budget.
+                let depth = if node.is_some() { 1 + best } else { 0 };
+                depths[index] = depth;
+                state[index] = 2;
+                max_depth = max_depth.max(depth);
+                stack.pop();
+                if let Some(parent) = stack.last_mut() {
+                    parent.2 = parent.2.max(depth);
+                }
+            }
+        }
+    }
+    Ok(max_depth)
 }
 
 /// Parses a little-endian Skyrim NIF header for Bethesda versions 83 or 100.
@@ -2347,13 +2614,14 @@ struct SkeletonEntry {
     /// Lowercase, forward-slashed logical path: the ranking key.
     key: String,
     source: PathBuf,
-    /// Node names, or `None` when the file could not be parsed.
+    /// Node names, or `None` when the file is ineligible for skeleton use.
     nodes: Option<BTreeSet<String>>,
 }
 
 impl SkeletonEntry {
+    /// Indexes node names after the shared scene and declared-skin eligibility checks.
     fn load(key: String, source: PathBuf) -> Self {
-        let nodes = match open_nif_resilient(&source) {
+        let nodes = match open_nif_for_conversion(&source) {
             Ok((nif, _, _)) => Some(
                 nif.get_nodes()
                     .iter()
@@ -2508,7 +2776,7 @@ impl SkeletonIndex {
         };
         let mut union = BTreeSet::new();
         for source in sources {
-            let Ok((nif, _, _)) = open_nif_resilient(&source) else {
+            let Ok((nif, _, _)) = open_nif_for_conversion(&source) else {
                 continue;
             };
             union.extend(
@@ -2754,6 +3022,7 @@ pub fn resolve_skeleton(
     resolve_skeleton_with_index(relative, sources, &index)
 }
 
+/// Resolves a winning skeleton after enforcing the source mesh eligibility checks.
 pub(crate) fn resolve_skeleton_with_index(
     relative: &Path,
     sources: &BTreeMap<PathBuf, PathBuf>,
@@ -2771,13 +3040,16 @@ pub(crate) fn resolve_skeleton_with_index(
                 .map(|(_, source)| source)
         })
         .map(PathBuf::as_path);
-    let (has_skeleton, joints) =
-        match mesh_source.and_then(|source| open_nif_resilient(source).ok()) {
-            Some((nif, _, _)) => (nif.has_skeleton(), nif.legacy_skin_joint_names()),
+    let (declares_skin, joints) =
+        match mesh_source.and_then(|source| open_nif_for_conversion(source).ok()) {
+            Some((nif, diagnostics, _)) => (
+                declares_skin_type(&diagnostics),
+                nif.legacy_skin_joint_names(),
+            ),
             None => (false, BTreeSet::new()),
         };
     let candidates = skeleton_candidates(&key_path);
-    if !has_skeleton || joints.is_empty() {
+    if !declares_skin || joints.is_empty() {
         return resolve_without_joints(&candidates, index, skeleton_key);
     }
     resolve_against(&key, mesh_source, &candidates, index, &joints, skeleton_key)
@@ -2813,7 +3085,7 @@ fn skeleton_candidates(nif_path: &Path) -> Vec<PathBuf> {
 /// Resolves a mesh on disk. The tree-wide skeleton index is built only when no
 /// path candidate covers the rig, so ordinary meshes never pay for the walk.
 pub fn find_skeleton(nif_path: &Path) -> SkeletonResolution {
-    let Ok((nif, _, _)) = open_nif_resilient(nif_path) else {
+    let Ok((nif, diagnostics, _)) = open_nif_for_conversion(nif_path) else {
         return SkeletonResolution::SelfContained;
     };
     let key = normalize_path_key(nif_path);
@@ -2821,7 +3093,7 @@ pub fn find_skeleton(nif_path: &Path) -> SkeletonResolution {
     let joints = nif.legacy_skin_joint_names();
     let mut index =
         SkeletonIndex::from_paths(candidates.iter().filter(|path| path.is_file()).cloned());
-    if !nif.has_skeleton() || joints.is_empty() {
+    if !declares_skin_type(&diagnostics) || joints.is_empty() {
         return resolve_without_joints(&candidates, &index, skeleton_source);
     }
     if let Some(entry) = first_covering_candidate(&candidates, &index, &joints) {
@@ -3024,6 +3296,90 @@ mod tests {
         fs::write(&input, b"not a nif").unwrap();
         assert!(MeshConverter::convert_nif_to_glb(&input, &output).is_err());
         assert!(!output.exists());
+    }
+
+    fn single_block_nif(block_type: &str, block: &[u8], trailer: &[u8]) -> Vec<u8> {
+        let mut bytes = b"Gamebryo File Format, Version 20.2.0.7\n".to_vec();
+        bytes.extend(0x1402_0007u32.to_le_bytes());
+        bytes.push(1);
+        bytes.extend(12u32.to_le_bytes());
+        bytes.extend(1u32.to_le_bytes());
+        bytes.extend(100u32.to_le_bytes());
+        bytes.extend([0, 0, 0]); // absent author/process/export strings
+        bytes.extend(1u16.to_le_bytes());
+        bytes.extend((block_type.len() as u32).to_le_bytes());
+        bytes.extend(block_type.as_bytes());
+        bytes.extend(0u16.to_le_bytes());
+        bytes.extend((block.len() as u32).to_le_bytes());
+        bytes.extend([0; 12]); // no strings, maximum string length zero, no groups
+        bytes.extend(block);
+        bytes.extend(trailer);
+        bytes
+    }
+
+    #[test]
+    fn nif_audit_accounts_for_known_block_tails_and_file_trailers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tail.nif");
+        let block = [
+            u32::MAX.to_le_bytes().as_slice(),
+            &0u32.to_le_bytes(),
+            &[9, 7, 5],
+        ]
+        .concat();
+        let bytes = single_block_nif("BSXFlags", &block, &[3, 1]);
+        fs::write(&path, &bytes).unwrap();
+        let audit = MeshConverter::inspect_nif(&path).unwrap();
+        assert_eq!(audit.parsed_block_count, 1);
+        assert!(audit.fallback_blocks.is_empty());
+        assert_eq!(audit.unparsed_regions, 2);
+        assert_eq!(audit.unparsed_bytes, 5);
+        let tail = &audit.unparsed_samples[0];
+        assert_eq!(tail.reason, "unparsed_block_tail");
+        assert_eq!(tail.block_index, Some(0));
+        assert_eq!(tail.block_type.as_deref(), Some("BSXFlags"));
+        assert_eq!(tail.byte_length, 3);
+        assert_eq!(tail.sha256, crate::cache::hash_bytes(&[9, 7, 5]));
+        assert_eq!(
+            &bytes[tail.file_offset..tail.file_offset + tail.byte_length],
+            &[9, 7, 5]
+        );
+        let trailer = &audit.unparsed_samples[1];
+        assert_eq!(trailer.reason, "unparsed_file_trailer");
+        assert_eq!(trailer.block_index, None);
+        assert_eq!(trailer.file_offset, bytes.len() - 2);
+        assert_eq!(trailer.sha256, crate::cache::hash_bytes(&[3, 1]));
+
+        // Changing one ignored input changes its receipt, not its unaffected control.
+        let changed = single_block_nif("BSXFlags", &block, &[3, 2]);
+        fs::write(&path, changed).unwrap();
+        let changed = MeshConverter::inspect_nif(&path).unwrap();
+        assert_eq!(changed.unparsed_samples[0].sha256, tail.sha256);
+        assert_ne!(changed.unparsed_samples[1].sha256, trailer.sha256);
+    }
+
+    #[test]
+    fn nif_audit_accounts_for_whole_fallback_blocks_with_bounded_samples() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unknown.nif");
+        let bytes = single_block_nif("UnknownModBlock", &[0, 1, 2, 3], &[]);
+        fs::write(&path, &bytes).unwrap();
+        let mut audit = MeshConverter::inspect_nif(&path).unwrap();
+        assert_eq!(audit.unparsed_regions, 1);
+        assert_eq!(audit.unparsed_bytes, 4);
+        assert_eq!(audit.unparsed_samples[0].file_offset, bytes.len() - 4);
+        assert_eq!(audit.unparsed_samples[0].reason, "unhandled_block");
+        for index in 1..20 {
+            audit.record_unparsed(
+                "unhandled_block",
+                Some((index, "UnknownModBlock")),
+                index * 4,
+                &[0; 4],
+            );
+        }
+        assert_eq!(audit.unparsed_regions, 20);
+        assert_eq!(audit.unparsed_bytes, 80);
+        assert_eq!(audit.unparsed_samples.len(), 8);
     }
 
     #[test]
@@ -3398,7 +3754,8 @@ mod tests {
             "dlc02volcanicashgrass02",
             "control",
         ] {
-            for suffix in ["", ".opensky-wrap0", ".opensky-wrap1", ".opensky-wrap2"] {
+            for suffix in std::iter::once("").chain(shared::texture_aliases::WRAP_TEXTURE_SUFFIXES)
+            {
                 for (original, target, original_source) in [
                     (false, true, false),
                     (true, true, true),
@@ -3976,6 +4333,449 @@ mod tests {
         .unwrap()
     }
 
+    /// A NIF whose only blocks are `len` chained `NiNode`s, each naming the next
+    /// as its child. Written as raw bytes because no fixture generator produces
+    /// a scene graph this deep.
+    fn node_chain_nif(len: usize) -> Vec<u8> {
+        let children: Vec<Vec<u32>> = (0..len)
+            .map(|index| {
+                if index + 1 < len {
+                    vec![(index + 1) as u32]
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        node_graph_nif(&children)
+    }
+
+    /// A NIF of `NiNode` blocks where block `i` lists `children[i]`.
+    fn node_graph_nif(children: &[Vec<u32>]) -> Vec<u8> {
+        const NIF_VERSION: u32 = 0x1402_0007;
+        const USER_VERSION: u32 = 12;
+        const BETHESDA_VERSION: u32 = 100;
+        /// Append little-endian transform components to a procedural node block.
+        fn push_f32(bytes: &mut Vec<u8>, values: impl IntoIterator<Item = f32>) {
+            for value in values {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        /// Encode one node with the requested child references and an identity transform.
+        fn node(children: &[u32]) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            for value in [0u32, u32::MAX, u32::MAX, 0] {
+                // name, extra data, controller, flags
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            push_f32(&mut bytes, [0.0, 0.0, 0.0]); // translation
+            push_f32(&mut bytes, [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]); // rotation
+            push_f32(&mut bytes, [1.0]); // scale
+            bytes.extend_from_slice(&u32::MAX.to_le_bytes()); // collision object
+            bytes.extend_from_slice(&(children.len() as u32).to_le_bytes());
+            for child in children {
+                bytes.extend_from_slice(&child.to_le_bytes());
+            }
+            bytes.extend_from_slice(&0u32.to_le_bytes()); // effects
+            bytes
+        }
+        let blocks: Vec<Vec<u8>> = children.iter().map(|children| node(children)).collect();
+        let mut bytes = b"Gamebryo File Format, Version 20.2.0.7\n".to_vec();
+        bytes.extend_from_slice(&NIF_VERSION.to_le_bytes());
+        bytes.push(1); // little-endian
+        bytes.extend_from_slice(&USER_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&BETHESDA_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&[0, 0, 0]); // empty author, process and export script
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // one block type
+        bytes.extend_from_slice(&("NiNode".len() as u32).to_le_bytes());
+        bytes.extend_from_slice(b"NiNode");
+        for _ in 0..blocks.len() {
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+        }
+        for block in &blocks {
+            bytes.extend_from_slice(&(block.len() as u32).to_le_bytes());
+        }
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // no strings
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // longest string
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // no groups
+        for block in blocks {
+            bytes.extend_from_slice(&block);
+        }
+        bytes
+    }
+
+    /// Extend the static fixture's root-to-shape path while retaining all material references.
+    fn static_scene_chain_nif(depth: usize) -> Vec<u8> {
+        assert!(depth > 0);
+        let source = static_nif();
+        let (data, header) = parse_skyrim_header(&source, Path::new("fixture.nif")).unwrap();
+        let data_start = source.len() - data.len();
+        let mut remaining = data;
+        let mut blocks: Vec<Vec<u8>> = header
+            .block_size_index
+            .iter()
+            .map(|size| {
+                let (block, rest) = remaining.split_at(*size as usize);
+                remaining = rest;
+                block.to_vec()
+            })
+            .collect();
+        let original_count = blocks.len();
+        if depth > 1 {
+            // The fixture root has one child, its shape. Appended nodes keep every
+            // original block index stable and end at that same shape (block 1).
+            blocks[0][76..80].copy_from_slice(&(original_count as u32).to_le_bytes());
+            for index in 0..depth - 1 {
+                let child = if index + 1 == depth - 1 {
+                    1
+                } else {
+                    (original_count + index + 1) as u32
+                };
+                let node_file = node_graph_nif(&[vec![child]]);
+                let (node, _) = parse_skyrim_header(&node_file, Path::new("node.nif")).unwrap();
+                blocks.push(node.to_vec());
+            }
+        }
+        let count_offset = b"Gamebryo File Format, Version 20.2.0.7\n".len() + 4 + 1 + 4;
+        let mut type_offset = count_offset + 4 + 4;
+        for _ in 0..3 {
+            type_offset += 1 + source[type_offset] as usize;
+        }
+        let indices_start = type_offset
+            + 2
+            + header
+                .block_types
+                .iter()
+                .map(|kind| 4 + kind.0.len())
+                .sum::<usize>();
+        let strings_start = indices_start + original_count * 6;
+        let mut bytes = source[..indices_start].to_vec();
+        bytes[count_offset..count_offset + 4].copy_from_slice(&(blocks.len() as u32).to_le_bytes());
+        for index in 0..blocks.len() {
+            let kind = if index < original_count {
+                header.block_type_index[index]
+            } else {
+                header.block_type_index[0]
+            };
+            bytes.extend_from_slice(&kind.to_le_bytes());
+        }
+        for block in &blocks {
+            bytes.extend_from_slice(&(block.len() as u32).to_le_bytes());
+        }
+        bytes.extend_from_slice(&source[strings_start..data_start]);
+        for block in blocks {
+            bytes.extend_from_slice(&block);
+        }
+        bytes
+    }
+
+    /// Export real geometry through the old and new boundaries on a default worker stack.
+    #[test]
+    fn scene_chains_through_256_export_geometry_and_walk_bounds() {
+        std::thread::spawn(|| {
+            let directory = tempfile::tempdir().unwrap();
+            for (depth, exported_nodes) in [(64, 66), (65, 67), (256, 258)] {
+                let input = directory.path().join(format!("chain-{depth}.nif"));
+                let output = input.with_extension("glb");
+                fs::write(&input, static_scene_chain_nif(depth)).unwrap();
+                let diagnostics = MeshConverter::inspect_nif(&input).unwrap();
+                assert_eq!(diagnostics.max_scene_depth, depth);
+                assert!(
+                    SkeletonEntry::load("skeleton.nif".into(), input.clone())
+                        .nodes
+                        .is_some()
+                );
+                MeshConverter::convert_nif_to_glb_with_skeleton(&input, &output, None).unwrap();
+                assert!(MeshConverter::glb_bounds(&output).is_ok());
+                let glb = fs::read(&output).unwrap();
+                let json_len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+                let json: serde_json::Value =
+                    serde_json::from_slice(&glb[20..20 + json_len]).unwrap();
+                assert_eq!(json["nodes"].as_array().unwrap().len(), exported_nodes);
+                assert_eq!(json["meshes"].as_array().unwrap().len(), 1);
+            }
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// Scenes well under the old 64-node collision limit convert to the same GLB bytes as before
+    /// the shared 256-node bound. The pinned hashes come from the converter before that bound.
+    #[test]
+    fn shallow_scene_glb_bytes_are_unchanged_by_the_depth_bound() {
+        let directory = tempfile::tempdir().unwrap();
+        let cases = [
+            (
+                "static",
+                static_nif(),
+                "32055a7cc2a3a7a4dd45eb11cd69ad893349f2e853eb82cffe72fd7efebcffe7",
+            ),
+            (
+                "chain-40",
+                static_scene_chain_nif(40),
+                "4c5a5c66c022d9b37562a69afe5f814a858d26cc26d97f449d3378fe0064e496",
+            ),
+        ];
+        for (name, source, expected) in cases {
+            let input = directory.path().join(format!("{name}.nif"));
+            let output = input.with_extension("glb");
+            fs::write(&input, source).unwrap();
+            MeshConverter::convert_nif_to_glb_with_skeleton(&input, &output, None).unwrap();
+            assert_eq!(
+                crate::cache::hash_bytes(&fs::read(&output).unwrap()),
+                expected,
+                "{name}: GLB bytes changed"
+            );
+        }
+    }
+
+    /// Inspection measures deep skeletons while every consuming entry point refuses them.
+    #[test]
+    fn deep_skeleton_is_inspectable_but_ineligible_for_conversion() {
+        let directory = tempfile::tempdir().unwrap();
+        let skeleton = directory.path().join("skeleton.nif");
+        fs::write(&skeleton, node_chain_nif(257)).unwrap();
+        assert_eq!(
+            MeshConverter::inspect_nif(&skeleton)
+                .unwrap()
+                .max_scene_depth,
+            257
+        );
+        assert!(
+            SkeletonEntry::load("skeleton.nif".into(), skeleton.clone())
+                .nodes
+                .is_none()
+        );
+        assert!(MeshConverter::extract_collision(&skeleton).is_err());
+        let input = directory.path().join("skin.nif");
+        fs::write(
+            &input,
+            dummy_content::nif::legacy_skinned_shape(&dummy_content::nif::LegacySkin {
+                name: "SkeletonBoundary",
+                instance_kind: dummy_content::nif::SkinInstanceKind::Plain,
+                bone_transforms: [([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0); 2],
+                palette: &[1, 0],
+                weights: &[[0.75, 0.25, 0.0, 0.0]; 4],
+                with_geometry: true,
+                joint_override: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let output = directory.path().join("skin.glb");
+        let error =
+            MeshConverter::convert_nif_to_glb_with_skeleton(&input, &output, Some(&skeleton))
+                .unwrap_err();
+        assert!(format!("{error:#}").contains("257 scene nodes"));
+        assert!(build_skinned_model_with_materials(&input, &skeleton).is_err());
+        assert!(!output.exists());
+    }
+
+    /// A deep scene retains its measured depth when its material contract is also invalid.
+    #[test]
+    fn deep_scene_diagnostics_survive_material_inspection_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("deep-material.nif");
+        let mut bytes = static_scene_chain_nif(257);
+        let (data, header) = parse_skyrim_header(&bytes, &input).unwrap();
+        // Geometry remains block 1; its shader reference follows AV/bounds/skin.
+        let shape = bytes.len() - data.len() + header.block_size_index[0] as usize;
+        bytes[shape + 92..shape + 96].copy_from_slice(&(u32::MAX - 1).to_le_bytes());
+        fs::write(&input, bytes).unwrap();
+        let diagnostics = MeshConverter::inspect_nif(&input)
+            .expect("material failure must preserve an already refused scene's depth");
+        assert_eq!(diagnostics.max_scene_depth, 257);
+        assert_eq!(diagnostics.conversion_refusals.len(), 2);
+        assert!(diagnostics.conversion_refusals[0].contains("257 scene nodes"));
+        assert!(
+            diagnostics.conversion_refusals[1].starts_with("material inspection unavailable: ")
+        );
+        assert!(diagnostics.conversion_refusals[1].chars().count() <= 512);
+        assert!(MeshConverter::validate_nif_for_conversion(&input).is_err());
+        let output = input.with_extension("glb");
+        assert!(MeshConverter::convert_nif_to_glb(&input, &output).is_err());
+        assert!(!output.exists());
+    }
+
+    /// Reject a long procedural chain before recursive export can exhaust the stack.
+    #[test]
+    fn crafted_deep_scene_chain_is_refused_not_walked() {
+        let directory = tempfile::tempdir().unwrap();
+        // Well inside the block cap, far past any authored scene: recursion
+        // here would exhaust the stack and abort the whole conversion run.
+        let input = directory.path().join("deep.nif");
+        fs::write(&input, node_chain_nif(20_000)).unwrap();
+        let output = directory.path().join("deep.glb");
+        let error = MeshConverter::convert_nif_to_glb(&input, &output).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("20000 scene nodes"), "{message}");
+        assert!(message.contains("256-node limit"), "{message}");
+        assert!(!output.exists(), "a refused scene must not publish a GLB");
+        let diagnostics = MeshConverter::inspect_nif(&input)
+            .expect("inspection must retain measurements for refused scenes");
+        assert_eq!(diagnostics.max_scene_depth, 20_000);
+    }
+
+    /// Accept a chain at the configured node limit.
+    #[test]
+    fn scene_chain_at_the_depth_limit_is_readable() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("limit.nif");
+        fs::write(&input, node_chain_nif(MAX_SCENE_DEPTH)).unwrap();
+        let diagnostics = MeshConverter::inspect_nif(&input).unwrap();
+        assert_eq!(diagnostics.max_scene_depth, MAX_SCENE_DEPTH);
+    }
+
+    /// Geometry and other non-node child blocks do not consume the scene-node budget.
+    #[test]
+    fn scene_depth_refusal_counts_only_nodes_including_at_the_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("limit.nif");
+        fs::write(&input, node_chain_nif(256)).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let NifBlock::NiNode(last) = &mut nif.blocks[255] else {
+            panic!("fixture must end in a scene node");
+        };
+        last.children.push(256);
+        let geometry = directory.path().join("geometry.nif");
+        fs::write(&geometry, static_nif()).unwrap();
+        let (geometry, _, _) = open_nif_resilient(&geometry).unwrap();
+        let shape = geometry
+            .blocks
+            .into_iter()
+            .find(|block| matches!(block, NifBlock::BSTriShape(_)))
+            .unwrap();
+        nif.blocks.push(shape);
+        assert_eq!(nif_scene_depth(&nif.blocks).unwrap(), 256);
+        assert_eq!(nif_scene_depth(&[NifBlock::Unhandled]).unwrap(), 0);
+        assert_eq!(nif_scene_depth(&[]).unwrap(), 0);
+        fs::write(&input, node_chain_nif(257)).unwrap();
+        let diagnostics = MeshConverter::inspect_nif(&input).unwrap();
+        assert_eq!(diagnostics.max_scene_depth, 257);
+        assert!(diagnostics.conversion_refusals[0].contains("257 scene nodes"));
+        assert!(MeshConverter::validate_nif_for_conversion(&input).is_err());
+    }
+
+    /// Bound malformed-instance diagnostics and distinguish a caught parser panic.
+    #[test]
+    fn skin_parse_refusal_names_only_the_first_offsets() {
+        let mut diagnostics = NifParseDiagnostics::default();
+        let block_type = "NiSkinInstance".to_owned();
+        diagnostics.fallback_blocks.insert(block_type.clone(), 20);
+        let mut offsets: Vec<usize> = (0..19).map(|index| 100 + index).collect();
+        offsets.insert(0, usize::MAX);
+        diagnostics.fallback_offsets.insert(block_type, offsets);
+        let message = ensure_declared_skins_parsed(&diagnostics, Path::new("many.nif"))
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("20 NiSkinInstance block(s)"), "{message}");
+        assert!(
+            message.contains("(parser panicked, offset 100,"),
+            "{message}"
+        );
+        assert!(message.contains("offset 106, and 12 more)"), "{message}");
+        assert!(!message.contains("offset 107"), "{message}");
+    }
+
+    /// Reject an ancestor back edge in a disconnected-capable block walk.
+    #[test]
+    fn scene_graph_loop_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("loop.nif");
+        fs::write(&input, node_graph_nif(&[vec![1], vec![2], vec![1]])).unwrap();
+        let diagnostics = MeshConverter::inspect_nif(&input).unwrap();
+        assert_eq!(diagnostics.max_scene_depth, 0);
+        assert!(diagnostics.conversion_refusals[0].contains("loops through block 1"));
+        assert!(MeshConverter::validate_nif_for_conversion(&input).is_err());
+    }
+
+    /// Reuse completed depths without losing a shared child's longest parent chain.
+    #[test]
+    fn shared_scene_children_count_their_depth_once_from_every_parent() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("shared.nif");
+        // Block 0 is a leaf that the outer walk finishes first, before block 3
+        // reaches it as a child; blocks 1 and 2 then share block 3, whose depth
+        // the second parent reads from the cache.
+        let graph = [vec![], vec![3], vec![1, 3], vec![0]];
+        fs::write(&input, node_graph_nif(&graph)).unwrap();
+        let diagnostics = MeshConverter::inspect_nif(&input).unwrap();
+        // 2 -> 1 -> 3 -> 0 is the deepest chain.
+        assert_eq!(diagnostics.max_scene_depth, 4);
+    }
+
+    /// Refuse an undecodable binding instead of publishing a silently rigid model.
+    #[test]
+    fn unparsable_skin_instance_is_an_error_not_a_static_mesh() {
+        use dummy_content::nif::{LegacySkin, SkinInstanceKind, legacy_skinned_shape};
+        const BONE_TRANSFORMS: [([f32; 3], [f32; 4], f32); 2] = [
+            (
+                [0.0, 0.0, 0.0],
+                [
+                    0.0,
+                    0.0,
+                    std::f32::consts::FRAC_1_SQRT_2,
+                    std::f32::consts::FRAC_1_SQRT_2,
+                ],
+                1.0,
+            ),
+            ([0.0, 0.0, 2.0], [0.0, 0.0, 0.0, 1.0], 1.0),
+        ];
+        const WEIGHTS: [[f32; 4]; 4] = [
+            [0.7, 0.3, 0.0, 0.0],
+            [0.25, 0.75, 0.0, 0.0],
+            [0.5, 0.2, 0.0, 0.0],
+            [0.4, 0.6, 0.0, 0.0],
+        ];
+        const PALETTE: [u16; 2] = [1, 0];
+        let fixture = LegacySkin {
+            name: "GeneratedSkin",
+            instance_kind: SkinInstanceKind::Plain,
+            bone_transforms: BONE_TRANSFORMS,
+            palette: &PALETTE,
+            weights: &WEIGHTS,
+            with_geometry: true,
+            joint_override: None,
+        };
+        let mut bytes = legacy_skinned_shape(&fixture).unwrap();
+        let path = Path::new("broken-skin.nif");
+        let (remaining, header) = parse_skyrim_header(&bytes, path).unwrap();
+        let block_data = bytes.len() - remaining.len();
+        let skin = (0..header.block_count as usize)
+            .find(|index| {
+                header
+                    .get_block_type(*index)
+                    .is_ok_and(|block_type| block_type == "NiSkinInstance")
+            })
+            .expect("the fixture declares a NiSkinInstance");
+        let block_start = block_data
+            + header.block_size_index[..skin]
+                .iter()
+                .map(|size| *size as usize)
+                .sum::<usize>();
+        // A bone count larger than the remaining block bytes is a count the
+        // parser must reject, so the block comes back unhandled. The three
+        // references ahead of it are `data`, `skin partition`, `skeleton root`.
+        let bone_count = block_start + 3 * 4;
+        bytes[bone_count..bone_count + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join(path);
+        fs::write(&input, bytes).unwrap();
+        let output = directory.path().join("broken-skin.glb");
+        let error = MeshConverter::convert_nif_to_glb(&input, &output).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("NiSkinInstance"), "{message}");
+        assert!(message.contains("offset"), "{message}");
+        assert!(
+            !output.exists(),
+            "a skinned mesh must not publish a static GLB"
+        );
+        let diagnostics = MeshConverter::inspect_nif(&input)
+            .expect("inspection must retain the declared, unparsed skin block");
+        assert_eq!(diagnostics.fallback_blocks["NiSkinInstance"], 1);
+        assert_eq!(diagnostics.fallback_offsets["NiSkinInstance"].len(), 1);
+    }
+
     fn inspect_and_convert(bytes: &[u8]) {
         let directory = tempfile::tempdir().unwrap();
         let input = directory.path().join("property.nif");
@@ -3995,6 +4795,35 @@ mod tests {
             let mut bytes = b"Gamebryo File Format, Version 20.2.0.7\n".to_vec();
             bytes.extend_from_slice(&tail);
             inspect_and_convert(&bytes);
+        }
+
+        /// Exercise header and block-table recovery beyond the small arbitrary-input budget.
+        #[test]
+        fn nif_never_panics_on_larger_arbitrary_bytes(tail in arbitrary_bytes(4096)) {
+            // Longer than the 512-byte budget, so whole headers and block tables
+            // are reached; most random tails still stop at header validation.
+            // Scene graphs get their own property below.
+            let mut bytes = b"Gamebryo File Format, Version 20.2.0.7\n".to_vec();
+            bytes.extend_from_slice(&tail);
+            inspect_and_convert(&bytes);
+        }
+
+        /// Exercise loops, shared subgraphs and out-of-range references in procedural graphs.
+        #[test]
+        fn nif_scene_graphs_never_panic_and_stay_within_the_depth_limit(
+            // Child indices run past the last block too: the walk skips those.
+            children in prop::collection::vec(prop::collection::vec(0u32..96, 0..4), 1..80)
+        ) {
+            let directory = tempfile::tempdir().unwrap();
+            let input = directory.path().join("graph.nif");
+            fs::write(&input, node_graph_nif(&children)).unwrap();
+            // Inspection retains refusals; only conversion-eligible graphs are in bounds.
+            if let Ok(diagnostics) = MeshConverter::inspect_nif(&input)
+                && diagnostics.conversion_refusals.is_empty()
+            {
+                prop_assert!(diagnostics.max_scene_depth <= MAX_SCENE_DEPTH);
+            }
+            let _ = MeshConverter::convert_nif_to_glb(&input, &directory.path().join("graph.glb"));
         }
 
         #[test]

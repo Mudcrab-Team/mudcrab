@@ -9,9 +9,9 @@ env:
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, 'release/**' ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, develop, 'release/**' ]
   workflow_dispatch:
 
 permissions:
@@ -61,7 +61,7 @@ jobs:
             fi
           }
 
-          check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|(.*/)?Cargo\.toml|.*\.rs|\.cargo/.*|\.github/workflows/.*)$'
+          check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|(.*/)?Cargo\.toml|.*\.rs|crates/converter/src/records/.*\.json|\.cargo/.*|\.github/workflows/.*)$'
           check_pattern "check_scripts" '(\.(ps1|py)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
           check_pattern "check_lod_experiment" '^(scripts/lod-experiment/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_native_profiling" '^(scripts/profiling/(analyze_native\.py|correlate_drawables\.py|metal_trace\.m|source-manifest\.json|fixtures/.*\.json)|scripts/tests/test_native_metal_profiling\.py|\.github/workflows/run_tests\.yml)$'
@@ -117,6 +117,11 @@ jobs:
       - name: Test Skyrim capture, replay and comparison helpers
         run: python3 -B -m unittest discover -s scripts -p 'test_*.py' -v
 
+      - name: Test actor idle CPU qualification tools
+        run: |
+          python3 -B tools/actor_idle/test_actor_idle_cpu_qualification.py
+          python3 -B tools/actor_idle/test_actor_idle_preparation.py
+
       - name: Test Riverwood asset reuse audit
         run: python3 -B -m unittest discover -s scripts/tests -p test_audit_riverwood_reuse.py -v
 
@@ -134,6 +139,9 @@ jobs:
 
       - name: Test recorded comparison value matching
         run: python3 -B -m unittest discover -s tools/record_comparison -p 'test_*.py' -v
+
+      - name: Test Windows installer checksum handling
+        run: pwsh -NoProfile -File scripts/tests/test_install_checksum.ps1
 
       - name: PowerShell scripts with non-ASCII text keep a UTF-8 BOM
         run: |
@@ -153,6 +161,9 @@ jobs:
 
       - name: Verify stage receipt comparison
         run: python3 -m unittest discover -s scripts/tests -p test_compare_stage_receipts.py -v
+
+      - name: Verify cluster timing receipt validation
+        run: python3 -B -m unittest discover -s scripts/tests -p test_cluster_timing_receipt.py -v
 
       - name: Verify terrain LOD helper commands
         run: python3 -m unittest discover -s scripts/lod-performance -p test_helpers.py -v

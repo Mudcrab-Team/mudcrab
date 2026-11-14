@@ -13,6 +13,7 @@ use crate::{
     terrain_merge::{
         CellLookup, TerrainMerge, classes::TerrainClasses, material::MergedTerrainMaterial,
     },
+    visual_profile::VisualProfile,
     world::{
         actor_catalog::ActorCatalog,
         cache::{CellCache, TerrainLayerSnapshot, TerrainSnapshot},
@@ -22,6 +23,7 @@ use crate::{
             WorldPosition, WorldTransform,
         },
         database::{AssetCatalog, CellKey, CellPayload, DatabaseRequest, WorldDatabase},
+        water::{FlatWater, FlatWaterBody},
     },
 };
 use bevy::{
@@ -45,7 +47,7 @@ use shared::collision::{
 };
 use shared::lod::LodTier;
 use shared::terrain_mesh::TerrainCellMesh;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error as StdError;
 use std::sync::Arc;
 use std::time::Instant;
@@ -576,7 +578,7 @@ pub struct StreamingMetrics {
     pub streaming_fixture_failures: u64,
     pub physics_fixture_validated: bool,
     pub physics_fixture_failures: u64,
-    pub asset_failures: Vec<AssetFailure>,
+    pub asset_failures: AssetFailureLog,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -586,6 +588,70 @@ pub struct AssetFailure {
     pub base_form_id: u32,
     pub cell_id: u32,
     pub dependency_chain: Vec<String>,
+}
+
+/// How many recent [`AssetFailure`] records [`StreamingMetrics`] retains.
+///
+/// A failure is recorded per failing reference per cell commit, and a cell committed again
+/// records the same failure again, so the count grows with play time rather than with content.
+/// The collector bounds what it keeps; [`AssetFailureLog::total`] keeps the exact number
+/// recorded and the bug report exports the newest entries plus that total, so the bound hides
+/// no count. The ring is well above the bug report's export limit so every export the report
+/// can show has retained detail behind it.
+pub const MAX_ASSET_FAILURES: usize = 256;
+
+/// The newest [`MAX_ASSET_FAILURES`] asset failures, plus the exact number ever recorded.
+///
+/// [`Self::push`] is the only way in and applies the bound itself, so no call site can grow
+/// the log without bound. Serialized as the retained failures alone (the shape the profiling
+/// and comparison scripts read); the exact count is published by the bug report through
+/// [`Self::total`].
+#[derive(Debug, Clone, Default)]
+pub struct AssetFailureLog {
+    /// Newest last; `push` evicts the oldest, making this a ring.
+    recent: VecDeque<AssetFailure>,
+    total: u64,
+}
+
+impl AssetFailureLog {
+    /// Records one failure, keeping the newest [`MAX_ASSET_FAILURES`] and the exact total.
+    pub fn push(&mut self, failure: AssetFailure) {
+        self.total = self.total.saturating_add(1);
+        self.recent.push_back(failure);
+        if self.recent.len() > MAX_ASSET_FAILURES {
+            self.recent.pop_front();
+        }
+    }
+
+    /// Every failure ever recorded through this log, including ones no longer retained.
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+
+    /// Retained failures; never more than [`MAX_ASSET_FAILURES`].
+    pub fn len(&self) -> usize {
+        self.recent.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.recent.is_empty()
+    }
+
+    /// Oldest retained failure first; `.rev()` yields newest first.
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &AssetFailure> {
+        self.recent.iter()
+    }
+
+    /// The oldest retained failure.
+    pub fn first(&self) -> Option<&AssetFailure> {
+        self.recent.front()
+    }
+}
+
+impl Serialize for AssetFailureLog {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.recent.serialize(serializer)
+    }
 }
 
 #[derive(Resource, Default)]
@@ -1125,6 +1191,7 @@ fn despawn_subtree(world: &mut World, root: Entity) -> usize {
 fn collect_cells(
     mut commands: Commands,
     config: Res<EngineConfig>,
+    profile: Res<VisualProfile>,
     database: Res<WorldDatabase>,
     cache: Res<CellCache>,
     origin: Res<RenderOrigin>,
@@ -1337,6 +1404,7 @@ fn collect_cells(
                     merged,
                     &mut streaming.next_model_sequence,
                     &mut profiler,
+                    profile.decodes_colour_srgb(),
                 );
                 match root {
                     Ok(root) => {
@@ -1502,10 +1570,11 @@ fn spawn_cell(
     terrain_physics: bool,
     schedule_scenes: bool,
     payload: CellPayload,
-    terrain: Option<TerrainSnapshot>,
+    mut terrain: Option<TerrainSnapshot>,
     merged: Option<MergedSpawn>,
     model_sequence: &mut u64,
     profiler: &mut ProfilingState,
+    colour_srgb: bool,
 ) -> Result<Entity, String> {
     let spawn_started = Instant::now();
     let reference_count = payload
@@ -1520,6 +1589,11 @@ fn spawn_cell(
         CellKey::Exterior { grid_x, grid_y, .. } => Some(IVec2::new(grid_x, grid_y)),
         CellKey::Interior(_) => None,
     };
+    // The merged mesh may have welded edges different from the cached LAND. Query shorelines
+    // against the height field actually drawn, while keeping the cache's CELL/WRLD water data.
+    if let (Some(terrain), Some(merged)) = (&mut terrain, &merged) {
+        terrain.heights = crate::terrain_merge::mesh::cell_to_grid(&merged.cell)?.0;
+    }
     // The merged cell's one mesh and its one collider, built from the same buffers.
     let merged_cell = merged
         .map(|spawn| {
@@ -1596,9 +1670,14 @@ fn spawn_cell(
                 }
             }
             for (quadrant, mesh, collider) in terrain_quadrants {
-                let (extension, images) =
-                    TerrainExtension::from_quadrant(&terrain, quadrant, catalog, asset_server)
-                        .expect("validated terrain material must build");
+                let (extension, images) = TerrainExtension::from_quadrant(
+                    &terrain,
+                    quadrant,
+                    catalog,
+                    asset_server,
+                    colour_srgb,
+                )
+                .expect("validated terrain material must build");
                 let material = terrain_materials.add(TerrainMaterial {
                     base: StandardMaterial {
                         base_color: Color::WHITE,
@@ -1657,15 +1736,12 @@ fn spawn_cell(
                     ));
                 }
             }
-            if let Some(height) = terrain
-                .water_height
-                .filter(|height| height.is_finite() && height.abs() < 1.0e7)
-            {
+            if let Some(surface) = FlatWater::from_terrain(&terrain) {
                 let water_mesh = meshes.add(Plane3d::default().mesh().size(CELL_SIZE, CELL_SIZE));
-                let water_colors = terrain
+                let water_colors = surface
                     .water_type_form_id
                     .and_then(|form_id| catalog.water_colors(form_id));
-                let flow_normal = terrain
+                let flow_normal = surface
                     .water_type_form_id
                     .and_then(|form_id| catalog.water_flow(form_id))
                     .map(|path| {
@@ -1713,13 +1789,13 @@ fn spawn_cell(
                             }),
                     ),
                 });
-                parent.spawn((
+                let mut water = parent.spawn((
                     Name::new("Water"),
                     Mesh3d(water_mesh),
                     MeshMaterial3d(water_material),
                     Transform::from_translation(Vec3::new(
                         CELL_SIZE * 0.5,
-                        height,
+                        surface.height,
                         -CELL_SIZE * 0.5,
                     )),
                     WaterSurface,
@@ -1730,6 +1806,9 @@ fn spawn_cell(
                     },
                     RenderLayers::layer(WATER_LAYER),
                 ));
+                if let Some(body) = FlatWaterBody::from_terrain(payload.key, &terrain) {
+                    water.insert(body);
+                }
             }
         }
         let references_started = Instant::now();
@@ -1816,6 +1895,38 @@ fn spawn_cell(
                         crate::actor_animation::ActorClips::load(asset_server, plan.actor.sex),
                         crate::actor_drive::ActorDrive::default(),
                     ));
+                } else if reference.starts_dead {
+                    // No death pose or ragdoll exists yet. A placed corpse keeps its bind
+                    // pose; a standing idle loop would make it look alive.
+                    debug!(
+                        reference_form_id = format_args!("{:08X}", reference.form_id),
+                        base_form_id = format_args!("{:08X}", plan.actor.base_form_id),
+                        body_model = %plan.scene_path,
+                        reason = "starts_dead",
+                        "actor spawned without idle playback"
+                    );
+                } else if let Some(scene) = actor_catalog.idle_scene(plan) {
+                    entity.insert((
+                        crate::actor_animation::ActorClips::load_idle(asset_server, scene),
+                        crate::actor_animation::ActorIdleLibrary {
+                            body_scene: plan.scene_path.clone(),
+                        },
+                    ));
+                } else if let Some(scene) = actor_catalog.legacy_creature_idle_scene(plan) {
+                    entity.insert(crate::actor_animation::ActorClips::load_idle(
+                        asset_server,
+                        scene,
+                    ));
+                } else {
+                    debug!(
+                        reference_form_id = format_args!("{:08X}", reference.form_id),
+                        base_form_id = format_args!("{:08X}", plan.actor.base_form_id),
+                        race_id = format_args!("{:08X}", plan.actor.race_id),
+                        sex = plan.actor.sex.as_str(),
+                        body_model = %plan.scene_path,
+                        reason = "no_supported_gait_mapping",
+                        "actor spawned without gait setup"
+                    );
                 }
             }
             // The colour the reference's `XEMI` source lends its model's `External_Emittance`
@@ -1881,6 +1992,7 @@ fn spawn_cell(
                         collision_candidate: terrain_physics
                             && fixed_collision_record_eligible(
                                 reference.base_record_type.as_deref(),
+                                &path,
                             ),
                         handle: None,
                         started: Instant::now(),
@@ -1967,20 +2079,36 @@ enum FixedCollisionTier {
     Full,
     /// Authored fixed/keyframed bodies only; no render proxy; dynamic bodies ignored.
     AuthoredOnly,
+    /// Audited container models with one intact, static-layer body on the root only.
+    VerifiedContainer,
 }
 
-fn fixed_collision_tier(record_type: Option<&str>) -> Option<FixedCollisionTier> {
+/// Container paths are a positive audited subset, not a filename prefix or a record-wide grant.
+/// See `docs/riverwood-static-collision.md` for the source inventory and deferred moving lids.
+fn fixed_collision_tier(record_type: Option<&str>, path: &str) -> Option<FixedCollisionTier> {
     match record_type {
         Some("STAT" | "TREE" | "FURN") => Some(FixedCollisionTier::Full),
         Some("ACTI") => Some(FixedCollisionTier::AuthoredOnly),
+        Some("CONT")
+            if !crate::collision_measure::disabled()
+                && matches!(
+                    path,
+                    "meshes/clutter/barrel01.glb"
+                        | "meshes/clutter/tgbarrel01.glb"
+                        | "meshes/clutter/sovngarde/sovbarrel01.glb"
+                        | "meshes/clutter/sburialurn01.glb"
+                ) =>
+        {
+            Some(FixedCollisionTier::VerifiedContainer)
+        }
         _ => None,
     }
 }
 
 /// Placed furniture is fixed in the world, but may use only its authored NIF shape.
 /// Render proxies remain restricted to the verified STAT/TREE families above.
-fn fixed_collision_record_eligible(record_type: Option<&str>) -> bool {
-    fixed_collision_tier(record_type).is_some()
+fn fixed_collision_record_eligible(record_type: Option<&str>, path: &str) -> bool {
+    fixed_collision_tier(record_type, path).is_some()
 }
 
 /// Base record types whose placed references may become dynamic bodies (#104 phase a). These are
@@ -2189,11 +2317,14 @@ fn collider_parts_from_authored(
 /// `Full` keeps every authored shape, whatever its body's kind, which is what fixed record types
 /// have always done. `AuthoredOnly` keeps a shape unless every body that owns it is dynamic, so a
 /// prop's fixed and keyframed bodies stay solid while its simulated parts are left to nothing.
+/// `VerifiedContainer` requires complete ownership by one static-layer root body; unowned shapes
+/// and animated components cannot inherit ACTI's rest-pose fallback.
 fn static_decision_from_asset(
     tier: FixedCollisionTier,
     asset: &CollisionAsset,
 ) -> StaticCollisionDecision {
     match tier {
+        FixedCollisionTier::VerifiedContainer => verified_container_collision(asset),
         FixedCollisionTier::Full => match collider_parts_from_authored(asset) {
             Ok(parts) if !parts.is_empty() => {
                 StaticCollisionDecision::Authored(parts, asset.skipped.clone())
@@ -2264,6 +2395,59 @@ fn static_decision_from_asset(
                 StaticCollisionDecision::Skipped(asset.skipped.join("; "))
             }
         }
+    }
+}
+
+/// The admitted container models were audited without node animation and with collision on their
+/// root. Keep that narrow contract even when an existing pack has lost body bindings, or a model
+/// override changes the authored body kind, layer, node or shape ownership.
+fn verified_container_collision(asset: &CollisionAsset) -> StaticCollisionDecision {
+    if !asset.skipped.is_empty() {
+        return StaticCollisionDecision::Skipped(asset.skipped.join("; "));
+    }
+    if asset.shapes.is_empty() {
+        return StaticCollisionDecision::AuthoredAbsent;
+    }
+    if asset.version < 2 {
+        return StaticCollisionDecision::Skipped(
+            "fixed container collision requires version 2 body ownership".to_owned(),
+        );
+    }
+    let [body] = asset.bodies.as_slice() else {
+        return StaticCollisionDecision::Skipped(
+            "fixed container collision requires one intact root body".to_owned(),
+        );
+    };
+    if body.kind != BodyKind::Fixed
+        || body.node != 0
+        || body.target.is_empty()
+        || body.mass != 0.0
+        || body.havok.collision_layer != 1
+    {
+        return StaticCollisionDecision::Skipped(
+            "fixed container collision requires a massless fixed STATIC-layer root body".to_owned(),
+        );
+    }
+    let mut owned = vec![false; asset.shapes.len()];
+    for index in &body.shapes {
+        let Some(shape) = usize::try_from(*index)
+            .ok()
+            .and_then(|index| owned.get_mut(index))
+        else {
+            return StaticCollisionDecision::Skipped(
+                "fixed container body lists a shape that does not exist".to_owned(),
+            );
+        };
+        *shape = true;
+    }
+    if owned.contains(&false) {
+        return StaticCollisionDecision::Skipped(
+            "fixed container collision has shapes without root-body ownership".to_owned(),
+        );
+    }
+    match collider_parts_from_authored(asset) {
+        Ok(parts) => StaticCollisionDecision::Authored(parts, Vec::new()),
+        Err(reason) => StaticCollisionDecision::Skipped(reason),
     }
 }
 
@@ -2598,7 +2782,7 @@ fn static_collision_from_hierarchy(
         // rather than a case to fall back on: the fallback would hand a record the shapes its
         // tier exists to withhold.
         Ok(Some(asset)) => static_decision_from_asset(
-            fixed_collision_tier(record_type)
+            fixed_collision_tier(record_type, path)
                 .expect("static collision is only built for a tiered record type"),
             &asset,
         ),
@@ -2767,6 +2951,7 @@ type ReadinessExtras<'world, 'state> = (
     ResMut<'world, crate::pacing::PacingTracker>,
     Query<'world, 'state, (), With<crate::physics::DynamicClutter>>,
     EffectPalettePrimitives<'world, 'state>,
+    Res<'world, VisualProfile>,
 );
 
 /// Converted effect surfaces drawn through their palette (`crate::nif_material`): these carry an
@@ -3042,7 +3227,7 @@ fn track_asset_readiness(
     world_assets: Res<Assets<WorldAsset>>,
     mut fallback_assets: ResMut<DiagnosticFallbackAssets>,
     mut static_cache: ResMut<StaticCollisionCache>,
-    (mut meshes, mut materials, camera, mut pacing, clutter, palettes): ReadinessExtras,
+    (mut meshes, mut materials, camera, mut pacing, clutter, palettes, profile): ReadinessExtras,
     (mut metrics, mut runtime): (
         ResMut<StreamingMetrics>,
         Option<ResMut<runtime::StreamingRuntime>>,
@@ -3078,7 +3263,7 @@ fn track_asset_readiness(
             break;
         }
         let static_candidate = pending.static_physics
-            && fixed_collision_record_eligible(pending.base_record_type.as_deref());
+            && fixed_collision_record_eligible(pending.base_record_type.as_deref(), &pending.path);
         let load_failure =
             asset_server
                 .get_load_states(root.0.id())
@@ -3171,6 +3356,7 @@ fn track_asset_readiness(
                 &materials,
                 (&palettes.0, palettes.1.as_deref()),
                 &images,
+                profile.decodes_colour_srgb(),
             );
             let summary = match validation {
                 Ok(summary) => summary,
@@ -3332,7 +3518,8 @@ fn track_asset_readiness(
             // A record type outside every tier used to drop authored collision without a trace.
             // Report the placements that do carry it so the exclusion is visible in metrics.
             if pending.static_physics
-                && fixed_collision_tier(pending.base_record_type.as_deref()).is_none()
+                && fixed_collision_tier(pending.base_record_type.as_deref(), &pending.path)
+                    .is_none()
                 && !dynamic_clutter_record_eligible(pending.base_record_type.as_deref())
             {
                 let key = (pending.base_record_type.clone(), pending.path.clone());
@@ -3641,6 +3828,7 @@ fn track_surface_readiness(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     images: Res<Assets<Image>>,
+    profile: Res<VisualProfile>,
     terrain: Query<(
         Entity,
         &PendingTerrainProfile,
@@ -3660,6 +3848,7 @@ fn track_surface_readiness(
             &images,
             &pending.images,
             SurfaceImageKind::Terrain,
+            profile.decodes_colour_srgb(),
         ) {
             SurfaceDependencyState::Ready => {
                 match validate_surface_dependencies(
@@ -3667,6 +3856,7 @@ fn track_surface_readiness(
                     &images,
                     &pending.normals,
                     SurfaceImageKind::TerrainNormal,
+                    profile.decodes_colour_srgb(),
                 ) {
                     // A normal map is optional detail: without it the quadrant is lit by its
                     // geometric normal, as a quadrant whose layers have none is.
@@ -3751,6 +3941,7 @@ fn track_surface_readiness(
             &images,
             &handles,
             SurfaceImageKind::Water,
+            profile.decodes_colour_srgb(),
         ) {
             SurfaceDependencyState::Pending => {}
             SurfaceDependencyState::Ready => {
@@ -3817,7 +4008,9 @@ fn validate_surface_dependencies(
     images: &Assets<Image>,
     handles: &[Handle<Image>],
     kind: SurfaceImageKind,
+    colour_srgb: bool,
 ) -> SurfaceDependencyState {
+    let expects_srgb = matches!(kind, SurfaceImageKind::Terrain) && colour_srgb;
     for handle in handles {
         if let Some((load, _, recursive)) = asset_server.get_load_states(handle.id()) {
             let failed = match (load, recursive) {
@@ -3835,7 +4028,7 @@ fn validate_surface_dependencies(
         let Some(image) = images.get(handle) else {
             return SurfaceDependencyState::Pending;
         };
-        if image.texture_descriptor.format.is_srgb() != matches!(kind, SurfaceImageKind::Terrain) {
+        if image.texture_descriptor.format.is_srgb() != expects_srgb {
             return SurfaceDependencyState::Failed(format!(
                 "image {:?} has wrong color space {:?}",
                 handle.id(),
@@ -4100,6 +4293,7 @@ fn matrix_max_difference(left: Mat4, right: Mat4) -> f32 {
         .fold(0.0, f32::max)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_spawned_asset(
     root: Entity,
     children: &Query<&Children>,
@@ -4111,6 +4305,7 @@ fn validate_spawned_asset(
         Option<&Assets<EffectPaletteMaterial>>,
     ),
     images: &Assets<Image>,
+    colour_srgb: bool,
 ) -> Result<AssetValidationSummary, String> {
     let mut summary = AssetValidationSummary::default();
     for descendant in children.iter_descendants(root) {
@@ -4138,7 +4333,7 @@ fn validate_spawned_asset(
                         palette_handle.id()
                     )
                 })?;
-            summary.images += validate_effect_palette_material(material, images)?;
+            summary.images += validate_effect_palette_material(material, images, colour_srgb)?;
             summary.materials += 1;
             continue;
         }
@@ -4160,7 +4355,7 @@ fn validate_spawned_asset(
                 material_handle.id()
             )
         })?;
-        summary.images += validate_standard_material(material, images)?;
+        summary.images += validate_standard_material(material, images, colour_srgb)?;
         summary.materials += 1;
     }
     Ok(summary)
@@ -4181,6 +4376,7 @@ fn has_explicit_material_exclusion(extras: &GltfExtras) -> bool {
 pub(crate) fn validate_standard_material(
     material: &StandardMaterial,
     images: &Assets<Image>,
+    colour_srgb: bool,
 ) -> Result<usize, String> {
     match material.alpha_mode {
         AlphaMode::Opaque | AlphaMode::Blend => {}
@@ -4220,23 +4416,27 @@ pub(crate) fn validate_standard_material(
         ),
     ];
     let mut validated = 0usize;
-    for (slot, handle, expects_srgb) in slots {
+    for (slot, handle, is_colour) in slots {
         let Some(handle) = handle else {
             continue;
         };
-        validate_material_image(slot, handle, expects_srgb, images)?;
+        validate_material_image(slot, handle, is_colour && colour_srgb, images)?;
         validated += 1;
     }
     Ok(validated)
 }
 
-/// Validates the standard half of an effect palette material, then its palette. The palette must
-/// be sampled through an sRGB view: the palette shader takes its colour as decoded on sampling.
+/// Validates the standard half of an effect palette material, then its palette. The standard half
+/// follows the profile's colour space; the palette does not, because the converter publishes it at
+/// a plain path rather than under a `.opensky-srgb` alias, and Bevy keys images by path. Both
+/// profiles therefore sample the palette through an sRGB view until a pack publishes an alias for
+/// it.
 pub(crate) fn validate_effect_palette_material(
     material: &EffectPaletteMaterial,
     images: &Assets<Image>,
+    colour_srgb: bool,
 ) -> Result<usize, String> {
-    let validated = validate_standard_material(&material.base, images)?;
+    let validated = validate_standard_material(&material.base, images, colour_srgb)?;
     validate_material_image("palette", material.extension.palette(), true, images)?;
     Ok(validated + 1)
 }
@@ -4491,8 +4691,8 @@ pub(crate) fn quadrant_layers(
     Ok(layers)
 }
 
-/// Validates terrain geometry and nonzero image dependencies. Normalized zero-ID layers retain
-/// their slots and weights without requiring a converted texture.
+/// Validates terrain geometry while retaining unresolved texture layers and their weights.
+/// Missing diffuse images use the same material fallback as normalized zero-ID layers.
 fn validate_terrain_snapshot(
     terrain: &TerrainSnapshot,
     catalog: &AssetCatalog,
@@ -4529,16 +4729,20 @@ fn validate_terrain_snapshot(
             terrain.vertex_colors.len()
         ));
     }
+    let mut missing_diffuse = HashSet::new();
     for quadrant in 0..4 {
         for layer in quadrant_layers(terrain, quadrant)? {
             if layer.texture_form_id == 0 {
                 continue;
             }
-            if catalog.landscape_diffuse(layer.texture_form_id).is_none() {
-                return Err(format!(
-                    "quadrant {quadrant} texture {:08X} has no converted diffuse image",
-                    layer.texture_form_id
-                ));
+            if catalog.landscape_diffuse(layer.texture_form_id).is_none()
+                && missing_diffuse.insert(layer.texture_form_id)
+            {
+                warn!(
+                    cell_id = terrain.cell_id,
+                    texture_form_id = layer.texture_form_id,
+                    "LAND texture has no converted diffuse image; retaining its layer and weights with a missing-image fallback"
+                );
             }
         }
     }
@@ -5179,6 +5383,51 @@ mod tests {
         AdditionalMassProperties, ColliderMassProperties, QueryFilter, ReadRapierContext, Velocity,
     };
 
+    /// A broken pack re-records the same failure on every cell commit, so the collector, not
+    /// the exporter, must hold the bound: the log keeps the newest entries and the exact total.
+    #[test]
+    fn asset_failures_keep_the_newest_entries_and_an_exact_total() {
+        let mut metrics = StreamingMetrics::default();
+        let recorded = MAX_ASSET_FAILURES + 68;
+        for id in 0..recorded as u32 {
+            metrics.asset_failures.push(AssetFailure {
+                model_path: format!("meshes/model-{id}.nif"),
+                reference_form_id: id,
+                base_form_id: 0,
+                cell_id: 7,
+                dependency_chain: vec!["missing texture".to_owned()],
+            });
+        }
+        assert_eq!(metrics.asset_failures.len(), MAX_ASSET_FAILURES);
+        assert_eq!(
+            metrics
+                .asset_failures
+                .iter()
+                .next_back()
+                .expect("the newest failure is retained")
+                .reference_form_id,
+            recorded as u32 - 1
+        );
+        assert_eq!(
+            metrics
+                .asset_failures
+                .first()
+                .expect("the oldest retained failure")
+                .reference_form_id,
+            68,
+            "the ring drops only the oldest entries"
+        );
+        assert_eq!(metrics.asset_failures.total(), recorded as u64);
+        assert!(!metrics.asset_failures.is_empty());
+        // The reported streaming JSON keeps its array shape for the comparison scripts; the
+        // exact count is published by the bug report.
+        let json = serde_json::to_value(&metrics).unwrap();
+        assert_eq!(
+            json["asset_failures"].as_array().unwrap().len(),
+            MAX_ASSET_FAILURES
+        );
+    }
+
     #[test]
     fn a_capsule_hull_covers_the_diagonals_of_its_end_spheres() {
         let radius = 2.0;
@@ -5334,8 +5583,8 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<StandardMaterial>>();
-        assert!(fixed_collision_record_eligible(Some("FURN")));
-        assert!(!fixed_collision_record_eligible(Some("MISC")));
+        assert!(fixed_collision_record_eligible(Some("FURN"), ""));
+        assert!(!fixed_collision_record_eligible(Some("MISC"), ""));
         assert!(!static_proxy_eligible(
             Some("FURN"),
             "meshes/furniture/clutter/milllogpile.glb"
@@ -5439,21 +5688,379 @@ mod tests {
     #[test]
     fn fixed_collision_tier_splits_fixed_and_authored_only_records() {
         assert_eq!(
-            fixed_collision_tier(Some("ACTI")),
+            fixed_collision_tier(Some("ACTI"), ""),
             Some(FixedCollisionTier::AuthoredOnly)
         );
         for record in ["STAT", "TREE", "FURN"] {
             assert_eq!(
-                fixed_collision_tier(Some(record)),
+                fixed_collision_tier(Some(record), ""),
                 Some(FixedCollisionTier::Full),
                 "{record}"
             );
         }
         for record in ["DOOR", "MSTT", "FLOR", "CONT", "MISC"] {
-            assert_eq!(fixed_collision_tier(Some(record)), None, "{record}");
+            assert_eq!(fixed_collision_tier(Some(record), ""), None, "{record}");
         }
-        assert_eq!(fixed_collision_tier(None), None);
-        assert!(fixed_collision_record_eligible(Some("ACTI")));
+        assert_eq!(fixed_collision_tier(None, ""), None);
+        assert!(fixed_collision_record_eligible(Some("ACTI"), ""));
+    }
+
+    fn verified_container_asset() -> CollisionAsset {
+        let mut body = clutter_body(BodyKind::Fixed, vec![0], true);
+        body.node = 0;
+        body.target = "Barrel01".to_owned();
+        body.mass = 0.0;
+        body.havok.motion_system = 5;
+        body.havok.quality_type = 0;
+        body.havok.collision_layer = 1;
+        authored_asset(vec![authored_box_shape()], vec![body])
+    }
+
+    #[test]
+    fn container_collision_tier_requires_an_audited_model_and_cont_base() {
+        for path in [
+            "meshes/clutter/barrel01.glb",
+            "meshes/clutter/tgbarrel01.glb",
+            "meshes/clutter/sovngarde/sovbarrel01.glb",
+            "meshes/clutter/sburialurn01.glb",
+        ] {
+            assert_eq!(
+                fixed_collision_tier(Some("CONT"), path),
+                Some(FixedCollisionTier::VerifiedContainer)
+            );
+            assert!(!dynamic_clutter_record_eligible(Some("CONT")));
+            assert!(!static_proxy_eligible(Some("CONT"), path));
+            for record in ["MISC", "MSTT", "FLOR", "DOOR", "TACT", "LIGH"] {
+                assert_eq!(fixed_collision_tier(Some(record), path), None);
+            }
+        }
+        for path in [
+            "meshes/clutter/upperclass/upperchest01.glb",
+            "meshes/clutter/ruins/ruinslargeurnwithstand01.glb",
+            "meshes/clutter/barrel01extra.glb",
+            "meshes/architecture/barrel01.glb",
+        ] {
+            assert_eq!(fixed_collision_tier(Some("CONT"), path), None);
+            assert!(!static_proxy_eligible(Some("CONT"), path));
+        }
+    }
+
+    #[test]
+    fn container_collision_keeps_all_shapes_of_the_verified_root_body() {
+        let mut asset = verified_container_asset();
+        asset.shapes.push(authored_hull_shape());
+        asset.bodies[0].shapes.push(1);
+        match static_decision_from_asset(FixedCollisionTier::VerifiedContainer, &asset) {
+            StaticCollisionDecision::Authored(parts, notes) => {
+                assert_eq!(parts.len(), 2);
+                assert!(notes.is_empty());
+            }
+            _ => panic!("an intact audited root body must be solid"),
+        }
+    }
+
+    #[test]
+    fn container_collision_defers_ambiguous_moving_or_nonphysical_assets() {
+        let asset = verified_container_asset();
+        let mut cases = Vec::new();
+        let mut legacy = asset.clone();
+        legacy.version = 1;
+        legacy.bodies.clear();
+        cases.push(("legacy", legacy));
+        let mut unbound = asset.clone();
+        unbound.bodies.clear();
+        cases.push(("lost body", unbound));
+        let mut unowned = asset.clone();
+        unowned.shapes.push(authored_box_shape());
+        cases.push(("unowned shape", unowned));
+        let mut invalid = asset.clone();
+        invalid.bodies[0].shapes.push(u32::MAX);
+        cases.push(("missing shape", invalid));
+        let mut mixed = asset.clone();
+        mixed.shapes.push(authored_box_shape());
+        mixed
+            .bodies
+            .push(clutter_body(BodyKind::Dynamic, vec![1], true));
+        cases.push(("mixed bodies", mixed));
+        for kind in [BodyKind::Dynamic, BodyKind::Keyframed] {
+            let mut changed = asset.clone();
+            changed.bodies[0].kind = kind;
+            cases.push(("moving body", changed));
+        }
+        for layer in [2, 4, 12, 15] {
+            let mut changed = asset.clone();
+            changed.bodies[0].havok.collision_layer = layer;
+            cases.push(("different layer", changed));
+        }
+        let mut child_body = asset.clone();
+        child_body.bodies[0].node = 1;
+        cases.push(("child body", child_body));
+        let mut unnamed = asset.clone();
+        unnamed.bodies[0].target.clear();
+        cases.push(("unnamed target", unnamed));
+        let mut massive = asset.clone();
+        massive.bodies[0].mass = 1.0;
+        cases.push(("massive body", massive));
+        let mut skipped = asset;
+        skipped.skipped.push("lost animated lid".to_owned());
+        cases.push(("conversion skip", skipped));
+        for (case, asset) in cases {
+            assert!(
+                matches!(
+                    static_decision_from_asset(FixedCollisionTier::VerifiedContainer, &asset),
+                    StaticCollisionDecision::Skipped(_)
+                ),
+                "{case} must stay excluded and counted as a skip"
+            );
+        }
+    }
+
+    #[test]
+    fn container_collision_preserves_authored_absence_and_conversion_failures() {
+        let mut asset = authored_asset(Vec::new(), Vec::new());
+        assert!(matches!(
+            static_decision_from_asset(FixedCollisionTier::VerifiedContainer, &asset),
+            StaticCollisionDecision::AuthoredAbsent
+        ));
+        asset.skipped.push("unsupported shape".to_owned());
+        match static_decision_from_asset(FixedCollisionTier::VerifiedContainer, &asset) {
+            StaticCollisionDecision::Skipped(reason) => assert_eq!(reason, "unsupported shape"),
+            _ => panic!("a conversion failure is not authored absence"),
+        }
+    }
+
+    #[test]
+    fn container_collision_readiness_attaches_once_and_counts_deferred_assets() {
+        for (path, physics, valid, attached, skipped, excluded) in [
+            ("meshes/clutter/barrel01.glb", true, true, 1, 0, 0),
+            ("meshes/clutter/barrel01.glb", false, true, 0, 0, 0),
+            ("meshes/clutter/barrel01.glb", true, false, 0, 1, 0),
+            (
+                "meshes/clutter/upperclass/upperchest01.glb",
+                true,
+                true,
+                0,
+                0,
+                1,
+            ),
+        ] {
+            let mut app = model_app();
+            let mut asset = verified_container_asset();
+            if !valid {
+                asset.bodies.clear();
+            }
+            let (reference, metrics) =
+                ready_clutter_reference_with(&mut app, "CONT", path, physics, &asset);
+            assert_eq!(metrics.static_colliders_authored, attached);
+            assert_eq!(metrics.static_colliders_skipped, skipped);
+            assert_eq!(metrics.static_colliders_excluded_authored, excluded);
+            assert_eq!(metrics.static_colliders_proxy, 0);
+            assert_eq!(metrics.dynamic_clutter_bodies, 0);
+            assert_eq!(
+                app.world().get::<RigidBody>(reference),
+                (attached == 1).then_some(&RigidBody::Fixed)
+            );
+            let mut colliders = app.world_mut().query_filtered::<Entity, With<Collider>>();
+            assert_eq!(colliders.iter(app.world()).count(), attached as usize);
+            settle_readiness(&mut app);
+            assert_eq!(
+                app.world()
+                    .resource::<StreamingMetrics>()
+                    .static_colliders_authored,
+                attached,
+                "a settled reference must not get another collider"
+            );
+        }
+    }
+
+    #[test]
+    fn container_collision_without_metadata_has_no_render_proxy() {
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>();
+        let root = app.world_mut().spawn_empty().id();
+        let decision = app
+            .world_mut()
+            .run_system_once(
+                move |children: Query<&Children>,
+                      extras: Query<&GltfSceneExtras>,
+                      transforms: Query<(&Transform, &GlobalTransform)>,
+                      primitives: RenderPrimitiveQuery,
+                      meshes: Res<Assets<Mesh>>,
+                      materials: Res<Assets<StandardMaterial>>| {
+                    static_collision_from_hierarchy(
+                        Some("CONT"),
+                        "meshes/clutter/barrel01.glb",
+                        root,
+                        &children,
+                        &extras,
+                        &transforms,
+                        &primitives,
+                        &meshes,
+                        &materials,
+                    )
+                },
+            )
+            .unwrap();
+        assert!(matches!(decision, StaticCollisionDecision::LegacyExcluded));
+    }
+
+    #[test]
+    fn container_collision_preserves_scaled_pose_rebase_unload_and_reload() {
+        let mut app = crate::physics::headless::fixture_app();
+        app.insert_resource(EngineConfig::default())
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .init_resource::<ActiveSpace>()
+            .add_systems(Update, update_render_origin);
+        let cell = app
+            .world_mut()
+            .spawn((ExteriorCellGrid(IVec2::ZERO), Transform::default()))
+            .id();
+        let mut asset = verified_container_asset();
+        asset.shapes = vec![CollisionShape::Box {
+            center: [0.0, 10.0, 0.0],
+            half_extents: [10.0, 10.0, 20.0],
+        }];
+        let StaticCollisionDecision::Authored(parts, _) = static_decision_from_asset(
+            fixed_collision_tier(Some("CONT"), "meshes/clutter/barrel01.glb").unwrap(),
+            &asset,
+        ) else {
+            panic!("verified container must supply the fixture collider");
+        };
+        let transform = Transform::from_xyz(700.0, 100.0, 700.0)
+            .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2))
+            .with_scale(Vec3::splat(2.0));
+        let root = app.world_mut().spawn((transform, ChildOf(cell))).id();
+        let attach = |app: &mut App, entity, parts: Vec<AuthoredColliderPart>| {
+            app.world_mut()
+                .run_system_once(move |mut commands: Commands| {
+                    attach_authored_collision(&mut commands, entity, &parts);
+                })
+                .unwrap();
+        };
+        attach(&mut app, root, parts.clone());
+        for _ in 0..3 {
+            app.update();
+        }
+        let hit = |app: &mut App, x: f32| {
+            app.world_mut()
+                .run_system_once(move |context: ReadRapierContext| {
+                    context.single().unwrap().cast_ray(
+                        Vec3::new(x, 200.0, 700.0),
+                        Vec3::NEG_Y,
+                        100.0,
+                        true,
+                        QueryFilter::default().groups(crate::physics::player_collision_groups()),
+                    )
+                })
+                .unwrap()
+        };
+        // Rotation makes the 20-unit local Z half-extent the 40-unit world X half-extent.
+        let (collider, distance) = hit(&mut app, 730.0).expect("scaled container has contact");
+        assert!((distance - 60.0).abs() < 0.01, "contact at {distance}");
+        assert!(
+            hit(&mut app, 750.0).is_none(),
+            "container grew beyond authored extent"
+        );
+        let camera = app
+            .world_mut()
+            .query_filtered::<Entity, With<StreamingCamera>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation
+            .x += CELL_SIZE;
+        app.update();
+        let rebased_body_x = app
+            .world_mut()
+            .run_system_once(move |context: ReadRapierContext| {
+                let context = context.single().unwrap();
+                context.rigidbody_set.bodies[context.entity2body()[&root]]
+                    .translation()
+                    .x
+            })
+            .unwrap();
+        assert!((rebased_body_x - (700.0 - CELL_SIZE)).abs() < 0.01);
+        assert!(
+            (app.world()
+                .get::<GlobalTransform>(root)
+                .unwrap()
+                .translation()
+                .x
+                - rebased_body_x)
+                .abs()
+                < 0.01
+        );
+        // Rebasing runs in Update, after the fixed physics step. The following fixed step
+        // refreshes Rapier's broad phase before spatial queries use the new collider bounds.
+        app.update();
+        let (rebased, distance) = hit(&mut app, 730.0 - CELL_SIZE).expect("rebased contact");
+        assert_eq!(rebased, collider);
+        assert!((distance - 60.0).abs() < 0.01);
+        assert!(
+            hit(&mut app, 730.0).is_none(),
+            "stale collider at the old origin"
+        );
+        app.world_mut().entity_mut(cell).despawn();
+        app.update();
+        assert!(app.world().get_entity(collider).is_err());
+        assert!(
+            hit(&mut app, 730.0 - CELL_SIZE).is_none(),
+            "unloaded collider remains"
+        );
+        let reloaded = app.world_mut().spawn(transform).id();
+        attach(&mut app, reloaded, parts);
+        for _ in 0..3 {
+            app.update();
+        }
+        let (_, distance) = hit(&mut app, 730.0).expect("reloaded contact");
+        assert!((distance - 60.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn container_collision_blocks_the_fixture_player() {
+        let mut app = crate::physics::headless::fixture_app();
+        let mut asset = verified_container_asset();
+        asset.shapes = vec![CollisionShape::Box {
+            center: [0.0, 150.0, 0.0],
+            half_extents: [10.0, 150.0, 250.0],
+        }];
+        let StaticCollisionDecision::Authored(parts, _) =
+            static_decision_from_asset(FixedCollisionTier::VerifiedContainer, &asset)
+        else {
+            panic!("verified container must supply the blocking collider");
+        };
+        let root = app
+            .world_mut()
+            .spawn(Transform::from_xyz(250.0, 0.0, 750.0))
+            .id();
+        app.world_mut()
+            .run_system_once(move |mut commands: Commands| {
+                attach_authored_collision(&mut commands, root, &parts);
+            })
+            .unwrap();
+        crate::physics::headless::place_player(&mut app, Vec3::new(0.0, 200.0, 900.0));
+        app.insert_resource(crate::physics::WalkIntent {
+            wish_dir: Vec3::X,
+            target_speed: crate::physics::MovementTuning::default().run_speed,
+            jump_pressed: false,
+        });
+        for _ in 0..180 {
+            app.update();
+        }
+        let (player, _) = crate::physics::headless::player_pose(&mut app);
+        assert!(
+            player.x > 100.0,
+            "player never approached the container: {player:?}"
+        );
+        assert!(player.x < 225.0, "player crossed the container: {player:?}");
+        assert!(
+            app.world()
+                .get::<crate::physics::DynamicClutter>(root)
+                .is_none()
+        );
     }
 
     #[test]
@@ -7139,10 +7746,10 @@ mod tests {
         assert!(quadrant_layers(&terrain, 0).unwrap().is_empty());
     }
 
-    /// Zero overlays retain ordered weights and geometry validation while missing nonzero
-    /// diffuse images still fail locally and a subsequent placeholder snapshot remains usable.
+    /// Zero and unresolved nonzero overlays retain ordered weights while malformed geometry
+    /// still fails validation.
     #[test]
-    fn terrain_zero_texture_overlay_preserves_weights_and_nonzero_image_errors() {
+    fn terrain_unresolved_texture_overlays_preserve_weights_and_geometry_validation() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("placeholder-catalogue.db");
         write_empty_catalogue(&path);
@@ -7188,8 +7795,10 @@ mod tests {
         assert!(build_terrain_quadrant_mesh(&terrain, 0).is_ok());
 
         terrain.layers[4].texture_form_id = 0x844;
-        let error = validate_terrain_snapshot(&terrain, &catalog).unwrap_err();
-        assert!(error.contains("00000844") && error.contains("no converted diffuse image"));
+        validate_terrain_snapshot(&terrain, &catalog)
+            .expect("a missing diffuse image must not discard the cell and its objects");
+        assert_eq!(quadrant_overlay_weights(&terrain, 0).unwrap(), grids);
+        assert!(build_terrain_quadrant_mesh(&terrain, 0).is_ok());
         terrain.layers[4].texture_form_id = 0;
         assert!(validate_terrain_snapshot(&terrain, &catalog).is_ok());
 
@@ -7260,38 +7869,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_loaded_material_images_and_rejects_missing_required_texture() {
-        let mut images = Assets::<Image>::default();
-        let base_color = images.add(Image::new_fill(
-            bevy::render::render_resource::Extent3d {
-                width: 2,
-                height: 2,
-                depth_or_array_layers: 1,
-            },
-            bevy::render::render_resource::TextureDimension::D2,
-            &[255, 255, 255, 255],
-            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
-            RenderAssetUsages::default(),
-        ));
-        let material = StandardMaterial {
-            base_color_texture: Some(base_color),
-            ..default()
-        };
-        assert_eq!(validate_standard_material(&material, &images), Ok(1));
-
-        let missing = StandardMaterial {
-            normal_map_texture: Some(Handle::default()),
-            ..default()
-        };
-        assert!(
-            validate_standard_material(&missing, &images)
-                .unwrap_err()
-                .contains("normal image")
-        );
-    }
-
-    #[test]
-    fn effect_palette_material_needs_its_palette_loaded_through_an_srgb_view() {
+    fn validates_loaded_material_images_in_the_profile_colour_space() {
         let mut images = Assets::<Image>::default();
         let mut image = |format| {
             images.add(Image::new_fill(
@@ -7308,27 +7886,201 @@ mod tests {
         };
         let srgb = image(bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb);
         let linear = image(bevy::render::render_resource::TextureFormat::Rgba8Unorm);
-        let material = |palette: Handle<Image>| EffectPaletteMaterial {
-            base: StandardMaterial {
-                base_color_texture: Some(srgb.clone()),
-                ..default()
-            },
-            extension: crate::nif_material::EffectPalette::new(palette, true, true, 1.6),
+        let material = |base_color: Handle<Image>| StandardMaterial {
+            base_color_texture: Some(base_color),
+            ..default()
         };
         assert_eq!(
-            validate_effect_palette_material(&material(srgb.clone()), &images),
+            validate_standard_material(&material(srgb.clone()), &images, true),
+            Ok(1)
+        );
+        assert_eq!(
+            validate_standard_material(&material(linear.clone()), &images, false),
+            Ok(1)
+        );
+        assert!(
+            validate_standard_material(&material(linear), &images, true)
+                .unwrap_err()
+                .contains("base_color image color space mismatch")
+        );
+        assert!(
+            validate_standard_material(&material(srgb), &images, false)
+                .unwrap_err()
+                .contains("base_color image color space mismatch")
+        );
+
+        let missing = StandardMaterial {
+            normal_map_texture: Some(Handle::default()),
+            ..default()
+        };
+        assert!(
+            validate_standard_material(&missing, &images, true)
+                .unwrap_err()
+                .contains("normal image")
+        );
+    }
+
+    #[test]
+    fn reuse_of_a_colour_texture_as_data_stays_linear_under_both_profiles() {
+        let mut images = Assets::<Image>::default();
+        let linear = images.add(Image::new_fill(
+            bevy::render::render_resource::Extent3d {
+                width: 2,
+                height: 2,
+                depth_or_array_layers: 1,
+            },
+            bevy::render::render_resource::TextureDimension::D2,
+            &[255, 255, 255, 255],
+            bevy::render::render_resource::TextureFormat::Rgba8Unorm,
+            RenderAssetUsages::default(),
+        ));
+        let data_slots = |handle: Handle<Image>| StandardMaterial {
+            metallic_roughness_texture: Some(handle.clone()),
+            normal_map_texture: Some(handle.clone()),
+            occlusion_texture: Some(handle.clone()),
+            specular_texture: Some(handle),
+            ..default()
+        };
+        for colour_srgb in [true, false] {
+            assert_eq!(
+                validate_standard_material(&data_slots(linear.clone()), &images, colour_srgb),
+                Ok(4)
+            );
+        }
+    }
+
+    #[test]
+    fn effect_palette_material_follows_the_profile_colour_space() {
+        let mut images = Assets::<Image>::default();
+        let mut image = |format| {
+            images.add(Image::new_fill(
+                bevy::render::render_resource::Extent3d {
+                    width: 2,
+                    height: 2,
+                    depth_or_array_layers: 1,
+                },
+                bevy::render::render_resource::TextureDimension::D2,
+                &[255, 255, 255, 255],
+                format,
+                RenderAssetUsages::default(),
+            ))
+        };
+        let srgb = image(bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb);
+        let linear = image(bevy::render::render_resource::TextureFormat::Rgba8Unorm);
+        let material = |palette: Handle<Image>, base_color: Handle<Image>| EffectPaletteMaterial {
+            base: StandardMaterial {
+                base_color_texture: Some(base_color),
+                ..default()
+            },
+            extension: crate::nif_material::EffectPalette::new(palette, true, true, 1.6, false),
+        };
+        assert_eq!(
+            validate_effect_palette_material(&material(srgb.clone(), srgb.clone()), &images, true),
+            Ok(2)
+        );
+        assert_eq!(
+            validate_effect_palette_material(
+                &material(srgb.clone(), linear.clone()),
+                &images,
+                false
+            ),
             Ok(2)
         );
         assert!(
-            validate_effect_palette_material(&material(linear), &images)
-                .unwrap_err()
-                .contains("palette image color space mismatch")
+            validate_effect_palette_material(
+                &material(linear.clone(), srgb.clone()),
+                &images,
+                true
+            )
+            .unwrap_err()
+            .contains("palette image color space mismatch")
         );
         assert!(
-            validate_effect_palette_material(&material(Handle::default()), &images)
+            validate_effect_palette_material(
+                &material(linear.clone(), linear.clone()),
+                &images,
+                false
+            )
+            .unwrap_err()
+            .contains("palette image color space mismatch")
+        );
+        assert!(
+            validate_effect_palette_material(&material(Handle::default(), srgb), &images, true)
                 .unwrap_err()
                 .contains("palette image")
         );
+    }
+
+    #[test]
+    fn surface_colour_space_follows_the_profile_while_normals_and_water_stay_linear() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>();
+        let server = app.world().resource::<AssetServer>().clone();
+        let surface = |format| {
+            let mut image = Image::new_fill(
+                bevy::render::render_resource::Extent3d {
+                    width: 2,
+                    height: 2,
+                    depth_or_array_layers: 1,
+                },
+                bevy::render::render_resource::TextureDimension::D2,
+                &[255, 255, 255, 255],
+                format,
+                RenderAssetUsages::default(),
+            );
+            image.sampler = ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+                address_mode_u: ImageAddressMode::Repeat,
+                address_mode_v: ImageAddressMode::Repeat,
+                ..bevy::image::ImageSamplerDescriptor::linear()
+            });
+            server.add(image)
+        };
+        let srgb = surface(bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb);
+        let linear = surface(bevy::render::render_resource::TextureFormat::Rgba8Unorm);
+        app.update();
+        let images = app.world().resource::<Assets<Image>>();
+        let check = |handles: &[Handle<Image>], kind, colour_srgb| {
+            validate_surface_dependencies(&server, images, handles, kind, colour_srgb)
+        };
+        assert!(matches!(
+            check(std::slice::from_ref(&srgb), SurfaceImageKind::Terrain, true),
+            SurfaceDependencyState::Ready
+        ));
+        assert!(matches!(
+            check(
+                std::slice::from_ref(&linear),
+                SurfaceImageKind::Terrain,
+                false
+            ),
+            SurfaceDependencyState::Ready
+        ));
+        assert!(matches!(
+            check(std::slice::from_ref(&linear), SurfaceImageKind::Terrain, true),
+            SurfaceDependencyState::Failed(reason) if reason.contains("wrong color space")
+        ));
+        assert!(matches!(
+            check(std::slice::from_ref(&srgb), SurfaceImageKind::Terrain, false),
+            SurfaceDependencyState::Failed(reason) if reason.contains("wrong color space")
+        ));
+        for colour_srgb in [true, false] {
+            assert!(matches!(
+                check(
+                    std::slice::from_ref(&linear),
+                    SurfaceImageKind::TerrainNormal,
+                    colour_srgb
+                ),
+                SurfaceDependencyState::Ready
+            ));
+            assert!(matches!(
+                check(
+                    std::slice::from_ref(&linear),
+                    SurfaceImageKind::Water,
+                    colour_srgb
+                ),
+                SurfaceDependencyState::Ready
+            ));
+        }
     }
 
     #[test]
@@ -7340,7 +8092,8 @@ mod tests {
                     alpha_mode: AlphaMode::Mask(f32::NAN),
                     ..default()
                 },
-                &images
+                &images,
+                true
             )
             .is_err()
         );
@@ -7350,7 +8103,8 @@ mod tests {
                     double_sided: true,
                     ..default()
                 },
-                &images
+                &images,
+                true
             )
             .is_err()
         );
@@ -7387,6 +8141,7 @@ mod tests {
         .init_resource::<SceneSpawnBatch>()
         .init_resource::<StaticCollisionCache>()
         .init_resource::<crate::pacing::PacingTracker>()
+        .init_resource::<VisualProfile>()
         // The converted scene holds entities, and the spawner reads each of their components out
         // of the type registry.
         .register_type::<ChildOf>()
@@ -7675,6 +8430,65 @@ mod tests {
         assert_eq!(layers, &RenderLayers::layer(WATER_LAYER));
     }
 
+    #[test]
+    fn flat_water_query_matches_spawned_surface_and_cell_unload() {
+        use crate::world::water::water_at_point;
+
+        let mut app = model_app();
+        app.init_resource::<AssetCatalog>()
+            .init_resource::<ActorCatalog>()
+            .init_asset::<TerrainMaterial>()
+            .init_asset::<WaterMaterial>()
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .insert_resource(WaterReflectionTexture(Handle::default()))
+            .add_systems(Update, spawn_test_cell);
+        app.update();
+
+        let point = WorldPosition::from_creation_units(Vec3::new(64.0, 64.0, 100.0));
+        let mut surfaces = app
+            .world_mut()
+            .query_filtered::<(&FlatWaterBody, &Transform, &ChildOf), With<WaterSurface>>();
+        let (body, transform, parent) = surfaces.single(app.world()).unwrap();
+        let root = parent.parent();
+        let sample = water_at_point([body], 60, point).unwrap();
+        assert_eq!(sample.cell_id, 0x02D4E0);
+        assert_eq!(sample.surface.height, transform.translation.y);
+        assert_eq!(sample.surface.water_type_form_id, None);
+
+        // A floating-origin shift changes rendering, not this Creation-space query.
+        app.world_mut()
+            .get_mut::<Transform>(root)
+            .unwrap()
+            .translation += Vec3::new(4096.0, 0.0, -8192.0);
+        let mut bodies = app.world_mut().query::<&FlatWaterBody>();
+        assert_eq!(
+            water_at_point(bodies.iter(app.world()), 60, point),
+            Some(sample)
+        );
+
+        // Retiring meshes remain queryable until the real unload removes their cell subtree.
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .cells
+            .insert(
+                CellKey::Exterior {
+                    worldspace_id: 60,
+                    grid_x: 0,
+                    grid_y: 0,
+                },
+                CellStatus::Retiring { root },
+            );
+        assert_eq!(
+            water_at_point(bodies.iter(app.world()), 60, point),
+            Some(sample)
+        );
+        assert_eq!(unload_all_cells_now(app.world_mut()), 1);
+        let mut bodies = app.world_mut().query::<&FlatWaterBody>();
+        assert!(water_at_point(bodies.iter(app.world()), 60, point).is_none());
+        app.update();
+        assert!(water_at_point(bodies.iter(app.world()), 60, point).is_none());
+    }
+
     /// A model reference's meshes arrive from the converted glb, frames after the reference itself,
     /// and they are what the reflection pass must not draw.
     #[test]
@@ -7771,6 +8585,7 @@ mod tests {
                 references: vec![ReferenceRow {
                     form_id: 0x00F9907,
                     initially_enabled: true,
+                    starts_dead: false,
                     cell_id: 0x02D4E0,
                     base_form_id: 0x00EF957,
                     base_record_type: None,
@@ -7792,6 +8607,7 @@ mod tests {
             None,
             &mut 0,
             &mut profiler,
+            true,
         )
         .expect("spawn cell");
     }
@@ -8812,6 +9628,7 @@ mod tests {
         ReferenceRow {
             form_id,
             initially_enabled: true,
+            starts_dead: false,
             cell_id: 99,
             base_form_id: 0x200 + form_id,
             base_record_type: None,
@@ -8876,6 +9693,7 @@ mod tests {
                 None,
                 &mut 0,
                 &mut profiler,
+                true,
             )
             .expect("spawn cell"),
         );
@@ -9051,6 +9869,7 @@ mod tests {
     fn ready_clutter_reference_with(
         app: &mut App,
         record_type: &str,
+        path: &str,
         static_physics: bool,
         asset: &CollisionAsset,
     ) -> (Entity, StreamingMetrics) {
@@ -9076,7 +9895,7 @@ mod tests {
         {
             let mut entity_mut = app.world_mut().entity_mut(reference);
             let mut pending = entity_mut.get_mut::<PendingAssetProfile>().unwrap();
-            pending.path = "meshes/clutter/test/clutter01.glb".to_owned();
+            pending.path = path.to_owned();
             pending.base_record_type = Some(record_type.to_owned());
             pending.static_physics = static_physics;
         }
@@ -9100,8 +9919,13 @@ mod tests {
         asset: &CollisionAsset,
     ) -> (App, Entity, StreamingMetrics) {
         let mut app = model_app();
-        let (reference, metrics) =
-            ready_clutter_reference_with(&mut app, record_type, static_physics, asset);
+        let (reference, metrics) = ready_clutter_reference_with(
+            &mut app,
+            record_type,
+            "meshes/clutter/test/clutter01.glb",
+            static_physics,
+            asset,
+        );
         (app, reference, metrics)
     }
 
@@ -9540,7 +10364,13 @@ mod tests {
                 max_angular_velocity: 0.0,
             });
         }
-        let (reference, metrics) = ready_clutter_reference_with(&mut app, "MISC", true, &dynamic);
+        let (reference, metrics) = ready_clutter_reference_with(
+            &mut app,
+            "MISC",
+            "meshes/clutter/test/clutter01.glb",
+            true,
+            &dynamic,
+        );
         assert_eq!(metrics.dynamic_clutter_bodies, 0);
         assert_eq!(metrics.dynamic_clutter_overflow, 1);
         assert!(app.world().get::<RigidBody>(reference).is_none());
@@ -10002,6 +10832,164 @@ mod tests {
         assert!((weight.0 - 0.8).abs() < 1e-6, "{weight:?}");
     }
 
+    /// One creature `NPC_` row (base 0x2000, race 0x1000) with `body` as its body part.
+    fn creature_catalog_connection(body: &str) -> rusqlite::Connection {
+        let connection = actor_catalog_connection();
+        connection
+            .execute(
+                "INSERT INTO actor_models(id,race_id,sex,resolution) VALUES(0x2000,0x1000,'male','body')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO actor_model_parts(npc_id,slot,model_path) VALUES(0x2000,'body',?1)",
+                [body],
+            )
+            .unwrap();
+        connection
+    }
+
+    fn creature_reference(starts_dead: bool) -> ReferenceRow {
+        let mut reference = lit_reference(0x2001, None, None);
+        reference.base_form_id = 0x2000;
+        reference.base_record_type = Some("NPC_".to_owned());
+        reference.starts_dead = starts_dead;
+        reference
+    }
+
+    fn write_asset(root: &std::path::Path, relative: &str) {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"clip").unwrap();
+    }
+
+    /// Verified creature bodies select their own idle and retain their standalone geometry.
+    #[test]
+    fn verified_creature_bodies_request_their_own_idle_without_locomotion() {
+        for profile in shared::creature_idle::CREATURE_IDLES {
+            let directory = tempfile::tempdir().unwrap();
+            write_asset(directory.path(), profile.clip_scene);
+            let connection = creature_catalog_connection(profile.body_source);
+            let catalog =
+                ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+            let app = spawn_reference_cell_app_with_catalog(
+                vec![creature_reference(false)],
+                false,
+                catalog,
+            );
+            let entity = app.world().entity(reference_entity(&app, 0x2001));
+            assert_eq!(entity.get::<MeshHandle>().unwrap().0, profile.body_scene);
+            let clips = entity.get::<crate::actor_animation::ActorClips>().unwrap();
+            assert_eq!(
+                clips.idle.path().unwrap().path().to_str().unwrap(),
+                profile.clip_scene
+            );
+            assert_eq!(clips.idle, clips.walk);
+            assert_eq!(clips.idle, clips.run);
+            assert!(entity.get::<crate::actor_drive::ActorDrive>().is_none());
+            assert_eq!(entity.get::<Actor>().unwrap().base_form_id, 0x2000);
+        }
+    }
+
+    /// A pack converted before the explicit creature clips existed requests no missing asset.
+    #[test]
+    fn verified_creature_bodies_without_their_published_clip_stay_static() {
+        let profile = shared::creature_idle::CREATURE_IDLES[0];
+        let directory = tempfile::tempdir().unwrap();
+        let connection = creature_catalog_connection(profile.body_source);
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+        let app =
+            spawn_reference_cell_app_with_catalog(vec![creature_reference(false)], false, catalog);
+        let entity = app.world().entity(reference_entity(&app, 0x2001));
+        assert_eq!(entity.get::<MeshHandle>().unwrap().0, profile.body_scene);
+        assert!(entity.get::<crate::actor_animation::ActorClips>().is_none());
+    }
+
+    /// The generic catalog branch binds by race, sex and full body key, and only then installs
+    /// the published default clip and the authored idle library.
+    #[test]
+    fn catalog_creature_bodies_play_their_published_default_idle() {
+        use shared::actor_idle_catalog::{ActorIdleBinding, ActorIdleCatalog, PATH, VERSION};
+        let directory = tempfile::tempdir().unwrap();
+        let clip = "meshes/actor-idles/clips/idle.glb";
+        write_asset(directory.path(), clip);
+        let body = "meshes/actors/custom/body.glb";
+        let catalog = ActorIdleCatalog {
+            version: VERSION,
+            bindings: vec![ActorIdleBinding {
+                race_id: 0x1000,
+                sex: "male".into(),
+                body_scene: body.into(),
+                project: "meshes/actors/custom/project.hkx".into(),
+                skeleton: "meshes/actors/custom/character assets/skeleton.hkx".into(),
+                race_skeleton_nif: "meshes/actors/custom/character assets/skeleton.nif".into(),
+                bound_tracks: 2,
+                moving_bound_tracks: 1,
+                skipped_tracks: Vec::new(),
+                source: "meshes/actors/custom/animations/idle.hkx".into(),
+                scene: clip.into(),
+                clips: Default::default(),
+            }],
+            ..Default::default()
+        };
+        std::fs::write(
+            directory.path().join(PATH),
+            serde_json::to_vec(&catalog).unwrap(),
+        )
+        .unwrap();
+        for starts_dead in [false, true] {
+            let connection = creature_catalog_connection("Actors\\Custom\\Body.nif");
+            connection
+                .execute_batch(
+                    "CREATE TABLE race_animation_sources(race_id INTEGER,sex TEXT,skeleton_nif TEXT,project_hkx TEXT);
+                     INSERT INTO race_animation_sources VALUES (4096,'male','meshes/actors/custom/character assets/skeleton.nif','meshes/actors/custom/project.hkx');",
+                )
+                .unwrap();
+            let actor_catalog =
+                ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+            let app = spawn_reference_cell_app_with_catalog(
+                vec![creature_reference(starts_dead)],
+                false,
+                actor_catalog,
+            );
+            let entity = app.world().entity(reference_entity(&app, 0x2001));
+            assert_eq!(entity.get::<MeshHandle>().unwrap().0, body);
+            assert!(entity.get::<crate::actor_drive::ActorDrive>().is_none());
+            let clips = entity.get::<crate::actor_animation::ActorClips>();
+            let library = entity.get::<crate::actor_animation::ActorIdleLibrary>();
+            if starts_dead {
+                assert!(
+                    clips.is_none(),
+                    "a placed corpse must not play a standing idle"
+                );
+                assert!(library.is_none());
+            } else {
+                assert_eq!(
+                    clips.unwrap().idle.path().unwrap().path().to_str().unwrap(),
+                    clip
+                );
+                assert_eq!(library.unwrap().body_scene, body);
+            }
+        }
+    }
+
+    /// The legacy cow/chicken branch also leaves a Starts Dead corpse without idle playback.
+    #[test]
+    fn starts_dead_verified_creatures_receive_no_idle() {
+        let profile = shared::creature_idle::CREATURE_IDLES[1];
+        let directory = tempfile::tempdir().unwrap();
+        write_asset(directory.path(), profile.clip_scene);
+        let connection = creature_catalog_connection(profile.body_source);
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+        let app =
+            spawn_reference_cell_app_with_catalog(vec![creature_reference(true)], false, catalog);
+        let entity = app.world().entity(reference_entity(&app, 0x2001));
+        assert_eq!(entity.get::<MeshHandle>().unwrap().0, profile.body_scene);
+        assert!(entity.get::<crate::actor_animation::ActorClips>().is_none());
+        assert_eq!(entity.get::<Actor>().unwrap().base_form_id, 0x2000);
+    }
+
     /// A race with its own body keeps that body and receives no shared human gait, even when the
     /// default composed body exists.
     #[test]
@@ -10251,3 +11239,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod collision_placement_probe;
