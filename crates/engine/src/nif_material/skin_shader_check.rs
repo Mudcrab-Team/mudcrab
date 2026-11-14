@@ -209,7 +209,11 @@ const OIT: &str = r#"
 fn oit_draw(position: vec4<f32>, color: vec4<f32>) {}
 "#;
 
-fn shader_defs(skinned: bool, morphed: bool) -> HashMap<String, ShaderDefValue> {
+fn shader_defs(
+    skinned: bool,
+    morphed: bool,
+    raw_colour_texels: bool,
+) -> HashMap<String, ShaderDefValue> {
     let mut defs = HashMap::new();
     defs.insert("MATERIAL_BIND_GROUP".into(), ShaderDefValue::UInt(3));
     for name in [
@@ -230,11 +234,19 @@ fn shader_defs(skinned: bool, morphed: bool) -> HashMap<String, ShaderDefValue> 
     if morphed {
         defs.insert("MORPH_TARGETS".into(), ShaderDefValue::Bool(true));
     }
+    if raw_colour_texels {
+        defs.insert("RAW_COLOUR_TEXELS".into(), ShaderDefValue::Bool(true));
+    }
     defs
 }
 
-fn compose(source: &str, skinned: bool, morphed: bool) -> Result<wgpu::naga::Module, String> {
-    let shader_defs = shader_defs(skinned, morphed);
+fn compose(
+    source: &str,
+    skinned: bool,
+    morphed: bool,
+    raw_colour_texels: bool,
+) -> Result<wgpu::naga::Module, String> {
+    let shader_defs = shader_defs(skinned, morphed, raw_colour_texels);
     let mut composer = Composer::default();
     for (path, module_source) in [
         ("cs_lighting_msn.wgsl", LIGHTING),
@@ -282,14 +294,18 @@ fn production_skin_shader_composes_for_static_and_skinned_meshes() {
         } else {
             SHADER.replace("#ifdef MORPH_TARGETS", "#ifdef DISABLED_MORPH_TARGETS")
         };
-        let module = compose(&source, skinned, morphed).unwrap_or_else(|error| {
-            panic!(
-                "{}{} mesh shader failed:\n{error}",
-                if skinned { "skinned" } else { "static" },
-                if morphed { " morphed" } else { "" }
-            )
-        });
-        assert_facegen_bindings(&module);
+        for raw_colour_texels in [false, true] {
+            let module =
+                compose(&source, skinned, morphed, raw_colour_texels).unwrap_or_else(|error| {
+                    panic!(
+                        "{}{}{} mesh shader failed:\n{error}",
+                        if skinned { "skinned" } else { "static" },
+                        if morphed { " morphed" } else { "" },
+                        if raw_colour_texels { " raw-texel" } else { "" }
+                    )
+                });
+            assert_facegen_bindings(&module);
+        }
     }
 }
 
@@ -319,7 +335,8 @@ fn assert_facegen_bindings(module: &wgpu::naga::Module) {
 fn missing_skinned_vertex_field_fails_composition() {
     let broken = SHADER.replace("vertex.joint_indices", "vertex.missing_joint_indices");
     assert_ne!(broken, SHADER);
-    let error = compose(&broken, true, false).expect_err("missing skinned vertex field must fail");
+    let error =
+        compose(&broken, true, false, false).expect_err("missing skinned vertex field must fail");
     assert!(
         error.contains("missing_joint_indices"),
         "unexpected error: {error}"
@@ -333,7 +350,8 @@ fn missing_facegen_sampler_symbol_fails_composition() {
         "var facegen_missing_sampler: sampler;",
     );
     assert_ne!(broken, SHADER);
-    let error = compose(&broken, false, false).expect_err("missing FaceGen sampler must fail");
+    let error =
+        compose(&broken, false, false, false).expect_err("missing FaceGen sampler must fail");
     assert!(
         error.contains("facegen_detail_sampler"),
         "unexpected error: {error}"

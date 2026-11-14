@@ -37,6 +37,10 @@ pub struct ReferenceRow {
     /// New-game enable-state snapshot, including parent chains. All rows remain available;
     /// this bootstrap value does not represent subsequent script/quest/save state.
     pub initially_enabled: bool,
+    /// The winning `ACHR` header's `Starts Dead` flag (`0x200`). Only actor references read it;
+    /// other record types assign that bit another meaning. The engine has no death pose or
+    /// ragdoll, so a corpse keeps its bind pose instead of playing a standing idle.
+    pub starts_dead: bool,
     pub cell_id: u32,
     pub base_form_id: u32,
     /// Authoritative base record type; `statics` also contains movable clutter.
@@ -865,6 +869,8 @@ const ABSENT_RADIUS_OVERRIDE_COLUMN: &str = "NULL";
 // reserved suffix so combining the optional door/emittance projections with enable state cannot
 // reinterpret either feature.
 const REFERENCE_ENABLE_START: usize = 37;
+/// `ACHR` record header flag: the actor is placed as a corpse.
+const ACTOR_STARTS_DEAD: u32 = 0x200;
 
 /// The `lights` row of the reference's base record: one `LIGH` record can be placed many times,
 /// each reference lighting the space at its own radius.
@@ -1253,10 +1259,12 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
         None => None,
     };
     let base_flags: Option<u32> = row.get(STATIC_FLAGS_INDEX)?;
+    let enable_inputs = map_enable_inputs(row, REFERENCE_ENABLE_START)?;
     Ok((
         ReferenceRow {
             form_id: row.get(0)?,
             initially_enabled: true,
+            starts_dead: enable_inputs.header_flags & ACTOR_STARTS_DEAD != 0,
             cell_id: row.get(1)?,
             base_form_id: row.get(2)?,
             base_record_type,
@@ -1273,7 +1281,7 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
             door,
             emittance,
         },
-        map_enable_inputs(row, REFERENCE_ENABLE_START)?,
+        enable_inputs,
     ))
 }
 
@@ -1407,6 +1415,30 @@ mod tests {
                 .unwrap();
             assert!(!child.initially_enabled);
         }
+    }
+
+    #[test]
+    fn starts_dead_comes_from_the_reference_header_and_defaults_off() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        let mut legacy = ReferenceQuery::for_connection(&connection).unwrap();
+        let payload = super::load_cell(&connection, &mut legacy, 1, CellKey::Interior(10)).unwrap();
+        assert!(!payload.references.is_empty());
+        assert!(payload.references.iter().all(|row| !row.starts_dead));
+        enable_columns(&connection);
+        // 0x200 Starts Dead with Persistent (0x400); 0x800 alone is Initially Disabled.
+        connection
+            .execute_batch(
+                "UPDATE \"references\" SET header_flags=1536 WHERE id=30;
+                 UPDATE \"references\" SET header_flags=2048 WHERE id<>30;",
+            )
+            .unwrap();
+        let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+        let payload = super::load_cell(&connection, &mut query, 1, CellKey::Interior(10)).unwrap();
+        for row in &payload.references {
+            assert_eq!(row.starts_dead, row.form_id == 30, "{:08X}", row.form_id);
+        }
+        assert!(payload.references.iter().any(|row| row.form_id == 30));
     }
 
     #[test]

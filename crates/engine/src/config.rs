@@ -431,6 +431,12 @@ Diagnostics:
 Help:
   -h, --help                            print this message and exit
 
+Exit codes:
+  0  success
+  1  the run failed
+  2  the command line could not be used
+  3  the GPU device was lost (retry the run; repeated losses can still be an engine fault)
+
 Example (the dummy-content fixture's worldspace is 1):
   engine --assets modern_assets --worldspace 1
 ";
@@ -1827,6 +1833,7 @@ mod tests {
         "--shader-id", // sample_skyrim_tonemap_gpu.py
         "--source-shader", // sample_skyrim_tonemap_gpu.py
         "--stage3-relative", // compare_stage_receipts.py
+        "--stage3-absolute", // compare_stage_receipts.py
         "--stage4-bytes", // compare_stage_receipts.py
     ];
 
