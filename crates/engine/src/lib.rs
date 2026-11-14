@@ -27,6 +27,8 @@ pub mod metrics;
 pub mod nif_depth;
 pub mod nif_material;
 pub mod pacing;
+pub mod papyrus_host;
+pub mod papyrus_plugin;
 pub mod papyrus_runtime;
 pub mod physics;
 pub mod prepass_vertex_alpha;
