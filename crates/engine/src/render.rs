@@ -45,23 +45,43 @@ use std::sync::{
 pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, TerrainExtension>;
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExtension>;
 
-/// How far the procedural waves tilt the water's normal. Skyrim's water is close to flat at a
-/// distance; a stronger tilt striped lakes with bright and dark bands.
+/// The previous procedural waves' tilt, kept only as the neutral point of the user's "Water wave
+/// strength" setting: the setting divided by this is a multiplier on the amplitudes the water's own
+/// WATR record gives, so the default setting changes nothing. It never reaches the shader as a
+/// value of its own.
 pub(crate) const WAVE_STRENGTH: f32 = 0.05;
+
+/// The neutral point of the "Water wave scale" setting, in the same way: the setting over this is a
+/// multiplier on the record's noise UV scales.
+pub(crate) const DEFAULT_WAVE_SCALE: f32 = 0.006;
+
+/// The neutral point of the "Water wave speed" setting: the setting over this is a multiplier on
+/// the record's wind speeds.
+pub(crate) const DEFAULT_WAVE_SPEED: f32 = 0.15;
 
 /// A phase below zero makes the shader run the waves on the frame clock instead of a phase the CPU
 /// uploaded, so an interactive run does not rewrite every water material every frame.
 pub(crate) const ANIMATED_WAVE_PHASE: f32 = -1.0;
 
-/// The one flow every water's waves run on: the vector `(0.8, 0.35)` in world X and Z. The data has
-/// no flow to use instead (see `docs/research/water.md`, "Flow"). The shader moves the wave pattern
-/// toward the negative of this vector.
-pub(crate) const DEFAULT_WATER_FLOW: Vec2 = Vec2::new(0.8, 0.35);
+/// Degrees to radians as the retail engine does it for the noise wind directions: a float
+/// constant, `0.017453292` (`SkyrimSE.exe` 1.7.104.0, VA `0x1418121c8`, read in the loop at
+/// `0x1405290ac`; `evidence/rea-20261114/q1-water.md`).
+pub(crate) const WATER_DEGREES_TO_RADIANS: f32 = 0.017453292;
 
-/// The most of the water the Fresnel reflection may cover, as in `REFLECTION_SHARE` in
-/// `water.wgsl` (a test keeps the two equal). Tuned by eye.
+/// Where the pattern of a noise layer sits at water clock `seconds`, in tiles. Skyrim wraps
+/// `(sin(theta) * speed * T, cos(theta) * speed * T)` into `[0, 1)`, `theta` being the layer's wind
+/// direction in radians and `speed` its wind speed in tiles per second (`SkyrimSE.exe`
+/// `0x1405290ac` to `0x140529356`; `evidence/rea-20261114/q1-water.md`). The shader adds it to
+/// the layer's UV. `water.wgsl` does the same; a test keeps them equal.
 #[cfg(test)]
-pub(crate) const REFLECTION_SHARE: f32 = 0.6;
+pub(crate) fn noise_scroll(direction_degrees: f32, speed: f32, seconds: f32) -> Vec2 {
+    let theta = direction_degrees * WATER_DEGREES_TO_RADIANS;
+    let wrap = |value: f32| value - value.floor();
+    Vec2::new(
+        wrap(theta.sin() * speed * seconds),
+        wrap(theta.cos() * speed * seconds),
+    )
+}
 
 /// How long the shared shader clock (`globals.time`) runs before it wraps to zero. Bevy wraps it
 /// after one hour, and the waves would jump to a different pattern at that instant, because the
@@ -745,6 +765,34 @@ impl MaterialExtension for TerrainExtension {
     }
 }
 
+/// The WATR `DNAM` values that shape and move a water's noise layers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaterNoiseValues {
+    /// World units per tile of each layer (`uvScaleA`).
+    pub uv_scale: [f32; 3],
+    /// How much each layer tilts the normal (`amplitudeA`).
+    pub amplitude: [f32; 3],
+    /// Reflections, refraction, normals and specular lighting depth properties.
+    pub depth_properties: [f32; 4],
+    /// Compass bearing each layer's wind comes from, degrees (`noiseWindDirectionA`).
+    pub wind_direction: [f32; 3],
+    /// Tiles per second (`noiseWindSpeedA`).
+    pub wind_speed: [f32; 3],
+}
+
+impl WaterNoiseValues {
+    /// No layers: a flat surface.
+    pub fn flat() -> Self {
+        Self {
+            uv_scale: [1.0; 3],
+            amplitude: [0.0; 3],
+            depth_properties: [0.0; 4],
+            wind_direction: [0.0; 3],
+            wind_speed: [0.0; 3],
+        }
+    }
+}
+
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct WaterExtension {
     #[uniform(100)]
@@ -757,13 +805,28 @@ pub struct WaterExtension {
     flow_normal: Option<Handle<Image>>,
     #[texture(105, filterable = false)]
     bed_depth: Option<Handle<Image>>,
+    /// The three noise normal maps (WATR `NAM2` to `NAM4`), read with the sampler of `flow_normal`.
+    #[texture(106)]
+    noise_normal_0: Option<Handle<Image>>,
+    #[texture(107)]
+    noise_normal_1: Option<Handle<Image>>,
+    #[texture(108)]
+    noise_normal_2: Option<Handle<Image>>,
 }
 
 #[derive(ShaderType, Reflect, Debug, Clone, PartialEq)]
 struct WaterSettings {
+    /// x = multiplier on the noise UV scales, y = multiplier on the wind speeds, z = multiplier on
+    /// the amplitudes (all neutral at 1 and set from the user's settings; z is 0 when waves are
+    /// off), w = pinned wave time in seconds, or negative to run on the frame clock.
     wave_scale_speed_strength: Vec4,
-    flow_direction: Vec4,
-    /// x = Fresnel Amount (Schlick F0), y = Reflectivity Amount. z/w unused.
+    /// xyz = the three noise layers' wind directions in radians (WATR DNAM `noiseWindDirectionA`,
+    /// compass bearing the wind comes from); w unused.
+    noise_wind_direction: Vec4,
+    /// xyz = the three noise layers' wind speeds in tiles per second (DNAM `noiseWindSpeedA`).
+    noise_wind_speed: Vec4,
+    /// x = Fresnel Amount (Schlick F0), y = Reflectivity Amount, z = the user's reflection
+    /// multiplier, w = Reflection Magnitude (all WATR DNAM except z).
     fresnel_reflectivity: Vec4,
     /// The water's Reflection Color (WATR DNAM), linear. What the reflection fades to where the
     /// reflection image has no coverage; alpha unused.
@@ -779,33 +842,44 @@ struct WaterSettings {
     /// frame whose resolve was skipped leaves the texture bound but cleared to a negative sentinel,
     /// which the shader reads as unknown too. yzw unused.
     depth_params: Vec4,
+    /// xyz = the three noise layers' UV scales in world units per texture tile (WATR DNAM
+    /// `uvScaleA`); w = 1 when the noise textures are bound, 0 for a flat surface.
+    noise_uv_scale: Vec4,
+    /// xyz = the three noise layers' amplitudes (WATR DNAM `amplitudeA`).
+    noise_amplitude: Vec4,
+    /// x, y, z, w = the WATR DNAM depth properties: reflections, refraction, normals and specular
+    /// lighting. How much of each effect is left at zero depth is `1 - value`; only the normals one
+    /// is used.
+    depth_control: Vec4,
 }
 
 impl Default for WaterExtension {
     fn default() -> Self {
         Self {
             settings: WaterSettings {
-                wave_scale_speed_strength: Vec4::new(
-                    0.006,
-                    0.15,
-                    WAVE_STRENGTH,
-                    ANIMATED_WAVE_PHASE,
-                ),
-                flow_direction: Vec4::new(DEFAULT_WATER_FLOW.x, DEFAULT_WATER_FLOW.y, 0.0, 0.0),
+                wave_scale_speed_strength: Vec4::new(1.0, 1.0, 1.0, ANIMATED_WAVE_PHASE),
+                noise_wind_direction: Vec4::ZERO,
+                noise_wind_speed: Vec4::ZERO,
                 fresnel_reflectivity: Vec4::new(
                     DEFAULT_WATER_FRESNEL,
                     DEFAULT_WATER_REFLECTIVITY,
                     1.0,
-                    0.0,
+                    crate::world::database::DEFAULT_WATER_REFLECTION_MAGNITUDE,
                 ),
                 reflection_color: linear_rgb(DEFAULT_WATER_REFLECTION_COLOR),
                 shallow_color: linear_rgb(DEFAULT_WATER_SHALLOW_COLOR),
                 body: default_water_body(),
                 depth_params: Vec4::ZERO,
+                noise_uv_scale: Vec4::ZERO,
+                noise_amplitude: Vec4::ZERO,
+                depth_control: Vec4::ZERO,
             },
             reflection: None,
             flow_normal: None,
             bed_depth: None,
+            noise_normal_0: None,
+            noise_normal_1: None,
+            noise_normal_2: None,
         }
     }
 }
@@ -814,7 +888,12 @@ impl WaterExtension {
     /// Per-cell dependencies. The shared reflection target belongs to the
     /// renderer baseline and must not keep a retired water cell reserved.
     pub(crate) fn image_ids(&self) -> impl Iterator<Item = bevy::asset::AssetId<Image>> + '_ {
-        self.flow_normal.iter().map(Handle::id)
+        self.flow_normal
+            .iter()
+            .chain(self.noise_normal_0.iter())
+            .chain(self.noise_normal_1.iter())
+            .chain(self.noise_normal_2.iter())
+            .map(Handle::id)
     }
 
     /// Builds a water material with Skyrim's DefaultWater fresnel and reflectivity. Callers that
@@ -835,31 +914,32 @@ impl WaterExtension {
         fresnel: f32,
         reflectivity: f32,
     ) -> Self {
-        let has_flow_normal = flow_normal.is_some() as u8 as f32;
         Self {
             reflection: Some(reflection),
             flow_normal,
             settings: WaterSettings {
-                wave_scale_speed_strength: Vec4::new(
-                    0.006,
-                    0.15,
-                    WAVE_STRENGTH,
-                    ANIMATED_WAVE_PHASE,
-                ),
-                flow_direction: Vec4::new(
-                    DEFAULT_WATER_FLOW.x,
-                    DEFAULT_WATER_FLOW.y,
-                    0.0,
-                    has_flow_normal,
-                ),
+                wave_scale_speed_strength: Vec4::new(1.0, 1.0, 1.0, ANIMATED_WAVE_PHASE),
+                noise_wind_direction: Vec4::ZERO,
+                noise_wind_speed: Vec4::ZERO,
                 // z gates the reflection strength; 1.0 keeps reflections on until settings set it.
-                fresnel_reflectivity: Vec4::new(fresnel, reflectivity, 1.0, 0.0),
+                fresnel_reflectivity: Vec4::new(
+                    fresnel,
+                    reflectivity,
+                    1.0,
+                    crate::world::database::DEFAULT_WATER_REFLECTION_MAGNITUDE,
+                ),
                 reflection_color: linear_rgb(DEFAULT_WATER_REFLECTION_COLOR),
                 shallow_color: linear_rgb(DEFAULT_WATER_SHALLOW_COLOR),
                 body: default_water_body(),
                 depth_params: Vec4::ZERO,
+                noise_uv_scale: Vec4::ZERO,
+                noise_amplitude: Vec4::ZERO,
+                depth_control: Vec4::ZERO,
             },
             bed_depth: None,
+            noise_normal_0: None,
+            noise_normal_1: None,
+            noise_normal_2: None,
         }
     }
 
@@ -879,6 +959,51 @@ impl WaterExtension {
     pub(crate) fn set_bed_depth(&mut self, handle: Option<Handle<Image>>) {
         self.settings.depth_params.x = if handle.is_some() { 1.0 } else { 0.0 };
         self.bed_depth = handle;
+    }
+
+    /// Gives the water its three noise normal maps and the DNAM values that shape and move them.
+    /// A layer without a texture adds no tilt; with none, the surface is flat.
+    pub fn with_noise(
+        mut self,
+        textures: [Option<Handle<Image>>; 3],
+        values: WaterNoiseValues,
+    ) -> Self {
+        let has = |texture: &Option<Handle<Image>>| texture.is_some() as u8 as f32;
+        // A missing layer is a zero amplitude, so the shader can sample all three unconditionally.
+        let amplitude = [
+            values.amplitude[0] * has(&textures[0]),
+            values.amplitude[1] * has(&textures[1]),
+            values.amplitude[2] * has(&textures[2]),
+        ];
+        let bound = textures.iter().any(Option::is_some);
+        let scale = values.uv_scale;
+        self.settings.noise_uv_scale = Vec4::new(scale[0], scale[1], scale[2], bound as u8 as f32);
+        self.settings.noise_amplitude = Vec4::new(amplitude[0], amplitude[1], amplitude[2], 0.0);
+        self.settings.depth_control = Vec4::from_array(values.depth_properties);
+        let radians = values
+            .wind_direction
+            .map(|degrees| degrees * WATER_DEGREES_TO_RADIANS);
+        self.settings.noise_wind_direction = Vec4::new(radians[0], radians[1], radians[2], 0.0);
+        let speed = values.wind_speed;
+        self.settings.noise_wind_speed = Vec4::new(speed[0], speed[1], speed[2], 0.0);
+        let [first, second, third] = textures;
+        self.noise_normal_0 = first;
+        self.noise_normal_1 = second;
+        self.noise_normal_2 = third;
+        self
+    }
+
+    /// The noise layers' UV scales and amplitudes as the shader reads them, for tests.
+    #[cfg(test)]
+    pub(crate) fn noise(&self) -> (Vec4, Vec4) {
+        (self.settings.noise_uv_scale, self.settings.noise_amplitude)
+    }
+
+    /// Sets the water's Reflection Magnitude (WATR DNAM): how much of the wave normal reaches the
+    /// reflection.
+    pub fn with_reflection_magnitude(mut self, magnitude: f32) -> Self {
+        self.settings.fresnel_reflectivity.w = magnitude;
+        self
     }
 
     /// Sets the water's own Reflection Color (WATR DNAM, as stored bytes).
@@ -922,15 +1047,12 @@ fn wanted_water_settings(
     let mut wanted = current.settings.clone();
     wanted.wave_scale_speed_strength.w = phase;
     if let Some(settings) = settings {
-        wanted.wave_scale_speed_strength.x = settings.wave_scale;
-        wanted.wave_scale_speed_strength.y = settings.wave_speed;
+        // The user's wave scale and strength are multipliers on the water's own values, neutral at
+        // their defaults.
+        wanted.wave_scale_speed_strength.x = settings.wave_scale / DEFAULT_WAVE_SCALE;
+        wanted.wave_scale_speed_strength.y = settings.wave_speed / DEFAULT_WAVE_SPEED;
         wanted.wave_scale_speed_strength.z = if settings.water_waves {
-            settings.wave_strength
-        } else {
-            0.0
-        };
-        wanted.flow_direction.w = if settings.water_flow_normals && current.flow_normal.is_some() {
-            1.0
+            settings.wave_strength / WAVE_STRENGTH
         } else {
             0.0
         };
@@ -2321,46 +2443,151 @@ mod tests {
         }
     }
 
+    /// DefaultWater's own values (WATR 0x18), as the retail Skyrim.esm and Update.esm write them.
+    fn default_water_noise() -> WaterNoiseValues {
+        WaterNoiseValues {
+            uv_scale: [1920.0, 6703.0, 488.0],
+            amplitude: [0.6957, 0.6304, 0.4746],
+            depth_properties: [0.3, 0.95, 0.1, 0.9],
+            wind_direction: [270.0, 210.0, 225.0],
+            wind_speed: [0.019, 0.013, 0.096],
+        }
+    }
+
     #[test]
-    fn the_second_ripple_octave_runs_along_the_flow_not_across_it() {
+    fn the_noise_layers_carry_the_records_values() {
+        let layer = || Some(Handle::<Image>::default());
+        let water = WaterExtension::default()
+            .with_noise([layer(), layer(), layer()], default_water_noise());
+        let (scale, amplitude) = water.noise();
+        assert_eq!(scale, Vec4::new(1920.0, 6703.0, 488.0, 1.0));
+        assert_eq!(amplitude, Vec4::new(0.6957, 0.6304, 0.4746, 0.0));
+        assert_eq!(water.settings.depth_control, Vec4::new(0.3, 0.95, 0.1, 0.9));
+        // The wind directions go to the shader in radians, with the retail conversion constant.
+        let radians = water.settings.noise_wind_direction;
+        assert_eq!(radians.x, 270.0 * WATER_DEGREES_TO_RADIANS);
+        assert_eq!(
+            water.settings.noise_wind_speed,
+            Vec4::new(0.019, 0.013, 0.096, 0.0)
+        );
+        assert_eq!(water.image_ids().count(), 3);
+        // A layer without a texture adds no tilt, and with none the surface is flat.
+        let two =
+            WaterExtension::default().with_noise([layer(), None, layer()], default_water_noise());
+        assert_eq!(two.noise().1, Vec4::new(0.6957, 0.0, 0.4746, 0.0));
+        let flat =
+            WaterExtension::default().with_noise([None, None, None], WaterNoiseValues::flat());
+        assert_eq!(flat.noise().0.w, 0.0);
+        assert_eq!(flat.noise().1, Vec4::ZERO);
+        assert_eq!(flat.image_ids().count(), 0);
+    }
+
+    /// The compass bearing (0 north, 90 east, clockwise) a pattern moves toward when its UV offset
+    /// follows `noise_scroll`: U runs east and V north, and the offset is added to the UV, so the
+    /// pattern moves against it.
+    fn pattern_bearing(direction_degrees: f32) -> f32 {
+        let (before, after) = (
+            noise_scroll(direction_degrees, 0.05, 1.0),
+            noise_scroll(direction_degrees, 0.05, 1.01),
+        );
+        let shift = after - before;
+        // Fractions wrap at tile edges; a step this small does not cross one for these directions.
+        let toward = -shift;
+        toward.x.atan2(toward.y).to_degrees().rem_euclid(360.0)
+    }
+
+    #[test]
+    fn the_wind_direction_is_the_bearing_the_wind_comes_from() {
+        // The retail scroll (`SkyrimSE.exe` 0x1405290ac; `evidence/rea-20261114/q1-water.md`) puts
+        // the pattern toward the wind direction plus 180 degrees. The five directional retail
+        // records agree with their names under it: first-layer direction, then the bearing the
+        // water flows toward.
+        for (record, direction, toward) in [
+            ("RiverWaterFlowNE", 233.0, 53.0),
+            ("RiverWaterFlowNW", 141.0, 321.0),
+            ("RiverWaterFlowSE", 340.0, 160.0),
+            ("CreekWaterFlowSW", 33.0, 213.0),
+            ("CreekWaterFlowSE", 360.0, 180.0),
+        ] {
+            let bearing = pattern_bearing(direction);
+            let off = (bearing - toward + 540.0).rem_euclid(360.0) - 180.0;
+            assert!(
+                off.abs() < 0.5,
+                "{record}: {direction} degrees moves toward {bearing}, not {toward}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_noise_scroll_is_the_retail_formula() {
+        // frac(sin(theta) * speed * T) in U and frac(cos(theta) * speed * T) in V.
+        let scroll = noise_scroll(90.0, 0.5, 3.0);
+        assert!((scroll.x - 0.5).abs() < 1.0e-6, "{scroll}");
+        assert!(
+            scroll.y.abs() < 1.0e-4 || (scroll.y - 1.0).abs() < 1.0e-4,
+            "{scroll}"
+        );
+        // Negative products wrap upward, as the retail `fmodf(x, 1) + 1` does.
+        let scroll = noise_scroll(270.0, 0.25, 1.0);
+        assert!((scroll.x - 0.75).abs() < 1.0e-6, "{scroll}");
+        // The shader holds the same formula.
         let source = include_str!("shaders/water.wgsl");
-        let turn: f32 = source
-            .lines()
-            .find_map(|line| line.strip_prefix("const SECOND_OCTAVE_TURN_DEGREES: f32 = "))
-            .expect("water.wgsl declares SECOND_OCTAVE_TURN_DEGREES")
-            .trim_end_matches(';')
-            .parse()
-            .expect("a float");
-        // It used to be a fixed direction at right angles to the default flow, so half of the
-        // ripple motion ran across any current. A turn under 45 degrees keeps it within the flow.
-        let old_second = Vec2::new(-0.35, 0.8);
         assert!(
-            old_second.dot(DEFAULT_WATER_FLOW).abs() < 1.0e-6,
-            "the old pair was perpendicular"
+            source.contains("return fract(vec2<f32>(sin(theta), cos(theta)) * speed * seconds);")
         );
-        assert!(
-            turn.abs() < 45.0,
-            "turn {turn} would put the second octave across the flow"
-        );
-        assert!(
-            !source.contains("SECOND_OCTAVE_DIRECTION"),
-            "a fixed direction is back"
+        assert_eq!(WATER_DEGREES_TO_RADIANS, 0.017453292);
+    }
+
+    #[test]
+    fn the_users_wave_settings_are_multipliers_that_are_neutral_at_their_defaults() {
+        let water = WaterExtension::default();
+        let defaults = crate::settings::RenderingSettings::default();
+        let wanted = wanted_water_settings(&water, 0.0, Some(&defaults));
+        assert_eq!(wanted.wave_scale_speed_strength.x, 1.0);
+        assert_eq!(wanted.wave_scale_speed_strength.y, 1.0);
+        assert_eq!(wanted.wave_scale_speed_strength.z, 1.0);
+        let doubled = crate::settings::RenderingSettings {
+            wave_scale: defaults.wave_scale * 2.0,
+            wave_speed: defaults.wave_speed * 2.0,
+            wave_strength: defaults.wave_strength * 2.0,
+            ..defaults.clone()
+        };
+        let wanted = wanted_water_settings(&water, 0.0, Some(&doubled));
+        assert_eq!(wanted.wave_scale_speed_strength.x, 2.0);
+        assert_eq!(wanted.wave_scale_speed_strength.y, 2.0);
+        assert_eq!(wanted.wave_scale_speed_strength.z, 2.0);
+        let off = crate::settings::RenderingSettings {
+            water_waves: false,
+            ..defaults
+        };
+        assert_eq!(
+            wanted_water_settings(&water, 0.0, Some(&off))
+                .wave_scale_speed_strength
+                .z,
+            0.0
         );
     }
 
     #[test]
-    fn the_shader_and_the_renderer_agree_on_the_reflection_share() {
+    fn the_shader_has_no_tuned_or_legacy_constants_left() {
+        // Every number in the water shader is a WATR field, a number from a cited source, or an
+        // engineering guard. The names below were tuned by eye or kept from the old waves, and are
+        // gone.
         let source = include_str!("shaders/water.wgsl");
-        let line = source
-            .lines()
-            .find(|line| line.starts_with("const REFLECTION_SHARE: f32 = "))
-            .expect("water.wgsl declares REFLECTION_SHARE");
-        let value: f32 = line
-            .trim_start_matches("const REFLECTION_SHARE: f32 = ")
-            .trim_end_matches(';')
-            .parse()
-            .expect("a float");
-        assert_eq!(value, REFLECTION_SHARE);
+        for gone in [
+            "REFLECTION_SHARE",
+            "REFLECTION_DISTORTION",
+            "MAX_REFLECTION_OFFSET",
+            "NORMAL_FADE_START",
+            "NORMAL_FADE_END",
+            "SECOND_OCTAVE",
+            "MAX_WATER_PATH",
+            "LEGACY",
+            "flow_direction",
+            "0.006",
+        ] {
+            assert!(!source.contains(gone), "{gone} is back in water.wgsl");
+        }
     }
 
     #[test]

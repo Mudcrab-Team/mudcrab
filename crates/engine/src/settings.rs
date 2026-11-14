@@ -57,6 +57,8 @@ pub struct RenderingSettings {
     pub water_reflections: bool,
     pub water_reflection_strength: f32,
     pub water_waves: bool,
+    /// No longer read: the flow-normal tilt had no Skyrim source and was removed (`#299`). The
+    /// field stays so saved settings files keep loading.
     pub water_flow_normals: bool,
     pub wave_scale: f32,
     pub wave_speed: f32,
@@ -132,8 +134,8 @@ impl Default for RenderingSettings {
             water_reflection_strength: 1.0,
             water_waves: true,
             water_flow_normals: true,
-            wave_scale: 0.006,
-            wave_speed: 0.15,
+            wave_scale: crate::render::DEFAULT_WAVE_SCALE,
+            wave_speed: crate::render::DEFAULT_WAVE_SPEED,
             wave_strength: crate::render::WAVE_STRENGTH,
             cpu_frustum_culling: true,
             indirect_drawing: true,
@@ -302,7 +304,6 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
     number!(Graphics, "Water", "Water reflection multiplier", water_reflection_strength; 0.0, 1.0, 0.1)
         .when(|s| s.water_reflections),
     toggle!("Water", "Water waves", water_waves),
-    toggle!("Water", "Water flow normals", water_flow_normals),
     number!(Graphics, "Water", "Water wave scale", wave_scale; 0.001, 0.05, 0.001).when(|s| s.water_waves),
     number!(Graphics, "Water", "Water wave speed", wave_speed; 0.0, 2.0, 0.05).when(|s| s.water_waves),
     number!(Graphics, "Water", "Water wave strength", wave_strength; 0.0, 2.0, 0.05).when(|s| s.water_waves),

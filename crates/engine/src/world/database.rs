@@ -248,32 +248,125 @@ const WATER_DNAM_FOG_NEAR: usize = 32;
 const WATER_DNAM_FOG_FAR: usize = 36;
 const WATER_DNAM_FOG_AMOUNT: usize = 132;
 
-/// Decodes a water's fog from the `waters.data` blob, the converter's archived list of the record's
-/// subrecords. `None` when the blob does not decode, has no `DNAM`, the `DNAM` is too short, or a
-/// value is not finite; the caller then uses [`WaterFog::default`] and keeps the water's colours.
-fn water_fog_from_record(record: &[u8]) -> Option<WaterFog> {
+/// The parts of a `waters.data` blob the engine reads: the WATR `DNAM` bytes and the three noise
+/// texture paths (`NAM2` to `NAM4`). The blob is the converter's archived list of the record's
+/// subrecords. `None` when it does not decode or has no `DNAM`.
+struct WaterRecord {
+    dnam: Vec<u8>,
+    noise_paths: [Option<String>; 3],
+}
+
+fn parse_water_record(record: &[u8]) -> Option<WaterRecord> {
     // SQLite gives no alignment guarantee, and the archive is validated before it is read.
     let mut aligned = rkyv::util::AlignedVec::<16>::with_capacity(record.len());
     aligned.extend_from_slice(record);
     let record =
         rkyv::from_bytes::<shared::records::ArchivedRecordData, rkyv::rancor::Error>(&aligned)
             .ok()?;
-    let dnam = record
-        .subrecords
-        .iter()
-        .find(|subrecord| &subrecord.tag == b"DNAM")?
-        .data
-        .as_slice();
-    let float = |offset: usize| {
-        let bytes = dnam.get(offset..offset + 4)?;
-        Some(f32::from_le_bytes(bytes.try_into().ok()?))
+    let find = |tag: &[u8; 4]| {
+        record
+            .subrecords
+            .iter()
+            .find(|subrecord| &subrecord.tag == tag)
+            .map(|subrecord| subrecord.data.as_slice())
     };
+    let path = |tag: &[u8; 4]| {
+        let bytes = find(tag)?;
+        let end = bytes
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(bytes.len());
+        let text = String::from_utf8_lossy(&bytes[..end]).into_owned();
+        (!text.is_empty()).then_some(text)
+    };
+    Some(WaterRecord {
+        dnam: find(b"DNAM")?.to_vec(),
+        noise_paths: [path(b"NAM2"), path(b"NAM3"), path(b"NAM4")],
+    })
+}
+
+/// A little-endian `f32` at `offset` of a `DNAM`, if it is there and finite.
+fn dnam_float(dnam: &[u8], offset: usize) -> Option<f32> {
+    let bytes = dnam.get(offset..offset + 4)?;
+    Some(f32::from_le_bytes(bytes.try_into().ok()?)).filter(|value| value.is_finite())
+}
+
+fn water_fog_from_dnam(dnam: &[u8]) -> Option<WaterFog> {
     let fog = WaterFog {
-        near: float(WATER_DNAM_FOG_NEAR)?,
-        far: float(WATER_DNAM_FOG_FAR)?,
-        amount: float(WATER_DNAM_FOG_AMOUNT)?,
+        near: dnam_float(dnam, WATER_DNAM_FOG_NEAR)?,
+        far: dnam_float(dnam, WATER_DNAM_FOG_FAR)?,
+        amount: dnam_float(dnam, WATER_DNAM_FOG_AMOUNT)?,
     };
     fog.is_usable().then_some(fog)
+}
+
+/// Decodes a water's fog from the `waters.data` blob. `None` when the blob does not decode, has no
+/// `DNAM`, the `DNAM` is too short, or a value is not finite; the caller then uses
+/// [`WaterFog::default`] and keeps the water's colours.
+#[cfg(test)]
+fn water_fog_from_record(record: &[u8]) -> Option<WaterFog> {
+    water_fog_from_dnam(&parse_water_record(record)?.dnam)
+}
+
+/// The surface of a water, as its WATR record gives it: three noise normal maps, each with a UV
+/// scale and an amplitude, and the depth property that flattens them in shallow water. Skyrim's
+/// water shader blends the three maps as `normalize((0,0,1) + a0*n0 + a1*n1 + a2*n2)`
+/// (Community Shaders `Water.hlsl`, `GetWaterNormal`); `docs/research/water.md` has the sources.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WaterNoise {
+    /// The converted texture of each layer (`NAM2` to `NAM4`); `None` for a layer with no path.
+    pub textures: [Option<String>; 3],
+    /// World units per texture tile (`DNAM` `uvScaleA`).
+    pub uv_scale: [f32; 3],
+    /// How much each layer tilts the normal (`DNAM` `amplitudeA`).
+    pub amplitude: [f32; 3],
+    /// `DNAM` depth properties: reflections, refraction, normals and specular lighting.
+    pub depth_properties: [f32; 4],
+    /// `DNAM` `noiseWindDirectionA`, degrees: the compass bearing the wind of each layer comes from
+    /// (0 is north, 90 is east).
+    pub wind_direction: [f32; 3],
+    /// `DNAM` `noiseWindSpeedA`: noise-tile repeats per second.
+    pub wind_speed: [f32; 3],
+}
+
+/// Byte offsets in a WATR `DNAM` (`docs/research/water.md`, section 1.2).
+const WATER_DNAM_REFLECTION_MAGNITUDE: usize = 0xC4;
+const WATER_DNAM_UV_SCALE: usize = 0xAC;
+const WATER_DNAM_AMPLITUDE: usize = 0xB8;
+const WATER_DNAM_DEPTH_PROPERTIES: usize = 0xD0;
+const WATER_DNAM_WIND_DIRECTION: usize = 0x64;
+const WATER_DNAM_WIND_SPEED: usize = 0x70;
+
+/// Skyrim's DefaultWater reflection magnitude (`DNAM` +0xC4, 0.42 in the retail records read for
+/// this PR), used when a water's record cannot be read.
+pub const DEFAULT_WATER_REFLECTION_MAGNITUDE: f32 = 0.42;
+
+fn water_noise_from_record(record: &WaterRecord) -> Option<WaterNoise> {
+    let triple = |offset: usize| {
+        Some([
+            dnam_float(&record.dnam, offset)?,
+            dnam_float(&record.dnam, offset + 4)?,
+            dnam_float(&record.dnam, offset + 8)?,
+        ])
+    };
+    let uv_scale = triple(WATER_DNAM_UV_SCALE)?;
+    let amplitude = triple(WATER_DNAM_AMPLITUDE)?;
+    // A scale of zero or less has no tile size; the amplitude may be zero, which silences a layer.
+    if uv_scale.iter().any(|scale| *scale <= 0.0) || amplitude.iter().any(|amount| *amount < 0.0) {
+        return None;
+    }
+    let depth = |index: usize| dnam_float(&record.dnam, WATER_DNAM_DEPTH_PROPERTIES + 4 * index);
+    Some(WaterNoise {
+        textures: record
+            .noise_paths
+            .clone()
+            .map(|path| path.and_then(record_texture_path)),
+        uv_scale,
+        amplitude,
+        depth_properties: [depth(0)?, depth(1)?, depth(2)?, depth(3)?],
+        wind_direction: triple(WATER_DNAM_WIND_DIRECTION)?,
+        wind_speed: triple(WATER_DNAM_WIND_SPEED)?,
+    })
 }
 
 /// A water's Skyrim colours, reflectivity factors, opacity and fog. The colours and factors are
@@ -295,6 +388,10 @@ pub struct WaterColors {
     /// no opacity reads as Skyrim's DefaultWater 50.
     pub opacity: u8,
     pub fog: Option<WaterFog>,
+    /// `DNAM` Reflection Magnitude: Skyrim's water shader reflects along
+    /// `reflect(view, magnitude * normal + (0, 0, 1 - magnitude))`, so it is how much of the wave
+    /// normal reaches the reflection. Read from the record bytes in `waters.data`.
+    pub reflection_magnitude: Option<f32>,
 }
 
 fn unpack_color(value: u32) -> [u8; 3] {
@@ -308,6 +405,7 @@ pub struct AssetCatalog {
     landscape_normal: std::collections::HashMap<u32, String>,
     water_flow: std::collections::HashMap<u32, String>,
     water_colors: std::collections::HashMap<u32, WaterColors>,
+    water_noise: std::collections::HashMap<u32, WaterNoise>,
 }
 
 impl AssetCatalog {
@@ -376,15 +474,22 @@ impl AssetCatalog {
              WHERE shallow_color IS NOT NULL AND deep_color IS NOT NULL \
              AND reflection_color IS NOT NULL AND fresnel IS NOT NULL AND reflectivity IS NOT NULL"
         );
-        let water_colors = connection
+        let water_rows: Vec<(u32, WaterColors, Option<WaterNoise>)> = connection
             .prepare(&water_colors_query)
             .ok()
             .and_then(|mut statement| {
                 statement
                     .query_map([], |row| {
-                        let fog = row
+                        let parsed = row
                             .get::<_, Option<Vec<u8>>>(7)?
-                            .and_then(|record| water_fog_from_record(&record));
+                            .and_then(|record| parse_water_record(&record));
+                        let fog = parsed
+                            .as_ref()
+                            .and_then(|record| water_fog_from_dnam(&record.dnam));
+                        let reflection_magnitude = parsed.as_ref().and_then(|record| {
+                            dnam_float(&record.dnam, WATER_DNAM_REFLECTION_MAGNITUDE)
+                        });
+                        let noise = parsed.as_ref().and_then(water_noise_from_record);
                         Ok((
                             row.get::<_, u32>(0)?,
                             WaterColors {
@@ -395,18 +500,29 @@ impl AssetCatalog {
                                 reflectivity: row.get::<_, f32>(5)?,
                                 opacity: row.get::<_, i64>(6)?.clamp(0, 100) as u8,
                                 fog,
+                                reflection_magnitude,
                             },
+                            noise,
                         ))
                     })
                     .ok()
                     .map(|rows| rows.filter_map(std::result::Result::ok).collect())
             })
             .unwrap_or_default();
+        let mut water_colors = std::collections::HashMap::new();
+        let mut water_noise = std::collections::HashMap::new();
+        for (id, colors, noise) in water_rows {
+            water_colors.insert(id, colors);
+            if let Some(noise) = noise {
+                water_noise.insert(id, noise);
+            }
+        }
         Ok(Self {
             landscape_diffuse,
             landscape_normal,
             water_flow,
             water_colors,
+            water_noise,
         })
     }
 
@@ -423,6 +539,11 @@ impl AssetCatalog {
         self.water_flow.get(&form_id).map(String::as_str)
     }
 
+    /// The noise normal maps and their scales of water `form_id`, when its record bytes give them.
+    pub fn water_noise(&self, form_id: u32) -> Option<&WaterNoise> {
+        self.water_noise.get(&form_id)
+    }
+
     pub fn water_colors(&self, form_id: u32) -> Option<WaterColors> {
         self.water_colors.get(&form_id).copied()
     }
@@ -433,6 +554,15 @@ impl AssetCatalog {
 /// The database is input the engine did not write, so a path that could leave `textures/` - a
 /// `..` or `.` segment, an absolute or drive-prefixed path, an empty segment, or a `:` (a Windows
 /// drive or stream, or an asset source such as `embedded://`) - is refused rather than loaded.
+/// The converted texture of a path as a record's own subrecord spells it, for example
+/// `Data\\Textures\\Water\\DefaultWater.dds`: the converter's `waters` columns hold such paths
+/// already without the `Data` folder, the record bytes do not.
+fn record_texture_path(path: String) -> Option<String> {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    let without_data = normalized.strip_prefix("data/").unwrap_or(&normalized);
+    converted_texture_path(without_data.to_owned())
+}
+
 fn converted_texture_path(path: String) -> Option<String> {
     // Converted assets are published with lowercase canonical paths, so the
     // lookup must lowercase too (matching world-inspect's resolver).
@@ -1306,7 +1436,11 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
 /// Archived WATR records for tests, shaped as the converter writes `waters.data`.
 #[cfg(test)]
 pub(crate) mod water_fixtures {
-    use super::{WATER_DNAM_FOG_AMOUNT, WATER_DNAM_FOG_FAR, WATER_DNAM_FOG_NEAR, WaterFog};
+    use super::{
+        WATER_DNAM_AMPLITUDE, WATER_DNAM_DEPTH_PROPERTIES, WATER_DNAM_FOG_AMOUNT,
+        WATER_DNAM_FOG_FAR, WATER_DNAM_FOG_NEAR, WATER_DNAM_REFLECTION_MAGNITUDE,
+        WATER_DNAM_UV_SCALE, WATER_DNAM_WIND_DIRECTION, WATER_DNAM_WIND_SPEED, WaterFog,
+    };
 
     /// A WATR record's archived subrecords, with a `DNAM` of `len` bytes holding the given fog at
     /// the documented offsets, as the converter writes it into `waters.data`.
@@ -1324,6 +1458,52 @@ pub(crate) mod water_fixtures {
         water_record(vec![(*b"EDID", b"TestWater\0".to_vec()), (*b"DNAM", dnam)])
     }
 
+    /// What a retail water record puts in the `DNAM` of a 228-byte water: the three noise layers'
+    /// UV scales and amplitudes, the depth properties and the Reflection Magnitude.
+    pub(crate) struct NoiseFixture {
+        pub uv_scale: [f32; 3],
+        pub amplitude: [f32; 3],
+        pub depth_properties: [f32; 4],
+        pub reflection_magnitude: f32,
+        pub wind_direction: [f32; 3],
+        pub wind_speed: [f32; 3],
+        pub textures: [&'static str; 3],
+    }
+
+    pub(crate) fn water_record_with_noise(len: usize, noise: &NoiseFixture) -> Vec<u8> {
+        let mut dnam = vec![0u8; len];
+        let mut put = |offset: usize, value: f32| {
+            if let Some(slot) = dnam.get_mut(offset..offset + 4) {
+                slot.copy_from_slice(&value.to_le_bytes());
+            }
+        };
+        for index in 0..3 {
+            put(WATER_DNAM_UV_SCALE + 4 * index, noise.uv_scale[index]);
+            put(WATER_DNAM_AMPLITUDE + 4 * index, noise.amplitude[index]);
+        }
+        for index in 0..4 {
+            put(
+                WATER_DNAM_DEPTH_PROPERTIES + 4 * index,
+                noise.depth_properties[index],
+            );
+        }
+        put(WATER_DNAM_REFLECTION_MAGNITUDE, noise.reflection_magnitude);
+        for index in 0..3 {
+            put(
+                WATER_DNAM_WIND_DIRECTION + 4 * index,
+                noise.wind_direction[index],
+            );
+            put(WATER_DNAM_WIND_SPEED + 4 * index, noise.wind_speed[index]);
+        }
+        let mut subrecords = vec![(*b"EDID", b"TestWater\0".to_vec()), (*b"DNAM", dnam)];
+        for (tag, path) in [b"NAM2", b"NAM3", b"NAM4"].into_iter().zip(noise.textures) {
+            let mut bytes = path.as_bytes().to_vec();
+            bytes.push(0);
+            subrecords.push((*tag, bytes));
+        }
+        water_record(subrecords)
+    }
+
     pub(super) fn water_record(subrecords: Vec<([u8; 4], Vec<u8>)>) -> Vec<u8> {
         let record = shared::records::ArchivedRecordData {
             subrecords: subrecords
@@ -1339,7 +1519,9 @@ pub(crate) mod water_fixtures {
 
 #[cfg(test)]
 mod tests {
-    use super::water_fixtures::{water_record, water_record_with_fog};
+    use super::water_fixtures::{
+        NoiseFixture, water_record, water_record_with_fog, water_record_with_noise,
+    };
     use super::*;
 
     #[test]
@@ -2274,6 +2456,7 @@ mod tests {
                 reflectivity: 0.8,
                 opacity: 35,
                 fog: None,
+                reflection_magnitude: None,
             })
         );
         // A waters row with no ANAM reads as DefaultWater's 50, and an out-of-range one clamps
@@ -2391,6 +2574,106 @@ mod tests {
             catalog.water_colors(7).map(|colors| colors.shallow),
             Some([38, 39, 24])
         );
+    }
+
+    const DEFAULT_WATER_NOISE: NoiseFixture = NoiseFixture {
+        // DefaultWater (0x18) as the retail Skyrim.esm and Update.esm write it.
+        uv_scale: [1920.0, 6703.0, 488.0],
+        amplitude: [0.6957, 0.6304, 0.4746],
+        depth_properties: [0.3, 0.95, 0.1, 0.9],
+        reflection_magnitude: 0.42,
+        wind_direction: [270.0, 210.0, 225.0],
+        wind_speed: [0.019, 0.013, 0.096],
+        textures: [
+            "Data\\Textures\\Water\\DefaultWater.dds",
+            "Data\\Textures\\Water\\DefaultWater.dds",
+            "Data\\Textures\\Water\\DefaultWater.dds",
+        ],
+    };
+
+    #[test]
+    fn a_water_record_yields_its_noise_layers() {
+        let record = parse_water_record(&water_record_with_noise(228, &DEFAULT_WATER_NOISE))
+            .expect("a record");
+        let noise = water_noise_from_record(&record).expect("noise layers");
+        assert_eq!(noise.uv_scale, [1920.0, 6703.0, 488.0]);
+        assert_eq!(noise.amplitude, [0.6957, 0.6304, 0.4746]);
+        assert_eq!(noise.depth_properties, [0.3, 0.95, 0.1, 0.9]);
+        assert_eq!(noise.wind_direction, [270.0, 210.0, 225.0]);
+        assert_eq!(noise.wind_speed, [0.019, 0.013, 0.096]);
+        // The record's own Windows path becomes the converted texture.
+        let expected = Some("textures/water/defaultwater.ktx2".to_owned());
+        assert_eq!(
+            noise.textures,
+            [expected.clone(), expected.clone(), expected]
+        );
+        assert_eq!(
+            dnam_float(&record.dnam, WATER_DNAM_REFLECTION_MAGNITUDE),
+            Some(0.42)
+        );
+        // A layer with no path has no texture; a `DNAM` that stops before the depth properties,
+        // a zero scale and a non-finite amplitude give no noise at all.
+        let mut no_path = DEFAULT_WATER_NOISE;
+        no_path.textures = ["", "Data\\Textures\\Water\\DefaultWater.dds", ""];
+        let record = parse_water_record(&water_record_with_noise(228, &no_path)).unwrap();
+        let noise = water_noise_from_record(&record).unwrap();
+        assert_eq!(noise.textures[0], None);
+        assert!(noise.textures[1].is_some());
+        let short =
+            parse_water_record(&water_record_with_noise(200, &DEFAULT_WATER_NOISE)).unwrap();
+        assert_eq!(water_noise_from_record(&short), None);
+        let mut zero_scale = DEFAULT_WATER_NOISE;
+        zero_scale.uv_scale[1] = 0.0;
+        let record = parse_water_record(&water_record_with_noise(228, &zero_scale)).unwrap();
+        assert_eq!(water_noise_from_record(&record), None);
+        let mut broken = DEFAULT_WATER_NOISE;
+        broken.amplitude[2] = f32::NAN;
+        let record = parse_water_record(&water_record_with_noise(228, &broken)).unwrap();
+        assert_eq!(water_noise_from_record(&record), None);
+    }
+
+    #[test]
+    fn the_catalog_serves_each_waters_noise_and_reflection_magnitude() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT); \
+                 CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER); \
+                 CREATE TABLE waters(id INTEGER PRIMARY KEY,opacity INTEGER,shallow_color INTEGER,deep_color INTEGER,reflection_color INTEGER,fresnel REAL,reflectivity REAL,flow_normal_path TEXT,data BLOB NOT NULL);",
+            )
+            .unwrap();
+        let insert = |id: u32, record: Vec<u8>| {
+            connection
+                .execute(
+                    "INSERT INTO waters VALUES (?1,50,1,2,3,0.1,0.8,NULL,?2)",
+                    params![id, record],
+                )
+                .unwrap();
+        };
+        insert(24, water_record_with_noise(232, &DEFAULT_WATER_NOISE));
+        insert(7, water_record_with_fog(100, WaterFog::default()));
+        drop(connection);
+        let catalog = AssetCatalog::open(&path).unwrap();
+        let noise = catalog.water_noise(24).expect("DefaultWater's noise");
+        assert_eq!(noise.uv_scale, [1920.0, 6703.0, 488.0]);
+        assert_eq!(
+            catalog
+                .water_colors(24)
+                .and_then(|colors| colors.reflection_magnitude),
+            Some(0.42)
+        );
+        // A record that stops short of the noise fields still has its colours, no noise and no
+        // magnitude; the caller then keeps the surface flat and uses DefaultWater's magnitude.
+        assert!(catalog.water_noise(7).is_none());
+        assert_eq!(
+            catalog
+                .water_colors(7)
+                .and_then(|colors| colors.reflection_magnitude),
+            None
+        );
+        assert!(catalog.water_colors(7).is_some());
     }
 
     #[test]

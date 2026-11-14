@@ -23,7 +23,8 @@ use crate::{
             WorldPosition, WorldTransform,
         },
         database::{
-            AssetCatalog, CellKey, CellPayload, DatabaseRequest, WaterColors, WorldDatabase,
+            AssetCatalog, CellKey, CellPayload, DatabaseRequest, WaterColors, WaterNoise,
+            WorldDatabase,
         },
         water::{FlatWater, FlatWaterBody},
     },
@@ -1754,10 +1755,29 @@ fn spawn_cell(
                             })
                             .load(path.to_owned())
                     });
+                // The three noise normal maps of the water's record, read from its record bytes.
+                let noise = surface
+                    .water_type_form_id
+                    .and_then(|form_id| catalog.water_noise(form_id));
+                let noise_textures: [Option<Handle<Image>>; 3] = noise
+                    .map(|noise| {
+                        noise.textures.each_ref().map(|path| {
+                            path.as_ref().map(|path| {
+                                asset_server
+                                    .load_builder()
+                                    .with_settings(|settings: &mut ImageLoaderSettings| {
+                                        settings.is_srgb = false;
+                                    })
+                                    .load(path.to_owned())
+                            })
+                        })
+                    })
+                    .unwrap_or_default();
                 let water_material = water_materials.add(water_material(
                     water_colors,
                     reflection.0.clone(),
                     flow_normal.clone(),
+                    noise.map(|noise| (noise, noise_textures.clone())),
                 ));
                 let mut water = parent.spawn((
                     Name::new("Water"),
@@ -1773,6 +1793,7 @@ fn spawn_cell(
                     PendingWaterProfile {
                         cell_id: terrain.cell_id,
                         flow_normal,
+                        noise: noise_textures.into_iter().flatten().collect(),
                     },
                     RenderLayers::layer(WATER_LAYER),
                 ));
@@ -2860,6 +2881,9 @@ struct PendingTerrainProfile {
 struct PendingWaterProfile {
     cell_id: u32,
     flow_normal: Option<Handle<Image>>,
+    /// The noise normal maps. They are optional detail: one that fails to load leaves the water
+    /// flat instead of hiding it.
+    noise: Vec<Handle<Image>>,
 }
 
 /// Counts the streamer's unfinished-work markers under one cell root: a model not yet armed or
@@ -3807,8 +3831,9 @@ fn track_surface_readiness(
         &PendingTerrainProfile,
         Option<&MeshMaterial3d<TerrainMaterial>>,
     )>,
-    water: Query<(Entity, &PendingWaterProfile)>,
+    water: Query<(Entity, &PendingWaterProfile, &MeshMaterial3d<WaterMaterial>)>,
     mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
+    mut water_materials: ResMut<Assets<WaterMaterial>>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
 ) {
@@ -3907,8 +3932,34 @@ fn track_surface_readiness(
             }
         }
     }
-    for (entity, pending) in &water {
+    for (entity, pending, material) in &water {
         let handles: Vec<_> = pending.flow_normal.iter().cloned().collect();
+        // The noise normal maps are optional detail: while they load the water waits, and one that
+        // fails leaves the water flat instead of hiding it.
+        match validate_surface_dependencies(
+            &asset_server,
+            &images,
+            &pending.noise,
+            SurfaceImageKind::Water,
+            profile.decodes_colour_srgb(),
+        ) {
+            SurfaceDependencyState::Pending => continue,
+            SurfaceDependencyState::Failed(reason) => {
+                warn!(
+                    cell = format_args!("{:08X}", pending.cell_id),
+                    %reason,
+                    "water noise normal map failed; drawing the water flat"
+                );
+                if let Some(mut material) = water_materials.get_mut(&material.0) {
+                    material.extension = material
+                        .extension
+                        .clone()
+                        .with_noise([None, None, None], crate::render::WaterNoiseValues::flat());
+                }
+                profiler.increment("water/noise_fallbacks", 1);
+            }
+            SurfaceDependencyState::Ready => {}
+        }
         match validate_surface_dependencies(
             &asset_server,
             &images,
@@ -5350,6 +5401,7 @@ fn water_material(
     colors: Option<WaterColors>,
     reflection: Handle<Image>,
     flow_normal: Option<Handle<Image>>,
+    noise: Option<(&WaterNoise, [Option<Handle<Image>>; 3])>,
 ) -> WaterMaterial {
     // Skyrim's DefaultWater deep colour after Update.esm, used when this water has no
     // decoded colours yet (a database converted before the WATR colour export). The
@@ -5366,6 +5418,40 @@ fn water_material(
         ),
         |colors| (colors.fresnel, colors.reflectivity),
     );
+    let mut extension =
+        WaterExtension::with_reflection_and_factors(reflection, flow_normal, fresnel, reflectivity)
+            .with_reflection_magnitude(
+                colors
+                    .and_then(|colors| colors.reflection_magnitude)
+                    .unwrap_or(crate::world::database::DEFAULT_WATER_REFLECTION_MAGNITUDE),
+            )
+            .with_reflection_color(
+                colors.map_or(crate::render::DEFAULT_WATER_REFLECTION_COLOR, |colors| {
+                    colors.reflection
+                }),
+            )
+            .with_body(
+                colors.map_or(crate::render::DEFAULT_WATER_SHALLOW_COLOR, |colors| {
+                    colors.shallow
+                }),
+                colors.map_or(crate::render::DEFAULT_WATER_OPACITY, |colors| {
+                    colors.opacity
+                }),
+                colors.and_then(|colors| colors.fog).unwrap_or_default(),
+            );
+    // A water whose record bytes give no noise layers stays flat.
+    if let Some((noise, textures)) = noise {
+        extension = extension.with_noise(
+            textures,
+            crate::render::WaterNoiseValues {
+                uv_scale: noise.uv_scale,
+                amplitude: noise.amplitude,
+                depth_properties: noise.depth_properties,
+                wind_direction: noise.wind_direction,
+                wind_speed: noise.wind_speed,
+            },
+        );
+    }
     WaterMaterial {
         base: StandardMaterial {
             base_color,
@@ -5375,26 +5461,7 @@ fn water_material(
             alpha_mode: AlphaMode::Blend,
             ..default()
         },
-        extension: WaterExtension::with_reflection_and_factors(
-            reflection,
-            flow_normal,
-            fresnel,
-            reflectivity,
-        )
-        .with_reflection_color(
-            colors.map_or(crate::render::DEFAULT_WATER_REFLECTION_COLOR, |colors| {
-                colors.reflection
-            }),
-        )
-        .with_body(
-            colors.map_or(crate::render::DEFAULT_WATER_SHALLOW_COLOR, |colors| {
-                colors.shallow
-            }),
-            colors.map_or(crate::render::DEFAULT_WATER_OPACITY, |colors| {
-                colors.opacity
-            }),
-            colors.and_then(|colors| colors.fog).unwrap_or_default(),
-        ),
+        extension,
     }
 }
 
@@ -5495,7 +5562,7 @@ mod tests {
         drop(connection);
         let catalog = AssetCatalog::open(&path).unwrap();
         let body = |form_id| {
-            water_material(catalog.water_colors(form_id), Handle::default(), None)
+            water_material(catalog.water_colors(form_id), Handle::default(), None, None)
                 .extension
                 .body()
         };
