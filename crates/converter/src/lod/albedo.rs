@@ -19,21 +19,16 @@ use image_dds::image::{
 use rayon::prelude::*;
 use rusqlite::Connection;
 use shared::{TerrainLayer, lod::LodTier};
+// The key the default diffuse is stored under: entry 0 of the land texture table, the slot a
+// quadrant with no `BTXT` (or a null one) names. Form id 0 is a null reference, so no landscape
+// texture record can collide with it.
+use shared::terrain_mesh::DEFAULT_LAND_TEXTURE_FORM_ID as DEFAULT_TEXTURE_KEY;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Cursor,
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
 };
-
-/// The landscape texture Skyrim paints where a quadrant names no texture of its own, as a
-/// Bethesda path. A null `BTXT` falls back to `dirt02.dds`, which Skyrim.ini's
-/// `[Landscape] sDefaultLandDiffuseTexture` also names.
-const DEFAULT_LAND_DIFFUSE: &str = "textures/landscape/Dirt02.dds";
-
-/// The key the default texture is stored under. Form id 0 is a null reference, so no landscape
-/// texture record can collide with it.
-const DEFAULT_TEXTURE_KEY: u32 = 0;
 
 const GUTTER: usize = 2;
 const WEIGHT_SIDE: usize = 17;
@@ -50,18 +45,17 @@ fn diffuse_catalog(connection: &Connection) -> Result<BTreeMap<u32, String>> {
         }).collect()
 }
 
-fn default_diffuse_path() -> Result<String> {
-    canonical_asset_path(DEFAULT_LAND_DIFFUSE, AssetKind::Texture, "dds")
-}
-
-/// Every diffuse a terrain bake may read: each landscape texture's and the default one, so a
-/// conversion extracts the default even when no LTEX record names it.
+/// Every diffuse a terrain bake may read: each landscape texture's and the built-in Skyrim
+/// default ([`crate::terrain_pipeline::builtin_default_diffuse`]), so a conversion extracts the
+/// default even when no LTEX record names it.
 pub(crate) fn terrain_diffuse_paths(connection: &Connection) -> Result<BTreeSet<PathBuf>> {
     let mut paths: BTreeSet<_> = diffuse_catalog(connection)?
         .into_values()
         .map(PathBuf::from)
         .collect();
-    paths.insert(PathBuf::from(default_diffuse_path()?));
+    paths.insert(PathBuf::from(
+        crate::terrain_pipeline::builtin_default_diffuse()?,
+    ));
     Ok(paths)
 }
 
@@ -99,15 +93,112 @@ pub(crate) struct TerrainTextureCache {
     decoded: BTreeMap<String, (Arc<[LinearImage; 3]>, String)>,
 }
 
+/// The default (entry 0) diffuse every world's bake paints where a quadrant names no texture of
+/// its own, decoded once per run: the texture the conversion resolved
+/// ([`crate::terrain_pipeline::TerrainDefaultDiffuse`]) rather than a constant of this module's.
+pub(crate) struct LoadedDefault {
+    images: Arc<[LinearImage; 3]>,
+    /// The DDS it was decoded from and that file's hash, for the build identity; `None` for the
+    /// generated white texture, which has no source file.
+    source: Option<(String, String)>,
+}
+
+impl LoadedDefault {
+    /// `default` decoded through the stage cache. A configured image that cannot be read leaves
+    /// the generated white texture in place — the same fallback the merged-terrain stage makes for
+    /// entry 0 — and the second value names it for the report; nothing fell back when it is
+    /// `None`.
+    pub(crate) fn load(
+        default: &crate::terrain_pipeline::TerrainDefaultDiffuse,
+        vfs: &Path,
+        cache: &mut TerrainTextureCache,
+    ) -> (Self, Option<String>) {
+        use crate::terrain_pipeline::TerrainDefaultDiffuse;
+        match default {
+            TerrainDefaultDiffuse::GeneratedWhite => (Self::generated_white(), None),
+            TerrainDefaultDiffuse::Image(path) => match decoded(path, vfs, cache) {
+                Ok((images, hash)) => (
+                    Self {
+                        images,
+                        source: Some((path.clone(), hash)),
+                    },
+                    None,
+                ),
+                Err(error) => (
+                    Self::generated_white(),
+                    Some(format!("{path} cannot be used: {error:#}")),
+                ),
+            },
+        }
+    }
+
+    fn generated_white() -> Self {
+        Self {
+            images: Arc::new(generated_white_tiers()),
+            source: None,
+        }
+    }
+}
+
+/// The generated white diffuse entry 0 of the land texture table holds with the default `white`
+/// selection: one white texel in every tier, painted like any other default.
+fn generated_white_tiers() -> [LinearImage; 3] {
+    std::array::from_fn(|_| LinearImage {
+        width: 1,
+        height: 1,
+        pixels: vec![[1.0; 3]],
+    })
+}
+
+/// The three tier images of the DDS at `path` under `vfs`, decoded once per stage and shared
+/// through `cache`, with the file's hash for the build identity.
+fn decoded(
+    path: &str,
+    vfs: &Path,
+    cache: &mut TerrainTextureCache,
+) -> Result<(Arc<[LinearImage; 3]>, String)> {
+    if let std::collections::btree_map::Entry::Vacant(entry) = cache.decoded.entry(path.to_owned())
+    {
+        let bytes = std::fs::read(vfs.join(path))
+            .wrap_err_with(|| format!("missing terrain diffuse {path}"))?;
+        let dds = Dds::read(Cursor::new(&bytes))
+            .wrap_err_with(|| format!("invalid terrain DDS {path}"))?;
+        ensure!(
+            dds.get_depth() == 1
+                && dds.get_num_array_layers() == 1
+                && !dds.header.caps2.contains(Caps2::CUBEMAP),
+            "terrain diffuse {path} must be a 2D image"
+        );
+        let images = LinearImage::decode_tiers(&dds)?;
+        entry.insert((Arc::new(images), hash_bytes(&bytes)));
+    }
+    let (images, hash) = &cache.decoded[path];
+    Ok((Arc::clone(images), hash.clone()))
+}
+
 impl TerrainTextures {
-    pub fn load(connection: &Connection, vfs: &Path, cells: &[TerrainCellInput]) -> Result<Self> {
-        Self::load_with_cache(connection, vfs, cells, &mut TerrainTextureCache::default())
+    /// [`Self::load_with_cache`] with a fresh cache, for tests that load one world.
+    #[cfg(test)]
+    pub(crate) fn load(
+        connection: &Connection,
+        vfs: &Path,
+        cells: &[TerrainCellInput],
+        default: &LoadedDefault,
+    ) -> Result<Self> {
+        Self::load_with_cache(
+            connection,
+            vfs,
+            cells,
+            default,
+            &mut TerrainTextureCache::default(),
+        )
     }
 
     pub(crate) fn load_with_cache(
         connection: &Connection,
         vfs: &Path,
         cells: &[TerrainCellInput],
+        default: &LoadedDefault,
         cache: &mut TerrainTextureCache,
     ) -> Result<Self> {
         let catalog = diffuse_catalog(connection)?;
@@ -124,32 +215,23 @@ impl TerrainTextures {
             })?;
             wanted.insert(id, path.clone());
         }
-        if any_uses_default(cells) {
-            wanted.insert(DEFAULT_TEXTURE_KEY, default_diffuse_path()?);
-        }
         let mut result = Self::default();
         for (id, path) in wanted {
-            let path = &path;
-            if !cache.decoded.contains_key(path) {
-                let bytes = std::fs::read(vfs.join(path))
-                    .wrap_err_with(|| format!("missing terrain diffuse {path}"))?;
-                let dds = Dds::read(Cursor::new(&bytes))
-                    .wrap_err_with(|| format!("invalid terrain DDS {path}"))?;
-                ensure!(
-                    dds.get_depth() == 1
-                        && dds.get_num_array_layers() == 1
-                        && !dds.header.caps2.contains(Caps2::CUBEMAP),
-                    "terrain diffuse {path} must be a 2D image"
-                );
-                let images = LinearImage::decode_tiers(&dds)?;
-                cache
-                    .decoded
-                    .insert(path.clone(), (Arc::new(images), hash_bytes(&bytes)));
-            }
-            let (images, hash) = &cache.decoded[path];
-            result.textures.insert(id, Arc::clone(images));
+            let (images, hash) = decoded(&path, vfs, cache)?;
+            result.textures.insert(id, images);
             result.source_hashes.insert(path.clone(), hash.clone());
-            result.sources.insert(id, (path.clone(), hash.clone()));
+            result.sources.insert(id, (path, hash));
+        }
+        if any_uses_default(cells) {
+            result
+                .textures
+                .insert(DEFAULT_TEXTURE_KEY, Arc::clone(&default.images));
+            if let Some((path, hash)) = &default.source {
+                result.source_hashes.insert(path.clone(), hash.clone());
+                result
+                    .sources
+                    .insert(DEFAULT_TEXTURE_KEY, (path.clone(), hash.clone()));
+            }
         }
         Ok(result)
     }
@@ -1114,7 +1196,14 @@ mod tests {
             256,
             "the benchmark requires its complete 16x16 cell block"
         );
-        let textures = TerrainTextures::load(&connection, &vfs, &inputs).unwrap();
+        let (default, _) = LoadedDefault::load(
+            &crate::terrain_pipeline::TerrainDefaultDiffuse::Image(
+                crate::terrain_pipeline::builtin_default_diffuse().unwrap(),
+            ),
+            &vfs,
+            &mut TerrainTextureCache::default(),
+        );
+        let textures = TerrainTextures::load(&connection, &vfs, &inputs, &default).unwrap();
         textures.verify_sources(&vfs).unwrap();
         let load_seconds = load_start.elapsed().as_secs_f64();
         let jobs = terrain_jobs(worldspace_id, origin, &inputs);
@@ -1553,6 +1642,50 @@ mod tests {
         .unwrap()
     }
 
+    /// A solid-colour RGBA8 DDS with one mip: its decoded tiers hold exactly this colour.
+    fn solid_dds(color: [u8; 3]) -> Vec<u8> {
+        let mut dds = Dds::new_dxgi(ddsfile::NewDxgiParams {
+            height: 8,
+            width: 8,
+            depth: None,
+            format: ddsfile::DxgiFormat::R8G8B8A8_UNorm,
+            mipmap_levels: None,
+            array_layers: None,
+            caps2: None,
+            is_cubemap: false,
+            resource_dimension: ddsfile::D3D10ResourceDimension::Texture2D,
+            alpha_mode: ddsfile::AlphaMode::Straight,
+        })
+        .unwrap();
+        for pixel in dds.data.as_chunks_mut::<4>().0 {
+            *pixel = [color[0], color[1], color[2], 255];
+        }
+        let mut bytes = Vec::new();
+        dds.write(&mut bytes).unwrap();
+        bytes
+    }
+
+    /// Entry 0 as a `skyrim-ini` conversion resolves it with no ini: the built-in Dirt02.
+    fn skyrim_ini_default() -> crate::terrain_pipeline::TerrainDefaultDiffuse {
+        crate::terrain_pipeline::TerrainDefaultDiffuse::Image(
+            crate::terrain_pipeline::builtin_default_diffuse().unwrap(),
+        )
+    }
+
+    /// `default` decoded through a fresh stage cache, as the LOD stage loads it once per run.
+    fn load_default(
+        default: &crate::terrain_pipeline::TerrainDefaultDiffuse,
+        vfs: &Path,
+    ) -> (LoadedDefault, Option<String>) {
+        LoadedDefault::load(default, vfs, &mut TerrainTextureCache::default())
+    }
+
+    /// The atlas pixel at the north-west corner of its first cell's first quadrant.
+    fn atlas_corner(atlas: &TerrainAtlas) -> [u8; 3] {
+        let offset = (GUTTER * atlas.size + GUTTER) * 4;
+        atlas.rgba[offset..offset + 3].try_into().unwrap()
+    }
+
     #[test]
     fn v122_selected_dds_mip_is_decoded_once_for_all_tiers() {
         let dds = Dds::read(Cursor::new(test_dds())).unwrap();
@@ -1589,10 +1722,12 @@ mod tests {
                     .collect(),
             )
         };
+        let default = LoadedDefault::generated_white();
         let first = TerrainTextures::load_with_cache(
             &connection,
             directory.path(),
             &[fully_painted(1)],
+            &default,
             &mut cache,
         )
         .unwrap();
@@ -1601,6 +1736,7 @@ mod tests {
             &connection,
             directory.path(),
             &[fully_painted(2)],
+            &default,
             &mut cache,
         )
         .unwrap();
@@ -1631,7 +1767,11 @@ mod tests {
     }
 
     #[test]
-    fn a_layerless_or_null_only_quadrant_paints_the_default_texture_not_white() {
+    fn a_layerless_or_null_only_quadrant_samples_the_loaded_default_texture() {
+        // The default is whatever the conversion resolved — the generated white texture by
+        // default — and here the fixture's default is green, so the blend is green exactly. What
+        // the resolution selected is checked in
+        // `the_bake_paints_the_resolved_default_texture_not_a_built_in_dirt02`.
         let textures = textures();
         for source in [cell(Vec::new()), cell(vec![layer(0, true, 0.0)])] {
             for tier in 0..3 {
@@ -1667,25 +1807,34 @@ mod tests {
     fn the_default_texture_is_decoded_once_and_shared_across_worlds() {
         let connection = texture_database();
         let vfs = tempfile::tempdir().unwrap();
-        let default_path = default_diffuse_path().unwrap();
+        let default_path = crate::terrain_pipeline::builtin_default_diffuse().unwrap();
         let file = vfs.path().join(&default_path);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, test_dds()).unwrap();
 
         let mut cache = TerrainTextureCache::default();
+        let default = skyrim_ini_default();
+        let (first_default, reason) = LoadedDefault::load(&default, vfs.path(), &mut cache);
+        assert_eq!(reason, None);
+        std::fs::remove_file(&file).unwrap();
+        // The stage cache holds the decoded default: a second world reuses it rather than reading.
+        let (second_default, reason) = LoadedDefault::load(&default, vfs.path(), &mut cache);
+        assert_eq!(reason, None);
+        assert!(Arc::ptr_eq(&first_default.images, &second_default.images));
+
         let first = TerrainTextures::load_with_cache(
             &connection,
             vfs.path(),
             &[cell(Vec::new())],
+            &first_default,
             &mut cache,
         )
         .unwrap();
-        std::fs::remove_file(&file).unwrap();
-        // A second world that needs the default reuses the decoded image rather than re-reading it.
         let second = TerrainTextures::load_with_cache(
             &connection,
             vfs.path(),
             &[cell(vec![layer(0, true, 0.0)])],
+            &second_default,
             &mut cache,
         )
         .unwrap();
@@ -1701,7 +1850,9 @@ mod tests {
     fn a_changed_default_texture_changes_only_the_cells_that_draw_it() {
         let connection = texture_database();
         let vfs = tempfile::tempdir().unwrap();
-        let default_file = vfs.path().join(default_diffuse_path().unwrap());
+        let default_file = vfs
+            .path()
+            .join(crate::terrain_pipeline::builtin_default_diffuse().unwrap());
         std::fs::create_dir_all(default_file.parent().unwrap()).unwrap();
         std::fs::create_dir_all(vfs.path().join("textures/landscape")).unwrap();
         std::fs::write(vfs.path().join("textures/landscape/grass.dds"), test_dds()).unwrap();
@@ -1724,7 +1875,10 @@ mod tests {
                     .collect(),
             );
             let cells = [cell(Vec::new()), grass];
-            let textures = TerrainTextures::load(&connection, vfs.path(), &cells).unwrap();
+            let (default, reason) = load_default(&skyrim_ini_default(), vfs.path());
+            assert_eq!(reason, None);
+            let textures =
+                TerrainTextures::load(&connection, vfs.path(), &cells, &default).unwrap();
             let defaulted_sources: BTreeMap<u32, (String, String)> = textures
                 .sources_for(&[&cells[0]])
                 .into_iter()
@@ -1768,7 +1922,7 @@ mod tests {
     #[test]
     fn the_default_texture_is_extracted_loaded_and_hashed_only_when_a_quadrant_needs_it() {
         let connection = texture_database();
-        let default_path = default_diffuse_path().unwrap();
+        let default_path = crate::terrain_pipeline::builtin_default_diffuse().unwrap();
         assert!(
             terrain_diffuse_paths(&connection)
                 .unwrap()
@@ -1782,14 +1936,20 @@ mod tests {
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, &bytes).unwrap();
 
-        let loaded =
-            TerrainTextures::load(&connection, vfs.path(), &[cell(vec![layer(0, true, 0.0)])])
-                .unwrap();
+        let (default, reason) = load_default(&skyrim_ini_default(), vfs.path());
+        assert_eq!(reason, None);
+        let loaded = TerrainTextures::load(
+            &connection,
+            vfs.path(),
+            &[cell(vec![layer(0, true, 0.0)])],
+            &default,
+        )
+        .unwrap();
         assert!(loaded.textures.contains_key(&DEFAULT_TEXTURE_KEY));
         assert_eq!(loaded.source_hashes[&default_path], hash_bytes(&bytes));
 
-        // Cells whose quadrants all name a texture never read the default, so a data set without
-        // it still loads.
+        // Cells whose quadrants all name a texture never paint the default, so a data set without
+        // it still loads: the white fallback this run resolved is simply not entered.
         let mut covered = cell(Vec::new());
         covered.layers = (0..4)
             .map(|quadrant| TerrainLayer {
@@ -1800,14 +1960,84 @@ mod tests {
         std::fs::remove_file(&file).unwrap();
         std::fs::create_dir_all(vfs.path().join("textures/landscape")).unwrap();
         std::fs::write(vfs.path().join("textures/landscape/grass.dds"), &bytes).unwrap();
-        let loaded = TerrainTextures::load(&connection, vfs.path(), &[covered]).unwrap();
+        let (missing, reason) = load_default(&skyrim_ini_default(), vfs.path());
+        let reason = reason.expect("a missing default texture is named for the report");
+        assert!(reason.contains(&default_path), "{reason}");
+        let loaded = TerrainTextures::load(&connection, vfs.path(), &[covered], &missing).unwrap();
         assert!(!loaded.textures.contains_key(&DEFAULT_TEXTURE_KEY));
 
-        // A quadrant that needs the default with the file missing fails naming the file.
-        let error = TerrainTextures::load(&connection, vfs.path(), &[cell(Vec::new())])
-            .err()
-            .expect("a missing default texture is an error");
-        assert!(format!("{error:#}").contains("dirt02.dds"), "{error:#}");
+        // A quadrant that needs the missing default paints the generated white texture instead,
+        // the fallback entry 0 takes in the merged-terrain arrays, rather than failing the world.
+        let loaded =
+            TerrainTextures::load(&connection, vfs.path(), &[cell(Vec::new())], &missing).unwrap();
+        assert_eq!(loaded.textures[&DEFAULT_TEXTURE_KEY][0].pixels, [[1.0; 3]]);
+        assert!(
+            !loaded
+                .sources_for(&[&cell(Vec::new())])
+                .contains_key(&DEFAULT_TEXTURE_KEY),
+            "the generated white texture has no source file to name"
+        );
+    }
+
+    /// The finding conv-lod-terrain-F1 regression: the bake paints entry 0 as the conversion
+    /// resolved it, not the Dirt02 this module used to hard-code regardless of the settings.
+    #[test]
+    fn the_bake_paints_the_resolved_default_texture_not_a_built_in_dirt02() {
+        let connection = texture_database();
+        let vfs = tempfile::tempdir().unwrap();
+        let dirt02 = vfs
+            .path()
+            .join(crate::terrain_pipeline::builtin_default_diffuse().unwrap());
+        std::fs::create_dir_all(dirt02.parent().unwrap()).unwrap();
+        std::fs::write(&dirt02, solid_dds([255, 0, 0])).unwrap();
+        // A quadrant with no BTXT: the one that paints entry 0.
+        let null_base = || cell(vec![layer(0, true, 0.0)]);
+
+        // The default `white` selection: the Dirt02 file is present, and it must not be read.
+        let white = null_base();
+        let textures = TerrainTextures::load(
+            &connection,
+            vfs.path(),
+            &[white],
+            &LoadedDefault::generated_white(),
+        )
+        .unwrap();
+        let white = null_base();
+        let atlas = TerrainAtlas::bake(LodTier::Tier4, &[&white], &textures).unwrap();
+        assert_eq!(atlas_corner(&atlas), [255, 255, 255]);
+        assert!(
+            !textures
+                .source_hashes
+                .contains_key(&crate::terrain_pipeline::builtin_default_diffuse().unwrap()),
+            "the white default must not read a texture file"
+        );
+
+        // A `skyrim-ini` selection naming its own texture paints that texture's colour instead.
+        let configured = "textures/landscape/modded.dds";
+        std::fs::write(vfs.path().join(configured), solid_dds([0, 120, 200])).unwrap();
+        let (default, reason) = load_default(
+            &crate::terrain_pipeline::TerrainDefaultDiffuse::Image(configured.into()),
+            vfs.path(),
+        );
+        assert_eq!(reason, None);
+        let painted = null_base();
+        let textures =
+            TerrainTextures::load(&connection, vfs.path(), &[painted], &default).unwrap();
+        let painted = null_base();
+        let atlas = TerrainAtlas::bake(LodTier::Tier4, &[&painted], &textures).unwrap();
+        let painted = atlas_corner(&atlas);
+        assert_ne!(painted, [255, 0, 0], "Dirt02 must not be painted");
+        for (channel, expected) in [0, 120, 200]
+            .map(|byte| linear_to_srgb(srgb_to_linear(byte)))
+            .iter()
+            .enumerate()
+        {
+            assert!(
+                painted[channel].abs_diff(*expected) <= 1,
+                "channel {channel}: painted {}, expected {expected} from the configured default",
+                painted[channel]
+            );
+        }
     }
 
     #[test]

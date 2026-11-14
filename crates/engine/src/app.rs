@@ -117,6 +117,12 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     let mut preferences = config
         .interactive_world_physics()
         .then(|| crate::settings::prepare_settings(&mut config));
+    // A saved profile can disagree with an explicit launch option the parser already accepted.
+    config.check_visual_profile()?;
+    info!(
+        profile = config.visual_profile.name(),
+        "visual profile active; changing it requires a restart"
+    );
     config.image_space_selection()?;
     let start_camera = prepare_start_camera(&mut config)?;
     let shots = prepare_shots(&mut config)?;
@@ -317,7 +323,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     // The run fingerprint is measurement data: an ordinary play session neither builds one nor
     // pays for the startup system that reads it.
     let records_measurements = crate::fingerprint::records_measurements(&config);
-    app.insert_resource(config.color_grade)
+    app.insert_resource(config.visual_profile)
+        .insert_resource(config.color_grade)
         .insert_resource(config.visual_preset)
         .insert_resource(sky_palette)
         .insert_resource(grade_source)
@@ -361,6 +368,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             SkyPlugin,
             SkyrimCinematicPostPlugin,
             ConsolePlugin,
+            crate::console_selection::ConsoleSelectionPlugin,
             crate::bug_report::BugReportPlugin,
             crate::nif_material::EffectPaletteMaterialPlugin,
             crate::nif_material::NifMaterialPlugin,
@@ -382,6 +390,10 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .add_plugins(crate::terrain_merge::TerrainMergePlugin::new(
             terrain_merge.as_ref(),
         ));
+    #[cfg(feature = "collision-measure")]
+    if std::env::var_os("MUDCRAB_COLLISION_MEASURE").is_some() {
+        app.add_plugins(crate::collision_measure::MeasurePlugin);
+    }
     if interactive_world_physics {
         app.add_plugins(crate::settings_ui::SettingsPlugin);
     }
@@ -414,6 +426,10 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             .insert_resource(ground_height)
             .insert_resource(crate::physics::WalkSpawnGroundHeight(spawn_ground_height))
             .add_plugins(StreamingPlugin);
+        #[cfg(feature = "collision-measure")]
+        if std::env::var_os("MUDCRAB_PLACEMENT_PROBE").is_some() {
+            app.add_plugins(crate::scene_placement_probe::ScenePlacementProbe);
+        }
         if let (Some(plan), Some(ground)) = (route, route_ground) {
             info!(
                 route = %plan.source,
@@ -4967,6 +4983,7 @@ mod tests {
             hfov: 60.0,
             reference: None,
             note: None,
+            probes: Vec::new(),
         };
 
         assert_eq!(
