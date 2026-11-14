@@ -193,12 +193,15 @@ mod tests {
     }
 
     #[test]
-    fn bevy_alone_still_blocks_this_shutdown() {
+    fn vendored_bevy_render_no_longer_blocks_this_shutdown() {
+        // The vendored `bevy_render` backports bevyengine/bevy#25722, so dropping the render app
+        // channels ticks the main-thread executor. This guard is now redundant on that build;
+        // keep it until the vendor patch is removed or the removal is decided.
         assert_eq!(
             shut_down(false, 0, Duration::from_secs(2)),
-            (false, 2),
-            "Bevy no longer deadlocks dropping the render app channels while a main-thread render \
-             system is pending (bevyengine/bevy#25722); render_teardown can be removed"
+            (true, 3),
+            "the vendored bevy_render should finish the last main-thread render frame at shutdown \
+             (bevyengine/bevy#25722 backport)"
         );
     }
 
