@@ -22,8 +22,11 @@ static PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::ne
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
+// SAFETY: Allocation and deallocation delegate unchanged pointers and layouts to System;
+// the additional atomic counters never access the allocated memory.
 unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // SAFETY: The caller supplies the valid allocation layout required by GlobalAlloc.
         let ptr = unsafe { std::alloc::System.alloc(layout) };
         if !ptr.is_null() {
             let live =
@@ -33,6 +36,7 @@ unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
         ptr
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        // SAFETY: The caller returns a live System allocation with its original layout.
         unsafe { std::alloc::System.dealloc(ptr, layout) };
         LIVE.fetch_sub(layout.size(), std::sync::atomic::Ordering::SeqCst);
     }
