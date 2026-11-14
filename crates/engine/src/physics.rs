@@ -18,6 +18,8 @@ use std::path::Path;
 
 #[cfg(test)]
 mod stair_tests;
+#[cfg(test)]
+mod feel_measure;
 
 use crate::{
     console::{AppConsoleExt, ConsoleCommand, ConsoleState, console_closed},
