@@ -1336,11 +1336,17 @@ mod tests {
     #[ignore = "requires software Vulkan; run with the renderer smoke tests"]
     fn production_scene_pipeline_shader_uses_real_mesh_bindings() {
         let mut app = App::new();
-        app.add_plugins(DefaultPlugins.set(bevy::window::WindowPlugin {
-            primary_window: None,
-            exit_condition: bevy::window::ExitCondition::DontExit,
-            ..default()
-        }));
+        app.add_plugins(
+            DefaultPlugins
+                .build()
+                .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>()
+                .disable::<bevy::audio::AudioPlugin>()
+                .set(bevy::window::WindowPlugin {
+                    primary_window: None,
+                    exit_condition: bevy::window::ExitCondition::DontExit,
+                    ..default()
+                }),
+        );
         app.finish();
         app.cleanup();
         app.update();
