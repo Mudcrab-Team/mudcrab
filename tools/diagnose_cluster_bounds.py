@@ -37,6 +37,10 @@ def sha256(data):
 
 
 def cached_sources(lock, registry):
+    # A CRLF lockfile leaves a trailing carriage return before each line end,
+    # so the anchored patterns below would never match. Normalise line endings;
+    # callers still hash the raw bytes, so the lockfile digest is unchanged.
+    lock = lock.replace("\r\n", "\n")
     sources, receipts = {}, []
     for name, paths in FILES.items():
         blocks = [block for block in lock.split("[[package]]")

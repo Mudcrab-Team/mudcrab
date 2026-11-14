@@ -2,7 +2,7 @@
 
 Owner: issue467-implementation-5e2edc11. Source base:
 `b5259d33a73e1df730f0730866595fd4cdaae0e3`. Checkout:
-`/Users/taylor/.t3/worktrees/mudcrab/t3-5e2edc11`, branch
+`<worktree>`, branch
 `t3/investigate-gpu-lockup`. The initial investigation commit is
 `f5950727c7c88809869467e235a937828bdae6fb`. The follow-up below bypasses the
 confirmed GPU bounds hazards on Metal; it does not reproduce #467 or establish
@@ -11,7 +11,7 @@ its freeze cause.
 ## Preserved evidence
 
 Original evidence root:
-`/Users/taylor/Projects/mudcrab/.mudcrab-local/evidence/20261031-user-testing-ec59a76c`.
+`<shared storage>/evidence/20261031-user-testing-ec59a76c`.
 Read `main/first-session-failure/observation.json`, its `settings.json`, the three
 `.ips` reports, `main/interactive.log`, and `defaults-fix/investigation.json`.
 The three reports identify `engine`, firmware-detected lockup, and
@@ -106,15 +106,17 @@ The first full-build attempt was blocked by the 60 GiB storage budget. Taylor
 approved a process-local 68 GiB allowance for the successful run, retaining the
 20 GiB reserve and two-build limit. No persistent storage policy changed.
 Detailed commands, output and the test-binary checksum are retained at
-`/Users/taylor/Projects/mudcrab/.mudcrab-local/evidence/20261031-issue467-metal-cpu-safety`,
+`<shared storage>/evidence/20261031-issue467-metal-cpu-safety`,
 owned by `issue467-coordination-metal-cpu-safety`. Native freeze confirmation,
 performance and Skyrim visual parity remain unvalidated.
 
 ## Executed check
 
 ```sh
-python3 tools/diagnose_cluster_bounds.py --registry /Users/taylor/.cargo/registry
+python3 tools/diagnose_cluster_bounds.py --registry "$CARGO_HOME/registry"
 ```
+
+`CARGO_HOME` defaults to `~/.cargo`.
 
 The audit checks source premises and enumerates allocation counts
 1/255/256/257/3672/4096 and Z-slice counts 1024/1025/1536/3072 at capacity 1024.
@@ -189,7 +191,7 @@ the implicated path, followed by native validation. This investigation leaves
 
 Retain audit JSON, input hashes, ownership snapshot, source diff and settlement
 receipts under
-`/Users/taylor/Projects/mudcrab/.mudcrab-local/evidence/20261031-issue467-5e2edc11`.
+`<shared storage>/evidence/20261031-issue467-5e2edc11`.
 Owner is `issue467-implementation-5e2edc11`; purpose is independent source review
 and preparation of the next bounded experiment. Original evidence remains in
 place. No build lease, worker process, pack conversion or task-owned large scratch
