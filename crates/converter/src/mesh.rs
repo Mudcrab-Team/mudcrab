@@ -4687,8 +4687,8 @@ mod tests {
 
     /// Scenes well under the old 64-node collision limit convert to the same GLB bytes as before
     /// the shared 256-node bound. The pinned hashes come from the converter before that bound,
-    /// except that the single-shape `static` case also carries the `mudcrabObjectDiffuseV1`
-    /// primitive tag that `single-shape-object-diffuse-v1` adds; that tag is the only difference.
+    /// except that both single-shape cases also carry the `mudcrabObjectDiffuseV1` primitive tag
+    /// that `single-shape-object-diffuse-v1` adds; each case asserts that tag below.
     #[test]
     fn shallow_scene_glb_bytes_are_unchanged_by_the_depth_bound() {
         let directory = tempfile::tempdir().unwrap();
@@ -4701,7 +4701,7 @@ mod tests {
             (
                 "chain-40",
                 static_scene_chain_nif(40),
-                "4c5a5c66c022d9b37562a69afe5f814a858d26cc26d97f449d3378fe0064e496",
+                "afc3b0b003c94eaf8ba603efaf5efeb08e831c7a63f5bfc3db5be65beaf14af6",
             ),
         ];
         for (name, source, expected) in cases {
@@ -4709,8 +4709,15 @@ mod tests {
             let output = input.with_extension("glb");
             fs::write(&input, source).unwrap();
             MeshConverter::convert_nif_to_glb_with_skeleton(&input, &output, None).unwrap();
+            let bytes = fs::read(&output).unwrap();
+            let document = glb_json_from_bytes(&bytes).unwrap();
             assert_eq!(
-                crate::cache::hash_bytes(&fs::read(&output).unwrap()),
+                document["meshes"][0]["primitives"][0]["extras"]["mudcrabObjectDiffuseV1"]["shapeIndex"],
+                0,
+                "{name}: the single shape carries the object-diffuse tag"
+            );
+            assert_eq!(
+                crate::cache::hash_bytes(&bytes),
                 expected,
                 "{name}: GLB bytes changed"
             );
