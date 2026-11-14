@@ -196,7 +196,7 @@ impl MeshConverter {
         let primary = catch_unwind(AssertUnwindSafe(|| {
             nif_to_model_with_skin_fallback(&nif, skeleton.as_ref(), unresolved_skin)
         }));
-        let (mut model, used_static_fallback) = match primary {
+        let (mut model, mut used_static_fallback) = match primary {
             Ok(Ok((model, skin_diagnostics))) => {
                 for (block, cause) in skin_diagnostics {
                     let name = material_contract
@@ -304,6 +304,8 @@ impl MeshConverter {
                     )
                 })?;
             model = static_model;
+            // The recovered mesh is a static fallback, so it is never an object-diffuse shape.
+            used_static_fallback = true;
         }
         let shape_blocks = exported_shape_blocks(&nif, &model, &material_contract)?;
         let exported_material_contract = shape_blocks
@@ -3297,6 +3299,66 @@ mod tests {
                 glb
             );
         }
+    }
+
+    /// A single-shape NIF whose shape node scale is replaced after generation. A scale of
+    /// 1e35 on a position of 123456 overflows `f32` in the bounds, so the primary export has
+    /// invalid bounds. The generator keeps its scale at 1, so the bytes are patched.
+    fn single_shape_nif_with_node_scale(scale: Option<f32>) -> Vec<u8> {
+        let mut bytes = dummy_content::nif::static_shape(&dummy_content::nif::StaticShape {
+            name: "PropertyQuad",
+            positions: &[
+                [-1.0, -1.0, 0.0],
+                [1.0, -1.0, 0.0],
+                [1.0, 1.0, 123_456.0],
+                [-1.0, 1.0, 0.0],
+            ],
+            normals: &[[0.0, 0.0, 1.0]; 4],
+            uvs: &[[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+            indices: &[[0, 1, 2], [0, 2, 3]],
+            diffuse: "textures/generated_color.dds",
+            normal_texture: "textures/generated_normal.dds",
+        })
+        .unwrap();
+        if let Some(scale) = scale {
+            let identity: Vec<u8> = [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0]
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect();
+            let hits: Vec<usize> = bytes
+                .windows(identity.len())
+                .enumerate()
+                .filter(|(_, window)| *window == identity.as_slice())
+                .map(|(at, _)| at)
+                .collect();
+            for at in hits {
+                let scale_at = at + 36;
+                bytes[scale_at..scale_at + 4].copy_from_slice(&scale.to_le_bytes());
+            }
+        }
+        bytes
+    }
+
+    /// The bounds-recovery branch exports a static fallback. A fallback mesh is never an
+    /// object-diffuse shape, so it must not carry the tag that a normal export of the same
+    /// single shape does.
+    #[test]
+    fn object_diffuse_tag_is_absent_from_a_bounds_recovered_static_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let tag = |name: &str, scale: Option<f32>| {
+            let input = directory.path().join(format!("{name}.nif"));
+            let output = directory.path().join(format!("{name}.glb"));
+            fs::write(&input, single_shape_nif_with_node_scale(scale)).unwrap();
+            MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+            glb_json_from_bytes(&fs::read(output).unwrap()).unwrap()["meshes"][0]["primitives"][0]
+                ["extras"]["mudcrabObjectDiffuseV1"]
+                .clone()
+        };
+        // Control: the same single shape with finite positions is certified.
+        assert_eq!(tag("control", None)["shapeIndex"], 0);
+        // An enormous node scale gives the primary export invalid bounds, so the static
+        // fallback replaces it.
+        assert!(tag("recovered", Some(1.0e35)).is_null());
     }
 
     #[test]

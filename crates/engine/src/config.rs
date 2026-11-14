@@ -3623,11 +3623,17 @@ mod tests {
                     "--exclude-standard",
                 ]
                 .contains(&flag)
-                && !script.lines().any(|line| {
-                    line.split(|c: char| !c.is_alphanumeric())
-                        .any(|word| word == "engine")
-                        && script_cli_options(line).contains(&flag)
-                });
+                // Every line that names the flag must be an argparse declaration or a Git
+                // command line. A flag on any other line, such as a continuation line of a
+                // multi-line engine command, is audited like any engine option.
+                && script
+                    .lines()
+                    .filter(|line| script_cli_options(line).contains(&flag))
+                    .all(|line| {
+                        line.contains("add_argument(")
+                            || (line.contains("\"git\"")
+                                && (line.contains("ls-files") || line.contains("\"diff\"")))
+                    });
             // This standalone example owns these arguments; do not admit them for engine.
             let inspector_option = path.ends_with("scripts/model_inspector/runtime.py")
                 && [
@@ -3691,7 +3697,14 @@ mod tests {
             "--others",
             "--exclude-standard",
         ] {
-            assert_eq!(checked_script_engine_flags(flag, oracle), 0);
+            let declaration = format!(
+                "parser.add_argument(\"{flag}\")\ncommand([\"git\", \"ls-files\", \"{flag}\"])"
+            );
+            assert_eq!(checked_script_engine_flags(&declaration, oracle), 0);
+            assert!(
+                std::panic::catch_unwind(|| checked_script_engine_flags(flag, oracle)).is_err(),
+                "{flag} on a bare line is not a declaration"
+            );
             assert!(
                 std::panic::catch_unwind(|| {
                     checked_script_engine_flags(&format!("engine {flag}"), oracle)
@@ -3705,6 +3718,21 @@ mod tests {
                 })
                 .is_err(),
                 "{flag} must not become a global non-engine option"
+            );
+        }
+        // The real declarations stay exempt.
+        let declarations = "check.add_argument(\"--packet\", type=Path)\n\
+            command([\"git\", \"ls-files\", \"--others\", \"--exclude-standard\"])\n\
+            command([\"git\", \"diff\", \"--name-only\", \"HEAD\"])";
+        assert_eq!(checked_script_engine_flags(declarations, oracle), 0);
+        // A multi-line engine command puts its flags on lines without the word `engine`.
+        // Those lines are neither declarations nor Git commands, so the audit must reject them.
+        for flag in ["--packet", "--receipt", "--name-only"] {
+            let multiline = format!("cmd = [\"engine\",\n    \"{flag}\", \"value\"]");
+            assert!(
+                std::panic::catch_unwind(|| checked_script_engine_flags(&multiline, oracle))
+                    .is_err(),
+                "a multi-line engine command with {flag} must fail the audit"
             );
         }
         assert_eq!(checked_script_engine_flags("engine --headless", oracle), 1);

@@ -3,7 +3,10 @@
 
 use bevy::{app::SceneSpawnerSystems, asset::LoadState, prelude::*};
 use rusqlite::Connection;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 #[derive(Clone, Debug)]
 struct TextureSwap {
@@ -117,11 +120,18 @@ struct DiffuseMaterials(
     HashMap<(AssetId<StandardMaterial>, AssetId<Image>), AssetId<StandardMaterial>>,
 );
 
+/// Base records and refusal reasons that already produced a warning. A placed base can have
+/// many instances and reload with every cell, so each pair warns once per run; the rest log
+/// at debug level.
+#[derive(Resource, Default)]
+struct ReportedSwapRefusals(HashSet<(u32, String)>);
+
 pub struct ObjectMaterialPlugin;
 
 impl Plugin for ObjectMaterialPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DiffuseMaterials>()
+            .init_resource::<ReportedSwapRefusals>()
             .add_systems(
                 SpawnScene,
                 apply_swaps.after(SceneSpawnerSystems::WorldInstanceSpawn),
@@ -173,6 +183,7 @@ fn apply_swaps(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut cache: ResMut<DiffuseMaterials>,
+    mut reported: ResMut<ReportedSwapRefusals>,
 ) {
     for (root, input, requested) in &roots {
         // Scene loading and failure belong to streaming. Only instantiated roots reach this
@@ -288,11 +299,17 @@ fn apply_swaps(
                 texture_set: swap.texture_set,
             }
         })();
-        finish(&mut commands, root, input.base, result);
+        finish(&mut commands, &mut reported, root, input.base, result);
     }
 }
 
-fn finish(commands: &mut Commands, root: Entity, base: u32, result: ObjectTextureSwapState) {
+fn finish(
+    commands: &mut Commands,
+    reported: &mut ReportedSwapRefusals,
+    root: Entity,
+    base: u32,
+    result: ObjectTextureSwapState,
+) {
     if matches!(result, ObjectTextureSwapState::Pending) {
         commands.entity(root).insert(PendingTextureSwap);
     } else {
@@ -300,11 +317,19 @@ fn finish(commands: &mut Commands, root: Entity, base: u32, result: ObjectTextur
             result,
             ObjectTextureSwapState::Unsupported(_) | ObjectTextureSwapState::Failed(_)
         ) {
-            warn!(
+            debug!(
                 base = format_args!("{base:08X}"),
                 ?result,
-                "STAT MODS diffuse substitution not applied"
+                "STAT MODS diffuse substitution not applied to an instance"
             );
+            if reported.0.insert((base, format!("{result:?}"))) {
+                warn!(
+                    base = format_args!("{base:08X}"),
+                    ?result,
+                    "STAT MODS diffuse substitution not applied (once per base record and \
+                     reason; later instances log at debug level)"
+                );
+            }
         }
         commands.entity(root).remove::<PendingTextureSwap>();
     }

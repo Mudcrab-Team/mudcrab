@@ -643,3 +643,39 @@ fn object_diffuse_optional_projection_rejects_missing_links_and_preserves_other_
         "old packs remain compatible"
     );
 }
+
+#[test]
+fn object_diffuse_refusals_warn_once_per_base_record_and_reason() {
+    let directory = tempfile::tempdir().unwrap();
+    fixture(directory.path());
+    let (conn, mut records) = database();
+    records.insert(6, record(6, b"STAT", &[(b"MODS", swap("Rock", 101, 1))]));
+    export_to_db(&conn, &records).unwrap();
+    let catalog = ObjectTextureCatalog::read(&conn).unwrap();
+    let mut app = object_app(directory.path());
+    let scene: Handle<WorldAsset> = app
+        .world()
+        .resource::<AssetServer>()
+        .load(GltfAssetLabel::Scene(0).from_asset("meshes/shared.glb"));
+    wait_for_dependencies(&mut app, &scene);
+    // Many placements of one refused base record, one placement of another, one applied.
+    let refused_a: Vec<_> = (0..5)
+        .map(|_| spawn(&mut app, &scene, catalog.get(4)))
+        .collect();
+    let refused_b = spawn(&mut app, &scene, catalog.get(6));
+    let applied = spawn(&mut app, &scene, catalog.get(1));
+    let roots: Vec<_> = refused_a
+        .iter()
+        .copied()
+        .chain([refused_b, applied])
+        .collect();
+    settle(&mut app, &roots);
+    // Later passes (a cell reload, a changed child list) must not add entries.
+    for _ in 0..3 {
+        app.update();
+    }
+    let reported = &app.world().resource::<ReportedSwapRefusals>().0;
+    let bases: std::collections::BTreeSet<_> = reported.iter().map(|(base, _)| *base).collect();
+    assert_eq!(reported.len(), 2, "{reported:?}");
+    assert_eq!(bases, [4, 6].into());
+}
