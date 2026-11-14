@@ -92,8 +92,9 @@ their original recorded reader configuration. Older unstamped packs and the exac
 they are not identified as a versioned projection. Exact version-1 and version-2
 legacy stamps and full hashes remain recognized as their original retained-asset
 contracts and are not upgraded to the current projection.
-Adapter-12 metadata recognizes the exact adapter-10 and adapter-11 retained-asset contracts
-with matching original schema/add-on bytes, reader fields and combined settings
+Adapter-13 metadata recognizes the exact adapter-10, adapter-11 and adapter-12 retained-asset contracts
+(adapter 13 adds placed database rows only), and legacy projection 5 recognizes the exact projection-4
+contract, with matching original schema/add-on bytes, reader fields and combined settings
 hash. The original reader and asset producer remain recorded across repeated
 metadata rebuilds. The string-table language changes database text only, so a pack
 read in one language is a valid source for a rebuild in another; its proof is
@@ -402,9 +403,13 @@ resumed staging run rebuild meshes an earlier converter of the same producer
 wrote, while textures and scripts stay reusable. Every producer-27 manifest
 records per-kind proofs, which arrived with producer 26, so the combined fallback
 below never decides current-producer meshes. The list is cleared when the
-producer advances. `--reuse-assets` still retains the source
-package's mesh bytes and its recorded mesh proof, so a later normal conversion
-of that package rebuilds them.
+producer advances. `--reuse-assets` retains the source package's mesh bytes
+only when its recorded `nif` proof equals the current list's proof
+(`crates/converter/src/metadata.rs`). A source written before a name was
+appended is rejected with "retained mesh settings predate the current mesh
+output contract", and a normal conversion rebuilds its meshes. The NIF scene-depth
+bound and the unparsable-skin refusal append no name, so the `nif` proof is unchanged
+and `--reuse-assets` behaves as before.
 
 Normal producer eligibility remains independent of explicit metadata retention.
 The only cross-producer mesh allowance is producer 24 -> 26; a future producer

@@ -327,9 +327,14 @@ fn settings_for_source_reader(
                 && [
                     crate::cache::inhouse_adapter10_reader_identity(&schemas),
                     crate::cache::inhouse_adapter11_reader_identity(&schemas),
+                    crate::cache::inhouse_adapter12_reader_identity(&schemas, &language),
                 ]
                 .iter()
                 .any(|prior| prior.as_ref() == Some(identity)))
+            || (reader == crate::config::RecordReader::Legacy
+                && schemas.identities().is_empty()
+                && crate::cache::legacy_projection4_reader_identity(&language).as_ref()
+                    == Some(identity))
             || (reader == crate::config::RecordReader::Legacy
                 && (identity == &serde_json::json!({"mode": "legacy"})
                     || identity
@@ -1419,9 +1424,9 @@ mod tests {
             },
         );
         let mut aliases = Vec::new();
-        for mode in 0..3 {
-            for transfer in ["", ".opensky-srgb"] {
-                let alias = format!("textures/shared{transfer}.opensky-wrap{mode}.ktx2");
+        for sampler in shared::texture_aliases::WRAP_TEXTURE_SUFFIXES {
+            for transfer in ["", shared::texture_aliases::SRGB_TEXTURE_SUFFIX] {
+                let alias = format!("textures/shared{transfer}{sampler}.ktx2");
                 fs::write(source.join(&alias), b"verified texture").unwrap();
                 aliases.push(alias);
             }
@@ -1568,7 +1573,7 @@ mod metadata_schema_controls {
     /// Known prior adapters retain the exact original schema and reject unproven variants.
     #[test]
     fn adapter10_source_settings_require_original_saved_schema_and_identity() {
-        for adapter in [10, 11] {
+        for adapter in [10, 11, 12] {
             let original = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
             let mut identity =
                 crate::esm::inhouse::reader_identity_with_schemas(RecordReader::Inhouse, &original);
@@ -1593,7 +1598,7 @@ mod metadata_schema_controls {
                 ORIGINAL
             );
             assert_eq!(identity["adapter_version"], adapter);
-            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 12);
+            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 13);
             assert!(
                 settings_for_source_reader(
                     &config,
@@ -1622,6 +1627,21 @@ mod metadata_schema_controls {
                 );
             }
         }
+    }
+
+    #[test]
+    fn adapter12_retains_exact_non_english_source_settings() {
+        let schemas = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
+        let identity = crate::cache::inhouse_adapter12_reader_identity(&schemas, "french").unwrap();
+        let config = PipelineConfig::new("Data", "output");
+        let recovered = settings_for_source_reader(&config, &identity, schemas).unwrap();
+        assert_eq!(recovered.language, "french");
+        assert_eq!(
+            recovered.schemas().unwrap().addon_bytes().next().unwrap(),
+            ORIGINAL
+        );
+        assert_eq!(identity["adapter_version"], 12);
+        assert_eq!(identity["string_table_encoding"], "utf-8-or-windows-1252");
     }
 
     /// Missing old stamps remain unversioned; later metadata cannot infer a newer asset reader.
@@ -1681,6 +1701,7 @@ mod metadata_schema_controls {
             serde_json::json!({"mode": "legacy", "projection_version": 1}),
             serde_json::json!({"mode": "legacy", "projection_version": 2}),
             serde_json::json!({"mode": "legacy", "projection_version": 3}),
+            crate::cache::legacy_projection4_reader_identity("english").unwrap(),
             crate::esm::inhouse::reader_identity(RecordReader::Legacy),
         ] {
             let settings = settings_for_source_reader(
@@ -1693,7 +1714,7 @@ mod metadata_schema_controls {
         }
         for identity in [
             serde_json::json!({"mode": "legacy", "projection_version": 0}),
-            serde_json::json!({"mode": "legacy", "projection_version": 5}),
+            serde_json::json!({"mode": "legacy", "projection_version": 6}),
             serde_json::json!({"mode": "legacy", "unproven": true}),
         ] {
             assert!(

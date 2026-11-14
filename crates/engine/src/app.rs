@@ -120,10 +120,6 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .then(|| crate::settings::prepare_settings(&mut config));
     // A saved profile can disagree with an explicit launch option the parser already accepted.
     config.check_visual_profile()?;
-    info!(
-        profile = config.visual_profile.name(),
-        "visual profile active; changing it requires a restart"
-    );
     config.image_space_selection()?;
     let start_camera = prepare_start_camera(&mut config)?;
     let shots = prepare_shots(&mut config)?;
@@ -324,6 +320,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     // The run fingerprint is measurement data: an ordinary play session neither builds one nor
     // pays for the startup system that reads it.
     let records_measurements = crate::fingerprint::records_measurements(&config);
+    let visual_profile = config.visual_profile;
     app.insert_resource(config.visual_profile)
         .insert_resource(config.color_grade)
         .insert_resource(config.visual_preset)
@@ -351,6 +348,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
                     ..default()
                 }),
         )
+        .add_plugins(crate::raw_texel::RawTexelPlugin {
+            profile: visual_profile,
+        })
         .add_plugins((
             FrameTimeDiagnosticsPlugin::default(),
             LogDiagnosticsPlugin {
@@ -405,6 +405,15 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     if records_measurements {
         app.add_plugins(crate::fingerprint::RunFingerprintPlugin);
     }
+    info!(
+        profile = visual_profile.name(),
+        colour_textures = if visual_profile.decodes_colour_srgb() {
+            "sRGB"
+        } else {
+            "raw UNORM"
+        },
+        "visual profile active; changing it requires a restart"
+    );
     if app
         .world()
         .resource::<EngineConfig>()
@@ -1214,6 +1223,7 @@ fn setup_material_fixture(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    profile: Res<crate::visual_profile::VisualProfile>,
 ) {
     commands.init_resource::<CanonicalMaterialFixtureState>();
     let checker = images.add(fixture_image(
@@ -1223,7 +1233,7 @@ fn setup_material_fixture(
                 [78, 166, 88, alpha]
             })
             .collect(),
-        true,
+        profile.decodes_colour_srgb(),
     ));
     let normal = images.add(fixture_image(
         (0..16).flat_map(|_| [128, 128, 255, 255]).collect(),
@@ -1320,6 +1330,7 @@ fn validate_material_fixture(
     query: Query<(&CanonicalMaterialKind, &MeshMaterial3d<StandardMaterial>)>,
     materials: Res<Assets<StandardMaterial>>,
     images: Res<Assets<Image>>,
+    profile: Res<crate::visual_profile::VisualProfile>,
     mut state: ResMut<CanonicalMaterialFixtureState>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
@@ -1360,7 +1371,7 @@ fn validate_material_fixture(
                     }
                     _ => Ok(()),
                 }?;
-                validate_standard_material(material, &images)
+                validate_standard_material(material, &images, profile.decodes_colour_srgb())
             });
         match result {
             Ok(count) => validated_images += count,
@@ -3421,6 +3432,39 @@ mod tests {
         assert!(error.contains("at most 64 threads"), "{error}");
     }
 
+    /// Uses the real startup system, so the texture it adds is the one the validator will see.
+    #[test]
+    fn the_material_fixture_builds_its_colour_checker_in_the_profile_space() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        for (profile, expected) in [
+            (
+                crate::visual_profile::VisualProfile::Mudcrab,
+                bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            ),
+            (
+                crate::visual_profile::VisualProfile::Skyrim,
+                bevy::render::render_resource::TextureFormat::Rgba8Unorm,
+            ),
+        ] {
+            let mut app = App::new();
+            app.init_resource::<Assets<Image>>()
+                .init_resource::<Assets<Mesh>>()
+                .init_resource::<Assets<StandardMaterial>>()
+                .insert_resource(profile);
+            app.world_mut()
+                .run_system_once(setup_material_fixture)
+                .unwrap();
+            let images = app.world().resource::<Assets<Image>>();
+            assert!(
+                images
+                    .iter()
+                    .any(|(_, image)| image.texture_descriptor.format == expected),
+                "no {expected:?} image under {profile:?}"
+            );
+        }
+    }
+
     /// Uses real loaders with a generated external normal image, without game assets or a GPU.
     fn world_normal_loader_fixture(wrap_s: u32, wrap_t: u32) -> (tempfile::TempDir, App) {
         use bevy::{
@@ -3776,6 +3820,7 @@ mod tests {
         .insert_resource(WaterReflectionTexture(Handle::<Image>::default()))
         .init_resource::<ProfilingState>()
         .init_resource::<StreamingFixtureState>()
+        .init_resource::<crate::visual_profile::VisualProfile>()
         .add_plugins(StreamingPlugin)
         .add_systems(
             PreUpdate,
@@ -4468,6 +4513,7 @@ mod tests {
     fn v1_world_and_visual_fixture_cameras_have_explicit_hdr_output() {
         let mut app = App::new();
         app.insert_resource(EngineConfig::default())
+            .init_resource::<crate::visual_profile::VisualProfile>()
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<Image>>()
             .init_resource::<Assets<StandardMaterial>>()
