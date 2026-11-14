@@ -26,7 +26,8 @@ unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
         let ptr = unsafe { std::alloc::System.alloc(layout) };
         if !ptr.is_null() {
-            let live = LIVE.fetch_add(layout.size(), std::sync::atomic::Ordering::SeqCst) + layout.size();
+            let live =
+                LIVE.fetch_add(layout.size(), std::sync::atomic::Ordering::SeqCst) + layout.size();
             PEAK.fetch_max(live, std::sync::atomic::Ordering::SeqCst);
         }
         ptr
@@ -306,12 +307,20 @@ fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: 
         let baseline = LIVE.load(std::sync::atomic::Ordering::SeqCst);
         PEAK.store(baseline, std::sync::atomic::Ordering::SeqCst);
         let warm = generate(cache, id, &config);
-        let peak = PEAK.load(std::sync::atomic::Ordering::SeqCst).saturating_sub(baseline);
-        let retained = LIVE.load(std::sync::atomic::Ordering::SeqCst).saturating_sub(baseline);
-        assert!(peak <= slots as usize * GRASS_COUNT as usize * 48 + 64 * 1024,
-            "generation peak heap budget exceeded: {peak}");
-        assert!(peak.saturating_sub(retained) <= slots as usize * 16 + 64 * 1024,
-            "generation scratch heap budget exceeded: peak={peak}, retained={retained}");
+        let peak = PEAK
+            .load(std::sync::atomic::Ordering::SeqCst)
+            .saturating_sub(baseline);
+        let retained = LIVE
+            .load(std::sync::atomic::Ordering::SeqCst)
+            .saturating_sub(baseline);
+        assert!(
+            peak <= slots as usize * GRASS_COUNT as usize * 48 + 64 * 1024,
+            "generation peak heap budget exceeded: {peak}"
+        );
+        assert!(
+            peak.saturating_sub(retained) <= slots as usize * 16 + 64 * 1024,
+            "generation scratch heap budget exceeded: peak={peak}, retained={retained}"
+        );
         assert_eq!(
             warm.batches.len(),
             GRASS_COUNT as usize,
@@ -438,12 +447,16 @@ async fn performance_grass_generation() {
     second_config.io_jobs = 1;
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    let second_report = converter::AssetPipeline::run_async(second_config, tx).await.unwrap();
+    let second_report = converter::AssetPipeline::run_async(second_config, tx)
+        .await
+        .unwrap();
     drain.await.unwrap();
     assert!(second_report.complete);
-    assert_eq!(fs::read(output.join("grass_cache.rkyv")).unwrap(),
+    assert_eq!(
+        fs::read(output.join("grass_cache.rkyv")).unwrap(),
         fs::read(second_output.join("grass_cache.rkyv")).unwrap(),
-        "independent conversions at different job counts must produce identical grass caches");
+        "independent conversions at different job counts must produce identical grass caches"
+    );
     let cache = GrassCache::open(&output.join("grass_cache.rkyv")).unwrap();
     for cell in &terrain_cells {
         assert!(
