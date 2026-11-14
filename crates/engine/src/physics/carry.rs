@@ -3,21 +3,63 @@
 //! Hold Activate (`E`) on a movable object for `fZKeyDelay` to pick it up. The object hangs on a
 //! spring at the point where it was grabbed, in front of the camera, and keeps its collider and
 //! its collision group the whole time. The release that ends the grabbing hold does nothing; the
-//! next press and release of `E` drops it. That latch is how spud documents the game's rule. It
-//! is not verified against the retail binary: `controlmap.txt` in `Skyrim - Interface.bsa` maps
-//! Activate to `E` but says nothing about holding. Left click while carrying throws it; that is
-//! Mudcrab tuning (see [`THROW_BUTTON`]). The object drops by itself when it snags (the grabbed point lags too far behind the target), when the
-//! player stands on it, or when it is pressed against a much heavier moving body.
+//! next press and release of `E` drops it. The object drops by itself when it snags (the grabbed
+//! point is more than 96 units from its target) or when it is pressed against a much heavier
+//! moving body.
 //!
-//! The spring is a port of the mechanism that the MIT-licensed spud engine documents
-//! (chasmlol/spud, `src/physics/world.cpp` `apply_grab`, read as a description; no code is
-//! copied). Constants that come from spud's description or fallbacks are marked "spud". Skyrim's
-//! own GMST names are kept in [`CarryTuning::apply_gmst`]. The pack carries only `fZKeyMaxForce`
-//! (100) today; the other values are the Skyrim defaults that spud uses.
+//! # Where each rule and constant comes from
 //!
-//! Spud's lag test compares a distance in metres with a constant in game units, so its "stuck"
-//! drop never fires at play distances. Here every distance is in Creation units, and a test pins
-//! that 96 units drops at 1.37 m.
+//! The reverse-engineering analysis of retail `SkyrimSE.exe` 1.7.104.0 (`RF-CARRY-001` to
+//! `RF-CARRY-007`, `RF-UNIT-001`; static trace of the activate handler at `0x1407b2660`, the grab
+//! start at `0x140751870` and the per-frame hold checks at `0x140753580`) is the source for every
+//! rule and constant here. Effective values are the compiled defaults, replaced by `Skyrim.esm`
+//! where it overrides them.
+//!
+//! - **Input, `RF-CARRY-001`.** A press held longer than `fZKeyDelay` (0.2 s) with no grab active
+//!   starts one grab; a flag marks that this press started it. On release, if a grab is active and
+//!   this press did not start it, the object drops; the release that ends the grabbing hold does
+//!   nothing.
+//! - **Weight limit, `RF-CARRY-002`.** The grab is refused when the body's mass is above
+//!   `fGrabMaxWeightWalking` (100 kg); a body at exactly 100 is carried.
+//! - **Spring, `RF-CARRY-003`.** A Havok mouse-spring action with damping `fZKeySpringDamping`
+//!   (0.5), elasticity `fZKeySpringElasticity` (0.2) times E, object damping `fZKeyObjectDamping`
+//!   (0.75) and maximum relative force `fZKeyMaxForce` times S. For a normal object E = 1 and S is
+//!   the mass scale of [`CarryTuning::max_force_scale`]: 1.0 at 0 kg, falling linearly to 0.2 at
+//!   `fZKeyMaxForceWeightHigh` and above. `Skyrim.esm` overrides `fZKeyMaxForce` (250 in the
+//!   executable, 100 in the master) and `fZKeyMaxForceWeightHigh` (300 and 150). Both are read from
+//!   the pack ([`CarryTuning::from_world_database`]).
+//! - **Drops, `RF-CARRY-005`.** The lag is the distance between the grabbed point and its target in
+//!   game units. Lag above 96 units (hard-coded) drops the object. Lag above
+//!   `fZKeyMaxContactDistance` (10) with a touching body more than `fZKeyMaxContactMassRatio` (4)
+//!   times the held mass drops it. Havok metres are 69.99125 units (`RF-UNIT-001`).
+//! - **Hold distance.** The grab distance, at least the player's radius plus 5 units. Retail's
+//!   radius term is not verified (the trace shows `radius * 70 + 5`); Mudcrab uses its capsule
+//!   radius.
+//! - **No throw, `RF-CARRY-007`.** Release removes the spring and applies no impulse; there is no
+//!   throw setting for this path. The object keeps the velocity the spring left it.
+//!
+//! The spring's parameters have Havok `hkpMouseSpringAction` semantics, and the binary passes them
+//! through; the solver internals were not traced. [`spring_step`] is therefore a step-by-step port
+//! of the algorithm in `apply_grab` in spud (<https://github.com/chasmlol/spud>, MIT, commit
+//! `e5f2de4b`, `src/physics/world.cpp`): damp both velocities, take the point velocity, solve the
+//! impulse through the point's effective mass, clamp it per kilogram. It was written from the
+//! project's audit of that source (`docs/research/spud/`), not by copying code, and spud's licence
+//! notice is in `THIRD_PARTY.md`. The contact-mass scan follows spud's too.
+//!
+//! Not implemented, each with a follow-up (#691): the layer-14 and constraint-type-0xB special
+//! cases of the spring (`RF-CARRY-004`: S and E change), the complex helper
+//! (`fZKeyComplexHelper*`, formula partly traced), the movement block while holding a body above
+//! `fZKeyHeavyWeight` (75 kg; `RF-CARRY-006`: which movement it blocks is unverified), and the
+//! retail held-object collision layer. spud's stand-on drop has no retail source and is not
+//! implemented either.
+//!
+//! Not from retail, and without constants of its own (Mudcrab engineering): the steep-look target
+//! clamp (it reuses the retail radius plus 5), the interrupt rules (WALK end, door crossing,
+//! cursor release, console or menu open) and the disabled sleeping while held.
+//!
+//! The settings are read from the pack at startup; a pack without them keeps the compiled
+//! defaults. [`CarryTuning::apply_gmst`] takes any other carry setting the converter publishes
+//! later (#595).
 
 use super::{
     ControlledCamera, CursorCapture, DebugTankard, DynamicClutter, MoveMode, MovementTuning,
@@ -28,48 +70,66 @@ use crate::{
 };
 use bevy::{ecs::schedule::common_conditions::not, prelude::*};
 use bevy_rapier3d::prelude::*;
+use color_eyre::{Result, eyre::WrapErr};
+use rusqlite::{Connection, OpenFlags};
+use shared::records::ArchivedRecordData;
+use std::{collections::HashMap, path::Path};
 
-/// Mouse button that throws the carried object. Mudcrab tuning: the retail attack button may shove
-/// or throw, but that is not verified here, and the throw speed constants are ours.
-pub const THROW_BUTTON: MouseButton = MouseButton::Left;
-
-/// Creation units per metre. The converter and the movement code use 1 unit = 1/70 m, and the
-/// Skyrim GMSTs that spud reads in m/s^2 are scaled by this value.
-pub const UNITS_PER_METRE: f32 = 70.0;
+/// Creation units per metre: the constant the retail grab code multiplies metres by
+/// (`69.99125`, read from `SkyrimSE.exe`).
+pub const UNITS_PER_METRE: f32 = 69.99125;
 
 /// Spring and drop constants. All distances are in Creation units, masses in kg.
+///
+/// Each default below is the compiled default in the retail executable (the reverse-engineering
+/// analysis, `RF-CARRY-001` to `RF-CARRY-007`). `fZKeyMaxForce` and `fZKeyMaxForceWeightHigh`, which
+/// `Skyrim.esm` overrides, are read from the pack by [`Self::from_world_database`].
 #[derive(Resource, Debug, Clone, PartialEq)]
 pub struct CarryTuning {
-    /// `fActivatePickLength:Interface`, 180 units (about 2.57 m). Spud hard-codes the same value.
+    /// `fActivatePickLength:Interface`, 180 units. Retail executable default.
     pub reach: f32,
-    /// `fZKeyDelay:Controls`, seconds the key must stay down before it grabs. Spud never resolves
-    /// the key, so it always uses 0.2.
+    /// `fZKeyDelay:Controls`, seconds the key must stay down before it grabs (`RF-CARRY-001`).
+    /// Executable default 0.2; not in `Skyrim.ini`.
     pub key_delay: f32,
-    /// `fZKeySpringElasticity`. The fraction of the position error that the spring asks to remove
-    /// in one 60 Hz step: 0.2 per step is 12 per second (spud).
+    /// `fZKeySpringElasticity`: the fraction of the position error that the spring asks to remove
+    /// in one 60 Hz step, 0.2 (12 per second). Retail executable default.
     pub spring_elasticity: f32,
-    /// `fZKeySpringDamping`. The fraction of the point velocity the spring removes each step
-    /// (spud).
+    /// `fZKeySpringDamping`: the fraction of the point velocity the spring removes each step, 0.5.
+    /// Retail executable default.
     pub spring_damping: f32,
-    /// `fZKeyObjectDamping`. Both body velocities are multiplied by this value each step (spud).
+    /// `fZKeyObjectDamping`: both body velocities are multiplied by this each step, 0.75. Retail
+    /// executable default.
     pub object_damping: f32,
-    /// `fZKeyMaxForce`. Largest spring acceleration per kilogram, in m/s^2. The pack stores 100.
+    /// `fZKeyMaxForce`: largest spring acceleration per kilogram, in m/s^2, before the weight
+    /// factor (`RF-CARRY-003`). `Skyrim.esm` sets 100 (the executable default is 250); read from
+    /// the pack.
     pub max_force: f32,
-    /// `fGrabMaxWeightWalking`, heaviest body the player can grab, in kg (spud).
+    /// `fZKeyMaxForceWeightLow`, kg: bodies this light or lighter get `max_force_scale_high`.
+    /// Retail executable default 0 (not overridden by the master).
+    pub max_force_weight_low: f32,
+    /// `fZKeyMaxForceWeightHigh`, kg: bodies this heavy or heavier get `max_force_scale_low`
+    /// (`RF-CARRY-003`). `Skyrim.esm` sets 150 (the executable default is 300); read from the pack.
+    pub max_force_weight_high: f32,
+    /// `fZKeyMaxForceScaleLow`: the force factor for the heaviest bodies. Retail executable
+    /// default 0.2.
+    pub max_force_scale_low: f32,
+    /// `fZKeyMaxForceScaleHigh`: the force factor for the lightest bodies. Retail executable
+    /// default 1.0.
+    pub max_force_scale_high: f32,
+    /// `fGrabMaxWeightWalking`, heaviest body the player can grab, in kg. Retail executable
+    /// default 100. (`fGrabMaxWeightRunning`, 50, is not used: running is not modelled.)
     pub grab_max_weight: f32,
-    /// Distance between the grabbed point and its target that drops the object, in units.
-    /// Spud's description gives 96 game units.
+    /// Distance between the grabbed point and its target that drops the object, in units. The
+    /// retail hold check compares the lag, in units, with the hard-coded constant 96.0 at
+    /// `0x14181ab88` (`RF-CARRY-005`).
     pub lag_break: f32,
-    /// `fZKeyMaxContactDistance`, in units. A lag above this arms the contact-mass rule.
+    /// `fZKeyMaxContactDistance`, in units. A lag above this arms the contact-mass rule. Retail
+    /// executable default 10.
     pub contact_distance: f32,
     /// `fZKeyMaxContactMassRatio`. The heaviest moving body that touches the held object, divided
     /// by the held mass, drops the object when it is above this value and the lag is above
-    /// [`Self::contact_distance`].
+    /// [`Self::contact_distance`]. Retail executable default 4.
     pub contact_mass_ratio: f32,
-    /// Throw momentum in kg x units/s. Mudcrab tuning: neither Skyrim nor spud has a throw.
-    pub throw_momentum: f32,
-    /// Fastest throw, in units/s. Mudcrab tuning.
-    pub throw_max_speed: f32,
 }
 
 impl Default for CarryTuning {
@@ -81,12 +141,14 @@ impl Default for CarryTuning {
             spring_damping: 0.5,
             object_damping: 0.75,
             max_force: 100.0,
+            max_force_weight_low: 0.0,
+            max_force_weight_high: 150.0,
+            max_force_scale_low: 0.2,
+            max_force_scale_high: 1.0,
             grab_max_weight: 100.0,
             lag_break: 96.0,
             contact_distance: 10.0,
             contact_mass_ratio: 4.0,
-            throw_momentum: 6000.0,
-            throw_max_speed: 1000.0,
         }
     }
 }
@@ -97,20 +159,62 @@ impl CarryTuning {
         self.spring_elasticity / dt
     }
 
-    /// Largest spring acceleration in units/s^2 (100 m/s^2 is 7000 units/s^2).
-    pub fn max_acceleration(&self) -> f32 {
-        self.max_force * UNITS_PER_METRE
+    /// The factor that scales `fZKeyMaxForce` for a body of `mass` kg, as the retail grab code
+    /// computes it: with `t = (high - clamp(mass, low, high)) / (high - low)`, the factor is
+    /// `scale_low + (scale_high - scale_low) * t`. A body at or below the low weight gets
+    /// `scale_high` (1.0); a body at or above the high weight gets `scale_low` (0.2). Degenerate
+    /// weights (high not above low) keep full force.
+    pub fn max_force_scale(&self, mass: f32) -> f32 {
+        let span = self.max_force_weight_high - self.max_force_weight_low;
+        if !(span.is_finite() && span > 0.0 && mass.is_finite()) {
+            return self.max_force_scale_high;
+        }
+        let clamped = mass.clamp(self.max_force_weight_low, self.max_force_weight_high);
+        let light = (self.max_force_weight_high - clamped) / span;
+        self.max_force_scale_low + (self.max_force_scale_high - self.max_force_scale_low) * light
     }
 
-    /// Closest hold distance from the camera: the player's radius plus 5 units, so the object
-    /// does not rest inside the capsule.
+    /// Largest spring acceleration in units/s^2 for a body of `mass` kg: `fZKeyMaxForce` (m/s^2
+    /// per kg) times [`Self::max_force_scale`], in units.
+    pub fn max_acceleration_for(&self, mass: f32) -> f32 {
+        self.max_force * self.max_force_scale(mass) * UNITS_PER_METRE
+    }
+
+    /// Closest hold distance from the camera: the player's radius plus 5 units, as in the retail
+    /// code, so the object does not rest inside the capsule.
     pub fn min_hold_distance(&self, capsule_radius: f32) -> f32 {
         capsule_radius + 5.0
     }
 
+    /// The compiled defaults, with every carry setting that the pack's GMST records hold
+    /// replacing them. The pack carries `fZKeyMaxForce` (100) and `fZKeyMaxForceWeightHigh` (150),
+    /// the two that `Skyrim.esm` overrides. A pack without GMST records, or with undecodable ones,
+    /// keeps the defaults. Read-only.
+    pub fn from_world_database(path: &Path) -> Result<Self> {
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .wrap_err_with(|| format!("opening carry settings in {}", path.display()))?;
+        let mut statement = connection
+            .prepare("SELECT data FROM records WHERE record_type='GMST'")
+            .wrap_err("reading GMST records")?;
+        let mut values: HashMap<String, f32> = HashMap::new();
+        for row in statement.query_map([], |row| row.get::<_, Vec<u8>>(0))? {
+            if let Some((name, value)) = decode_carry_gmst(&row?) {
+                values.insert(name, value);
+            }
+        }
+        let mut tuning = Self::default();
+        tuning.apply_gmst(|name| values.get(name).copied());
+        info!(
+            "carry settings: {} carry GMSTs from the pack; fZKeyMaxForce={} fZKeyMaxForceWeightHigh={}",
+            values.len(),
+            tuning.max_force,
+            tuning.max_force_weight_high
+        );
+        Ok(tuning)
+    }
+
     /// Replace each constant that `lookup` knows by its Skyrim GMST name. Missing, non-finite and
-    /// non-positive values keep the current constant. Nothing calls this until the converter
-    /// publishes the carry GMSTs (#595); the pack holds only `fZKeyMaxForce` today.
+    /// non-positive values keep the current constant.
     pub fn apply_gmst(&mut self, lookup: impl Fn(&str) -> Option<f32>) {
         let take = |name: &str, slot: &mut f32| {
             if let Some(value) = lookup(name).filter(|value| value.is_finite() && *value > 0.0) {
@@ -122,10 +226,40 @@ impl CarryTuning {
         take("fZKeySpringDamping", &mut self.spring_damping);
         take("fZKeyObjectDamping", &mut self.object_damping);
         take("fZKeyMaxForce", &mut self.max_force);
+        take("fZKeyMaxForceWeightHigh", &mut self.max_force_weight_high);
+        take("fZKeyMaxForceScaleLow", &mut self.max_force_scale_low);
+        take("fZKeyMaxForceScaleHigh", &mut self.max_force_scale_high);
         take("fGrabMaxWeightWalking", &mut self.grab_max_weight);
         take("fZKeyMaxContactDistance", &mut self.contact_distance);
         take("fZKeyMaxContactMassRatio", &mut self.contact_mass_ratio);
+        // `fZKeyMaxForceWeightLow` is 0 in the retail executable, and `apply_gmst` skips zero
+        // values, so it is only replaced by a positive master value.
+        take("fZKeyMaxForceWeightLow", &mut self.max_force_weight_low);
     }
+}
+
+/// A carry GMST (`fZKey*` or `fGrab*`) from a `records.data` archive: its editor ID and float
+/// value. `None` for any other record, and for a record that does not decode.
+fn decode_carry_gmst(bytes: &[u8]) -> Option<(String, f32)> {
+    // SQLite gives no alignment guarantee for the blob, and the archive check needs one.
+    let mut aligned = rkyv::util::AlignedVec::<16>::with_capacity(bytes.len());
+    aligned.extend_from_slice(bytes);
+    let record = rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(&aligned).ok()?;
+    let field = |tag: &[u8; 4]| {
+        record
+            .subrecords
+            .iter()
+            .find(|sub| &sub.tag == tag)
+            .map(|sub| sub.data.as_slice())
+    };
+    let name = String::from_utf8_lossy(field(b"EDID")?)
+        .trim_matches('\0')
+        .to_owned();
+    if !(name.starts_with("fZKey") || name.starts_with("fGrab")) {
+        return None;
+    }
+    let data: [u8; 4] = field(b"DATA")?.try_into().ok()?;
+    Some((name, f32::from_le_bytes(data)))
 }
 
 /// Why a grab attempt did nothing. Kept for diagnostics and tests.
@@ -142,12 +276,8 @@ pub enum GrabRefusal {
 pub enum DropReason {
     /// The player let go of Activate.
     Released,
-    /// The player threw it.
-    Thrown,
     /// The grabbed point lags more than [`CarryTuning::lag_break`] behind its target.
     Lag,
-    /// The player stands on the held body.
-    StoodOn,
     /// A heavier moving body presses on the object while it lags.
     HeavyContact,
     /// The body no longer exists (its cell unloaded).
@@ -167,30 +297,13 @@ pub fn check_mass(mass: f32, tuning: &CarryTuning) -> Result<(), GrabRefusal> {
 
 /// Auto-drop rule. `lag` is the distance in units between the grabbed point and its target.
 /// `contact_ratio` is the heaviest touching moving body's mass over the held mass.
-pub fn drop_reason(
-    lag: f32,
-    stood_on: bool,
-    contact_ratio: f32,
-    tuning: &CarryTuning,
-) -> Option<DropReason> {
+pub fn drop_reason(lag: f32, contact_ratio: f32, tuning: &CarryTuning) -> Option<DropReason> {
     if lag > tuning.lag_break {
         Some(DropReason::Lag)
-    } else if stood_on {
-        Some(DropReason::StoodOn)
     } else if lag > tuning.contact_distance && contact_ratio > tuning.contact_mass_ratio {
         Some(DropReason::HeavyContact)
     } else {
         None
-    }
-}
-
-/// Speed given to a thrown body in units/s: the same momentum for every body, so a heavy body
-/// leaves slowly, capped for light ones.
-pub fn throw_speed(mass: f32, tuning: &CarryTuning) -> f32 {
-    if mass.is_finite() && mass > 0.0 {
-        (tuning.throw_momentum / mass).min(tuning.throw_max_speed)
-    } else {
-        0.0
     }
 }
 
@@ -223,15 +336,20 @@ pub fn skew(v: Vec3) -> Mat3 {
     )
 }
 
-/// One step of the Havok-style mouse spring on the material point `anchor` (spud
-/// `apply_grab`, read as a description).
+/// One step of the Havok-style mouse spring on the material point `anchor`: a step-by-step port of
+/// the algorithm in spud's `apply_grab` (MIT, commit `e5f2de4b`; see the module docs and
+/// `THIRD_PARTY.md`). Retail passes its spring parameters to Havok (presumably the mouse spring).
 ///
 /// 1. Both velocities are scaled by `object_damping`.
 /// 2. The point velocity is `v + w x r`.
 /// 3. The wanted velocity change is `(target - anchor) * gain - point velocity * damping`.
 /// 4. The impulse that gives that change at the point goes through the point's effective mass,
 ///    `K = I/m - [r]x W [r]x`, so an off-centre grab turns the body and does not shake it.
-/// 5. The impulse is clamped to `max_acceleration * mass * dt` and applied at the point.
+/// 5. The impulse is clamped to `max_acceleration_for(mass) * mass * dt` (the retail force limit,
+///    scaled by the body's weight) and applied at the point.
+///
+/// If any input or result is not finite, the step only damps the finite velocities and applies no
+/// impulse, so a degenerate inertia cannot poison the body's velocity.
 pub fn spring_step(
     body: &CarryBody,
     anchor: Vec3,
@@ -239,14 +357,19 @@ pub fn spring_step(
     tuning: &CarryTuning,
     dt: f32,
 ) -> SpringOutcome {
-    let mut linear = body.linear * tuning.object_damping;
-    let mut angular = body.angular * tuning.object_damping;
-    if !(body.mass.is_finite() && body.mass > 0.0) {
-        return SpringOutcome {
-            linear,
-            angular,
-            impulse: Vec3::ZERO,
-        };
+    let finite_or_zero = |v: Vec3| if v.is_finite() { v } else { Vec3::ZERO };
+    let mut linear = finite_or_zero(body.linear * tuning.object_damping);
+    let mut angular = finite_or_zero(body.angular * tuning.object_damping);
+    let damped_only = SpringOutcome {
+        linear,
+        angular,
+        impulse: Vec3::ZERO,
+    };
+    if !(body.mass.is_finite() && body.mass > 0.0)
+        || !(anchor.is_finite() && target.is_finite() && body.centre.is_finite())
+        || !body.inv_inertia.is_finite()
+    {
+        return damped_only;
     }
     let r = anchor - body.centre;
     let point_velocity = linear + angular.cross(r);
@@ -260,9 +383,12 @@ pub fn spring_step(
     } else {
         wanted * body.mass
     };
-    impulse = impulse.clamp_length_max(tuning.max_acceleration() * body.mass * dt);
+    impulse = impulse.clamp_length_max(tuning.max_acceleration_for(body.mass) * body.mass * dt);
     linear += impulse / body.mass;
     angular += body.inv_inertia * r.cross(impulse);
+    if !(impulse.is_finite() && linear.is_finite() && angular.is_finite()) {
+        return damped_only;
+    }
     SpringOutcome {
         linear,
         angular,
@@ -293,7 +419,6 @@ pub struct HeldObject {
 enum CarryRequest {
     Grab,
     Release,
-    Throw,
 }
 
 /// Key state sampled each frame; the fixed step consumes the request.
@@ -307,12 +432,11 @@ pub struct CarryInput {
     pending: Option<CarryRequest>,
 }
 
-/// Samples `E` and the throw button each frame. A key that stays down for `key_delay` seconds asks
+/// Samples `E` each frame. A key that stays down for `key_delay` seconds asks
 /// for one grab, and the release that ends that hold does nothing. A later press and release of
-/// the key drops the object. A click of [`THROW_BUTTON`] throws it.
+/// the key drops the object.
 pub fn carry_input_system(
     keyboard: Res<ButtonInput<KeyCode>>,
-    mouse: Res<ButtonInput<MouseButton>>,
     capture: Res<CursorCapture>,
     time: Res<Time>,
     tuning: Res<CarryTuning>,
@@ -337,7 +461,7 @@ pub fn carry_input_system(
     }
     if input.down && keyboard.pressed(KeyCode::KeyE) {
         input.down_secs += time.delta_secs();
-        if !input.attempted && input.down_secs >= tuning.key_delay {
+        if !input.attempted && input.down_secs > tuning.key_delay {
             input.attempted = true;
             if !holding && input.pending.is_none() {
                 input.pending = Some(CarryRequest::Grab);
@@ -349,12 +473,9 @@ pub fn carry_input_system(
         input.down = false;
         // The release that ends the grabbing hold does nothing, whether or not the grab worked.
         // Any other release while carrying lets go.
-        if !input.grabbed_by_press && holding && input.pending != Some(CarryRequest::Throw) {
+        if !input.grabbed_by_press && holding {
             input.pending = Some(CarryRequest::Release);
         }
-    }
-    if mouse.just_pressed(THROW_BUTTON) && holding {
-        input.pending = Some(CarryRequest::Throw);
     }
 }
 
@@ -380,45 +501,6 @@ fn world_inverse_inertia(body: &bevy_rapier3d::rapier::dynamics::RigidBody) -> M
     );
     scaled * frame.transpose()
 }
-
-/// True when the player's capsule rests on the held body.
-fn player_stands_on(
-    context: &RapierContext,
-    player: (Entity, &Transform, &Collider),
-    held: Entity,
-) -> bool {
-    let (entity, transform, capsule) = player;
-    let is_held = |candidate: Entity| {
-        context
-            .colliders
-            .collider_parent(context.rigidbody_set, candidate)
-            == Some(held)
-    };
-    let filter = QueryFilter::default()
-        .exclude_rigid_body(entity)
-        .predicate(&is_held);
-    context
-        .cast_shape(
-            transform.translation,
-            transform.rotation,
-            Vec3::NEG_Y,
-            &*capsule.raw,
-            ShapeCastOptions {
-                target_distance: 0.0,
-                stop_at_penetration: false,
-                max_time_of_impact: STAND_PROBE,
-                compute_impact_geometry_on_penetration: true,
-            },
-            filter,
-        )
-        .and_then(|(_, hit)| hit.details)
-        // A surface that faces up holds the player. A held body against the capsule's side does not.
-        .is_some_and(|details| details.normal1.y > 0.5)
-}
-
-/// How far below the capsule a held body can be and still count as the player's floor, in units.
-/// The controller keeps the capsule 2 units above its support.
-const STAND_PROBE: f32 = 6.0;
 
 /// The heaviest moving body that touches the held body, over the held mass. Static and kinematic
 /// bodies (world, player) do not count.
@@ -462,24 +544,12 @@ fn contact_mass_ratio(context: &RapierContext, held: Entity, held_mass: f32) -> 
     heaviest / held_mass
 }
 
-/// Let go of the held object. The body keeps the velocity the spring left it with, plus the throw.
-fn release(
-    commands: &mut Commands,
-    held: &mut HeldObject,
-    velocities: &mut Query<&mut Velocity>,
-    reason: DropReason,
-    throw: Option<Vec3>,
-    tuning: &CarryTuning,
-) {
+/// Let go of the held object. The body keeps the velocity the spring left it with.
+fn release(commands: &mut Commands, held: &mut HeldObject, reason: DropReason) {
     let Some(taken) = held.held.take() else {
         return;
     };
     held.last_drop = Some(reason);
-    if let Some(direction) = throw
-        && let Ok(mut velocity) = velocities.get_mut(taken.entity)
-    {
-        velocity.linear += direction * throw_speed(taken.mass, tuning);
-    }
     // Normal sleeping again. Only an entity that still exists can take the component.
     if let Ok(mut entity) = commands.get_entity(taken.entity) {
         entity.insert(Sleeping::default());
@@ -489,6 +559,37 @@ fn release(
 
 /// Bodies the player may pick up: debug tankards and authored dynamic clutter.
 type CarriableFilter = Or<(With<DebugTankard>, With<DynamicClutter>)>;
+
+/// Keeps the hold target out of the player's capsule: its horizontal distance from the capsule
+/// axis is at least `min_horizontal`. Looking steeply down puts the plain target
+/// (`eye + forward * distance`) on the axis, inside the capsule, and the held body and the capsule
+/// would then fight. The target moves out along the view's horizontal direction (the body's facing
+/// when the view is straight down). Mudcrab engineering: retail probably avoids this with the
+/// `ZKeyObject` collision layer (#691).
+pub fn clamp_target_outside_body(
+    target: Vec3,
+    body: Vec3,
+    view_forward: Vec3,
+    min_horizontal: f32,
+) -> Vec3 {
+    let offset = Vec2::new(target.x - body.x, target.z - body.z);
+    if offset.length() >= min_horizontal {
+        return target;
+    }
+    let facing = Vec2::new(view_forward.x, view_forward.z);
+    let direction = if facing.length() > 1.0e-4 {
+        facing.normalize()
+    } else if offset.length() > 1.0e-4 {
+        offset.normalize()
+    } else {
+        Vec2::NEG_Y
+    };
+    Vec3::new(
+        body.x + direction.x * min_horizontal,
+        target.y,
+        body.z + direction.y * min_horizontal,
+    )
+}
 
 type CarryCamera<'w, 's> = Query<
     'w,
@@ -501,7 +602,7 @@ type CarryCamera<'w, 's> = Query<
     ),
 >;
 
-/// Fixed-step carry: runs the pending grab, drop or throw, then the drop rules and the spring.
+/// Fixed-step carry: runs the pending grab or drop, then the drop rules and the spring.
 #[allow(clippy::too_many_arguments)]
 pub fn carry_step_system(
     mode: Res<MoveMode>,
@@ -511,7 +612,7 @@ pub fn carry_step_system(
     mut input: ResMut<CarryInput>,
     mut held: ResMut<HeldObject>,
     camera: CarryCamera,
-    player: Query<(Entity, &Transform, &Collider), With<PlayerBody>>,
+    player: Query<(Entity, &Transform), With<PlayerBody>>,
     carriable: Query<(), CarriableFilter>,
     mut velocities: Query<&mut Velocity>,
     context: ReadRapierContext,
@@ -523,14 +624,7 @@ pub fn carry_step_system(
             .as_ref()
             .is_some_and(|crossing| crossing.is_active());
     if interrupted {
-        release(
-            &mut commands,
-            &mut held,
-            &mut velocities,
-            DropReason::Interrupted,
-            None,
-            &tuning,
-        );
+        release(&mut commands, &mut held, DropReason::Interrupted);
         return;
     }
     let (Ok(camera), Ok(context)) = (camera.single(), context.single()) else {
@@ -558,61 +652,36 @@ pub fn carry_step_system(
         .get(&taken.entity)
         .and_then(|handle| context.rigidbody_set.bodies.get(*handle));
     let (Some(body), Ok(velocity)) = (body, velocities.get(taken.entity).copied()) else {
-        release(
-            &mut commands,
-            &mut held,
-            &mut velocities,
-            DropReason::Gone,
-            None,
-            &tuning,
-        );
+        release(&mut commands, &mut held, DropReason::Gone);
         return;
     };
     match request {
-        Some(CarryRequest::Throw) => {
-            release(
-                &mut commands,
-                &mut held,
-                &mut velocities,
-                DropReason::Thrown,
-                Some(forward),
-                &tuning,
-            );
-            return;
-        }
         Some(CarryRequest::Release) => {
-            release(
-                &mut commands,
-                &mut held,
-                &mut velocities,
-                DropReason::Released,
-                None,
-                &tuning,
-            );
+            release(&mut commands, &mut held, DropReason::Released);
             return;
         }
         _ => {}
     }
     let anchor = body.translation() + *body.rotation() * taken.anchor_local;
-    let target = camera.translation + forward * taken.distance;
+    // The camera `Transform` is the pose of the last rendered frame. #619 makes it an interpolated
+    // view pose, so after it lands this must read the tick pose instead (#691).
+    let mut target = camera.translation + forward * taken.distance;
+    if let Ok((_, body_pose)) = player.single() {
+        target = clamp_target_outside_body(
+            target,
+            body_pose.translation,
+            forward,
+            tuning.min_hold_distance(movement.capsule_radius),
+        );
+    }
     let lag = anchor.distance(target);
-    let stood_on = player
-        .single()
-        .is_ok_and(|player| player_stands_on(&context, player, taken.entity));
     let ratio = if lag > tuning.contact_distance {
         contact_mass_ratio(&context, taken.entity, taken.mass)
     } else {
         0.0
     };
-    if let Some(reason) = drop_reason(lag, stood_on, ratio, &tuning) {
-        release(
-            &mut commands,
-            &mut held,
-            &mut velocities,
-            reason,
-            None,
-            &tuning,
-        );
+    if let Some(reason) = drop_reason(lag, ratio, &tuning) {
+        release(&mut commands, &mut held, reason);
         return;
     }
     let outcome = spring_step(
@@ -640,14 +709,14 @@ fn try_grab(
     camera: &Transform,
     tuning: &CarryTuning,
     movement: &MovementTuning,
-    player: &Query<(Entity, &Transform, &Collider), With<PlayerBody>>,
+    player: &Query<(Entity, &Transform), With<PlayerBody>>,
     carriable: &Query<(), CarriableFilter>,
     held: &mut HeldObject,
     commands: &mut Commands,
 ) {
     let forward = camera.forward().as_vec3();
     let filter = match player.single() {
-        Ok((entity, _, _)) => QueryFilter::default().exclude_rigid_body(entity),
+        Ok((entity, _)) => QueryFilter::default().exclude_rigid_body(entity),
         Err(_) => QueryFilter::default(),
     };
     // The nearest thing on the line of sight decides: a wall in front hides an object behind it.
@@ -695,7 +764,7 @@ fn try_grab(
     info!("carry: grabbed {owner:?}, mass {mass} kg, {distance:.0} units away");
 }
 
-/// Adds the carry systems. `E` carries, a left click throws, `T` still spawns a test tankard.
+/// Adds the carry systems. `E` carries; `T` still spawns a test tankard.
 pub struct CarryPlugin;
 
 impl Plugin for CarryPlugin {
@@ -729,9 +798,9 @@ mod tests {
     use bevy::input::{
         ButtonState,
         keyboard::{Key, KeyboardInput},
-        mouse::MouseButtonInput,
     };
     use shared::collision::{BodyKind, CollisionBody, HavokBodyInfo};
+    use shared::records::ArchivedRecordData;
 
     const DT: f32 = PHYSICS_TIMESTEP;
 
@@ -750,13 +819,44 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_are_twelve_per_second_and_one_hundred_metres_per_second_squared() {
+    fn the_defaults_are_the_retail_values() {
         let tuning = CarryTuning::default();
+        // Spring: 0.2 per step is 12 per second (fZKeySpringElasticity).
         assert!((tuning.spring_gain(DT) - 12.0).abs() < 1.0e-3);
-        assert!((tuning.max_acceleration() - 7000.0).abs() < 1.0e-3);
-        // One 60 Hz step may change a body's velocity by at most 116.7 units/s.
-        assert!((tuning.max_acceleration() * DT - 116.67).abs() < 0.01);
+        assert_eq!(tuning.spring_damping, 0.5);
+        assert_eq!(tuning.object_damping, 0.75);
+        // fZKeyMaxForce is 100 in Skyrim.esm (250 in the executable): 100 m/s^2 for a light body,
+        // in units with the retail 69.99125 units per metre.
+        assert!((tuning.max_acceleration_for(0.0) - 6999.125).abs() < 0.01);
+        assert_eq!(tuning.grab_max_weight, 100.0);
+        assert_eq!(tuning.lag_break, 96.0);
+        assert_eq!(tuning.contact_distance, 10.0);
+        assert_eq!(tuning.contact_mass_ratio, 4.0);
+        assert_eq!(tuning.reach, 180.0);
+        assert_eq!(tuning.key_delay, 0.2);
         assert_eq!(tuning.min_hold_distance(28.0), 33.0);
+    }
+
+    /// The force factor follows the retail formula with the Skyrim.esm weights (0 and 150 kg) and
+    /// the executable's scales (1.0 and 0.2).
+    #[test]
+    fn the_force_limit_falls_with_the_weight_of_the_body() {
+        let tuning = CarryTuning::default();
+        assert_eq!(tuning.max_force_scale(0.0), 1.0);
+        assert!((tuning.max_force_scale(75.0) - 0.6).abs() < 1.0e-6);
+        assert!((tuning.max_force_scale(150.0) - 0.2).abs() < 1.0e-6);
+        // Past the high weight and below the low weight the factor stops changing.
+        assert!((tuning.max_force_scale(900.0) - 0.2).abs() < 1.0e-6);
+        assert_eq!(tuning.max_force_scale(-5.0), 1.0);
+        // 100 kg, the heaviest body that can be grabbed, still gets 46.7 m/s^2, above gravity.
+        let limit = tuning.max_acceleration_for(100.0) / UNITS_PER_METRE;
+        assert!((limit - 46.667).abs() < 0.01, "{limit}");
+        // Degenerate weights keep full force instead of dividing by zero.
+        let flat = CarryTuning {
+            max_force_weight_high: 0.0,
+            ..CarryTuning::default()
+        };
+        assert_eq!(flat.max_force_scale(10.0), 1.0);
     }
 
     #[test]
@@ -780,23 +880,93 @@ mod tests {
     }
 
     #[test]
-    fn a_large_error_is_clamped_to_the_per_mass_force_limit() {
+    fn a_large_error_is_clamped_to_the_weight_scaled_force_limit() {
+        let tuning = CarryTuning::default();
         for mass in [1.0, 5.0, 25.0, 100.0] {
             let outcome = spring_step(
                 &cube(mass),
                 Vec3::ZERO,
                 Vec3::new(0.0, 0.0, 140.0),
-                &CarryTuning::default(),
+                &tuning,
                 DT,
             );
+            let limit = tuning.max_acceleration_for(mass) * DT;
             let change = outcome.linear.length();
             assert!(
-                (change - 116.67).abs() < 116.67 * 0.05,
-                "{mass} kg changed its velocity by {change}"
+                (change - limit).abs() < limit * 0.01,
+                "{mass} kg changed its velocity by {change}, limit {limit}"
             );
             // The limit is per kilogram, so the impulse grows with the mass.
-            assert!((outcome.impulse.length() - 116.67 * mass).abs() < 116.67 * mass * 0.05);
+            assert!((outcome.impulse.length() - limit * mass).abs() < limit * mass * 0.01);
         }
+        // A 5 kg body: 100 m/s^2 times the weight factor, about 116 units/s in one step.
+        let light = tuning.max_acceleration_for(5.0) * DT;
+        assert!((light - 113.0).abs() < 1.5, "{light}");
+    }
+
+    #[test]
+    fn a_degenerate_body_never_writes_a_non_finite_velocity() {
+        let tuning = CarryTuning::default();
+        let mut body = cube(5.0);
+        body.linear = Vec3::new(8.0, 0.0, 0.0);
+        let cases = [
+            // NaN inertia, NaN anchor, NaN target, NaN mass, infinite velocity.
+            CarryBody {
+                inv_inertia: Mat3::from_diagonal(Vec3::splat(f32::NAN)),
+                ..body
+            },
+            CarryBody {
+                mass: f32::NAN,
+                ..body
+            },
+            CarryBody {
+                linear: Vec3::splat(f32::INFINITY),
+                ..body
+            },
+        ];
+        for body in cases {
+            let outcome = spring_step(&body, Vec3::ONE, Vec3::new(5.0, 0.0, 0.0), &tuning, DT);
+            assert!(outcome.linear.is_finite(), "{outcome:?}");
+            assert!(outcome.angular.is_finite(), "{outcome:?}");
+            assert!(outcome.impulse.is_finite(), "{outcome:?}");
+        }
+        for (anchor, target) in [
+            (Vec3::splat(f32::NAN), Vec3::ZERO),
+            (Vec3::ZERO, Vec3::splat(f32::NAN)),
+        ] {
+            let outcome = spring_step(&body, anchor, target, &tuning, DT);
+            assert!(outcome.linear.is_finite() && outcome.angular.is_finite());
+            // Nothing was applied: the step only damped the old velocity.
+            assert!(
+                outcome.linear.abs_diff_eq(Vec3::new(6.0, 0.0, 0.0), 1.0e-4),
+                "{outcome:?}"
+            );
+            assert_eq!(outcome.impulse, Vec3::ZERO);
+        }
+    }
+
+    #[test]
+    fn the_hold_target_is_kept_outside_the_capsule() {
+        let body = Vec3::new(100.0, 50.0, 200.0);
+        let min = 33.0;
+        // Looking level: the target is far enough already and does not move.
+        let level = Vec3::new(100.0, 140.0, 110.0);
+        assert_eq!(
+            clamp_target_outside_body(level, body, Vec3::NEG_Z, min),
+            level
+        );
+        // Looking straight down: the target is on the axis and moves out along the facing.
+        let down = Vec3::new(100.0, 107.0, 200.0);
+        let moved = clamp_target_outside_body(down, body, Vec3::new(0.0, -1.0, -0.01), min);
+        assert!((Vec2::new(moved.x - body.x, moved.z - body.z).length() - min).abs() < 1.0e-3);
+        assert!(moved.z < body.z, "moved the wrong way: {moved:?}");
+        assert_eq!(moved.y, down.y);
+        // Exactly straight down and on the axis: falls back to a fixed direction, never NaN.
+        let fallback = clamp_target_outside_body(down, body, Vec3::NEG_Y, min);
+        assert!(fallback.is_finite());
+        assert!(
+            (Vec2::new(fallback.x - body.x, fallback.z - body.z).length() - min).abs() < 1.0e-3
+        );
     }
 
     #[test]
@@ -855,25 +1025,14 @@ mod tests {
         let tuning = CarryTuning::default();
         // 96 units is 1.37 m.
         assert!((96.0 / UNITS_PER_METRE - 1.371).abs() < 0.001);
-        assert_eq!(drop_reason(90.0, false, 0.0, &tuning), None);
-        assert_eq!(drop_reason(96.0, false, 0.0, &tuning), None);
+        assert_eq!(drop_reason(90.0, 0.0, &tuning), None);
+        assert_eq!(drop_reason(96.0, 0.0, &tuning), None);
+        assert_eq!(drop_reason(100.0, 0.0, &tuning), Some(DropReason::Lag));
+        // The retail code compares units (metres times 69.99125) with 96.0, so a 2 m lag, 140
+        // units, drops it. A lag of 2 against a constant of 96 would not.
         assert_eq!(
-            drop_reason(100.0, false, 0.0, &tuning),
+            drop_reason(2.0 * UNITS_PER_METRE, 0.0, &tuning),
             Some(DropReason::Lag)
-        );
-        // Spud compares metres with 96, so it keeps holding at this lag: 2 m is 140 units.
-        assert_eq!(
-            drop_reason(2.0 * UNITS_PER_METRE, false, 0.0, &tuning),
-            Some(DropReason::Lag)
-        );
-    }
-
-    #[test]
-    fn standing_on_the_object_always_drops_it() {
-        let tuning = CarryTuning::default();
-        assert_eq!(
-            drop_reason(0.0, true, 0.0, &tuning),
-            Some(DropReason::StoodOn)
         );
     }
 
@@ -881,24 +1040,15 @@ mod tests {
     fn a_heavy_moving_body_drops_the_object_only_while_it_lags() {
         let tuning = CarryTuning::default();
         // Ratio 5 is above 4, but the object follows its target: no drop.
-        assert_eq!(drop_reason(5.0, false, 5.0, &tuning), None);
+        assert_eq!(drop_reason(5.0, 5.0, &tuning), None);
         assert_eq!(
-            drop_reason(11.0, false, 5.0, &tuning),
+            drop_reason(11.0, 5.0, &tuning),
             Some(DropReason::HeavyContact)
         );
         // Ratio 3 is below 4: held at any lag below the snag limit.
-        assert_eq!(drop_reason(50.0, false, 3.0, &tuning), None);
+        assert_eq!(drop_reason(50.0, 3.0, &tuning), None);
         // Static geometry is ratio 0.
-        assert_eq!(drop_reason(50.0, false, 0.0, &tuning), None);
-    }
-
-    #[test]
-    fn throw_speed_falls_with_mass_and_is_capped() {
-        let tuning = CarryTuning::default();
-        assert_eq!(throw_speed(1.0, &tuning), tuning.throw_max_speed);
-        assert!((throw_speed(20.0, &tuning) - 300.0).abs() < 1.0e-3);
-        assert!(throw_speed(100.0, &tuning) < throw_speed(20.0, &tuning));
-        assert_eq!(throw_speed(0.0, &tuning), 0.0);
+        assert_eq!(drop_reason(50.0, 0.0, &tuning), None);
     }
 
     #[test]
@@ -913,6 +1063,102 @@ mod tests {
         assert_eq!(tuning.max_force, 150.0);
         assert_eq!(tuning.grab_max_weight, 100.0);
         assert_eq!(tuning.key_delay, 0.2);
+    }
+
+    // ---- Settings from the pack ----------------------------------------------------------------
+
+    /// A `records` row for a GMST, as the converter archives it.
+    fn gmst_row(name: &str, value: f32) -> Vec<u8> {
+        let record = ArchivedRecordData {
+            subrecords: vec![
+                shared::records::ArchivedSubRecord {
+                    tag: *b"EDID",
+                    data: format!("{name}\0").into_bytes(),
+                },
+                shared::records::ArchivedSubRecord {
+                    tag: *b"DATA",
+                    data: value.to_le_bytes().to_vec(),
+                },
+            ],
+        };
+        rkyv::to_bytes::<rkyv::rancor::Error>(&record)
+            .unwrap()
+            .to_vec()
+    }
+
+    fn pack_with(rows: &[(u32, &str, Vec<u8>)]) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        let connection = Connection::open(directory.path().join("skyrim_world.db")).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE records (form_id INTEGER PRIMARY KEY, record_type TEXT NOT NULL, \
+                 cell_id INTEGER, worldspace_id INTEGER, load_order INTEGER NOT NULL, \
+                 data BLOB NOT NULL)",
+            )
+            .unwrap();
+        for (form_id, record_type, data) in rows {
+            connection
+                .execute(
+                    "INSERT INTO records(form_id, record_type, load_order, data) VALUES (?1, ?2, 0, ?3)",
+                    rusqlite::params![form_id, record_type, data],
+                )
+                .unwrap();
+        }
+        directory
+    }
+
+    /// `RF-CARRY-003`: `Skyrim.esm` overrides `fZKeyMaxForce` (250 in the executable) with 100 and
+    /// `fZKeyMaxForceWeightHigh` (300) with 150. The pack's values replace the compiled ones.
+    #[test]
+    fn the_pack_gmsts_replace_the_compiled_defaults() {
+        let pack = pack_with(&[
+            (0x108B7B, "GMST", gmst_row("fZKeyMaxForce", 100.0)),
+            (0x108B7C, "GMST", gmst_row("fZKeyMaxForceWeightHigh", 150.0)),
+            (0x1, "GMST", gmst_row("fMoveCharWalkBase", 100.0)),
+            (0x2, "STAT", gmst_row("fZKeyDelay", 9.0)),
+        ]);
+        let tuning =
+            CarryTuning::from_world_database(&pack.path().join("skyrim_world.db")).unwrap();
+        assert_eq!(tuning.max_force, 100.0);
+        assert_eq!(tuning.max_force_weight_high, 150.0);
+        // Only GMST records count, and only carry settings: nothing else moved.
+        assert_eq!(tuning, CarryTuning::default());
+        // Other values in the pack are used too, for example the executable's own 250 and 300.
+        let pack = pack_with(&[
+            (1, "GMST", gmst_row("fZKeyMaxForce", 250.0)),
+            (2, "GMST", gmst_row("fZKeyMaxForceWeightHigh", 300.0)),
+        ]);
+        let tuning =
+            CarryTuning::from_world_database(&pack.path().join("skyrim_world.db")).unwrap();
+        assert_eq!(tuning.max_force, 250.0);
+        assert_eq!(tuning.max_force_weight_high, 300.0);
+        // The mass scale follows the setting: 150 kg is the heavy end at 150, not at 300.
+        assert!((CarryTuning::default().max_force_scale(150.0) - 0.2).abs() < 1.0e-6);
+        assert!((tuning.max_force_scale(150.0) - 0.6).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn a_pack_without_gmst_records_keeps_the_defaults() {
+        let pack = pack_with(&[(1, "STAT", vec![1, 2, 3])]);
+        let tuning =
+            CarryTuning::from_world_database(&pack.path().join("skyrim_world.db")).unwrap();
+        assert_eq!(tuning, CarryTuning::default());
+        // A GMST record that does not decode is skipped, not fatal.
+        let pack = pack_with(&[(1, "GMST", vec![1, 2, 3])]);
+        let tuning =
+            CarryTuning::from_world_database(&pack.path().join("skyrim_world.db")).unwrap();
+        assert_eq!(tuning, CarryTuning::default());
+    }
+
+    /// Reads the real pack. Set `MUDCRAB_CARRY_PACK` to a pack's `skyrim_world.db` and run with
+    /// `--ignored`: the pack must give the traced values 100 and 150 (`RF-CARRY-003`).
+    #[test]
+    #[ignore = "needs a converted pack: set MUDCRAB_CARRY_PACK to its skyrim_world.db"]
+    fn the_real_pack_gives_the_traced_force_settings() {
+        let path = std::env::var("MUDCRAB_CARRY_PACK").expect("MUDCRAB_CARRY_PACK");
+        let tuning = CarryTuning::from_world_database(Path::new(&path)).unwrap();
+        assert_eq!(tuning.max_force, 100.0);
+        assert_eq!(tuning.max_force_weight_high, 150.0);
     }
 
     // ---- Rapier fixture ------------------------------------------------------------------------
@@ -947,17 +1193,6 @@ mod tests {
             window: Entity::PLACEHOLDER,
         });
         app.update();
-    }
-
-    fn click(app: &mut App) {
-        for state in [ButtonState::Pressed, ButtonState::Released] {
-            app.world_mut().write_message(MouseButtonInput {
-                button: MouseButton::Left,
-                state,
-                window: Entity::PLACEHOLDER,
-            });
-            app.update();
-        }
     }
 
     /// Hold Activate until the delay passes and the fixed step has run the grab, then let go: the
@@ -1147,12 +1382,20 @@ mod tests {
         assert!(lag(&mut app) < 3.0, "lag {}", lag(&mut app));
     }
 
-    /// Spud's check: the grabbed point must not shake once the hold has settled. The body itself
-    /// keeps creeping toward the pose that hangs from the point, under heavy rotational damping, so
-    /// the body centre gets two checks of its own: a bound on the total creep, and a strict limit
-    /// once it has settled. Measured: the point stays about 1 unit (1.4 cm) under its target and
-    /// moves under 0.5 units; the centre creeps about 1 unit over ticks 44 to 104 and under 0.1
-    /// units over the last 30 of them.
+    /// The hold must not shake once it has settled. The 0.5-unit limit on the grabbed point is the
+    /// jitter limit from the audit's phase-1 acceptance numbers (see "Acceptance numbers" in
+    /// `docs/specs/engine/object-carrying.md`; spud's own shake before its effective-mass fix was
+    /// 16 mm, about 1.1 units). A shake also reverses the point's direction every few ticks, so
+    /// reversals are counted too.
+    ///
+    /// The body itself keeps creeping after the grab, so its centre gets two checks of its own: a
+    /// bound on the total creep and a strict limit once it has settled. Measured: the point stays
+    /// about 1 unit (1.4 cm) under its target and moves under 0.5 units; the centre creeps about 1
+    /// unit over ticks 44 to 104 and under 0.1 units over the last 30 of them. The cause of the
+    /// creep is not proven. Pure object damping (0.75 per tick) would be gone in under 40 ticks, so
+    /// the creep is driven: gravity pulls the centre of mass around the grabbed point and the
+    /// spring's effective-mass response lets the body turn slowly toward hanging under the point.
+    /// Whether retail does the same is unverified (#691).
     #[test]
     fn a_hold_has_no_visible_jitter() {
         let mut app = carry_app();
@@ -1183,6 +1426,23 @@ mod tests {
             total < 2.0,
             "the body centre moved {total} units while held"
         );
+        // A shake reverses the point's direction on every axis; a settling creep does not.
+        for axis in 0..3 {
+            let steps: Vec<f32> = points
+                .windows(2)
+                .map(|pair| pair[1][axis] - pair[0][axis])
+                .collect();
+            let reversals = steps
+                .windows(2)
+                .filter(|pair| {
+                    pair[0].abs() > 0.01 && pair[1].abs() > 0.01 && pair[0] * pair[1] < 0.0
+                })
+                .count();
+            assert!(
+                reversals <= 2,
+                "axis {axis}: the point reversed {reversals} times"
+            );
+        }
         let settled = spread(&centres[30..]);
         assert!(
             settled < 0.5,
@@ -1284,10 +1544,13 @@ mod tests {
         assert!(held(&app).is_some(), "a 60 unit lag dropped the box");
     }
 
+    /// The stand-on drop rule is not implemented (no retail source found, #691). The controller
+    /// is kinematic and does not push loose bodies, so a held box under the player's feet cannot
+    /// lift or launch the player: it only slides out from under them.
     #[test]
-    fn standing_on_the_held_box_drops_it_even_without_lag() {
+    fn standing_on_the_held_box_does_not_launch_the_player() {
         let mut app = carry_app();
-        // Switch the snag rule off, so only the stand-on rule can end the hold.
+        // Keep the hold, so the spring keeps pulling on the box under the player.
         app.world_mut().resource_mut::<CarryTuning>().lag_break = 1.0e9;
         let entity = spawn_box_ahead(&mut app, 5.0, 100.0);
         frames(&mut app, 2);
@@ -1298,11 +1561,17 @@ mod tests {
         let tuning = app.world().resource::<MovementTuning>().clone();
         let body = top + Vec3::Y * (tuning.capsule_half_height() + tuning.capsule_radius + 2.0);
         headless::place_player(&mut app, body);
-        frames(&mut app, 2);
-        assert!(held(&app).is_none());
-        assert_eq!(
-            app.world().resource::<HeldObject>().last_drop,
-            Some(DropReason::StoodOn)
+        let mut highest = body.y;
+        for _ in 0..180 {
+            app.update();
+            let (pose, _) = headless::player_pose(&mut app);
+            assert!(pose.is_finite(), "player pose {pose:?}");
+            highest = highest.max(pose.y);
+        }
+        assert!(
+            highest < body.y + 1.0,
+            "the held box lifted the player from {} to {highest}",
+            body.y
         );
     }
 
@@ -1334,8 +1603,7 @@ mod tests {
         let ratio = touching_ratio(&mut app, light, 5.0);
         assert!((ratio - 5.0).abs() < 1.0e-3, "ratio {ratio}");
         assert!(
-            drop_reason(30.0, false, ratio, &CarryTuning::default())
-                == Some(DropReason::HeavyContact)
+            drop_reason(30.0, ratio, &CarryTuning::default()) == Some(DropReason::HeavyContact)
         );
     }
 
@@ -1352,49 +1620,7 @@ mod tests {
         frames(&mut app, 30);
         let ratio = touching_ratio(&mut app, light, 5.0);
         assert!((ratio - 3.0).abs() < 1.0e-3, "ratio {ratio}");
-        assert_eq!(
-            drop_reason(30.0, false, ratio, &CarryTuning::default()),
-            None
-        );
-    }
-
-    #[test]
-    fn a_left_click_throws_the_object_forward() {
-        let mut app = carry_app();
-        let entity = spawn_box_ahead(&mut app, 5.0, 100.0);
-        frames(&mut app, 2);
-        hold_activate(&mut app);
-        frames(&mut app, 30);
-        click(&mut app);
-        frames(&mut app, 1);
-        assert!(held(&app).is_none());
-        assert_eq!(
-            app.world().resource::<HeldObject>().last_drop,
-            Some(DropReason::Thrown)
-        );
-        let velocity = app.world().get::<Velocity>(entity).unwrap().linear;
-        let forward = eye(&mut app).forward().as_vec3();
-        // 5 kg gets the capped speed, along the view (the fixture camera looks slightly down).
-        assert!(velocity.length() > 900.0, "thrown with {velocity:?}");
-        assert!(
-            velocity.normalize().dot(forward) > 0.97,
-            "thrown {velocity:?} along {forward:?}"
-        );
-    }
-
-    #[test]
-    fn a_click_without_a_held_object_does_nothing() {
-        let mut app = carry_app();
-        let entity = spawn_box_ahead(&mut app, 5.0, 100.0);
-        frames(&mut app, 2);
-        click(&mut app);
-        frames(&mut app, 5);
-        assert!(held(&app).is_none());
-        assert_eq!(app.world().resource::<HeldObject>().last_drop, None);
-        assert_eq!(
-            app.world().get::<Velocity>(entity).unwrap().linear,
-            Vec3::ZERO
-        );
+        assert_eq!(drop_reason(30.0, ratio, &CarryTuning::default()), None);
     }
 
     #[test]
@@ -1412,6 +1638,77 @@ mod tests {
             frames(&mut app, 3);
             assert!(held(&app).is_none(), "{case}: still held");
         }
+    }
+
+    /// Opening the console (or a menu) drops the object and swallows the key: no grab starts while
+    /// it is open. What retail does with a held object when a menu opens is unknown (#691).
+    #[test]
+    fn opening_the_console_drops_the_object_and_blocks_a_new_grab() {
+        let mut app = carry_app();
+        spawn_box_ahead(&mut app, 5.0, 100.0);
+        frames(&mut app, 2);
+        hold_activate(&mut app);
+        assert!(held(&app).is_some());
+        app.insert_resource(crate::console::ConsoleState {
+            open: true,
+            ..default()
+        });
+        frames(&mut app, 3);
+        assert!(held(&app).is_none(), "still held with the console open");
+        // Pressing and holding the key while the console is open grabs nothing.
+        key(&mut app, ButtonState::Released);
+        key(&mut app, ButtonState::Pressed);
+        frames(&mut app, 16);
+        assert!(held(&app).is_none(), "grabbed with the console open");
+    }
+
+    #[test]
+    fn losing_window_focus_drops_the_object() {
+        let mut app = carry_app();
+        spawn_box_ahead(&mut app, 5.0, 100.0);
+        frames(&mut app, 2);
+        hold_activate(&mut app);
+        assert!(held(&app).is_some());
+        // An unfocused window releases the cursor, which ends the hold.
+        app.world_mut().spawn(bevy::window::Window {
+            focused: false,
+            ..default()
+        });
+        frames(&mut app, 3);
+        assert_eq!(
+            *app.world().resource::<CursorCapture>(),
+            CursorCapture::Released
+        );
+        assert!(held(&app).is_none(), "still held after focus loss");
+    }
+
+    /// Looking straight down puts the plain target inside the capsule. The clamp keeps it out, so
+    /// the box stays held, reaches its target and does not rest inside the player.
+    #[test]
+    fn looking_straight_down_keeps_the_held_box_out_of_the_capsule() {
+        let mut app = carry_app();
+        spawn_box_ahead(&mut app, 5.0, 100.0);
+        frames(&mut app, 2);
+        hold_activate(&mut app);
+        frames(&mut app, 30);
+        app.world_mut().resource_mut::<LookIntent>().pitch = -crate::physics::MAX_PITCH_RADIANS;
+        frames(&mut app, 150);
+        let taken = held(&app).expect("the hold ended while looking down");
+        let radius = app.world().resource::<MovementTuning>().capsule_radius;
+        let player = app
+            .world_mut()
+            .query_filtered::<&Transform, With<PlayerBody>>()
+            .single(app.world())
+            .unwrap()
+            .translation;
+        let transform = *app.world().get::<Transform>(taken.entity).unwrap();
+        let point = transform.translation + transform.rotation * taken.anchor_local;
+        let away = Vec2::new(point.x - player.x, point.z - player.z).length();
+        assert!(
+            away > radius,
+            "the grabbed point is {away} units from the player axis, inside the radius {radius}"
+        );
+        assert!(lag(&mut app) < 6.0, "lag {}", lag(&mut app));
     }
 
     #[test]
