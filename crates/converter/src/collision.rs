@@ -349,9 +349,14 @@ fn read_dynamics(bytes: &[u8], frame: Mat4, owned: &[CollisionShape]) -> Result<
     })
 }
 
+/// Accumulates a collision target frame within the shared scene-node budget.
 fn target_transform(nif: &NifFile, blocks: &[Block<'_>], target: usize) -> Result<Mat4> {
+    /// Counts both the target and root visits while replacing authored root placement.
     fn visit(nif: &NifFile, blocks: &[Block<'_>], index: usize, depth: usize) -> Result<Mat4> {
-        ensure!(depth < 64, "NIF node hierarchy is too deep");
+        ensure!(
+            depth < crate::mesh::MAX_SCENE_DEPTH,
+            "NIF node hierarchy is too deep"
+        );
         let raw_av;
         let av = match nif.blocks.get(index).map(NifBlock::as_node) {
             Some(Ok(node)) => &node.av,
@@ -1451,6 +1456,90 @@ mod tests {
             ],
         )
         .unwrap()
+    }
+
+    /// Retains original geometry/material indices and appends a translated node chain.
+    /// Block 1 is geometry; blocks 2 and 3 are non-exported material data, so raw
+    /// block indices and exported glTF node indices differ throughout the chain.
+    fn collision_depth_fixture(node_count: usize) -> (NifFile, usize) {
+        assert!(node_count >= 2);
+        let bytes = body_nif();
+        let (mut data, header) =
+            crate::mesh::parse_skyrim_header(&bytes, Path::new("collision-depth.nif")).unwrap();
+        let mut blocks = Vec::new();
+        // Keep the root, geometry and its two material dependencies. The original
+        // body nodes and Havok blocks are unnecessary for this direct target walk.
+        for index in 0..4 {
+            let (raw, remaining) = data.split_at(header.block_size_index[index] as usize);
+            data = remaining;
+            let kind = header.get_block_type(index).unwrap().to_owned();
+            blocks.push(
+                NifBlock::parse_with_version(raw, kind, header.bethesda_version)
+                    .unwrap()
+                    .1,
+            );
+        }
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let root = scene_node_bytes(0, &[4], [10_000.0; 3], 1.0, identity);
+        blocks[0] = NifBlock::parse(&root, "NiNode".to_owned()).unwrap().1;
+        for level in 1..node_count {
+            let child = if level + 1 == node_count {
+                1 // Original geometry is attached below the deepest scene node.
+            } else {
+                u32::try_from(blocks.len() + 1).unwrap()
+            };
+            let raw = scene_node_bytes(0, &[child], [level as f32, 1.0, 0.0], 1.0, identity);
+            blocks.push(NifBlock::parse(&raw, "NiNode".to_owned()).unwrap().1);
+        }
+        let target = blocks.len() - 1;
+        (NifFile { header, blocks }, target)
+    }
+
+    /// Walks every parent at literal old/new boundaries and preserves exported indices.
+    #[test]
+    fn collision_target_through_256_walks_every_parent_and_keeps_exported_index() {
+        std::thread::spawn(|| {
+            for (count, raw_index, exported_index, position) in [
+                (64, 66, 64, Vec3::new(2016.0, 63.0, 0.0)),
+                (256, 258, 256, Vec3::new(32640.0, 255.0, 0.0)),
+            ] {
+                let (nif, target) = collision_depth_fixture(count);
+                assert_eq!(target, raw_index);
+                assert_eq!(gltf_node_index(&nif, target).unwrap(), exported_index);
+                // Every target is parsed; the raw block fallback is unavailable.
+                let transform = target_transform(&nif, &[], target).unwrap();
+                // Keep each non-root local transform and replace root placement.
+                assert_eq!(transform.transform_point3(Vec3::ZERO), position);
+                let mut model = nif_to_static_model(&nif).unwrap();
+                crate::mesh::clear_root_transform(&mut model);
+                let (gltf, _) = model
+                    .to_gltf("collision-depth-boundary".to_owned())
+                    .unwrap();
+                assert_eq!(gltf.nodes.len(), count + 1);
+                assert_eq!(gltf.meshes.len(), 1);
+                let exported_index = exported_index as usize;
+                assert_eq!(
+                    gltf_world_transform(&gltf.nodes, exported_index).to_cols_array(),
+                    transform.to_cols_array()
+                );
+                assert_eq!(
+                    gltf.nodes[exported_index].children.as_ref().unwrap()[0].value(),
+                    1
+                );
+            }
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// Collision recursion independently rejects the first node above its bound.
+    #[test]
+    fn collision_target_at_257_refuses_before_transform_recursion_exceeds_the_bound() {
+        let (nif, target) = collision_depth_fixture(257);
+        assert_eq!(target, 259);
+        assert_eq!(gltf_node_index(&nif, target).unwrap(), 257);
+        let error = target_transform(&nif, &[], target).unwrap_err();
+        assert!(format!("{error:#}").contains("hierarchy is too deep"));
     }
 
     fn extract(bytes: &[u8]) -> Result<CollisionAsset> {

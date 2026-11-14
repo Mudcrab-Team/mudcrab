@@ -464,6 +464,47 @@ fn npc_weight(view: &SubrecordView<'_>) -> Option<f32> {
     (weight.is_finite() && (0.0..=100.0).contains(&weight)).then_some(weight)
 }
 
+/// `(armature, armature race)` pairs: race-compatible first, `DefaultRace` second.
+pub(crate) type ArmatureTiers = (Vec<(u32, u32)>, Vec<(u32, u32)>);
+
+/// Splits an `ARMO`'s armatures by race compatibility, keeping authored order in each tier.
+///
+/// The first tier holds armatures whose own race, or one of their additional races, is
+/// `race_id`; the second holds `DefaultRace` armatures. Both are `(armature, armature race)`.
+/// Skin armor and worn outfit armor share this rule.
+pub(crate) fn partition_armatures(
+    records: &HashMap<u32, RawRecord>,
+    armatures: &[u32],
+    race_id: u32,
+) -> ArmatureTiers {
+    let mut compatible: Vec<(u32, u32)> = Vec::new();
+    let mut default: Vec<(u32, u32)> = Vec::new();
+    for &armature_id in armatures {
+        let Some(armature) = records
+            .get(&armature_id)
+            .filter(|armature| &armature.record_type == b"ARMA" && !armature.is_deleted())
+        else {
+            continue;
+        };
+        let armature_view = SubrecordView::new(&armature.subrecords);
+        let armature_race_id = armature_view.get_form_id(b"RNAM").unwrap_or(0);
+        let exact_race = armature_race_id == race_id;
+        let additional_race = armature_view.get_form_ids(b"MODL").into_iter().any(|id| {
+            id != 0
+                && id == race_id
+                && records
+                    .get(&id)
+                    .is_some_and(|race| &race.record_type == b"RACE" && !race.is_deleted())
+        });
+        if exact_race || additional_race {
+            compatible.push((armature_id, armature_race_id));
+        } else if armature_race_id == DEFAULT_RACE_FORM_ID {
+            default.push((armature_id, DEFAULT_RACE_FORM_ID));
+        }
+    }
+    (compatible, default)
+}
+
 /// Follows effective skin armor -> `ARMO/MODL` -> compatible `ARMA` tiers, and fills biped slots.
 fn resolve_body(
     records: &HashMap<u32, RawRecord>,
@@ -500,32 +541,7 @@ fn resolve_body(
         return Vec::new();
     }
 
-    // Preserve authored order across exact and additional-race compatible entries.
-    let mut compatible: Vec<(u32, u32)> = Vec::new();
-    let mut default: Vec<(u32, u32)> = Vec::new();
-    for armature_id in armatures {
-        let Some(armature) = records
-            .get(&armature_id)
-            .filter(|armature| &armature.record_type == b"ARMA" && !armature.is_deleted())
-        else {
-            continue;
-        };
-        let armature_view = SubrecordView::new(&armature.subrecords);
-        let armature_race_id = armature_view.get_form_id(b"RNAM").unwrap_or(0);
-        let exact_race = armature_race_id == race_id;
-        let additional_race = armature_view.get_form_ids(b"MODL").into_iter().any(|id| {
-            id != 0
-                && id == race_id
-                && records
-                    .get(&id)
-                    .is_some_and(|race| &race.record_type == b"RACE" && !race.is_deleted())
-        });
-        if exact_race || additional_race {
-            compatible.push((armature_id, armature_race_id));
-        } else if armature_race_id == DEFAULT_RACE_FORM_ID {
-            default.push((armature_id, DEFAULT_RACE_FORM_ID));
-        }
-    }
+    let (compatible, default) = partition_armatures(records, &armatures, race_id);
 
     let mut parts: Vec<ActorModelPartRow> = Vec::new();
     let mut creature_candidates = Vec::new();
