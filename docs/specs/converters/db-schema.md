@@ -1007,10 +1007,20 @@ CREATE TABLE IF NOT EXISTS waters (
 `skyrim_world.db` built before they existed has a `waters` table without them, and
 `AssetCatalog::water_colors` (`crates/engine/src/world/database.rs`) returns `None` for every
 water against such a database rather than failing to open it. The engine falls back to Skyrim's
-DefaultWater values (`render::DEFAULT_WATER_FRESNEL` / `render::DEFAULT_WATER_REFLECTIVITY`, and
-`streaming.rs`'s deep-colour constant) until a reconversion populates them. Adding them did **not**
-bump `shared::WORLD_DATABASE_SCHEMA_VERSION`: nothing that already reads `waters` depends on their
-presence, and the fallback exists specifically so a reconversion is not required.
+DefaultWater values (`render::DEFAULT_WATER_FRESNEL`, `DEFAULT_WATER_REFLECTIVITY`,
+`DEFAULT_WATER_DEEP_COLOR`, `DEFAULT_WATER_SHALLOW_COLOR` and `DEFAULT_WATER_OPACITY`) until a
+reconversion populates them. Adding them did **not** bump
+`shared::WORLD_DATABASE_SCHEMA_VERSION`: nothing that already reads `waters` depends on their
+presence, and the fallback exists specifically so a reconversion is not required. `opacity` is
+not one of those additions: it has been in the table since the table was first created.
+
+The above-water fog (near and far distance, amount) has **no** column. The engine reads it per
+water from the `DNAM` subrecord inside `data` (`DNAM+32`, `DNAM+36` and `DNAM+132`, three
+little-endian `f32`s, see [water research](../../research/water.md)), so every existing database
+yields each water's own fog without a reconversion. A water whose `data` does not decode, whose
+`DNAM` is shorter than 136 bytes, or whose fog is not finite uses Skyrim's DefaultWater fog
+(near -10, far 150, amount 0.7; `WaterFog::default()` in `crates/engine/src/world/database.rs`)
+and keeps its colours.
 
 ---
 

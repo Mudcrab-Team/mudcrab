@@ -58,6 +58,7 @@ mod test_support;
 pub mod tone_mapping;
 pub mod visibility_optimization;
 pub mod visual_profile;
+mod water_depth;
 pub mod world;
 
 pub use app::run;
