@@ -19,8 +19,8 @@
 //! The function in this module is pure. The caller owns the state and feeds it the feet position
 //! of the rendered frame, so view interpolation between physics ticks can feed it later.
 //!
-//! Not implemented (RF-CAM-003 marks these flags unresolved): the state byte at `+0x88`, the
-//! reference handle at player `+0x1F0` and the `0x1401573e0(player+0x70, 0xA9)` check. Also not
+//! Not implemented (open): RF-CAMW-002 (actor handle at player `+0x1F0`, medium confidence) and
+//! RF-CAMW-003 (FirstPersonState byte `+0x88`, low confidence). Also not
 //! implemented: the optional N-frame average of the camera clock (RF-CAM-007).
 
 use bevy::prelude::*;
@@ -83,6 +83,10 @@ pub struct FollowInput {
     /// RF-CAM-004: whether the movement controller is controls-driven. The spring fades out when
     /// it is not.
     pub controls_driven: bool,
+    /// RF-CAMW-001: whether the player is on a mount (Actor::IsOnMount). The spring fades out
+    /// while mounted. Mudcrab has no mount state yet, so the caller sets this flag. It is false by
+    /// default in the engine.
+    pub is_on_mount: bool,
     pub view: FollowView,
 }
 
@@ -118,7 +122,9 @@ pub fn follow_spring_step(prev: FollowSpring, input: FollowInput) -> FollowStep 
 
     // RF-CAM-003: the weight fades out above the speed limit or when not controls-driven.
     // The order of the weight update and the lag evaluation is an assumption (unresolved).
-    let fades_out = !input.controls_driven || prev.velocity.length() > FADE_OUT_SPEED;
+    // RF-CAMW-001: the player is on a mount (same 1.5/s ramp).
+    let fades_out =
+        !input.controls_driven || input.is_on_mount || prev.velocity.length() > FADE_OUT_SPEED;
     let weight_step = WEIGHT_RATE_PER_SECOND * t;
     let weight = if fades_out {
         prev.weight - weight_step
@@ -165,6 +171,7 @@ mod tests {
             feet,
             delta_secs,
             controls_driven: true,
+            is_on_mount: false,
             view: FollowView::FirstPerson,
         }
     }
@@ -329,6 +336,48 @@ mod tests {
             },
         );
         assert_eq!(step.lag, Vec3::ZERO);
+    }
+
+    #[test]
+    fn the_weight_fades_out_while_mounted_and_ramps_back_when_dismounted() {
+        let dt = 1.0 / 60.0;
+        let feet = Vec3::ZERO;
+        let mounted = FollowInput {
+            is_on_mount: true,
+            ..input(feet, dt)
+        };
+        let mut state = FollowSpring::at_rest(feet, FULL);
+        for _ in 0..30 {
+            state = follow_spring_step(state, mounted).state;
+        }
+        // RF-CAMW-001: the same 1.5/s ramp as RF-CAM-003.
+        assert!((state.weight - 0.25).abs() < 1.0e-4, "{}", state.weight);
+        // While faded out, a rise produces no full lag.
+        let step = follow_spring_step(
+            state,
+            FollowInput {
+                feet: Vec3::Y * 24.0,
+                ..mounted
+            },
+        );
+        assert!(step.lag.y.abs() < 0.25 * 24.0);
+        for _ in 0..60 {
+            state = follow_spring_step(state, mounted).state;
+        }
+        assert_eq!(state.weight, 0.0);
+        let step = follow_spring_step(
+            state,
+            FollowInput {
+                feet: Vec3::Y * 24.0,
+                ..mounted
+            },
+        );
+        assert_eq!(step.lag.y, 0.0);
+        // Dismounted: the weight ramps back up at 1.5/s.
+        for _ in 0..30 {
+            state = follow_spring_step(state, input(feet, dt)).state;
+        }
+        assert!((state.weight - 0.75).abs() < 1.0e-4, "{}", state.weight);
     }
 
     #[test]

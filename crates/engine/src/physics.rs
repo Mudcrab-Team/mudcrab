@@ -2000,6 +2000,8 @@ fn walk_camera_follow_system(
                 // RF-CAM-004: the player is controls-driven in normal play. Mudcrab has no
                 // AI-driven player movement.
                 controls_driven: true,
+                // RF-CAMW-001: Mudcrab has no mount state yet, so this stays false.
+                is_on_mount: false,
                 // The engine has no third-person camera. RF-CAM-006: it would get no spring.
                 view: camera_follow::FollowView::FirstPerson,
             },

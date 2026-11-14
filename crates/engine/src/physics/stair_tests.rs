@@ -136,6 +136,7 @@ fn rendered_frame_follows_the_spring(
             feet,
             delta_secs,
             controls_driven: true,
+            is_on_mount: false,
             view: camera_follow::FollowView::FirstPerson,
         },
     );

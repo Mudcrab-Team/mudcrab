@@ -32,9 +32,12 @@ camera = camera_node + e
 | Weight ramp rate, inside [0, 1] | 1.5 per second | RF-CAM-003 |
 | Weight fade-out speed (3D speed of `S`) | 500 units per second | RF-CAM-003 |
 | Controls-driven gate | the spring fades out when not controls-driven | RF-CAM-003, RF-CAM-004 |
+| Mounted gate | the spring fades out while the player is on a mount (same 1.5 per second ramp) | RF-CAMW-001 |
 | Camera clock clamp | 0.1667 s (166.67 ms) | RF-CAM-007 |
 | No slope threshold, no slack, no per-tick clamp, no vertical-only speed gate | absent | RF-CAM-005 |
 | Third person: no vertical spring | absent | RF-CAM-006 |
+
+The mounted gate is an input flag, `is_on_mount`. The caller sets it. Mudcrab has no mount state yet, so the WALK system passes false. No mount system is added here.
 
 When `|S_prev - P_now|` is above 300 units, `e` and `V` are 0 for that frame. The weight ramps up by `1.5 * T` per frame. It ramps down by the same amount when the speed of `S` is above 500 units per second or when the player is not controls-driven.
 
@@ -50,7 +53,7 @@ A teleport, a `CameraSpace` change, a `RenderOrigin` rebase, a move-mode change,
 
 ## Not implemented
 
-- RF-CAM-003 names three more flags that fade the weight out and that are unresolved in the registry: the state byte at `+0x88`, the reference handle at player `+0x1F0` and the `0x1401573e0(player+0x70, 0xA9)` check. They are left out until the registry resolves them.
+- Open gates, not implemented: RF-CAMW-002 (actor handle at player `+0x1F0` that fades the weight out, medium confidence for its role) and RF-CAMW-003 (FirstPersonState byte `+0x88`, low confidence).
 - The optional running average of the camera clock over N frames (RF-CAM-007) is left out. Its filter length is unverified.
 - The initial value of the weight is not known. The spring starts with a weight of 0 and ramps up at 1.5 per second. This is unverified.
 - The order of the weight update and the lag evaluation inside one frame is an assumption. The registry does not state it.
