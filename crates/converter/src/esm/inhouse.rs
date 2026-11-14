@@ -26,7 +26,7 @@ use std::{
 };
 
 /// Decoder/adapter behavior version for output changes outside the authored schema.
-pub const ADAPTER_VERSION: u32 = 12;
+pub const ADAPTER_VERSION: u32 = 13;
 
 /// Legacy metadata projection contract: preserve WRLD payloads and record-aware VMAD links.
 /// Version 4 resolves localized string fields to the in-house reader's text (`legacy_text`).
@@ -95,6 +95,7 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "actor_model_parts",
     "movement_types",
     "race_movement_links",
+    "race_animation_sources",
     "movement_game_settings",
     "waters",
     "texture_sets",

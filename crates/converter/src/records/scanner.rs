@@ -80,7 +80,9 @@ fn scan_plugin_with_payloads(
         diagnostics.note("record", || "input shorter than TES4 header".into());
         return Ok(());
     }
-    // Inputs are read-only for the conversion; the map is never exposed to a writer.
+    // SAFETY: inputs are read-only for the conversion and the map is never exposed to a writer.
+    // An outside truncation or in-place rewrite would fault reads of the map; that risk is
+    // accepted here (#633).
     let map = unsafe { Mmap::map(&file)? };
     if map.len() < 24 || &map[..4] != b"TES4" {
         diagnostics.note("record", || "input has no complete TES4 header".into());

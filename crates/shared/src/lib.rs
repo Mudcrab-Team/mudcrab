@@ -1,10 +1,12 @@
 //! Stable data contracts shared by the offline converter and the runtime.
 
 pub mod actor_idle_catalog;
+pub mod actor_outfits;
 pub mod asset_lock;
 pub mod collision;
 pub mod coordinates;
 pub mod creature_idle;
+pub mod extensions;
 pub mod form_key;
 pub mod legacy_id_view;
 pub mod lod;
@@ -14,12 +16,16 @@ pub mod records;
 pub mod source_form_id;
 pub mod streaming_costs;
 pub mod terrain_mesh;
+pub mod texture_aliases;
 pub mod world_assets;
 
 use rkyv::{Archive, Deserialize, Serialize};
 
 /// Current combined database contract: corrected TXST roles and one-byte XESP flags.
 pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 9;
+
+/// Current Papyrus script emission ABI: case-insensitive identifiers and permissive initial states.
+pub const PAPYRUS_SCRIPT_ABI_VERSION: u32 = 3;
 /// Latest producer required when a package advertises the combined LOD contract.
 /// 27: collision coverage (sphere shapes as zero-length capsules, multi-sphere and cylinder
 /// shapes) changes GLB collision extras.

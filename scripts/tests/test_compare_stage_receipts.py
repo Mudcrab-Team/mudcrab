@@ -34,7 +34,9 @@ def receipt(hdr=(0.25, 0.2, 0.1, 1.0), output=(220.0, 198.0, 154.0)):
 
 
 def run(reference, candidate):
-    return COMPARE.compare(reference, candidate, COMPARE.STAGE3_RELATIVE, COMPARE.STAGE4_BYTES)
+    return COMPARE.compare(
+        reference, candidate, COMPARE.STAGE3_RELATIVE, COMPARE.STAGE4_BYTES, COMPARE.STAGE3_ABSOLUTE
+    )
 
 
 class CompareStageReceiptsTests(unittest.TestCase):
@@ -50,6 +52,43 @@ class CompareStageReceiptsTests(unittest.TestCase):
         outside = receipt(hdr=(0.256, 0.2, 0.1, 1.0), output=(220.0, 198.0, 157.0))
         failures = run(receipt(), outside)[0]
         self.assertEqual(len(failures), 2, failures)
+
+    def test_a_near_zero_channel_gets_one_8_bit_step_of_room(self):
+        step = COMPARE.STAGE3_ABSOLUTE
+        self.assertAlmostEqual(step, 1.0 / 255.0)
+        failures, _, passed = run(receipt(hdr=(0.0, 0.2, 0.1)), receipt(hdr=(step * 0.9, 0.2, 0.1)))
+        self.assertEqual(failures, [])
+        self.assertIn("sunlit-thatch hdr_pre_tonemap", passed)
+        failures = run(receipt(hdr=(0.0, 0.2, 0.1)), receipt(hdr=(step * 1.5, 0.2, 0.1)))[0]
+        self.assertEqual(len(failures), 1, failures)
+
+    def test_the_absolute_floor_does_not_loosen_bright_channels(self):
+        # 2 % of 0.25 is 0.005, above one 8-bit step (about 0.0039): the relative bound governs.
+        self.assertEqual(run(receipt(), receipt(hdr=(0.2549, 0.2, 0.1)))[0], [])
+        failures = run(receipt(hdr=(100.0, 0.2, 0.1)), receipt(hdr=(103.0, 0.2, 0.1)))[0]
+        self.assertEqual(len(failures), 1, failures)
+
+    def test_the_absolute_floor_never_applies_to_stage_4_bytes(self):
+        failures = run(receipt(output=(0.0, 198.0, 154.0)), receipt(output=(2.5, 198.0, 154.0)))[0]
+        self.assertEqual(len(failures), 1, failures)
+
+    def test_non_finite_channels_still_fail_with_the_absolute_floor(self):
+        failures, _, passed = run(receipt(hdr=(float("inf"), 0.2, 0.1)), receipt(hdr=(0.0, 0.2, 0.1)))
+        self.assertNotIn("sunlit-thatch hdr_pre_tonemap", passed)
+        self.assertIn("non-finite", failures[0])
+
+    def test_the_command_reports_and_accepts_the_absolute_tolerance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            reference, candidate = root / "reference.json", root / "candidate.json"
+            reference.write_text(json.dumps(receipt(hdr=(0.0, 0.2, 0.1))))
+            candidate.write_text(json.dumps(receipt(hdr=(0.003, 0.2, 0.1))))
+            for extra, code in (([], 0), (["--stage3-absolute", "0.001"], 1)):
+                result = subprocess.run(
+                    [sys.executable, str(SCRIPT), str(reference), str(candidate), *extra],
+                    capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, code, result.stdout)
+                self.assertIn("stage3_absolute", json.loads(result.stdout)["tolerance"])
 
     def test_rgb_and_rgba_stage_3_values_compare(self):
         self.assertEqual(run(receipt(), receipt(hdr=(0.25, 0.2, 0.1)))[0], [])
