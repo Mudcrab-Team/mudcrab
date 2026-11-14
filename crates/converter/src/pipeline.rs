@@ -1554,6 +1554,7 @@ impl AssetPipeline {
                 .phase_elapsed_ms
                 .insert("scripts".into(), scripts_started.elapsed().as_millis());
         }
+        let mut withdraw_default = false;
         if config.mo2.is_some() && !plugins.is_empty() {
             if !config.no_lod {
                 stage_mo2_lod_inputs(&staging.join("vfs"), &resolved_files)?;
@@ -1574,13 +1575,12 @@ impl AssetPipeline {
                     {
                         let selected = BTreeMap::from([(relative.clone(), source.clone())]);
                         if let Err(error) = stage_mo2_lod_inputs(&staging.join("vfs"), &selected) {
-                            // Never publish a lower-priority archive copy after its winner fails.
-                            // An unremovable staging file is a publication failure, not bad mod data.
-                            match fs::remove_file(staging.join("vfs").join(&canonical)) {
-                                Ok(()) => {}
-                                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                                Err(error) => return Err(error.into()),
-                            }
+                            // A surviving lower-priority copy cannot supply this run's default.
+                            // Withdraw the optional default if cleanup fails; keep usable data.
+                            withdraw_default |= discard_failed_default_input(
+                                &staging.join("vfs").join(&canonical),
+                                &mut report,
+                            );
                             report
                                 .notices
                                 .push(format!("default land input omitted: {relative}: {error:#}"));
@@ -1589,9 +1589,18 @@ impl AssetPipeline {
                 }
             }
         }
+        // Keep the requested configuration/cache identity unchanged. Only this run's terrain
+        // consumers use white when a failed winner leaves bytes that cannot be removed.
+        let default_config = withdraw_default.then(|| {
+            let mut fallback = config.clone();
+            fallback.terrain_default_texture = crate::config::TerrainDefaultTexture::White;
+            fallback.terrain_ini = None;
+            fallback
+        });
+        let terrain_config = default_config.as_ref().unwrap_or(config);
         let lod_started = Instant::now();
         compile_lod_chunks_with_cancel(
-            config,
+            terrain_config,
             staging,
             &config.output_dir,
             &plugins,
@@ -1614,7 +1623,7 @@ impl AssetPipeline {
                 merged_terrain_records.take(),
                 std::mem::take(&mut merged_terrain_offsets),
                 &plugins,
-                &crate::terrain_pipeline::TerrainOptions::from_config(config),
+                &crate::terrain_pipeline::TerrainOptions::from_config(terrain_config),
                 progress_tx,
                 &mut report,
             )
@@ -3723,6 +3732,21 @@ fn plugin_paths_with_diagnostics(
             .unwrap_or("empty selection"),
     );
     Ok(plugins)
+}
+
+/// Discards a failed optional default's staged bytes; true withdraws the default for this run.
+fn discard_failed_default_input(path: &Path, report: &mut PipelineReport) -> bool {
+    match fs::remove_file(path) {
+        Ok(()) => false,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            report.notices.push(format!(
+                "configured default withdrawn: failed to remove {}: {error}; using legacy null-base behaviour",
+                path.display(),
+            ));
+            true
+        }
+    }
 }
 
 /// Materializes winning loose LOD inputs for the compiler's filesystem-based VFS reads.
@@ -6029,6 +6053,19 @@ mod stop_hook {
 
 #[cfg(test)]
 mod tests {
+    /// Failed staging must actually remove a surviving stale copy before permitting defaults.
+    #[test]
+    fn failed_default_cleanup_removes_surviving_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("stale.dds");
+        std::fs::write(&path, b"stale lower-priority bytes").unwrap();
+        let mut report = super::PipelineReport::default();
+        assert!(!super::discard_failed_default_input(&path, &mut report));
+        assert!(!path.exists());
+        assert!(report.notices.is_empty());
+        assert!(!super::discard_failed_default_input(&path, &mut report));
+    }
+
     #[test]
     fn legacy_report_without_lod_fields_deserializes() {
         let mut legacy = serde_json::to_value(super::PipelineReport::default()).unwrap();

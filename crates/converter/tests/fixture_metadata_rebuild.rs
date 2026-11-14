@@ -121,6 +121,15 @@ async fn dangling_base_publication(reader: converter::config::RecordReader, expe
             "the existing optional-link recovery must be reported: {report:?}"
         );
         assert!(report.complete && report.warnings.is_empty(), "{report:?}");
+    } else {
+        assert!(report.complete && report.warnings.is_empty(), "{report:?}");
+        assert!(
+            !report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("00000899")),
+            "legacy preserves unresolved identity without an optional-link recovery notice: {report:?}"
+        );
     }
 }
 

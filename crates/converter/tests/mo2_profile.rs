@@ -650,7 +650,7 @@ async fn mo2_no_lod_locked_stale_default_is_withdrawn() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(neighbor, 333.0);
+    assert_eq!(neighbor, 444.0);
     assert!(
         converter::cache::ConversionManifest::load(
             &config.output_dir.join("conversion-manifest.json")

@@ -34,8 +34,8 @@ converter outcomes are advisory `notices` and do not affect conversion completen
 A dangling BTXT is reader-dependent under the existing compatibility contracts: the in-house
 reader clears a missing, deleted or wrong-kind LTEX target to zero, so that base selects the
 configured default; the legacy reader preserves the nonzero unresolved identity, so that base
-binds no images. This change preserves legacy reference identities rather than changing its
-general unresolved-link policy. Both readers retain usable neighboring terrain.
+binds no images. The legacy reader preserves reference identities under its general
+unresolved-link policy. Both readers retain usable neighboring terrain.
 Generated `terrain/default-diffuse.ktx2` and `terrain/default-normal.ktx2` are rebuilt from the
 current source bytes, outside ingestion-cache reuse. Their actual image loads participate in
 streaming resource reservations. Zero overlays keep their unresolved slots and weights without
@@ -50,7 +50,10 @@ arrays. Default images are rebuilt from current source bytes; LOD source hashes 
 invalidate affected chunks without globally invalidating unrelated ingestion caches.
 
 MO2 conversions with `--no-lod` stage only the winning configured default DDS inputs;
-other MO2 assets retain direct, read-only source access.
+other MO2 assets retain direct, read-only source access. If a failed winner leaves a staged
+copy that cannot be removed, the configured default is withdrawn for that run: no default
+images are published, null bases use the legacy white fallback, and a notice names the
+staged path and removal error.
 
 When no cached quadrant needs an implicit default, the converter records unused white metadata
 and does not require default images. Texture-only and fully painted packs therefore remain
