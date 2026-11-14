@@ -1331,7 +1331,7 @@ mod tests {
         );
     }
 
-    /// Exercise the same MeshPipeline specialization and shader definitions as queue_grass.
+    /// Validate real scene shader layouts on software Vulkan, plus all MSAA semantic variants.
     #[test]
     #[ignore = "requires software Vulkan; run with the renderer smoke tests"]
     fn production_scene_pipeline_shader_uses_real_mesh_bindings() {
@@ -1341,18 +1341,42 @@ mod tests {
                 .build()
                 .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>()
                 .disable::<bevy::audio::AudioPlugin>()
+                .disable::<bevy::winit::WinitPlugin>()
                 .set(bevy::window::WindowPlugin {
                     primary_window: None,
                     exit_condition: bevy::window::ExitCondition::DontExit,
                     ..default()
                 }),
         );
+        let shader = app
+            .world_mut()
+            .resource_mut::<Assets<Shader>>()
+            .add(Shader::from_wgsl(
+                include_str!("shaders/grass.wgsl"),
+                "grass.wgsl",
+            ));
         app.finish();
         app.cleanup();
         app.update();
         let render = app.sub_app(RenderApp);
         let scene = render.world().resource::<bevy::pbr::MeshPipeline>().clone();
-        let mut pipeline = GrassPipeline::new(Handle::default());
+        let adapter = render
+            .world()
+            .resource::<bevy::render::renderer::RenderAdapter>()
+            .clone();
+        let info = adapter.get_info();
+        assert_eq!(
+            info.backend,
+            wgpu::Backend::Vulkan,
+            "software Vulkan required: {info:?}"
+        );
+        assert_eq!(
+            info.device_type,
+            wgpu::DeviceType::Cpu,
+            "software adapter required: {info:?}"
+        );
+        eprintln!("grass pipeline software adapter: {info:?}");
+        let mut pipeline = GrassPipeline::new(shader);
         pipeline.scene = Some(scene);
         let mesh = Mesh::new(
             PrimitiveTopology::TriangleList,
@@ -1365,6 +1389,7 @@ mod tests {
         .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[1.0, 0.0, 0.0, 1.0]; 3]);
         let layout =
             mesh.get_mesh_vertex_buffer_layout(&mut bevy::mesh::MeshVertexBufferLayouts::default());
+        let mut queued = Vec::new();
         for samples in [1, 2, 4, 8] {
             for hdr in [false, true] {
                 let mut key = GrassKey::new(
@@ -1389,7 +1414,7 @@ mod tests {
                 let descriptor = pipeline.specialize(key, &layout).unwrap();
                 assert_eq!(descriptor.layout.len(), 3);
                 let mut defs = std::collections::HashMap::new();
-                for def in descriptor.vertex.shader_defs {
+                for def in descriptor.vertex.shader_defs.clone() {
                     let (name, value) = match def {
                         bevy::shader::ShaderDefVal::Bool(name, value) => {
                             (name, naga_oil::compose::ShaderDefValue::Bool(value))
@@ -1405,7 +1430,48 @@ mod tests {
                 }
                 super::grass_shader_tests::compose(include_str!("shaders/grass.wgsl"), defs)
                     .unwrap();
+                if [TextureFormat::Rgba16Float, TextureFormat::Depth32Float]
+                    .into_iter()
+                    .all(|format| {
+                        adapter
+                            .get_texture_format_features(format)
+                            .flags
+                            .sample_count_supported(samples)
+                    })
+                {
+                    let id = app
+                        .sub_app(RenderApp)
+                        .world()
+                        .resource::<PipelineCache>()
+                        .queue_render_pipeline(descriptor);
+                    queued.push((samples, hdr, id));
+                }
             }
+        }
+        assert!(
+            queued.len() >= 2,
+            "both single-sample HDR policies must compile"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            app.update();
+            let cache = app.sub_app(RenderApp).world().resource::<PipelineCache>();
+            if queued
+                .iter()
+                .all(|(_, _, id)| cache.get_render_pipeline(*id).is_some())
+            {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                for (samples, hdr, id) in &queued {
+                    assert!(
+                        cache.get_render_pipeline(*id).is_some(),
+                        "grass pipeline samples={samples} hdr={hdr}: {:?}",
+                        cache.get_render_pipeline_state(*id)
+                    );
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
 
