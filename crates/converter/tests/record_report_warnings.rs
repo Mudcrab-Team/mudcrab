@@ -354,7 +354,7 @@ fn incomplete(report: &PipelineReport, output: &Path, warning_count: usize) {
 fn compatibility_kind(reader: RecordReader) -> &'static str {
     match reader {
         RecordReader::Legacy => {
-            "FormID occurrence(s) past the original master list resolved to self"
+            "FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own"
         }
         RecordReader::Inhouse => "used supplier-self runtime compatibility",
     }
@@ -375,8 +375,12 @@ fn compatibility_notice(report: &PipelineReport, reader: RecordReader) {
         report.notices
     );
     let message = messages[0];
+    if reader == RecordReader::Legacy {
+        assert!(message.starts_with("notice:"), "{message}");
+        assert!(message.contains("in ACTI)"), "{message}");
+    }
     let count = match reader {
-        RecordReader::Legacy => "2 FormID occurrence(s)",
+        RecordReader::Legacy => "2 FormID occurrences",
         RecordReader::Inhouse => "for 1 headers",
     };
     assert!(message.contains(count), "{message}");
