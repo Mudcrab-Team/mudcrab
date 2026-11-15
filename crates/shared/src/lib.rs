@@ -10,6 +10,7 @@ pub mod extensions;
 pub mod lod;
 pub mod plugin_selection;
 pub mod records;
+pub mod room_assignment;
 pub mod streaming_costs;
 pub mod terrain_mesh;
 pub mod texture_aliases;

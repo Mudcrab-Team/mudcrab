@@ -617,6 +617,7 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
             form_ids: &[0],
         },
         b"XLRM" | b"LNAM" | b"INAM" if record_type == b"REFR" => Fixed(SINGLE),
+        b"XMBR" if is_placed_record_type(record_type) => Fixed(SINGLE),
         // Regions.
         b"XCLR" if record_type == b"CELL" => Array {
             stride: 4,

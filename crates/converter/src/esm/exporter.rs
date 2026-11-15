@@ -306,7 +306,7 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     // here, and an older-shaped `room_portals` (no `pair_index`) is migrated in place.
     crate::esm::rooms::migrate_room_portals(conn)?;
     conn.execute_batch(crate::esm::rooms::ROOM_TABLES_SQL)?;
-    crate::esm::rooms::migrate_portal_endpoints(conn)?;
+    crate::esm::rooms::migrate_room_metadata(conn)?;
     // Typed race animation identity (db-schema.md, actor models). Archive-only snapshots keep
     // the same schema and defer its rows like the other runtime views.
     conn.execute_batch(crate::animation::authoring::RACE_ANIMATION_SOURCES_SQL)?;
@@ -3110,9 +3110,17 @@ mod tests {
         assert_eq!((expected.rooms, expected.portals), (1, 1));
         assert_eq!(rooms_of(&conn, 0x2001), vec![(0x1001, 1)]);
 
+        conn.execute("INSERT INTO room_model_bounds VALUES(1280,1,2,3,4)", [])
+            .unwrap();
         export_to_db(&conn, &HashMap::new()).unwrap();
         assert_eq!(rooms::RoomGraphReport::read(&conn).unwrap(), expected);
         assert_eq!(rooms_of(&conn, 0x2001), vec![(0x1001, 1)]);
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM room_model_bounds", [], |r| r
+                .get::<_, u32>(0))
+                .unwrap(),
+            1
+        );
 
         export_inhouse_record_archive_to_db(&conn, &master, &order, &paths).unwrap();
         for table in [
@@ -3121,6 +3129,9 @@ mod tests {
             "room_links",
             "reference_rooms",
             "room_graph_stats",
+            "room_reference_rules",
+            "room_graph_cells",
+            "room_model_bounds",
             "projection_omission_stats",
             "projection_omission_samples",
             "cells",
@@ -3343,6 +3354,23 @@ mod tests {
             "authored targets bypass geometric membership too"
         );
         assert_eq!(rooms_of(&conn, 0x2003), vec![(0x1001, 1)]);
+        let rules = conn
+            .prepare("SELECT assignment,target_ref FROM room_reference_rules ORDER BY reference_id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<u32>>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            rules,
+            vec![
+                ("none".into(), None),
+                ("target".into(), Some(0x1001)),
+                ("auto".into(), None)
+            ]
+        );
     }
 
     #[test]

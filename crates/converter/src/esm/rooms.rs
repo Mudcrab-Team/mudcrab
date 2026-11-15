@@ -44,7 +44,22 @@ pub const ROOM_TABLES_SQL: &str = r#"
          CREATE INDEX IF NOT EXISTS idx_room_portals_cell ON room_portals(cell_id);
          CREATE TABLE IF NOT EXISTS room_links (
              room_ref INTEGER NOT NULL, linked_ref INTEGER NOT NULL,
+             link_index INTEGER NOT NULL DEFAULT 0,
              PRIMARY KEY (room_ref, linked_ref)
+         );
+         CREATE TABLE IF NOT EXISTS room_reference_rules (
+             reference_id INTEGER PRIMARY KEY, cell_id INTEGER NOT NULL,
+             assignment TEXT NOT NULL CHECK(assignment IN ('auto','none','target','unknown')),
+             target_ref INTEGER
+         );
+         CREATE INDEX IF NOT EXISTS idx_room_reference_rules_cell ON room_reference_rules(cell_id);
+         CREATE TABLE IF NOT EXISTS room_model_bounds (
+             base_form_id INTEGER PRIMARY KEY,
+             center_x REAL NOT NULL, center_y REAL NOT NULL, center_z REAL NOT NULL,
+             radius REAL NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS room_graph_cells (
+             cell_id INTEGER PRIMARY KEY, complete INTEGER NOT NULL
          );
          CREATE TABLE IF NOT EXISTS reference_rooms (
              reference_id INTEGER NOT NULL, room_ref INTEGER NOT NULL,
@@ -58,7 +73,7 @@ pub const ROOM_TABLES_SQL: &str = r#"
 "#;
 
 /// Old NULL endpoints are ambiguous. Adding columns never promotes them to authored outside.
-pub fn migrate_portal_endpoints(conn: &Connection) -> Result<()> {
+pub fn migrate_room_metadata(conn: &Connection) -> Result<()> {
     let outermost = conn.is_autocommit();
     conn.execute_batch("SAVEPOINT portal_endpoints")?;
     let result = (|| {
@@ -73,6 +88,16 @@ pub fn migrate_portal_endpoints(conn: &Connection) -> Result<()> {
                     "ALTER TABLE room_portals ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
                 ))?;
             }
+        }
+        let ordered_links: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('room_links') WHERE name='link_index')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !ordered_links {
+            conn.execute_batch(
+                "ALTER TABLE room_links ADD COLUMN link_index INTEGER NOT NULL DEFAULT 0",
+            )?;
         }
         conn.execute_batch("RELEASE portal_endpoints")
     })();
@@ -305,6 +330,9 @@ pub fn clear(conn: &Connection) -> Result<()> {
         "room_bounds",
         "room_portals",
         "room_links",
+        "room_reference_rules",
+        "room_graph_cells",
+        "room_model_bounds",
         "reference_rooms",
         "room_graph_stats",
     ] {
@@ -487,6 +515,7 @@ pub fn export_room_graph(
 ) -> Result<RoomGraphReport> {
     clear(tx)?;
     let mut report = RoomGraphReport::default();
+    let mut incomplete = HashSet::new();
     let mut ordered: Vec<(&u32, &RawRecord)> = master
         .iter()
         .filter(|(_, record)| {
@@ -513,10 +542,12 @@ pub fn export_room_graph(
         let cell = record.cell_form_id.unwrap_or(0);
         let view = SubrecordView::new(&record.subrecords);
         let Some(xprm) = view.find(b"XPRM").filter(|data| data.len() >= 32) else {
+            incomplete.insert(cell);
             report.non_box_rooms_skipped += 1;
             continue;
         };
         if u32_at(xprm, 28) != Some(SHAPE_BOX) {
+            incomplete.insert(cell);
             report.non_box_rooms_skipped += 1;
             continue;
         }
@@ -533,6 +564,7 @@ pub fn export_room_graph(
             .all(|v| v.is_finite())
         {
             report.invalid_markers_skipped += 1;
+            incomplete.insert(cell);
             continue;
         }
         let flags = view
@@ -557,15 +589,20 @@ pub fn export_room_graph(
                 optional_form_id(b"INAM"), flags
             ],
         )?;
-        for (_, link) in record.subrecords.iter().filter(|(tag, _)| tag == b"XLRM") {
+        for (index, (_, link)) in record
+            .subrecords
+            .iter()
+            .filter(|(tag, _)| tag == b"XLRM")
+            .enumerate()
+        {
             // A zero id is "no room": the plugin remap clears an invalid link to 0.
             if let Some(linked) = u32_at(link, 0)
                 .filter(|_| link.len() == 4)
                 .filter(|id| *id != 0)
             {
                 let inserted = tx.execute(
-                    "INSERT OR IGNORE INTO room_links(room_ref, linked_ref) VALUES (?1, ?2)",
-                    params![form_id, linked],
+                    "INSERT OR IGNORE INTO room_links(room_ref, linked_ref, link_index) VALUES (?1, ?2, ?3)",
+                    params![form_id, linked, index as i64],
                 )?;
                 report.links += inserted as u64;
             }
@@ -584,6 +621,7 @@ pub fn export_room_graph(
         let cell = record.cell_form_id.unwrap_or(0);
         let view = SubrecordView::new(&record.subrecords);
         let Some(xprm) = view.find(b"XPRM").filter(|data| data.len() >= 12) else {
+            incomplete.insert(cell);
             report.portals_without_size_skipped += 1;
             continue;
         };
@@ -597,6 +635,7 @@ pub fn export_room_graph(
             .all(|v| v.is_finite())
         {
             report.invalid_markers_skipped += 1;
+            incomplete.insert(cell);
             continue;
         }
         // `XPOD` is an array of (origin, destination) pairs of 8 bytes (xEdit 4.1.5f defs).
@@ -638,7 +677,32 @@ pub fn export_room_graph(
         report.portals += 1;
     }
 
-    // Membership: every placed object of a cell with rooms except the markers themselves.
+    // Assignment rules are independent of geometric membership and survive missing models.
+    for &(&id, record) in &ordered {
+        let base = base_of(record);
+        if base == ROOM_MARKER_BASE || base == PORTAL_MARKER_BASE {
+            continue;
+        }
+        let view = SubrecordView::new(&record.subrecords);
+        let target = view.get_form_id(b"XMBR").filter(|&id| id != 0);
+        let assignment = if target.is_some() {
+            "target"
+        } else if view.find(b"XMBR").is_some() {
+            "unknown"
+        } else if record.flags & shared::records::MULTIBOUND_REFERENCE_FLAG != 0 {
+            "none"
+        } else if view.find(b"XPRM").is_some() {
+            // Native occlusion primitives can substitute their shape's translation for NiBound.
+            "unknown"
+        } else {
+            "auto"
+        };
+        tx.execute(
+            "INSERT INTO room_reference_rules(reference_id,cell_id,assignment,target_ref) VALUES (?1,?2,?3,?4)",
+            params![id,record.cell_form_id,assignment,target],
+        )?;
+    }
+    // Legacy membership remains available to older readers.
     {
         let mut insert = tx.prepare(
             "INSERT OR IGNORE INTO reference_rooms(reference_id, room_ref, contained) VALUES (?1, ?2, 1)",
@@ -671,9 +735,19 @@ pub fn export_room_graph(
             }
         }
     }
+    for &cell in rooms_by_cell.keys() {
+        tx.execute(
+            "INSERT INTO room_graph_cells VALUES (?1,?2)",
+            params![cell, !incomplete.contains(&cell)],
+        )?;
+    }
     report.write(tx)?;
     tx.execute(
         "INSERT INTO room_graph_stats(name,value) VALUES ('visibility_version',2)",
+        [],
+    )?;
+    tx.execute(
+        "INSERT INTO room_graph_stats(name,value) VALUES ('assignment_version',1)",
         [],
     )?;
     Ok(report)

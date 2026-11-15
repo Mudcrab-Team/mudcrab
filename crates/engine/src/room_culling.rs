@@ -10,17 +10,24 @@
 //! For a view, find the rooms that contain the camera and walk from them through the portals. At
 //! each portal its polygon is clipped against the arriving convex volume. Aperture planes and
 //! the plane behind the doorway narrow the next volume. Each room retains the union of its paths,
-//! so a gap between visible doorways stays outside the union. `XLRM` links pass volumes unchanged.
+//! so a gap between visible doorways stays outside the union. Authored `XLRM` groups share one
+//! master room and the union of their bounds. Legacy links pass volumes unchanged.
 //! Cycles and complex graphs have bounded work: exceeding a contribution or plane budget widens
 //! that room to the camera frustum and propagates the wider volume.
 //!
 //! Versioned graphs distinguish rooms, authored unbounded endpoints, and unknown endpoints. A
 //! camera outside every room starts in unbounded space and enters rooms through their apertures.
 //! Unbounded geometry uses its accumulated volume, including when viewed from a room. Legacy
-//! graphs keep their outside-camera fallback. Unknown endpoints or a reached portal-less room
-//! still draw the whole cell while authored joins and incomplete graph coverage remain unresolved.
+//! graphs keep their outside-camera fallback. Unknown endpoints and incomplete authored graphs
+//! draw the whole cell. Legacy graphs also fall back on reached portal-less rooms.
 //!
-//! A static object's containing and overlapping rooms supply its candidate visibility volumes.
+//! Authored assignment uses source NIF spheres, bound-center containment, named overrides, and
+//! the native sphere/portal test. One touched portal supplies both endpoint volumes; several
+//! touched portals use the common node and remain drawn. Ownership is cached across views and
+//! recomputed when the reference transform changes. Uncertain native room-map order retains all
+//! possible owners. Missing source spheres remain drawn. Each mesh still tests its own bounds.
+//!
+//! In legacy graphs, a static object's containing and overlapping rooms supply candidate volumes.
 //! An object with one pivot-containing room is hidden when its mesh bounds miss every candidate
 //! volume. The mesh's current AABB is transformed into cell-local space with its full affine
 //! transform, including rotation, scale, and shear. Missing or invalid bounds and `NoFrustumCulling`
@@ -57,29 +64,28 @@
 //!
 //! # Implicit overlap edges
 //!
-//! Touching or overlapping room boxes gain implicit edges within [`OVERLAP_TOLERANCE`], unless
+//! In legacy graphs, touching or overlapping boxes gain edges within [`OVERLAP_TOLERANCE`], unless
 //! an authored portal or link already joins the pair. Between two rooms with portals, the edge
 //! tests the destination box against the incoming volume and clips to its projected rectangle.
 //! An edge to a portal-less room instead triggers the whole-cell fallback above.
 //!
-//! These edges approximate connectivity missing from our graph. They are not Skyrim's authored
-//! joined bounds. Box coverage gaps and exact native assignment remain separate
-//! parity work. See `docs/research/skyrim-native-culling.md`.
+//! Authored graphs disable these edges and the portal-less-room heuristic. They use the authored
+//! master/slave resolution instead. See `docs/research/skyrim-native-culling.md`.
 //!
 //! # What is never culled by its room
 //!
 //! The converter records room membership for every placed record, actors included, but a room is
 //! where something *was placed*, not where it is. These are treated as in no room and stay drawn:
 //!
-//! - a reference carrying [`RoomCullExempt`], which `streaming::spawn_cell` inserts when the base
-//!   record type is an actor, a door, an activator or a movable inventory item
-//!   ([`exempt_record_type`]), or the placed reference carries the authored Multibound header flag.
-//!   This preserves `NONE` even when an older conversion assigned it geometric room membership.
-//!   Named overrides are conservatively kept visible too. **Future actor spawning hooks in here:** whatever spawns an actor
+//! - a reference carrying [`RoomCullExempt`], inserted for actors, doors and activators.
+//!   [`RoomCullLegacyExempt`] protects authored overrides and loose inventory items in legacy
+//!   graphs; authored assignment preserves `NONE` and updates supported moving reference roots.
+//!   **Future actor spawning hooks in here:** whatever spawns an actor
 //!   or an animated door outside `spawn_cell` inserts `RoomCullExempt` on the reference entity;
 //! - a mesh whose own entity, or whose reference, has a `RigidBody` that moves
-//!   (`Dynamic`, `KinematicPositionBased` or `KinematicVelocityBased`). `Fixed` bodies, which is
-//!   what static collision uses, are culled normally.
+//!   (`Dynamic`, `KinematicPositionBased` or `KinematicVelocityBased`), except an authored
+//!   reference root with a known source sphere. Moving child meshes still stay drawn.
+//!   `Fixed` bodies, which static collision uses, are culled normally.
 //!
 //! Streamed actors and doors receive the exemption when their reference root is spawned.
 //!
@@ -104,6 +110,7 @@
 //! which is the local X-Y rectangle in runtime axes. The graph is stored in the cell root's local
 //! space and the walk runs there, so a render-origin rebase of the root needs no rebuild.
 
+mod assignment;
 mod volume;
 
 use volume::{MeshBounds, RoomVisibility, VisibilityVolume};
@@ -133,10 +140,26 @@ use std::{
     path::PathBuf,
 };
 
-/// Marks a placed reference that room culling must never hide: an authored multibound override,
-/// an actor, a door, or anything that can move. See the module documentation.
+/// Marks a placed reference that room culling must never hide, such as an actor or animated door.
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct RoomCullExempt;
+
+/// Authored policies and loose objects stay exempt until native assignment metadata is available.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct RoomCullLegacyExempt;
+
+/// Ownership persists until the reference moves or its cell root is replaced.
+#[derive(Default)]
+pub struct RoomAssignmentCache(HashMap<(u32, Entity, Entity), assignment::CachedAssignment>);
+
+pub fn assignment_follows_transform(record_type: Option<&str>) -> bool {
+    matches!(
+        record_type,
+        Some(
+            "MISC" | "ALCH" | "AMMO" | "ARMO" | "BOOK" | "INGR" | "KEYM" | "SCRL" | "SLGM" | "WEAP"
+        )
+    )
+}
 
 /// Whether a base record type (the `records.record_type` of a reference's base object) is one
 /// room culling must not hide: actors and their leveled lists, doors, activators, and the
@@ -406,6 +429,7 @@ pub struct Membership {
 /// The room graph of one interior cell, in the space of the cell root.
 #[derive(Debug, Clone, Default)]
 pub struct RoomGraph {
+    pub(crate) authored: Option<assignment::Assignments>,
     /// Full export with authored endpoint provenance and complete reference identities.
     pub supports_unbounded: bool,
     pub rooms: Vec<Room>,
@@ -478,6 +502,14 @@ fn project_box(room: &Room, clip_from_local: Mat4) -> Option<Rect> {
 impl RoomGraph {
     /// Indices of the rooms whose box holds a cell-local point, in table order.
     pub fn rooms_containing(&self, point: Vec3) -> Vec<usize> {
+        if let Some(authored) = &self.authored {
+            return (0..self.rooms.len())
+                .filter(|&index| {
+                    authored.masters[index] == Some(index)
+                        && authored.contains(&self.rooms, index, point)
+                })
+                .collect();
+        }
         self.rooms
             .iter()
             .enumerate()
@@ -496,6 +528,11 @@ impl RoomGraph {
         let full = VisibilityVolume::camera(clip_from_local)?;
         let room_count = self.rooms.len();
         if room_count == 0 {
+            return None;
+        }
+        if self.authored.as_ref().is_some_and(|authored| {
+            !authored.complete || authored.masters.iter().any(Option::is_none)
+        }) {
             return None;
         }
         let outside = room_count;
@@ -546,7 +583,7 @@ impl RoomGraph {
         while let Some((room, arriving)) = pending.pop() {
             // Open halls can expose rooms across uncovered box gaps. Keep their conservative
             // fallback until authored joins and room assignment are available.
-            if room != outside && !has_portal[room] {
+            if self.authored.is_none() && room != outside && !has_portal[room] {
                 return None;
             }
             let Some(seen) = visibility[room].insert(arriving, &full) else {
@@ -775,7 +812,16 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
             }
         }
     }
-    let implicit: Vec<(usize, usize)> = overlap_links(&graph.rooms)
+    if graph.supports_unbounded {
+        graph.authored = assignment::load(connection, cell_id, &graph.rooms, &mut graph.portals)?;
+    }
+    if graph.authored.is_some() {
+        graph.links.clear();
+    }
+    let implicit: Vec<(usize, usize)> = if graph.authored.is_some() {
+        Vec::new()
+    } else {
+        overlap_links(&graph.rooms)
         .into_iter()
         .filter(|&(a, b)| {
             let joined = |&(x, y): &(usize, usize)| (x, y) == (a, b) || (x, y) == (b, a);
@@ -785,7 +831,8 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
                     .iter()
                     .any(|portal| matches!(portal.rooms, [PortalSide::Room(x), PortalSide::Room(y)] if joined(&(x, y))))
         })
-        .collect();
+        .collect()
+    };
     if !implicit.is_empty() {
         info!(
             "room culling: cell {cell_id:08X} has {} implicit overlap edges between touching or overlapping rooms",
@@ -1079,10 +1126,16 @@ pub fn cull_room_views(
     >,
     mesh_bounds: Query<(&Aabb, &GlobalTransform), Without<NoFrustumCulling>>,
     reference_bounds: Query<(&ExpectedModelBounds, &GlobalTransform)>,
+    reference_transforms: Query<&GlobalTransform>,
     parents: Query<&ChildOf>,
     ids: Query<&FormId>,
-    exemptions: Query<(Option<&RigidBody>, Has<RoomCullExempt>)>,
+    exemptions: Query<(
+        Option<&RigidBody>,
+        Has<RoomCullExempt>,
+        Has<RoomCullLegacyExempt>,
+    )>,
     mut owners: Local<HashMap<Entity, (u32, Entity)>>,
+    mut assignments: Local<RoomAssignmentCache>,
 ) {
     state.culled_last_frame = 0;
     state.main_view_meshes = None;
@@ -1090,6 +1143,13 @@ pub fn cull_room_views(
     cells.sort_unstable();
     let mut culled = 0;
     let mut main_view = None;
+    assignments.0.retain(|&(cell, root, reference), _| {
+        state
+            .graphs
+            .get(&cell)
+            .is_some_and(|loaded| loaded.root == root)
+            && reference_transforms.get(reference).is_ok()
+    });
     for (camera_transform, projection, camera, is_main, mut visible) in &mut views {
         if camera.is_some_and(|camera| !camera.is_active) {
             continue;
@@ -1134,17 +1194,74 @@ pub fn cull_room_views(
                     return true;
                 };
                 // Re-read every frame: a body can be added after the mesh spawns.
+                let has_bound = loaded
+                    .graph
+                    .authored
+                    .as_ref()
+                    .is_some_and(|authored| authored.has_source_bound(form_id));
                 let exempted = |entity| {
-                    exemptions
-                        .get(entity)
-                        .is_ok_and(|(body, marked)| marked || body.is_some_and(|b| body_moves(*b)))
+                    exemptions.get(entity).is_ok_and(|(body, marked, legacy)| {
+                        marked
+                            || (legacy && loaded.graph.authored.is_none())
+                            || (body.is_some_and(|body| body_moves(*body))
+                                && (entity != reference || !has_bound))
+                    })
                 };
-                if exempted(reference) || exempted(entity) {
+                let mut ancestor = entity;
+                for _ in 0..=32 {
+                    if exempted(ancestor) {
+                        return true;
+                    }
+                    if ancestor == reference {
+                        break;
+                    }
+                    let Ok(parent) = parents.get(ancestor) else {
+                        return true;
+                    };
+                    ancestor = parent.parent();
+                }
+                if ancestor != reference {
                     return true;
                 }
                 let bounds = mesh_bounds.get(entity).ok().and_then(|(aabb, transform)| {
                     MeshBounds::transformed(aabb, local_from_world * transform.affine())
                 });
+                if let Some(authored) = &loaded.graph.authored {
+                    if !authored.has_rule(form_id) {
+                        return true;
+                    }
+                    let Ok(matrix) = reference_transforms.get(reference) else {
+                        return true;
+                    };
+                    let transform = local_from_world * matrix.affine();
+                    let assigned = assignments
+                        .0
+                        .entry((*cell, loaded.root, reference))
+                        .or_insert_with(|| assignment::CachedAssignment {
+                            transform,
+                            owners: authored.initial_owners(
+                                form_id,
+                                transform,
+                                &loaded.graph.rooms,
+                                &loaded.graph.portals,
+                            ),
+                        });
+                    if !transform.abs_diff_eq(assigned.transform, 1.0e-3) {
+                        assigned.transform = transform;
+                        assigned.owners = authored.owners(
+                            form_id,
+                            Some(transform),
+                            &loaded.graph.rooms,
+                            &loaded.graph.portals,
+                        );
+                    }
+                    return assignment::draws(
+                        &assigned.owners,
+                        &loaded.graph.portals,
+                        &volumes,
+                        bounds.as_ref(),
+                    );
+                }
                 let owner_bounds =
                     reference_bounds
                         .get(reference)
@@ -1274,6 +1391,134 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(SCHEMA).unwrap();
         connection
+    }
+
+    fn authored_database() -> Connection {
+        let connection = database();
+        connection.execute_batch(
+            "ALTER TABLE room_portals ADD COLUMN unbounded_a INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE room_portals ADD COLUMN unbounded_b INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE room_links ADD COLUMN link_index INTEGER NOT NULL DEFAULT 0;
+             INSERT INTO room_graph_stats VALUES ('visibility_version',2),('assignment_version',1);
+             CREATE TABLE room_reference_rules(reference_id INTEGER,cell_id INTEGER,assignment TEXT,target_ref INTEGER);
+             CREATE TABLE room_model_bounds(base_form_id INTEGER,center_x REAL,center_y REAL,center_z REAL,radius REAL);
+             CREATE TABLE room_graph_cells(cell_id INTEGER,complete INTEGER);
+             INSERT INTO room_graph_cells VALUES(7,1);
+             CREATE TABLE \"references\"(id INTEGER,cell_id INTEGER,base_form_id INTEGER,
+                 pos_x REAL DEFAULT 0,pos_y REAL DEFAULT 0,pos_z REAL DEFAULT 0,
+                 rot_x REAL DEFAULT 0,rot_y REAL DEFAULT 0,rot_z REAL DEFAULT 0,scale REAL DEFAULT 1);"
+        ).unwrap();
+        connection
+    }
+
+    #[test]
+    fn authored_join_redirects_portals_and_preserves_disjoint_bounds() {
+        let connection = authored_database();
+        insert_room(&connection, 1, 7, [0.0; 3]);
+        insert_room(&connection, 2, 7, [100.0, 0.0, 0.0]);
+        insert_room(&connection, 3, 7, [200.0, 0.0, 0.0]);
+        connection
+            .execute_batch(
+                "UPDATE room_bounds SET flags=256 WHERE ref_id IN (1,3);
+             INSERT INTO room_links VALUES(1,2,0),(2,1,0);
+             INSERT INTO room_portals VALUES(10,7,150,0,0,0,0,0,4,6,2,3,0,0);",
+            )
+            .unwrap();
+        let graph = load_room_graph(&connection, 7).unwrap();
+        assert!(graph.authored.is_some());
+        assert_eq!(graph.rooms_containing(Vec3::new(100.0, 0.0, 0.0)), [0]);
+        assert!(graph.rooms_containing(Vec3::new(50.0, 0.0, 0.0)).is_empty());
+        assert_eq!(
+            graph.portals[0].rooms,
+            [PortalSide::Room(0), PortalSide::Room(2)]
+        );
+        assert!(graph.links.is_empty() && graph.overlaps.is_empty());
+    }
+
+    #[test]
+    fn current_source_bound_assignment_replaces_stale_membership_for_a_moving_reference() {
+        let connection = authored_database();
+        insert_room(&connection, 1, 7, [0.0; 3]);
+        insert_room(&connection, 2, 7, [0.0, 25.0, 0.0]);
+        connection
+            .execute_batch(
+                "INSERT INTO \"references\"(id,cell_id,base_form_id) VALUES(2,7,99);
+             INSERT INTO room_reference_rules VALUES(2,7,'auto',NULL);
+             INSERT INTO room_model_bounds VALUES(99,0,0,-25,1);
+             INSERT INTO reference_rooms VALUES(2,1,1);",
+            )
+            .unwrap();
+        let graph = load_room_graph(&connection, 7).unwrap();
+        let mut scene = scene();
+        scene
+            .app
+            .world_mut()
+            .resource_mut::<RoomCullingState>()
+            .graphs
+            .get_mut(&7)
+            .unwrap()
+            .graph = graph;
+        let reference = scene
+            .app
+            .world()
+            .get::<ChildOf>(scene.far)
+            .unwrap()
+            .parent();
+        scene.app.world_mut().entity_mut(reference).insert((
+            GlobalTransform::IDENTITY,
+            RigidBody::Dynamic,
+            RoomCullLegacyExempt,
+        ));
+        scene.app.world_mut().entity_mut(scene.far).insert((
+            Aabb::from_min_max(-Vec3::splat(0.5), Vec3::splat(0.5)),
+            GlobalTransform::from_translation(Vec3::new(0.0, 0.0, -25.0)),
+        ));
+        run_cull(&mut scene.app);
+        assert!(
+            !mesh_list(&scene.app, scene.camera).contains(&scene.far),
+            "bound center is in the unreached room despite its pivot membership"
+        );
+        scene
+            .app
+            .world_mut()
+            .entity_mut(reference)
+            .insert(GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 20.0)));
+        scene
+            .app
+            .world_mut()
+            .entity_mut(scene.far)
+            .insert(GlobalTransform::from_translation(Vec3::new(0.0, 0.0, -5.0)));
+        scene
+            .app
+            .world_mut()
+            .get_mut::<VisibleEntities>(scene.camera)
+            .unwrap()
+            .get_mut(TypeId::of::<Mesh3d>())
+            .push(scene.far);
+        run_cull(&mut scene.app);
+        assert!(
+            mesh_list(&scene.app, scene.camera).contains(&scene.far),
+            "movement reassigns ownership before filtering this view"
+        );
+        scene
+            .app
+            .world_mut()
+            .entity_mut(reference)
+            .insert(GlobalTransform::IDENTITY);
+        let moving_child = scene
+            .app
+            .world_mut()
+            .spawn((ChildOf(reference), RigidBody::Dynamic))
+            .id();
+        scene.app.world_mut().entity_mut(scene.far).insert((
+            ChildOf(moving_child),
+            GlobalTransform::from_translation(Vec3::new(0.0, 0.0, -25.0)),
+        ));
+        run_cull(&mut scene.app);
+        assert!(
+            mesh_list(&scene.app, scene.camera).contains(&scene.far),
+            "an independently moving ancestor invalidates the reference's fixed source sphere"
+        );
     }
 
     fn insert_room(connection: &Connection, id: u32, cell: u32, position: [f32; 3]) {
@@ -1491,6 +1736,7 @@ mod tests {
             links: vec![],
             overlaps: vec![],
             membership: HashMap::new(),
+            authored: None,
             supports_unbounded: false,
         }
     }
@@ -1576,6 +1822,7 @@ mod tests {
         let mut offscreen = doorway(11, Vec3::new(40.0, 0.0, -10.0), 2.0, [1, 1]);
         offscreen.rooms = [PortalSide::Unbounded, PortalSide::Room(1)];
         RoomGraph {
+            authored: None,
             supports_unbounded: true,
             rooms: vec![
                 room(1, Vec3::new(0.0, 0.0, -20.0), 5.0),
@@ -1841,6 +2088,7 @@ mod tests {
             links: vec![],
             overlaps: vec![],
             membership: HashMap::new(),
+            authored: None,
             supports_unbounded: false,
         };
         graph.membership.insert(
@@ -2404,6 +2652,7 @@ mod tests {
             ))
             .id();
         let graph = RoomGraph {
+            authored: None,
             supports_unbounded: false,
             rooms: vec![
                 room(1, Vec3::ZERO, 10.0),
@@ -2725,6 +2974,7 @@ mod tests {
             links: vec![],
             overlaps: vec![],
             membership: HashMap::new(),
+            authored: None,
             supports_unbounded: false,
             rooms: rooms.clone(),
         };
@@ -2849,6 +3099,7 @@ mod tests {
             links: vec![],
             overlaps: overlap_links(&rooms),
             membership: HashMap::new(),
+            authored: None,
             supports_unbounded: false,
             rooms,
         }
@@ -2972,6 +3223,7 @@ mod tests {
             links: vec![],
             overlaps: overlap_links(&rooms),
             membership: HashMap::new(),
+            authored: None,
             supports_unbounded: false,
         };
         assert_eq!(
@@ -3017,6 +3269,7 @@ mod tests {
             links: vec![],
             overlaps: overlap_links(&rooms),
             membership: HashMap::new(),
+            authored: None,
             supports_unbounded: false,
         };
         assert_eq!(

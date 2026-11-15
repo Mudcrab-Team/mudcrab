@@ -26,6 +26,8 @@ use std::{
 };
 use walkdir::WalkDir;
 
+mod room_bounds;
+
 pub struct MeshConverter;
 
 /// Distinguishes rigid unresolved-skin output from a self-contained rig's skins.
@@ -359,7 +361,14 @@ impl MeshConverter {
             .map(|node| node.name.clone().unwrap_or_default())
             .collect();
         retain_bodies_for_written_glb(&mut collision, &glb, Some(&source_order))?;
-        let glb = embed_collision(glb, &collision)?;
+        let mut glb = embed_collision(glb, &collision)?;
+        if !declares_skin && let Some(sphere) = room_bounds::source_sphere(&nif) {
+            let mut document = glb_json_from_bytes(&glb)?;
+            document["extras"]["mudcrabRoomSphere"] = serde_json::json!({
+                "version": 1, "center": sphere.center, "radius": sphere.radius
+            });
+            glb = rebuild_glb_with_document(&glb, &document)?;
+        }
         if !model.skeletal_meshes.is_empty() {
             validate_declared_skin_glb(&glb, nif_path)?;
         }
@@ -4850,6 +4859,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn assignment_sphere_keeps_source_bounds_and_ignores_the_reference_root_transform() {
+        use project_wormhole_shared::glam::{Mat3, Vec3};
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("source.nif");
+        fs::write(&input, static_nif()).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let (NifBlock::NiNode(root) | NifBlock::BSFadeNode(root)) = &mut nif.blocks[0] else {
+            unreachable!()
+        };
+        root.av.translation.0.0 = Vec3::splat(1000.0);
+        root.av.scale.0 = 10.0;
+        let NifBlock::BSTriShape(shape) = &mut nif.blocks[1] else {
+            unreachable!()
+        };
+        shape.bounding_sphere.center = [10.0, 20.0, 30.0];
+        shape.bounding_sphere.radius = 2.0;
+        shape.av.translation.0.0 = Vec3::new(3.0, 4.0, 5.0);
+        shape.av.rotation.0.0 = Mat3::IDENTITY;
+        shape.av.scale.0 = 2.0;
+        assert_eq!(
+            room_bounds::source_sphere(&nif),
+            Some(shared::room_assignment::ModelSphere {
+                center: [23.0, 65.0, -44.0],
+                radius: 4.0,
+            })
+        );
+        nif.blocks[1] = NifBlock::Unhandled;
+        assert!(room_bounds::source_sphere(&nif).is_none());
+    }
+
     fn static_nif() -> Vec<u8> {
         dummy_content::nif::static_shape(&dummy_content::nif::StaticShape {
             name: "PropertyQuad",
@@ -5038,6 +5078,7 @@ mod tests {
     /// the shared 256-node bound. The pinned hashes come from the converter before that bound,
     /// except that both single-shape cases also carry the `mudcrabGeometryIndex` primitive tag
     /// that `object-texture-swap-geometry-index-v1` adds; each case asserts that tag below.
+    /// Additive room-assignment metadata is excluded from this render-output comparison.
     #[test]
     fn shallow_scene_glb_bytes_are_unchanged_by_the_depth_bound() {
         let directory = tempfile::tempdir().unwrap();
@@ -5058,14 +5099,20 @@ mod tests {
             let output = input.with_extension("glb");
             fs::write(&input, source).unwrap();
             MeshConverter::convert_nif_to_glb_with_skeleton(&input, &output, None).unwrap();
-            let bytes = fs::read(&output).unwrap();
-            let document = glb_json_from_bytes(&bytes).unwrap();
+            let glb = fs::read(&output).unwrap();
+            let mut document = glb_json_from_bytes(&glb).unwrap();
             assert_eq!(
                 document["meshes"][0]["primitives"][0]["extras"]["mudcrabGeometryIndex"], 0,
                 "{name}: the single shape carries its geometry index"
             );
+            if let Some(extras) = document["extras"].as_object_mut() {
+                extras.remove("mudcrabRoomSphere");
+                if extras.is_empty() {
+                    document.as_object_mut().unwrap().remove("extras");
+                }
+            }
             assert_eq!(
-                crate::cache::hash_bytes(&bytes),
+                crate::cache::hash_bytes(&rebuild_glb_with_document(&glb, &document).unwrap()),
                 expected,
                 "{name}: GLB bytes changed"
             );
