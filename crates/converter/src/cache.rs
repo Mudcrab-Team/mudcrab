@@ -655,7 +655,7 @@ fn configuration_hash_with_identity(
         "script_abi_version": config.script_abi_version,
     });
     // Keep historical metadata identities stable. Changed output recipes belong
-    // to per-kind proofs; combined proofs cannot authorize those newer bytes.
+    // to per-kind or per-source proofs; combined proofs alone cannot authorize newer bytes.
     if let Some(identity) = identity {
         relevant["record_reader"] = identity.clone();
     }
