@@ -437,7 +437,7 @@ async fn combined_export_keeps_grass_links_lod_origins_and_payloads() {
     rule[24..28].copy_from_slice(&1.0f32.to_le_bytes());
     plugin.extend(record(
         b"GRAS",
-        0x0100_0801,
+        0x801,
         &[
             sub(b"EDID", b"CombinedGrass\0"),
             sub(b"MODL", b"grass/optional.nif\0"),
@@ -448,7 +448,7 @@ async fn combined_export_keeps_grass_links_lod_origins_and_payloads() {
     plugin.extend(record(
         b"LTEX",
         0x802,
-        &sub(b"GNAM", &0x0100_0801u32.to_le_bytes()),
+        &sub(b"GNAM", &0x801u32.to_le_bytes()),
     ));
     fs::write(data.join("Grass.esp"), plugin).unwrap();
     let output = directory.path().join("combined");
