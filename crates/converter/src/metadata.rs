@@ -431,13 +431,18 @@ fn settings_for_source_reader_in_lineage(
                     crate::cache::inhouse_adapter10_reader_identity(&schemas),
                     crate::cache::inhouse_adapter11_reader_identity(&schemas),
                     crate::cache::inhouse_adapter12_reader_identity(&schemas, &language),
+                    crate::cache::inhouse_adapter13_reader_identity(&schemas, &language),
                 ]
                 .iter()
                 .any(|prior| prior.as_ref() == Some(identity)))
             || (reader == crate::config::RecordReader::Legacy
                 && schemas.identities().is_empty()
-                && crate::cache::legacy_projection4_reader_identity(&language).as_ref()
-                    == Some(identity))
+                && [
+                    crate::cache::legacy_projection4_reader_identity(&language),
+                    crate::cache::legacy_projection5_reader_identity(&language),
+                ]
+                .iter()
+                .any(|prior| prior.as_ref() == Some(identity)))
             || (reader == crate::config::RecordReader::Legacy
                 && (identity == &serde_json::json!({"mode": "legacy"})
                     || identity
@@ -538,6 +543,93 @@ fn matched_plugins(source: &Path, data: &Path) -> Result<(Vec<PathBuf>, Vec<Stri
         hashes.push(expected);
     }
     Ok((plugins, hashes))
+}
+
+/// Enforce retained source identity for every ordinary LTEX diffuse.
+fn verify_retained_terrain_source(
+    vfs: &Path,
+    relative: &Path,
+    manifest: &ConversionManifest,
+) -> Result<()> {
+    if let Some(entry) = manifest
+        .entries
+        .get(&relative.to_string_lossy().to_string())
+        && vfs.join(relative).is_file()
+    {
+        let raw_hash = hash_file(&vfs.join(relative))?;
+        ensure!(
+            entry
+                .source_hash
+                .split_once(":texture-encoding:")
+                .is_some_and(|(recorded, _)| recorded == raw_hash),
+            "retained terrain texture source differs from current inputs: {}",
+            relative.display()
+        );
+    }
+    Ok(())
+}
+
+/// Discard partial or stale default bytes so publication can select its existing fallback.
+/// Failure to remove a staged file is a publication failure, not damaged input recovery.
+fn discard_default_source(
+    vfs: &Path,
+    relative: &Path,
+    error: &color_eyre::Report,
+    report: &mut PipelineReport,
+) -> Result<()> {
+    match fs::remove_file(vfs.join(relative)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    report.notices.push(format!(
+        "unusable default land source {} omitted: {error:#}",
+        relative.display()
+    ));
+    Ok(())
+}
+
+/// Stage one default-only path without letting a broken override abort metadata publication.
+/// Ordinary terrain paths are excluded by the caller and retain strict overlay/hash checks.
+fn stage_optional_default_source(
+    config: &PipelineConfig,
+    vfs: &Path,
+    relative: &Path,
+    archives: &[PathBuf],
+    files: &[PathBuf],
+    report: &mut PipelineReport,
+) -> Result<()> {
+    let paths = BTreeSet::from([relative.to_owned()]);
+    for archive in archives {
+        if let Err(error) = ArchiveExtractor::extract_paths(archive, vfs, &paths) {
+            discard_default_source(vfs, relative, &error, report)?;
+        }
+    }
+    let loose: Vec<_> = files
+        .iter()
+        .filter(|path| {
+            if !path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("dds"))
+            {
+                return false;
+            }
+            path.strip_prefix(&config.data_dir)
+                .ok()
+                .and_then(|path| {
+                    canonical_asset_path(&path.to_string_lossy(), AssetKind::Texture, "dds").ok()
+                })
+                .is_some_and(|canonical| Path::new(&canonical) == relative)
+        })
+        .cloned()
+        .collect();
+    if let Err(error) = overlay_loose_assets(&config.data_dir, vfs, &loose) {
+        // A failed winning loose override must not expose a lower-priority archive copy.
+        discard_default_source(vfs, relative, &error, report)?;
+    }
+    // Generated default images are never retained: publication consumes current DDS bytes.
+    // Only ordinary LTEX inputs must match the retained package's texture proofs.
+    Ok(())
 }
 
 /// Rebuild requested metadata while publishing the already verified original asset provenance.
@@ -796,6 +888,19 @@ async fn rebuild_into(
         None
     };
     let diffuse_paths = terrain_diffuse_paths(&Connection::open(&database)?)?;
+    // Read the freshly rebuilt cache, not the retained source pack's coverage.
+    // A path also named by an LTEX remains required, even if it is a configured default.
+    let default_paths: BTreeSet<_> = if config.terrain_default_texture
+        == crate::config::TerrainDefaultTexture::SkyrimIni
+        && crate::terrain_pipeline::default_land_is_needed(staging)?
+    {
+        crate::terrain_pipeline::default_land_sources(config)?
+            .into_iter()
+            .filter(|path| !diffuse_paths.contains(path))
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
     for archive in &archives {
         ArchiveExtractor::extract_paths(archive, &vfs, &diffuse_paths)?;
     }
@@ -815,21 +920,10 @@ async fn rebuild_into(
         .collect();
     overlay_loose_assets(&config.data_dir, &vfs, &loose_diffuse)?;
     for relative in &diffuse_paths {
-        if let Some(entry) = manifest
-            .entries
-            .get(&relative.to_string_lossy().to_string())
-            && vfs.join(relative).is_file()
-        {
-            let raw_hash = hash_file(&vfs.join(relative))?;
-            ensure!(
-                entry
-                    .source_hash
-                    .split_once(":texture-encoding:")
-                    .is_some_and(|(recorded, _)| recorded == raw_hash),
-                "retained terrain texture source differs from current inputs: {}",
-                relative.display()
-            );
-        }
+        verify_retained_terrain_source(&vfs, relative, manifest)?;
+    }
+    for relative in &default_paths {
+        stage_optional_default_source(config, &vfs, relative, &archives, &files, &mut report)?;
     }
     report.artifacts.extend([
         PathBuf::from("skyrim_world.db"),
@@ -1887,7 +1981,7 @@ mod metadata_schema_controls {
     /// Known prior adapters retain the exact original schema and reject unproven variants.
     #[test]
     fn adapter10_source_settings_require_original_saved_schema_and_identity() {
-        for adapter in [10, 11, 12] {
+        for adapter in [10, 11, 12, 13] {
             let original = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
             let mut identity =
                 crate::esm::inhouse::reader_identity_with_schemas(RecordReader::Inhouse, &original);
@@ -1912,7 +2006,7 @@ mod metadata_schema_controls {
                 ORIGINAL
             );
             assert_eq!(identity["adapter_version"], adapter);
-            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 13);
+            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 14);
             assert!(
                 settings_for_source_reader(
                     &config,
@@ -1922,7 +2016,11 @@ mod metadata_schema_controls {
                 .is_err()
             );
             for (key, value) in [
+                // Rule: a metadata-only migration to adapter 14 accepts retained-asset sources
+                // of adapters 10 to 13 (the loop above) and nothing else. Adapter 8 and any
+                // adapter newer than the producer are unproven and must regenerate assets.
                 ("adapter_version", serde_json::json!(8)),
+                ("adapter_version", serde_json::json!(15)),
                 ("schema_sha256", serde_json::json!("different-schema")),
                 ("schema_addons", serde_json::json!([])),
                 ("language", serde_json::json!("french")),
@@ -1955,6 +2053,17 @@ mod metadata_schema_controls {
             ORIGINAL
         );
         assert_eq!(identity["adapter_version"], 12);
+        assert_eq!(identity["string_table_encoding"], "utf-8-or-windows-1252");
+    }
+
+    #[test]
+    fn adapter13_retains_exact_non_english_source_settings() {
+        let schemas = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
+        let identity = crate::cache::inhouse_adapter13_reader_identity(&schemas, "french").unwrap();
+        let config = PipelineConfig::new("Data", "output");
+        let recovered = settings_for_source_reader(&config, &identity, schemas).unwrap();
+        assert_eq!(recovered.language, "french");
+        assert_eq!(identity["adapter_version"], 13);
         assert_eq!(identity["string_table_encoding"], "utf-8-or-windows-1252");
     }
 
@@ -2016,6 +2125,7 @@ mod metadata_schema_controls {
             serde_json::json!({"mode": "legacy", "projection_version": 2}),
             serde_json::json!({"mode": "legacy", "projection_version": 3}),
             crate::cache::legacy_projection4_reader_identity("english").unwrap(),
+            crate::cache::legacy_projection5_reader_identity("english").unwrap(),
             crate::esm::inhouse::reader_identity(RecordReader::Legacy),
         ] {
             let settings = settings_for_source_reader(
@@ -2028,7 +2138,7 @@ mod metadata_schema_controls {
         }
         for identity in [
             serde_json::json!({"mode": "legacy", "projection_version": 0}),
-            serde_json::json!({"mode": "legacy", "projection_version": 6}),
+            serde_json::json!({"mode": "legacy", "projection_version": 7}),
             serde_json::json!({"mode": "legacy", "unproven": true}),
         ] {
             assert!(

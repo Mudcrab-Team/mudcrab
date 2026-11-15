@@ -269,6 +269,8 @@ fog, stream radius and poses. `--shots` pins water animation to 1.0 seconds; nor
 interactive runs and matched movement routes keep animated water. Capture receipts
 record grade selection and fixed water time. The script rejects failed runs,
 timeout captures, missing receipts and inconsistent poses before accepting a set.
+The script passes `--game-hour 12` because the native Riverwood reference was captured at noon;
+the engine default hour is the retail `GameHour` record (GLOB 0x38, 8.0).
 PNG files and logs stay outside the repository; this is Mudcrab A/B evidence,
 not matched retail Skyrim or a performance benchmark.
 
