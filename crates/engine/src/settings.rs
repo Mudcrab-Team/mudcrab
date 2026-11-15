@@ -101,6 +101,11 @@ pub struct RenderingSettings {
     pub diagnostic_asset_fallbacks: bool,
     /// [`crate::visual_profile::VisualProfile`] index; read only at startup.
     pub visual_profile: usize,
+    /// Session-only window size from an interactive start shot, in logical points like
+    /// [`WINDOW_SIZES`]. A window control edit or reset returns to the selected preference size;
+    /// this value is never serialized.
+    #[serde(skip)]
+    pub window_size_override: Option<(u32, u32)>,
 }
 
 impl Default for RenderingSettings {
@@ -172,6 +177,7 @@ impl Default for RenderingSettings {
             io_threads: config.io_threads,
             diagnostic_asset_fallbacks: config.diagnostic_asset_fallbacks,
             visual_profile: config.visual_profile.index(),
+            window_size_override: None,
         }
     }
 }
@@ -746,6 +752,25 @@ impl SettingsFile {
         settings.unload_radius = config.unload_radius;
     }
 
+    /// Apply launch-only start-shot framing while retaining saved preferences.
+    pub(crate) fn apply_start_shot(
+        &mut self,
+        settings: &mut RenderingSettings,
+        fov_degrees: f32,
+        dimensions: (u32, u32),
+    ) {
+        settings.fov_degrees = fov_degrees;
+        settings.window_mode = 0;
+        settings.window_size_override = Some(dimensions);
+        if !self
+            .launch_overrides
+            .iter()
+            .any(|flag| flag == "--start-shot")
+        {
+            self.launch_overrides.push("--start-shot".into());
+        }
+    }
+
     pub fn session_only() -> Self {
         Self {
             path: None,
@@ -780,7 +805,15 @@ impl SettingsFile {
         self.metal_drawing_default_available = true;
         self.metal_drawing_auto_unowned = true;
         *settings = RenderingSettings::default();
-        self.status = "Defaults restored for this session. Choose Save to keep them.".into();
+        self.status = if self
+            .launch_overrides
+            .iter()
+            .any(|flag| flag == "--start-shot")
+        {
+            "Defaults restored for this session. Save preserves the pre-launch FOV, window mode, and window size.".into()
+        } else {
+            "Defaults restored for this session. Choose Save to keep them.".into()
+        };
     }
 
     pub fn save(&mut self, settings: &RenderingSettings) {
@@ -790,6 +823,8 @@ impl SettingsFile {
                 &self.persisted(settings),
                 self.metal_drawing_auto_unowned,
             ) {
+                Ok(()) if self.launch_overrides.iter().any(|flag| flag == "--start-shot") =>
+                    "Settings saved. IO-thread changes apply after restart. Save preserves the pre-launch FOV, window mode, and window size.".into(),
                 Ok(()) => "Settings saved. IO-thread changes apply after restart.".into(),
                 Err(error) => format!("Could not save settings: {error}"),
             },
@@ -803,6 +838,7 @@ impl SettingsFile {
     /// launch value stays in effect until the next run.
     fn persisted(&self, settings: &RenderingSettings) -> RenderingSettings {
         let mut persisted = settings.clone();
+        persisted.window_size_override = None;
         persisted.take_launch_owned_values(&self.stored, &self.launch_overrides);
         if let Some((stream_radius, unload_radius)) = self.grass_coverage {
             if persisted.stream_radius == stream_radius {
@@ -812,6 +848,15 @@ impl SettingsFile {
                 // A menu edit to the stream ring still needs a covering unload ring.
                 persisted.unload_radius = self.stored.unload_radius.max(persisted.stream_radius);
             }
+        }
+        if self
+            .launch_overrides
+            .iter()
+            .any(|flag| flag == "--start-shot")
+        {
+            persisted.fov_degrees = self.stored.fov_degrees;
+            persisted.window_mode = self.stored.window_mode;
+            persisted.window_size = self.stored.window_size;
         }
         if self.preserve_unavailable_record_mode && !self.unavailable_record_mode_replaced {
             persisted.color_grade = self.stored.color_grade;
@@ -838,8 +883,8 @@ pub(crate) fn prepare_settings(config: &mut EngineConfig) -> (RenderingSettings,
     prepare_settings_at(config, preferences_path())
 }
 
-/// Resolve saved preferences with launch ownership and active grass's terrain minimum.
-fn prepare_settings_at(
+/// Resolve saved preferences with launch ownership and active grass terrain coverage.
+pub(crate) fn prepare_settings_at(
     config: &mut EngineConfig,
     path: Option<PathBuf>,
 ) -> (RenderingSettings, SettingsFile) {
@@ -1134,6 +1179,11 @@ pub(crate) fn apply_render_settings(
         return;
     }
     retain_live_grass_coverage(settings.reborrow(), &config);
+    if previous.as_ref().is_some_and(|previous| {
+        previous.window_size != settings.window_size || previous.window_mode != settings.window_mode
+    }) {
+        settings.window_size_override = None;
+    }
     let old_mode = current_mode
         .as_deref()
         .copied()
@@ -1322,11 +1372,18 @@ pub(crate) fn apply_render_settings(
             };
         }
         if added
-            || previous
-                .as_ref()
-                .is_none_or(|previous| previous.window_size != settings.window_size)
+            || (settings.window_mode == 0
+                && previous.as_ref().is_none_or(|previous| {
+                    previous.window_size != settings.window_size
+                        || previous.window_mode != settings.window_mode
+                        || previous.window_size_override != settings.window_size_override
+                }))
         {
-            let (width, height) = WINDOW_SIZES[settings.window_size];
+            // Both sizes are logical points: the window backend multiplies them by the display
+            // scale factor, so a 2.0 display gets twice as many physical pixels.
+            let (width, height) = settings
+                .window_size_override
+                .unwrap_or(WINDOW_SIZES[settings.window_size]);
             window.resolution.set(width as f32, height as f32);
         }
     }
@@ -2048,6 +2105,105 @@ mod tests {
         app.world_mut()
             .resource_mut::<SettingsFile>()
             .save(&settings);
+    }
+
+    #[test]
+    fn start_shot_reset_reports_preserved_framing() {
+        let mut file = SettingsFile::session_only();
+        let mut settings = RenderingSettings::default();
+        file.restore_defaults(&mut settings);
+        assert_eq!(
+            file.status,
+            "Defaults restored for this session. Choose Save to keep them."
+        );
+        file.apply_start_shot(&mut settings, 60.0, (1920, 1080));
+        file.restore_defaults(&mut settings);
+        assert!(
+            file.status
+                .contains("Save preserves the pre-launch FOV, window mode, and window size")
+        );
+    }
+
+    #[test]
+    fn start_shot_save_reports_preserved_framing() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut file = SettingsFile::session_only();
+        file.path = Some(directory.path().join("settings.json"));
+        let mut settings = RenderingSettings::default();
+        file.save(&settings);
+        assert_eq!(
+            file.status,
+            "Settings saved. IO-thread changes apply after restart."
+        );
+        file.apply_start_shot(&mut settings, 60.0, (1920, 1080));
+        file.save(&settings);
+        assert!(
+            file.status
+                .contains("Save preserves the pre-launch FOV, window mode, and window size")
+        );
+    }
+
+    #[test]
+    fn start_shot_size_is_logical_points_at_any_display_scale() {
+        let (width, height) = (1280, 800);
+        for scale in [1.0_f32, 2.0] {
+            let mut app = App::new();
+            let settings = RenderingSettings {
+                window_size_override: Some((width, height)),
+                ..default()
+            };
+            app.add_plugins(MinimalPlugins)
+                .insert_resource(EngineConfig::default())
+                .insert_resource(settings)
+                .add_systems(Update, apply_render_settings);
+            let window = app
+                .world_mut()
+                .spawn((Window::default(), PrimaryWindow))
+                .id();
+            app.world_mut()
+                .get_mut::<Window>(window)
+                .unwrap()
+                .resolution
+                .set_scale_factor(scale);
+            app.update();
+            let physical = |app: &App| {
+                let resolution = &app.world().get::<Window>(window).unwrap().resolution;
+                assert_eq!(resolution.scale_factor_override(), None);
+                assert_eq!((resolution.width(), resolution.height()), (1280.0, 800.0));
+                (resolution.physical_width(), resolution.physical_height())
+            };
+            // 1280x800 requests 1280x800 logical points: 2560x1600 physical at scale 2.0.
+            let expected = (
+                (width as f32 * scale) as u32,
+                (height as f32 * scale) as u32,
+            );
+            assert_eq!(physical(&app), expected);
+            // A fullscreen round trip keeps the logical size and never forces a scale factor.
+            app.world_mut()
+                .resource_mut::<RenderingSettings>()
+                .window_mode = 1;
+            app.update();
+            app.world_mut()
+                .resource_mut::<RenderingSettings>()
+                .window_mode = 0;
+            app.update();
+            let resolution = &app.world().get::<Window>(window).unwrap().resolution;
+            assert_eq!(resolution.scale_factor_override(), None);
+            // Leaving fullscreen releases the session size for the preference size, also logical.
+            let (preset_width, preset_height) =
+                WINDOW_SIZES[RenderingSettings::default().window_size];
+            assert_eq!(
+                (resolution.width(), resolution.height()),
+                (preset_width as f32, preset_height as f32)
+            );
+            assert_eq!(
+                (resolution.physical_width(), resolution.physical_height()),
+                (
+                    (preset_width as f32 * scale) as u32,
+                    (preset_height as f32 * scale) as u32
+                )
+            );
+        }
     }
 
     #[test]

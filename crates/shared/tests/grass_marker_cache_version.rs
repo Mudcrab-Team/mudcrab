@@ -18,3 +18,16 @@ fn header_marker_policy_rejects_v6_masks() {
         "v6 masks predate authoritative marker-header filtering and must rebuild"
     );
 }
+
+/// Version-nine masks predate effective NullTextureSet hiding in the supported MODS path.
+#[test]
+fn mods_visibility_policy_rejects_v9_masks() {
+    let legacy = GrassCache {
+        version: 9,
+        types: vec![],
+        cells: vec![],
+    };
+    let bytes = rkyv::to_bytes::<Error>(&legacy).unwrap();
+    let archived = rkyv::access::<ArchivedGrassCache, Error>(&bytes).unwrap();
+    assert!(validate_archived_cache(archived).is_err());
+}

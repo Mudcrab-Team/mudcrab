@@ -196,7 +196,7 @@ impl MeshConverter {
         let primary = catch_unwind(AssertUnwindSafe(|| {
             nif_to_model_with_skin_fallback(&nif, skeleton.as_ref(), unresolved_skin)
         }));
-        let (mut model, used_static_fallback) = match primary {
+        let (mut model, mut used_static_fallback) = match primary {
             Ok(Ok((model, skin_diagnostics))) => {
                 for (block, cause) in skin_diagnostics {
                     let name = material_contract
@@ -304,6 +304,8 @@ impl MeshConverter {
                     )
                 })?;
             model = static_model;
+            // The recovered mesh is a static fallback, so it carries no geometry index.
+            used_static_fallback = true;
         }
         let shape_blocks = exported_shape_blocks(&nif, &model, &material_contract)?;
         let exported_material_contract = shape_blocks
@@ -326,6 +328,15 @@ impl MeshConverter {
             &shape_blocks,
             output,
         )?;
+        // A static fallback or a skin export does not prove the exported primitive for each source
+        // shape, and an unparsed block makes the geometry count unreliable. Those meshes keep their
+        // untagged form, so the engine leaves their materials alone.
+        let glb =
+            if declares_skin || used_static_fallback || !diagnostics.fallback_blocks.is_empty() {
+                glb
+            } else {
+                tag_geometry_indices(glb, &exported_material_contract, &shape_blocks, &nif)?
+            };
         ensure!(
             glb.len() >= 12 && &glb[..4] == b"glTF",
             "NIF exporter produced an invalid GLB header"
@@ -2389,6 +2400,149 @@ impl BoundsAccumulator {
     }
 }
 
+/// Whether a block is a geometry leaf for the retail 3D Index count: the five parsed geometry
+/// block kinds. Any other geometry kind parses as an unhandled block, which stops tagging.
+fn is_index_geometry(block: &NifBlock) -> bool {
+    matches!(
+        block,
+        NifBlock::BSTriShape(_)
+            | NifBlock::BSDynamicTriShape(_)
+            | NifBlock::BSSubIndexTriShape(_)
+            | NifBlock::BSLODTriShape(_)
+            | NifBlock::NiTriShape(_)
+    )
+}
+
+/// The retail 3D Index of every geometry block (RF-TEX-002): a pre-order, depth-first count of
+/// geometry leaves in child-array order, starting at 0 under the single scene root. Every
+/// geometry counts, including shapes the converter excludes or whose shader is not lighting.
+///
+/// Returns `None` when the count is not provable: no single root, a block reached twice (a shared
+/// subgraph, which retail would count twice), or a child that is not a parsed block.
+pub(crate) fn geometry_preorder_indices(blocks: &[NifBlock]) -> Option<BTreeMap<u32, u32>> {
+    let is_scene = |block: &NifBlock| block.as_node().is_ok() || is_index_geometry(block);
+    let mut is_child = vec![false; blocks.len()];
+    for block in blocks {
+        if let Ok(node) = block.as_node() {
+            for child in &node.children {
+                let child = usize::try_from(*child).ok()?;
+                if let Some(slot) = is_child.get_mut(child) {
+                    *slot = true;
+                }
+            }
+        }
+    }
+    let mut roots = (0..blocks.len()).filter(|&index| !is_child[index] && is_scene(&blocks[index]));
+    let root = roots.next()?;
+    if roots.next().is_some() {
+        return None;
+    }
+    let mut indices = BTreeMap::new();
+    let mut visited = vec![false; blocks.len()];
+    let mut stack = vec![(root, 0usize)];
+    visited[root] = true;
+    let mut next_index = 0u32;
+    if is_index_geometry(&blocks[root]) {
+        indices.insert(root as u32, next_index);
+        next_index += 1;
+    }
+    while let Some((block, child_at)) = stack.pop() {
+        let Ok(node) = blocks[block].as_node() else {
+            continue;
+        };
+        let Some(&child) = node.children.get(child_at) else {
+            continue;
+        };
+        stack.push((block, child_at + 1));
+        let Ok(child) = usize::try_from(child) else {
+            continue;
+        };
+        // A null child reference is not a block; any other missing child is unprovable.
+        if child >= blocks.len() {
+            if node.children[child_at] == u32::MAX {
+                continue;
+            }
+            return None;
+        }
+        if !is_scene(&blocks[child]) {
+            return None;
+        }
+        if std::mem::replace(&mut visited[child], true) {
+            return None;
+        }
+        if is_index_geometry(&blocks[child]) {
+            indices.insert(child as u32, next_index);
+            next_index += 1;
+        } else {
+            stack.push((child, 0));
+        }
+    }
+    Some(indices)
+}
+
+/// Record each exported lighting primitive's retail 3D Index as `extras.mudcrabGeometryIndex`.
+/// RF-TEX-003: only lighting-shader shapes are swapped, so only those are tagged; effect shapes,
+/// excluded shapes and untextured shapes still count in the index but carry no tag.
+/// The index comes from the source NIF, not from the GLB order, so it is the same number the
+/// game computes (RF-TEX-002) whatever order the exporter writes meshes in. The tag holds source
+/// identity only: it never carries a record's substitution.
+fn tag_geometry_indices(
+    glb: Vec<u8>,
+    contract: &[NifShapeMaterial],
+    shape_blocks: &[u32],
+    nif: &NifFile,
+) -> Result<Vec<u8>> {
+    use crate::material::NifShaderFamily;
+    let Some(indices) = geometry_preorder_indices(&nif.blocks) else {
+        return Ok(glb);
+    };
+    let mut document = glb_json_from_bytes(&glb)?;
+    let Some(meshes) = document
+        .get_mut("meshes")
+        .and_then(serde_json::Value::as_array_mut)
+        .filter(|meshes| meshes.len() == shape_blocks.len())
+    else {
+        return Ok(glb);
+    };
+    let mut tagged = false;
+    for (mesh, block) in meshes.iter_mut().zip(shape_blocks) {
+        let Some(NifMaterialDisposition::Validated { material }) = contract
+            .iter()
+            .find(|shape| shape.shape_block == *block)
+            .map(|shape| &shape.disposition)
+        else {
+            continue;
+        };
+        let (Some(index), NifShaderFamily::Lighting) = (indices.get(block), material.shader_family)
+        else {
+            continue;
+        };
+        let Some(primitives) = mesh
+            .get_mut("primitives")
+            .and_then(serde_json::Value::as_array_mut)
+            .filter(|primitives| primitives.len() == 1)
+        else {
+            continue;
+        };
+        let Some(primitive) = primitives[0].as_object_mut() else {
+            continue;
+        };
+        let Some(extras) = primitive
+            .entry("extras")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+        else {
+            continue;
+        };
+        extras.insert("mudcrabGeometryIndex".to_owned(), (*index).into());
+        tagged = true;
+    }
+    if !tagged {
+        return Ok(glb);
+    }
+    rebuild_glb_with_document(&glb, &document)
+}
+
 pub(crate) fn rewrite_materials_and_texture_uris(
     glb: Vec<u8>,
     material_contract: &[NifShapeMaterial],
@@ -3139,6 +3293,237 @@ mod tests {
     use crate::material::NifAlphaMode;
     use crate::test_strategies::{arbitrary_bytes, config, corrupted};
     use proptest::prelude::*;
+
+    fn geometry_test_contract() -> Vec<NifShapeMaterial> {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("shape.nif");
+        fs::write(&input, static_nif()).unwrap();
+        let (_, _, contract) = open_nif_resilient(&input).unwrap();
+        assert_eq!(contract.len(), 1);
+        assert!(matches!(
+            contract[0].disposition,
+            NifMaterialDisposition::Validated { .. }
+        ));
+        contract
+    }
+
+    /// A NIF of `nodes.len()` `NiNode` blocks (block `i` lists `nodes[i]`) followed by
+    /// `geometry` copies of the fixture's `BSTriShape`. Child references past the node count name
+    /// the geometry blocks in order.
+    fn tree_nif(nodes: &[Vec<u32>], geometry: usize) -> NifFile {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("tree.nif");
+        // Parse empty nodes, then set the child lists: the parser need not see references to
+        // blocks that come later in the file.
+        fs::write(&input, node_graph_nif(&vec![Vec::new(); nodes.len()])).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        for (block, children) in nif.blocks.iter_mut().zip(nodes) {
+            let NifBlock::NiNode(node) = block else {
+                panic!("fixture block must be a node");
+            };
+            node.children = children.clone();
+        }
+        let fixture = directory.path().join("shape.nif");
+        fs::write(&fixture, static_nif()).unwrap();
+        // `NifBlock` is not `Clone`: parse the fixture again for each geometry block.
+        for _ in 0..geometry {
+            let (shapes, _, _) = open_nif_resilient(&fixture).unwrap();
+            let shape = shapes
+                .blocks
+                .into_iter()
+                .find(|block| matches!(block, NifBlock::BSTriShape(_)))
+                .unwrap();
+            nif.blocks.push(shape);
+        }
+        nif
+    }
+
+    /// RF-TEX-002: the 3D Index is a pre-order depth-first count of geometry leaves in child
+    /// order. Nodes are 0 to 3 and geometry is 4 to 7. Root 0 lists node 1 then geometry 4; node 1
+    /// lists geometry 5 then node 2 then geometry 6; node 2 lists node 3; node 3 lists geometry 7.
+    #[test]
+    fn geometry_index_is_the_preorder_depth_first_count_in_child_order() {
+        let nif = tree_nif(&[vec![1, 4], vec![5, 2, 6], vec![3], vec![7, u32::MAX]], 4);
+        let indices = geometry_preorder_indices(&nif.blocks).unwrap();
+        // Order visited: 5, 7, 6, 4.
+        assert_eq!(indices, BTreeMap::from([(5, 0), (7, 1), (6, 2), (4, 3)]));
+    }
+
+    /// An unprovable count yields no indices rather than a guess: two roots, a block reached
+    /// twice, or a child that is not a scene block.
+    #[test]
+    fn geometry_index_is_refused_when_the_count_is_not_provable() {
+        // Two roots (nodes 0 and 1 are both unreferenced).
+        assert!(geometry_preorder_indices(&tree_nif(&[vec![2], vec![3]], 2).blocks).is_none());
+        // Geometry 1 is listed twice (retail would count it twice).
+        assert!(geometry_preorder_indices(&tree_nif(&[vec![1, 1]], 1).blocks).is_none());
+        // A child reference that is not a block.
+        assert!(geometry_preorder_indices(&tree_nif(&[vec![99]], 0).blocks).is_none());
+        // A node reachable by two parents.
+        assert!(
+            geometry_preorder_indices(&tree_nif(&[vec![1, 2], vec![3], vec![1], vec![]], 0).blocks)
+                .is_none()
+        );
+        // A lone geometry root has index 0.
+        let lone = tree_nif(&[Vec::new()], 1);
+        assert_eq!(
+            geometry_preorder_indices(&lone.blocks[1..]).unwrap(),
+            BTreeMap::from([(0, 0)])
+        );
+    }
+
+    /// RF-TEX-003: every geometry counts, but only a validated lighting-shader primitive carries
+    /// the index. An effect shape and an excluded shape keep their place in the count and get no tag.
+    #[test]
+    fn only_lighting_primitives_are_tagged_and_other_shapes_still_count() {
+        use crate::material::NifShaderFamily;
+        let nif = tree_nif(&[vec![1, 2, 3, 4], vec![5]], 4);
+        // Geometry blocks are 2 to 5 in file order, but the tree visits 5 first, so the indices
+        // by block are {5: 0, 2: 1, 3: 2, 4: 3}.
+        let indices = geometry_preorder_indices(&nif.blocks).unwrap();
+        assert_eq!(indices, BTreeMap::from([(5, 0), (2, 1), (3, 2), (4, 3)]));
+        let base = geometry_test_contract().remove(0);
+        let shape = |block: u32| NifShapeMaterial {
+            shape_block: block,
+            ..base.clone()
+        };
+        let mut effect = shape(3);
+        let NifMaterialDisposition::Validated { material } = &mut effect.disposition else {
+            unreachable!()
+        };
+        material.shader_family = NifShaderFamily::Effect;
+        let mut excluded = shape(4);
+        excluded.disposition = NifMaterialDisposition::Excluded {
+            reason: "fixture".into(),
+        };
+        let contract = [shape(5), shape(2), effect, excluded];
+        let shape_blocks = [5, 2, 3, 4];
+        let document = serde_json::json!({"asset":{"version":"2.0"},"meshes":[
+            {"primitives":[{}]},
+            {"primitives":[{"extras":{"retained":"control"}}]},
+            {"primitives":[{}]},
+            {"primitives":[{"extras":{"openSkyrim":{"materialExclusion":"fixture"}}}]},
+        ]});
+        let glb = glb_bytes(&document, b"geometry control");
+        let tagged = tag_geometry_indices(glb.clone(), &contract, &shape_blocks, &nif).unwrap();
+        let tagged = glb_json_from_bytes(&tagged).unwrap();
+        let index = |mesh: usize| {
+            tagged["meshes"][mesh]["primitives"][0]["extras"]["mudcrabGeometryIndex"].clone()
+        };
+        assert_eq!(index(0), 0);
+        assert_eq!(index(1), 1);
+        assert!(index(2).is_null(), "effect shape");
+        assert!(index(3).is_null(), "excluded shape");
+        assert_eq!(
+            tagged["meshes"][1]["primitives"][0]["extras"]["retained"],
+            "control"
+        );
+        assert_eq!(
+            tagged["meshes"][3]["primitives"][0]["extras"]["openSkyrim"]["materialExclusion"],
+            "fixture"
+        );
+        // With no lighting shape to tag, or no provable count, the bytes are unchanged.
+        let no_tag = [contract[2].clone(), contract[3].clone()];
+        assert_eq!(
+            tag_geometry_indices(glb.clone(), &no_tag, &[3, 4], &tree_nif(&[vec![1, 2]], 2),)
+                .unwrap(),
+            glb
+        );
+        assert_eq!(
+            tag_geometry_indices(
+                glb.clone(),
+                &contract,
+                &shape_blocks,
+                &tree_nif(&[Vec::new(), Vec::new()], 0),
+            )
+            .unwrap(),
+            glb
+        );
+        // A mesh count that does not match the exported blocks is never tagged.
+        assert_eq!(
+            tag_geometry_indices(glb.clone(), &contract, &[5, 2], &nif).unwrap(),
+            glb
+        );
+    }
+
+    /// The converted fixture is tagged with its index, whatever depth its shape sits at.
+    #[test]
+    fn converted_single_shape_models_carry_their_geometry_index() {
+        let directory = tempfile::tempdir().unwrap();
+        for (name, source) in [
+            ("static", static_nif()),
+            ("chain", static_scene_chain_nif(5)),
+        ] {
+            let input = directory.path().join(format!("{name}.nif"));
+            let output = directory.path().join(format!("{name}.glb"));
+            fs::write(&input, source).unwrap();
+            MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+            let document = glb_json_from_bytes(&fs::read(output).unwrap()).unwrap();
+            assert_eq!(
+                document["meshes"][0]["primitives"][0]["extras"]["mudcrabGeometryIndex"], 0,
+                "{name}"
+            );
+        }
+    }
+
+    /// A single-shape NIF whose shape node scale is replaced after generation. A scale of
+    /// 1e35 on a position of 123456 overflows `f32` in the bounds, so the primary export has
+    /// invalid bounds. The generator keeps its scale at 1, so the bytes are patched.
+    fn single_shape_nif_with_node_scale(scale: Option<f32>) -> Vec<u8> {
+        let mut bytes = dummy_content::nif::static_shape(&dummy_content::nif::StaticShape {
+            name: "PropertyQuad",
+            positions: &[
+                [-1.0, -1.0, 0.0],
+                [1.0, -1.0, 0.0],
+                [1.0, 1.0, 123_456.0],
+                [-1.0, 1.0, 0.0],
+            ],
+            normals: &[[0.0, 0.0, 1.0]; 4],
+            uvs: &[[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+            indices: &[[0, 1, 2], [0, 2, 3]],
+            diffuse: "textures/generated_color.dds",
+            normal_texture: "textures/generated_normal.dds",
+        })
+        .unwrap();
+        if let Some(scale) = scale {
+            let identity: Vec<u8> = [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0]
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect();
+            let hits: Vec<usize> = bytes
+                .windows(identity.len())
+                .enumerate()
+                .filter(|(_, window)| *window == identity.as_slice())
+                .map(|(at, _)| at)
+                .collect();
+            for at in hits {
+                let scale_at = at + 36;
+                bytes[scale_at..scale_at + 4].copy_from_slice(&scale.to_le_bytes());
+            }
+        }
+        bytes
+    }
+
+    /// The bounds-recovery branch exports a static fallback. A fallback keeps no source-shape
+    /// proof, so it must not carry the geometry index that a normal export of the same shape does.
+    #[test]
+    fn geometry_index_is_absent_from_a_bounds_recovered_static_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let tag = |name: &str, scale: Option<f32>| {
+            let input = directory.path().join(format!("{name}.nif"));
+            let output = directory.path().join(format!("{name}.glb"));
+            fs::write(&input, single_shape_nif_with_node_scale(scale)).unwrap();
+            MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+            glb_json_from_bytes(&fs::read(output).unwrap()).unwrap()["meshes"][0]["primitives"][0]
+                ["extras"]["mudcrabGeometryIndex"]
+                .clone()
+        };
+        // Control: the same single shape with finite bounds is tagged.
+        assert_eq!(tag("control", None), 0);
+        // An enormous node scale gives the primary export invalid bounds, so the static
+        // fallback replaces it.
+        assert!(tag("recovered", Some(1.0e35)).is_null());
+    }
 
     fn body_at(node: u32, target: &str) -> shared::collision::CollisionBody {
         use shared::collision::{BodyKind, CollisionBody, HavokBodyInfo};
@@ -4499,8 +4884,8 @@ mod tests {
         .unwrap();
     }
 
-    /// Pin shallow-scene bytes including the native-UV tangent output contract.
-    /// The shared 256-node traversal bound must not change these otherwise stable outputs.
+    /// Pin shallow-scene bytes including native-UV tangents and geometry-index tags.
+    /// The shared 256-node traversal bound preserves these output contracts.
     #[test]
     fn shallow_scene_glb_bytes_are_unchanged_by_the_depth_bound() {
         let directory = tempfile::tempdir().unwrap();
@@ -4508,25 +4893,36 @@ mod tests {
             (
                 "static",
                 static_nif(),
-                "a9b5b133442efe59440b33a89b31c3309a853ab9a7c4f1b7ffddffb3a96febb9",
+                "d33c4cc0ca0ce66e694c7baed309a82f5b57fe0d493102b73a86945c1c6e525b",
             ),
             (
                 "chain-40",
                 static_scene_chain_nif(40),
-                "4744abb50f37523e73a0cfc747d56152d504a46d795621208276573648f5df0c",
+                "e99a91a038915d444d5e262b82d83930da17ab404e1da5a532d6ff1af77227e4",
             ),
         ];
+        let mut differences = Vec::new();
         for (name, source, expected) in cases {
             let input = directory.path().join(format!("{name}.nif"));
             let output = input.with_extension("glb");
             fs::write(&input, source).unwrap();
             MeshConverter::convert_nif_to_glb_with_skeleton(&input, &output, None).unwrap();
+            let bytes = fs::read(&output).unwrap();
+            let document = glb_json_from_bytes(&bytes).unwrap();
             assert_eq!(
-                crate::cache::hash_bytes(&fs::read(&output).unwrap()),
-                expected,
-                "{name}: GLB bytes changed"
+                document["meshes"][0]["primitives"][0]["extras"]["mudcrabGeometryIndex"], 0,
+                "{name}: the single shape carries its geometry index"
             );
+            assert_eq!(
+                document["meshes"][0]["primitives"][0]["attributes"]["TANGENT"],
+                3
+            );
+            let actual = crate::cache::hash_bytes(&bytes);
+            if actual != expected {
+                differences.push((name, actual, expected));
+            }
         }
+        assert!(differences.is_empty(), "GLB bytes changed: {differences:?}");
     }
 
     /// Inspection measures deep skeletons while every consuming entry point refuses them.
