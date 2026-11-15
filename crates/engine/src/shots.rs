@@ -2662,30 +2662,37 @@ mod tests {
 
     /// Obstruct the evidence path after output preparation, in the selected production phase.
     fn assert_grass_count_write_failure(captured: bool) {
-            let directory = tempfile::tempdir().unwrap();
-            let mut app = g3_shots_app(directory.path(), false);
-            app.insert_resource(crate::grass_render::GrassCaptureControls { capture: true });
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = g3_shots_app(directory.path(), false);
+        app.insert_resource(crate::grass_render::GrassCaptureControls { capture: true });
+        app.update();
+        if captured {
+            g3_shots_frames(&mut app, SETTLE_QUIET_FRAMES + 1);
+            assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Capture);
+            fs::rename(
+                directory.path().join("grass-counts.jsonl"),
+                directory.path().join("settled-counts.jsonl"),
+            )
+            .unwrap();
+            app.world_mut().resource_mut::<ShotsRun>().capture = Some(Ok(()));
+        }
+        fs::create_dir(directory.path().join("grass-counts.jsonl")).unwrap();
+        if captured {
             app.update();
-            if captured {
-                g3_shots_frames(&mut app, SETTLE_QUIET_FRAMES + 1);
-                assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Capture);
-                fs::rename(directory.path().join("grass-counts.jsonl"), directory.path().join("settled-counts.jsonl")).unwrap();
-                app.world_mut().resource_mut::<ShotsRun>().capture = Some(Ok(()));
-            }
-            fs::create_dir(directory.path().join("grass-counts.jsonl")).unwrap();
-            if captured {
-                app.update();
-            } else {
-                g3_shots_frames(&mut app, SETTLE_QUIET_FRAMES + 1);
-            }
-            assert!(app.world().resource::<ShotsRun>().failed, "count evidence failure must fail the shot: captured={captured}");
-            assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Done);
-            app.update();
-            let exits=app.world().resource::<Messages<AppExit>>();
-            let mut cursor=exits.get_cursor();
-            assert!(cursor.read(exits).any(|exit|exit.is_error()));
-            let log=fs::read_to_string(directory.path().join("shots.log")).unwrap();
-            assert!(log.contains("grass count evidence"), "{log}");
+        } else {
+            g3_shots_frames(&mut app, SETTLE_QUIET_FRAMES + 1);
+        }
+        assert!(
+            app.world().resource::<ShotsRun>().failed,
+            "count evidence failure must fail the shot: captured={captured}"
+        );
+        assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Done);
+        app.update();
+        let exits = app.world().resource::<Messages<AppExit>>();
+        let mut cursor = exits.get_cursor();
+        assert!(cursor.read(exits).any(|exit| exit.is_error()));
+        let log = fs::read_to_string(directory.path().join("shots.log")).unwrap();
+        assert!(log.contains("grass count evidence"), "{log}");
     }
 
     /// Disabled grass keeps existing shots behavior, regardless of absent or failing resources.
