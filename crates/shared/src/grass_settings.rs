@@ -5,8 +5,9 @@
 //! holds one static INI `Setting` per key: vtable, 8-byte default value, name pointer.
 //! The doc comment of each field gives the virtual address of that `Setting` and the
 //! default stored in it. The shipped INI files (`Skyrim_Default.ini`, `SkyrimPrefs.ini`)
-//! omit most of these keys, and the INI a player or a capture setup wrote
-//! (`iMinGrassSize=40`, `fGrassFadeRange=1766`, `bEnableGrassFade=0`) is not the default.
+//! omit most of these keys. A local `Skyrim.ini` with other values (`iMinGrassSize=40`,
+//! `fGrassFadeRange=1766`, `bEnableGrassFade=0`) differs from the exe defaults; the exe
+//! defaults are used.
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -305,7 +306,8 @@ mod tests {
     use super::*;
 
     /// The defaults equal the values read from the `Setting` objects in `SkyrimSE.exe` 1.7.104,
-    /// not the values of a capture setup's `Skyrim.ini` (40, 1766 and 0 for the first three).
+    /// not the values of a local `Skyrim.ini` (40, 1766 and 0 for the first three), which differs
+    /// from the exe defaults.
     #[test]
     fn defaults_equal_the_retail_compiled_values() {
         let d = GrassSettings::default();
