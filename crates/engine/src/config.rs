@@ -1798,6 +1798,7 @@ mod tests {
         "--short",               // git rev-parse
         "--output", // world-inspect, profiling, startup runner, repeat-terrain-startup.py
         "--pairs-output", // correlate_drawables.py
+        "--cell",   // world-inspect
         "--radius", // world-inspect
         "--library-path", // ld-linux
         "--meshes", // audit-collision.py
@@ -1859,6 +1860,7 @@ mod tests {
         "--name",   // xdotool
         "--sync",   // xdotool
         "--psm",    // tesseract
+        "--cell",   // world-inspect
         "--radius", // world-inspect
         "--library-path", // ld-linux
         "--meshes", // audit-collision.py

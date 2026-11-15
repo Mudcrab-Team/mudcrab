@@ -40,12 +40,17 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Which cells to inspect: an exterior worldspace grid or one cell by FormID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    Exterior { worldspace: u32, grid: [i32; 2] },
+    Cell { cell: u32 },
+}
+
 #[derive(Debug)]
 struct Options {
     assets: PathBuf,
-    worldspace: u32,
-    grid_x: i32,
-    grid_y: i32,
+    target: Target,
     radius: i32,
     reference: Option<u32>,
     output: Option<PathBuf>,
@@ -56,21 +61,21 @@ impl Options {
         let mut args = args.into_iter();
         let assets = PathBuf::from(args.next().ok_or_else(|| {
             color_eyre::eyre::eyre!(
-                "usage: world-inspect <assets> <worldspace> <grid-x> <grid-y> [--radius N] [--reference FORM_ID] [--output report.json]\n       world-inspect -V | --version"
+                "usage: world-inspect <assets> <worldspace> <grid-x> <grid-y> [--radius N] [--reference FORM_ID] [--output report.json]\n       world-inspect <assets> --cell CELL_FORM_ID [--reference FORM_ID] [--output report.json]\n       world-inspect -V | --version"
             )
         })?);
-        let worldspace = parse_number(args.next(), "worldspace")?;
-        let grid_x = parse_i32(args.next(), "grid-x")?;
-        let grid_y = parse_i32(args.next(), "grid-y")?;
-        let mut radius = 0;
+        let mut cell = None;
+        let mut radius = None;
         let mut reference = None;
         let mut output = None;
+        let mut positional = Vec::new();
         while let Some(argument) = args.next() {
             let argument = argument
                 .into_string()
                 .map_err(|_| color_eyre::eyre::eyre!("argument is not valid UTF-8"))?;
             match argument.as_str() {
-                "--radius" => radius = parse_i32(args.next(), "radius")?,
+                "--cell" => cell = Some(parse_number(args.next(), "cell")?),
+                "--radius" => radius = Some(parse_i32(args.next(), "radius")?),
                 "--reference" => reference = Some(parse_number(args.next(), "reference")?),
                 "--output" => {
                     output = Some(PathBuf::from(
@@ -78,18 +83,44 @@ impl Options {
                             .ok_or_else(|| color_eyre::eyre::eyre!("missing output"))?,
                     ));
                 }
-                _ => color_eyre::eyre::bail!("unknown argument: {argument}"),
+                _ if argument.starts_with("--") => {
+                    color_eyre::eyre::bail!("unknown argument: {argument}");
+                }
+                _ => positional.push(argument),
             }
         }
+        let radius = radius.unwrap_or(0);
         color_eyre::eyre::ensure!(
             (0..=16).contains(&radius),
             "radius must be between 0 and 16"
         );
+        let target = if let Some(cell) = cell {
+            color_eyre::eyre::ensure!(
+                positional.is_empty(),
+                "--cell selects one cell and takes no worldspace, grid-x or grid-y"
+            );
+            color_eyre::eyre::ensure!(
+                radius == 0,
+                "--radius applies to an exterior grid and cannot be used with --cell"
+            );
+            Target::Cell { cell }
+        } else {
+            color_eyre::eyre::ensure!(
+                positional.len() == 3,
+                "an exterior inspection needs <worldspace> <grid-x> <grid-y>, or use --cell CELL_FORM_ID"
+            );
+            let mut positional = positional.into_iter().map(std::ffi::OsString::from);
+            let worldspace = parse_number(positional.next(), "worldspace")?;
+            let grid_x = parse_i32(positional.next(), "grid-x")?;
+            let grid_y = parse_i32(positional.next(), "grid-y")?;
+            Target::Exterior {
+                worldspace,
+                grid: [grid_x, grid_y],
+            }
+        };
         Ok(Self {
             assets,
-            worldspace,
-            grid_x,
-            grid_y,
+            target,
             radius,
             reference,
             output,
@@ -104,6 +135,8 @@ struct InspectionReport {
     worldspace_id: String,
     center_grid: [i32; 2],
     radius: i32,
+    /// Present when `--cell` named an interior cell.
+    interior_cell: Option<InteriorCellReport>,
     reference_filter: Option<String>,
     database_schema: u32,
     converter_manifest: ContractStatus,
@@ -171,6 +204,16 @@ struct CellReport {
     terrain: Option<TerrainReport>,
 }
 
+/// The cell named by `--cell`: an interior has no worldspace or grid.
+#[derive(Debug, Serialize)]
+struct InteriorCellReport {
+    cell_id: String,
+    name: Option<String>,
+    worldspace_id: String,
+    grid: [i32; 2],
+    reference_count: usize,
+}
+
 #[derive(Debug, Serialize)]
 struct TerrainReport {
     dimensions: [u16; 2],
@@ -185,6 +228,7 @@ struct ReferenceReport {
     form_id: String,
     cell_id: String,
     base_form_id: String,
+    base_type: Option<String>,
     editor_id: Option<String>,
     source_model: Option<String>,
     runtime_model: Option<String>,
@@ -253,6 +297,7 @@ struct ReferenceRow {
     form_id: u32,
     cell_id: u32,
     base_form_id: u32,
+    base_type: Option<String>,
     editor_id: Option<String>,
     model_path: Option<String>,
     position: [f32; 3],
@@ -285,55 +330,77 @@ fn inspect_world(options: &Options) -> Result<InspectionReport> {
     );
     let cache = CellCache::open(&assets.join("cell_cache.rkyv"))?;
     let lod_manifest = lod_contract_status(&assets, &connection);
-    let lod_chunks = load_lod_chunks(&connection, &assets, options.worldspace)?;
     let mut cells = Vec::new();
     let mut rows = Vec::new();
-    for y in -options.radius..=options.radius {
-        for x in -options.radius..=options.radius {
-            let grid_x = options.grid_x + x;
-            let grid_y = options.grid_y + y;
-            let cell_id = connection
-                .query_row(
-                    "SELECT id FROM cells WHERE worldspace_id=?1 AND grid_x=?2 AND grid_y=?3",
-                    params![options.worldspace, grid_x, grid_y],
-                    |row| row.get::<_, u32>(0),
-                )
-                .optional()?
-                .ok_or_else(|| {
-                    color_eyre::eyre::eyre!(
-                        "cell was not found: worldspace={:08X} grid=({grid_x},{grid_y})",
-                        options.worldspace
-                    )
-                })?;
-            let mut cell_rows = load_references(
-                &connection,
-                options.worldspace,
-                grid_x,
-                grid_y,
-                options.reference,
-            )?;
-            let terrain = cache.terrain(cell_id).map(|terrain| {
-                let min = terrain.heights.iter().copied().reduce(f32::min);
-                let max = terrain.heights.iter().copied().reduce(f32::max);
-                let center = usize::from(terrain.height / 2) * usize::from(terrain.width)
-                    + usize::from(terrain.width / 2);
-                TerrainReport {
-                    dimensions: [terrain.width, terrain.height],
-                    height_range: min.zip(max).map(|(min, max)| [min, max]),
-                    center_height: terrain.heights.get(center).copied(),
-                    layer_count: terrain.layers.len(),
-                    water_height: terrain.water_height,
+    let mut interior_cell = None;
+    let (worldspace_id, center_grid, lod_chunks) = match options.target {
+        Target::Exterior { worldspace, grid } => {
+            let lod_chunks = load_lod_chunks(&connection, &assets, worldspace)?;
+            for y in -options.radius..=options.radius {
+                for x in -options.radius..=options.radius {
+                    let grid_x = grid[0] + x;
+                    let grid_y = grid[1] + y;
+                    let cell_id = connection
+                        .query_row(
+                            "SELECT id FROM cells WHERE worldspace_id=?1 AND grid_x=?2 AND grid_y=?3",
+                            params![worldspace, grid_x, grid_y],
+                            |row| row.get::<_, u32>(0),
+                        )
+                        .optional()?
+                        .ok_or_else(|| {
+                            color_eyre::eyre::eyre!(
+                                "cell was not found: worldspace={worldspace:08X} grid=({grid_x},{grid_y})"
+                            )
+                        })?;
+                    let mut cell_rows = load_references(
+                        &connection,
+                        worldspace,
+                        grid_x,
+                        grid_y,
+                        options.reference,
+                    )?;
+                    cells.push(CellReport {
+                        cell_id: hex_id(cell_id),
+                        grid: [grid_x, grid_y],
+                        reference_count: cell_rows.len(),
+                        terrain: terrain_report(&cache, cell_id),
+                    });
+                    rows.append(&mut cell_rows);
                 }
-            });
+            }
+            (hex_id(worldspace), grid, lod_chunks)
+        }
+        Target::Cell { cell } => {
+            // One named cell, interior or exterior. An interior cell has no
+            // worldspace or grid, so the row also records what it does have.
+            let found = find_cell(&connection, cell)?;
+            let (cell_id, worldspace, interior_name, full_name) = (
+                found.id,
+                found.worldspace,
+                found.interior_name,
+                found.full_name,
+            );
+            let grid = found.grid;
+            rows = load_references_in_cell(&connection, cell_id, options.reference)?;
+            let reference_count = rows.len();
             cells.push(CellReport {
                 cell_id: hex_id(cell_id),
-                grid: [grid_x, grid_y],
-                reference_count: cell_rows.len(),
-                terrain,
+                grid,
+                reference_count,
+                terrain: terrain_report(&cache, cell_id),
             });
-            rows.append(&mut cell_rows);
+            if worldspace.is_none_or(|id| id == 0) {
+                interior_cell = Some(InteriorCellReport {
+                    cell_id: hex_id(cell_id),
+                    name: interior_name.or(full_name),
+                    worldspace_id: hex_id(0),
+                    grid,
+                    reference_count,
+                });
+            }
+            (hex_id(worldspace.unwrap_or(0)), grid, Vec::new())
         }
-    }
+    };
     rows.sort_by_key(|row| row.form_id);
 
     let mut model_paths = BTreeSet::new();
@@ -353,7 +420,10 @@ fn inspect_world(options: &Options) -> Result<InspectionReport> {
         .collect::<Vec<_>>();
     let assets_report = inspected.into_values().collect::<Vec<_>>();
     let summary = InspectionSummary {
-        requested_cells: ((options.radius * 2 + 1).pow(2)) as usize,
+        requested_cells: match options.target {
+            Target::Exterior { .. } => ((options.radius * 2 + 1).pow(2)) as usize,
+            Target::Cell { .. } => 1,
+        },
         found_cells: cells.len(),
         references: references.len(),
         references_without_model: references
@@ -391,9 +461,10 @@ fn inspect_world(options: &Options) -> Result<InspectionReport> {
     Ok(InspectionReport {
         format_version: FORMAT_VERSION,
         assets_root: assets.display().to_string(),
-        worldspace_id: hex_id(options.worldspace),
-        center_grid: [options.grid_x, options.grid_y],
+        worldspace_id,
+        center_grid,
         radius: options.radius,
+        interior_cell,
         reference_filter: options.reference.map(hex_id),
         database_schema,
         converter_manifest: contract_status(&assets.join("conversion-manifest.json"), "complete"),
@@ -404,6 +475,58 @@ fn inspect_world(options: &Options) -> Result<InspectionReport> {
         lod_chunks,
         references,
         assets: assets_report,
+    })
+}
+
+/// A cell row looked up by FormID.
+#[derive(Debug)]
+struct CellRow {
+    id: u32,
+    worldspace: Option<u32>,
+    /// Zero for an interior, which has no grid.
+    grid: [i32; 2],
+    interior_name: Option<String>,
+    full_name: Option<String>,
+}
+
+/// The cell with this FormID, or an error that names it.
+fn find_cell(connection: &Connection, cell: u32) -> Result<CellRow> {
+    connection
+        .query_row(
+            "SELECT id, worldspace_id, grid_x, grid_y, interior_name, full_name
+             FROM cells WHERE id=?1",
+            params![cell],
+            |row| {
+                Ok(CellRow {
+                    id: row.get(0)?,
+                    worldspace: row.get(1)?,
+                    grid: [
+                        row.get::<_, Option<i32>>(2)?.unwrap_or(0),
+                        row.get::<_, Option<i32>>(3)?.unwrap_or(0),
+                    ],
+                    interior_name: row.get(4)?,
+                    full_name: row.get(5)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| color_eyre::eyre::eyre!("cell was not found: id={cell:08X}"))
+}
+
+/// Terrain for one cell. Interior cells have none, and the cache says so.
+fn terrain_report(cache: &CellCache, cell_id: u32) -> Option<TerrainReport> {
+    cache.terrain(cell_id).map(|terrain| {
+        let min = terrain.heights.iter().copied().reduce(f32::min);
+        let max = terrain.heights.iter().copied().reduce(f32::max);
+        let center = usize::from(terrain.height / 2) * usize::from(terrain.width)
+            + usize::from(terrain.width / 2);
+        TerrainReport {
+            dimensions: [terrain.width, terrain.height],
+            height_range: min.zip(max).map(|(min, max)| [min, max]),
+            center_height: terrain.heights.get(center).copied(),
+            layer_count: terrain.layers.len(),
+            water_height: terrain.water_height,
+        }
     })
 }
 
@@ -524,13 +647,14 @@ fn load_references(
     reference: Option<u32>,
 ) -> Result<Vec<ReferenceRow>> {
     let sql =
-        "SELECT r.id,r.cell_id,r.base_form_id,s.editor_id,s.model_path,r.pos_x,r.pos_y,r.pos_z,
-                r.rot_x,r.rot_y,r.rot_z,r.scale,
+        "SELECT r.id,r.cell_id,r.base_form_id,rec.record_type,s.editor_id,s.model_path,
+                r.pos_x,r.pos_y,r.pos_z,r.rot_x,r.rot_y,r.rot_z,r.scale,
                 COALESCE(s.bounds_min_x,-64),COALESCE(s.bounds_min_y,-64),COALESCE(s.bounds_min_z,-64),
                 COALESCE(s.bounds_max_x,64),COALESCE(s.bounds_max_y,64),COALESCE(s.bounds_max_z,64),
                 COALESCE(s.bounds_valid,0)
          FROM exterior_spatial x JOIN \"references\" r ON r.id=x.id
          LEFT JOIN statics s ON s.id=r.base_form_id
+         LEFT JOIN records rec ON rec.form_id=r.base_form_id
          WHERE x.worldspace_id=?1 AND x.minX>=?2 AND x.minX<?3 AND x.minY>=?4 AND x.minY<?5
            AND (?6 IS NULL OR r.id=?6)
          ORDER BY r.id";
@@ -547,24 +671,52 @@ fn load_references(
                 min_y + CELL_SIZE,
                 reference
             ],
-            |row| {
-                Ok(ReferenceRow {
-                    form_id: row.get(0)?,
-                    cell_id: row.get(1)?,
-                    base_form_id: row.get(2)?,
-                    editor_id: row.get(3)?,
-                    model_path: row.get(4)?,
-                    position: [row.get(5)?, row.get(6)?, row.get(7)?],
-                    rotation: [row.get(8)?, row.get(9)?, row.get(10)?],
-                    scale: row.get(11)?,
-                    bounds_min: [row.get(12)?, row.get(13)?, row.get(14)?],
-                    bounds_max: [row.get(15)?, row.get(16)?, row.get(17)?],
-                    bounds_valid: row.get(18)?,
-                })
-            },
+            reference_row,
         )?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
+}
+
+/// Every reference in one cell, interior or exterior. Interior references are
+/// not in `exterior_spatial`, so the cell id is the only selector.
+fn load_references_in_cell(
+    connection: &Connection,
+    cell_id: u32,
+    reference: Option<u32>,
+) -> Result<Vec<ReferenceRow>> {
+    let sql =
+        "SELECT r.id,r.cell_id,r.base_form_id,rec.record_type,s.editor_id,s.model_path,
+                r.pos_x,r.pos_y,r.pos_z,r.rot_x,r.rot_y,r.rot_z,r.scale,
+                COALESCE(s.bounds_min_x,-64),COALESCE(s.bounds_min_y,-64),COALESCE(s.bounds_min_z,-64),
+                COALESCE(s.bounds_max_x,64),COALESCE(s.bounds_max_y,64),COALESCE(s.bounds_max_z,64),
+                COALESCE(s.bounds_valid,0)
+         FROM \"references\" r
+         LEFT JOIN statics s ON s.id=r.base_form_id
+         LEFT JOIN records rec ON rec.form_id=r.base_form_id
+         WHERE r.cell_id=?1 AND (?2 IS NULL OR r.id=?2)
+         ORDER BY r.id";
+    connection
+        .prepare(sql)?
+        .query_map(params![cell_id, reference], reference_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+fn reference_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReferenceRow> {
+    Ok(ReferenceRow {
+        form_id: row.get(0)?,
+        cell_id: row.get(1)?,
+        base_form_id: row.get(2)?,
+        base_type: row.get(3)?,
+        editor_id: row.get(4)?,
+        model_path: row.get(5)?,
+        position: [row.get(6)?, row.get(7)?, row.get(8)?],
+        rotation: [row.get(9)?, row.get(10)?, row.get(11)?],
+        scale: row.get(12)?,
+        bounds_min: [row.get(13)?, row.get(14)?, row.get(15)?],
+        bounds_max: [row.get(16)?, row.get(17)?, row.get(18)?],
+        bounds_valid: row.get(19)?,
+    })
 }
 
 fn reference_report(row: &ReferenceRow, assets: &BTreeMap<String, AssetReport>) -> ReferenceReport {
@@ -605,6 +757,7 @@ fn reference_report(row: &ReferenceRow, assets: &BTreeMap<String, AssetReport>) 
         form_id: hex_id(row.form_id),
         cell_id: hex_id(row.cell_id),
         base_form_id: hex_id(row.base_form_id),
+        base_type: row.base_type.clone(),
         editor_id: row.editor_id.clone(),
         source_model: row.model_path.clone(),
         runtime_model,
@@ -992,11 +1145,14 @@ mod tests {
             .map(std::ffi::OsString::from),
         )
         .unwrap();
-        assert_eq!(options.worldspace, 0x3c);
         assert_eq!(
-            (options.grid_x, options.grid_y, options.radius),
-            (18, -5, 2)
+            options.target,
+            Target::Exterior {
+                worldspace: 0x3c,
+                grid: [18, -5]
+            }
         );
+        assert_eq!(options.radius, 2);
         assert_eq!(options.reference, Some(0x123));
         assert_eq!(options.output, Some(PathBuf::from("report.json")));
     }
@@ -1021,9 +1177,10 @@ mod tests {
 
         let options = Options {
             assets: directory.path().to_owned(),
-            worldspace: 0x3c,
-            grid_x: 0,
-            grid_y: 0,
+            target: Target::Exterior {
+                worldspace: 0x3c,
+                grid: [0, 0],
+            },
             radius: 0,
             reference: None,
             output: None,
@@ -1037,6 +1194,109 @@ mod tests {
         assert!(
             !message.contains("no such table"),
             "must not run further queries before the schema check: {message}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod interior_tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    fn args(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn cell_parsing_takes_one_form_id_and_no_grid() {
+        let options =
+            Options::parse(args(&["pack", "--cell", "0x133C6", "--reference", "0x9F"])).unwrap();
+        assert_eq!(options.target, Target::Cell { cell: 0x133C6 });
+        assert_eq!(options.reference, Some(0x9F));
+        assert_eq!(options.radius, 0);
+    }
+
+    #[test]
+    fn cell_parsing_rejects_a_grid_and_radius() {
+        let grid = Options::parse(args(&["pack", "0x3C", "0", "0", "--cell", "0x133C6"]));
+        assert!(grid.is_err(), "--cell and a grid must not be combined");
+        let radius = Options::parse(args(&["pack", "--cell", "0x133C6", "--radius", "1"]));
+        assert!(radius.is_err(), "--radius applies to an exterior grid only");
+    }
+
+    #[test]
+    fn exterior_parsing_still_needs_three_positionals() {
+        let options = Options::parse(args(&["pack", "0x3C", "3", "-12"])).unwrap();
+        assert_eq!(
+            options.target,
+            Target::Exterior {
+                worldspace: 0x3C,
+                grid: [3, -12]
+            }
+        );
+        assert!(Options::parse(args(&["pack", "0x3C", "3"])).is_err());
+    }
+
+    fn interior_database() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE cells(id INTEGER PRIMARY KEY, worldspace_id INTEGER, grid_x INTEGER,
+                    grid_y INTEGER, interior_name TEXT, flags INTEGER NOT NULL, data BLOB,
+                    full_name TEXT);
+                 CREATE TABLE statics(id INTEGER PRIMARY KEY, editor_id TEXT, model_path TEXT,
+                    bounds_min_x REAL, bounds_min_y REAL, bounds_min_z REAL,
+                    bounds_max_x REAL, bounds_max_y REAL, bounds_max_z REAL, bounds_valid INTEGER);
+                 CREATE TABLE records(form_id INTEGER PRIMARY KEY, record_type TEXT);
+                 CREATE TABLE \"references\"(id INTEGER PRIMARY KEY, cell_id INTEGER,
+                    base_form_id INTEGER, pos_x REAL, pos_y REAL, pos_z REAL,
+                    rot_x REAL, rot_y REAL, rot_z REAL, scale REAL);",
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO cells VALUES(0x133C6, NULL, NULL, NULL, 'RiverwoodSleepingGiantInn',
+                    0, NULL, 'Sleeping Giant Inn');
+                 INSERT INTO records VALUES(0x2A, 'CONT');
+                 INSERT INTO \"references\" VALUES(0x1, 0x133C6, 0x2A, 10.0, 20.0, 30.0, 0.0, 0.0, 0.0, 1.0);
+                 INSERT INTO \"references\" VALUES(0x2, 0x133C6, 0x2B, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);",
+            )
+            .unwrap();
+        connection
+    }
+
+    #[test]
+    fn one_interior_container_is_inspected_by_cell_id() {
+        let connection = interior_database();
+        let rows = load_references_in_cell(&connection, 0x133C6, None).unwrap();
+        assert_eq!(rows.len(), 2, "both references in the interior cell");
+        let container = rows.iter().find(|row| row.base_form_id == 0x2A).unwrap();
+        assert_eq!(container.base_type.as_deref(), Some("CONT"));
+        assert_eq!(container.cell_id, 0x133C6);
+        assert_eq!(container.position, [10.0, 20.0, 30.0]);
+
+        let one = load_references_in_cell(&connection, 0x133C6, Some(0x1)).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].form_id, 0x1);
+    }
+
+    #[test]
+    fn a_known_cell_is_found_and_an_unknown_cell_is_an_error_naming_it() {
+        let connection = interior_database();
+        let found = find_cell(&connection, 0x133C6).unwrap();
+        assert_eq!(found.worldspace, None, "an interior has no worldspace");
+        assert_eq!(found.grid, [0, 0]);
+        assert_eq!(
+            found.interior_name.as_deref(),
+            Some("RiverwoodSleepingGiantInn")
+        );
+
+        let error = find_cell(&connection, 0xDEAD).unwrap_err().to_string();
+        assert!(error.contains("0000DEAD"), "{error}");
+        assert!(
+            load_references_in_cell(&connection, 0xDEAD, None)
+                .unwrap()
+                .is_empty()
         );
     }
 }
