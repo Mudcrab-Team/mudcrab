@@ -10,6 +10,7 @@ pub mod history_source;
 pub(crate) mod profile;
 mod scanner;
 pub mod schema_format;
+pub(crate) mod schema_lineage;
 pub mod source_identity;
 pub(crate) mod typed_export;
 pub mod vmad;
