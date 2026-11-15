@@ -411,6 +411,32 @@ output contract", and a normal conversion rebuilds its meshes. The NIF scene-dep
 bound and the unparsable-skin refusal append no name, so the `nif` proof is unchanged
 and `--reuse-assets` behaves as before.
 
+`--reuse-assets` decides each asset kind on its own recorded proof
+(`crates/converter/src/reuse.rs`). The combined settings proof also binds the
+script ABI, so the rebuild recovers the ABI that proof records and requires every
+other setting to match. Meshes (`nif`) and textures (`dds`) are copied only when
+their recorded proof equals the current one; otherwise the rebuild is refused and
+a normal conversion regenerates that kind. Scripts (`pex`) whose recorded ABI is
+older are never copied: the rebuild converts them again from the Data scripts and
+requires every recorded script source hash to match, so Data that changed since the
+package refuses the rebuild. `metadata-rebuild.json` records the outcome and proof
+of each kind (`asset_kinds`) and both script ABIs. A pack decoded with an earlier
+base schema is accepted when `crates/converter/src/records/schema-lineage.json` lists
+its digest. Each entry is pinned to the compiled schema digest it was reviewed against
+and to a hash in `schema_lineage.rs`, and CODEOWNERS covers both files. A schema edit
+therefore refuses older packs again until a maintainer reviews the entry afresh. A
+saved script ABI newer than the converter's is refused. An output folder inside any
+asset pack is refused. `--reuse-assets` adds no lane that rebuilds a stale `nif` or `dds`
+kind; it refuses and points to a normal conversion into an APFS clone of the package,
+never into a registered pack. That conversion needs the same `--record-reader inhouse
+--texture-encoder gpu --gpu-quality 2` settings the package was made with, needs the
+project owner's explicit approval because it is a conversion, and reuses every other kind
+by its own proof. On the reference pack, one appended mesh contract name cost about 14
+minutes of converter time with LOD and about 65 GiB of transient disk, mostly the
+rewritten ingestion cache. A missing `pex` proof is never reused: the scripts rebuild. A
+missing `dds` proof (manifests older than the per-kind proofs) is covered only by the
+combined settings proof, which must match the current settings and the recorded reader.
+
 Normal producer eligibility remains independent of explicit metadata retention.
 The only cross-producer mesh allowance is producer 24 -> 26; a future producer
 does not inherit that allowance, so producer 27 (which changes the GLB collision
