@@ -5,7 +5,7 @@
 //! kind no longer rejects the whole package. A kind is reused only when its recorded proof
 //! equals the current one. A kind whose bytes the rebuild can regenerate from game data without
 //! the normal conversion's extraction, mesh or texture stages is rebuilt. Every other changed
-//! kind refuses the rebuild and names a normal conversion into a clone of the package as the
+//! kind refuses the rebuild and names a normal conversion into an APFS clone of the package as the
 //! way to regenerate it. That conversion reuses every other kind through its own proof.
 //!
 //! | Kind  | Recorded proof against the current one                        | Decision |
@@ -91,34 +91,33 @@ pub(crate) fn decide(
     current: &str,
     source_abi_is_current: bool,
 ) -> Result<Action, Refusal> {
+    // Reuse needs a recorded proof that equals the current one. A missing proof proves nothing.
+    let proven = recorded == Some(current);
     match kind {
-        Kind::Nif => match recorded {
-            Some(recorded) if recorded == current => Ok(Action::Reuse),
-            _ => Err(Refusal(
-                "retained mesh settings predate the current mesh output contract; \
-                 run normal conversion into a clone of this package (it rebuilds the models \
-                 and reuses textures and scripts whose own proofs match)"
-                    .into(),
-            )),
-        },
-        Kind::Dds => match recorded {
-            Some(recorded) if recorded != current => Err(Refusal(
-                "retained texture settings differ from the rebuild settings; \
-                 run normal conversion into a clone of this package (it rebuilds the textures \
-                 and reuses models and scripts whose own proofs match)"
-                    .into(),
-            )),
-            _ => Ok(Action::Reuse),
-        },
-        Kind::Pex => {
-            if source_abi_is_current && recorded.is_none_or(|recorded| recorded == current) {
-                Ok(Action::Reuse)
-            } else {
-                Ok(Action::Rebuild)
-            }
-        }
+        Kind::Nif if proven => Ok(Action::Reuse),
+        Kind::Nif => Err(Refusal(format!(
+            "retained mesh settings predate the current mesh output contract. {REGENERATE}"
+        ))),
+        // Manifests of producers before the per-kind proofs record only the combined settings
+        // proof for textures. The caller has already required that proof to match the current
+        // settings and the recorded reader, so a missing texture proof is covered by it.
+        Kind::Dds if recorded.is_none() || proven => Ok(Action::Reuse),
+        Kind::Dds => Err(Refusal(format!(
+            "retained texture settings differ from the rebuild settings. {REGENERATE}"
+        ))),
+        Kind::Pex if proven && source_abi_is_current => Ok(Action::Reuse),
+        Kind::Pex => Ok(Action::Rebuild),
     }
 }
+
+/// How to regenerate a mesh or texture kind, shown with every such refusal.
+const REGENERATE: &str = "Regenerate it with a normal conversion into an APFS clone of this \
+    package, never into a registered pack: clone the package folder (cp -c -R) and its \
+    .assets-cache beside the new output, then convert into the clone with the same \
+    --record-reader inhouse --texture-encoder gpu --gpu-quality 2 settings the package was \
+    made with. That conversion reuses every kind whose own proof still matches. It is a \
+    conversion, so it needs the project owner's explicit approval, and it uses about 65 GiB \
+    of transient disk (about 14 minutes with LOD on the reference pack)";
 
 /// The decisions for every kind of one source pack.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -195,7 +194,7 @@ mod tests {
             (Kind::Dds, None, true, Ok(Reuse)),
             (Kind::Dds, Some("other"), true, Err(())),
             (Kind::Pex, Some("current-pex"), true, Ok(Reuse)),
-            (Kind::Pex, None, true, Ok(Reuse)),
+            (Kind::Pex, None, true, Ok(Rebuild)),
             (Kind::Pex, Some("older-abi"), false, Ok(Rebuild)),
             (Kind::Pex, None, false, Ok(Rebuild)),
             // A script proof that disagrees with its own combined proof is never trusted.

@@ -1899,6 +1899,19 @@ async fn script_rebuild_refuses_data_scripts_that_differ_from_the_package() {
     assert!(!output.exists());
 }
 
+/// Every mesh or texture refusal names the safe path, its settings, its approval and its cost.
+fn assert_regeneration_note(error: &str) {
+    for needle in [
+        "into an APFS clone of this package",
+        "never into a registered pack",
+        "--texture-encoder gpu --gpu-quality 2",
+        "explicit approval",
+        "65 GiB",
+    ] {
+        assert!(error.contains(needle), "missing {needle:?}: {error}");
+    }
+}
+
 /// Copy a pack tree. Stands in for an APFS clone on the tiny fixture.
 fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).unwrap();
@@ -1964,10 +1977,7 @@ async fn normal_conversion_into_a_clone_rebuilds_only_the_stale_mesh_kind() {
     let refused = rebuild(&data, &clone, &directory.path().join("refused"))
         .await
         .unwrap_err();
-    assert!(
-        format!("{refused:?}").contains("normal conversion into a clone"),
-        "{refused:?}"
-    );
+    assert_regeneration_note(&format!("{refused:?}"));
 
     convert(&data, &clone).await;
     let current = converter::cache::asset_configuration_hash_for_schema(
@@ -2022,7 +2032,7 @@ async fn changed_texture_proof_alone_refuses_a_rebuild() {
     });
     let error = format!("{:?}", rebuild(&data, &source, &output).await.unwrap_err());
     assert!(error.contains("texture settings"), "{error}");
-    assert!(error.contains("normal conversion into a clone"), "{error}");
+    assert_regeneration_note(&error);
     assert!(!output.exists());
 }
 
