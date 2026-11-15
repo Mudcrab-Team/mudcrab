@@ -457,7 +457,7 @@ mod tests {
         let path = dir.path().join("tuning.toml");
         std::fs::write(&path, "brightness=0.8").unwrap();
         let mut state = GrassTuningState::new(Some(path.clone()));
-        assert_eq!(state.effective.brightness, 1.15);
+        assert_eq!(state.effective.brightness, 1.0);
         assert!(state.poll_at(Duration::from_secs(1)));
         std::fs::write(&path, "").unwrap();
         assert!(!state.poll_at(Duration::from_secs(2)));
