@@ -1389,6 +1389,7 @@ pub(crate) fn retained_configuration_matches_for_lineage_reader(
             inhouse_adapter10_reader_identity(schemas.as_ref()),
             inhouse_adapter11_reader_identity(schemas.as_ref()),
             inhouse_adapter12_reader_identity(schemas.as_ref(), &config.language),
+            inhouse_adapter13_reader_identity(schemas.as_ref(), &config.language),
         ]
         .iter()
         .any(|prior| prior.as_ref() == Some(&normalized));

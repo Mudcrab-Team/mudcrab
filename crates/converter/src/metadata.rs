@@ -422,6 +422,7 @@ fn settings_for_source_reader_in_lineage(
                     crate::cache::inhouse_adapter10_reader_identity(&schemas),
                     crate::cache::inhouse_adapter11_reader_identity(&schemas),
                     crate::cache::inhouse_adapter12_reader_identity(&schemas, &language),
+                    crate::cache::inhouse_adapter13_reader_identity(&schemas, &language),
                 ]
                 .into_iter()
                 .flatten()
