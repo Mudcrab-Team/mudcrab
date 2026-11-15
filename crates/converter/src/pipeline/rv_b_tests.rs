@@ -293,9 +293,9 @@ async fn reader_switch_reuses_archives_and_assets_but_rebuilds_database_and_cell
     assert!(fixture.output.join("cell_cache_preserved.rkyv").is_file());
 }
 
-/// Known full legacy proofs retain unchanged BC1/BC5 DDS and PEX, but cannot prove newer NIF contracts.
+/// Known full settings retain unchanged BC1/BC5 textures and PEX, but cannot prove mesh contracts.
 #[tokio::test]
-async fn known_legacy_full_hashes_reuse_block_dds_and_pex_but_regenerate_nif_without_kind_keys() {
+async fn known_legacy_full_hashes_retain_textures_and_pex_without_nif_kind_keys() {
     for contract in [
         "historical",
         "projection-1",
@@ -695,8 +695,8 @@ async fn historical_legacy_reader_identity_with_current_nif_proof_survives_repea
             .unwrap(),
             _ => unreachable!(),
         };
-        // Retain the fresh mesh proof. Exact historical combined proofs cover PEX
-        // and these BC1/BC5 DDS sources; packed normals still need their source recipe.
+        // Retain the fresh mesh proof. Known combined settings cover PEX and
+        // unchanged BC1/BC5 texture candidates; packed-normal recipes are checked per source.
         original
             .asset_configuration_hashes
             .retain(|kind, _| kind == "nif");
@@ -767,17 +767,17 @@ async fn historical_legacy_reader_identity_with_current_nif_proof_survives_repea
         let report = publish(second_config.clone()).await;
         assert_eq!(
             report.converted, 1,
-            "metadata retention lacks only the archive cache; BC1/BC5 DDS remain proven"
+            "metadata retention lacks only the archive cache; these DDS recipes are unchanged"
         );
         assert_eq!(
             report.cache_hits, 5,
-            "current NIF and historical BC1/BC5 DDS/PEX proofs remain valid"
+            "current NIF and known historical DDS/PEX proofs remain valid"
         );
         assert_asset_bytes(&second_output, &expected);
         let warm = publish(second_config).await;
         assert_eq!(
             warm.converted, 0,
-            "retained assets and rebuilt archive must remain reusable"
+            "re-extracted archive must become reusable"
         );
         assert_eq!(warm.cache_hits, 6);
         assert_asset_bytes(&second_output, &expected);
