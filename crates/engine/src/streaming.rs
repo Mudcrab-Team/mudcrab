@@ -5410,7 +5410,8 @@ fn water_material(
     let [r, g, b] = colors.map_or(crate::render::DEFAULT_WATER_DEEP_COLOR, |colors| {
         colors.deep
     });
-    let base_color = Color::srgb_u8(r, g, b);
+    let multiplier = crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER;
+    let base_color = crate::render::water_deep_color([r, g, b], multiplier);
     let (fresnel, reflectivity) = colors.map_or(
         (
             crate::render::DEFAULT_WATER_FRESNEL,
@@ -5567,23 +5568,22 @@ mod tests {
                 .body()
         };
 
-        // Clear water: fog amount 0 keeps the body clear whatever the depth.
-        assert_eq!(body(1), Vec4::new(0.4, 0.0, 10.0, 0.0));
-        // A far distance other than DefaultWater's 150.
-        assert_eq!(body(2), Vec4::new(0.6, -290.0, 720.0, 0.7));
+        // The retail copy writes (opacity, far - near, max(far, 1), max(4 * amount, 1)). A puddle
+        // (far 10, no amount): range 10, and the exponent floors at 1.
+        assert_eq!(body(1), Vec4::new(0.4, 10.0, 10.0, 1.0));
+        // A far distance other than DefaultWater's 150: range 1010, exponent 2.8.
+        assert_eq!(body(2), Vec4::new(0.6, 1010.0, 720.0, 2.8));
         // A DNAM with no readable fog, and no row at all: DefaultWater's fog.
         let fallback = WaterFog::default();
-        assert_eq!(
-            body(3),
-            Vec4::new(0.5, fallback.near, fallback.far, fallback.amount)
-        );
+        let (range, exponent) = (fallback.far - fallback.near, 4.0 * fallback.amount);
+        assert_eq!(body(3), Vec4::new(0.5, range, fallback.far, exponent));
         assert_eq!(
             body(99),
             Vec4::new(
                 f32::from(crate::render::DEFAULT_WATER_OPACITY) / 100.0,
-                fallback.near,
+                range,
                 fallback.far,
-                fallback.amount
+                exponent
             )
         );
     }

@@ -212,6 +212,14 @@ pub struct SkyPalette {
 }
 
 impl SkyPalette {
+    /// `SkyrimClear` (`WTHR` 0x0000081A): the day column of its `NAM0` Water Multiplier colour, which
+    /// the retail water shader multiplies into the shallow, deep and reflection colours
+    /// (`evidence/rea-20261114/s1-water-mix.md`, RF-SHADER-007: the Sky `+0x150` colour, written once
+    /// per frame). Read from the `weather_colors` table of the registered packs. The engine's sky is
+    /// this static day palette, so this is the matching value; a weather and time-of-day driven
+    /// multiplier is not implemented.
+    pub const SKYRIM_CLEAR_DAY_WATER_MULTIPLIER: [u8; 3] = [175, 237, 214];
+
     /// `SkyrimClear` (`WTHR` 0x0000081A, as left by Update.esm): the day column of its `NAM0`
     /// Sky-Upper, Sky-Lower and Horizon colours and of its Fog Far colour. Weather colours are
     /// 8-bit sRGB values.

@@ -1553,7 +1553,10 @@ fn setup_terrain_water_fixture(
         MeshMaterial3d(
             water_materials.add(WaterMaterial {
                 base: StandardMaterial {
-                    base_color: Color::srgb_u8(deep_r, deep_g, deep_b),
+                    base_color: crate::render::water_deep_color(
+                        [deep_r, deep_g, deep_b],
+                        crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER,
+                    ),
                     metallic: 0.15,
                     perceptual_roughness: 0.06,
                     reflectance: 0.9,
@@ -1561,6 +1564,9 @@ fn setup_terrain_water_fixture(
                     ..default()
                 },
                 extension: WaterExtension::with_reflection(reflection.0.clone(), Some(flow_normal))
+                    .with_water_multiplier(
+                        crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER,
+                    )
                     .with_reflection_color(DEFAULT_WATER_REFLECTION_COLOR)
                     .with_body(
                         DEFAULT_WATER_SHALLOW_COLOR,

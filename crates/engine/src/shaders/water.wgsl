@@ -1,14 +1,17 @@
-// Skyrim's water, as far as it is known. The pixel formulas follow the water pixel shader of
-// Community Shaders, `package/Shaders/Water.hlsl` (GPL-3.0, https://github.com/doodlum/skyrim-community-shaders,
-// read at commit dc89d339), which reimplements the retail shader's `GetWaterNormal`, `GetFresnelValue`,
-// `GetWaterDiffuseColor` and `main`. The noise scroll is the retail engine's own, read from
-// `SkyrimSE.exe` 1.7.104.0 (`0x1405290ac` to `0x140529356`; `evidence/rea-20261114/q1-water.md`).
-// The WATR field names and offsets are those of CommonLibSSE-NG `TESWaterForm.h` (MIT, commit
-// b93280e). `docs/research/water.md` lists each source and what is still UNKNOWN. Every number in
-// this file is a WATR field, a number from one of those sources, or an engineering guard.
+// Skyrim's water, as far as it is known. The mix, the opacity, the Fresnel term, the reflection and
+// the depth factors are the retail water pixel shader's, read from the disassembled retail
+// programs (`shaders011.fxp` group 8, keys 0x1C, 0x11C and 0x18) and the WATR material copy in
+// `SkyrimSE.exe` 1.7.104.0: `evidence/rea-20261114/s1-water-mix.md`, registry RF-SHADER-001 and
+// RF-SHADER-006 to RF-SHADER-010. The noise scroll is the retail engine's own, `0x1405290ac` to
+// `0x140529356` (`evidence/rea-20261114/q1-water.md`, RF-WATER-001 to RF-WATER-006). The noise
+// normal blend follows Community Shaders `package/Shaders/Water.hlsl` (GPL-3.0, commit dc89d339), which
+// agrees with the retail programs; the WATR field names and offsets are CommonLibSSE-NG
+// `TESWaterForm.h` (MIT, b93280e). `docs/research/water.md` lists each source and what is still
+// UNKNOWN. Every number in this file is a WATR field, a retail number from those sources, or an
+// engineering guard.
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
-    pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
+    pbr_functions::main_pass_post_lighting_processing,
     forward_io::{VertexOutput, FragmentOutput},
     view_transformations::{depth_ndc_to_view_z, position_world_to_view},
 }
@@ -24,15 +27,16 @@ struct WaterSettings {
     noise_wind_direction: vec4<f32>,
     // xyz = the three noise layers' wind speeds in tiles per second (noiseWindSpeedA).
     noise_wind_speed: vec4<f32>,
-    // x = Fresnel Amount, y = Reflectivity Amount, z = the user's reflection multiplier, w =
-    // Reflection Magnitude (WATR DNAM, per water).
+    // x = Fresnel Amount, y = Reflectivity Amount, z = the user's reflection multiplier (1 by
+    // default), w = Reflection Magnitude (WATR DNAM, per water).
     fresnel_reflectivity: vec4<f32>,
-    // rgb = the water's Reflection Color (linear), alpha unused.
+    // rgb = the water's Reflection Color times the weather's Water Multiplier (linear), alpha unused.
     reflection_color: vec4<f32>,
-    // rgb = Shallow Color (linear); the deep colour is the material base colour.
+    // rgb = Shallow Color times the Water Multiplier (linear); the deep colour, likewise multiplied,
+    // is the material base colour.
     shallow_color: vec4<f32>,
-    // x = opacity 0..1 (WATR ANAM), used where the depth is unknown; y, z = above-water fog near
-    // and far distance in world units; w = fog amount, the curve exponent (WATR DNAM).
+    // x = opacity 0..1 (WATR ANAM), used where the depth is unknown; y = the fog range (far minus
+    // near), z = max(fog far, 1), w = the curve exponent max(4 * fog amount, 1) (RF-SHADER-006).
     body: vec4<f32>,
     // x = 1 when a snapshot texture is bound to bed_depth, 0 when none is and the body falls back
     // to its ANAM opacity. Whether a given frame's texels are valid is carried by the texels
@@ -65,6 +69,11 @@ struct WaterSettings {
 // Any path at or past the fog far distance is opaque and fully deep (Skyrim saturates the ratio),
 // so this only has to be larger than any fog far distance.
 const BOTTOMLESS_PATH: f32 = 1.0e7;
+// FramebufferRange (RF-SHADER-001): the retail water shader scales every texture it reads by this
+// and its output by the inverse, so the colours it computes from constants (the body and the flat
+// reflection colour) reach the screen divided by it. Only the console command `SetFramebufferRange`
+// changes it.
+const FRAMEBUFFER_RANGE: f32 = 1.2;
 
 // How far, in world units, the view ray travels through water before it reaches whatever opaque
 // lies behind this fragment; negative when that is unknown because this view has no bed-depth
@@ -94,28 +103,23 @@ fn water_path_length(frag_coord: vec4<f32>, world_position: vec3<f32>) -> f32 {
     return min(length(surface) * past_surface, BOTTOMLESS_PATH);
 }
 
-// x = how far the body colour has moved from shallow to deep (Skyrim's distanceMul.y, the path
-// through the water over the fog far distance), y = how much of the surface is the water body
-// rather than what lies behind (refractionMul, 1 - saturate((far - path) / (far - near))^amount),
-// z = the vertical depth over the fog far distance (distanceMul.z, which the depth properties
-// read). A water with no fog amount stays clear at any depth. When the depth is unknown the water
-// draws as its deep colour at its ANAM opacity, as Skyrim draws water it has no depth for.
+// x = sat(L / F), L being the view ray's length through the water and F the fog far distance: it
+// moves the body colour from shallow to deep and is the path term of the depth factors; y = the
+// body's share over what lies behind, 1 - sat((F - min(L, F)) / range) ^ exponent (RF-SHADER-010);
+// z = sat(h / F), h being the vertical depth, which the normals depth factor reads. When the depth
+// is unknown the water draws as its deep colour at its ANAM opacity; the retail programs examined
+// all have depth, so that fallback is not retail.
 fn water_body(path: f32, vertical_depth: f32) -> vec3<f32> {
     if path < 0.0 {
         return vec3<f32>(1.0, water.body.x, 1.0);
     }
-    let near = water.body.y;
-    // The CPU already keeps far at least one unit past near and at least one (`usable_fog_far`);
-    // the shader keeps the same bound so no uniform can make the divisions below divide by zero.
-    let far = max(water.body.z, max(near + 1.0, 1.0));
-    let colour = clamp(path / far, 0.0, 1.0);
+    let range = water.body.y;
+    let far = water.body.z;
+    let exponent = water.body.w;
+    let along = clamp(path / far, 0.0, 1.0);
     let vertical = clamp(vertical_depth / far, 0.0, 1.0);
-    let amount = water.body.w;
-    if amount <= 0.0 {
-        return vec3<f32>(colour, 0.0, vertical);
-    }
-    let clear = clamp((far - path) / (far - near), 0.0, 1.0);
-    return vec3<f32>(colour, 1.0 - pow(clear, amount), vertical);
+    let clear = clamp((far - min(path, far)) / range, 0.0, 1.0);
+    return vec3<f32>(along, 1.0 - pow(clear, exponent), vertical);
 }
 
 // One noise normal map sampled at a world-space UV. The map tiles, so the UV is wrapped by hand
@@ -175,27 +179,25 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let to_surface = in.world_position.xyz - view.world_position.xyz;
     let vertical_depth = path * abs(to_surface.y) / max(length(to_surface), 1e-4);
     let body = water_body(path, vertical_depth);
-    let deep = pbr_input.material.base_color.rgb;
-    pbr_input.material.base_color = vec4<f32>(mix(water.shallow_color.rgb, deep, body.x), 1.0);
 
     // A negative time runs the waves on the frame clock; zero or more pins them (`ANIMATED_WAVE_PHASE`).
     let pinned = water.wave_scale_speed_strength.w;
     let time = select(globals.time, pinned, pinned >= 0.0);
     let position = vec2<f32>(in.world_position.x, -in.world_position.z);
-    // depthControl.z = DepthControl.z * (distanceMul.z - 1) + 1: the normals fade in with depth.
+    // depthControl.z = lerp(1, sat(h / F), DepthControl.z): the normals fade in with depth.
     let normals_depth = water.depth_control.z * (body.z - 1.0) + 1.0;
     let normal_skyrim = noise_normal(position, time, normals_depth);
     // Skyrim (x, y, z) is Bevy (x, z, -y).
     let normal = vec3<f32>(normal_skyrim.x, normal_skyrim.z, -normal_skyrim.y);
     pbr_input.N = normal;
 
-    // The reflection: Skyrim reflects along reflect(view, m * normal + (0, 0, 1 - m)), m being the
-    // Reflection Magnitude. The planar reflection is looked up where that direction lands, the
-    // flat one being the fragment's own mirrored position.
+    // The reflection: Skyrim reflects along reflect(view, lerp(up, n, m)), m being the Reflection
+    // Magnitude (RF-SHADER-009). The planar reflection is looked up where that direction lands,
+    // the flat one being the fragment's own mirrored position.
     let view_direction = normalize(to_surface);
     let magnitude = water.fresnel_reflectivity.w;
     let up = vec3<f32>(0.0, 1.0, 0.0);
-    let reflected_normal = magnitude * normal + (1.0 - magnitude) * up;
+    let reflected_normal = mix(up, normal, magnitude);
     var reflected = reflect(view_direction, reflected_normal);
     reflected.y = max(reflected.y, 0.0);
     let flat_reflected = reflect(view_direction, up);
@@ -206,25 +208,35 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         vec2<f32>(1.0),
     );
     let reflection_sample = textureSample(water_reflection, water_reflection_sampler, reflection_uv);
-    // Without a reflection image (alpha 0) Skyrim reflects its flat Reflection Color scaled by the
-    // Reflectivity Amount.
-    let reflection_color = vec4<f32>(
-        mix(water.reflection_color.rgb * water.fresnel_reflectivity.y, reflection_sample.rgb, reflection_sample.a),
-        1.0,
-    );
-    // GetFresnelValue: (1 - F) * (1 - n.v)^5 + F, F being the water's Fresnel Amount.
-    let water_fresnel_f0 = water.fresnel_reflectivity.x;
-    let n_dot_v = clamp(dot(normalize(pbr_input.V), pbr_input.N), 0.0, 1.0);
-    let fresnel = water_fresnel_f0 + (1.0 - water_fresnel_f0) * pow(1.0 - n_dot_v, 5.0);
-    pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
+    // refl = lerp(ReflectionColor, env, Reflection Amount) (RF-SHADER-009). Retail multiplies env by
+    // FramebufferRange and the result by its inverse, so env passes unchanged and the flat colour is
+    // divided. Where the planar image has no coverage (alpha 0) the environment is that flat colour.
+    let flat_reflection = water.reflection_color.rgb / FRAMEBUFFER_RANGE;
+    let environment = mix(flat_reflection, reflection_sample.rgb, reflection_sample.a);
+    let reflection = mix(flat_reflection, environment, water.fresnel_reflectivity.y);
+
+    // F = FresnelRI.x + (1 - FresnelRI.x) * (1 - sat(-V.N))^5 (RF-SHADER-008).
+    let fresnel_amount = water.fresnel_reflectivity.x;
+    let n_dot_v = clamp(dot(normalize(pbr_input.V), normal), 0.0, 1.0);
+    let fresnel = fresnel_amount + (1.0 - fresnel_amount) * pow(1.0 - n_dot_v, 5.0);
+
+    // The retail mix (RF-SHADER-008, RF-SHADER-010):
+    //   diffuse = lerp(what lies behind, water, a)        a = body.y
+    //   color   = lerp(diffuse, reflection, m)            m = F * depthReflections
+    // where depthReflections = lerp(1, sat(L / F), DepthControl.x). The weight is taken as F * dR,
+    // the value of the main pass's frame flag being unverified (#698). The first lerp is the alpha
+    // blend with the bed already in the frame, so both lerps become one blend with coverage
+    // 1 - (1 - a)(1 - m) and the colour that makes the product match.
+    let depth_reflections = water.depth_control.x * (body.x - 1.0) + 1.0;
+    let m = fresnel * depth_reflections * water.fresnel_reflectivity.z;
+    let a = body.y;
+    // The body colour, lerp(Shallow, Deep, sat(L / F)), divided by FramebufferRange as the retail
+    // output is.
+    let deep = pbr_input.material.base_color.rgb;
+    let water_colour = mix(water.shallow_color.rgb, deep, body.x) / FRAMEBUFFER_RANGE;
+    let coverage = a + m - a * m;
     var out: FragmentOutput;
-    // The water's own colour is lit; the reflection is light that already left the scene, so it is
-    // blended in after lighting. Skyrim: finalColor = lerp(refractionDiffuseColor, specularColor,
-    // fresnel), then lerp(what lies behind, finalColor, refractionMul). The second lerp is the
-    // alpha blend, with the body's coverage as alpha: the Fresnel reflection does not raise it.
-    out.color = apply_pbr_lighting(pbr_input);
-    let reflected_weight = fresnel * water.fresnel_reflectivity.z;
-    out.color = vec4<f32>(mix(out.color.rgb, reflection_color.rgb, reflected_weight), body.y);
+    out.color = vec4<f32>((water_colour * (1.0 - m) * a + reflection * m) / max(coverage, 1.0e-6), coverage);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
 }

@@ -111,26 +111,41 @@ pub const DEFAULT_WATER_DEEP_COLOR: [u8; 3] = [0x05, 0x0E, 0x12];
 pub const DEFAULT_WATER_SHALLOW_COLOR: [u8; 3] = [0x26, 0x27, 0x18];
 /// DefaultWater's opacity (WATR ANAM, 0-100).
 pub const DEFAULT_WATER_OPACITY: u8 = 50;
-fn linear_rgb(rgb: [u8; 3]) -> Vec4 {
-    let linear = Color::srgb_u8(rgb[0], rgb[1], rgb[2]).to_linear();
+/// A WATR colour (stored sRGB bytes) times the weather's Water Multiplier (also bytes), as the
+/// retail water shader multiplies them (RF-SHADER-007, `evidence/rea-20261114/s1-water-mix.md`):
+/// the product is taken on the 0..1 values and then read as an sRGB colour, as in retail.
+fn water_srgb(rgb: [u8; 3], multiplier: [f32; 3]) -> [f32; 3] {
+    [
+        f32::from(rgb[0]) / 255.0 * multiplier[0],
+        f32::from(rgb[1]) / 255.0 * multiplier[1],
+        f32::from(rgb[2]) / 255.0 * multiplier[2],
+    ]
+}
+
+fn linear_rgb(rgb: [f32; 3]) -> Vec4 {
+    let linear = Color::srgb(rgb[0], rgb[1], rgb[2]).to_linear();
     Vec4::new(linear.red, linear.green, linear.blue, 0.0)
 }
 
-/// The fog far distance the shader may divide by: at least one world unit, and at least one unit
-/// past `near`. Retail has records that need it: `LavaSettingsDUPLICATE001` has near 0 and far 0,
-/// and `DLC2ApocryphaWater` has near -10000 and far -9200. Such a water reads as opaque once the
-/// view travels a unit through it, which is what its opacity of 100 asks for.
-fn usable_fog_far(near: f32, far: f32) -> f32 {
-    far.max((near + 1.0).max(1.0))
+/// A water's Deep Color times the weather's Water Multiplier, as the material base colour.
+pub fn water_deep_color(deep: [u8; 3], multiplier: [u8; 3]) -> Color {
+    let [r, g, b] = water_srgb(deep, multiplier.map(|byte| f32::from(byte) / 255.0));
+    Color::srgb(r, g, b)
 }
 
-/// x = opacity 0..1, y/z = above-water fog near and far in world units, w = fog amount.
+/// The above-water fog terms as the retail material copy writes them (RF-SHADER-006,
+/// `SkyrimSE.exe` `0x140307460`): x = opacity (ANAM / 100, used only where the depth is unknown),
+/// y = the fog range, far minus near (`1e-5` when that is zero), z = max(far, 1), w = the curve
+/// exponent max(4 * fog amount, 1). The shader's opacity is
+/// `1 - saturate((z - min(L, z)) / y) ^ w` for a view path `L` through the water
+/// (RF-SHADER-010).
 fn water_body(opacity: u8, fog: WaterFog) -> Vec4 {
+    let range = fog.far - fog.near;
     Vec4::new(
         f32::from(opacity.min(100)) / 100.0,
-        fog.near,
-        usable_fog_far(fog.near, fog.far),
-        fog.amount,
+        if range == 0.0 { 1.0e-5 } else { range },
+        fog.far.max(1.0),
+        (4.0 * fog.amount).max(1.0),
     )
 }
 
@@ -812,6 +827,8 @@ pub struct WaterExtension {
     noise_normal_1: Option<Handle<Image>>,
     #[texture(108)]
     noise_normal_2: Option<Handle<Image>>,
+    /// The weather's Water Multiplier as 0..1 values, applied to the colours set after it.
+    multiplier: [f32; 3],
 }
 
 #[derive(ShaderType, Reflect, Debug, Clone, PartialEq)]
@@ -866,8 +883,8 @@ impl Default for WaterExtension {
                     1.0,
                     crate::world::database::DEFAULT_WATER_REFLECTION_MAGNITUDE,
                 ),
-                reflection_color: linear_rgb(DEFAULT_WATER_REFLECTION_COLOR),
-                shallow_color: linear_rgb(DEFAULT_WATER_SHALLOW_COLOR),
+                reflection_color: linear_rgb(water_srgb(DEFAULT_WATER_REFLECTION_COLOR, [1.0; 3])),
+                shallow_color: linear_rgb(water_srgb(DEFAULT_WATER_SHALLOW_COLOR, [1.0; 3])),
                 body: default_water_body(),
                 depth_params: Vec4::ZERO,
                 noise_uv_scale: Vec4::ZERO,
@@ -880,6 +897,7 @@ impl Default for WaterExtension {
             noise_normal_0: None,
             noise_normal_1: None,
             noise_normal_2: None,
+            multiplier: [1.0; 3],
         }
     }
 }
@@ -928,8 +946,8 @@ impl WaterExtension {
                     1.0,
                     crate::world::database::DEFAULT_WATER_REFLECTION_MAGNITUDE,
                 ),
-                reflection_color: linear_rgb(DEFAULT_WATER_REFLECTION_COLOR),
-                shallow_color: linear_rgb(DEFAULT_WATER_SHALLOW_COLOR),
+                reflection_color: linear_rgb(water_srgb(DEFAULT_WATER_REFLECTION_COLOR, [1.0; 3])),
+                shallow_color: linear_rgb(water_srgb(DEFAULT_WATER_SHALLOW_COLOR, [1.0; 3])),
                 body: default_water_body(),
                 depth_params: Vec4::ZERO,
                 noise_uv_scale: Vec4::ZERO,
@@ -940,6 +958,7 @@ impl WaterExtension {
             noise_normal_0: None,
             noise_normal_1: None,
             noise_normal_2: None,
+            multiplier: [1.0; 3],
         }
     }
 
@@ -999,6 +1018,12 @@ impl WaterExtension {
         (self.settings.noise_uv_scale, self.settings.noise_amplitude)
     }
 
+    /// Sets the weather's Water Multiplier (bytes). Call it before the colour setters: they apply it.
+    pub fn with_water_multiplier(mut self, multiplier: [u8; 3]) -> Self {
+        self.multiplier = multiplier.map(|byte| f32::from(byte) / 255.0);
+        self
+    }
+
     /// Sets the water's Reflection Magnitude (WATR DNAM): how much of the wave normal reaches the
     /// reflection.
     pub fn with_reflection_magnitude(mut self, magnitude: f32) -> Self {
@@ -1008,13 +1033,13 @@ impl WaterExtension {
 
     /// Sets the water's own Reflection Color (WATR DNAM, as stored bytes).
     pub fn with_reflection_color(mut self, rgb: [u8; 3]) -> Self {
-        self.settings.reflection_color = linear_rgb(rgb);
+        self.settings.reflection_color = linear_rgb(water_srgb(rgb, self.multiplier));
         self
     }
 
     /// Sets the water's Shallow Color (stored sRGB bytes), opacity (0-100) and above-water fog.
     pub fn with_body(mut self, shallow: [u8; 3], opacity: u8, fog: WaterFog) -> Self {
-        self.settings.shallow_color = linear_rgb(shallow);
+        self.settings.shallow_color = linear_rgb(water_srgb(shallow, self.multiplier));
         self.settings.body = water_body(opacity, fog);
         self
     }
@@ -2407,40 +2432,83 @@ mod tests {
     }
 
     #[test]
-    fn a_degenerate_fog_far_never_reaches_the_shader_as_a_divisor_of_zero() {
-        let far_of = |near, far| {
-            water_body(
-                100,
-                WaterFog {
-                    near,
-                    far,
-                    amount: 0.7,
-                },
-            )
-            .z
-        };
-        // Far 0 with near at -1 or below: the shader's `max(far, near + 1)` alone would give 0.
-        assert_eq!(far_of(-5.0, 0.0), 1.0);
-        assert_eq!(far_of(-1.0, 0.0), 1.0);
-        // The two retail records: lava (near 0, far 0) and Apocrypha water (-10000, -9200).
-        assert_eq!(far_of(0.0, 0.0), 1.0);
-        assert_eq!(far_of(-10000.0, -9200.0), 1.0);
-        // Far at or below near stays one unit past near; a sane record is unchanged.
-        assert_eq!(far_of(20.0, 10.0), 21.0);
-        assert_eq!(far_of(-10.0, 150.0), 150.0);
-        assert_eq!(far_of(-290.0, 720.0), 720.0);
-        let default = WaterFog::default();
-        assert_eq!(far_of(default.near, default.far), default.far);
-        // Whatever the record says, far - near is at least one and far is at least one.
-        for near in [-10000.0, -50.0, -1.0, 0.0, 3.0, 500.0] {
-            for far in [-9200.0, -1.0, 0.0, 0.5, 2.0, 1000.0] {
-                let usable = far_of(near, far);
-                assert!(
-                    usable >= 1.0 && usable - near >= 1.0,
-                    "near {near}, far {far}"
-                );
-            }
-        }
+    fn the_fog_terms_are_the_retail_material_copy() {
+        // RF-SHADER-006 / 010: range = far - near (1e-5 when zero), F = max(far, 1), exponent =
+        // max(4 * amount, 1).
+        let body = |near, far, amount| water_body(100, WaterFog { near, far, amount });
+        // DefaultWater: near -10, far 150, amount 0.7. The exponent floors at 1.
+        assert_eq!(
+            body(-10.0, 150.0, 0.7),
+            Vec4::new(1.0, 160.0, 150.0, 2.8_f32.max(1.0))
+        );
+        // A larger amount raises the exponent.
+        assert_eq!(body(-10.0, 150.0, 1.0).w, 4.0);
+        // No fog amount does not make the water clear: the exponent stays 1.
+        assert_eq!(body(0.0, 10.0, 0.0), Vec4::new(1.0, 10.0, 10.0, 1.0));
+        // The retail records whose far is not above zero: lava (near 0, far 0) has a zero range
+        // that becomes 1e-5, and Apocrypha water (-10000, -9200) keeps its range of 800 while
+        // the far used for the depth ratio floors at 1.
+        assert_eq!(body(0.0, 0.0, 0.95), Vec4::new(1.0, 1.0e-5, 1.0, 3.8));
+        assert_eq!(
+            body(-10000.0, -9200.0, 1.0),
+            Vec4::new(1.0, 800.0, 1.0, 4.0)
+        );
+        // Opacity is ANAM over 100.
+        assert_eq!(water_body(35, WaterFog::default()).x, 0.35);
+    }
+
+    #[test]
+    fn the_water_multiplier_scales_the_colours_in_srgb_before_they_become_linear() {
+        // RF-SHADER-007: Shallow, Deep and Reflection colours times the weather's Water Multiplier.
+        // SkyrimClear's day value is (175, 237, 214); a colour of (200, 100, 50) becomes
+        // (200 * 175, 100 * 237, 50 * 214) / 255 / 255 as sRGB values.
+        let multiplier = crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER;
+        let water = WaterExtension::default()
+            .with_water_multiplier(multiplier)
+            .with_reflection_color([200, 100, 50]);
+        let expected = Color::srgb(
+            200.0 / 255.0 * 175.0 / 255.0,
+            100.0 / 255.0 * 237.0 / 255.0,
+            50.0 / 255.0 * 214.0 / 255.0,
+        )
+        .to_linear();
+        let linear = water.settings.reflection_color;
+        assert!((linear.x - expected.red).abs() < 1.0e-6);
+        assert!((linear.y - expected.green).abs() < 1.0e-6);
+        assert!((linear.z - expected.blue).abs() < 1.0e-6);
+        // The deep colour takes the same product as the material base colour.
+        let deep = water_deep_color([5, 14, 18], multiplier).to_linear();
+        let expected = Color::srgb(
+            5.0 / 255.0 * 175.0 / 255.0,
+            14.0 / 255.0 * 237.0 / 255.0,
+            18.0 / 255.0 * 214.0 / 255.0,
+        )
+        .to_linear();
+        assert!((deep.red - expected.red).abs() < 1.0e-6);
+        // Without a multiplier the colours are unchanged.
+        let plain = WaterExtension::default().with_reflection_color([200, 100, 50]);
+        assert!(
+            (plain.settings.reflection_color.x - Color::srgb_u8(200, 100, 50).to_linear().red)
+                .abs()
+                < 1.0e-6
+        );
+    }
+
+    #[test]
+    fn the_shader_holds_the_retail_framebuffer_range_and_mix() {
+        // RF-SHADER-001: FramebufferRange 1.2. RF-SHADER-008: coverage 1 - (1 - a)(1 - m).
+        let source = include_str!("shaders/water.wgsl");
+        assert!(source.contains("const FRAMEBUFFER_RANGE: f32 = 1.2;"));
+        assert!(source.contains("let coverage = a + m - a * m;"));
+        assert!(
+            source.contains("let m = fresnel * depth_reflections * water.fresnel_reflectivity.z;")
+        );
+        assert!(source.contains(
+            "let reflection = mix(flat_reflection, environment, water.fresnel_reflectivity.y);"
+        ));
+        // The Fresnel reflection no longer raises the alpha and no lit body colour remains.
+        assert!(!source.contains("max(body"));
+        assert!(!source.contains("apply_pbr_lighting"));
     }
 
     /// DefaultWater's own values (WATR 0x18), as the retail Skyrim.esm and Update.esm write them.
@@ -2464,8 +2532,10 @@ mod tests {
         assert_eq!(amplitude, Vec4::new(0.6957, 0.6304, 0.4746, 0.0));
         assert_eq!(water.settings.depth_control, Vec4::new(0.3, 0.95, 0.1, 0.9));
         // The wind directions go to the shader in radians, with the retail conversion constant.
-        let radians = water.settings.noise_wind_direction;
-        assert_eq!(radians.x, 270.0 * WATER_DEGREES_TO_RADIANS);
+        assert_eq!(
+            water.settings.noise_wind_direction.x,
+            270.0 * WATER_DEGREES_TO_RADIANS
+        );
         assert_eq!(
             water.settings.noise_wind_speed,
             Vec4::new(0.019, 0.013, 0.096, 0.0)
@@ -2486,13 +2556,10 @@ mod tests {
     /// follows `noise_scroll`: U runs east and V north, and the offset is added to the UV, so the
     /// pattern moves against it.
     fn pattern_bearing(direction_degrees: f32) -> f32 {
-        let (before, after) = (
-            noise_scroll(direction_degrees, 0.05, 1.0),
-            noise_scroll(direction_degrees, 0.05, 1.01),
-        );
-        let shift = after - before;
+        let before = noise_scroll(direction_degrees, 0.05, 1.0);
+        let after = noise_scroll(direction_degrees, 0.05, 1.01);
         // Fractions wrap at tile edges; a step this small does not cross one for these directions.
-        let toward = -shift;
+        let toward = -(after - before);
         toward.x.atan2(toward.y).to_degrees().rem_euclid(360.0)
     }
 
@@ -2598,17 +2665,11 @@ mod tests {
             WaterFog::default(),
         );
         assert_eq!(water.settings.body.x, 0.5);
-        assert_eq!(
-            water.settings.body.yzw(),
-            Vec3::new(
-                WaterFog::default().near,
-                WaterFog::default().far,
-                WaterFog::default().amount
-            )
-        );
+        // DefaultWater's fog as the retail copy writes it: range 160, F 150, exponent 2.8.
+        assert_eq!(water.settings.body.yzw(), Vec3::new(160.0, 150.0, 2.8));
         assert_eq!(
             water.settings.shallow_color,
-            linear_rgb(DEFAULT_WATER_SHALLOW_COLOR)
+            linear_rgb(water_srgb(DEFAULT_WATER_SHALLOW_COLOR, [1.0; 3]))
         );
         // A WATR ANAM above 100 must not push the body past fully opaque.
         let clamped = WaterExtension::default().with_body(
@@ -2620,14 +2681,15 @@ mod tests {
     }
 
     #[test]
-    fn with_body_takes_the_records_fog_including_a_clear_body() {
+    fn with_body_takes_the_records_fog_terms() {
         let puddle = WaterFog {
             near: 0.0,
             far: 10.0,
             amount: 0.0,
         };
         let water = WaterExtension::default().with_body([1, 2, 3], 25, puddle);
-        assert_eq!(water.settings.body, Vec4::new(0.25, 0.0, 10.0, 0.0));
+        // Range 10, F 10, and the exponent floors at 1: no fog amount does not clear the body.
+        assert_eq!(water.settings.body, Vec4::new(0.25, 10.0, 10.0, 1.0));
     }
 
     #[test]
@@ -3479,12 +3541,11 @@ mod water_body_tests {
         if path < 0.0 {
             return (1.0, body.x);
         }
-        let far = body.z.max(body.y + 1.0);
-        let colour = (vertical / far).clamp(0.0, 1.0);
-        if body.w <= 0.0 {
-            return (colour, 0.0);
-        }
-        let clear = ((far - path) / (far - body.y)).clamp(0.0, 1.0);
+        // The retail terms (RF-SHADER-006, RF-SHADER-010): body.y is the fog range, body.z the far
+        // distance floored at 1 and body.w the curve exponent. The colour follows the path.
+        let _ = vertical;
+        let colour = (path / body.z).clamp(0.0, 1.0);
+        let clear = ((body.z - path.min(body.z)) / body.y).clamp(0.0, 1.0);
         (colour, 1.0 - clear.powf(body.w))
     }
 
