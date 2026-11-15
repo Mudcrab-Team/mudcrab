@@ -35,6 +35,10 @@ warnings. Usable neighboring records still publish, but data-loss warnings mark
 both the report and conversion manifest incomplete and make the CLI exit with
 code 1. Compatibility notices remain visible without affecting completeness or
 the exit code; a mixed run retains both severities and stays incomplete.
+Recoverable configured-default land texture fallbacks are also `notices`: an unusable
+diffuse uses generated white, while an unusable optional normal leaves a valid diffuse intact.
+These advisories alone do not make the report or manifest incomplete or make the CLI exit 1;
+failures that prevent publishing usable output still fail conversion.
 `--report-json`, the CLI and the launcher show the warnings and notices. Reader
 recovery does not increment the separate skipped-asset counter. Metadata rebuild
 and `--reuse-assets` use the same severity and completeness rules when they
@@ -92,9 +96,11 @@ their original recorded reader configuration. Older unstamped packs and the exac
 they are not identified as a versioned projection. Exact version-1 and version-2
 legacy stamps and full hashes remain recognized as their original retained-asset
 contracts and are not upgraded to the current projection.
-Adapter-13 metadata recognizes the exact adapter-10, adapter-11 and adapter-12 retained-asset contracts
-(adapter 13 adds placed database rows only), and legacy projection 5 recognizes the exact projection-4
-contract, with matching original schema/add-on bytes, reader fields and combined settings
+Adapter-14 metadata recognizes the exact adapter-10, adapter-11, adapter-12 and adapter-13
+retained-asset contracts (adapter 13 adds placed database rows; adapter 14 adds the STAT MODS
+alternate-texture table and the `object-texture-swap-geometry-index-v1` NIF contract, so retained DDS and PEX
+candidates stay reusable and NIF output is rebuilt), and legacy projection 6 recognizes the exact
+projection-4 and projection-5 contracts, with matching original schema/add-on bytes, reader fields and combined settings
 hash. The original reader and asset producer remain recorded across repeated
 metadata rebuilds. The string-table language changes database text only, so a pack
 read in one language is a valid source for a rebuild in another; its proof is
@@ -226,6 +232,8 @@ MO2 also checks the longest installed owner, using all root plugin identities in
 
 Metadata rebuilds use the source package's checksum-matched plugin order for archive priority. The longest installed direct-Data owner must appear in that order before an archive supplies current LOD settings or terrain diffuse inputs. Verified source assets remain retained.
 
+Default-only terrain sources are collected only when the rebuilt cell cache needs the configured Skyrim land default. Default-only images are regenerated from current source bytes and are not compared with retained asset hashes. Unusable default archive entries or loose overrides are omitted with advisory notices so default publication can fall back to white or omit only the normal. A path also named by an LTEX remains an ordinary required source with strict extraction, overlay and source-identity checks.
+
 Asset repair selects replacement sources with the same installed-owner filters after recovering the selected plugins. It keeps recorded database plugin provenance and existing assets outside the repair targets. It retains non-MO2 standalone admission and MO2 unowned-archive exclusion. Archive sorting uses the same shared matcher and longest matching active stem, keeping the first load-order slot for equal stems.
 
 Creation fallback warnings are typed entries in the report's `selection_warnings`, naming the CCC path, read failure and installed built-in fallback. CLI summaries, progress and the launcher show them as warnings. They describe input-selection policy and do not count as failed asset conversions or make healthy published output incomplete. The `warnings` field describes conversion failures and reader data loss; successful compatibility remaps remain `notices`. Empty `skipped_plugins`, `load_order` and `selection_warnings` fields are omitted; old reports deserialize with empty vectors.
@@ -305,7 +313,7 @@ Creation fallback warnings are typed entries in the report's `selection_warnings
   follow attached ones. This deterministic tie policy has not been established as equivalent
   to every mod manager's archive insertion order. BSA header file-type categories are advisory;
   unknown category bits do not relax layout, count, offset or compression validation.
-- Runtime transcoding applies to UASTC outputs only. Native BC and newly encoded BC7 require compatible BC GPU support. GPU encoder selection does not make a pack portable. The [proposed desktop texture contract](../../adr/0014-phase1-desktop-texture-contract.md) records the pending mobile/web scope decision and validation work in [#274](https://github.com/Mudcrab-Team/mudcrab/issues/274).
+- Runtime transcoding applies to UASTC outputs only. Native BC and newly encoded BC7 require compatible BC GPU support. GPU encoder selection does not make a pack portable. The [desktop texture contract](../../adr/0014-phase1-desktop-texture-contract.md) records the deferral of the mobile/web profile. Its implementation and validation are tracked in [#548](https://github.com/Mudcrab-Team/mudcrab/issues/548).
 
 ### C. World & Scene Database (`.esm` ➔ `SQLite3` + `rkyv` Zero-Copy Cache)
 

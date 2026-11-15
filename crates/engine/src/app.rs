@@ -242,7 +242,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         ))
     };
     // Authored lighting, weather, climate and image space, when the database has them (#269).
-    // Read only; nothing renders from it yet.
+    // Read only; the sun consumes climate timing and GMST settings from this catalog.
     let environment = runtime_data.as_ref().map(|_| {
         crate::world::environment::EnvironmentCatalog::open(
             &config.assets_dir.join("skyrim_world.db"),
@@ -362,6 +362,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     // The run fingerprint is measurement data: an ordinary play session neither builds one nor
     // pays for the startup system that reads it.
     let records_measurements = crate::fingerprint::records_measurements(&config);
+    app.insert_resource(crate::sun::GameClock::from_config(&config));
     let visual_profile = config.visual_profile;
     app.insert_resource(config.visual_profile)
         .insert_resource(config.color_grade)
@@ -416,6 +417,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             crate::nif_material::EffectPaletteMaterialPlugin,
             crate::nif_material::NifMaterialPlugin,
             crate::emittance::EmittancePlugin,
+            crate::object_materials::ObjectMaterialPlugin,
+        ))
+        .add_plugins((
             crate::actor_skin_tone::ActorSkinTonePlugin,
             crate::actor_body_weight::ActorBodyWeightPlugin,
         ))
@@ -431,6 +435,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .add_plugins(crate::actor_head::ActorHeadPlugin)
         .add_plugins(crate::actor_outfit::ActorOutfitPlugin)
         .add_systems(PostUpdate, keep_windows_hidden)
+        .add_systems(Update, crate::sun::update_sun)
         .add_plugins(crate::terrain_merge::TerrainMergePlugin::new(
             terrain_merge.as_ref(),
         ));
@@ -2365,11 +2370,18 @@ pub(crate) fn sun_shadow_cascades(config: &EngineConfig) -> CascadeShadowConfig 
     .into()
 }
 
-/// Rotation for a sun at the configured Creation bearing and elevation. Directional lights emit
-/// along local -Z, so that vector points from the sun toward the ground, opposite its position.
-fn sun_rotation(config: &EngineConfig) -> Quat {
+/// Rotate toward the evaluated sun unless an explicit Creation bearing/elevation overrides it.
+/// Directional lights emit along local -Z, opposite the toward-sun direction. Without an evaluated
+/// sun (a world with no climate timing, so no sunrise or sunset) the sun has no authored direction
+/// and keeps the identity rotation; no direction is invented. Retail worlds always carry climate
+/// timing, so this is not retail behaviour: it affects only fixtures and benchmarks (a test-only
+/// path).
+fn sun_rotation(config: &EngineConfig, direction: Option<Vec3>) -> Quat {
     let Some((azimuth_degrees, elevation_degrees)) = config.sun_position else {
-        return Quat::from_euler(EulerRot::XYZ, -0.8, -0.5, 0.0);
+        return match direction {
+            Some(direction) => Quat::from_rotation_arc(Vec3::Z, direction),
+            None => crate::sun::NO_SUN_ROTATION,
+        };
     };
     let azimuth = azimuth_degrees.to_radians();
     let elevation = elevation_degrees.to_radians();
@@ -2400,6 +2412,7 @@ fn camera_offset(config: &EngineConfig) -> Vec3 {
     }
 }
 
+/// Spawn the world camera and its clock/climate driven directional sun.
 fn setup_world(
     mut commands: Commands,
     shot_output: Option<Res<ShotOutputImage>>,
@@ -2407,6 +2420,7 @@ fn setup_world(
     ground_height: Option<Res<InitialCameraGroundHeight>>,
     tuning: Option<Res<MovementTuning>>,
     start_camera: Option<Res<InitialWorldCameraPose>>,
+    environment: Option<Res<crate::world::environment::EnvironmentCatalog>>,
 ) {
     let ground_height = ground_height.as_deref().map_or(0.0, |height| height.0);
     let target = Vec3::new(CELL_SIZE_HALF, ground_height, -CELL_SIZE_HALF);
@@ -2480,7 +2494,16 @@ fn setup_world(
         },
         sun_shadow_cascades(&config),
         RenderLayers::from_layers(LIGHT_LAYERS),
-        Transform::from_rotation(sun_rotation(&config)),
+        Transform::from_rotation(sun_rotation(
+            &config,
+            crate::sun::world_sun_direction(
+                &config,
+                config.game_hour,
+                environment.as_deref(),
+                config.worldspace_id,
+            ),
+        )),
+        crate::sun::SunLight,
     ));
     commands.insert_resource(GlobalAmbientLight {
         color: weather_lighting.mean_ambient(),
@@ -4418,6 +4441,7 @@ mod tests {
         assert!(cascades.bounds.windows(2).all(|pair| pair[0] < pair[1]));
     }
 
+    /// Explicit CLI bearings retain their calibrated Creation-to-engine ray mapping.
     #[test]
     fn sun_position_maps_clockwise_bearing_and_elevation_to_light_rays() {
         for (azimuth, elevation, expected) in [
@@ -4431,7 +4455,7 @@ mod tests {
                 sun_position: Some((azimuth, elevation)),
                 ..EngineConfig::default()
             };
-            let rays = sun_rotation(&config) * Vec3::NEG_Z;
+            let rays = sun_rotation(&config, Some(Vec3::Y)) * Vec3::NEG_Z;
             assert!(
                 rays.distance(expected) < 1.0e-5,
                 "{azimuth},{elevation}: {rays:?}"
@@ -4439,12 +4463,20 @@ mod tests {
         }
     }
 
+    /// Without the CLI override, use the clock/climate evaluator rather than fixed Euler angles.
     #[test]
-    fn absent_sun_position_preserves_the_existing_light_rotation() {
-        assert_eq!(
-            sun_rotation(&EngineConfig::default()),
-            Quat::from_euler(EulerRot::XYZ, -0.8, -0.5, 0.0)
+    fn absent_sun_position_uses_the_evaluated_direction() {
+        let direction = Vec3::new(0.3, 0.8, -0.1).normalize();
+        assert!(
+            (sun_rotation(&EngineConfig::default(), Some(direction)) * Vec3::Z).distance(direction)
+                < 1e-6
         );
+    }
+
+    /// A world with no climate timing has no authored sun direction: identity, nothing invented.
+    #[test]
+    fn no_evaluated_sun_has_no_authored_direction() {
+        assert_eq!(sun_rotation(&EngineConfig::default(), None), Quat::IDENTITY);
     }
 
     /// The range is the camera's own distance to the far corner of the drawn grid, not the corner's
