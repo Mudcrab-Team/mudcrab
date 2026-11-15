@@ -805,6 +805,17 @@ impl SettingsFile {
         self.metal_drawing_default_available = true;
         self.metal_drawing_auto_unowned = true;
         *settings = RenderingSettings::default();
+        if let Some(coverage) = self.grass_coverage.as_mut()
+            && self
+                .launch_overrides
+                .iter()
+                .any(|flag| flag == "grass:stream-radius")
+        {
+            // Reset owns the default preferences; live application establishes coverage again.
+            self.stored.stream_radius = settings.stream_radius;
+            self.stored.unload_radius = settings.unload_radius;
+            *coverage = (settings.stream_radius, settings.unload_radius);
+        }
         self.status = if self
             .launch_overrides
             .iter()
@@ -1178,7 +1189,19 @@ pub(crate) fn apply_render_settings(
     if !preferences_changed {
         return;
     }
+    let before_coverage = (settings.stream_radius, settings.unload_radius);
     retain_live_grass_coverage(settings.reborrow(), &config);
+    if let Some(file) = file.as_deref_mut()
+        && let Some(coverage) = file.grass_coverage.as_mut()
+    {
+        // Follow automatic radius changes independently while preserving edited preferences.
+        if before_coverage.0 == coverage.0 {
+            coverage.0 = settings.stream_radius;
+        }
+        if before_coverage.1 == coverage.1 {
+            coverage.1 = settings.unload_radius;
+        }
+    }
     if previous.as_ref().is_some_and(|previous| {
         previous.window_size != settings.window_size || previous.window_mode != settings.window_mode
     }) {
