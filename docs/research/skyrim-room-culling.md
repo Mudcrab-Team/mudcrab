@@ -13,6 +13,11 @@ Research checked on 2026-11-15:
   `PortalMarker`, `XPOD` room pairs and `XLRM` links measured in the game data. Portals identify
   apertures between rooms. Links connect rooms that must be seen together without an aperture.
   Membership in our conversion uses the reference pivot, with additional bounds-overlap rows.
+- [Native SkyrimSE culling research](skyrim-native-culling.md) now traces the installed
+  1.7.104.0 executable. It establishes portal traversal with per-node compound frusta,
+  object-bound tests within reached rooms, explicit unbounded-space traversal, shared-node
+  volume unions, joined bounds, and occluder exclusions. That report records exact-build RVAs,
+  local evidence, the parity priorities, and remaining uncertainty.
 - [awarebayes/skyrim-research at `3c83806`](https://github.com/awarebayes/skyrim-research/tree/3c83806196a71329248edd7c00060461dff91a80)
   contains room/portal declarations and reconstructed leaf functions. Its
   [BSPortalGraph implementation](https://github.com/awarebayes/skyrim-research/blob/3c83806196a71329248edd7c00060461dff91a80/reconstruction/bsengine/BSPortalGraph.cpp)
@@ -53,19 +58,20 @@ Research checked on 2026-11-15:
 - Bethesda's [optimization tutorial for Fallout](https://geckwiki.com/index.php/Bethsoft_Tutorial_Optimization)
   additionally names a separate unbounded space connected through portals. That terminology and
   its exact traversal rules are not established by the supplied Skyrim pages. Skyrim's outside-
-  bounds portal rule is now documented directly above; the explicit unbounded-space state remains
-  supported by the community declarations.
+  bounds portal rule is documented directly above. The later native trace independently
+  establishes explicit unbounded-space traversal in this SkyrimSE build.
 
-The structural comparison is useful: Skyrim's declared compound frusta can represent unions and
-intersections of plane sets. Our screen rectangles approximate those visible regions and merge
-multiple paths conservatively. We do not implement the original visibility map or unbounded-space
-traversal, which is why unresolved connections draw the whole cell instead of being ignored.
+Skyrim's native compound-frustum interpreter evaluates unions and intersections of plane sets,
+including occluder exclusions. Our screen rectangles approximate visible regions and merge
+multiple paths conservatively, then discard those regions before individual mesh filtering.
+We do not implement the native per-node visibility map or unbounded-space traversal, which is
+why unresolved connections draw the whole cell instead of being ignored.
 
 No reconstruction source was copied into the engine. No original Skyrim runtime comparison was
-performed. The evidence supports using authored apertures and explicit room links; the exact
-clipping at overlapping bounds, construction of unbounded-space visibility, dynamic membership
-updates, lights and shadows still needs controlled Skyrim experiments or reconstructed traversal
-functions.
+performed. The native trace now establishes how room volumes reach object culling and how
+unbounded space enters traversal. Exact clipping tolerances, path merging and revisits, full
+assignment policy, dynamic membership updates, lights, and shadows still need further tracing
+or controlled Skyrim experiments.
 
 ## Differences established by the Skyrim tutorial
 
