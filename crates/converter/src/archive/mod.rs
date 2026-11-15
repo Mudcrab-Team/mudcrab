@@ -475,6 +475,7 @@ impl IngestionSelection {
         selection_includes(self, path)
     }
 
+    /// Accept coverage from current filtered recipes or an all-files inventory.
     fn accepts_recipe(self, recipe: &str) -> bool {
         let proven = match recipe {
             "" | "all-v1" => Self::All,
