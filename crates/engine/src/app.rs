@@ -2359,7 +2359,9 @@ pub(crate) fn sun_shadow_cascades(config: &EngineConfig) -> CascadeShadowConfig 
 /// Rotate toward the evaluated sun unless an explicit Creation bearing/elevation overrides it.
 /// Directional lights emit along local -Z, opposite the toward-sun direction. Without an evaluated
 /// sun (a world with no climate timing, so no sunrise or sunset) the sun has no authored direction
-/// and keeps the identity rotation; no direction is invented.
+/// and keeps the identity rotation; no direction is invented. Retail worlds always carry climate
+/// timing, so this is not retail behaviour: it affects only fixtures and benchmarks (a test-only
+/// path).
 fn sun_rotation(config: &EngineConfig, direction: Option<Vec3>) -> Quat {
     let Some((azimuth_degrees, elevation_degrees)) = config.sun_position else {
         return match direction {

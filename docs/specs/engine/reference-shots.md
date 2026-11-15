@@ -139,9 +139,11 @@ them. Optional `[Sky]` keys of the same names in `--ini` files override them ind
 engine extension; retail reads only the GMSTs). A pack that lacks a GMST uses the retail exe
 default of that setting, so the same formula runs: `fSunXExtreme` 400, `fSunYExtreme` 25,
 `fSunZExtreme` -100, `fSunDirXExtreme` 400, `fSunAlphaTransTime` 2.0 (`rea-20261114/q4-sun.md`;
-data addresses 0x14209E960, 0x14209E978, 0x14209E990, 0x14209E9A8, 0x14209E948 from the PR #214
-research note, not re-traced by REA). A world without a usable climate timing has no sunrise or
-sunset, so no sun path applies and its sun has no authored direction (identity rotation).
+confirmed against the exe settings dump: record addresses 0x14209e940, 0x14209e958, 0x14209e970,
+0x14209e988, 0x14209e9a0, with the value at record + 8). A world without a usable climate timing has
+no sunrise or sunset, so no sun path applies and its sun has no authored direction (identity
+rotation). Retail worlds always carry climate timing, so this is not retail behaviour and affects
+only fixtures and benchmarks (a test-only path).
 Invalid record/INI fields warn and are ignored.
 `--sun-position` remains a fixed explicit bearing/elevation override. Capture-frame receipts
 include the actual clock and engine-space toward-sun vector.

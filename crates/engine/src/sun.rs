@@ -37,8 +37,10 @@ pub const SUN_KEYS: [&str; 5] = [
 pub struct SunSettings(pub [f32; 5]);
 
 /// The retail exe defaults of the five sun settings, used only for a GMST the pack lacks (Skyrim.esm
-/// values win over them; RF-SUN-003, `rea-20261114/q4-sun.md` GMST table). The data addresses are
-/// from the PR #214 research note `skyrim-native-sun-trajectory-20261010` (not re-traced by REA):
+/// values win over them; RF-SUN-003, `rea-20261114/q4-sun.md` GMST table). The data addresses were
+/// confirmed against the exe settings dump (record addresses 0x14209e940, 0x14209e958, 0x14209e970,
+/// 0x14209e988, 0x14209e9a0; value at record + 8) and match the PR #214 research note
+/// `skyrim-native-sun-trajectory-20261010`:
 /// `fSunXExtreme` 400 (0x14209E960), `fSunYExtreme` 25 (0x14209E978), `fSunZExtreme` -100
 /// (0x14209E990), `fSunDirXExtreme` 400 (0x14209E9A8), `fSunAlphaTransTime` 2.0 (0x14209E948).
 pub const EXE_SUN_DEFAULTS: SunSettings = SunSettings([400.0, 25.0, -100.0, 400.0, 2.0]);
@@ -220,7 +222,9 @@ pub struct SunLight;
 
 /// Resolve the active world's climate timing and the pack's five GMSTs (retail exe defaults for a
 /// missing GMST), then apply explicit INI keys. `None` means the world has no climate timing, so no
-/// sunrise or sunset exists and no sun path applies.
+/// sunrise or sunset exists and no sun path applies. Retail worlds always carry climate timing, so
+/// this is not retail behaviour: it affects only fixtures and benchmarks without a pack (a
+/// test-only path).
 pub fn world_sun_direction(
     config: &EngineConfig,
     hour: f64,
