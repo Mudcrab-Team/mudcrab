@@ -466,7 +466,6 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "hidden-niavobject-excluded",
     "nif-root-transform-ignored",
     "skin-static-fallback",
-    "native-uv-tangent-frame",
     "object-texture-swap-geometry-index-v1",
 ];
 
@@ -688,8 +687,7 @@ fn configuration_hash_with_identity(
         "texture_uastc_level": config.texture_uastc_level,
         "script_abi_version": config.script_abi_version,
     });
-    // Keep historical metadata identities stable. Changed output recipes belong
-    // to per-kind or per-source proofs; combined proofs alone cannot authorize newer bytes.
+    // Actual DDS roles remain in per-source proofs rather than this broad identity.
     if let Some(identity) = identity {
         relevant["record_reader"] = identity.clone();
     }
@@ -768,35 +766,6 @@ pub fn asset_configuration_hash_for_schema(
     schema: u32,
     source_ext: &str,
 ) -> Result<String> {
-    asset_configuration_hash_with_normal_kind_contract(config, schema, source_ext, false)
-}
-
-/// Recognize only the exact former producer-28 DDS proof during source-recipe migration.
-/// Encoder/quality settings still match, and source proofs decide packed-normal reuse.
-pub(crate) fn compatible_asset_configuration_hash(
-    config: &crate::config::PipelineConfig,
-    schema: u32,
-    source_ext: &str,
-    recorded: &str,
-) -> Result<bool> {
-    Ok(
-        recorded == asset_configuration_hash_for_schema(config, schema, source_ext)?
-            || (schema == 28
-                && source_ext == "dds"
-                && recorded
-                    == asset_configuration_hash_with_normal_kind_contract(
-                        config, schema, source_ext, true,
-                    )?),
-    )
-}
-
-/// Reconstruct kind settings, optionally including the historical broad packed-normal field.
-fn asset_configuration_hash_with_normal_kind_contract(
-    config: &crate::config::PipelineConfig,
-    schema: u32,
-    source_ext: &str,
-    normal_kind_contract: bool,
-) -> Result<String> {
     let mut relevant = match source_ext {
         "nif" => {
             let mut mesh = serde_json::json!({"mesh_producer": schema});
@@ -818,9 +787,6 @@ fn asset_configuration_hash_with_normal_kind_contract(
         }),
         _ => color_eyre::eyre::bail!("unsupported asset cache kind {source_ext}"),
     };
-    if normal_kind_contract {
-        relevant["normal_packed_contract"] = serde_json::json!("lossless-rgba8-v1");
-    }
     if source_ext == "dds" && schema >= 16 {
         relevant["texture_zstd_level"] = serde_json::json!(config.texture_zstd_level);
     }
