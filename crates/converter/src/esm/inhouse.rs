@@ -26,12 +26,14 @@ use std::{
 };
 
 /// Decoder/adapter behavior version for output changes outside the authored schema.
-/// Version 14 combines placed database rows with item-local malformed LAND recovery.
+/// Version 14 projects STAT MODS texture swaps and recovers malformed LAND items.
 pub const ADAPTER_VERSION: u32 = 14;
 
 /// Legacy metadata projection contract: preserve WRLD payloads and record-aware VMAD links.
 /// Version 4 resolves localized string fields to the in-house reader's text (`legacy_text`).
-/// Version 5 adds placed database rows; version 6 also recovers malformed LAND paint items.
+/// Version 5 changes database placement coverage.
+/// Version 6 projects STAT MODS alternate-texture entries (3D Index, TXST link) and remaps their TXST links.
+/// Version 6 also recovers malformed LAND paint items.
 /// This identity does not change the independent converted-asset producer/settings proofs.
 pub const LEGACY_PROJECTION_VERSION: u32 = 6;
 
@@ -90,6 +92,7 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "exterior_spatial",
     "land",
     "statics",
+    "base_texture_swaps",
     "lights",
     "npcs",
     "actor_models",

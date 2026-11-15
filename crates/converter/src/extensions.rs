@@ -41,6 +41,7 @@ pub struct ExtensionSpec {
 const MAIN_CORE_TABLES: &[&str] = &[
     "actor_model_parts",
     "actor_models",
+    "base_texture_swaps",
     "cell_environment",
     "cell_lighting",
     "cell_regions",

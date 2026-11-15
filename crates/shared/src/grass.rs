@@ -2,7 +2,7 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// Version eleven retains non-emitting species slots and locally recovers malformed LAND items.
+/// Version eleven combines MODS-aware masks with reference-order species slots and LAND recovery.
 pub const GRASS_CACHE_VERSION: u32 = 11;
 pub const GRASS_BLEND_SIDE: usize = 17;
 pub const GRASS_EXCLUSION_SIDE: usize = 64;
