@@ -6835,7 +6835,7 @@ mod tests {
         );
         config.record_reader = crate::config::RecordReader::Inhouse;
         let mut identity = crate::esm::inhouse::reader_identity(config.record_reader);
-        identity["adapter_version"] = serde_json::json!(10);
+        identity["adapter_version"] = serde_json::json!(adapter);
         let historical = serde_json::json!({
             "schema": CONVERTER_SCHEMA_VERSION,
             "texture_etc1s_quality": config.texture_fallback_quality,

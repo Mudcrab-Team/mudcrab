@@ -391,8 +391,10 @@ fn standard_mods_surface(material: Option<&serde_json::Value>) -> bool {
     let flags2 = tag
         .and_then(|tag| tag.get("shaderFlags2"))
         .and_then(serde_json::Value::as_u64);
-    if let (Some(flags1), Some(flags2)) = (flags1, flags2) {
-        let (flags1, flags2) = (flags1 as u32, flags2 as u32);
+    if let (Some(flags1), Some(flags2)) = (
+        flags1.and_then(|flags| u32::try_from(flags).ok()),
+        flags2.and_then(|flags| u32::try_from(flags).ok()),
+    ) {
         let depth_test = flags1 & (1 << 31) != 0;
         let depth_write = flags2 & 1 != 0;
         let decal = flags1 & ((1 << 26) | (1 << 27)) != 0;
@@ -2560,7 +2562,7 @@ mod tests {
             "v6 marker masks must never be reused"
         );
         let cache = read(&output);
-        assert_eq!(cache.version, 7);
+        assert_eq!(cache.version, shared::grass::GRASS_CACHE_VERSION);
         assert!(cache.cells.iter().all(|cell| {
             cell.quadrants
                 .iter()

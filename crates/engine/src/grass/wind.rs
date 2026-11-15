@@ -9,13 +9,13 @@
 
 use std::f32::consts::TAU;
 
-/// RF-GRASS-002: hard-coded cap on the wind constant (`0x141b5bec8`).
+/// RF-GRASS-002: hard-coded cap on the wind constant.
 pub const WIND_CONSTANT_CAP: f32 = 60.0;
 
-/// RF-GRASS-002: `fWindGrassMultiplier:Display` retail default (`Setting` at `0x1420d6d28`).
+/// RF-GRASS-002: `fWindGrassMultiplier:Display` retail default.
 pub const WIND_GRASS_MULTIPLIER: f32 = 1.0;
 
-/// RF-GRASS-003: the retail phase scale `1/600` (constant at `0x14197f108`).
+/// RF-GRASS-003: the retail phase scale `1/600`.
 pub const WIND_PHASE_RATE: f32 = 1.0 / 600.0;
 
 /// RF-GRASS-001: `A = fGrassWindMagnitudeMin + (fGrassWindMagnitudeMax - Min) * w`.
@@ -34,7 +34,7 @@ pub fn wind_shader_constant(amplitude: f32, wind_grass_multiplier: f32) -> f32 {
 /// RF-GRASS-003: `phase = TotalTime * (1/600) * 2*pi * value`.
 ///
 /// The formula has high confidence. That `value` is the GRAS wave period (grass shader property
-/// `+0x184`) has medium confidence: the binary trace does not name the field.
+/// field) has medium confidence: the binary trace does not name the field.
 pub fn wind_phase(total_time_seconds: f32, wave_period: f32) -> f32 {
     total_time_seconds * WIND_PHASE_RATE * TAU * wave_period
 }
