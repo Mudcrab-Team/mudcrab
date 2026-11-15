@@ -80,6 +80,12 @@ pub(crate) const WATER_DISTANCE_LITERAL: f32 = 8192.0;
 #[cfg(test)]
 pub(crate) const WATER_SSR_INTENSITY: f32 = 0.5;
 
+/// The cube map retail's water reflects when the worldspace and the cell name none (RF-WATER-007:
+/// `Cubemaps\QuickSky_e.dds`, converted to this KTX2 in the pack). Which cube Tamriel uses is still
+/// medium confidence (the worldspace name is a 2D path and the constructor falls back to a rendered
+/// six-face cube), so this is a data-backed fallback, not a proven match (#698).
+pub const WATER_CUBE_FALLBACK_PATH: &str = "textures/cubemaps/quicksky_e.ktx2";
+
 /// The retail distance term of the reflection mix (RF-SHADER-008).
 #[cfg(test)]
 pub(crate) fn water_dist_t(eye_distance: f32, noise_falloff: f32, flag: f32) -> f32 {
@@ -93,6 +99,21 @@ pub(crate) fn water_dist_t(eye_distance: f32, noise_falloff: f32, flag: f32) -> 
 #[cfg(test)]
 pub(crate) fn water_reflection_share(dist_t: f32, coverage: f32) -> f32 {
     (dist_t * WATER_SSR_INTENSITY * coverage).clamp(0.0, 1.0)
+}
+
+/// The reflection the retail cube-map programs write (RF-WATER-050): `lerp(ReflectionColor, env,
+/// DNAM 0x14)` with `env = lerp(cube * FBR, ssr, share)`, `share` being [`water_reflection_share`].
+/// The flat colour is only the `1 - DNAM 0x14` part; the cube is the rest less the SSR share.
+#[cfg(test)]
+pub(crate) fn water_reflection_colour(
+    flat: f32,
+    cube: f32,
+    ssr: f32,
+    share: f32,
+    reflection_amount: f32,
+) -> f32 {
+    let environment = cube + (ssr - cube) * share;
+    flat + (environment - flat) * reflection_amount
 }
 
 /// The two sun terms of the retail water pixel shader, before the sun colour (RF-WATER-010):
@@ -901,6 +922,10 @@ pub struct WaterExtension {
     noise_normal_1: Option<Handle<Image>>,
     #[texture(108)]
     noise_normal_2: Option<Handle<Image>>,
+    /// The sky cube map the water reflects (retail's `cube` of RF-WATER-009), read with the sampler
+    /// of `flow_normal`. `None` leaves the flat Reflection Color in its place.
+    #[texture(109, dimension = "cube")]
+    cube: Option<Handle<Image>>,
     /// The weather's Water Multiplier as 0..1 values, applied to the colours set after it.
     multiplier: [f32; 3],
 }
@@ -933,7 +958,8 @@ struct WaterSettings {
     /// frame whose resolve was skipped leaves the texture bound but cleared to a negative sentinel,
     /// which the shader reads as unknown too. y = the record's noise falloff, clamped to
     /// `[1, 8191]` (RF-SHADER-007). z = 1 for a water in an interior cell, which uses retail's
-    /// interior program (RF-WATER-017). w unused.
+    /// interior program (RF-WATER-017). w = 1 when the sky cube map is bound to `cube`, 0 when the
+    /// flat Reflection Color stands in for it.
     depth_params: Vec4,
     /// xyz = the three noise layers' UV scales in world units per texture tile (WATR DNAM
     /// `uvScaleA`); w = 1 when the noise textures are bound, 0 for a flat surface.
@@ -981,6 +1007,7 @@ impl Default for WaterExtension {
             noise_normal_0: None,
             noise_normal_1: None,
             noise_normal_2: None,
+            cube: None,
             multiplier: [1.0; 3],
         }
     }
@@ -995,6 +1022,7 @@ impl WaterExtension {
             .chain(self.noise_normal_0.iter())
             .chain(self.noise_normal_1.iter())
             .chain(self.noise_normal_2.iter())
+            .chain(self.cube.iter())
             .map(Handle::id)
     }
 
@@ -1044,6 +1072,7 @@ impl WaterExtension {
             noise_normal_0: None,
             noise_normal_1: None,
             noise_normal_2: None,
+            cube: None,
             multiplier: [1.0; 3],
         }
     }
@@ -1064,6 +1093,14 @@ impl WaterExtension {
     pub(crate) fn set_bed_depth(&mut self, handle: Option<Handle<Image>>) {
         self.settings.depth_params.x = if handle.is_some() { 1.0 } else { 0.0 };
         self.bed_depth = handle;
+    }
+
+    /// Binds the sky cube map the water reflects, or none (the flat Reflection Color then stands in
+    /// for it, which is not retail's behaviour).
+    pub fn with_cube(mut self, cube: Option<Handle<Image>>) -> Self {
+        self.settings.depth_params.w = f32::from(u8::from(cube.is_some()));
+        self.cube = cube;
+        self
     }
 
     /// Gives the water its three noise normal maps and the DNAM values that shape and move them.
@@ -2768,6 +2805,53 @@ mod tests {
         assert_eq!(water_reflection_share(10.0, 1.0), 1.0);
         // Coverage below one, as at the edge of a mirrored mountain, lowers it in proportion.
         assert!((water_reflection_share(1.0, 0.4) - 0.2).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn the_flat_colour_is_only_the_part_the_reflection_amount_leaves() {
+        // RF-WATER-050: refl = lerp(ReflectionColor, env, DNAM 0x14); env = lerp(cube, ssr, share).
+        // A river (DNAM 0x14 = 0.8) at distT 1 with full image coverage: share = 0.5. The flat
+        // colour's weight is 1 - 0.8 = 0.2 and nothing else; before the cube it was
+        // 0.2 + 0.8 * 0.5 = 0.6 (RF-WATER-050 correction, WATER5 section 1).
+        let share = water_reflection_share(1.0, 1.0);
+        let only_flat = water_reflection_colour(1.0, 0.0, 0.0, share, 0.8);
+        assert!((only_flat - 0.2).abs() < 1.0e-6);
+        let only_cube = water_reflection_colour(0.0, 1.0, 0.0, share, 0.8);
+        assert!((only_cube - 0.8 * 0.5).abs() < 1.0e-6);
+        let only_ssr = water_reflection_colour(0.0, 0.0, 1.0, share, 0.8);
+        assert!((only_ssr - 0.8 * 0.5).abs() < 1.0e-6);
+        // Where the image has no coverage the cube carries all of the 0.8.
+        let no_image =
+            water_reflection_colour(0.0, 1.0, 0.0, water_reflection_share(1.0, 0.0), 0.8);
+        assert!((no_image - 0.8).abs() < 1.0e-6);
+        // A creek (DNAM 0x14 = 1.0) has no flat share at all.
+        assert_eq!(water_reflection_colour(1.0, 0.0, 0.0, share, 1.0), 0.0);
+        // The shader holds the same mix over the bound cube, in Skyrim's axes (x east, y north,
+        // z up) and with the unclamped reflected direction.
+        let source = include_str!("shaders/water.wgsl");
+        assert!(source.contains("@binding(109) var water_cube: texture_cube<f32>;"));
+        assert!(
+            source.contains("textureSample(water_cube, water_flow_normal_sampler, cube_direction)")
+        );
+        assert!(source.contains(
+            "let cube_direction = vec3<f32>(cube_reflected.x, -cube_reflected.z, cube_reflected.y);"
+        ));
+        assert!(source.contains("let reflection_planar = mix(flat_reflection, environment, water.fresnel_reflectivity.y);"));
+    }
+
+    #[test]
+    fn the_cube_map_is_bound_only_when_there_is_one() {
+        assert_eq!(
+            WATER_CUBE_FALLBACK_PATH,
+            "textures/cubemaps/quicksky_e.ktx2"
+        );
+        let without = WaterExtension::default();
+        assert_eq!(without.settings.depth_params.w, 0.0);
+        assert_eq!(without.image_ids().count(), 0);
+        let with = WaterExtension::default().with_cube(Some(Handle::default()));
+        assert_eq!(with.settings.depth_params.w, 1.0);
+        assert_eq!(with.image_ids().count(), 1);
+        assert_eq!(with.with_cube(None).settings.depth_params.w, 0.0);
     }
 
     #[test]

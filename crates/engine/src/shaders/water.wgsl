@@ -71,6 +71,9 @@ struct WaterSettings {
 @group(#{MATERIAL_BIND_GROUP}) @binding(106) var water_noise_0: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(107) var water_noise_1: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(108) var water_noise_2: texture_2d<f32>;
+// The sky cube map of retail's cube-map programs (RF-WATER-009, RF-WATER-050), read with the flow
+// normal's sampler. `depth_params.w` says whether one is bound.
+@group(#{MATERIAL_BIND_GROUP}) @binding(109) var water_cube: texture_cube<f32>;
 
 // Any path at or past the fog far distance is opaque and fully deep (Skyrim saturates the ratio),
 // so this only has to be larger than any fog far distance.
@@ -241,15 +244,22 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // record's noise falloff clamped to [1, 8191] on the CPU (RF-SHADER-007, RF-SHADER-008).
     let ratio = (length(to_surface) - WATER_DISTANCE_LITERAL) / (water.depth_params.y - WATER_DISTANCE_LITERAL);
     let dist_t = clamp(mix(WATER_FRAME_FLAG, 1.0, ratio), 0.0, 1.0);
-    // refl = lerp(ReflectionColor, env, Reflection Amount) (RF-SHADER-009). Retail multiplies env by
+    // refl = lerp(ReflectionColor, env, DNAM 0x14) with env = lerp(cube * FBR, ssr, s),
+    // s = sat(distT * fWaterSSRIntensity * ssr.a) (RF-WATER-050). Retail multiplies env by
     // FramebufferRange and the result by its inverse, so env passes unchanged and the flat colour is
-    // divided. env is the flat colour (standing in for the sky cube map, until one exists) toward
-    // the reflection image, weighted like retail's screen-space reflection:
-    // sat(distT * fWaterSSRIntensity * image alpha). Where the image has no coverage (alpha 0) the
-    // environment is the flat colour.
+    // divided. The cube is sampled along reflect(V, lerp(up, N, Reflection Magnitude)) in Skyrim's
+    // axes (x east, y north, z up; Bevy (x, y, z) is Skyrim (x, -z, y)), with no clamp as in retail.
+    // The planar reflection image takes the place of retail's screen-space reflection: it is the
+    // local scene, with an alpha that is 0 where it has no coverage. Without a bound cube the flat
+    // colour stands in for it; that is not retail's behaviour and is only the fallback for a cube
+    // that did not load.
     let flat_reflection = water.reflection_color.rgb / FRAMEBUFFER_RANGE;
+    let cube_reflected = reflect(view_direction, reflected_normal);
+    let cube_direction = vec3<f32>(cube_reflected.x, -cube_reflected.z, cube_reflected.y);
+    let cube_sample = textureSample(water_cube, water_flow_normal_sampler, cube_direction).rgb;
+    let sky = select(flat_reflection, cube_sample, water.depth_params.w > 0.5);
     let environment = mix(
-        flat_reflection,
+        sky,
         reflection_sample.rgb,
         clamp(dist_t * WATER_SSR_INTENSITY * reflection_sample.a, 0.0, 1.0),
     );

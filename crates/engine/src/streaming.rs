@@ -1773,10 +1773,16 @@ fn spawn_cell(
                         })
                     })
                     .unwrap_or_default();
+                // The sky cube map every exterior water reflects (RF-WATER-007, RF-WATER-050). The
+                // asset server hands out one handle per path, so cells share it. Interior water
+                // has no cube in retail (RF-WATER-017).
+                let cube = (!matches!(payload.key, CellKey::Interior(_)))
+                    .then(|| asset_server.load::<Image>(crate::render::WATER_CUBE_FALLBACK_PATH));
                 let water_material = water_materials.add(water_material(
                     water_colors,
                     reflection.0.clone(),
                     flow_normal.clone(),
+                    cube.clone(),
                     noise.map(|noise| (noise, noise_textures.clone())),
                     matches!(payload.key, CellKey::Interior(_)),
                 ));
@@ -1794,6 +1800,7 @@ fn spawn_cell(
                     PendingWaterProfile {
                         cell_id: terrain.cell_id,
                         flow_normal,
+                        cube,
                         noise: noise_textures.into_iter().flatten().collect(),
                     },
                     RenderLayers::layer(WATER_LAYER),
@@ -2885,6 +2892,9 @@ struct PendingTerrainProfile {
 struct PendingWaterProfile {
     cell_id: u32,
     flow_normal: Option<Handle<Image>>,
+    /// The sky cube map. It is optional: one that fails to load, or that is not a six-face cube,
+    /// leaves the flat Reflection Color in its place instead of hiding the water.
+    cube: Option<Handle<Image>>,
     /// The noise normal maps. They are optional detail: one that fails to load leaves the water
     /// flat instead of hiding it.
     noise: Vec<Handle<Image>>,
@@ -3938,6 +3948,25 @@ fn track_surface_readiness(
     }
     for (entity, pending, material) in &water {
         let handles: Vec<_> = pending.flow_normal.iter().cloned().collect();
+        // The sky cube map is optional: while it loads the water waits, and one that fails, or is
+        // not a six-face cube, leaves the flat Reflection Color in its place.
+        if let Some(cube) = &pending.cube {
+            match sky_cube_state(&asset_server, &images, cube) {
+                SkyCubeState::Pending => continue,
+                SkyCubeState::Failed(reason) => {
+                    warn!(
+                        cell = format_args!("{:08X}", pending.cell_id),
+                        %reason,
+                        "water sky cube map failed; reflecting the flat colour"
+                    );
+                    if let Some(mut material) = water_materials.get_mut(&material.0) {
+                        material.extension = material.extension.clone().with_cube(None);
+                    }
+                    profiler.increment("water/cube_fallbacks", 1);
+                }
+                SkyCubeState::Ready => {}
+            }
+        }
         // The noise normal maps are optional detail: while they load the water waits, and one that
         // fails leaves the water flat instead of hiding it.
         match validate_surface_dependencies(
@@ -4007,6 +4036,45 @@ fn track_surface_readiness(
         "assets/pending_surface_instances",
         metrics.pending_surface_instances as f64,
     );
+}
+
+enum SkyCubeState {
+    Pending,
+    Ready,
+    Failed(String),
+}
+
+/// Whether the water's sky cube map has loaded as a six-face cube. A cube map is stored sRGB, so it
+/// does not go through the surface check, which wants linear water images.
+fn sky_cube_state(
+    asset_server: &AssetServer,
+    images: &Assets<Image>,
+    handle: &Handle<Image>,
+) -> SkyCubeState {
+    if let Some((load, _, recursive)) = asset_server.get_load_states(handle.id()) {
+        let failed = match (load, recursive) {
+            (LoadState::Failed(error), _) => Some(error),
+            (_, RecursiveDependencyLoadState::Failed(error)) => Some(error),
+            _ => None,
+        };
+        if let Some(error) = failed {
+            return SkyCubeState::Failed(error_chain(error.as_ref()).join(" -> "));
+        }
+    }
+    if !asset_server.is_loaded_with_dependencies(handle.id()) {
+        return SkyCubeState::Pending;
+    }
+    let Some(image) = images.get(handle) else {
+        return SkyCubeState::Pending;
+    };
+    let is_cube = image.texture_view_descriptor.as_ref().is_some_and(|view| {
+        view.dimension == Some(bevy::render::render_resource::TextureViewDimension::Cube)
+    });
+    if is_cube {
+        SkyCubeState::Ready
+    } else {
+        SkyCubeState::Failed(format!("image {:?} is not a six-face cube", handle.id()))
+    }
 }
 
 enum SurfaceDependencyState {
@@ -5422,6 +5490,7 @@ fn water_material(
     colors: Option<WaterColors>,
     reflection: Handle<Image>,
     flow_normal: Option<Handle<Image>>,
+    cube: Option<Handle<Image>>,
     noise: Option<(&WaterNoise, [Option<Handle<Image>>; 3])>,
     interior: bool,
 ) -> WaterMaterial {
@@ -5445,6 +5514,7 @@ fn water_material(
     let mut extension =
         WaterExtension::with_reflection_and_factors(reflection, flow_normal, fresnel, reflectivity)
             .with_water_multiplier(multiplier)
+            .with_cube(cube)
             .with_interior(interior)
             .with_sun_color(crate::sky::WeatherLighting::SKYRIM_CLEAR_DAY.sunlight)
             .with_reflection_magnitude(
@@ -5596,6 +5666,7 @@ mod tests {
                 Handle::default(),
                 None,
                 None,
+                None,
                 false,
             )
             .extension
@@ -5639,7 +5710,7 @@ mod tests {
             underwater_fog: None,
         };
         let multiplier = crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER;
-        let material = water_material(Some(colors), Handle::default(), None, None, false);
+        let material = water_material(Some(colors), Handle::default(), None, None, None, false);
         let scaled = |rgb: [u8; 3]| {
             Color::srgb(
                 f32::from(rgb[0]) / 255.0 * f32::from(multiplier[0]) / 255.0,
@@ -5659,7 +5730,7 @@ mod tests {
             .to_linear();
         assert!((sun.x - sunlight.red).abs() < 1.0e-6);
         assert_eq!(interior, 0.0);
-        let indoors = water_material(Some(colors), Handle::default(), None, None, true);
+        let indoors = water_material(Some(colors), Handle::default(), None, None, None, true);
         assert_eq!(indoors.extension.colours().3, 1.0);
     }
 
