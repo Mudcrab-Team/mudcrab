@@ -2209,6 +2209,20 @@ mod tests {
     }
 
     #[test]
+    /// Filtered inventories must include controls and reject recipes that omitted them.
+    fn control_files_require_current_filtered_recipe() {
+        for selection in [IngestionSelection::ConverterInputsV1, IngestionSelection::RuntimeEnglishV1] {
+            for name in ["controlmap.txt", "keyboard_english.txt", "gamepad.txt"] {
+                let path = format!("Interface/Controls/PC/{name}");
+                assert!(selection.includes(Path::new(&path)), "{path}");
+            }
+            assert!(!selection.includes(Path::new("interface/controls/pc/notes.txt")));
+            assert!(!selection.accepts_recipe("converter-inputs-v4"));
+            assert!(!selection.accepts_recipe("runtime-english-v4"));
+        }
+    }
+
+    #[test]
     fn creature_idle_selection_requires_the_new_filtered_recipe() {
         for selection in [
             IngestionSelection::ConverterInputsV1,
