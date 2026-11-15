@@ -1360,6 +1360,69 @@ pub(crate) fn retained_configuration_matches_for_reader(
     Ok(false)
 }
 
+/// As [`retained_configuration_matches_for_reader`], also accepting a reader identity that
+/// records an earlier base-schema digest the schema lineage trusts (`lineage`).
+///
+/// Substituting the compiled digest must give a reader identity this build still knows, so
+/// the adapter and diagnostics versions stay exactly checked. The recorded proof is then
+/// recomputed from the identity as the pack recorded it, with the earlier digest.
+pub(crate) fn retained_configuration_matches_for_lineage_reader(
+    config: &crate::config::PipelineConfig,
+    schema: u32,
+    recorded: &str,
+    identity: &serde_json::Value,
+    lineage: Option<&str>,
+) -> Result<bool> {
+    if retained_configuration_matches_for_reader(config, schema, recorded, identity)? {
+        return Ok(true);
+    }
+    let Some(earlier) = lineage else {
+        return Ok(false);
+    };
+    if config.record_reader != crate::config::RecordReader::Inhouse
+        || identity
+            .get("schema_sha256")
+            .and_then(|digest| digest.as_str())
+            != Some(earlier)
+    {
+        return Ok(false);
+    }
+    let mut normalized = identity.clone();
+    normalized["schema_sha256"] = serde_json::json!(hash_bytes(crate::records::SCHEMA_BYTES));
+    let schemas = config.schemas()?;
+    let known = normalized == crate::esm::inhouse::configured_reader_identity(config)?
+        || [
+            inhouse_adapter10_reader_identity(schemas.as_ref()),
+            inhouse_adapter11_reader_identity(schemas.as_ref()),
+            inhouse_adapter12_reader_identity(schemas.as_ref(), &config.language),
+        ]
+        .iter()
+        .any(|prior| prior.as_ref() == Some(&normalized));
+    Ok(known && recorded == configuration_hash_with_identity(config, schema, Some(identity))?)
+}
+
+/// The script ABI a recorded combined settings proof was made with, when exactly one ABI up
+/// to the configured one reproduces it. Every other setting must already match, so a proof
+/// that differs in anything besides the ABI finds none. The newest ABI is tried first.
+pub(crate) fn recover_script_abi(
+    config: &crate::config::PipelineConfig,
+    schema: u32,
+    recorded: &str,
+    identity: &serde_json::Value,
+    lineage: Option<&str>,
+) -> Result<Option<u32>> {
+    for abi in (1..=config.script_abi_version).rev() {
+        let mut candidate = config.clone();
+        candidate.script_abi_version = abi;
+        if retained_configuration_matches_for_lineage_reader(
+            &candidate, schema, recorded, identity, lineage,
+        )? {
+            return Ok(Some(abi));
+        }
+    }
+    Ok(None)
+}
+
 pub fn hash_bytes(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()

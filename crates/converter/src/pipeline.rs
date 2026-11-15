@@ -1959,6 +1959,55 @@ struct ConversionBatch<'a> {
     cancellation: &'a Cancellation,
 }
 
+/// Converts every `.pex` under `staging/vfs` again, with the normal conversion's script stage.
+///
+/// A metadata rebuild uses it when the source pack's scripts were produced under an older
+/// script ABI. Nothing is reused: no previous manifest, no staged output and no cache entry
+/// can satisfy a script here. The caller owns the manifest's other kinds and later checks the
+/// recorded script source hashes against the new ones.
+pub(crate) async fn convert_staged_scripts(
+    config: &PipelineConfig,
+    staging: &Path,
+    manifest: &mut ConversionManifest,
+    report: &mut PipelineReport,
+    progress_tx: &Sender<ProgressEvent>,
+) -> Result<()> {
+    let vfs = staging.join("vfs");
+    let files = discover(&vfs)?;
+    let source_paths: BTreeMap<PathBuf, PathBuf> = files
+        .iter()
+        .filter(|path| extension(path, &["pex"]))
+        .map(|path| (path.clone(), path.clone()))
+        .collect();
+    let previous = ConversionManifest::default();
+    let mut journal = StagingJournal::open(staging)?;
+    let cancellation = Cancellation::new();
+    let result = ConversionBatch {
+        config,
+        staging,
+        previous: &previous,
+        staged: Arc::new(BTreeMap::new()),
+        journal: &mut journal,
+        manifest,
+        report,
+        progress_tx,
+        cancellation: &cancellation,
+    }
+    .convert_kind(
+        &files,
+        &source_paths,
+        "pex",
+        ProgressStage::Scripts,
+        None,
+        &BTreeSet::new(),
+    )
+    .await;
+    // The journal only resumes an interrupted normal run. A rebuild never resumes.
+    drop(journal);
+    let _ = fs::remove_file(StagingJournal::path_in(staging));
+    result
+}
+
 /// How a worker produced a conversion output.
 enum Produced {
     /// A cached output was reused.
