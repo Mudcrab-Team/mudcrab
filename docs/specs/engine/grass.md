@@ -273,8 +273,9 @@ These are the fifteen honoured grass keys. All retain their `[Grass]` section.
 Every default is retail data. `SkyrimSE.exe` 1.7.104 stores one static INI
 `Setting` per key (vtable, 8-byte default, name pointer); the address below is that
 `Setting`. `fGrassMinStartFadeDistance` is the exception: the compiled value is 400.0
-and the shipped INI files override it with 0.0. A capture setup's `Skyrim.ini`
-(`iMinGrassSize=40`, `fGrassFadeRange=1766`, `bEnableGrassFade=0`) is not a default.
+and the shipped INI files override it with 0.0. A local `Skyrim.ini` with other values
+(`iMinGrassSize=40`, `fGrassFadeRange=1766`, `bEnableGrassFade=0`) differs from the exe
+defaults; the exe defaults are used.
 
 | Section | Key | Default | Default source | Engine use |
 | --- | --- | --- | --- | --- |
