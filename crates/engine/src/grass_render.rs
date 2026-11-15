@@ -1241,7 +1241,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::gltf::GltfPrimitive;
+    use bevy::{asset::RenderAssetUsages, gltf::GltfPrimitive};
 
     include!("grass_render_alpha_tests.rs");
 
