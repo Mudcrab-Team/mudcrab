@@ -452,8 +452,8 @@ pub struct WaterColors {
 }
 
 impl WaterColors {
-    /// FNAM bit 3: retail draws this water with its flow-map program (RF-WATER-013, RF-WATER-019).
-    /// The engine decodes it and does not draw that program yet (#698).
+    /// FNAM bit 3: retail draws this water with its flow-map program (RF-WATER-013, RF-WATER-019)
+    /// in a cell that has a flow map (RF-WATER-036).
     pub fn uses_flow_map(&self) -> bool {
         self.fnam.is_some_and(|flags| flags & 0x08 != 0)
     }
@@ -478,6 +478,38 @@ pub struct AssetCatalog {
     water_flow: std::collections::HashMap<u32, String>,
     water_colors: std::collections::HashMap<u32, WaterColors>,
     water_noise: std::collections::HashMap<u32, WaterNoise>,
+    /// The cells whose pack holds a per-cell flow map (RF-WATER-036), read from the pack's
+    /// `textures/water/<plugin>/` folder when the catalog opens.
+    water_flow_maps: std::collections::HashSet<(i32, i32)>,
+}
+
+/// The plugin folder the retail game reads a cell's flow map from: it formats the cell's own
+/// plugin file name (RF-WATER-036). Every one of the 641 flow maps is under `skyrim.esm`, and no
+/// other archive has one, so the engine reads that folder.
+pub const WATER_FLOW_MAP_PLUGIN: &str = "skyrim.esm";
+
+/// The cells with a flow map in `<pack>/textures/water/<plugin>/`: the file names are
+/// `flow.<cellX>.<cellY>.ktx2`. A pack with no such folder has none.
+fn read_flow_map_cells(pack: &Path) -> std::collections::HashSet<(i32, i32)> {
+    let folder = pack
+        .join("textures")
+        .join("water")
+        .join(WATER_FLOW_MAP_PLUGIN);
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Default::default();
+    };
+    entries
+        .filter_map(std::result::Result::ok)
+        .filter_map(|entry| flow_map_cell(&entry.file_name().to_string_lossy()))
+        .collect()
+}
+
+/// The cell a flow map file name `flow.<x>.<y>.ktx2` belongs to.
+fn flow_map_cell(file_name: &str) -> Option<(i32, i32)> {
+    let stem = file_name.to_ascii_lowercase();
+    let stem = stem.strip_prefix("flow.")?.strip_suffix(".ktx2")?;
+    let (x, y) = stem.split_once('.')?;
+    Some((x.parse().ok()?, y.parse().ok()?))
 }
 
 impl AssetCatalog {
@@ -645,7 +677,15 @@ impl AssetCatalog {
             water_flow,
             water_colors,
             water_noise,
+            water_flow_maps: path.parent().map(read_flow_map_cells).unwrap_or_default(),
         })
+    }
+
+    /// The converted per-cell flow map of cell (`x`, `y`) (RF-WATER-036), when the pack has one.
+    pub fn water_flow_map(&self, x: i32, y: i32) -> Option<String> {
+        self.water_flow_maps
+            .contains(&(x, y))
+            .then(|| format!("textures/water/{WATER_FLOW_MAP_PLUGIN}/flow.{x}.{y}.ktx2"))
     }
 
     /// The converted LTEX diffuse, or the pack's configured default for the zero base ID.
@@ -2811,6 +2851,27 @@ mod tests {
             catalog.water_colors(7).map(|colors| colors.shallow),
             Some([38, 39, 24])
         );
+    }
+
+    #[test]
+    fn flow_maps_are_found_by_their_file_names() {
+        // RF-WATER-036: flow.<cellX>.<cellY>.ktx2, negative coordinates included.
+        assert_eq!(flow_map_cell("flow.-1.-14.ktx2"), Some((-1, -14)));
+        assert_eq!(flow_map_cell("Flow.27.1.KTX2"), Some((27, 1)));
+        assert_eq!(flow_map_cell("flow.27.ktx2"), None);
+        assert_eq!(flow_map_cell("riverflow.ktx2"), None);
+        assert_eq!(flow_map_cell("flow.a.b.ktx2"), None);
+        let directory = tempfile::tempdir().unwrap();
+        let folder = directory.path().join("textures/water/skyrim.esm");
+        std::fs::create_dir_all(&folder).unwrap();
+        for name in ["flow.-1.-14.ktx2", "flow.27.1.ktx2", "notes.txt"] {
+            std::fs::write(folder.join(name), b"x").unwrap();
+        }
+        let cells = read_flow_map_cells(directory.path());
+        assert_eq!(cells.len(), 2);
+        assert!(cells.contains(&(-1, -14)) && cells.contains(&(27, 1)));
+        // A pack with no such folder has none, and the catalog then names no flow map.
+        assert!(read_flow_map_cells(&directory.path().join("missing")).is_empty());
     }
 
     const DEFAULT_WATER_NOISE: NoiseFixture = NoiseFixture {

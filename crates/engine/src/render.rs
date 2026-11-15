@@ -141,6 +141,30 @@ pub(crate) fn water_refraction_leaks(
     (camera_height - surface_height) * (scene_height - surface_height) > 0.0
 }
 
+/// The bilinear weight of the flow-map program along one axis (RF-WATER-044): `1 - |2 * fract(64 *
+/// uv) - 1|`, 1 at a texel centre and 0 at a texel edge.
+#[cfg(test)]
+pub(crate) fn water_flow_weight(cell_uv: f32) -> f32 {
+    let scaled = 64.0 * cell_uv;
+    1.0 - (2.0 * (scaled - scaled.floor()) - 1.0).abs()
+}
+
+/// The renormalising divisor of the flow blend (RF-WATER-044): `sqrt((1 - w)^2 + w^2)` per axis,
+/// multiplied.
+#[cfg(test)]
+pub(crate) fn water_flow_divisor(weight_x: f32, weight_y: f32) -> f32 {
+    let axis = |w: f32| ((1.0 - w) * (1.0 - w) + w * w).sqrt();
+    axis(weight_x) * axis(weight_y)
+}
+
+/// The flow clock in game seconds after `seconds` of real time: the retail clock is the game hour
+/// times 3600 and wraps at midnight (RF-WATER-038); the engine starts it at hour 12 and runs it at
+/// the retail time scale of 20.
+#[cfg(test)]
+pub(crate) fn water_flow_clock(seconds: f32) -> f32 {
+    (43200.0 + seconds * 20.0) % 86400.0
+}
+
 /// The two sun terms of the retail water pixel shader, before the sun colour (RF-WATER-010):
 /// `sat(R.sun)^specularPower * specularMagnitude + sat(N.(-0.099, -0.099, 0.99))^sparklePower *
 /// sparkleMagnitude`. `terms` is (specular power, specular magnitude, sparkle power, sparkle
@@ -962,6 +986,10 @@ pub struct WaterExtension {
     /// of `flow_normal`. `None` leaves the flat Reflection Color in its place.
     #[texture(109, dimension = "cube")]
     cube: Option<Handle<Image>>,
+    /// The cell's 64 by 64 flow map (RF-WATER-036): per texel the flow direction (rg), the scale (b)
+    /// and the phase speed (a). Read with the sampler of `flow_normal`.
+    #[texture(110)]
+    flow_map: Option<Handle<Image>>,
     /// The weather's Water Multiplier as 0..1 values, applied to the colours set after it.
     multiplier: [f32; 3],
 }
@@ -1014,6 +1042,9 @@ struct WaterSettings {
     sun_color: Vec4,
     /// x = the refraction magnitude in world units (WATR DNAM +0x98; RF-WATER-049); yzw unused.
     refraction: Vec4,
+    /// xy = the cell's grid coordinates, z = 1 when the water runs retail's flow-map program
+    /// (FNAM bit 3 with a flow map and a flow normal texture bound), w unused (RF-WATER-044).
+    flow: Vec4,
 }
 
 impl Default for WaterExtension {
@@ -1039,6 +1070,7 @@ impl Default for WaterExtension {
                 sun_terms: Vec4::ZERO,
                 sun_color: Vec4::ZERO,
                 refraction: Vec4::new(DEFAULT_WATER_REFRACTION_MAGNITUDE, 0.0, 0.0, 0.0),
+                flow: Vec4::ZERO,
             },
             reflection: None,
             flow_normal: None,
@@ -1047,6 +1079,7 @@ impl Default for WaterExtension {
             noise_normal_1: None,
             noise_normal_2: None,
             cube: None,
+            flow_map: None,
             multiplier: [1.0; 3],
         }
     }
@@ -1062,6 +1095,7 @@ impl WaterExtension {
             .chain(self.noise_normal_1.iter())
             .chain(self.noise_normal_2.iter())
             .chain(self.cube.iter())
+            .chain(self.flow_map.iter())
             .map(Handle::id)
     }
 
@@ -1107,12 +1141,14 @@ impl WaterExtension {
                 sun_terms: Vec4::ZERO,
                 sun_color: Vec4::ZERO,
                 refraction: Vec4::new(DEFAULT_WATER_REFRACTION_MAGNITUDE, 0.0, 0.0, 0.0),
+                flow: Vec4::ZERO,
             },
             bed_depth: None,
             noise_normal_0: None,
             noise_normal_1: None,
             noise_normal_2: None,
             cube: None,
+            flow_map: None,
             multiplier: [1.0; 3],
         }
     }
@@ -1133,6 +1169,21 @@ impl WaterExtension {
     pub(crate) fn set_bed_depth(&mut self, handle: Option<Handle<Image>>) {
         self.settings.depth_params.x = if handle.is_some() { 1.0 } else { 0.0 };
         self.bed_depth = handle;
+    }
+
+    /// Runs retail's flow-map program (RF-WATER-044) for the cell `grid`, over its flow map, or
+    /// stops it with `None`. It needs the flow normal texture (WATR NAM5) too, so call it after
+    /// the water has one; without both the water keeps its noise layers.
+    pub fn with_flow(mut self, grid: IVec2, flow_map: Option<Handle<Image>>) -> Self {
+        let active = flow_map.is_some() && self.flow_normal.is_some();
+        self.settings.flow = Vec4::new(
+            grid.x as f32,
+            grid.y as f32,
+            f32::from(u8::from(active)),
+            0.0,
+        );
+        self.flow_map = flow_map;
+        self
     }
 
     /// Binds the sky cube map the water reflects, or none (the flat Reflection Color then stands in
@@ -2915,6 +2966,53 @@ mod tests {
             )
         );
         assert!(source.contains("refracted * (1.0 - a) * (1.0 - m) + water_colour * (1.0 - m) * a + reflection * m + sun, 1.0)"));
+    }
+
+    #[test]
+    fn the_flow_program_follows_the_retail_arithmetic() {
+        // RF-WATER-044: weight 1 at a texel centre, 0 at an edge, and the divisor that keeps the
+        // blend's spread when the weights are one half.
+        assert!((water_flow_weight(0.5 / 64.0) - 1.0).abs() < 1.0e-6);
+        assert!(water_flow_weight(1.0 / 64.0).abs() < 1.0e-6);
+        assert!((water_flow_weight(0.25 / 64.0) - 0.5).abs() < 1.0e-6);
+        assert!((water_flow_divisor(1.0, 1.0) - 1.0).abs() < 1.0e-6);
+        assert!((water_flow_divisor(0.5, 0.5) - 0.5).abs() < 1.0e-6);
+        // RF-WATER-038: hour 12 at the start, 20 game seconds per real second, wrapping at midnight.
+        assert_eq!(water_flow_clock(0.0), 43200.0);
+        assert_eq!(water_flow_clock(10.0), 43400.0);
+        assert_eq!(water_flow_clock(2160.0), 0.0);
+        // The shader holds the corrected taps (RF-WATER-044): A at (0, h), B at (h, h), C at the
+        // pixel, D at (h, 0); rates 10.64, 9.92, 8, 8.48 with offsets 0.27, 0, 0, 0.62.
+        let source = include_str!("shaders/water.wgsl");
+        for needle in [
+            "let flow_a = flow_texel(cell_uv + vec2<f32>(0.0, h));",
+            "let flow_b = flow_texel(cell_uv + vec2<f32>(h, h));",
+            "let flow_c = flow_texel(cell_uv);",
+            "let flow_d = flow_texel(cell_uv + vec2<f32>(h, 0.0));",
+            "const FLOW_RATES: vec4<f32> = vec4<f32>(10.64, 9.92, 8.0, 8.48);",
+            "const FLOW_OFFSETS: vec4<f32> = vec4<f32>(0.27, 0.0, 0.0, 0.62);",
+            "const FLOW_SCALE_BASE: f32 = 1.01;",
+            "const FLOW_CLOCK_FACTOR: f32 = 0.001;",
+            "const FLOW_DEPTH_FLOOR: f32 = 0.4;",
+            "let w = 1.0 - abs(2.0 * fract(FLOW_MAP_TEXELS * cell_uv) - 1.0);",
+            "w.y * (w.x * n_c + (1.0 - w.x) * n_d) + (1.0 - w.y) * (w.x * n_a + (1.0 - w.x) * n_b)",
+            "normal_skyrim = normalize(mix(flow_tiled_normal(position, time), flow, dist_t));",
+            "let ripple = cell_uv + vec2<f32>(water.flow.x, -water.flow.y);",
+        ] {
+            assert!(source.contains(needle), "missing {needle}");
+        }
+        // The program runs only with a flow map and a flow normal texture bound.
+        let handle = || Some(Handle::<Image>::default());
+        let both = WaterExtension::with_reflection(Handle::default(), handle())
+            .with_flow(IVec2::new(-3, 12), handle());
+        assert_eq!(both.settings.flow, Vec4::new(-3.0, 12.0, 1.0, 0.0));
+        assert_eq!(both.image_ids().count(), 2);
+        let no_normal = WaterExtension::default().with_flow(IVec2::new(1, 2), handle());
+        assert_eq!(no_normal.settings.flow.z, 0.0);
+        assert_eq!(
+            both.with_flow(IVec2::new(-3, 12), None).settings.flow.z,
+            0.0
+        );
     }
 
     #[test]

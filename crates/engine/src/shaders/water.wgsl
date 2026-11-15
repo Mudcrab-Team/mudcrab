@@ -58,6 +58,8 @@ struct WaterSettings {
     sun_color: vec4<f32>,
     // x = the refraction magnitude in world units (WATR DNAM +0x98; RF-WATER-049); yzw unused.
     refraction: vec4<f32>,
+    // xy = the cell's grid coordinates, z = 1 when the flow-map program runs, w unused.
+    flow: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: WaterSettings;
@@ -76,6 +78,10 @@ struct WaterSettings {
 // The sky cube map of retail's cube-map programs (RF-WATER-009, RF-WATER-050), read with the flow
 // normal's sampler. `depth_params.w` says whether one is bound.
 @group(#{MATERIAL_BIND_GROUP}) @binding(109) var water_cube: texture_cube<f32>;
+// The cell's 64 by 64 flow map (RF-WATER-036): rg = the flow direction as (cos, sin) * 0.5 + 0.5,
+// b = the scale term, a = the phase speed. Read with the flow normal's sampler. `water.flow.z`
+// says whether the flow program runs.
+@group(#{MATERIAL_BIND_GROUP}) @binding(110) var water_flow_map: texture_2d<f32>;
 
 // Any path at or past the fog far distance is opaque and fully deep (Skyrim saturates the ratio),
 // so this only has to be larger than any fog far distance.
@@ -96,6 +102,23 @@ const WATER_SSR_INTENSITY: f32 = 0.5;
 const WATER_FRAME_FLAG: f32 = 1.0;
 // The sparkle direction, a retail shader literal in Skyrim's frame (RF-WATER-010).
 const WATER_SPARKLE_DIRECTION: vec3<f32> = vec3<f32>(-0.099, -0.099, 0.99);
+// The flow-map program's literals, all read from the retail bytecode (RF-WATER-044, RF-WATER-039)
+// unless noted. The flow map is 64 by 64 texels per cell (RF-WATER-036).
+const FLOW_MAP_TEXELS: f32 = 64.0;
+const FLOW_RIPPLE_SCALE: f32 = 64.0;
+const FLOW_SCALE_BASE: f32 = 1.01;
+const FLOW_CLOCK_FACTOR: f32 = 0.001;
+// The least the depth factor leaves of the flow normal (RF-WATER-039).
+const FLOW_DEPTH_FLOOR: f32 = 0.4;
+// Each tap's scroll rate and UV offset, in the order A, B, C, D (RF-WATER-044).
+const FLOW_RATES: vec4<f32> = vec4<f32>(10.64, 9.92, 8.0, 8.48);
+const FLOW_OFFSETS: vec4<f32> = vec4<f32>(0.27, 0.0, 0.0, 0.62);
+// The flow clock is the game hour in seconds (RF-WATER-038: GameHour x 3600, wrapping at midnight,
+// fallback hour 12). The engine has no game clock (#698), so it starts at the fallback hour 12 and
+// runs at the retail default time scale of 20 game seconds per real second (RF-WATER-038).
+const FLOW_CLOCK_START: f32 = 43200.0;
+const FLOW_CLOCK_SPEED: f32 = 20.0;
+const FLOW_CLOCK_DAY: f32 = 86400.0;
 // The smallest reverse-Z depth taken as a real point, so a pixel of sky (depth 0, infinitely far) still
 // gives a finite scene point for the plane test (an engineering guard; retail reads the depth as is).
 const WATER_DEPTH_FLOOR: f32 = 1.0e-7;
@@ -205,6 +228,63 @@ fn noise_scroll(theta: f32, speed: f32, seconds: f32) -> vec2<f32> {
     return fract(vec2<f32>(sin(theta), cos(theta)) * speed * seconds);
 }
 
+// The flow map read at `uv`, clamped to the texture's edge texels.
+fn flow_texel(uv: vec2<f32>) -> vec4<f32> {
+    let edge = 0.5 / FLOW_MAP_TEXELS;
+    return textureSampleLevel(water_flow_map, water_flow_normal_sampler, clamp(uv, vec2<f32>(edge), vec2<f32>(1.0 - edge)), 0.0);
+}
+
+// One tap of the flow program (RF-WATER-044): the flow texel `flow` turns and scales the ripple
+// coordinates `ripple`, the phase speed scrolls them with the flow clock, and the tiling flow
+// normal texture is read there. Returns that texture's rg.
+fn flow_tap(flow: vec4<f32>, ripple: vec2<f32>, clock: f32, rate: f32, offset: f32) -> vec2<f32> {
+    let rotation = flow.rg * 2.0 - 1.0;
+    let scaled = FLOW_RIPPLE_SCALE * ripple * sqrt(max(FLOW_SCALE_BASE - flow.b, 0.0));
+    let turned = vec2<f32>(rotation.x * scaled.x - rotation.y * scaled.y, rotation.y * scaled.x + rotation.x * scaled.y);
+    let phase = FLOW_CLOCK_FACTOR * clock * flow.a;
+    let uv = turned - vec2<f32>(rate * phase, 0.0) + vec2<f32>(offset, offset);
+    return noise_texel(water_flow_normal, uv).rg;
+}
+
+// The flow-map program's normal xy (RF-WATER-044): four taps of the cell's flow map around the
+// pixel, each steering one read of the tiling flow normals, blended with the weights of a
+// bilinear lookup and renormalised, then faded by the normals depth factor (RF-WATER-047).
+// `cell_uv` is the cell-local texture coordinate (u east, v south, as the retail cell mesh has it)
+// and `normals_depth` is the DNAM 0xD8 depth factor.
+fn flow_normal_xy(cell_uv: vec2<f32>, seconds: f32, normals_depth: f32) -> vec2<f32> {
+    // Each cell has its own texture here where retail has one atlas of the loaded cells, so the
+    // lookups are clamped at the cell's edge instead of reading the neighbour cell's texels.
+    let h = 0.5 / FLOW_MAP_TEXELS;
+    let w = 1.0 - abs(2.0 * fract(FLOW_MAP_TEXELS * cell_uv) - 1.0);
+    let flow_a = flow_texel(cell_uv + vec2<f32>(0.0, h));
+    let flow_b = flow_texel(cell_uv + vec2<f32>(h, h));
+    let flow_c = flow_texel(cell_uv);
+    let flow_d = flow_texel(cell_uv + vec2<f32>(h, 0.0));
+    // The ripple coordinate is continuous across cells: the cell's mesh coordinate plus (cellX, -cellY).
+    let ripple = cell_uv + vec2<f32>(water.flow.x, -water.flow.y);
+    let clock = (FLOW_CLOCK_START + seconds * FLOW_CLOCK_SPEED) % FLOW_CLOCK_DAY;
+    let n_a = flow_tap(flow_a, ripple, clock, FLOW_RATES.x, FLOW_OFFSETS.x);
+    let n_b = flow_tap(flow_b, ripple, clock, FLOW_RATES.y, FLOW_OFFSETS.y);
+    let n_c = flow_tap(flow_c, ripple, clock, FLOW_RATES.z, FLOW_OFFSETS.z);
+    let n_d = flow_tap(flow_d, ripple, clock, FLOW_RATES.w, FLOW_OFFSETS.w);
+    let blended = w.y * (w.x * n_c + (1.0 - w.x) * n_d) + (1.0 - w.y) * (w.x * n_a + (1.0 - w.x) * n_b);
+    let renormalised = (blended - 0.5)
+        / (sqrt((1.0 - w.x) * (1.0 - w.x) + w.x * w.x) * sqrt((1.0 - w.y) * (1.0 - w.y) + w.y * w.y));
+    return renormalised * max(normals_depth, FLOW_DEPTH_FLOOR);
+}
+
+// The flow program's one tiled layer (RF-WATER-047): the first noise map at worldXY / DNAM 0xAC
+// plus its scroll, decoded as 2t - 1. It shows only past the noise falloff.
+fn flow_tiled_normal(position: vec2<f32>, seconds: f32) -> vec3<f32> {
+    if water.noise_uv_scale.w < 0.5 {
+        return vec3<f32>(0.0, 0.0, 1.0);
+    }
+    let size = water.wave_scale_speed_strength.x;
+    let clock = seconds * water.wave_scale_speed_strength.y;
+    let uv = position * size / water.noise_uv_scale.x + noise_scroll(water.noise_wind_direction.x, water.noise_wind_speed.x, clock);
+    return normalize(noise_texel(water_noise_0, uv) * 2.0 - 1.0);
+}
+
 // The surface normal in Skyrim's frame (x east, y north, z up), from the three noise layers:
 // normalize((0, 0, 1) + a0 * n0 + a1 * n1 + a2 * n2), flattened toward (0, 0, 1) in shallow water
 // by the normals depth property. Layer 0 is decoded as 2t + (-1, -1, -2), the others as 2t - 1,
@@ -261,7 +341,19 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let position = vec2<f32>(in.world_position.x, -in.world_position.z);
     // depthControl.z = lerp(1, sat(h / F), DepthControl.z): the normals fade in with depth.
     let normals_depth = water.depth_control.z * (body.z - 1.0) + 1.0;
-    let normal_skyrim = noise_normal(position, time, normals_depth);
+    // distT = sat(lerp(flag, 1, (D - 8192) / (falloff - 8192))), D the eye distance and falloff the
+    // record's noise falloff clamped to [1, 8191] on the CPU (RF-SHADER-007, RF-SHADER-008).
+    let ratio = (length(to_surface) - WATER_DISTANCE_LITERAL) / (water.depth_params.y - WATER_DISTANCE_LITERAL);
+    let dist_t = clamp(mix(WATER_FRAME_FLAG, 1.0, ratio), 0.0, 1.0);
+    // Retail's flow-map program (RF-WATER-044, RF-WATER-047) takes the normal from the flow map
+    // and the flow normals, with only one tiled layer, which distT fades out; the other programs
+    // blend the three noise layers.
+    var normal_skyrim = noise_normal(position, time, normals_depth);
+    if water.flow.z > 0.5 && !interior {
+        let flow_xy = flow_normal_xy(in.uv, time, normals_depth);
+        let flow = vec3<f32>(flow_xy, sqrt(max(1.0 - dot(flow_xy, flow_xy), 0.0)));
+        normal_skyrim = normalize(mix(flow_tiled_normal(position, time), flow, dist_t));
+    }
     // Skyrim (x, y, z) is Bevy (x, z, -y).
     let normal = vec3<f32>(normal_skyrim.x, normal_skyrim.z, -normal_skyrim.y);
     pbr_input.N = normal;
@@ -285,10 +377,6 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         vec2<f32>(1.0),
     );
     let reflection_sample = textureSample(water_reflection, water_reflection_sampler, reflection_uv);
-    // distT = sat(lerp(flag, 1, (D - 8192) / (falloff - 8192))), D the eye distance and falloff the
-    // record's noise falloff clamped to [1, 8191] on the CPU (RF-SHADER-007, RF-SHADER-008).
-    let ratio = (length(to_surface) - WATER_DISTANCE_LITERAL) / (water.depth_params.y - WATER_DISTANCE_LITERAL);
-    let dist_t = clamp(mix(WATER_FRAME_FLAG, 1.0, ratio), 0.0, 1.0);
     // refl = lerp(ReflectionColor, env, DNAM 0x14) with env = lerp(cube * FBR, ssr, s),
     // s = sat(distT * fWaterSSRIntensity * ssr.a) (RF-WATER-050). Retail multiplies env by
     // FramebufferRange and the result by its inverse, so env passes unchanged and the flat colour is

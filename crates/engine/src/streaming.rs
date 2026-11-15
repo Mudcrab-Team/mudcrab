@@ -1773,6 +1773,28 @@ fn spawn_cell(
                         })
                     })
                     .unwrap_or_default();
+                // The cell's flow map, for a water whose FNAM asks for retail's flow-map program
+                // when the pack has the cell's map (RF-WATER-036) and the water has its flow
+                // normal texture (NAM5).
+                let flow = match payload.key {
+                    CellKey::Exterior { grid_x, grid_y, .. }
+                        if flow_normal.is_some()
+                            && water_colors.is_some_and(|colors| colors.uses_flow_map()) =>
+                    {
+                        catalog.water_flow_map(grid_x, grid_y).map(|path| {
+                            (
+                                IVec2::new(grid_x, grid_y),
+                                asset_server
+                                    .load_builder()
+                                    .with_settings(|settings: &mut ImageLoaderSettings| {
+                                        settings.is_srgb = false;
+                                    })
+                                    .load::<Image>(path),
+                            )
+                        })
+                    }
+                    _ => None,
+                };
                 // The sky cube map every exterior water reflects (RF-WATER-007, RF-WATER-050). The
                 // asset server hands out one handle per path, so cells share it. Interior water
                 // has no cube in retail (RF-WATER-017).
@@ -1783,6 +1805,7 @@ fn spawn_cell(
                     reflection.0.clone(),
                     flow_normal.clone(),
                     cube.clone(),
+                    flow.clone(),
                     noise.map(|noise| (noise, noise_textures.clone())),
                     matches!(payload.key, CellKey::Interior(_)),
                 ));
@@ -1801,6 +1824,7 @@ fn spawn_cell(
                         cell_id: terrain.cell_id,
                         flow_normal,
                         cube,
+                        flow,
                         noise: noise_textures.into_iter().flatten().collect(),
                     },
                     RenderLayers::layer(WATER_LAYER),
@@ -2895,6 +2919,9 @@ struct PendingWaterProfile {
     /// The sky cube map. It is optional: one that fails to load, or that is not a six-face cube,
     /// leaves the flat Reflection Color in its place instead of hiding the water.
     cube: Option<Handle<Image>>,
+    /// The cell's grid coordinates and flow map. It is optional: one that fails to load leaves the
+    /// water on its noise layers instead of hiding it.
+    flow: Option<(IVec2, Handle<Image>)>,
     /// The noise normal maps. They are optional detail: one that fails to load leaves the water
     /// flat instead of hiding it.
     noise: Vec<Handle<Image>>,
@@ -3948,6 +3975,31 @@ fn track_surface_readiness(
     }
     for (entity, pending, material) in &water {
         let handles: Vec<_> = pending.flow_normal.iter().cloned().collect();
+        // The cell's flow map is optional too: while it loads the water waits, and one that fails
+        // leaves the water on its noise layers.
+        if let Some((grid, flow_map)) = &pending.flow {
+            match validate_surface_dependencies(
+                &asset_server,
+                &images,
+                std::slice::from_ref(flow_map),
+                SurfaceImageKind::Water,
+                profile.decodes_colour_srgb(),
+            ) {
+                SurfaceDependencyState::Pending => continue,
+                SurfaceDependencyState::Failed(reason) => {
+                    warn!(
+                        cell = format_args!("{:08X}", pending.cell_id),
+                        %reason,
+                        "water flow map failed; drawing the water without its flow"
+                    );
+                    if let Some(mut material) = water_materials.get_mut(&material.0) {
+                        material.extension = material.extension.clone().with_flow(*grid, None);
+                    }
+                    profiler.increment("water/flow_fallbacks", 1);
+                }
+                SurfaceDependencyState::Ready => {}
+            }
+        }
         // The sky cube map is optional: while it loads the water waits, and one that fails, or is
         // not a six-face cube, leaves the flat Reflection Color in its place.
         if let Some(cube) = &pending.cube {
@@ -5491,6 +5543,7 @@ fn water_material(
     reflection: Handle<Image>,
     flow_normal: Option<Handle<Image>>,
     cube: Option<Handle<Image>>,
+    flow: Option<(IVec2, Handle<Image>)>,
     noise: Option<(&WaterNoise, [Option<Handle<Image>>; 3])>,
     interior: bool,
 ) -> WaterMaterial {
@@ -5536,6 +5589,9 @@ fn water_material(
                 }),
                 colors.and_then(|colors| colors.fog).unwrap_or_default(),
             );
+    if let Some((grid, flow_map)) = flow {
+        extension = extension.with_flow(grid, Some(flow_map));
+    }
     // A water whose record bytes give no noise layers stays flat.
     if let Some((noise, textures)) = noise {
         extension = extension.with_noise(
@@ -5674,6 +5730,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 false,
             )
             .extension
@@ -5717,7 +5774,15 @@ mod tests {
             underwater_fog: None,
         };
         let multiplier = crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER;
-        let material = water_material(Some(colors), Handle::default(), None, None, None, false);
+        let material = water_material(
+            Some(colors),
+            Handle::default(),
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
         // The water is drawn in Bevy's transmissive phase so it can refract the scene copy
         // (RF-WATER-049): an opaque alpha mode and a material that reads the transmission texture.
         assert_eq!(material.base.alpha_mode, AlphaMode::Opaque);
@@ -5743,7 +5808,15 @@ mod tests {
             .to_linear();
         assert!((sun.x - sunlight.red).abs() < 1.0e-6);
         assert_eq!(interior, 0.0);
-        let indoors = water_material(Some(colors), Handle::default(), None, None, None, true);
+        let indoors = water_material(
+            Some(colors),
+            Handle::default(),
+            None,
+            None,
+            None,
+            None,
+            true,
+        );
         assert_eq!(indoors.extension.colours().3, 1.0);
     }
 
