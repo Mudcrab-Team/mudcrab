@@ -96,6 +96,12 @@ read for this count.
 - Retail behaviour for a MODS entry whose TXST link does not resolve was not traced (RF-TEX has no
   entry). The engine reports it and keeps the model's material.
 - The FormID 0x28 of the NullTextureSet is medium confidence (RF-TEX-005); the hide itself is high.
+- A tagged lighting shape that the NIF material plugin draws with a native depth material (a decal,
+  or a shape without depth test or depth write) is not swapped. `apply_swaps` reaches only
+  `StandardMaterial` surfaces. Its entry applies to nothing, and a model whose only tagged shapes
+  are such surfaces reports the "no geometry-index tags" reason. Retail swaps these shapes too
+  (RF-TEX-003). Examples: shape 0 of `Landscape\DirtCliffs\DirtCliffs01.nif` and of
+  `Landscape\Mountains\MountainTrim02.nif`, and shape 1 of `Landscape\Rocks\RockPileM02.nif`.
 - STAT DNAM's MATO link, maximum angle and SSE considered-snow flag, and MATO's projection,
   falloff, UV, colour and pass flags remain outside this implementation. #435's existing local
   prototype owns that continuation. No maximum-angle cutoff, snow colour or layer is invented.

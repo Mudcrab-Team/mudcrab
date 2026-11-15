@@ -127,11 +127,15 @@ const ROCK: nif::StaticShape<'static> = nif::StaticShape {
     normal_texture: "textures/original_n.dds",
 };
 
+/// Lighting-shader flag words of an ordinary surface: depth test, cast shadows, depth write.
+/// A shape without depth test or write gets a native depth material, which swaps do not reach.
+const ORDINARY_FLAGS: (u32, u32) = ((1 << 31) | (1 << 9), 1);
+
 fn fixture(directory: &Path) {
     fs::create_dir_all(directory.join("meshes")).unwrap();
     fs::create_dir_all(directory.join("textures/landscape")).unwrap();
-    // Depth test, cast shadows, depth write: an ordinary surface.
-    let bytes = nif::static_shape_with_material_flags(&ROCK, (1 << 31) | (1 << 9), 1).unwrap();
+    let (flags_1, flags_2) = ORDINARY_FLAGS;
+    let bytes = nif::static_shape_with_material_flags(&ROCK, flags_1, flags_2).unwrap();
     let source = directory.join("shared.nif");
     fs::write(&source, bytes).unwrap();
     MeshConverter::convert_nif_to_glb(&source, &directory.join("meshes/shared.glb")).unwrap();
@@ -470,10 +474,30 @@ fn a_model_with_havok_collision_receives_its_swap() {
     let directory = tempfile::tempdir().unwrap();
     fixture(directory.path());
     let source = directory.path().join("collidable.nif");
-    let bytes = nif::static_shape_with_bodies(&ROCK, &[nif::fixed_box_body("RockCollision")]);
+    // The same ordinary surface as `shared.glb`, plus a Havok box body on its own node.
+    let (flags_1, flags_2) = ORDINARY_FLAGS;
+    let bytes = nif::static_shape_with_bodies_and_material_flags(
+        &ROCK,
+        &[nif::fixed_box_body("RockCollision")],
+        flags_1,
+        flags_2,
+    );
     fs::write(&source, bytes.unwrap()).unwrap();
     let glb = directory.path().join("meshes/collidable.glb");
     MeshConverter::convert_nif_to_glb(&source, &glb).unwrap();
+    let written = gltf::Gltf::from_slice(&fs::read(&glb).unwrap()).unwrap();
+    let primitive = written
+        .meshes()
+        .next()
+        .unwrap()
+        .primitives()
+        .next()
+        .unwrap();
+    assert_eq!(
+        ObjectGeometryIndex::from_primitive(&primitive),
+        Some(ObjectGeometryIndex(0)),
+        "the converter tags the collidable model's lighting primitive"
+    );
     alias_texture_dependencies(directory.path(), &glb);
     let (conn, _) = database();
     let catalog = ObjectTextureCatalog::read(&conn).unwrap();

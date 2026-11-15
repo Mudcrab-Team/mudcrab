@@ -242,6 +242,16 @@ pub fn fixed_box_body(node_name: &str) -> BoxBody<'_> {
     }
 }
 
+/// Like [`static_shape_with_bodies`], with explicitly authored lighting-shader flag words.
+pub fn static_shape_with_bodies_and_material_flags(
+    shape: &StaticShape<'_>,
+    bodies: &[BoxBody<'_>],
+    flags_1: u32,
+    flags_2: u32,
+) -> Result<Vec<u8>> {
+    build_static_shape(shape, &[], bodies, None, Some((flags_1, flags_2)))
+}
+
 /// Like [`static_shape_with_bodies`], with `root` as the root node's local transform.
 pub fn static_shape_with_root_transform(
     shape: &StaticShape<'_>,
