@@ -1,6 +1,5 @@
 ---
 source: crates/converter/tests/snapshots.rs
-assertion_line: 176
 expression: document
 ---
 {
@@ -153,6 +152,9 @@ expression: document
             "POSITION": 0,
             "TANGENT": 3,
             "TEXCOORD_0": 2
+          },
+          "extras": {
+            "mudcrabGeometryIndex": 0
           },
           "indices": 4,
           "material": 0
