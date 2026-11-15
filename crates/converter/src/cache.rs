@@ -2262,64 +2262,6 @@ mod tests {
 
     /// A metadata-only version change preserves exact legacy asset proofs, including locale.
     #[test]
-    fn projection4_asset_proofs_keep_their_language_and_exact_settings() {
-        let mut config = crate::config::PipelineConfig::new("Data", "output");
-        config.record_reader = crate::config::RecordReader::Legacy;
-        config.language = "french".into();
-        let original = serde_json::json!({
-            "mode": "legacy", "projection_version": 4, "language": "french",
-            "text_encoding": "windows-1252", "string_table_encoding": "utf-8-or-windows-1252"
-        });
-        let recorded =
-            configuration_hash_with_identity(&config, CONVERTER_SCHEMA_VERSION, Some(&original))
-                .unwrap();
-        assert!(
-            retained_configuration_matches_for_reader(
-                &config,
-                CONVERTER_SCHEMA_VERSION,
-                &recorded,
-                &original
-            )
-            .unwrap()
-        );
-        assert_ne!(recorded, configuration_hash(&config).unwrap());
-        let mut changed = config.clone();
-        changed.texture_fallback_quality += 1;
-        assert!(
-            !retained_configuration_matches_for_reader(
-                &changed,
-                CONVERTER_SCHEMA_VERSION,
-                &recorded,
-                &original
-            )
-            .unwrap()
-        );
-        changed = config.clone();
-        changed.language = "english".into();
-        assert!(
-            !retained_configuration_matches_for_reader(
-                &changed,
-                CONVERTER_SCHEMA_VERSION,
-                &recorded,
-                &original
-            )
-            .unwrap()
-        );
-        let mut unknown = original;
-        unknown["projection_version"] = serde_json::json!(99);
-        assert!(
-            !retained_configuration_matches_for_reader(
-                &config,
-                CONVERTER_SCHEMA_VERSION,
-                &recorded,
-                &unknown
-            )
-            .unwrap()
-        );
-    }
-
-    /// A metadata-only version change preserves exact legacy asset proofs, including locale.
-    #[test]
     fn projection6_asset_proofs_keep_their_language_and_exact_settings() {
         let mut config = crate::config::PipelineConfig::new("Data", "output");
         config.record_reader = crate::config::RecordReader::Legacy;
