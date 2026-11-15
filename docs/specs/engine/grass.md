@@ -311,30 +311,13 @@ defaults; the exe defaults are used.
 
 | Section | Key | Default | Default source | Engine use |
 | --- | --- | --- | --- | --- |
-<<<<<<< HEAD
-| `[Grass]` | `iMinGrassSize` | `20` | MudCrab default | Candidate spacing/density |
-| `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | MudCrab default | Exact resolved-species cap (zero admits none); INI spelling retained |
-| `[Grass]` | `fTexturePctThreshold` | `0.0` | MudCrab default | Minimum blended texture weight |
-| `[Grass]` | `iGrassCellRadius` | `2` | MudCrab default | Generated cell radius |
-| `[Grass]` | `fGrassStartFadeDistance` | `7000.0` | Shipped `SkyrimPrefs.ini` | Start of distance thinning |
-| `[Grass]` | `fGrassFadeRange` | `1000.0` | MudCrab default | Fade end is start plus range |
-| `[Grass]` | `bDrawShaderGrass` | `1` | MudCrab default | Set the launch grass state unless a CLI switch overrides it |
-| `[Grass]` | `bEnableGrassFade` | `1` | MudCrab default | Enable distance thinning |
-| `[Grass]` | `fGrassMinStartFadeDistance` | `0.0` | Shipped `SkyrimPrefs.ini` | Reported menu metadata |
-| `[Grass]` | `fGrassMaxStartFadeDistance` | `7000.0` | Shipped `SkyrimPrefs.ini` | Reported menu metadata |
-| `[Grass]` | `fGrassWindMagnitudeMin` | `5.0` | MudCrab default | Reported only |
-| `[Grass]` | `fGrassWindMagnitudeMax` | `125.0` | MudCrab default | Reported only |
-| `[Grass]` | [`bAllowCreateGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `1` | MudCrab default | Reported legacy cache switch |
-| `[Grass]` | [`bAllowLoadGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `0` | MudCrab default | Reported legacy cache switch |
-| `[Grass]` | `bGenerateGrassDataFiles` | `0` | MudCrab default | Reported legacy cache switch |
-=======
 | `[Grass]` | `iMinGrassSize` | `20` | `SkyrimSE.exe` default | Candidate spacing/density |
 | `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | `SkyrimSE.exe` default | Exact resolved-species cap (zero admits none); INI spelling retained |
 | `[Grass]` | `fTexturePctThreshold` | `0.0` | `SkyrimSE.exe` default | Minimum blended texture weight |
 | `[Grass]` | `iGrassCellRadius` | `2` | `SkyrimSE.exe` default | Generated cell radius |
 | `[Grass]` | `fGrassStartFadeDistance` | `7000.0` | `SkyrimSE.exe` default; shipped `SkyrimPrefs.ini` | Start of distance thinning |
 | `[Grass]` | `fGrassFadeRange` | `1000.0` | `SkyrimSE.exe` default | Fade end is start plus range |
-| `[Grass]` | `bDrawShaderGrass` | `1` | `SkyrimSE.exe` default | Enable grass draws when `--grass` is requested |
+| `[Grass]` | `bDrawShaderGrass` | `1` | `SkyrimSE.exe` default | Set the launch grass state unless a CLI switch overrides it |
 | `[Grass]` | `bEnableGrassFade` | `1` | `SkyrimSE.exe` default | Enable distance thinning |
 | `[Grass]` | `fGrassMinStartFadeDistance` | `0.0` | Shipped `Skyrim_Default.ini` and `SkyrimPrefs.ini` | Reported menu metadata |
 | `[Grass]` | `fGrassMaxStartFadeDistance` | `7000.0` | `SkyrimSE.exe` default; shipped `SkyrimPrefs.ini` | Reported menu metadata |
@@ -343,21 +326,15 @@ defaults; the exe defaults are used.
 | `[Grass]` | [`bAllowCreateGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `1` | `SkyrimSE.exe` default | Reported legacy cache switch |
 | `[Grass]` | [`bAllowLoadGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `0` | `SkyrimSE.exe` default | Reported legacy cache switch |
 | `[Grass]` | `bGenerateGrassDataFiles` | `0` | `SkyrimSE.exe` default | Reported legacy cache switch |
->>>>>>> feature/grass-g5-appearance-20261104
 
 The UESP links document the cache-control keys in a workaround; they do not
 establish defaults or file precedence. Menu min/max fade settings are metadata,
 not a second clamp on the selected start distance. Disabling fade keeps full
 density up to cell unloading, so the zero-density cell-crossing guarantee no
 longer applies. Legacy cache switches and imported wind magnitudes do not
-<<<<<<< HEAD
-control MudCrab's cache or wind model. Imported spacing below eight is outside
-the bounded CPU generator's supported range and is ignored with a warning,
-retaining the supported spacing. Explicit CLI spacing remains strict. Startup
-=======
-control MudCrab's cache, and grass wind is not rendered. Imported spacing below eight is outside
-the bounded CPU generator's supported range and is rejected. Startup
->>>>>>> feature/grass-g5-appearance-20261104
+control MudCrab's cache, and grass wind is not rendered. Imported spacing below
+eight is outside the bounded CPU generator's supported range and is ignored
+with a warning, retaining the supported spacing. Explicit CLI spacing remains strict. Startup
 diagnostics report effective grass settings and each key's `--ini` path or
 `default` source, with explicit numeric overrides reported separately.
 
@@ -391,17 +368,13 @@ feature normal mapping does not establish vanilla NIF normal-slot usage.
 
 ## Live grass tuning
 
-<<<<<<< HEAD
 Interactive startup also discovers `grass.toml` beside the existing per-user
 `settings.json` (`%APPDATA%/Mudcrab` on Windows, `~/Library/Application Support/Mudcrab`
 on macOS, `$XDG_CONFIG_HOME/Mudcrab` or `~/.config/Mudcrab` elsewhere). It uses
 the same G5 TOML format and hot reload. No file is created automatically.
 `--grass-tuning` overrides `MUDCRAB_GRASS_TUNING`, which overrides this automatic file.
 
-Select a flat TOML file with `--grass-tuning docs/examples/grass-tuning/flat-b.toml`
-=======
 Select a flat TOML file with `--grass-tuning docs/examples/grass-tuning/retail.toml`
->>>>>>> feature/grass-g5-appearance-20261104
 (or `MUDCRAB_GRASS_TUNING`). Fileless startup and empty valid TOML use the same
 retail defaults. `--grass-tuning-info <path>` prints the accepted settings before
 app or GPU creation. Content-hash polling runs at most once per elapsed second;
