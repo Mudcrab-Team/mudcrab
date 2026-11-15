@@ -569,10 +569,10 @@ async fn malformed_over_capacity_overrides_keep_usable_layers_and_valid_neighbor
             let raw = version.raw.as_ref().unwrap();
             assert_eq!(version.runtime_form_id, Some(LAND_GLOBAL_ID));
             assert_eq!(version.source_form_id, LAND_SOURCE_ID);
+            assert_eq!(version.runtime_fallback_before_latest_source, seen == 2);
             if seen == 0 {
                 assert_eq!(version.status, "accepted");
                 assert!(!version.accepted_source_winner);
-                assert!(version.runtime_fallback_before_latest_source);
                 assert_eq!(
                     raw.stored_payload.as_deref(),
                     Some(accepted_payload.as_slice())
