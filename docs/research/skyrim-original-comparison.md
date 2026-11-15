@@ -4,6 +4,9 @@ On 2026-11-15, four matched camera views in SkyrimSE 1.7.104.0 supported Mudcrab
 visibility decisions in three disputed shell views and preserved the joined-room cave corridor.
 This is a limited visual comparison, not object-by-object or whole-engine parity.
 
+The later [geometry-mismatch investigation](skyrim-culling-mismatches.md) identifies and fixes the
+web and foliage overdraw recorded below. These observations preserve the earlier rendering revision.
+
 The machine-readable [capture report](room-original-comparison-20261115.json) records the live
 native cameras, executable hash, Mudcrab revision, render receipts, observations, and all 36 image
 hashes. The local evidence directory is `/home/aivv/.t3/artifacts/skyrim-culling-20261115`.

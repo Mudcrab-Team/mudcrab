@@ -143,7 +143,10 @@ Supported model bounds retain native source spheres and ordered child merges. Th
 from render AABBs. A reference's current cell-local transform places that sphere; its center selects
 containing master rooms. Initial named targets override geometric containment. Later transform changes
 recompute ownership, including after a moving object returns to its spawn pose. `NONE`, unknown
-targets/bounds, nonuniform or sheared assignment transforms, actors, doors, and activators stay visible.
+targets/bounds, nonuniform or sheared assignment transforms, actors, and doors stay visible.
+Activators with supported source bounds now use authored assignment. The
+[geometry-mismatch investigation](skyrim-culling-mismatches.md) verifies the web and foliage fixes
+against live native bounds and matched camera captures.
 Native overlapping-room hash order cannot be reconstructed from persistent IDs, so possible owners
 are combined. Named-target neighbor priority and specialized native paths remain conservative limits.
 
