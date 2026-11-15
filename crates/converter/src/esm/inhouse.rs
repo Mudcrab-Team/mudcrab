@@ -1239,6 +1239,20 @@ fn convert_plugins_with_text_sources_report_impl(
         .execute(params![id, offset])?;
     }
     let source_count = decoded.records.len();
+    if mode == RecordBundleMode::Full {
+        super::rooms::restore_portal_endpoint_provenance(
+            &tx,
+            decoded
+                .records
+                .values()
+                .filter(|record| record.record_type == *b"REFR")
+                .map(|record| (record.form_id, record.source_subrecord(b"XPOD"))),
+        )?;
+        tx.execute(
+            "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES ('visibility_version',2)",
+            [],
+        )?;
+    }
     let source_records_started = Instant::now();
     write_source_records(&tx, &mut decoded.records)?;
     phases.insert(

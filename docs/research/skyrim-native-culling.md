@@ -5,8 +5,8 @@ Research date: 2026-11-15. Mudcrab baseline: `8624434`.
 ## Overview
 
 Decompilation of the installed SkyrimSE 1.7.104.0 executable establishes that Skyrim retains
-**per-node visibility volumes and consumes them during object culling**. Mudcrab currently
-discards portal regions after traversal and retains room booleans. This is a demonstrated
+**per-node visibility volumes and consumes them during object culling**. Mudcrab at baseline
+`8624434` discards portal regions after traversal and retains room booleans. This is a demonstrated
 implementation difference. No controlled comparison against a running Skyrim instance was
 performed, so this research does not establish a particular visible rendering defect.
 
@@ -224,5 +224,10 @@ The native sphere test and our transformed AABB test can retain different conser
 positives, so identical submitted-object lists are not guaranteed by this implementation.
 The [current policy report](skyrim-room-culling.md#runtime-choices) describes the work limits,
 fallbacks, and exemptions. The table above remains a comparison against baseline `8624434`.
-Unbounded space, authored shared ownership, occluders, full assignment, and pass ownership
-remain separate work. This change does not claim exact Skyrim clipping or traversal parity.
+The next implementation adds an unbounded traversal node, source-verified outside endpoints,
+and combined endpoint volumes for portal-shared geometry. Portal overlap uses aggregate affine
+model bounds and retains geometric overlap candidates. Native assignment helper `0x2c9b90`
+instead calls the sphere/portal test at `0xfe9860`; exact ownership, particularly for references
+touching multiple portals, remains unresolved. Legacy and unknown endpoint data retain conservative
+fallbacks. Occluders, authored joined bounds, full assignment, and pass ownership remain separate
+work. These changes do not claim exact Skyrim clipping or traversal parity.

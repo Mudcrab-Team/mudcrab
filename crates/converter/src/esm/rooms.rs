@@ -37,6 +37,8 @@ pub const ROOM_TABLES_SQL: &str = r#"
              rot_x REAL NOT NULL, rot_y REAL NOT NULL, rot_z REAL NOT NULL,
              half_x REAL NOT NULL, half_z REAL NOT NULL,
              room_a INTEGER, room_b INTEGER,
+             unbounded_a INTEGER NOT NULL DEFAULT 0,
+             unbounded_b INTEGER NOT NULL DEFAULT 0,
              PRIMARY KEY (ref_id, pair_index)
          );
          CREATE INDEX IF NOT EXISTS idx_room_portals_cell ON room_portals(cell_id);
@@ -54,6 +56,64 @@ pub const ROOM_TABLES_SQL: &str = r#"
              name TEXT PRIMARY KEY, value INTEGER NOT NULL
          );
 "#;
+
+/// Old NULL endpoints are ambiguous. Adding columns never promotes them to authored outside.
+pub fn migrate_portal_endpoints(conn: &Connection) -> Result<()> {
+    let outermost = conn.is_autocommit();
+    conn.execute_batch("SAVEPOINT portal_endpoints")?;
+    let result = (|| {
+        for column in ["unbounded_a", "unbounded_b"] {
+            let present: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('room_portals') WHERE name=?1)",
+                [column],
+                |row| row.get(0),
+            )?;
+            if !present {
+                conn.execute_batch(&format!(
+                    "ALTER TABLE room_portals ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
+                ))?;
+            }
+        }
+        conn.execute_batch("RELEASE portal_endpoints")
+    })();
+    if result.is_err() {
+        let _ = conn.execute_batch(if outermost {
+            "ROLLBACK"
+        } else {
+            "ROLLBACK TO portal_endpoints; RELEASE portal_endpoints"
+        });
+    }
+    result
+}
+
+/// The typed reader can clear broken links to zero. Restore outside provenance from source
+/// framing before publication, without changing the canonical archive or its diagnostics.
+pub(crate) fn restore_portal_endpoint_provenance<'a>(
+    conn: &Connection,
+    sources: impl IntoIterator<Item = (u32, Option<&'a [u8]>)>,
+) -> Result<()> {
+    let mut clear = conn
+        .prepare_cached("UPDATE room_portals SET unbounded_a=0, unbounded_b=0 WHERE ref_id=?1")?;
+    let mut set = conn.prepare_cached(
+        "UPDATE room_portals SET unbounded_a=(room_a IS NULL AND ?3), unbounded_b=(room_b IS NULL AND ?4) WHERE ref_id=?1 AND pair_index=?2",
+    )?;
+    for (id, source) in sources {
+        if clear.execute([id])? == 0 {
+            continue;
+        }
+        if let Some(source) = source {
+            for (index, pair) in source.as_chunks::<8>().0.iter().enumerate() {
+                set.execute(params![
+                    id,
+                    index as i64,
+                    u32_at(pair, 0) == Some(0),
+                    u32_at(pair, 4) == Some(0)
+                ])?;
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Migrates a `room_portals` table of the older shape (`ref_id` alone as the key, no
 /// `pair_index`) to the current one in place: every existing row is copied with `pair_index` 0.
@@ -562,11 +622,13 @@ pub fn export_room_graph(
         for pair in 0..pairs.max(1) {
             let (room_a, room_b) = (side(pair, 0), side(pair, 4));
             tx.execute(
-                "INSERT OR REPLACE INTO room_portals(ref_id, pair_index, cell_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, half_x, half_z, room_a, room_b)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                "INSERT OR REPLACE INTO room_portals(ref_id, pair_index, cell_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, half_x, half_z, room_a, room_b, unbounded_a, unbounded_b)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     form_id, pair as i64, cell, position[0], position[1], position[2],
-                    rotation[0], rotation[1], rotation[2], half_x, half_z, room_a, room_b
+                    rotation[0], rotation[1], rotation[2], half_x, half_z, room_a, room_b,
+                    pair < pairs && u32_at(xpod, pair * 8)==Some(0),
+                    pair < pairs && u32_at(xpod, pair * 8+4)==Some(0)
                 ],
             )?;
             if room_a.is_none() || room_b.is_none() {
@@ -610,6 +672,10 @@ pub fn export_room_graph(
         }
     }
     report.write(tx)?;
+    tx.execute(
+        "INSERT INTO room_graph_stats(name,value) VALUES ('visibility_version',2)",
+        [],
+    )?;
     Ok(report)
 }
 

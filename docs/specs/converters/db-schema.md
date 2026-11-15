@@ -1199,6 +1199,8 @@ CREATE TABLE IF NOT EXISTS room_portals (      -- one row per XPOD pair of an in
     half_x REAL NOT NULL, half_z REAL NOT NULL, -- doorway half-width and half-height
     room_a INTEGER,                            -- the pair's origin; NULL when 0, absent or not a room of this cell
     room_b INTEGER,                            -- the pair's destination; same
+    unbounded_a INTEGER NOT NULL DEFAULT 0,     -- source XPOD explicitly names NULL on side A
+    unbounded_b INTEGER NOT NULL DEFAULT 0,     -- source XPOD explicitly names NULL on side B
     PRIMARY KEY (ref_id, pair_index)
 );
 CREATE INDEX IF NOT EXISTS idx_room_portals_cell ON room_portals(cell_id);
@@ -1217,7 +1219,7 @@ CREATE TABLE IF NOT EXISTS reference_rooms (   -- room membership, interiors wit
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_reference_rooms_room ON reference_rooms(room_ref);
 
-CREATE TABLE IF NOT EXISTS room_graph_stats (  -- conversion report counters, one row per name
+CREATE TABLE IF NOT EXISTS room_graph_stats (  -- report counters and visibility_version marker
     name TEXT PRIMARY KEY,
     value INTEGER NOT NULL
 );
@@ -1243,8 +1245,14 @@ Columns and rules:
   from `ref_id` alone, and `create_tables` migrates an older-shaped `room_portals` (no
   `pair_index`) in place, inside one savepoint: every row is kept with `pair_index` 0 until the
   next full export rebuilds the table.
+  A NULL endpoint with its `unbounded_*` flag set names authored unbounded space. Without that
+  flag it is unknown: a missing, malformed, unresolved or foreign-cell link does not establish
+  outside connectivity. Adding these columns to an older database leaves both flags zero.
   In the plugin remap `XPOD` is an array of FormIDs: every four bytes are remapped, and a
   length that is not a multiple of four is dropped with a warning, like any other FormID array.
+  A broken nonzero link also drops the legacy reader's `XPOD` occurrence rather than clearing
+  it to an authored null. The typed reader restores the flags from original source framing;
+  its canonical cleared links cannot establish outside connectivity.
 - **`room_links`**: one row per `XLRM` as stored on the room, with no mirror rows. A link joins
   rooms that may have no portal between them but must be seen together: if one is visible, so is
   the other. The target is stored as written, even if it is not a `room_bounds` row.
@@ -1272,6 +1280,9 @@ Columns and rules:
   pair), `portals_with_trailing_xpod_bytes` (markers whose `XPOD` length is not a multiple of 8),
   `non_box_rooms_skipped`, `portals_without_size_skipped`, `invalid_markers_skipped` (rooms and portals with a non-finite size or transform), `objects_in_no_room` and
   `objects_in_several_rooms` (both by pivot), and `overlap_rows`.
+  `visibility_version = 2` additionally marks graphs whose outside endpoints have verified
+  source provenance. The typed reader publishes this marker and the flags in the source-data
+  transaction. Until that transaction commits, the runtime uses legacy fallback behavior.
 
 The tables are derived data: a full load-order export clears and rebuilds them from the winning
 records on every conversion, like the grass tables, and the subset export used by movement
@@ -1280,6 +1291,10 @@ annotation leaves them alone. `create_tables` adds them to an older reused datab
 **These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`.** The engine reads
 them automatically and probes for them first, as it does for `lights` and the
 additive `waters` columns, so a database without them behaves as before.
+Unbounded traversal also requires both endpoint columns and `visibility_version = 2`.
+Older conversions retain their conservative outside-camera behavior until a full room export.
+In a versioned graph, the engine reads the cell's `references.id` values to distinguish known
+unbounded references from references belonging to other cells or unknown runtime objects.
 
 Placed references carrying the `Multibound` header flag (`0x80000000`) have an authored visibility
 policy, including `NONE`. Both pivot and bounds-overlap export omit their geometric memberships;
