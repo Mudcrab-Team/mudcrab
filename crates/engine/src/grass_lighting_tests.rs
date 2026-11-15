@@ -130,7 +130,6 @@ fn lighting_fixture_expression(
                         .collect()
                 }
                 M::Abs => a.into_iter().map(f32::abs).collect(),
-                M::Sqrt => a.into_iter().map(f32::sqrt).collect(),
                 M::Normalize => {
                     let length = a.iter().map(|value| value * value).sum::<f32>().sqrt();
                     a.into_iter().map(|value| value / length).collect()
