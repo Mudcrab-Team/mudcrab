@@ -695,8 +695,7 @@ async fn historical_legacy_reader_identity_with_current_nif_proof_survives_repea
             .unwrap(),
             _ => unreachable!(),
         };
-        // Retain the fresh mesh proof. Known combined settings cover PEX and
-        // unchanged BC1/BC5 texture candidates; packed-normal recipes are checked per source.
+        // Retain the fresh mesh proof; historical combined settings cover DDS/PEX.
         original
             .asset_configuration_hashes
             .retain(|kind, _| kind == "nif");
