@@ -48,7 +48,7 @@ pub struct GrassSettings {
     /// `fGrassWindMagnitudeMax`: retail default 125.0 (RF-GRASS-001); reported only.
     #[serde(rename = "fGrassWindMagnitudeMax")]
     pub wind_magnitude_max: f64,
-    /// `bDrawShaderGrass`: retail default true; grass still requires --grass.
+    /// `bDrawShaderGrass`: retail default true; launch-state resolution honors explicit CLI switches.
     #[serde(rename = "bDrawShaderGrass")]
     pub draw_shader_grass: bool,
     /// `bEnableGrassFade`: retail default true.
