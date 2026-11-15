@@ -9,11 +9,11 @@
 //!
 //! # Where each rule and constant comes from
 //!
-//! The reverse-engineering analysis of retail `SkyrimSE.exe` 1.7.104.0 (`RF-CARRY-001` to
-//! `RF-CARRY-007`, `RF-UNIT-001`; static trace of the activate handler at `0x1407b2660`, the grab
-//! start at `0x140751870` and the per-frame hold checks at `0x140753580`) is the source for every
-//! rule and constant here. Effective values are the compiled defaults, replaced by `Skyrim.esm`
-//! where it overrides them.
+//! The reverse-engineering analysis of retail `SkyrimSE.exe` 1.7.104.0 is the source for every rule
+//! and constant here, cited by registry ID. It is a static trace (activate handler `0x1407b2660`,
+//! grab start `0x140751870`, spring solver `0x140b99e20`, hold checks `0x140753580`). Effective
+//! values are the compiled defaults, replaced by `Skyrim.esm` where it overrides them
+//! (`RF-GMST-001`).
 //!
 //! - **Input, `RF-CARRY-001`.** A press held longer than `fZKeyDelay` (0.2 s) with no grab active
 //!   starts one grab; a flag marks that this press started it. On release, if a grab is active and
@@ -21,51 +21,51 @@
 //!   nothing.
 //! - **Weight limit, `RF-CARRY-002`.** The grab is refused when the body's mass is above
 //!   `fGrabMaxWeightWalking` (100 kg); a body at exactly 100 is carried.
-//! - **Spring, `RF-CARRY-003`.** A Havok mouse-spring action with damping `fZKeySpringDamping`
-//!   (0.5), elasticity `fZKeySpringElasticity` (0.2) times E, object damping `fZKeyObjectDamping`
-//!   (0.75) and maximum relative force `fZKeyMaxForce` times S. For a normal object E = 1 and S is
-//!   the mass scale of [`CarryTuning::max_force_scale`]: 1.0 at 0 kg, falling linearly to 0.2 at
+//! - **Spring parameters, `RF-CARRY-003`.** Damping `fZKeySpringDamping` (0.5), elasticity
+//!   `fZKeySpringElasticity` (0.2) times E, object damping `fZKeyObjectDamping` (0.75) and maximum
+//!   relative force `fZKeyMaxForce` times S. For a normal object E = 1 and S is the mass scale of
+//!   [`CarryTuning::max_force_scale`]: 1.0 at 0 kg, falling linearly to 0.2 at
 //!   `fZKeyMaxForceWeightHigh` and above. `Skyrim.esm` overrides `fZKeyMaxForce` (250 in the
-//!   executable, 100 in the master) and `fZKeyMaxForceWeightHigh` (300 and 150). Both are read from
+//!   executable, 100 in the master) and `fZKeyMaxForceWeightHigh` (300 and 150); both are read from
 //!   the pack ([`CarryTuning::from_world_database`]).
+//! - **Solver, `RF-CARRY-009`.** The Havok mouse-spring action, once per 1/60 s step
+//!   (`hkpMouseSpringAction::applyAction`, high confidence): multiply both velocities by 0.75, take
+//!   the point velocity `v + w x r`, apply at the point the impulse
+//!   `J = -K^-1 (0.5 v_p + 0.2 E e / dt)` with `K = I/m + [r]x W [r]x^T`, clamp `|J|` to
+//!   `100 * S * m * dt`, and apply nothing if K is singular. [`spring_step`] does this. It was first
+//!   written as a step-by-step port of the algorithm in `apply_grab` in spud
+//!   (<https://github.com/chasmlol/spud>, MIT, commit `e5f2de4b`, `src/physics/world.cpp`), from an
+//!   internal audit note of that source and not by copying code; the trace shows the retail solver
+//!   does the same steps, so the two agree. Spud's licence notice is in `THIRD_PARTY.md`. The
+//!   contact-mass scan follows spud's too.
 //! - **Drops, `RF-CARRY-005`.** The lag is the distance between the grabbed point and its target in
-//!   game units. Lag above 96 units (hard-coded) drops the object. Lag above
+//!   game units. Lag above 96 units (hard-coded at `0x14181ab88`) drops the object. Lag above
 //!   `fZKeyMaxContactDistance` (10) with a touching body more than `fZKeyMaxContactMassRatio` (4)
-//!   times the held mass drops it. Havok metres are 69.99125 units (`RF-UNIT-001`).
-//! - **Hold distance** (`m3-carry-gaps` section 1). The distance from the eye to the pick hit
-//!   point, shortened by any obstacle between them, and at least the player's character-controller
-//!   capsule radius times 69.99125 plus 5 units (the constant 5.0 is at `0x141b5be6c`). Mudcrab's
-//!   nearest-hit pick refuses a grab with an obstacle in front, and its minimum uses the player's
-//!   capsule radius, which is the same term.
+//!   times the held mass drops it. A Havok metre is 69.99125 units (`RF-UNIT-001`).
+//! - **Hold distance, `RF-CARRY-008`** (medium-high). The distance from the eye to the pick hit
+//!   point, shortened by the fraction of any obstacle ray, and at least the player's
+//!   character-controller capsule radius in Havok metres times 69.99125 plus 5 units (the constant
+//!   5.0 is at `0x141b5be6c`). Mudcrab's nearest-hit pick refuses a grab with an obstacle in front.
+//!   Its minimum uses Mudcrab's own capsule radius (`MovementTuning`, provisional), so the minimum
+//!   is only as retail as that radius.
+//! - **Heavy carry, `RF-CARRY-012`** (medium-high; supersedes `RF-CARRY-006`). Holding a body above
+//!   `fZKeyHeavyWeight` (75 kg) makes the "may run" test fail, the test that over-encumbrance
+//!   uses, and every direction's run speed is replaced by its walk speed. Sprint was not traced
+//!   separately; Mudcrab drops it while the block holds, because it builds on the run state
+//!   (derived, unverified).
 //! - **No throw, `RF-CARRY-007`.** Release removes the spring and applies no impulse; there is no
 //!   throw setting for this path. The object keeps the velocity the spring left it.
 //!
-//! [`spring_step`] is the retail Havok mouse-spring solver (`hkpMouseSpringAction::applyAction`
-//! at `0x140b99e20`, once per 1/60 s step; `m3-carry-gaps` section 2, high confidence): multiply
-//! both velocities by 0.75, take the point velocity `v + w x r`, apply at the point the impulse
-//! `J = -K^-1 (0.5 v_p + 0.2 E e / dt)` with `K = I/m + [r]x W [r]x^T`, clamp `|J|` to
-//! `100 * S * m * dt`, and apply nothing if K is singular. It was first written as a step-by-step
-//! port of the algorithm in `apply_grab` in spud (<https://github.com/chasmlol/spud>, MIT, commit
-//! `e5f2de4b`, `src/physics/world.cpp`), from the project's audit of that source
-//! (`docs/research/spud/`) and not by copying code; the trace shows the retail solver does the same
-//! steps, so the two agree. Spud's licence notice stays in `THIRD_PARTY.md`. The contact-mass scan
-//! follows spud's too.
-//!
-//! - **Heavy carry, `RF-CARRY-006`.** Holding a body above `fZKeyHeavyWeight` (75 kg) makes the
-//!   player's "may run" test fail, and every direction's run speed is replaced by its walk speed.
-//!   Sprint was not traced separately; Mudcrab drops it while the block holds, because it builds on
-//!   the run state (derived, unverified).
-//!
-//! Not implemented, each with a follow-up (#691), all medium confidence (`m3-carry-gaps`
-//! sections 3 and 4): the layer-14 (trap) case (S = 0.5, E = 0.1) and the all-contacts constraint
-//! case (S x 0.2, E = 0.1; `RF-CARRY-004`), the complex helper (`fZKeyComplexHelper*`; extra pull
-//! `(1 - m/100) * 2 * (L - 6) / L` toward the target for flagged objects and ragdolls when the lag
-//! L is over 6 units), and the retail held-object collision layer. spud's stand-on drop has no
+//! Not implemented, each with a follow-up (#691), all medium confidence: the layer-14 (TRAP) case
+//! (S = 0.5, E = 0.1) and the all-contacts constraint case (S x 0.2, E = 0.1) (`RF-CARRY-004`,
+//! meanings in `RF-CARRY-010`); the complex helper (`RF-CARRY-011`: `fZKeyComplexHelper*`, an extra
+//! pull `(1 - m/100) * 2 * (L - 6) / L` toward the target for flagged objects and ragdolls when the
+//! lag L is over 6 units); and the retail held-object collision layer. spud's stand-on drop has no
 //! retail source and is not implemented either.
 //!
 //! Not from retail, and without constants of its own (Mudcrab engineering): the steep-look target
-//! clamp (it reuses the retail radius plus 5), the interrupt rules (WALK end, door crossing,
-//! cursor release, console or menu open) and the disabled sleeping while held.
+//! clamp (it reuses the radius plus 5 of `RF-CARRY-008`), the interrupt rules (WALK end, door
+//! crossing, cursor release, console or menu open) and the disabled sleeping while held.
 //!
 //! The settings are read from the pack at startup; a pack without them keeps the compiled
 //! defaults. [`CarryTuning::apply_gmst`] takes any other carry setting the converter publishes
@@ -85,48 +85,53 @@ use rusqlite::{Connection, OpenFlags};
 use shared::records::ArchivedRecordData;
 use std::{collections::HashMap, path::Path};
 
-/// Creation units per metre: the constant the retail grab code multiplies metres by
-/// (`69.99125`, read from `SkyrimSE.exe`).
+/// Creation units per metre: the constant the retail grab code multiplies metres by (`RF-UNIT-001`,
+/// `0x1417f423c`).
 pub const UNITS_PER_METRE: f32 = 69.99125;
 
 /// Spring and drop constants. All distances are in Creation units, masses in kg.
 ///
-/// Each default below is the compiled default in the retail executable (the reverse-engineering
-/// analysis, `RF-CARRY-001` to `RF-CARRY-007`). `fZKeyMaxForce` and `fZKeyMaxForceWeightHigh`, which
-/// `Skyrim.esm` overrides, are read from the pack by [`Self::from_world_database`].
+/// Each default below is the compiled default in the retail executable, cited by registry ID.
+/// `fZKeyMaxForce` and `fZKeyMaxForceWeightHigh`, which `Skyrim.esm` overrides (`RF-GMST-001`), are
+/// read from the pack by [`Self::from_world_database`].
 #[derive(Resource, Debug, Clone, PartialEq)]
 pub struct CarryTuning {
-    /// `fActivatePickLength:Interface`, 180 units. Retail executable default.
+    /// `fActivatePickLength:Interface`, 180 units: the compiled default of an INI-style setting in
+    /// the executable's settings table. It is not a GMST: it is not in `Skyrim.esm`, the pack or
+    /// `Skyrim.ini`, so no master or pack can override it, and it has no registry ID yet (the
+    /// registry queue item 7, "Activation and grab reach").
     pub reach: f32,
-    /// `fZKeyDelay:Controls`, seconds the key must stay down before it grabs (`RF-CARRY-001`).
+    /// `fZKeyDelay:Controls`, seconds the key must stay down before it grabs (`RF-CARRY-001`, strict
+    /// `>`).
     /// Executable default 0.2; not in `Skyrim.ini`.
     pub key_delay: f32,
-    /// `fZKeySpringElasticity`: the fraction of the position error that the spring asks to remove
+    /// `fZKeySpringElasticity` (`RF-CARRY-003`): the fraction of the position error that the spring asks to remove
     /// in one 60 Hz step, 0.2 (12 per second). Retail executable default.
     pub spring_elasticity: f32,
-    /// `fZKeySpringDamping`: the fraction of the point velocity the spring removes each step, 0.5.
+    /// `fZKeySpringDamping` (`RF-CARRY-003`): the fraction of the point velocity the spring removes each step, 0.5.
     /// Retail executable default.
     pub spring_damping: f32,
-    /// `fZKeyObjectDamping`: both body velocities are multiplied by this each step, 0.75. Retail
+    /// `fZKeyObjectDamping` (`RF-CARRY-003`): both body velocities are multiplied by this each step, 0.75. Retail
     /// executable default.
     pub object_damping: f32,
     /// `fZKeyMaxForce`: largest spring acceleration per kilogram, in m/s^2, before the weight
-    /// factor (`RF-CARRY-003`). `Skyrim.esm` sets 100 (the executable default is 250); read from
+    /// factor (`RF-CARRY-003`, solver clamp `RF-CARRY-009`). `Skyrim.esm` sets 100 (`RF-GMST-001`) (the executable default is 250); read from
     /// the pack.
     pub max_force: f32,
-    /// `fZKeyMaxForceWeightLow`, kg: bodies this light or lighter get `max_force_scale_high`.
+    /// `fZKeyMaxForceWeightLow` (`RF-CARRY-003`), kg: bodies this light or lighter get `max_force_scale_high`.
     /// Retail executable default 0 (not overridden by the master).
     pub max_force_weight_low: f32,
     /// `fZKeyMaxForceWeightHigh`, kg: bodies this heavy or heavier get `max_force_scale_low`
-    /// (`RF-CARRY-003`). `Skyrim.esm` sets 150 (the executable default is 300); read from the pack.
+    /// (`RF-CARRY-003`). `Skyrim.esm` sets 150 (`RF-GMST-001`; the executable default is 300); read
+    /// from the pack.
     pub max_force_weight_high: f32,
-    /// `fZKeyMaxForceScaleLow`: the force factor for the heaviest bodies. Retail executable
+    /// `fZKeyMaxForceScaleLow` (`RF-CARRY-003`): the force factor for the heaviest bodies. Retail executable
     /// default 0.2.
     pub max_force_scale_low: f32,
-    /// `fZKeyMaxForceScaleHigh`: the force factor for the lightest bodies. Retail executable
+    /// `fZKeyMaxForceScaleHigh` (`RF-CARRY-003`): the force factor for the lightest bodies. Retail executable
     /// default 1.0.
     pub max_force_scale_high: f32,
-    /// `fGrabMaxWeightWalking`, heaviest body the player can grab, in kg. Retail executable
+    /// `fGrabMaxWeightWalking` (`RF-CARRY-002`), heaviest body the player can grab, in kg. Retail executable
     /// default 100. (`fGrabMaxWeightRunning`, 50, is not used: running is not modelled.)
     pub grab_max_weight: f32,
     /// Distance between the grabbed point and its target that drops the object, in units. The
@@ -134,13 +139,13 @@ pub struct CarryTuning {
     /// `0x14181ab88` (`RF-CARRY-005`).
     pub lag_break: f32,
     /// `fZKeyHeavyWeight`, kg: holding a body heavier than this makes the "may run" test fail, so
-    /// the run speed is replaced by the walk speed (`RF-CARRY-006`, resolved by the REA-3 note
-    /// `m3-carry-gaps` section 5). Retail executable default 75.
+    /// the run speed is replaced by the walk speed (`RF-CARRY-012`, which supersedes
+    /// `RF-CARRY-006`). Retail executable default 75.
     pub heavy_weight: f32,
-    /// `fZKeyMaxContactDistance`, in units. A lag above this arms the contact-mass rule. Retail
+    /// `fZKeyMaxContactDistance` (`RF-CARRY-005`), in units. A lag above this arms the contact-mass rule. Retail
     /// executable default 10.
     pub contact_distance: f32,
-    /// `fZKeyMaxContactMassRatio`. The heaviest moving body that touches the held object, divided
+    /// `fZKeyMaxContactMassRatio` (`RF-CARRY-005`). The heaviest moving body that touches the held object, divided
     /// by the held mass, drops the object when it is above this value and the lag is above
     /// [`Self::contact_distance`]. Retail executable default 4.
     pub contact_mass_ratio: f32,
@@ -196,13 +201,15 @@ impl CarryTuning {
     }
 
     /// True while holding a body of `held_mass` kg blocks running: a mass above `fZKeyHeavyWeight`
-    /// (`RF-CARRY-006`). The walk intent then uses the walk speed in place of the run speed.
+    /// (`RF-CARRY-012`). The walk intent then uses the walk speed in place of the run speed.
     pub fn blocks_running(&self, held_mass: f32) -> bool {
         held_mass.is_finite() && held_mass > self.heavy_weight
     }
 
-    /// Closest hold distance from the camera: the player's radius plus 5 units, as in the retail
-    /// code, so the object does not rest inside the capsule.
+    /// Closest hold distance from the camera, in units (`RF-CARRY-008`): retail takes the player's
+    /// character-controller capsule radius in Havok metres times 69.99125 plus 5.0 (the constant at
+    /// `0x141b5be6c`). The caller passes Mudcrab's own capsule radius, which is provisional and not
+    /// traced to retail, so this minimum is only as retail as that radius.
     pub fn min_hold_distance(&self, capsule_radius: f32) -> f32 {
         capsule_radius + 5.0
     }
@@ -243,6 +250,8 @@ impl CarryTuning {
             }
         };
         take("fZKeyDelay", &mut self.key_delay);
+        take("fZKeyDelay:Controls", &mut self.key_delay);
+        take("fActivatePickLength:Interface", &mut self.reach);
         take("fZKeySpringElasticity", &mut self.spring_elasticity);
         take("fZKeySpringDamping", &mut self.spring_damping);
         take("fZKeyObjectDamping", &mut self.object_damping);
@@ -399,7 +408,7 @@ pub fn spring_step(
         (target - anchor) * tuning.spring_gain(dt) - point_velocity * tuning.spring_damping;
     let skew_r = skew(r);
     let response = Mat3::IDENTITY * (1.0 / body.mass) - skew_r * body.inv_inertia * skew_r;
-    // Retail applies nothing in a step where K is singular (`m3-carry-gaps` section 2).
+    // Retail applies nothing in a step where K is singular (`RF-CARRY-009`).
     let determinant = response.determinant();
     if !(determinant.is_finite() && determinant != 0.0) {
         return damped_only;
@@ -965,7 +974,7 @@ mod tests {
         }
     }
 
-    /// `RF-CARRY-006`: a held mass over `fZKeyHeavyWeight` (75 kg) blocks running.
+    /// `RF-CARRY-012`: a held mass over `fZKeyHeavyWeight` (75 kg) blocks running.
     #[test]
     fn a_held_mass_over_75_kg_blocks_running() {
         let tuning = CarryTuning::default();
@@ -1408,7 +1417,7 @@ mod tests {
         app.update();
     }
 
-    /// `RF-CARRY-006`: holding 50 kg leaves the run speed; holding 90 kg (over 75) makes the run
+    /// `RF-CARRY-012`: holding 50 kg leaves the run speed; holding 90 kg (over 75) makes the run
     /// speed equal the walk speed.
     #[test]
     fn a_heavy_hold_walks_and_a_light_hold_runs() {

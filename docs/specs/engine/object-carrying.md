@@ -7,7 +7,7 @@ Tracking: [#104](https://github.com/Mudcrab-Team/mudcrab/issues/104), phase (b).
 
 Rule for this feature: every number comes from Skyrim's own data or code. Where no source has been
 found, the behaviour is not implemented, not guessed. The source is the reverse-engineering
-analysis of retail `SkyrimSE.exe` 1.7.104.0, cited as `RF-CARRY-001` to `RF-CARRY-007` and
+analysis of retail `SkyrimSE.exe` 1.7.104.0, cited as `RF-CARRY-001` to `RF-CARRY-012`, `RF-GMST-001` and
 `RF-UNIT-001` (activate handler at `0x1407b2660`, grab start at `0x140751870`, hold checks at
 `0x140753580`).
 
@@ -28,14 +28,14 @@ wall, a fixed object or an object heavier than `fGrabMaxWeightWalking` (100 kg, 
 `RF-CARRY-002`) is refused, and a wall in front hides an object behind it. The object stays at the distance where it
 was taken, never closer than the player's capsule radius times 69.99125 plus 5 units. Retail's hold
 distance is the eye-to-hit distance, shortened by any obstacle on the way, and at least that
-minimum (the REA-3 note `m3-carry-gaps`, section 1; the 5.0 is at `0x141b5be6c`). Mudcrab's
+minimum (`RF-CARRY-008`, medium-high; the 5.0 is at `0x141b5be6c`). The minimum uses Mudcrab's own capsule radius, which is provisional and not traced to retail, so it is only as retail as that radius. Mudcrab's
 nearest-hit pick refuses a grab with an obstacle in front, so the first part is the same.
 
 ## How the object is held
 
 The spring acts on the point that was grabbed, not on the centre of mass. It is the retail Havok
-mouse-spring solver (`hkpMouseSpringAction::applyAction` at `0x140b99e20`, `m3-carry-gaps` section
-2, high confidence), run once per 60 Hz step with `e` the point's error from the target:
+mouse-spring solver (`RF-CARRY-009`, `hkpMouseSpringAction::applyAction` at `0x140b99e20`, high
+confidence), run once per 60 Hz step with `e` the point's error from the target:
 
 1. Both body velocities are multiplied by `fZKeyObjectDamping` (0.75).
 2. The point velocity is `v_p = v + w x r`, from the damped velocities.
@@ -91,7 +91,7 @@ further setting that the converter publishes (#595).
 | Constant | Value used | Executable default | `Skyrim.esm` | Notes |
 |---|---|---|---|---|
 | `fZKeyDelay:Controls` | 0.2 s | 0.2 | none (not in `Skyrim.ini`) | |
-| `fActivatePickLength:Interface` | 180 | 180 | none | The executable also has `fActivatePickRadius` 16 (not used, #691) |
+| `fActivatePickLength:Interface` | 180 | 180 | none | **Not a GMST**: not in `Skyrim.esm`, the pack or `Skyrim.ini`, so it cannot be read from the pack. It is the compiled default of an INI-style setting; no registry ID yet. The executable also has `fActivatePickRadius` 16 (not used, #691) |
 | `fZKeySpringElasticity` | 0.2 | 0.2 | none | |
 | `fZKeySpringDamping` | 0.5 | 0.5 | none | |
 | `fZKeyObjectDamping` | 0.75 | 0.75 | none | |
@@ -118,11 +118,11 @@ All tracked in [#691](https://github.com/Mudcrab-Team/mudcrab/issues/691).
   upward lifts a player standing on it by about 6 units (measured from 159.9 to 166.3) before it
   slides away. The cause is not verified. The strict test (under 1 unit) is `#[ignore]`d until the
   held body leaves the player's collision group, as retail's `ZKeyObject` layer probably does.
-- **Spring special cases** (`RF-CARRY-004`, medium confidence; `m3-carry-gaps` section 3). A body
+- **Spring special cases** (`RF-CARRY-004`, meanings `RF-CARRY-010`, medium confidence). A body
   on collision layer 14 (TRAP) with no held-body list gets S = 0.5 and E = 0.1. A multi-body object
   whose constraints are all contacts (type 11) or that has none gets S x 0.2 and E = 0.1. Mudcrab
   bodies carry neither their layer nor a constraint list yet.
-- **Complex helper** (medium confidence; section 4). If the lag `L` is above
+- **Complex helper** (`RF-CARRY-011`, medium confidence). If the lag `L` is above
   `fZKeyComplexHelperMinDistance` (6 units) on a flagged object or a ragdoll, the body gets an extra
   velocity toward the target of `(1 - m/100) * fZKeyComplexHelperScale (2) * (L - 6) / L`, where `m`
   is the total mass clamped to 0 and 100 kg. The vector's units and the ragdoll factor are
@@ -130,7 +130,7 @@ All tracked in [#691](https://github.com/Mudcrab-Team/mudcrab/issues/691).
 
 ## Heavy carry
 
-`RF-CARRY-006` (resolved, medium-high; section 5): holding a body above `fZKeyHeavyWeight` (75 kg)
+`RF-CARRY-012` (medium-high; supersedes `RF-CARRY-006`): holding a body above `fZKeyHeavyWeight` (75 kg)
 makes the player's "may run" test fail, the same test that over-encumbrance uses. Every direction's
 run speed is then replaced by its walk speed. Sprint builds on the run state and was not traced
 separately, so Mudcrab drops sprint while the block holds (derived, unverified).
@@ -138,9 +138,9 @@ separately, so Mudcrab drops sprint while the block holds (derived, unverified).
 ## Sources
 
 - The reverse-engineering analysis of retail `SkyrimSE.exe` 1.7.104.0: registry entries
-  `RF-CARRY-001` to `RF-CARRY-007`, `RF-UNIT-001`, and the notes `q3-carry` and `m3-carry-gaps`
-  (hold distance, the mouse-spring solver, the special cases, the complex helper, the heavy-carry
-  block). Ghidra decompiler and disassembly; a static trace, no game was launched. An earlier read
+  `RF-CARRY-001` to `RF-CARRY-012`, `RF-GMST-001` and `RF-UNIT-001` (input, weight limit, spring,
+  drops, hold distance, the mouse-spring solver, the special cases, the complex helper and the
+  heavy-carry block). Ghidra decompiler and disassembly; a static trace, no game was launched. An earlier read
   of the same settings table and code, done while writing this PR, agrees with it.
 - spud (<https://github.com/chasmlol/spud>, MIT, commit `e5f2de4b`): the spring step and the
   contact-mass scan were first written as a step-by-step port of its `apply_grab`, from the
