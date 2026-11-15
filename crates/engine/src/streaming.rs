@@ -5619,6 +5619,7 @@ mod tests {
             fog: None,
             reflection_magnitude: None,
             fnam: None,
+            underwater_fog: None,
         };
         let multiplier = crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER;
         let material = water_material(Some(colors), Handle::default(), None, None, false);

@@ -58,6 +58,7 @@ pub mod terrain_upload;
 #[cfg(test)]
 mod test_support;
 pub mod tone_mapping;
+mod underwater;
 pub mod visibility_optimization;
 pub mod visual_profile;
 mod water_depth;

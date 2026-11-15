@@ -367,6 +367,8 @@ const WATER_DNAM_DEPTH_PROPERTIES: usize = 0xD0;
 const WATER_DNAM_WIND_DIRECTION: usize = 0x64;
 const WATER_DNAM_WIND_SPEED: usize = 0x70;
 const WATER_DNAM_NOISE_FALLOFF: usize = 0x60;
+const WATER_DNAM_UNDERWATER_FOG_NEAR: usize = 0x90;
+const WATER_DNAM_UNDERWATER_FOG_FAR: usize = 0x94;
 const WATER_DNAM_SUN_SPECULAR_POWER: usize = 0x10;
 const WATER_DNAM_SUN_SPECULAR_MAGNITUDE: usize = 0xCC;
 const WATER_DNAM_SUN_SPARKLE_POWER: usize = 0xE0;
@@ -438,6 +440,10 @@ pub struct WaterColors {
     /// flags, not this (RF-WATER-013). Bit 3 selects retail's flow-map program, bit 4 blends the
     /// normals. `None` when the record bytes cannot be read.
     pub fnam: Option<u8>,
+    /// `DNAM` underwater fog near (+0x90) and far (+0x94): the distances the underwater fog blends
+    /// over (RF-WATER-031). `DNAM` +0x8C, the fog amount, is passed to the effect but no program
+    /// reads it, so it is not read here.
+    pub underwater_fog: Option<[f32; 2]>,
 }
 
 impl WaterColors {
@@ -562,6 +568,12 @@ impl AssetCatalog {
                                 fog,
                                 reflection_magnitude,
                                 fnam: parsed.as_ref().and_then(|record| record.flags),
+                                underwater_fog: parsed.as_ref().and_then(|record| {
+                                    Some([
+                                        dnam_float(&record.dnam, WATER_DNAM_UNDERWATER_FOG_NEAR)?,
+                                        dnam_float(&record.dnam, WATER_DNAM_UNDERWATER_FOG_FAR)?,
+                                    ])
+                                }),
                             },
                             noise,
                         ))
@@ -2624,6 +2636,7 @@ mod tests {
                 fog: None,
                 reflection_magnitude: None,
                 fnam: None,
+                underwater_fog: None,
             })
         );
         // A waters row with no ANAM reads as DefaultWater's 50, and an out-of-range one clamps
@@ -2824,6 +2837,7 @@ mod tests {
                 fog: None,
                 reflection_magnitude: None,
                 fnam: record.flags,
+                underwater_fog: None,
             }
         };
         assert!(colors(0x08).uses_flow_map() && !colors(0x08).blends_normals());

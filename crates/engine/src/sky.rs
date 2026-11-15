@@ -448,9 +448,16 @@ impl Plugin for SkyPlugin {
         app.add_plugins(MaterialPlugin::<SkyMaterial>::default())
             .init_resource::<SkyPalette>()
             .init_resource::<CameraSpace>()
+            .init_resource::<crate::underwater::UnderwaterState>()
             .add_systems(
                 PostUpdate,
-                (spawn_sky_domes, follow_sky_cameras, apply_sky, apply_fog)
+                (
+                    spawn_sky_domes,
+                    follow_sky_cameras,
+                    apply_sky,
+                    crate::underwater::update_underwater_state,
+                    apply_fog,
+                )
                     .chain()
                     .before(TransformSystems::Propagate),
             );
@@ -599,11 +606,12 @@ fn apply_fog(
     space: Res<CameraSpace>,
     cameras: Query<(Entity, Option<&DistanceFog>), With<FogCamera>>,
     settings: Option<Res<crate::settings::RenderingSettings>>,
+    underwater: Res<crate::underwater::UnderwaterState>,
 ) {
-    let wanted = match (
-        *space,
-        settings.as_deref().is_none_or(|settings| settings.fog),
-    ) {
+    let fog_on = settings.as_deref().is_none_or(|settings| settings.fog);
+    let wanted = match (*space, fog_on) {
+        // Below the surface retail replaces the view with the water's own fog (RF-WATER-031).
+        _ if fog_on && underwater.fog().is_some() => underwater.fog().map(|fog| fog.distance_fog()),
         (CameraSpace::Exterior, true) => {
             // The fog is the clear colour, so it takes the same brightness scale as the sky.
             let scaled = scaled_palette(&palette, settings.as_deref());
@@ -651,6 +659,16 @@ fn same_fog(current: &DistanceFog, wanted: &DistanceFog) -> bool {
                 inscattering: wanted_inscattering,
             },
         ) => current_extinction == wanted_extinction && current_inscattering == wanted_inscattering,
+        (
+            FogFalloff::Linear {
+                start: current_start,
+                end: current_end,
+            },
+            FogFalloff::Linear {
+                start: wanted_start,
+                end: wanted_end,
+            },
+        ) => current_start == wanted_start && current_end == wanted_end,
         _ => false,
     }
 }
@@ -846,6 +864,7 @@ mod tests {
             .init_resource::<Assets<SkyMaterial>>()
             .init_resource::<SkyPalette>()
             .init_resource::<CameraSpace>()
+            .init_resource::<crate::underwater::UnderwaterState>()
             .add_systems(
                 Update,
                 (spawn_sky_domes, follow_sky_cameras, apply_sky, apply_fog).chain(),
