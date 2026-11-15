@@ -4,7 +4,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{io::Read, path::PathBuf, time::Duration};
 
-/// RF-GRASS-005: retail grass shadow floor, `fShadowClampValue:Display` (`Setting` at
+/// RF-GRASS-005, RF-SHADER-003: retail grass shadow floor, `fShadowClampValue:Display` (`Setting` at
 /// `0x1420d6d40`, default 0.3). The value has high confidence; its use in the pixel shader is
 /// medium confidence (the CPU side writes it to the grass constants at `0x141522d44`).
 pub const SHADOW_CLAMP_VALUE: f32 = 0.3;

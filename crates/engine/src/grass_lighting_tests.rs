@@ -382,9 +382,9 @@ fn shader_retail_light_fixture(
     )
 }
 
-/// The retail grass pixel formula, written out independently of the shader (s4-grass-shader.md):
+/// The retail grass pixel formula, written out independently of the shader (RF-SHADER-003):
 /// `(NdotL*C*Dir*albedo*lerp(floor,1,mask) + C*Ambient*albedo) * scale`, then the engine's
-/// exposure/pi unit conversion. The fixture's sun, ambient and albedo are fixed in the fixture.
+/// exposure/pi factor (exact for the sun; Bevy's ambient has no 1/pi). The fixture's sun, ambient and albedo are fixed in the fixture.
 fn retail_grass_pixel(n_dot_l: f32, shadow_mask: f32, floor: f32, output_scale: f32) -> [f32; 3] {
     let (sun, ambient, albedo) = ([1.5, 3.0, 5.0], [0.25, 0.5, 1.0], [0.25, 0.5, 0.75]);
     let shadow = floor + (1.0 - floor) * shadow_mask;
@@ -486,7 +486,7 @@ fn g3_directional_shadow_helper_obeys_light_count_and_flags() {
 #[test]
 /// The retail pixel formula holds for three shadow masks, three instance normals and both
 /// output scales. The ambient term is not shadowed (the mask 0 result keeps it); the shadow
-/// floor 0.3 (RF-GRASS-005) scales only the direct term; the scale is cb2[16].w (s4).
+/// floor 0.3 (RF-GRASS-005) scales only the direct term; the scale is cb2[16].w (RF-SHADER-004).
 fn retail_grass_pixel_formula_matches_for_shadow_masks_and_normals() {
     use crate::grass_tuning::{GrassTuning, SHADOW_CLAMP_VALUE};
     let tuning = GrassTuning::default().as_uniforms();
