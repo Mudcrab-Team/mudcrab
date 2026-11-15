@@ -95,7 +95,9 @@ fn shader_alpha_fixture(
             let body = shader.split_once(entry).expect("shader pass").1;
             let body = body.split_once('{').expect("pass body").1;
             let body = if matches!(path, AlphaFixturePath::Fragment) {
-                let start = body.find("    let base =").expect("fragment opacity sample");
+                let start = body
+                    .find("    let base =")
+                    .expect("fragment opacity sample");
                 assert!(
                     !body[..start].contains("input.color"),
                     "fragment setup must not rewrite the sampled color"
