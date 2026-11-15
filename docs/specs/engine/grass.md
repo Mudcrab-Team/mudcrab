@@ -127,7 +127,7 @@ control opacity: [grass authoring accounts](https://stepmodifications.org/forum/
 identify it as an animation/wind weight, while the
 [NIF definitions](https://github.com/niftools/nifxml/blob/develop/nif.xml)
 describe its storage without prescribing a grass opacity equation. The converted
-alpha attribute remains intact but is unused by the current grass wind model;
+alpha attribute remains intact but is unused, because grass wind is not rendered;
 an exact Skyrim wind equation or ambient-alpha interpretation is not established.
 Opaque primitives retain full coverage
 regardless of texture, material or vertex alpha. Only the main world camera receives
@@ -136,23 +136,24 @@ The color pass uses the camera's Bevy tone-mapping method, LUT and color grading
 for non-HDR targets, matching the color treatment of standard scene materials.
 HDR targets defer tone mapping to the later shared pass; depth remains colorless.
 This prevents exposed sunlight from clipping directly into an LDR target.
-Lighting uses one-sided Lambert diffuse `max(dot(N_blade,L),0)`, with no
-back-light term. Cards remain visible from both sides; the authored, transformed
-blade normal is kept on both raster sides without a front-facing flip. This
-matches the measured k=0 model: an authored normal facing away from the sun
-receives ambient only. The GRAS Vertex Lighting flag selects interpolated vertex
-lighting; otherwise the blade normal is evaluated per fragment.
-[Creation Kit's Grass documentation](https://ck.uesp.net/w/index.php?title=Grass&oldid=11790)
-describes Vertex Lighting as using the terrain normal underneath the grass.
-MudCrab's blade-normal branch does not yet implement that behavior. Flag masks
-are `0x01` Vertex Lighting, `0x02` Uniform Scaling and `0x04` Fit to Slope;
-the audited official grasses use `0x06`, leaving Vertex Lighting off.
+Lighting follows the retail grass shader (`s4-grass-shader.md`, RF-GRASS-004, RF-GRASS-005,
+RF-GRASS-006, from the retail bytecode). The vertex shader computes `NdotL = saturate(N_instance . L)`
+on the instance normal (the terrain normal with Fit to Slope, else straight up), and passes
+`C = vertexColor * instance brightness`. The pixel output is
+`(NdotL * C * DirLightColor * albedo * lerp(0.3, 1, shadowMask) + C * AmbientColor * albedo) * cb2[16].w`.
+The ambient term is not shadowed. 0.3 is `fShadowClampValue`. `cb2[16].w` is the renderer-wide
+output scale `1/FramebufferRange` (0.8333333; 1.0 when the fog distances are both 0), kept in
+`output_scale.rs` for every pass. The engine adds only its physical light-unit conversion
+(exposure and 1/pi). Authored blade normals and normal maps do not enter the lighting sum.
+Flag masks are `0x01` Vertex Lighting, `0x02` Uniform Scaling and `0x04` Fit to Slope;
+the audited official grasses use `0x06`. Retail lights every vertex on the instance normal,
+so the Vertex Lighting flag does not change the lighting path.
 
 The existing shader byte decode remains `byte/255`; 128 is approximately half
 brightness. LAND VCLR was already decoded for terrain and remains absent from
 the serialized grass cache. Grass now consumes the committed terrain snapshot,
-so no converter, shader, cache schema or pack rebuild is needed. Wave Period drives the current scrolling
-wind model, but its exact native timing and waveform remain unverified.
+so no converter, shader, cache schema or pack rebuild is needed. Wave Period stays in the grass uniform,
+but nothing reads it: grass wind is not rendered until the engine has a blended weather wind speed and wind direction.
 
 The color pass receives the existing directional shadows using Bevy's prepared
 terrain view bindings, cascades, filtering and normal/depth bias. Direct light
@@ -188,9 +189,8 @@ sample mask. Constant-alpha mask interiors use the authored cutoff comparison,
 including equality, and smoothing applies at alpha edges. This retains the same
 sample prefix as a dynamic coverage mask,
 while avoiding a reproduced pipeline-compilation crash in the tested AMD Vulkan
-driver when exporting a dynamic `sample_mask`. A shared wind
-texture drives coherent wind using absolute world coordinates across origin
-rebases. Distance fades retain a deterministic prefix of candidate slots.
+driver when exporting a dynamic `sample_mask`. Distance fades retain a deterministic
+prefix of candidate slots.
 
 The runtime keeps resident and recently generated cells in a byte-budgeted LRU
 pool, accounting for generated arrays, batch metadata and retained source height
@@ -286,33 +286,36 @@ the player's files. The planned converter follow-up that copies those files
 into a pack will feed this same `--ini` path.
 
 These are the fifteen honoured grass keys. All retain their `[Grass]` section.
-The three fade-start defaults present in the shipped `SkyrimPrefs.ini` match
-that file; every other value is an explicit **MudCrab default**.
+Every default is retail data. `SkyrimSE.exe` 1.7.104 stores one static INI
+`Setting` per key (vtable, 8-byte default, name pointer); the address below is that
+`Setting`. `fGrassMinStartFadeDistance` is the exception: the compiled value is 400.0
+and the shipped INI files override it with 0.0. A capture setup's `Skyrim.ini`
+(`iMinGrassSize=40`, `fGrassFadeRange=1766`, `bEnableGrassFade=0`) is not a default.
 
 | Section | Key | Default | Default source | Engine use |
 | --- | --- | --- | --- | --- |
-| `[Grass]` | `iMinGrassSize` | `20` | MudCrab default | Candidate spacing/density |
-| `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | MudCrab default | Exact resolved-species cap (zero admits none); INI spelling retained |
-| `[Grass]` | `fTexturePctThreshold` | `0.0` | MudCrab default | Minimum blended texture weight |
-| `[Grass]` | `iGrassCellRadius` | `2` | MudCrab default | Generated cell radius |
-| `[Grass]` | `fGrassStartFadeDistance` | `7000.0` | Shipped `SkyrimPrefs.ini` | Start of distance thinning |
-| `[Grass]` | `fGrassFadeRange` | `1000.0` | MudCrab default | Fade end is start plus range |
-| `[Grass]` | `bDrawShaderGrass` | `1` | MudCrab default | Set the launch grass state unless a CLI switch overrides it |
-| `[Grass]` | `bEnableGrassFade` | `1` | MudCrab default | Enable distance thinning |
-| `[Grass]` | `fGrassMinStartFadeDistance` | `0.0` | Shipped `SkyrimPrefs.ini` | Reported menu metadata |
-| `[Grass]` | `fGrassMaxStartFadeDistance` | `7000.0` | Shipped `SkyrimPrefs.ini` | Reported menu metadata |
-| `[Grass]` | `fGrassWindMagnitudeMin` | `5.0` | MudCrab default | Reported only |
-| `[Grass]` | `fGrassWindMagnitudeMax` | `125.0` | MudCrab default | Reported only |
-| `[Grass]` | [`bAllowCreateGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `1` | MudCrab default | Reported legacy cache switch |
-| `[Grass]` | [`bAllowLoadGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `0` | MudCrab default | Reported legacy cache switch |
-| `[Grass]` | `bGenerateGrassDataFiles` | `0` | MudCrab default | Reported legacy cache switch |
+| `[Grass]` | `iMinGrassSize` | `20` | `SkyrimSE.exe` default, `Setting` at 0x142079428 | Candidate spacing/density |
+| `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | `SkyrimSE.exe` default, `Setting` at 0x14207b890 | Exact resolved-species cap (zero admits none); INI spelling retained |
+| `[Grass]` | `fTexturePctThreshold` | `0.0` | `SkyrimSE.exe` default, `Setting` at 0x14207b8a8 | Minimum blended texture weight |
+| `[Grass]` | `iGrassCellRadius` | `2` | `SkyrimSE.exe` default, `Setting` at 0x142079470 | Generated cell radius |
+| `[Grass]` | `fGrassStartFadeDistance` | `7000.0` | `SkyrimSE.exe` default, `Setting` at 0x1420793e0; shipped `SkyrimPrefs.ini` | Start of distance thinning |
+| `[Grass]` | `fGrassFadeRange` | `1000.0` | `SkyrimSE.exe` default, `Setting` at 0x1420793f8 | Fade end is start plus range |
+| `[Grass]` | `bDrawShaderGrass` | `1` | `SkyrimSE.exe` default, `Setting` at 0x142079398 | Set the launch grass state unless a CLI switch overrides it |
+| `[Grass]` | `bEnableGrassFade` | `1` | `SkyrimSE.exe` default, `Setting` at 0x1420794e8 | Enable distance thinning |
+| `[Grass]` | `fGrassMinStartFadeDistance` | `0.0` | Shipped `Skyrim_Default.ini` and `SkyrimPrefs.ini` | Reported menu metadata |
+| `[Grass]` | `fGrassMaxStartFadeDistance` | `7000.0` | `SkyrimSE.exe` default, `Setting` at 0x1420793c8; shipped `SkyrimPrefs.ini` | Reported menu metadata |
+| `[Grass]` | `fGrassWindMagnitudeMin` | `5.0` | `SkyrimSE.exe` default, `Setting` at 0x142079458 | Reported only |
+| `[Grass]` | `fGrassWindMagnitudeMax` | `125.0` | `SkyrimSE.exe` default, `Setting` at 0x142079440 | Reported only |
+| `[Grass]` | [`bAllowCreateGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `1` | `SkyrimSE.exe` default, `Setting` at 0x1420794a0 | Reported legacy cache switch |
+| `[Grass]` | [`bAllowLoadGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `0` | `SkyrimSE.exe` default, `Setting` at 0x1420794b8 | Reported legacy cache switch |
+| `[Grass]` | `bGenerateGrassDataFiles` | `0` | `SkyrimSE.exe` default, `Setting` at 0x142079488 | Reported legacy cache switch |
 
 The UESP links document the cache-control keys in a workaround; they do not
 establish defaults or file precedence. Menu min/max fade settings are metadata,
 not a second clamp on the selected start distance. Disabling fade keeps full
 density up to cell unloading, so the zero-density cell-crossing guarantee no
 longer applies. Legacy cache switches and imported wind magnitudes do not
-control MudCrab's cache or wind model. Imported spacing below eight is outside
+control MudCrab's cache, and grass wind is not rendered. Imported spacing below eight is outside
 the bounded CPU generator's supported range and is rejected. Startup
 diagnostics report effective grass settings and each key's `--ini` path or
 `default` source, with explicit numeric overrides reported separately.
@@ -324,6 +327,9 @@ exact Skyrim placement, variation, animation or visual parity.
 
 ## Normal maps and authored wind weight
 
+Retail grass lighting does not sample a normal map (`s4-grass-shader.md`), so this frame does not
+enter the lighting sum; it is kept for the authored data and the shadow bias.
+
 Static grass keeps authored positions, normals and UVs; the converter builds
 an area-weighted UV tangent frame and exports its XYZ plus handedness.
 Normal textures are sampled as linear data in the fragment shader and transformed
@@ -332,16 +338,15 @@ degenerate frames or absent maps keep the geometric normal. The frame follows Be
 flip Y once, matching the native material contract. Node reflection/nonuniform
 scale, instance yaw, slope and authored UV transforms move the frame with the mesh.
 The fragment re-orthogonalizes it against the interpolated normal. Both raster
-sides retain authored orientation. Wind displaces positions while retaining the
-undeformed shading frame, matching the existing native wind policy.
+sides retain authored orientation. Grass wind is not rendered. The retail amplitude and
+phase (RF-GRASS-001 to 003) are in `grass/wind.rs`, but they need the blended `WTHR` wind speed
+and the wind direction, which the engine does not have yet; blades keep their placed positions.
 
-Vertex alpha linearly weights wind displacement (absent colors use full weight).
-Zero alpha is motionless; alpha does not control opacity. Coverage uses texture
-and material alpha. Public study: Community Shaders contributors, RunGrass and
+Vertex alpha is an authored wind weight, but nothing reads it while wind is absent;
+alpha does not control opacity. Coverage uses texture and material alpha. Public study: Community Shaders contributors, RunGrass and
 GrassLighting at commit 1ed40cb2fdf6099eeb7068661f632d71f0661b70 (GPL-3.0 with
 project exceptions). Its alpha-weighted wind supports this interpretation; its
-feature normal mapping does not establish vanilla NIF normal-slot usage. Wave
-and lighting formulas here remain native MudCrab choices.
+feature normal mapping does not establish vanilla NIF normal-slot usage.
 
 ## Live grass tuning
 
@@ -351,9 +356,9 @@ on macOS, `$XDG_CONFIG_HOME/Mudcrab` or `~/.config/Mudcrab` elsewhere). It uses
 the same G5 TOML format and hot reload. No file is created automatically.
 `--grass-tuning` overrides `MUDCRAB_GRASS_TUNING`, which overrides this automatic file.
 
-Select a flat TOML file with `--grass-tuning docs/examples/grass-tuning/flat-b.toml`
+Select a flat TOML file with `--grass-tuning docs/examples/grass-tuning/retail.toml`
 (or `MUDCRAB_GRASS_TUNING`). Fileless startup and empty valid TOML use the same
-flat-b defaults. `--grass-tuning-info <path>` prints the accepted settings before
+retail defaults. `--grass-tuning-info <path>` prints the accepted settings before
 app or GPU creation. Content-hash polling runs at most once per elapsed second;
 valid edits atomically update uniforms without regenerating placement or shaders.
 Missing/unreadable/invalid edits retain the last good values. Unknown keys warn;
@@ -361,10 +366,12 @@ finite values outside the ranges below clamp with warnings. Inputs over 64 KiB
 are rejected. Accepted file hash, effective values and revision are frozen with
 captured frames; callbacks never reread the file.
 
-The optional `mode` is `flat` (default), `d`, `e`, or `f`. Explicit D/E comparison
-presets set ambient, sun, shadows and saturation to1, with sun angle1 for D and0
-for E. F uses an unlit shadow visibility with floor .68. Scalar fields override
-the selected preset. Modes and scalars share the same hot-reload uniform path.
+The retail defaults are RF-GRASS-004 and RF-GRASS-005. Retail passes the sun direction, sun
+diffuse colour and sun ambient colour to the grass shader unscaled, so brightness,
+ambient strength, sun strength, shadow strength and saturation default to 1 and the sun
+angle weight to 1. The only retail number is the shadow floor `fShadowClampValue` 0.3.
+The optional `mode` is `flat` (default), `d` or `e`. D equals the default. E sets the sun
+angle weight to 0 for comparison. Scalar fields override the selected preset. Modes and scalars share the same hot-reload uniform path.
 
 For normalized authored blade normal N and sun direction L, let c=dot(N,L).
 The direct response is `mix(1,clamp((c+wrap)/(1+wrap),0,1),sun_angle_weight)
@@ -373,22 +380,22 @@ response; otherwise the fragment evaluates its interpolated normal.
 Shadow visibility V is `shadow_floor + (1-shadow_floor) *
 mix(1,native_shadow,shadow_strength)`. D/E illumination is
 `(ambient*ambient_strength + sun*direct_response*sun_strength*V)*exposure/pi`.
-F illumination is simply V, ignoring ambient, sun and exposure. Alpha coverage,
+Alpha coverage,
 terrain shadow filtering and display tone mapping retain the production paths.
 
 | Knob | Default | Accepted range | Effect |
 | --- | --- | --- | --- |
-| brightness | 1.15 | 0..8 | Final linear HDR RGB multiplier |
-| ambient_strength | 1.15 | 0..8 | Ambient/sky multiplier (D/E) |
-| sun_strength | .1 | 0..8 | Direct diffuse and specular sun multiplier (D/E) |
-| sun_angle_weight | 0 | 0..1 | Interpolate between sun-facing and wrapped normal response |
+| brightness | 1 | 0..8 | Final linear HDR RGB multiplier |
+| ambient_strength | 1 | 0..8 | Ambient/sky multiplier (D/E) |
+| sun_strength | 1 | 0..8 | Direct diffuse and specular sun multiplier (D/E) |
+| sun_angle_weight | 1 | 0..1 | Interpolate between sun-facing and wrapped normal response |
 | wrap | 0 | 0..1 | Wrapped Lambert response above |
-| shadow_strength | .3 | 0..1 | Interpolate native visibility toward no shadow |
-| shadow_floor | 0 | 0..1 | Minimum visibility; F preset .68 |
+| shadow_strength | 1 | 0..1 | Interpolate native visibility toward no shadow |
+| shadow_floor | .3 | 0..1 | Minimum visibility; retail `fShadowClampValue` (RF-GRASS-005) |
 | backlight | 0 | 0..1 | Add response from away-facing authored normals |
 | specular_strength | 0 | 0..1 | Dielectric GGX sun sheen multiplier (D/E) |
 | specular_roughness | .5 | .089..1 | Perceptual roughness, squared to GGX alpha |
-| saturation | .75 | 0..4 | Linear HDR saturation around Rec.709 luminance |
+| saturation | 1 | 0..4 | Linear HDR saturation around Rec.709 luminance |
 | vclr_tint_strength | 1 | 0..1 | LAND luminance strength |
 | color_range_strength | 1 | 0..1 | GRAS color-range variation strength |
 | root_darkening | 0 | 0..1 | Multiply by `1-root_darkening*clamp(original_uv.y,0,1)` |
@@ -408,7 +415,7 @@ For `alpha=max(roughness^2,.007921)`, `k=alpha/(1-NdotH^2+(NdotH*alpha)^2)`,
 F=.04+.96*(1-VdotH)^5. The added HDR sheen is
 `sun*sun_strength*specular_strength*D*Vsmith*F*NdotL*exposure*V`.
 Dot products clamp to their nonnegative domains; NdotV and visibility's
-denominator have epsilon guards. Strength zero bypasses sheen, as does F mode.
+denominator have epsilon guards. Strength zero bypasses sheen.
 This is a direct dielectric highlight, without an environment reflection probe.
 
 The old per-instance brightness byte is preserved exactly. With both tint and
@@ -423,17 +430,16 @@ both CPU and GPU fading ignore metadata. No sidecar allocation or instance-size
 increase occurs. No-file generation uses the same metadata and original brightness byte.
 
 To tune live, launch the engine with the usual asset/world arguments plus
-`--grass --grass-tuning docs/examples/grass-tuning/flat-b.toml` and edit
+`--grass --grass-tuning docs/examples/grass-tuning/retail.toml` and edit
 that file while it runs. Begin with brightness, then ambient/sun strength,
 then angle/wrap and shadows; adjust tint/saturation and roots last, and add
-sheen only if needed. `darker-start.toml` uses brightness .59 from the provisional
-rounded luminance ratio .065/.110. This is a starting hypothesis; tone mapping,
-scene differences and local shadows prevent it from proving a Skyrim match.
+sheen only if needed. Values you choose in a tuning file are experiments; the defaults stay
+the retail values.
 
 ## Default appearance and tuning
 
-Without a file, grass uses flat-b: sun angle weight 0, sun strength 0.1,
-shadow strength 0.3, ambient strength 1.15, saturation 0.75 and brightness 1.15.
+Without a file, grass uses the retail light: no multipliers (RF-GRASS-004) and a shadow
+floor of 0.3 (RF-GRASS-005).
 Authored vertex RGB, Color Range and terrain VCLR tint stay enabled. The appearance
 pipeline and packed tint metadata are active with or without a tuning file.
 `--grass-tuning <toml>` overrides `MUDCRAB_GRASS_TUNING`; edits hot reload at most
@@ -443,11 +449,11 @@ to 64 KiB. `--grass-tuning-info <toml>` validates and reports settings before ap
 or GPU creation. Captures freeze the accepted hash and effective settings with
 the actual frame; they do not reread the file in the callback.
 
-Explicit `--shots` runs freeze wind time and allow `-on`/`-off` shot-name pairs
+Explicit `--shots` runs allow `-on`/`-off` shot-name pairs
 to suppress grass draws while retaining placement and readiness accounting.
 No experimental gamma or alternate placement switches are included.
 
-The default tuning mode is `flat`; `d`, `e` and `f` remain explicit named presets
+The default tuning mode is `flat`; `d` and `e` remain explicit named presets
 for comparisons. Omitted mode selects `flat`, including an empty TOML file.
 All production startup paths use the tuning uniforms; there is no shading
 experiment environment switch. Authored normal maps use the preserved glTF frame
