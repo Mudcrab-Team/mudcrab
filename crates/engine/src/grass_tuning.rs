@@ -4,9 +4,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{io::Read, path::PathBuf, time::Duration};
 
-/// RF-GRASS-005, RF-SHADER-003: retail grass shadow floor, `fShadowClampValue:Display` (`Setting` at
-/// `0x1420d6d40`, default 0.3). The value has high confidence; its use in the pixel shader is
-/// medium confidence (the CPU side writes it to the grass constants at `0x141522d44`).
+/// RF-GRASS-005, RF-SHADER-003: retail grass shadow floor, `fShadowClampValue:Display`
+/// defaults to 0.3. The value has high confidence; its pixel-shader use has medium confidence.
 pub const SHADOW_CLAMP_VALUE: f32 = 0.3;
 
 /// Maximum settings input; bounds both polling allocations and TOML parsing work.
@@ -46,7 +45,7 @@ impl Default for GrassTuning {
     /// Retail grass light: RF-GRASS-004 passes the sun direction, diffuse colour and ambient
     /// colour to the shader unscaled, so every multiplier is the identity (1.0) and the
     /// sun-angle weight is the full Lambert response. RF-GRASS-005: the only retail number is
-    /// the shadow floor, `fShadowClampValue:Display` 0.3 (`Setting` at `0x1420d6d40`).
+    /// the shadow floor, `fShadowClampValue:Display` 0.3.
     /// Authored colour variation stays on.
     fn default() -> Self {
         Self {
@@ -330,7 +329,7 @@ mod tests {
     }
 
     /// RF-GRASS-004 and RF-GRASS-005: the defaults carry no multiplier and the shadow floor is
-    /// `fShadowClampValue` 0.3 (`Setting` at `0x1420d6d40`).
+    /// `fShadowClampValue` 0.3.
     #[test]
     fn retail_defaults_have_identity_multipliers_and_the_0_3_shadow_floor() {
         let d = GrassTuning::default();

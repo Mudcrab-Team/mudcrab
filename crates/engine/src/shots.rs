@@ -2648,10 +2648,20 @@ mod tests {
         }
     }
 
-    /// Late count-file failures in either phase fail the run through the installed shots system.
+    /// A late settled-count append failure fails the installed shots run.
     #[test]
-    fn grass_count_evidence_write_failures_fail_settled_and_captured_shots() {
-        for captured in [false, true] {
+    fn grass_count_evidence_write_failures_fail_settled_shots() {
+        assert_grass_count_write_failure(false);
+    }
+
+    /// A late captured-count append failure fails the installed shots run.
+    #[test]
+    fn grass_count_evidence_write_failures_fail_captured_shots() {
+        assert_grass_count_write_failure(true);
+    }
+
+    /// Obstruct the evidence path after output preparation, in the selected production phase.
+    fn assert_grass_count_write_failure(captured: bool) {
             let directory = tempfile::tempdir().unwrap();
             let mut app = g3_shots_app(directory.path(), false);
             app.insert_resource(crate::grass_render::GrassCaptureControls { capture: true });
@@ -2676,7 +2686,6 @@ mod tests {
             assert!(cursor.read(exits).any(|exit|exit.is_error()));
             let log=fs::read_to_string(directory.path().join("shots.log")).unwrap();
             assert!(log.contains("grass count evidence"), "{log}");
-        }
     }
 
     /// Disabled grass keeps existing shots behavior, regardless of absent or failing resources.

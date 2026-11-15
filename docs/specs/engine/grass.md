@@ -282,29 +282,28 @@ into a pack will feed this same `--ini` path.
 
 These are the fifteen honoured grass keys. All retain their `[Grass]` section.
 Every default is retail data. `SkyrimSE.exe` 1.7.104 stores one static INI
-`Setting` per key (vtable, 8-byte default, name pointer); the address below is that
-`Setting`. `fGrassMinStartFadeDistance` is the exception: the compiled value is 400.0
+`Setting` per key. The table retains Taylor's verified retail defaults. `fGrassMinStartFadeDistance` is the exception: the compiled value is 400.0
 and the shipped INI files override it with 0.0. A local `Skyrim.ini` with other values
 (`iMinGrassSize=40`, `fGrassFadeRange=1766`, `bEnableGrassFade=0`) differs from the exe
 defaults; the exe defaults are used.
 
 | Section | Key | Default | Default source | Engine use |
 | --- | --- | --- | --- | --- |
-| `[Grass]` | `iMinGrassSize` | `20` | `SkyrimSE.exe` default, `Setting` at 0x142079428 | Candidate spacing/density |
-| `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | `SkyrimSE.exe` default, `Setting` at 0x14207b890 | Exact resolved-species cap (zero admits none); INI spelling retained |
-| `[Grass]` | `fTexturePctThreshold` | `0.0` | `SkyrimSE.exe` default, `Setting` at 0x14207b8a8 | Minimum blended texture weight |
-| `[Grass]` | `iGrassCellRadius` | `2` | `SkyrimSE.exe` default, `Setting` at 0x142079470 | Generated cell radius |
-| `[Grass]` | `fGrassStartFadeDistance` | `7000.0` | `SkyrimSE.exe` default, `Setting` at 0x1420793e0; shipped `SkyrimPrefs.ini` | Start of distance thinning |
-| `[Grass]` | `fGrassFadeRange` | `1000.0` | `SkyrimSE.exe` default, `Setting` at 0x1420793f8 | Fade end is start plus range |
-| `[Grass]` | `bDrawShaderGrass` | `1` | `SkyrimSE.exe` default, `Setting` at 0x142079398 | Enable grass draws when `--grass` is requested |
-| `[Grass]` | `bEnableGrassFade` | `1` | `SkyrimSE.exe` default, `Setting` at 0x1420794e8 | Enable distance thinning |
+| `[Grass]` | `iMinGrassSize` | `20` | `SkyrimSE.exe` default | Candidate spacing/density |
+| `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | `SkyrimSE.exe` default | Exact resolved-species cap (zero admits none); INI spelling retained |
+| `[Grass]` | `fTexturePctThreshold` | `0.0` | `SkyrimSE.exe` default | Minimum blended texture weight |
+| `[Grass]` | `iGrassCellRadius` | `2` | `SkyrimSE.exe` default | Generated cell radius |
+| `[Grass]` | `fGrassStartFadeDistance` | `7000.0` | `SkyrimSE.exe` default; shipped `SkyrimPrefs.ini` | Start of distance thinning |
+| `[Grass]` | `fGrassFadeRange` | `1000.0` | `SkyrimSE.exe` default | Fade end is start plus range |
+| `[Grass]` | `bDrawShaderGrass` | `1` | `SkyrimSE.exe` default | Enable grass draws when `--grass` is requested |
+| `[Grass]` | `bEnableGrassFade` | `1` | `SkyrimSE.exe` default | Enable distance thinning |
 | `[Grass]` | `fGrassMinStartFadeDistance` | `0.0` | Shipped `Skyrim_Default.ini` and `SkyrimPrefs.ini` | Reported menu metadata |
-| `[Grass]` | `fGrassMaxStartFadeDistance` | `7000.0` | `SkyrimSE.exe` default, `Setting` at 0x1420793c8; shipped `SkyrimPrefs.ini` | Reported menu metadata |
-| `[Grass]` | `fGrassWindMagnitudeMin` | `5.0` | `SkyrimSE.exe` default, `Setting` at 0x142079458 | Reported only |
-| `[Grass]` | `fGrassWindMagnitudeMax` | `125.0` | `SkyrimSE.exe` default, `Setting` at 0x142079440 | Reported only |
-| `[Grass]` | [`bAllowCreateGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `1` | `SkyrimSE.exe` default, `Setting` at 0x1420794a0 | Reported legacy cache switch |
-| `[Grass]` | [`bAllowLoadGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `0` | `SkyrimSE.exe` default, `Setting` at 0x1420794b8 | Reported legacy cache switch |
-| `[Grass]` | `bGenerateGrassDataFiles` | `0` | `SkyrimSE.exe` default, `Setting` at 0x142079488 | Reported legacy cache switch |
+| `[Grass]` | `fGrassMaxStartFadeDistance` | `7000.0` | `SkyrimSE.exe` default; shipped `SkyrimPrefs.ini` | Reported menu metadata |
+| `[Grass]` | `fGrassWindMagnitudeMin` | `5.0` | `SkyrimSE.exe` default | Reported only |
+| `[Grass]` | `fGrassWindMagnitudeMax` | `125.0` | `SkyrimSE.exe` default | Reported only |
+| `[Grass]` | [`bAllowCreateGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `1` | `SkyrimSE.exe` default | Reported legacy cache switch |
+| `[Grass]` | [`bAllowLoadGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `0` | `SkyrimSE.exe` default | Reported legacy cache switch |
+| `[Grass]` | `bGenerateGrassDataFiles` | `0` | `SkyrimSE.exe` default | Reported legacy cache switch |
 
 The UESP links document the cache-control keys in a workaround; they do not
 establish defaults or file precedence. Menu min/max fade settings are metadata,
@@ -326,8 +325,8 @@ exact Skyrim placement, variation, animation or visual parity.
 Retail grass lighting does not sample a normal map (RF-SHADER-003), so this frame does not
 enter the lighting sum; it is kept for the authored data and the shadow bias.
 
-Static grass keeps authored positions, normals and UVs; the converter builds
-an area-weighted UV tangent frame and exports its XYZ plus handedness.
+Static grass keeps authored positions, normals and UVs. The renderer accepts
+authored tangent frames when present and uses its derivative fallback otherwise.
 Normal textures are sampled as linear data in the fragment shader and transformed
 through that frame. Legacy geometry without TANGENT uses position/UV derivatives;
 degenerate frames or absent maps keep the geometric normal. The frame follows Bevy's bitangent convention; DirectX-tagged normal maps

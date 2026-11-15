@@ -1,10 +1,8 @@
 //! Typed grass defaults and provenance. The engine's shared Skyrim INI reader
 //! supplies imported values; this module does not read files.
 //!
-//! Every default is retail data. `SkyrimSE.exe` 1.7.104 (SHA-256 `846efccf0c1374d7…f1402f`)
-//! holds one static INI `Setting` per key: vtable, 8-byte default value, name pointer.
-//! The doc comment of each field gives the virtual address of that `Setting` and the
-//! default stored in it. The shipped INI files (`Skyrim_Default.ini`, `SkyrimPrefs.ini`)
+//! Every default retains Taylor's verified retail data. The field comments record
+//! the default stored in each INI setting. The shipped INI files (`Skyrim_Default.ini`, `SkyrimPrefs.ini`)
 //! omit most of these keys. A local `Skyrim.ini` with other values (`iMinGrassSize=40`,
 //! `fGrassFadeRange=1766`, `bEnableGrassFade=0`) differs from the exe defaults; the exe
 //! defaults are used.
@@ -19,28 +17,28 @@ pub const SETTINGS_VERSION: u32 = 1;
 /// Grass values honoured by the engine, including reported-only Skyrim settings.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GrassSettings {
-    /// `iMinGrassSize`: retail default 20 (`SkyrimSE.exe` `Setting` at 0x142079428) Creation units for the candidate-count calculation.
+    /// `iMinGrassSize`: retail default 20 Creation units for the candidate-count calculation.
     #[serde(rename = "iMinGrassSize")]
     pub min_grass_size: i32,
-    /// `iMaxGrassTypesPerTexure`: retail default 2 (`Setting` at 0x14207b890) species per texture.
+    /// `iMaxGrassTypesPerTexure`: retail default 2 species per texture.
     #[serde(rename = "iMaxGrassTypesPerTexure")]
     pub max_grass_types_per_texture: i32,
-    /// `fTexturePctThreshold`: retail default 0.0 (`Setting` at 0x14207b8a8) minimum texture contribution.
+    /// `fTexturePctThreshold`: retail default 0.0 minimum texture contribution.
     #[serde(rename = "fTexturePctThreshold")]
     pub texture_pct_threshold: f64,
-    /// `iGrassCellRadius`: retail default 2 (`Setting` at 0x142079470) cells around the player.
+    /// `iGrassCellRadius`: retail default 2 cells around the player.
     #[serde(rename = "iGrassCellRadius")]
     pub cell_radius: i32,
-    /// `fGrassStartFadeDistance`: retail default 7000.0 (`Setting` at 0x1420793e0); shipped `SkyrimPrefs.ini` also sets 7000.0.
+    /// `fGrassStartFadeDistance`: retail default 7000.0; shipped `SkyrimPrefs.ini` also sets 7000.0.
     #[serde(rename = "fGrassStartFadeDistance")]
     pub start_fade_distance: f64,
-    /// `fGrassFadeRange`: retail default 1000.0 (`Setting` at 0x1420793f8) Creation units.
+    /// `fGrassFadeRange`: retail default 1000.0 Creation units.
     #[serde(rename = "fGrassFadeRange")]
     pub fade_range: f64,
     /// `fGrassMinStartFadeDistance`: 0.0 as shipped in `Skyrim_Default.ini` and `SkyrimPrefs.ini` (the compiled `Setting` at 0x1420793b0 holds 400.0, which the shipped INI overrides); reported only.
     #[serde(rename = "fGrassMinStartFadeDistance")]
     pub min_start_fade_distance: f64,
-    /// `fGrassMaxStartFadeDistance`: retail default 7000.0 (`Setting` at 0x1420793c8), also shipped in `Skyrim_Default.ini`; reported only.
+    /// `fGrassMaxStartFadeDistance`: retail default 7000.0, also shipped in `Skyrim_Default.ini`; reported only.
     #[serde(rename = "fGrassMaxStartFadeDistance")]
     pub max_start_fade_distance: f64,
     /// `fGrassWindMagnitudeMin`: retail default 5.0 (`Setting` at 0x142079458, RF-GRASS-001); reported only.
@@ -49,19 +47,19 @@ pub struct GrassSettings {
     /// `fGrassWindMagnitudeMax`: retail default 125.0 (`Setting` at 0x142079440, RF-GRASS-001); reported only.
     #[serde(rename = "fGrassWindMagnitudeMax")]
     pub wind_magnitude_max: f64,
-    /// `bDrawShaderGrass`: retail default true (`Setting` at 0x142079398); grass still requires --grass.
+    /// `bDrawShaderGrass`: retail default true; grass still requires --grass.
     #[serde(rename = "bDrawShaderGrass")]
     pub draw_shader_grass: bool,
-    /// `bEnableGrassFade`: retail default true (`Setting` at 0x1420794e8).
+    /// `bEnableGrassFade`: retail default true.
     #[serde(rename = "bEnableGrassFade")]
     pub enable_grass_fade: bool,
-    /// `bAllowCreateGrass`: retail default true (`Setting` at 0x1420794a0); reported legacy cache switch.
+    /// `bAllowCreateGrass`: retail default true; reported legacy cache switch.
     #[serde(rename = "bAllowCreateGrass")]
     pub allow_create_grass: bool,
-    /// `bAllowLoadGrass`: retail default false (`Setting` at 0x1420794b8); reported legacy cache switch.
+    /// `bAllowLoadGrass`: retail default false; reported legacy cache switch.
     #[serde(rename = "bAllowLoadGrass")]
     pub allow_load_grass: bool,
-    /// `bGenerateGrassDataFiles`: retail default false (`Setting` at 0x142079488); reported legacy cache switch.
+    /// `bGenerateGrassDataFiles`: retail default false; reported legacy cache switch.
     #[serde(rename = "bGenerateGrassDataFiles")]
     pub generate_grass_data_files: bool,
 }
