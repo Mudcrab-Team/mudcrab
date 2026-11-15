@@ -6762,17 +6762,19 @@ mod tests {
         );
     }
 
-    /// Historical combined proofs retain scripts without relabeling texture or mesh contracts.
+    /// Known combined settings retain DDS candidates and scripts without relabeling mesh contracts.
     #[test]
-    fn adapter10_combined_asset_proof_reuses_only_pex_without_relabeling() {
+    fn adapter10_combined_asset_proof_retains_dds_candidates_and_pex() {
         assert_historical_combined_asset_proof(10);
     }
 
+    /// Adapter 11 retains the same selective asset candidates without upgrading their producer.
     #[test]
-    fn adapter11_combined_asset_proof_reuses_only_pex_without_relabeling() {
+    fn adapter11_combined_asset_proof_retains_dds_candidates_and_pex() {
         assert_historical_combined_asset_proof(11);
     }
 
+    /// Check exact historical settings while preserving source proofs and excluding unproven meshes.
     fn assert_historical_combined_asset_proof(adapter: u32) {
         let directory = tempfile::tempdir().unwrap();
         let mut config = PipelineConfig::new(
@@ -6831,17 +6833,28 @@ mod tests {
         let reused = reusable_manifest(&config, manifest.clone()).unwrap();
         assert_eq!(
             reused.entries,
-            [(
-                "scripts/prior.pex".into(),
-                CacheEntry {
-                    source_hash: "native-script-proof".into(),
-                    output: "scripts/prior.luau".into(),
-                    output_hash: "script-byte-proof".into(),
-                    output_size: 389,
-                },
-            )]
+            [
+                (
+                    "textures/prior.dds".into(),
+                    CacheEntry {
+                        source_hash: "native-texture-proof".into(),
+                        output: "textures/prior.ktx2".into(),
+                        output_hash: "texture-byte-proof".into(),
+                        output_size: 251,
+                    },
+                ),
+                (
+                    "scripts/prior.pex".into(),
+                    CacheEntry {
+                        source_hash: "native-script-proof".into(),
+                        output: "scripts/prior.luau".into(),
+                        output_hash: "script-byte-proof".into(),
+                        output_size: 389,
+                    },
+                ),
+            ]
             .into(),
-            "combined metadata proof must retain PEX provenance and exclude unproven DDS/NIF"
+            "known combined settings retain DDS candidates for per-source checks and PEX, excluding unproven NIF"
         );
         assert_eq!(reused.schema_version, CONVERTER_SCHEMA_VERSION);
         assert_eq!(reused.configuration_hash, recorded);
