@@ -74,7 +74,9 @@ jobs:
 
       - name: Run unit & integration tests
         # Same command as the Linux PR job. GPU-only tests stay ignored by
-        # default, and the hardware repair test skips itself without a GPU.
+        # default. The hardware repair test
+        # `converter repair::tests::hardware_repair_labels_gpu_output_but_not_native_blocks`
+        # still runs, but returns early with a SKIP line when the runner has no GPU.
         run: cargo nextest run --workspace --lib --bins --tests --examples --no-fail-fast --no-tests=warn
         env:
           NEXTEST_NO_TESTS: warn
