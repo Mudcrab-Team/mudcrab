@@ -1913,6 +1913,7 @@ fn assert_regeneration_note(error: &str) {
 }
 
 /// Copy a pack tree. Stands in for an APFS clone on the tiny fixture.
+#[cfg(unix)]
 fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).unwrap();
     for entry in fs::read_dir(from).unwrap() {
