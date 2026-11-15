@@ -30,10 +30,15 @@ pub const ADAPTER_VERSION: u32 = 13;
 
 /// Legacy metadata projection contract: preserve WRLD payloads and record-aware VMAD links.
 /// Version 4 resolves localized string fields to the in-house reader's text (`legacy_text`).
-/// Version 5 clears absent past-master field targets in every handwritten link layout.
-/// Version 6 resolves NPC default outfits and every outfit item before publication.
+/// Version 5 expands placement coverage and clears absent past-master field targets.
+/// Version 6 resolves NPC outfits, outfit items and ARMA skin texture links before publication.
 /// This identity does not change the independent converted-asset producer/settings proofs.
 pub const LEGACY_PROJECTION_VERSION: u32 = 6;
+
+/// Earliest language-bound projection with the current converted-asset proof contract.
+/// Database-only changes bump `LEGACY_PROJECTION_VERSION`, leaving this floor unchanged.
+/// An asset-affecting change must raise this floor to its new projection version.
+pub(crate) const LEGACY_ASSET_PROOF_VERSION: u32 = 4;
 
 /// Where localized plugins' string tables are found, and in which language.
 #[derive(Clone, Copy)]

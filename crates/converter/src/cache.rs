@@ -628,17 +628,23 @@ pub(crate) fn inhouse_adapter12_reader_identity(
     Some(identity)
 }
 
-/// Legacy projection 5 changes database placement coverage, not the version-4 asset proof.
-pub(crate) fn legacy_projection4_reader_identity(language: &str) -> Option<serde_json::Value> {
-    if crate::esm::inhouse::LEGACY_PROJECTION_VERSION != 5 {
-        return None;
-    }
-    let mut identity = crate::esm::inhouse::reader_identity_in_language(
+/// Historical database identities sharing the current language-bound asset proof contract.
+/// The asset floor advances only when assets change: database-only projection bumps
+/// automatically retain every intervening proof, without accepting future identities.
+/// These identities authorize asset settings only, never a database-cache restore.
+pub(crate) fn legacy_asset_reader_identities(
+    language: &str,
+) -> impl Iterator<Item = serde_json::Value> {
+    use crate::esm::inhouse::{LEGACY_ASSET_PROOF_VERSION, LEGACY_PROJECTION_VERSION};
+    let current = crate::esm::inhouse::reader_identity_in_language(
         crate::config::RecordReader::Legacy,
         language,
     );
-    identity["projection_version"] = serde_json::json!(4);
-    Some(identity)
+    (LEGACY_ASSET_PROOF_VERSION..LEGACY_PROJECTION_VERSION).map(move |version| {
+        let mut identity = current.clone();
+        identity["projection_version"] = serde_json::json!(version);
+        identity
+    })
 }
 
 /// Hash the unchanged settings payload with an explicitly selected metadata identity.
@@ -1319,7 +1325,7 @@ pub(crate) fn retained_configuration_matches_for_reader(
         return Ok(recorded == configuration_hash_with_identity(config, schema, Some(identity))?);
     }
     if config.record_reader == crate::config::RecordReader::Legacy
-        && legacy_projection4_reader_identity(&config.language).as_ref() == Some(identity)
+        && legacy_asset_reader_identities(&config.language).any(|prior| &prior == identity)
     {
         return Ok(recorded == configuration_hash_with_identity(config, schema, Some(identity))?);
     }
@@ -2059,7 +2065,10 @@ mod tests {
         let mut config = crate::config::PipelineConfig::new("Data", "output");
         config.record_reader = crate::config::RecordReader::Legacy;
         config.language = "french".into();
-        let original = legacy_projection4_reader_identity(&config.language).unwrap();
+        let original = serde_json::json!({
+            "mode": "legacy", "projection_version": 4, "language": "french",
+            "text_encoding": "windows-1252", "string_table_encoding": "utf-8-or-windows-1252"
+        });
         let recorded =
             configuration_hash_with_identity(&config, CONVERTER_SCHEMA_VERSION, Some(&original))
                 .unwrap();
@@ -2096,7 +2105,7 @@ mod tests {
             .unwrap()
         );
         let mut unknown = original;
-        unknown["projection_version"] = serde_json::json!(6);
+        unknown["projection_version"] = serde_json::json!(99);
         assert!(
             !retained_configuration_matches_for_reader(
                 &config,

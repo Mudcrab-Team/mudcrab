@@ -333,8 +333,8 @@ fn settings_for_source_reader(
                 .any(|prior| prior.as_ref() == Some(identity)))
             || (reader == crate::config::RecordReader::Legacy
                 && schemas.identities().is_empty()
-                && crate::cache::legacy_projection4_reader_identity(&language).as_ref()
-                    == Some(identity))
+                && crate::cache::legacy_asset_reader_identities(&language)
+                    .any(|prior| &prior == identity))
             || (reader == crate::config::RecordReader::Legacy
                 && (identity == &serde_json::json!({"mode": "legacy"})
                     || identity
@@ -1706,7 +1706,10 @@ mod metadata_schema_controls {
             serde_json::json!({"mode": "legacy", "projection_version": 1}),
             serde_json::json!({"mode": "legacy", "projection_version": 2}),
             serde_json::json!({"mode": "legacy", "projection_version": 3}),
-            crate::cache::legacy_projection4_reader_identity("english").unwrap(),
+            serde_json::json!({"mode": "legacy", "projection_version": 4,
+                "language": "english", "text_encoding": "windows-1252"}),
+            serde_json::json!({"mode": "legacy", "projection_version": 5,
+                "language": "english", "text_encoding": "windows-1252"}),
             crate::esm::inhouse::reader_identity(RecordReader::Legacy),
         ] {
             let settings = settings_for_source_reader(
@@ -1719,7 +1722,7 @@ mod metadata_schema_controls {
         }
         for identity in [
             serde_json::json!({"mode": "legacy", "projection_version": 0}),
-            serde_json::json!({"mode": "legacy", "projection_version": 6}),
+            serde_json::json!({"mode": "legacy", "projection_version": 99}),
             serde_json::json!({"mode": "legacy", "unproven": true}),
         ] {
             assert!(

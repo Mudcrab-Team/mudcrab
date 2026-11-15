@@ -729,7 +729,8 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         // all three, and the catalog reads them as load-order FormIDs.
         b"WNAM" if record_type == b"RACE" => Fixed(SINGLE),
         b"MODL" if record_type == b"ARMO" => Fixed(SINGLE),
-        b"RNAM" if record_type == b"ARMA" => Fixed(SINGLE),
+        // xEdit 4.1.5f / items.json: race and male/female skin texture sets are scalar links.
+        b"RNAM" | b"NAM0" | b"NAM1" if record_type == b"ARMA" => Fixed(SINGLE),
         // Additional races repeat as one FormID per MODL subrecord; malformed entries
         // are discarded independently, matching ARMO/MODL's existing clear policy.
         b"MODL" if record_type == b"ARMA" => Fixed(SINGLE),

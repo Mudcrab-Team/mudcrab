@@ -335,7 +335,10 @@ text uses Windows-1252. Both record readers publish the same UTF-8 text:
   (`crates/converter/src/esm/legacy_text.rs`). That covers `FULL` on every record type, and
   `DESC`, `RNAM` and others where the subrecord is unambiguous. This changed the legacy
   projection; version 4 introduced language/encoding. Version 5 also publishes every schema-declared
-  projectile/hazard placement and its base model (#498). The in-house adapter is version 13.
+  projectile/hazard placement and its base model (#498). Version 6 resolves NPC default
+  outfits, outfit items and ARMA male/female skin texture links. Database-only projection
+  bumps retain language-bound asset proofs from the independent asset-proof floor.
+  The in-house adapter is version 13.
   Version-3 retained proofs are accepted only for their historical English setting; all older
   metadata rebuilds use the configured language. Retained assets keep their independent proof.
 

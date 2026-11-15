@@ -1861,8 +1861,7 @@ fn reusable_manifest(
                     }
                 }
                 if reader == crate::config::RecordReader::Legacy {
-                    if let Some(identity) =
-                        crate::cache::legacy_projection4_reader_identity(&settings.language)
+                    for identity in crate::cache::legacy_asset_reader_identities(&settings.language)
                     {
                         matched |= crate::cache::retained_configuration_matches_for_reader(
                             &settings, producer, recorded, &identity,
