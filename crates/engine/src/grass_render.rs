@@ -61,6 +61,7 @@ pub(crate) struct GrassCaptureControls {
 #[derive(Resource, Default, Debug)]
 pub struct GrassRenderMetrics {
     pub ready: bool,
+    /// Distinct failed models required by the current resident grass batches.
     pub failures: u64,
 }
 
@@ -581,7 +582,8 @@ fn update_grass_uniforms(
     fogs: Query<(), (With<StreamingCamera>, With<bevy::pbr::DistanceFog>)>,
     tuning: Option<Res<crate::grass_tuning::GrassTuningState>>,
     ambient: Option<Res<GlobalAmbientLight>>,
-    batches: Query<Option<&GrassAttached>, With<GrassBatch>>,
+    batches: Query<(&GrassBatch, Option<&GrassAttached>)>,
+    models: Res<GrassModels>,
     mut metrics: ResMut<GrassRenderMetrics>,
 ) {
     for (camera, _, marker) in &cameras {
@@ -623,9 +625,21 @@ fn update_grass_uniforms(
             || primitive.drawn.load(Ordering::Acquire)
             || eye.is_some_and(|eye| visible_instance_count(&primitive, eye) == 0);
     }
+    // Cached model diagnostics remain available; each view counts its currently required models.
+    metrics.failures = batches
+        .iter()
+        .filter(|(batch, _)| {
+            models
+                .0
+                .get(&batch.model_path)
+                .is_some_and(|model| model.failed)
+        })
+        .map(|(batch, _)| batch.model_path.as_str())
+        .collect::<HashSet<_>>()
+        .len() as u64;
     metrics.ready = eye.is_some()
         && metrics.failures == 0
-        && batches.iter().all(|attached| attached.is_some())
+        && batches.iter().all(|(_, attached)| attached.is_some())
         && all_drawn;
 }
 
