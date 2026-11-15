@@ -127,7 +127,7 @@ control opacity: [grass authoring accounts](https://stepmodifications.org/forum/
 identify it as an animation/wind weight, while the
 [NIF definitions](https://github.com/niftools/nifxml/blob/develop/nif.xml)
 describe its storage without prescribing a grass opacity equation. The converted
-alpha attribute remains intact and linearly weights the current grass wind displacement;
+alpha attribute remains intact but is unused, because grass wind is not rendered;
 an exact Skyrim wind equation or ambient-alpha interpretation is not established.
 Opaque primitives retain full coverage
 regardless of texture, material or vertex alpha. Only the main world camera receives
@@ -151,8 +151,8 @@ the audited official grasses use `0x06`, leaving Vertex Lighting off.
 The existing shader byte decode remains `byte/255`; 128 is approximately half
 brightness. LAND VCLR was already decoded for terrain and remains absent from
 the serialized grass cache. Grass now consumes the committed terrain snapshot,
-so no converter, shader, cache schema or pack rebuild is needed. Wave Period drives the current scrolling
-wind model, but its exact native timing and waveform remain unverified.
+so no converter, shader, cache schema or pack rebuild is needed. Wave Period stays in the grass uniform,
+but nothing reads it: grass wind is not rendered until the engine has a blended weather wind speed and wind direction.
 
 The color pass receives the existing directional shadows using Bevy's prepared
 terrain view bindings, cascades, filtering and normal/depth bias. Direct light
@@ -192,9 +192,8 @@ sample mask. Constant-alpha mask interiors use the authored cutoff comparison,
 including equality, and smoothing applies at alpha edges. This retains the same
 sample prefix as a dynamic coverage mask,
 while avoiding a reproduced pipeline-compilation crash in the tested AMD Vulkan
-driver when exporting a dynamic `sample_mask`. A shared wind
-texture drives coherent wind using absolute world coordinates across origin
-rebases. Distance fades retain a deterministic prefix of candidate slots.
+driver when exporting a dynamic `sample_mask`. Distance fades retain a deterministic
+prefix of candidate slots.
 
 The runtime keeps resident and recently generated cells in a byte-budgeted LRU
 pool, accounting for generated arrays, batch metadata and retained source height
@@ -275,33 +274,37 @@ the player's files. The planned converter follow-up that copies those files
 into a pack will feed this same `--ini` path.
 
 These are the fifteen honoured grass keys. All retain their `[Grass]` section.
-The three fade-start defaults present in the shipped `SkyrimPrefs.ini` match
-that file; every other value is an explicit **MudCrab default**.
+Every default is retail data. `SkyrimSE.exe` 1.7.104 stores one static INI
+`Setting` per key (vtable, 8-byte default, name pointer); the address below is that
+`Setting`. `fGrassMinStartFadeDistance` is the exception: the compiled value is 400.0
+and the shipped INI files override it with 0.0. A local `Skyrim.ini` with other values
+(`iMinGrassSize=40`, `fGrassFadeRange=1766`, `bEnableGrassFade=0`) differs from the exe
+defaults; the exe defaults are used.
 
 | Section | Key | Default | Default source | Engine use |
 | --- | --- | --- | --- | --- |
-| `[Grass]` | `iMinGrassSize` | `20` | MudCrab default | Candidate spacing/density |
-| `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | MudCrab default | Exact resolved-species cap (zero admits none); INI spelling retained |
-| `[Grass]` | `fTexturePctThreshold` | `0.0` | MudCrab default | Minimum blended texture weight |
-| `[Grass]` | `iGrassCellRadius` | `2` | MudCrab default | Generated cell radius |
-| `[Grass]` | `fGrassStartFadeDistance` | `7000.0` | Shipped `SkyrimPrefs.ini` | Start of distance thinning |
-| `[Grass]` | `fGrassFadeRange` | `1000.0` | MudCrab default | Fade end is start plus range |
-| `[Grass]` | `bDrawShaderGrass` | `1` | MudCrab default | Enable grass draws when `--grass` is requested |
-| `[Grass]` | `bEnableGrassFade` | `1` | MudCrab default | Enable distance thinning |
-| `[Grass]` | `fGrassMinStartFadeDistance` | `0.0` | Shipped `SkyrimPrefs.ini` | Reported menu metadata |
-| `[Grass]` | `fGrassMaxStartFadeDistance` | `7000.0` | Shipped `SkyrimPrefs.ini` | Reported menu metadata |
-| `[Grass]` | `fGrassWindMagnitudeMin` | `5.0` | MudCrab default | Reported only |
-| `[Grass]` | `fGrassWindMagnitudeMax` | `125.0` | MudCrab default | Reported only |
-| `[Grass]` | [`bAllowCreateGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `1` | MudCrab default | Reported legacy cache switch |
-| `[Grass]` | [`bAllowLoadGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `0` | MudCrab default | Reported legacy cache switch |
-| `[Grass]` | `bGenerateGrassDataFiles` | `0` | MudCrab default | Reported legacy cache switch |
+| `[Grass]` | `iMinGrassSize` | `20` | `SkyrimSE.exe` default, `Setting` at 0x142079428 | Candidate spacing/density |
+| `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | `SkyrimSE.exe` default, `Setting` at 0x14207b890 | Exact resolved-species cap (zero admits none); INI spelling retained |
+| `[Grass]` | `fTexturePctThreshold` | `0.0` | `SkyrimSE.exe` default, `Setting` at 0x14207b8a8 | Minimum blended texture weight |
+| `[Grass]` | `iGrassCellRadius` | `2` | `SkyrimSE.exe` default, `Setting` at 0x142079470 | Generated cell radius |
+| `[Grass]` | `fGrassStartFadeDistance` | `7000.0` | `SkyrimSE.exe` default, `Setting` at 0x1420793e0; shipped `SkyrimPrefs.ini` | Start of distance thinning |
+| `[Grass]` | `fGrassFadeRange` | `1000.0` | `SkyrimSE.exe` default, `Setting` at 0x1420793f8 | Fade end is start plus range |
+| `[Grass]` | `bDrawShaderGrass` | `1` | `SkyrimSE.exe` default, `Setting` at 0x142079398 | Enable grass draws when `--grass` is requested |
+| `[Grass]` | `bEnableGrassFade` | `1` | `SkyrimSE.exe` default, `Setting` at 0x1420794e8 | Enable distance thinning |
+| `[Grass]` | `fGrassMinStartFadeDistance` | `0.0` | Shipped `Skyrim_Default.ini` and `SkyrimPrefs.ini` | Reported menu metadata |
+| `[Grass]` | `fGrassMaxStartFadeDistance` | `7000.0` | `SkyrimSE.exe` default, `Setting` at 0x1420793c8; shipped `SkyrimPrefs.ini` | Reported menu metadata |
+| `[Grass]` | `fGrassWindMagnitudeMin` | `5.0` | `SkyrimSE.exe` default, `Setting` at 0x142079458 | Reported only |
+| `[Grass]` | `fGrassWindMagnitudeMax` | `125.0` | `SkyrimSE.exe` default, `Setting` at 0x142079440 | Reported only |
+| `[Grass]` | [`bAllowCreateGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `1` | `SkyrimSE.exe` default, `Setting` at 0x1420794a0 | Reported legacy cache switch |
+| `[Grass]` | [`bAllowLoadGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `0` | `SkyrimSE.exe` default, `Setting` at 0x1420794b8 | Reported legacy cache switch |
+| `[Grass]` | `bGenerateGrassDataFiles` | `0` | `SkyrimSE.exe` default, `Setting` at 0x142079488 | Reported legacy cache switch |
 
 The UESP links document the cache-control keys in a workaround; they do not
 establish defaults or file precedence. Menu min/max fade settings are metadata,
 not a second clamp on the selected start distance. Disabling fade keeps full
 density up to cell unloading, so the zero-density cell-crossing guarantee no
 longer applies. Legacy cache switches and imported wind magnitudes do not
-control MudCrab's cache or wind model. Imported spacing below eight is outside
+control MudCrab's cache, and grass wind is not rendered. Imported spacing below eight is outside
 the bounded CPU generator's supported range and is rejected. Startup
 diagnostics report effective grass settings and each key's `--ini` path or
 `default` source, with explicit numeric overrides reported separately.
@@ -321,21 +324,19 @@ degenerate frames or absent maps keep the geometric normal. The frame follows Be
 flip Y once, matching the native material contract. Node reflection/nonuniform
 scale, instance yaw, slope and authored UV transforms move the frame with the mesh.
 The fragment re-orthogonalizes it against the interpolated normal. Both raster
-sides retain authored orientation. Wind displaces positions while retaining the
-undeformed shading frame, matching the existing native wind policy.
+sides retain authored orientation. Grass wind is not rendered. The retail amplitude and
+phase (RF-GRASS-001 to 003) are in `grass/wind.rs`, but they need the blended `WTHR` wind speed
+and the wind direction, which the engine does not have yet; blades keep their placed positions.
 
-Vertex alpha linearly weights wind displacement (absent colors use full weight).
-Zero alpha is motionless; alpha does not control opacity. Coverage uses texture
-and material alpha. Public study: Community Shaders contributors, RunGrass and
+Vertex alpha is an authored wind weight, but nothing reads it while wind is absent;
+alpha does not control opacity. Coverage uses texture and material alpha. Public study: Community Shaders contributors, RunGrass and
 GrassLighting at commit 1ed40cb2fdf6099eeb7068661f632d71f0661b70 (GPL-3.0 with
 project exceptions). Its alpha-weighted wind supports this interpretation; its
-feature normal mapping does not establish vanilla NIF normal-slot usage. Wave
-and lighting formulas here remain native MudCrab choices.
+feature normal mapping does not establish vanilla NIF normal-slot usage. Lighting remains native MudCrab policy; retail wind math is sourced separately.
 
 Grass coverage follows the camera's compiled MSAA sample count (1/2/4/8),
 preserving the user's preference. Sample-rate shading remains the AMD Vulkan
-workaround described above. Shots pin wind at 1 second; interactive wind uses
-unwrapped elapsed time. BC5 normal maps reconstruct positive Z from XY.
+workaround described above. BC5 normal maps reconstruct positive Z from XY.
 Queueing rejects whole-cell bounds expanded by authored geometry, maximum scale,
 and wind. A per-frame view/primitive draw set suppresses the duplicate depth draw when
 Bevy's late prepass repeats NonMesh bins.
