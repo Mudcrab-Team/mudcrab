@@ -306,10 +306,8 @@ fn check_contract(module: &Module, scene: bool) {
             (grass_group, 2),
             (grass_group, 3),
             (grass_group, 4),
-            (grass_group, 5),
-            (grass_group, 6),
         ]),
-        "exact grass uniform, albedo and wind binding coordinates"
+        "exact grass uniform, albedo and normal map binding coordinates"
     );
     let resource_count = module
         .global_variables

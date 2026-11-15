@@ -8,8 +8,7 @@ use crate::{
 };
 use bevy::{
     asset::{
-        AssetId, LoadState, RecursiveDependencyLoadState, RenderAssetUsages, embedded_asset,
-        load_embedded_asset,
+        AssetId, LoadState, RecursiveDependencyLoadState, embedded_asset, load_embedded_asset,
     },
     core_pipeline::{
         core_3d::{AlphaMask3d, CORE_3D_DEPTH_FORMAT},
@@ -21,7 +20,6 @@ use bevy::{
         system::{SystemParamItem, lifetimeless::*},
     },
     gltf::{Gltf, GltfMaterial, GltfMesh, GltfNode},
-    image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor},
     mesh::{MeshVertexBufferLayoutRef, VertexBufferLayout},
     prelude::*,
     render::{
@@ -76,7 +74,6 @@ impl Plugin for GrassRenderPlugin {
                 ExtractComponentPlugin::<GrassPrimitive>::default(),
                 ExtractComponentPlugin::<GrassView>::default(),
             ))
-            .add_systems(Startup, create_wind)
             .add_systems(
                 PostUpdate,
                 (load_grass_models, attach_grass_primitives)
@@ -115,9 +112,6 @@ impl Plugin for GrassRenderPlugin {
 
 #[derive(Component, Clone, ExtractComponent)]
 struct GrassView;
-
-#[derive(Resource)]
-struct WindTexture(Handle<Image>);
 
 #[derive(Resource, Default)]
 struct GrassModels(HashMap<String, GrassModel>);
@@ -204,7 +198,6 @@ struct GrassPrimitive {
     mesh: Handle<Mesh>,
     texture: Handle<Image>,
     normal_texture: Handle<Image>,
-    wind: Handle<Image>,
     uniform: GrassUniform,
     model: Mat4,
     slot_count: u32,
@@ -238,39 +231,6 @@ struct GrassUniform {
     ambient: Vec4,
     uv_transform: Mat3,
     normal_params: Vec4,
-}
-
-/// A small, shared wind field; generated data, not an authored grass replacement.
-fn create_wind(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
-    let mut bytes = Vec::with_capacity(64 * 64);
-    for y in 0..64 {
-        for x in 0..64 {
-            let a = x as f32 * std::f32::consts::TAU / 64.0;
-            let b = y as f32 * std::f32::consts::TAU / 64.0;
-            bytes.push(
-                ((a.sin() * b.cos() * 0.5 + (a * 3.0 + b * 2.0).sin() * 0.25 + 1.0) * 127.0) as u8,
-            );
-        }
-    }
-    let mut image = Image::new(
-        Extent3d {
-            width: 64,
-            height: 64,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        bytes,
-        TextureFormat::R8Unorm,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-        address_mode_u: ImageAddressMode::Repeat,
-        address_mode_v: ImageAddressMode::Repeat,
-        mag_filter: ImageFilterMode::Linear,
-        min_filter: ImageFilterMode::Linear,
-        ..default()
-    });
-    commands.insert_resource(WindTexture(images.add(image)));
 }
 
 /// Advance bounded model-template loading for requested grass species.
@@ -461,12 +421,10 @@ fn attach_grass_primitives(
     meshes: Res<Assets<GltfMesh>>,
     materials: Res<Assets<GltfMaterial>>,
     vertex_meshes: Option<Res<Assets<Mesh>>>,
-    wind: Option<Res<WindTexture>>,
     config: Res<crate::config::EngineConfig>,
     server: Res<AssetServer>,
     mut metrics: ResMut<GrassRenderMetrics>,
 ) {
-    let Some(wind) = wind else { return };
     let mut budget = FrameBudget::new(config.grass_uploads_per_frame);
     for (path, model) in &mut models.0 {
         if model.failed || model.templates.is_some() {
@@ -535,7 +493,6 @@ fn attach_grass_primitives(
                 mesh: template.mesh.clone(),
                 texture: template.texture.clone(),
                 normal_texture: template.normal_texture.clone(),
-                wind: wind.0.clone(),
                 model: template.model,
                 slot_count: batch.slot_count,
                 drawn: Arc::new(AtomicBool::new(false)),
@@ -587,10 +544,7 @@ fn attach_grass_primitives(
     }
 }
 
-/// Captures pin wind; live sessions never use Bevy's hourly wrapped clock.
-fn grass_wind_time(time: &Time, shots: bool) -> f32 {
-    if shots { 1.0 } else { time.elapsed_secs() }
-}
+
 
 #[allow(clippy::too_many_arguments)] // Independent ECS queries/resources are scheduled by Bevy.
 /// Update propagated grass uniforms and readiness after deferred batch/primitive admission.
@@ -598,8 +552,6 @@ fn update_grass_uniforms(
     mut commands: Commands,
     cameras: Query<(Entity, &GlobalTransform, Option<&GrassView>), With<StreamingCamera>>,
     mut primitives: Query<(&GlobalTransform, &mut GrassPrimitive)>,
-    time: Res<Time>,
-    config: Option<Res<crate::config::EngineConfig>>,
     fade: Res<GrassFade>,
     ambient: Option<Res<GlobalAmbientLight>>,
     batches: Query<Option<&GrassAttached>, With<GrassBatch>>,
@@ -621,10 +573,7 @@ fn update_grass_uniforms(
         primitive.uniform.fade = Vec4::new(
             fade.start,
             fade.end,
-            grass_wind_time(
-                &time,
-                config.as_ref().is_some_and(|config| config.shots.is_some()),
-            ),
+            0.0,
             if fade.enabled { 0.0 } else { 1.0 },
         );
         if let Some(ambient) = &ambient {
@@ -679,8 +628,6 @@ impl GrassPipeline {
                     ShaderStages::VERTEX_FRAGMENT,
                     (
                         uniform_buffer::<GrassUniform>(false),
-                        texture_2d(TextureSampleType::Float { filterable: true }),
-                        sampler(SamplerBindingType::Filtering),
                         texture_2d(TextureSampleType::Float { filterable: true }),
                         sampler(SamplerBindingType::Filtering),
                         texture_2d(TextureSampleType::Float { filterable: true }),
@@ -954,9 +901,6 @@ fn prepare_grass(
             gpu.uniform.write_buffer(&device, &queue);
             continue;
         }
-        let Some(wind) = images.get(&data.wind) else {
-            continue;
-        };
         let texture = if data.texture == Handle::default() {
             &fallback.d2
         } else {
@@ -1009,8 +953,6 @@ fn prepare_grass(
                 uniform.binding().unwrap(),
                 &texture.texture_view,
                 &texture.sampler,
-                &wind.texture_view,
-                &wind.sampler,
                 &normal.texture_view,
                 &normal.sampler,
             )),
@@ -1228,91 +1170,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
         Option<&'static bevy::pbr::MeshViewBindGroup>,
     );
     type ItemQuery = (Read<GrassPrimitive>, Read<GrassGpu>);
-    /// Bind grass resources and issue an instanced draw for the prepared primitive.
-    fn render<'w>(
-        phase: &P,
-        (offset, view, view_group, scene_group): QueryItem<'w, '_, Self::ViewQuery>,
-        item: Option<QueryItem<'w, '_, Self::ItemQuery>>,
-        (meshes, allocator, prepass_draws): SystemParamItem<'w, '_, Self::Param>,
-        pass: &mut TrackedRenderPass<'w>,
-    ) -> RenderCommandResult {
-        let Some((data, gpu)) = item else {
-            return RenderCommandResult::Skip;
-        };
-        let Some(mesh) = meshes.into_inner().get(&data.mesh) else {
-            return RenderCommandResult::Skip;
-        };
-        let allocator = allocator.into_inner();
-        let Some(vertices) = allocator.mesh_vertex_slice(&data.mesh.id()) else {
-            return RenderCommandResult::Skip;
-        };
-        let count = visible_instance_count(data, view.world_from_view.translation()) as u32;
-        if count == 0 {
-            return RenderCommandResult::Skip;
-        }
-        if std::any::TypeId::of::<P>() == std::any::TypeId::of::<AlphaMask3dPrepass>()
-            && !prepass_draws
-                .0
-                .lock()
-                .unwrap()
-                .insert((view.retained_view_entity, phase.entity()))
-        {
-            return RenderCommandResult::Skip;
-        }
-        if std::any::TypeId::of::<P>() == std::any::TypeId::of::<AlphaMask3d>() {
-            let Some(group) = scene_group else {
-                return RenderCommandResult::Skip;
-            };
-            pass.set_bind_group(0, &group.main, &group.main_offsets);
-            pass.set_bind_group(1, &group.binding_array, &[]);
-            pass.set_bind_group(2, &gpu.bind_group, &[]);
-        } else {
-            pass.set_bind_group(0, &view_group.0, &[offset.offset]);
-            pass.set_bind_group(1, &gpu.bind_group, &[]);
-        }
-        pass.set_vertex_buffer(0, vertices.buffer.slice(..));
-        pass.set_vertex_buffer(1, gpu.buffer.slice(..));
-        match &mesh.buffer_info {
-            RenderMeshBufferInfo::Indexed {
-                index_format,
-                count: index_count,
-            } => {
-                let Some(indices) = allocator.mesh_index_slice(&data.mesh.id()) else {
-                    return RenderCommandResult::Skip;
-                };
-                pass.set_index_buffer(indices.buffer.slice(..), *index_format);
-                pass.draw_indexed(
-                    indices.range.start..indices.range.start + index_count,
-                    vertices.range.start as i32,
-                    0..count,
-                );
-            }
-            RenderMeshBufferInfo::NonIndexed => pass.draw(vertices.range, 0..count),
-        }
-        if std::any::TypeId::of::<P>() == std::any::TypeId::of::<AlphaMask3d>() {
-            data.drawn.store(true, Ordering::Release);
-        }
-        RenderCommandResult::Success
-    }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bevy::gltf::GltfPrimitive;
-
-    include!("grass_render_alpha_tests.rs");
-
-    #[test]
-    fn wind_capture_clock_is_fixed_and_live_clock_does_not_wrap_hourly() {
-        let mut time = Time::default();
-        time.advance_by(std::time::Duration::from_secs_f32(3599.5));
-        assert_eq!(grass_wind_time(&time, true), 1.0);
-        assert_eq!(grass_wind_time(&time, false), 3599.5);
-        time.advance_by(std::time::Duration::from_secs(1));
-        assert_eq!(grass_wind_time(&time, true), 1.0);
-        assert_eq!(grass_wind_time(&time, false), 3600.5);
-    }
 
     #[test]
     fn frustum_uses_whole_cell_blade_reach_and_propagated_transform() {
@@ -2198,7 +2056,6 @@ mod tests {
             mesh: Handle::default(),
             texture: Handle::default(),
             normal_texture: Handle::default(),
-            wind: Handle::default(),
             model: Mat4::IDENTITY,
             slot_count: 4,
             drawn: Arc::new(AtomicBool::new(false)),
@@ -2404,7 +2261,6 @@ mod tests {
             .insert_resource(nodes)
             .insert_resource(meshes)
             .insert_resource(materials)
-            .insert_resource(WindTexture(Handle::default()))
             .insert_resource(crate::config::EngineConfig {
                 grass_uploads_per_frame: 0,
                 ..default()

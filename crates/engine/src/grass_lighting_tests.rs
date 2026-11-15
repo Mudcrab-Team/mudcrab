@@ -560,22 +560,25 @@ fn directional_normal_fixture_uses_authored_axes_and_handedness() {
 }
 
 #[test]
-fn authored_alpha_weights_native_wind_without_erasing_roots() {
+fn grass_shader_has_no_unsourced_wind_displacement() {
+    // The engine has no blended WTHR wind speed or wind direction yet, so blades stay at their
+    // placed positions. Placement, fade and GRAS height/slope handling do not depend on wind.
     let shader = include_str!("shaders/grass.wgsl");
-    let source = lighting_fixture_function(shader, "wind_weight")
-        .unwrap()
-        .replace("fn wind_weight(", "fn fixture(");
-    for (alpha, expected) in [
-        (-0.2, 0.0),
-        (0.0, 0.0),
-        (0.35, 0.35),
-        (1.0, 1.0),
-        (1.5, 1.0),
+    for removed in [
+        "gust",
+        "sway",
+        "wind_weight",
+        "textureSampleLevel",
+        "var wind",
     ] {
-        assert_eq!(
-            lighting_fixture_run(&source, &[vec![alpha]]),
-            vec![expected]
-        );
+        assert!(!shader.contains(removed), "shader still has `{removed}`");
     }
-    assert!(shader.contains("sway = wind_weight(input.color.a)"));
+    assert!(
+        shader.contains("grass.fade.y-distance"),
+        "distance fade stays"
+    );
+    assert!(
+        shader.contains("signed_byte(input.packed.z"),
+        "slope fit stays"
+    );
 }
