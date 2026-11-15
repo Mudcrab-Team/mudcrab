@@ -4893,14 +4893,15 @@ mod tests {
             (
                 "static",
                 static_nif(),
-                "a9b5b133442efe59440b33a89b31c3309a853ab9a7c4f1b7ffddffb3a96febb9",
+                "d33c4cc0ca0ce66e694c7baed309a82f5b57fe0d493102b73a86945c1c6e525b",
             ),
             (
                 "chain-40",
                 static_scene_chain_nif(40),
-                "4744abb50f37523e73a0cfc747d56152d504a46d795621208276573648f5df0c",
+                "e99a91a038915d444d5e262b82d83930da17ab404e1da5a532d6ff1af77227e4",
             ),
         ];
+        let mut differences = Vec::new();
         for (name, source, expected) in cases {
             let input = directory.path().join(format!("{name}.nif"));
             let output = input.with_extension("glb");
@@ -4913,11 +4914,15 @@ mod tests {
                 "{name}: the single shape carries its geometry index"
             );
             assert_eq!(
-                crate::cache::hash_bytes(&bytes),
-                expected,
-                "{name}: GLB bytes changed"
+                document["meshes"][0]["primitives"][0]["attributes"]["TANGENT"],
+                3
             );
+            let actual = crate::cache::hash_bytes(&bytes);
+            if actual != expected {
+                differences.push((name, actual, expected));
+            }
         }
+        assert!(differences.is_empty(), "GLB bytes changed: {differences:?}");
     }
 
     /// Inspection measures deep skeletons while every consuming entry point refuses them.
