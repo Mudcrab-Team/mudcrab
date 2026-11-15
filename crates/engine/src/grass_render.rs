@@ -544,8 +544,6 @@ fn attach_grass_primitives(
     }
 }
 
-
-
 #[allow(clippy::too_many_arguments)] // Independent ECS queries/resources are scheduled by Bevy.
 /// Update propagated grass uniforms and readiness after deferred batch/primitive admission.
 fn update_grass_uniforms(

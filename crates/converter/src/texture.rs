@@ -1948,7 +1948,6 @@ fn validate_ktx2(bytes: &[u8], encoding: TextureEncoding) -> Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
