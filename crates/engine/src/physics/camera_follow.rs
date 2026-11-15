@@ -121,7 +121,8 @@ pub fn follow_spring_step(prev: FollowSpring, input: FollowInput) -> FollowStep 
     }
 
     // RF-CAM-003: the weight fades out above the speed limit or when not controls-driven.
-    // The order of the weight update and the lag evaluation is an assumption (unresolved).
+    // Two ordering assumptions, both unresolved in the registry: the weight is updated before the
+    // lag is evaluated, and the 500 u/s gate reads the velocity of the previous frame.
     // RF-CAMW-001: the player is on a mount (same 1.5/s ramp).
     let fades_out =
         !input.controls_driven || input.is_on_mount || prev.velocity.length() > FADE_OUT_SPEED;
@@ -192,7 +193,7 @@ mod tests {
 
     /// The REA table counts the settle time as the index of the first frame whose camera is
     /// within 5 percent of the target, divided by the frame rate (the first frame is index 0).
-    fn settle_seconds(fps: f32, rise: f32) -> f32 {
+    fn first_frame_within_5_percent_seconds(fps: f32, rise: f32) -> f32 {
         let lags = step_response(fps, rise, 600);
         let index = lags
             .iter()
@@ -220,9 +221,9 @@ mod tests {
     }
 
     #[test]
-    fn rea_step_response_settles_to_95_percent() {
+    fn rea_step_response_first_frame_within_5_percent_as_index_over_fps() {
         for (fps, expected) in [(30.0, 0.100), (60.0, 0.117), (144.0, 0.139)] {
-            let seconds = settle_seconds(fps, 24.0);
+            let seconds = first_frame_within_5_percent_seconds(fps, 24.0);
             assert!(
                 (seconds - expected).abs() < 0.0015,
                 "{fps} fps: settled at {seconds} s, REA {expected} s"

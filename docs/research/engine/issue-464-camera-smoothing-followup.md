@@ -49,27 +49,29 @@ When `|S_prev - P_now|` is above 300 units, `e` and `V` are 0 for that frame. Th
 
 ## Engine resets
 
-A teleport, a `CameraSpace` change, a `RenderOrigin` rebase, a move-mode change, a door crossing and the safe-placement hold place the body and the view in a new coordinate frame. The old smoothed point has no meaning there, so the system reseeds the spring at the new feet position and keeps the weight. During a door crossing or the placement hold the view follows the body directly. This is an engine coordinate-frame rule. It is not a retail value. For a teleport, retail reaches the same result through the 300 unit snap (RF-CAM-002). The authored startup view stays authoritative for the first WALK frame.
+A teleport and a `CameraSpace` change place the body and the view in a new coordinate frame. The old smoothed point has no meaning there, so the system reseeds the spring at the new feet position and keeps the weight. A door crossing and the safe-placement hold place the body without player control. They are plumbing for Mudcrab-only mechanisms that retail does not have. During them the view follows the body directly. None of this is a retail value.
+
+A `RenderOrigin` rebase does not reset the spring. The streamer shifts the body and the view by whole cells, so the system subtracts the same displacement from the smoothed point. The lag stays the same in the world frame. While running, the steady lag is about 20 units, so a reset would make the view jump forward at every cell border. Entering WALK needs no reset: the spring starts at rest on the feet. For a teleport, retail reaches the same result through the 300 unit snap (RF-CAM-002). The authored startup view stays authoritative for the first WALK frame.
 
 ## Not implemented
 
 - Open gates, not implemented: RF-CAMW-002 (actor handle at player `+0x1F0` that fades the weight out, medium confidence for its role) and RF-CAMW-003 (FirstPersonState byte `+0x88`, low confidence).
 - The optional running average of the camera clock over N frames (RF-CAM-007) is left out. Its filter length is unverified.
-- The initial value of the weight is not known. The spring starts with a weight of 0 and ramps up at 1.5 per second. This is unverified.
-- The order of the weight update and the lag evaluation inside one frame is an assumption. The registry does not state it.
+- UNVERIFIED: the initial weight. The spring starts with a weight of 0 and ramps up at 1.5 per second. RF-CAMW-003 notes that the retail state reset sets W = 1 (low confidence, callers not traced). That is not enough to choose 1, so 0 stays until the registry resolves it.
+- UNVERIFIED, ordering assumptions: the weight is updated before the lag is evaluated, and the 500 units per second gate reads the velocity of the previous frame. The registry states neither.
 - Horizontal lag follows the registry formula. Its effect on running camera feel is not measured here.
 
 ## Tests
 
 The pure unit tests in `camera_follow.rs` reproduce the numbers from the reverse-engineering notes for a 24 unit rise with `W = 1`:
 
-| Frame rate | Camera rise in the first frame | 95% settled | Overshoot |
+| Frame rate | Camera rise in the first frame | First frame within 5 percent (index / fps) | Overshoot |
 |---|---|---|---|
 | 30 fps | 4.9 | 0.100 s | 4.1 units |
 | 60 fps | 2.6 | 0.117 s | 1.3 units |
 | 144 fps | 1.1 | 0.139 s | 0.0 |
 
-The "95% settled" time counts the index of the first frame whose camera is within 5 percent of the target, divided by the frame rate. The first frame has index 0.
+The third column is the 0-based index of the first frame whose camera is within 5 percent of the target, divided by the frame rate. It is not a settled time. The elapsed time at the end of that frame is one frame later (0.133 s at 60 fps), and the camera can leave the band again after an overshoot.
 
 More tests cover the snap above 300 units, the weight ramp up and down at 1.5 per second, the fade-out above 500 units per second, the absence of a slope threshold or slack, no vertical spring in third person, the horizontal constants and the 0.1667 s clock clamp. The engine test `camera_follows_the_retail_spring_on_a_production_stair_flight` runs a stair flight through the production WALK controller. It checks, on every rendered frame at 60 and at 20 frames per second, that the view equals the eye node plus the spring lag. It also checks that the physical stair endpoints do not change.
 

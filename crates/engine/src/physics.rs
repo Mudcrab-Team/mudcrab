@@ -1951,9 +1951,13 @@ fn walk_camera_follow_system(
         .as_ref()
         .is_some_and(|space| space.is_changed());
     let current_origin = render_origin.as_ref().map(|origin| origin.0);
-    let origin_changed = follow
+    // A floating-origin rebase shifts the body and the view by whole cells. It is not a retail
+    // event. The spring state is shifted by the same displacement below, so the lag is unchanged.
+    let rebase = follow
         .previous_origin
-        .is_some_and(|old| Some(old) != current_origin);
+        .zip(current_origin)
+        .filter(|(old, new)| old != new)
+        .map(|(old, new)| render_origin_displacement(old, new));
     follow.previous_origin = current_origin;
 
     if *mode != MoveMode::Walk {
@@ -1973,19 +1977,25 @@ fn walk_camera_follow_system(
         return;
     }
 
-    // Engine coordinate-frame events. A teleport, a camera space change or a render origin rebase
-    // moves the body and the view into a new frame. The old smoothed point is meaningless there.
-    // Retail reaches the same result for a teleport through the 300 unit snap (RF-CAM-002). A door
-    // crossing and the safe-placement hold also place the body without player control, so the
-    // view follows the body directly until they end. The spring weight carries over.
+    // Engine plumbing, not retail behaviour. A teleport and a camera space change move the body
+    // and the view into a new frame, so the old smoothed point is meaningless there. Retail
+    // reaches the same result for a teleport over 300 units through the snap (RF-CAM-002). A door
+    // crossing and the safe-placement hold place the body without player control. They are
+    // plumbing for Mudcrab-only mechanisms that retail does not have, so the view follows the
+    // body directly until they end. The spring weight carries over. Entering WALK needs no reset:
+    // the spring is `None` outside WALK and starts at rest on the feet.
     let placing = hold.as_ref().is_some_and(|hold| hold.is_active())
         || crossing
             .as_ref()
             .is_some_and(|crossing| crossing.is_active());
-    let reset = mode.is_changed() || teleported || space_changed || origin_changed || placing;
-    let previous = follow
+    let reset = teleported || space_changed || placing;
+    let mut previous = follow
         .spring
         .unwrap_or(camera_follow::FollowSpring::at_rest(feet, 0.0));
+    if let Some(displacement) = rebase {
+        // The smoothed point lives in the same render space as the feet. Move it with them.
+        previous.smoothed -= displacement;
+    }
     let step = if reset {
         camera_follow::FollowStep {
             state: camera_follow::FollowSpring::at_rest(feet, previous.weight),
@@ -2010,6 +2020,17 @@ fn walk_camera_follow_system(
     follow.spring = Some(step.state);
     view.translation = target + step.lag;
     set_walk_camera_rotation(&mut view, body, look.pitch);
+}
+
+/// The displacement of the floating origin from `old` to `new`, in render-space units. The
+/// streamer subtracts it from the body and the view when it rebases.
+fn render_origin_displacement(old: IVec2, new: IVec2) -> Vec3 {
+    let shift = new - old;
+    Vec3::new(
+        shift.x as f32 * crate::world::components::CELL_SIZE,
+        0.0,
+        -(shift.y as f32) * crate::world::components::CELL_SIZE,
+    )
 }
 
 fn set_walk_camera_rotation(view: &mut Transform, body: &Transform, pitch: f32) {
@@ -2062,14 +2083,8 @@ mod walk_camera_presentation_tests {
                     app.insert_resource(MoveMode::Walk);
                 }
                 _ => {
-                    app.insert_resource(crate::streaming::RenderOrigin(IVec2::ZERO));
-                    app.world_mut().run_schedule(Update);
-                    app.world_mut()
-                        .resource_mut::<WalkCameraFollowState>()
-                        .spring = Some(camera_follow::FollowSpring::at_rest(Vec3::ZERO, 1.0));
-                    app.world_mut()
-                        .resource_mut::<crate::streaming::RenderOrigin>()
-                        .0 = IVec2::X;
+                    // Engine plumbing: the safe-placement hold places the body without control.
+                    app.world_mut().resource_mut::<WalkSpawnHold>().active = true;
                 }
             }
             app.world_mut().run_schedule(Update);
@@ -2086,7 +2101,91 @@ mod walk_camera_presentation_tests {
                 .expect("the spring is seeded after a reset");
             assert_eq!(spring.smoothed, position);
             assert_eq!(spring.velocity, Vec3::ZERO);
+            app.world_mut().resource_mut::<WalkSpawnHold>().active = false;
         }
+    }
+
+    /// A floating-origin rebase moves the body, the view and the smoothed point by the same
+    /// displacement. The lag, which is about 20 units while running, must not change in the world
+    /// frame, so the view does not pop forward at a cell border.
+    #[test]
+    fn a_render_origin_rebase_while_running_keeps_the_camera_offset() {
+        let mut app = headless::fixture_app();
+        let (body, camera) = {
+            let mut bodies = app.world_mut().query_filtered::<Entity, With<PlayerBody>>();
+            let body = bodies.single(app.world()).unwrap();
+            let mut cameras = app
+                .world_mut()
+                .query_filtered::<Entity, With<StreamingCamera>>();
+            (body, cameras.single(app.world()).unwrap())
+        };
+        let eye = Vec3::Y * MovementTuning::default().eye_height;
+        app.insert_resource(MoveMode::Walk);
+        app.insert_resource(crate::streaming::RenderOrigin(IVec2::ZERO));
+        app.world_mut().run_schedule(Update);
+        let feet = Vec3::new(1_000.0, 300.0, -500.0);
+        app.world_mut()
+            .get_mut::<Transform>(body)
+            .unwrap()
+            .translation = feet;
+        // A running spring: the smoothed point trails the feet and moves with them.
+        let running = camera_follow::FollowSpring {
+            smoothed: feet - Vec3::new(20.0, 0.0, 0.0),
+            velocity: Vec3::new(370.0, 0.0, 0.0),
+            weight: 1.0,
+        };
+        {
+            let mut follow = app.world_mut().resource_mut::<WalkCameraFollowState>();
+            follow.initialized = true;
+            follow.spring = Some(running);
+        }
+        // The same frame without a rebase is the control.
+        let delta_secs = app.world().resource::<Time>().delta_secs();
+        let expected = camera_follow::follow_spring_step(
+            running,
+            camera_follow::FollowInput {
+                feet,
+                delta_secs,
+                controls_driven: true,
+                is_on_mount: false,
+                view: camera_follow::FollowView::FirstPerson,
+            },
+        );
+        assert!(
+            expected.lag.x.abs() > 1.0,
+            "the fixture needs a visible lag: {:?}",
+            expected.lag
+        );
+        // The streamer rebases: the origin moves one cell in X and in Y, and the body and the view
+        // are shifted by the displacement.
+        let new_origin = IVec2::new(1, 1);
+        let displacement = render_origin_displacement(IVec2::ZERO, new_origin);
+        assert_ne!(displacement, Vec3::ZERO);
+        app.world_mut()
+            .resource_mut::<crate::streaming::RenderOrigin>()
+            .0 = new_origin;
+        for entity in [body, camera] {
+            app.world_mut()
+                .get_mut::<Transform>(entity)
+                .unwrap()
+                .translation -= displacement;
+        }
+        app.world_mut().run_schedule(Update);
+        let view = app.world().get::<Transform>(camera).unwrap().translation;
+        let shifted_feet = feet - displacement;
+        assert!(
+            (view - (shifted_feet + eye) - expected.lag).length() < 1.0e-3,
+            "the rebase changed the camera offset: view={view:?} lag={:?}",
+            expected.lag
+        );
+        let spring = app
+            .world()
+            .resource::<WalkCameraFollowState>()
+            .spring
+            .unwrap();
+        assert!((spring.smoothed - (shifted_feet + expected.lag)).length() < 1.0e-3);
+        assert_eq!(spring.velocity, expected.state.velocity);
+        assert_eq!(spring.weight, expected.state.weight);
     }
 }
 
