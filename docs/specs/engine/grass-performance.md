@@ -79,9 +79,15 @@ does not establish movement behavior or visual parity with retail Skyrim.
 Independent species each have the listed candidate count. The integration binary
 uses a counting global allocator around synchronous generation after conversion
 has completed: peak incremental live heap is limited to 48 bytes per potential
-instance plus 64 KiB; transient heap above retained output is limited to 16 bytes
-per candidate slot plus 64 KiB. This includes Vec growth and scratch, but excludes
-mapped input, native allocations and GPU resources. The library test only checks
+instance plus 64 KiB, and retained heap to 16 bytes per potential instance plus
+64 KiB. All eight species' vectors can retain growth capacity simultaneously before
+compaction. The scratch allowance is therefore
+`slots * (8 * (2 * staging_bytes - 16) + staging_bytes) + 64 KiB`: two staging
+capacities per species minus final output, plus one buffer's growth/shrink overlap.
+This layer stages 16-byte instances, giving 144 bytes per candidate slot plus
+64 KiB. These are explicit fixture allocation limits, checked against the actual
+counting allocator; they include Vec growth and scratch but exclude mapped input,
+native allocations and GPU resources. The library test only checks
 the generator's reported output size (32 bytes per potential instance plus 32 KiB).
 
 Both ignored tests require the actual Cargo OPT_LEVEL to be 3 (including a
