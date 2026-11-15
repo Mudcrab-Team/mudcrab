@@ -19,18 +19,46 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
         path.push(index);
         let block = nif.blocks.get(index as usize)?;
         let (av, sphere, children) = match block {
-            NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => {
-                (&node.av, None, node.children.as_slice())
+            NifBlock::NiNode(node)
+            | NifBlock::BSFadeNode(node)
+            | NifBlock::BSLeafAnimNode(node) => (&node.av, None, node.children.as_slice()),
+            NifBlock::BSOrderedNode(node)
+                if node.static_bound != 0 && node.node.av.flags.fixed_bound() =>
+            {
+                let bound = ModelSphere {
+                    center: node.alpha_sort_bound[..3].try_into().ok()?,
+                    radius: node.alpha_sort_bound[3],
+                };
+                (&node.node.av, Some(bound), &[][..])
             }
-            NifBlock::BSTriShape(shape) => (&shape.av, Some(shape.bounding_sphere), &[][..]),
+            NifBlock::BSOrderedNode(node) => (&node.node.av, None, node.node.children.as_slice()),
+            // Empty damage-stage nodes contribute a zero sphere. Nonempty ranges still need
+            // native selection semantics before they can supply assignment metadata.
+            NifBlock::BSBlastNode(node) if node.node.children.is_empty() => {
+                (&node.node.av, None, &[][..])
+            }
+            NifBlock::BSTriShape(shape) => (
+                &shape.av,
+                Some(ModelSphere {
+                    center: shape.bounding_sphere.center,
+                    radius: shape.bounding_sphere.radius,
+                }),
+                &[][..],
+            ),
             NifBlock::BSLODTriShape(shape) => (
                 &shape.bs_tri_shape.av,
-                Some(shape.bs_tri_shape.bounding_sphere),
+                Some(ModelSphere {
+                    center: shape.bs_tri_shape.bounding_sphere.center,
+                    radius: shape.bs_tri_shape.bounding_sphere.radius,
+                }),
                 &[][..],
             ),
             NifBlock::BSSubIndexTriShape(shape) => (
                 &shape.bs_tri_shape.av,
-                Some(shape.bs_tri_shape.bounding_sphere),
+                Some(ModelSphere {
+                    center: shape.bs_tri_shape.bounding_sphere.center,
+                    radius: shape.bs_tri_shape.bounding_sphere.radius,
+                }),
                 &[][..],
             ),
             _ => return None,

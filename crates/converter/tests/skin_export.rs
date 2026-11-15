@@ -460,10 +460,24 @@ fn legacy_bsdismember_skin_exports_skin() {
 
     let glb = read_glb(&glb_path);
     assert_skinned_primitives(&glb);
+    assert!(
+        glb.json["extras"]["mudcrabRoomSphere"].is_null(),
+        "external skeleton pose is not the source model's sphere"
+    );
     for (mesh_index, skin_index) in skinned_meshes(&glb) {
         let joints = glb.json["skins"][skin_index]["joints"].as_array().unwrap();
         assert!(!joints.is_empty(), "mesh {mesh_index} skin has no joints");
     }
+    let local_path = directory.path().join("local-skin.glb");
+    MeshConverter::convert_nif_to_glb_with_skeleton(&nif_path, &local_path, None).unwrap();
+    let local = read_glb(&local_path);
+    assert_skinned_primitives(&local);
+    assert!(
+        local.json["extras"]["mudcrabRoomSphere"]["radius"]
+            .as_f64()
+            .unwrap()
+            > 0.0
+    );
 }
 
 #[test]

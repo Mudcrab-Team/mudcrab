@@ -77,8 +77,8 @@
 //! The converter records room membership for every placed record, actors included, but a room is
 //! where something *was placed*, not where it is. These are treated as in no room and stay drawn:
 //!
-//! - a reference carrying [`RoomCullExempt`], inserted for actors, doors and activators.
-//!   [`RoomCullLegacyExempt`] protects authored overrides and loose inventory items in legacy
+//! - a reference carrying [`RoomCullExempt`], inserted for actors and doors.
+//!   [`RoomCullLegacyExempt`] protects authored overrides, activators and loose inventory items in legacy
 //!   graphs; authored assignment preserves `NONE` and updates supported moving reference roots.
 //!   **Future actor spawning hooks in here:** whatever spawns an actor
 //!   or an animated door outside `spawn_cell` inserts `RoomCullExempt` on the reference entity;
@@ -156,7 +156,17 @@ pub fn assignment_follows_transform(record_type: Option<&str>) -> bool {
     matches!(
         record_type,
         Some(
-            "MISC" | "ALCH" | "AMMO" | "ARMO" | "BOOK" | "INGR" | "KEYM" | "SCRL" | "SLGM" | "WEAP"
+            "ACTI"
+                | "MISC"
+                | "ALCH"
+                | "AMMO"
+                | "ARMO"
+                | "BOOK"
+                | "INGR"
+                | "KEYM"
+                | "SCRL"
+                | "SLGM"
+                | "WEAP"
         )
     )
 }
@@ -1437,6 +1447,7 @@ mod tests {
 
     #[test]
     fn current_source_bound_assignment_replaces_stale_membership_for_a_moving_reference() {
+        assert!(assignment_follows_transform(Some("ACTI")));
         let connection = authored_database();
         insert_room(&connection, 1, 7, [0.0; 3]);
         insert_room(&connection, 2, 7, [0.0, 25.0, 0.0]);

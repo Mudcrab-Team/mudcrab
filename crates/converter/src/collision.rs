@@ -36,6 +36,39 @@ struct Block<'a> {
     bytes: &'a [u8],
 }
 
+/// Skin bounds must not assume a bind pose for independently simulated bones. Read dynamics
+/// independently of collision-layer/shape filtering: an unexported collider can still move a native bone.
+pub(crate) fn skin_pose_is_fixed(path: &Path) -> Result<bool> {
+    let bytes = fs::read(path)?;
+    let (mut data, header) = crate::mesh::parse_skyrim_header(&bytes, path)?;
+    for index in 0..header.block_count as usize {
+        let size = header.block_size_index[index] as usize;
+        let (raw, remaining) = data
+            .split_at_checked(size)
+            .ok_or_else(|| color_eyre::eyre::eyre!("truncated NIF block {index}"))?;
+        data = remaining;
+        let kind = header
+            .get_block_type(index)
+            .map_err(|_| color_eyre::eyre::eyre!("invalid NIF block type"))?;
+        if kind.ends_with("Constraint") || kind == "bhkRagdollSystem" {
+            return Ok(false);
+        }
+        if matches!(kind, "bhkRigidBody" | "bhkRigidBodyT") {
+            if raw.len() < BODY_MIN_LEN {
+                return Ok(false);
+            }
+            let mass = f32_at(raw, BODY_MASS)?;
+            if !mass.is_finite()
+                || classify(raw[BODY_MOTION_SYSTEM], raw[BODY_QUALITY_TYPE], mass)
+                    != BodyKind::Fixed
+            {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
 pub fn from_nif(path: &Path, nif: &NifFile) -> Result<CollisionAsset> {
     let bytes = fs::read(path)?;
     let (mut data, header) = crate::mesh::parse_skyrim_header(&bytes, path)?;
@@ -1413,6 +1446,40 @@ mod tests {
                 "offset {offset}"
             );
         }
+    }
+
+    #[test]
+    fn skin_pose_checks_dynamics_even_on_unexported_collision_layers() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("skin-bodies.nif");
+        let mut bytes = body_nif();
+        let (data, header) = crate::mesh::parse_skyrim_header(&bytes, &path).unwrap();
+        let mut offset = bytes.len() - data.len();
+        let mut bodies = Vec::new();
+        for index in 0..header.block_count as usize {
+            if matches!(
+                header.get_block_type(index).unwrap(),
+                "bhkRigidBody" | "bhkRigidBodyT"
+            ) {
+                bodies.push(offset);
+            }
+            offset += header.block_size_index[index] as usize;
+        }
+        assert!(!bodies.is_empty());
+        for &offset in &bodies {
+            bytes[offset + BODY_LAYER] = 20;
+            bytes[offset + BODY_MOTION_SYSTEM] = 5;
+            bytes[offset + BODY_QUALITY_TYPE] = 0;
+            bytes[offset + BODY_MASS..offset + BODY_MASS + 4]
+                .copy_from_slice(&0.0f32.to_le_bytes());
+        }
+        fs::write(&path, &bytes).unwrap();
+        assert!(skin_pose_is_fixed(&path).unwrap());
+        let offset = bodies[0];
+        bytes[offset + BODY_QUALITY_TYPE] = 4;
+        bytes[offset + BODY_MASS..offset + BODY_MASS + 4].copy_from_slice(&5.0f32.to_le_bytes());
+        fs::write(&path, bytes).unwrap();
+        assert!(!skin_pose_is_fixed(&path).unwrap());
     }
 
     fn body_nif() -> Vec<u8> {

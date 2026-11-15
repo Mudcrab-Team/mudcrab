@@ -187,6 +187,15 @@ impl MeshConverter {
         let (nif, diagnostics, material_contract) = open_nif_for_conversion(nif_path)?;
         let mut collision = collision::from_nif(nif_path, &nif)?;
         let declares_skin = declares_skin_type(&diagnostics);
+        let room_sphere = if !declares_skin
+            || (skeleton_path.is_none()
+                && unresolved_skin.is_none()
+                && collision::skin_pose_is_fixed(nif_path)?)
+        {
+            room_bounds::source_sphere(&nif)
+        } else {
+            None
+        };
         let skeleton = if declares_skin {
             match skeleton_path {
                 Some(skeleton_path) => Some(open_nif_for_conversion(skeleton_path)?.0),
@@ -359,7 +368,7 @@ impl MeshConverter {
             .collect();
         retain_bodies_for_written_glb(&mut collision, &glb, Some(&source_order))?;
         let mut glb = embed_collision(glb, &collision)?;
-        if !declares_skin && let Some(sphere) = room_bounds::source_sphere(&nif) {
+        if let Some(sphere) = room_sphere {
             let mut document = glb_json_from_bytes(&glb)?;
             document["extras"]["mudcrabRoomSphere"] = serde_json::json!({
                 "version": 1, "center": sphere.center, "radius": sphere.radius
@@ -4738,6 +4747,123 @@ mod tests {
         );
         nif.blocks[1] = NifBlock::Unhandled;
         assert!(room_bounds::source_sphere(&nif).is_none());
+    }
+
+    #[test]
+    fn leaf_roots_export_assignment_bounds_and_keep_child_geometry() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("leaf.nif");
+        let output = directory.path().join("leaf.glb");
+        let mut bytes = static_nif();
+        let old = b"BSFadeNode";
+        let start = bytes
+            .windows(old.len())
+            .position(|part| part == old)
+            .unwrap();
+        let name = b"BSLeafAnimNode";
+        bytes.splice(
+            start - 4..start + old.len(),
+            (name.len() as u32)
+                .to_le_bytes()
+                .into_iter()
+                .chain(name.iter().copied()),
+        );
+        fs::write(&input, bytes).unwrap();
+        let (nif, diagnostics, _) = open_nif_resilient(&input).unwrap();
+        assert!(diagnostics.fallback_blocks.is_empty());
+        assert_eq!(nif.blocks[0].as_node().unwrap().children, vec![1]);
+        let expected = room_bounds::source_sphere(&nif).unwrap();
+        MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+        let bytes = fs::read(output).unwrap();
+        let document = glb_json_from_bytes(&bytes).unwrap();
+        assert_eq!(
+            document["extras"]["mudcrabRoomSphere"]["radius"],
+            expected.radius
+        );
+        assert_eq!(
+            document["extras"]["mudcrabRoomSphere"]["center"],
+            serde_json::json!(expected.center)
+        );
+        let gltf = gltf::Gltf::from_slice(&bytes).unwrap();
+        assert_eq!(gltf.meshes().count(), 1);
+        assert_eq!(
+            gltf.meshes()
+                .next()
+                .unwrap()
+                .primitives()
+                .next()
+                .unwrap()
+                .indices()
+                .unwrap()
+                .count(),
+            6
+        );
+    }
+
+    #[test]
+    fn ordered_node_uses_fixed_sort_bound_only_when_both_flags_enable_it() {
+        use nom_derive::Parse;
+        use project_wormhole_nif::nif_block::{BSOrderedNode, NiAVObjectFlags};
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("source.nif");
+        fs::write(&input, static_nif()).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let expected = room_bounds::source_sphere(&nif).unwrap();
+        let root = nif.blocks[0].as_node().unwrap().clone();
+        nif.blocks[0] = NifBlock::BSOrderedNode(BSOrderedNode {
+            node: root,
+            alpha_sort_bound: [1000.0, 2000.0, 3000.0, 4000.0],
+            static_bound: 1,
+        });
+        assert_eq!(room_bounds::source_sphere(&nif), Some(expected));
+        let NifBlock::BSOrderedNode(node) = &mut nif.blocks[0] else {
+            unreachable!()
+        };
+        node.node.av.flags = NiAVObjectFlags::parse(&0x2000u32.to_le_bytes()).unwrap().1;
+        assert_eq!(
+            room_bounds::source_sphere(&nif),
+            Some(shared::room_assignment::ModelSphere {
+                center: [1000.0, 3000.0, -2000.0],
+                radius: 4000.0,
+            })
+        );
+        let NifBlock::BSOrderedNode(node) = &mut nif.blocks[0] else {
+            unreachable!()
+        };
+        node.static_bound = 0;
+        assert_eq!(room_bounds::source_sphere(&nif), Some(expected));
+    }
+
+    #[test]
+    fn empty_damage_stage_nodes_do_not_discard_an_assignment_bound() {
+        use project_wormhole_nif::nif_block::BSBlastNode;
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("source.nif");
+        fs::write(&input, static_nif()).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let expected = room_bounds::source_sphere(&nif).unwrap();
+        let mut empty = nif.blocks[0].as_node().unwrap().clone();
+        empty.children.clear();
+        let added = nif.blocks.len() as u32;
+        let NifBlock::BSFadeNode(root) = &mut nif.blocks[0] else {
+            unreachable!()
+        };
+        root.children.push(added);
+        nif.blocks.push(NifBlock::BSBlastNode(BSBlastNode {
+            node: empty,
+            minimum: 1,
+            maximum: 1,
+            current: 0,
+        }));
+        assert_eq!(room_bounds::source_sphere(&nif), Some(expected));
+        let NifBlock::BSBlastNode(stage) = &mut nif.blocks[added as usize] else {
+            unreachable!()
+        };
+        stage.node.children.push(1);
+        assert!(
+            room_bounds::source_sphere(&nif).is_none(),
+            "nonempty damage ranges remain unsupported"
+        );
     }
 
     fn static_nif() -> Vec<u8> {

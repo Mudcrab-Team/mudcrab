@@ -468,6 +468,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "skin-static-fallback",
     "object-texture-swap-geometry-index-v1",
     "native-room-assignment-spheres",
+    "leaf-ordered-and-static-skin-room-spheres",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
