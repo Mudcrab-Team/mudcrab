@@ -279,6 +279,9 @@ impl DiagnosticSummaryKey {
 pub struct PluginDiagnostics {
     pub skipped_records: u64,
     pub skipped_fields: u64,
+    /// Source identity/metadata changes observed after capturing usable plugin bytes.
+    #[serde(skip_serializing_if = "no_input_changes")]
+    pub input_changes: u64,
     pub unexpected_subrecords: u64,
     /// Links faithfully cleared when their targets are absent, disallowed or outside the master list.
     pub invalid_links: u64,
@@ -302,8 +305,13 @@ pub struct PluginDiagnostics {
     pub(crate) deferred_link_events: Option<Vec<decoder::DeferredLinkEvent>>,
 }
 
+/// Preserve the existing diagnostics JSON for unchanged source inputs.
+fn no_input_changes(count: &u64) -> bool {
+    *count == 0
+}
+
 impl PluginDiagnostics {
-    /// Summarize omitted records, fields and unexpected subrecords as bounded warnings.
+    /// Summarize data loss and changed snapshot sources as bounded warnings.
     pub(crate) fn warning_summary_lines(&self, plugin: &str) -> Vec<String> {
         let mut lines = Vec::new();
         if let Some(example) = ["record", "field", "unexpected"]
@@ -315,6 +323,14 @@ impl PluginDiagnostics {
                 self.skipped_records,
                 self.skipped_fields,
                 self.unexpected_subrecords
+            ));
+        }
+        if self.input_changes != 0
+            && let Some(example) = self.first_by_category.get("input")
+        {
+            lines.push(format!(
+                "warning: {plugin}: observed {} input changes (first: {example})",
+                self.input_changes
             ));
         }
         lines
@@ -347,6 +363,10 @@ impl PluginDiagnostics {
     /// Unrecognized recovery categories remain field-loss warnings rather than link notices.
     pub(crate) fn note(&mut self, category: &str, example: impl FnOnce() -> String) {
         let summary_category = match category {
+            "input" => {
+                self.input_changes += 1;
+                category
+            }
             "record" => {
                 self.skipped_records += 1;
                 category

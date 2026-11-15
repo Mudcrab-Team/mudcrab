@@ -1,8 +1,7 @@
-//! Memory-mapped framing with recoverable record errors and bounded inflation.
+//! Snapshot framing with recoverable record errors and bounded inflation.
 use super::PluginDiagnostics;
 use color_eyre::{Result, eyre::WrapErr};
 use flate2::{Decompress, FlushDecompress, Status};
-use memmap2::Mmap;
 use std::{fs::File, path::Path};
 
 /// A framed, inflated record before any schema interpretation or ID resolution.
@@ -55,20 +54,33 @@ pub(crate) fn scan_plugin(
     mut receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
 ) -> Result<()> {
     diagnostics.set_record(0, None, None, None, "framing");
-    let file = File::open(path).wrap_err_with(|| format!("open {}", path.display()))?;
-    if file.metadata()?.len() < 24 {
-        diagnostics.note("record", || "input shorter than TES4 header".into());
-        return Ok(());
-    }
-    // SAFETY: inputs are read-only for the conversion and the map is never exposed to a writer.
-    // An outside truncation or in-place rewrite would fault reads of the map; that risk is
-    // accepted here (#633).
-    let map = unsafe { Mmap::map(&file)? };
+    let input = (|| -> Result<_> {
+        let file = File::open(path).wrap_err_with(|| format!("open {}", path.display()))?;
+        let stamp = crate::source_input::SourceStamp::capture(&file)?;
+        let map = crate::source_input::map_input(&file, path)?;
+        Ok((file, stamp, map))
+    })();
+    let (file, stamp, map) = match input {
+        Ok(input) => input,
+        Err(error) => {
+            diagnostics.note("record", || {
+                format!("unusable input {}: {error:#}", path.display())
+            });
+            return Ok(());
+        }
+    };
     if map.len() < 24 || &map[..4] != b"TES4" {
         diagnostics.note("record", || "input has no complete TES4 header".into());
         return Ok(());
     }
     scan_bytes_observed(&map, diagnostics, &mut receive, &mut observe);
+    if let Err(error) = stamp.verify(&file, path) {
+        diagnostics.set_record(0, None, None, None, "input_stability");
+        diagnostics.event_context.action = Some("kept_snapshot");
+        diagnostics.note("input", || {
+            format!("{error:#}; retained the stable captured snapshot")
+        });
+    }
     Ok(())
 }
 

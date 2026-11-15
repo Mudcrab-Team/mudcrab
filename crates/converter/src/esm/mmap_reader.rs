@@ -6,12 +6,14 @@ use memmap2::Mmap;
 /// The smallest thing that can be a plugin: one TES4 record header.
 const MIN_PLUGIN_LENGTH: u64 = 24;
 
+/// A checked plugin snapshot with a stable read-only byte view.
 pub struct EsmReader {
     _file: File,
     mmap: Mmap,
 }
 
 impl EsmReader {
+    /// Open and validate captured bytes without mapping the source inode.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
         let file = File::open(path)?;
@@ -21,11 +23,9 @@ impl EsmReader {
             "{} is too small to be a plugin: {length} bytes, below the {MIN_PLUGIN_LENGTH} byte TES4 header",
             path.display()
         );
-        // SAFETY: read-only mapping of a plugin this process does not write while it is mapped.
-        // An outside truncation or in-place rewrite would fault reads of the map; that
-        // risk is accepted here (#633).
-        let mmap = unsafe { Mmap::map(&file)? };
-        // The map takes its own length: the file may have shrunk since the metadata check.
+        // Snapshot external bytes before exposing a stable read-only mapping.
+        let mmap = crate::source_input::map_input(&file, path)?;
+        // Validate the captured bytes as well as the initial source metadata.
         ensure!(
             mmap.len() as u64 >= MIN_PLUGIN_LENGTH,
             "{} shrank to {} bytes while it was being opened",
@@ -40,6 +40,7 @@ impl EsmReader {
         Ok(Self { _file: file, mmap })
     }
 
+    /// Borrow bytes whose backing storage cannot be changed by source-file edits.
     pub fn as_slice(&self) -> &[u8] {
         &self.mmap[..]
     }

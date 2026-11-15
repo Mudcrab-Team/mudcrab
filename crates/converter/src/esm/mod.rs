@@ -238,6 +238,7 @@ impl EsmParser {
     }
 
     /// Use one load-order mapping for merge/export and retain all printed reader summaries.
+    /// An input that becomes unusable after admission is skipped without changing neighboring slots.
     fn merge_plugins_with_load_order(
         plugin_paths: &[PathBuf],
         order: &load_order::LoadOrder,
@@ -254,7 +255,18 @@ impl EsmParser {
             // Final ID -> (source ID, whether its master index was out of range). Two different
             // source IDs that resolve to one final ID would silently replace each other.
             let mut sources: HashMap<u32, (u32, bool)> = HashMap::new();
-            let (records, parser_summaries) = parse_plugin_file_with_warnings(path)?;
+            let (records, parser_summaries) = match parse_plugin_file_with_warnings(path) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    let message = format!(
+                        "warning: {}: skipped unusable plugin input: {error:#}",
+                        order.names[priority]
+                    );
+                    eprintln!("{message}");
+                    summaries.push(message);
+                    continue;
+                }
+            };
             summaries.extend(parser_summaries);
             for mut record in records {
                 record.load_order = priority as u32;

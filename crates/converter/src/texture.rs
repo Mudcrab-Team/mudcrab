@@ -3,7 +3,6 @@ use color_eyre::{
     eyre::{WrapErr, ensure},
 };
 use ddsfile::{Caps2, D3DFormat, Dds, DxgiFormat, MiscFlag, PixelFormatFlags};
-use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, HashMap},
@@ -193,6 +192,7 @@ impl TextureConverter {
         )
     }
 
+    /// Convert a stable private DDS snapshot with explicit encoder settings.
     pub fn convert_dds_to_ktx2_with_options(
         input: &Path,
         output: &Path,
@@ -203,11 +203,9 @@ impl TextureConverter {
     ) -> Result<Ktx2Metadata> {
         let file =
             File::open(input).wrap_err_with(|| format!("failed to open {}", input.display()))?;
-        // SAFETY: read-only mapping of a texture input this process does not write while it is mapped.
-        // An outside truncation or in-place rewrite would fault reads of the map; that
-        // risk is accepted here (#633).
-        let mmap = unsafe { Mmap::map(&file) }
-            .wrap_err_with(|| format!("failed to memory-map {}", input.display()))?;
+        // Snapshot external bytes before exposing a stable read-only mapping.
+        let mmap = crate::source_input::map_input(&file, input)
+            .wrap_err_with(|| format!("failed to snapshot {}", input.display()))?;
 
         let ktx2 =
             Self::convert_with_options(&mmap, encoding, etc1s_quality, uastc_level, zstd_level)?;

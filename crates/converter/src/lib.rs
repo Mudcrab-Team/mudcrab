@@ -26,6 +26,7 @@ pub mod records;
 pub mod repair;
 mod reuse;
 pub mod script;
+mod source_input;
 pub mod streaming_costs;
 pub mod terrain_arrays;
 pub mod terrain_chunks;

@@ -17,7 +17,6 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, bail},
 };
-use memmap2::Mmap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -525,8 +524,8 @@ impl ArchiveExtractor {
     /// Inventories canonical paths without decompressing any payload.
     pub fn list_paths(archive_path: &Path) -> Result<Vec<PathBuf>> {
         let file = File::open(archive_path)?;
-        // SAFETY: this is a read-only mapping, held only while the archive is open.
-        let bytes = unsafe { Mmap::map(&file) }?;
+        // Snapshot external bytes before exposing a stable read-only mapping.
+        let bytes = crate::source_input::map_input(&file, archive_path)?;
         let seen = std::cell::RefCell::new(BTreeMap::new());
         let paths = std::cell::RefCell::new(Vec::new());
         let record = |name: &str| -> Result<bool> {
@@ -792,6 +791,7 @@ struct ExtractionWriteContext<'a, 'session> {
     ingestion: Option<&'a FreshIngestion<'session>>,
 }
 
+/// Extract selected entries from private archive bytes and report synchronized progress.
 fn extract_selected_with_sync_reporting(
     archive_path: &Path,
     output_root: &Path,
@@ -807,10 +807,9 @@ fn extract_selected_with_sync_reporting(
     } = writes;
     let file = File::open(archive_path)
         .wrap_err_with(|| format!("failed to open archive {}", archive_path.display()))?;
-    // SAFETY: the file remains open and the mapping is read-only for the duration
-    // of parsing. No process-local code mutates the archive while it is mapped.
-    let bytes = unsafe { Mmap::map(&file) }
-        .wrap_err_with(|| format!("failed to map archive {}", archive_path.display()))?;
+    // Snapshot external bytes before exposing a stable read-only mapping.
+    let bytes = crate::source_input::map_input(&file, archive_path)
+        .wrap_err_with(|| format!("failed to snapshot archive {}", archive_path.display()))?;
     let progress_lock = Mutex::new(());
 
     match bytes.get(..4) {

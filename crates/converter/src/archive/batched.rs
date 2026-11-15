@@ -1,7 +1,7 @@
 //! Durable archive batches. Packs are the canonical cache; ordinary blobs and
 //! VFS files can be recreated after an interrupted write or a power loss.
-//! The mapped source inode must remain immutable during extraction. Source
-//! replacement is detected before accepting either success or a partial run.
+//! Decoding uses a private source snapshot. Source replacement or edits are
+//! detected before accepting either success or a partial run.
 
 use super::{
     ArchiveSelection, ExtractOptions, ExtractedFile, ExtractionOutcome, ExtractionProgressCallback,
@@ -17,6 +17,7 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, bail, ensure},
 };
+#[cfg(test)]
 use memmap2::Mmap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -259,6 +260,7 @@ pub(super) fn extract(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Extract one archive from a private snapshot while preserving batch checkpoints.
 pub(super) fn extract_with_session(
     archive_path: &Path,
     output: &Path,
@@ -278,11 +280,9 @@ pub(super) fn extract_with_session(
     check_stop(stop)?;
     let hash_started = std::time::Instant::now();
     let file = File::open(archive_path)?;
-    // SAFETY: read-only mapping of archive input that this process only reads, for this scoped
-    // extraction. An outside truncation or in-place rewrite would fault reads of the map; that
-    // risk is accepted here (#633).
-    let bytes = unsafe { Mmap::map(&file) }?;
-    // Hash the exact inode decoded below; a path can be replaced between opens.
+    // Snapshot external bytes before exposing a stable read-only mapping.
+    let bytes = crate::source_input::map_input(&file, archive_path)?;
+    // Hash the captured bytes decoded below; later path replacements cannot alter them.
     let source_hash = hash_bytes(&bytes);
     let reader_version = archive_reader_version(&bytes);
     let mut timings = ExtractionTimings {
@@ -1059,6 +1059,7 @@ fn validate_pack_layout(
     Ok(layout)
 }
 
+/// Validate and restore a sealed pack through a private snapshot of its bytes.
 fn read_pack(
     path: &Path,
     source_hash: &str,
@@ -1071,10 +1072,8 @@ fn read_pack(
         (16..=(MAX_FILE_BYTES + MAX_INDEX_BYTES + 16) as u64).contains(&file_len),
         "archive pack size exceeds limit"
     );
-    // SAFETY: read-only mapping of a pack file this process does not write while it is mapped.
-    // An outside truncation or in-place rewrite would fault reads of the map; that
-    // risk is accepted here (#633).
-    let bytes = unsafe { Mmap::map(&file) }?;
+    // Snapshot external bytes before exposing a stable read-only mapping.
+    let bytes = crate::source_input::map_input(&file, path)?;
     ensure!(
         bytes.len() <= MAX_FILE_BYTES + MAX_INDEX_BYTES + 16,
         "archive pack exceeds payload limit"
@@ -1194,16 +1193,15 @@ pub(crate) fn prune_stale_reader_packs(
     Ok(())
 }
 
+/// Inspect a cached pack recipe without mapping mutable external storage.
 fn pack_reader_version(path: &Path, source_hash: &str, recipe: &str) -> Option<u32> {
     let file = File::open(path).ok()?;
     let file_len = file.metadata().ok()?.len();
     if !(16..=(MAX_FILE_BYTES + MAX_INDEX_BYTES + 16) as u64).contains(&file_len) {
         return None;
     }
-    // SAFETY: read-only mapping of a pack file this process does not write while it is mapped.
-    // An outside truncation or in-place rewrite would fault reads of the map; that
-    // risk is accepted here (#633).
-    let bytes = unsafe { Mmap::map(&file) }.ok()?;
+    // Snapshot external bytes before exposing a stable read-only mapping.
+    let bytes = crate::source_input::map_input(&file, path).ok()?;
     if bytes.len() < 16
         || bytes.len() > MAX_FILE_BYTES + MAX_INDEX_BYTES + 16
         || &bytes[..8] != PACK_MAGIC
@@ -1921,8 +1919,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn source_replacement_invalidates_only_new_or_repaired_checkpoint_packs() {
-        // Atomic replacement keeps the mapped inode immutable. In-place writes
-        // to the source would violate Mmap's safety contract and are not tested.
+        // Atomic replacement keeps the captured source bytes unchanged while
+        // final source verification rejects the changed pathname.
         for existing in ["missing", "verified", "corrupt"] {
             let directory = tempfile::tempdir().unwrap();
             let archive = fixture(
