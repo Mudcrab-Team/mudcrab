@@ -1,6 +1,33 @@
 use super::*;
 use shared::grass::{GRASS_CACHE_VERSION, GrassCell, GrassLayer, GrassQuadrant, GrassType};
 
+/// Compact staging retains every finite half value, including signed zero and subnormals.
+#[test]
+fn half_height_staging_preserves_literal_and_finite_values() {
+    for (height, bits) in [
+        (0.0, 0x0000),
+        (-0.0, 0x8000),
+        (1.0, 0x3c00),
+        (-2.0, 0xc000),
+        (f32::from_bits(0x3380_0000), 0x0001),
+        (f32::from_bits(0x3880_0000), 0x0400),
+        (16_400.0, 0x7401),
+        (65_504.0, 0x7bff),
+        (-65_504.0, 0xfbff),
+    ] {
+        assert_eq!(stage_height(height), bits);
+        assert_eq!(staged_height(bits).to_bits(), height.to_bits());
+    }
+    for bits in 0..=u16::MAX {
+        if bits & 0x7c00 == 0x7c00 {
+            continue;
+        }
+        let height = staged_height(bits);
+        assert_eq!(stage_height(height), bits);
+        assert_eq!(sampling::half_round(height).to_bits(), height.to_bits());
+    }
+}
+
 /// Z staging must respect the existing dense-worker retained allocation ceiling.
 #[test]
 fn dense_staging_respects_retained_allocation_budget() {

@@ -119,6 +119,34 @@ fn quantize(value: f32, span: f32) -> u16 {
     (value / span * 65535.0).round().clamp(0.0, 65535.0) as u16
 }
 
+/// Keep an already rounded, finite binary16 height in the unpublished Z lane.
+fn stage_height(height: f32) -> u16 {
+    debug_assert!(height.is_finite());
+    let bits = height.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let magnitude = bits & 0x7fff_ffff;
+    let exponent = (magnitude >> 23) as i32 - 112;
+    if exponent <= 0 {
+        sign | (height.abs() * 16_777_216.0) as u16
+    } else {
+        sign | ((exponent as u16) << 10) | ((magnitude >> 13) & 0x3ff) as u16
+    }
+}
+
+/// Restore the exact selected height before final cell-range quantization.
+fn staged_height(bits: u16) -> f32 {
+    let sign = u32::from(bits & 0x8000) << 16;
+    let exponent = u32::from((bits >> 10) & 31);
+    let fraction = u32::from(bits & 0x3ff);
+    debug_assert!(exponent < 31);
+    if exponent == 0 {
+        let magnitude = fraction as f32 * f32::from_bits(0x3380_0000);
+        f32::from_bits(sign | magnitude.to_bits())
+    } else {
+        f32::from_bits(sign | ((exponent + 112) << 23) | (fraction << 13))
+    }
+}
+
 /// Retain the binary16 world root before cell-local float subtraction loses low bits near zero.
 fn root_coordinates(value: f32, block: f32, cell: f32) -> (f32, f32) {
     let world = block + sampling::half_round(value - block);
@@ -301,7 +329,7 @@ fn generate_field<const OBSERVE: bool>(
         (cy / 12 * 12) as f32 * 4096.0,
     ];
     let mut rng = CellRandom::new(cx.wrapping_mul(cy) as u32);
-    let mut instances: BTreeMap<u32, Vec<(GrassInstance, f32)>> = BTreeMap::new();
+    let mut instances: BTreeMap<u32, Vec<GrassInstance>> = BTreeMap::new();
     let mut ordinal = 0u32;
     for quadrant in cell.quadrants.iter() {
         let q = usize::from(quadrant.quadrant);
@@ -422,7 +450,8 @@ fn generate_field<const OBSERVE: bool>(
                                 position: [
                                     quantize(px, GRASS_CELL_SIZE),
                                     quantize(py, GRASS_CELL_SIZE),
-                                    0, // finalized once all selected heights are known
+                                    // Temporary binary16 bits; finalized before publication.
+                                    stage_height(rounded_height),
                                 ],
                                 rotation: rotation(u4, rule.flags & 4 != 0),
                                 scale: ((1.0 + signed(u5) * range).clamp(0.0, 2.0) * 127.5).round()
@@ -461,10 +490,7 @@ fn generate_field<const OBSERVE: bool>(
                                 });
                             }
                             if !obstructed {
-                                instances
-                                    .entry(entry.id)
-                                    .or_default()
-                                    .push((instance, rounded_height));
+                                instances.entry(entry.id).or_default().push(instance);
                             }
                         }
                     }
@@ -495,17 +521,13 @@ fn generate_field<const OBSERVE: bool>(
         placement.instance.position[2] = quantize(placement.position[2] - height_min, height_span);
         observe(placement);
     }
-    for (id, values) in instances {
-        let mut values: Vec<GrassInstance> = values
-            .into_iter()
-            .map(|(mut instance, height)| {
-                instance.position[2] = quantize(height - height_min, height_span);
-                instance
-            })
-            .collect();
-        // In-place tuple collection can retain its 20-byte allocation for 16-byte instances.
-        // Release that staging slack before charging and publishing the persistent batch.
-        values.shrink_to_fit();
+    for (id, mut values) in instances {
+        for instance in &mut values {
+            let height = staged_height(instance.position[2]);
+            instance.position[2] = quantize(height - height_min, height_span);
+        }
+        // Keep and charge the actual 16-byte vector capacity. Tuple staging and
+        // shrinking temporarily duplicate allocations beyond the scratch budget.
         values.sort_by_key(GrassInstance::candidate_slot);
         let rule = cache.species(id).expect("generated species is mapped");
         result.bytes += values.capacity() * std::mem::size_of::<GrassInstance>()
