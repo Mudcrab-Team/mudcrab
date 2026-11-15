@@ -1096,6 +1096,17 @@ impl WaterExtension {
         self
     }
 
+    /// Shallow colour, Reflection Color, sun colour (linear) and the interior flag, for tests.
+    #[cfg(test)]
+    pub(crate) fn colours(&self) -> (Vec4, Vec4, Vec4, f32) {
+        (
+            self.settings.shallow_color,
+            self.settings.reflection_color,
+            self.settings.sun_color,
+            self.settings.depth_params.z,
+        )
+    }
+
     /// The noise layers' UV scales and amplitudes as the shader reads them, for tests.
     #[cfg(test)]
     pub(crate) fn noise(&self) -> (Vec4, Vec4) {

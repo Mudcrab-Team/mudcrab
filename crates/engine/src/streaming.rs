@@ -5424,8 +5424,12 @@ fn water_material(
         ),
         |colors| (colors.fresnel, colors.reflectivity),
     );
+    // The Water Multiplier is applied first: the colour setters that follow read it.
     let mut extension =
         WaterExtension::with_reflection_and_factors(reflection, flow_normal, fresnel, reflectivity)
+            .with_water_multiplier(multiplier)
+            .with_interior(interior)
+            .with_sun_color(crate::sky::WeatherLighting::SKYRIM_CLEAR_DAY.sunlight)
             .with_reflection_magnitude(
                 colors
                     .and_then(|colors| colors.reflection_magnitude)
@@ -5599,6 +5603,46 @@ mod tests {
                 exponent
             )
         );
+    }
+
+    #[test]
+    fn a_waters_colours_carry_the_weathers_multiplier_the_sun_colour_and_the_interior_flag() {
+        // RF-SHADER-007: Shallow, Deep and Reflection colours times the Water Multiplier, applied
+        // to all three (the deep one as the base colour).
+        let colors = WaterColors {
+            shallow: [200, 100, 50],
+            deep: [100, 200, 40],
+            reflection: [50, 60, 70],
+            fresnel: 0.1,
+            reflectivity: 0.8,
+            opacity: 50,
+            fog: None,
+            reflection_magnitude: None,
+            fnam: None,
+        };
+        let multiplier = crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER;
+        let material = water_material(Some(colors), Handle::default(), None, None, false);
+        let scaled = |rgb: [u8; 3]| {
+            Color::srgb(
+                f32::from(rgb[0]) / 255.0 * f32::from(multiplier[0]) / 255.0,
+                f32::from(rgb[1]) / 255.0 * f32::from(multiplier[1]) / 255.0,
+                f32::from(rgb[2]) / 255.0 * f32::from(multiplier[2]) / 255.0,
+            )
+            .to_linear()
+        };
+        let (shallow, reflection, sun, interior) = material.extension.colours();
+        assert!((shallow.x - scaled(colors.shallow).red).abs() < 1.0e-6);
+        assert!((reflection.y - scaled(colors.reflection).green).abs() < 1.0e-6);
+        let deep = material.base.base_color.to_linear();
+        assert!((deep.blue - scaled(colors.deep).blue).abs() < 1.0e-6);
+        // The sun colour is the weather's sunlight, and an exterior is not an interior.
+        let sunlight = crate::sky::WeatherLighting::SKYRIM_CLEAR_DAY
+            .sunlight
+            .to_linear();
+        assert!((sun.x - sunlight.red).abs() < 1.0e-6);
+        assert_eq!(interior, 0.0);
+        let indoors = water_material(Some(colors), Handle::default(), None, None, true);
+        assert_eq!(indoors.extension.colours().3, 1.0);
     }
 
     #[test]
