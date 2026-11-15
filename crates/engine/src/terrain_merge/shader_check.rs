@@ -133,6 +133,15 @@ struct View {
 struct Globals {
     time: f32,
 }
+struct DirectionalLight {
+    color: vec4<f32>,
+    direction_to_light: vec3<f32>,
+}
+struct Lights {
+    directional_lights: array<DirectionalLight, 1>,
+    n_directional_lights: u32,
+}
+@group(0) @binding(2) var<uniform> lights: Lights;
 @group(0) @binding(0) var<uniform> view: View;
 @group(0) @binding(1) var<uniform> globals: Globals;
 ";

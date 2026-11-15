@@ -5454,6 +5454,7 @@ fn water_material(
                 wind_direction: noise.wind_direction,
                 wind_speed: noise.wind_speed,
                 noise_falloff: noise.noise_falloff,
+                sun: noise.sun,
             },
         );
     }

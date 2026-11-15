@@ -1583,6 +1583,7 @@ fn setup_terrain_water_fixture(
                     .with_water_multiplier(
                         crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER,
                     )
+                    .with_sun_color(crate::sky::WeatherLighting::SKYRIM_CLEAR_DAY.sunlight)
                     .with_reflection_color(DEFAULT_WATER_REFLECTION_COLOR)
                     .with_body(
                         DEFAULT_WATER_SHALLOW_COLOR,

@@ -92,6 +92,19 @@ pub(crate) fn water_reflection_share(dist_t: f32, coverage: f32) -> f32 {
     (dist_t * WATER_SSR_INTENSITY * coverage).clamp(0.0, 1.0)
 }
 
+/// The two sun terms of the retail water pixel shader, before the sun colour (RF-WATER-010):
+/// `sat(R.sun)^specularPower * specularMagnitude + sat(N.(-0.099, -0.099, 0.99))^sparklePower *
+/// sparkleMagnitude`. `terms` is (specular power, specular magnitude, sparkle power, sparkle
+/// magnitude). A base of zero is floored so a power of zero gives the magnitude rather than NaN.
+#[cfg(test)]
+pub(crate) fn water_sun_terms(r_dot_sun: f32, n_dot_sparkle: f32, terms: [f32; 4]) -> f32 {
+    let floor = 1.0e-30_f32;
+    let term = |base: f32, power: f32, magnitude: f32| {
+        (power * base.clamp(0.0, 1.0).max(floor).log2()).exp2() * magnitude
+    };
+    term(r_dot_sun, terms[0], terms[1]) + term(n_dot_sparkle, terms[2], terms[3])
+}
+
 /// A phase below zero makes the shader run the waves on the frame clock instead of a phase the CPU
 /// uploaded, so an interactive run does not rewrite every water material every frame.
 pub(crate) const ANIMATED_WAVE_PHASE: f32 = -1.0;
@@ -828,6 +841,9 @@ pub struct WaterNoiseValues {
     pub wind_speed: [f32; 3],
     /// World units (`noiseFalloff`, `DNAM` +0x60).
     pub noise_falloff: f32,
+    /// Sun specular power, sun specular magnitude, sparkle power, sparkle magnitude (`DNAM` +0x10,
+    /// +0xCC, +0xE0, +0xC8; RF-WATER-010).
+    pub sun: [f32; 4],
 }
 
 impl WaterNoiseValues {
@@ -840,6 +856,7 @@ impl WaterNoiseValues {
             wind_direction: [0.0; 3],
             wind_speed: [0.0; 3],
             noise_falloff: DEFAULT_WATER_NOISE_FALLOFF,
+            sun: [0.0; 4],
         }
     }
 }
@@ -905,6 +922,12 @@ struct WaterSettings {
     /// lighting. How much of each effect is left at zero depth is `1 - value`; only the normals one
     /// is used.
     depth_control: Vec4,
+    /// x = sun specular power, y = its magnitude, z = sparkle power, w = its magnitude (WATR DNAM
+    /// +0x10, +0xCC, +0xE0, +0xC8; RF-WATER-010).
+    sun_terms: Vec4,
+    /// rgb = the sun colour `S` the terms are multiplied by (linear); the weather's sunlight
+    /// colour. The sun intensity `SunDir.w` is not traced and taken as 1 (#698). w unused.
+    sun_color: Vec4,
 }
 
 impl Default for WaterExtension {
@@ -927,6 +950,8 @@ impl Default for WaterExtension {
                 noise_uv_scale: Vec4::ZERO,
                 noise_amplitude: Vec4::ZERO,
                 depth_control: Vec4::ZERO,
+                sun_terms: Vec4::ZERO,
+                sun_color: Vec4::ZERO,
             },
             reflection: None,
             flow_normal: None,
@@ -990,6 +1015,8 @@ impl WaterExtension {
                 noise_uv_scale: Vec4::ZERO,
                 noise_amplitude: Vec4::ZERO,
                 depth_control: Vec4::ZERO,
+                sun_terms: Vec4::ZERO,
+                sun_color: Vec4::ZERO,
             },
             bed_depth: None,
             noise_normal_0: None,
@@ -1044,6 +1071,7 @@ impl WaterExtension {
         self.settings.noise_wind_speed = Vec4::new(speed[0], speed[1], speed[2], 0.0);
         // The retail clamp of the noise falloff (RF-SHADER-007).
         self.settings.depth_params.y = values.noise_falloff.clamp(1.0, 8191.0);
+        self.settings.sun_terms = Vec4::from_array(values.sun);
         let [first, second, third] = textures;
         self.noise_normal_0 = first;
         self.noise_normal_1 = second;
@@ -1055,6 +1083,14 @@ impl WaterExtension {
     #[cfg(test)]
     pub(crate) fn noise(&self) -> (Vec4, Vec4) {
         (self.settings.noise_uv_scale, self.settings.noise_amplitude)
+    }
+
+    /// Sets the sun colour the sun terms are multiplied by: the weather's sunlight colour
+    /// (RF-WATER-010, `S = SunDir.w * SunColor`, with `SunDir.w` taken as 1).
+    pub fn with_sun_color(mut self, color: Color) -> Self {
+        let linear = color.to_linear();
+        self.settings.sun_color = Vec4::new(linear.red, linear.green, linear.blue, 0.0);
+        self
     }
 
     /// Sets the weather's Water Multiplier (bytes). Call it before the colour setters: they apply it.
@@ -2620,6 +2656,44 @@ mod tests {
             .world_mut()
             .query_filtered::<Entity, (With<WaterReflectionCamera>, With<crate::sky::FogCamera>)>();
         assert_eq!(cameras.iter(app.world()).count(), 1);
+    }
+
+    #[test]
+    fn the_sun_terms_are_the_retail_specular_and_sparkle() {
+        // RF-WATER-010 with DefaultWater's fields: 1021 x 4.65 and 3521 x 2.89.
+        let terms = [1021.0, 4.65, 3521.0, 2.89];
+        // Perfect alignment gives each magnitude.
+        assert!((water_sun_terms(1.0, 1.0, terms) - (4.65 + 2.89)).abs() < 1.0e-5);
+        // The glint is a narrow lobe: a mirror direction one degree off the sun is nearly dark.
+        let one_degree = 1.0_f32.to_radians().cos();
+        assert!(water_sun_terms(one_degree, 0.0, terms) < 4.65 * 1.0e-2);
+        // The power falls with the angle and is monotonic.
+        let wide = water_sun_terms(0.9999, 0.0, terms);
+        let narrow = water_sun_terms(0.9995, 0.0, terms);
+        assert!(wide > narrow && narrow > 0.0);
+        // Pointing away from the sun adds nothing; an unlit water (power and magnitude 0, as in
+        // `LavaSettingsDUPLICATE001`) adds nothing and is not NaN.
+        assert_eq!(water_sun_terms(-0.5, -0.5, terms), 0.0);
+        let lava = water_sun_terms(0.3, 0.3, [0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(lava, 0.0);
+        // The sparkle direction is the retail literal in the engine's shader.
+        let source = include_str!("shaders/water.wgsl");
+        assert!(source.contains("vec3<f32>(-0.099, -0.099, 0.99)"));
+        assert!(source.contains("exp2(water.sun_terms.x * log2("));
+        assert!(source.contains("exp2(water.sun_terms.z * log2("));
+        // The material carries the record's four fields and the sun colour.
+        let water = WaterExtension::default()
+            .with_noise(
+                [None, None, None],
+                WaterNoiseValues {
+                    sun: terms,
+                    ..WaterNoiseValues::flat()
+                },
+            )
+            .with_sun_color(Color::srgb_u8(190, 181, 171));
+        assert_eq!(water.settings.sun_terms, Vec4::from_array(terms));
+        let expected = Color::srgb_u8(190, 181, 171).to_linear();
+        assert_eq!(water.settings.sun_color.x, expected.red);
     }
 
     #[test]

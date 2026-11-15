@@ -15,7 +15,7 @@
     forward_io::{VertexOutput, FragmentOutput},
     view_transformations::{depth_ndc_to_view_z, position_world_to_view},
 }
-#import bevy_pbr::mesh_view_bindings::{globals, view}
+#import bevy_pbr::mesh_view_bindings::{globals, lights, view}
 
 struct WaterSettings {
     // x = multiplier on the noise UV scales, y = multiplier on the wind speeds, z = multiplier on
@@ -50,6 +50,12 @@ struct WaterSettings {
     noise_amplitude: vec4<f32>,
     // DNAM depth properties: reflections, refraction, normals, specular lighting.
     depth_control: vec4<f32>,
+    // x = sun specular power, y = its magnitude, z = sparkle power, w = its magnitude (WATR DNAM
+    // +0x10, +0xCC, +0xE0, +0xC8; RF-WATER-010).
+    sun_terms: vec4<f32>,
+    // rgb = the sun colour the terms are multiplied by (linear), w unused. The sun intensity
+    // `SunDir.w` is not traced and is 1 (#698).
+    sun_color: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: WaterSettings;
@@ -83,6 +89,11 @@ const WATER_SSR_INTENSITY: f32 = 0.5;
 // The main pass's frame flag `w` in `distT = sat(lerp(w, 1, ratio))`. UNVERIFIED (#698); 1 makes
 // `distT` 1 at every distance, as the arithmetic does for any flag up to 4007 units.
 const WATER_FRAME_FLAG: f32 = 1.0;
+// The sparkle direction, a retail shader literal in Skyrim's frame (RF-WATER-010).
+const WATER_SPARKLE_DIRECTION: vec3<f32> = vec3<f32>(-0.099, -0.099, 0.99);
+// Floors the base of a power so log2 of a base of 0 does not give NaN (an engineering guard; the
+// retail shader writes exp2(power * log2(base)) without one).
+const WATER_POWER_FLOOR: f32 = 1.0e-30;
 
 // How far, in world units, the view ray travels through water before it reaches whatever opaque
 // lies behind this fragment; negative when that is unknown because this view has no bed-depth
@@ -255,8 +266,27 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let deep = pbr_input.material.base_color.rgb;
     let water_colour = mix(water.shallow_color.rgb, deep, body.x) / FRAMEBUFFER_RANGE;
     let coverage = a + m - a * m;
+    // The sun specular and sparkle (RF-WATER-010), added after the mix: spec =
+    // sat(R.sunDir)^power * magnitude, sparkle = sat(N.(-0.099, -0.099, 0.99))^power * magnitude,
+    // both times the sun colour S and the specular depth factor dS = lerp(1, sat(h / F),
+    // DepthControl.w), then divided by FramebufferRange like every constant-derived colour. R and N
+    // are the full normal's (no Reflection Magnitude), as in retail. The sun is the engine's first
+    // directional light; with none (an interior) the surface gets no sun, as in retail.
+    var sun = vec3<f32>(0.0);
+    if lights.n_directional_lights > 0u {
+        let sun_direction = lights.directional_lights[0].direction_to_light;
+        let mirror = reflect(view_direction, normal);
+        let spec_base = max(clamp(dot(mirror, sun_direction), 0.0, 1.0), WATER_POWER_FLOOR);
+        let sparkle_base = max(clamp(dot(normal_skyrim, WATER_SPARKLE_DIRECTION), 0.0, 1.0), WATER_POWER_FLOOR);
+        let spec = exp2(water.sun_terms.x * log2(spec_base)) * water.sun_terms.y;
+        let sparkle = exp2(water.sun_terms.z * log2(sparkle_base)) * water.sun_terms.w;
+        let specular_depth = water.depth_control.w * (body.z - 1.0) + 1.0;
+        sun = (spec + sparkle) * water.sun_color.rgb * specular_depth / FRAMEBUFFER_RANGE;
+    }
+    // The sun adds to the whole pixel, not through the coverage: dividing by the coverage before
+    // the blend multiplies it back, so the blended result gains exactly `sun`.
     var out: FragmentOutput;
-    out.color = vec4<f32>((water_colour * (1.0 - m) * a + reflection * m) / max(coverage, 1.0e-6), coverage);
+    out.color = vec4<f32>((water_colour * (1.0 - m) * a + reflection * m + sun) / max(coverage, 1.0e-6), coverage);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
 }
