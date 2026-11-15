@@ -1170,7 +1170,80 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
         Option<&'static bevy::pbr::MeshViewBindGroup>,
     );
     type ItemQuery = (Read<GrassPrimitive>, Read<GrassGpu>);
+    /// Bind grass resources and issue an instanced draw for the prepared primitive.
+    fn render<'w>(
+        phase: &P,
+        (offset, view, view_group, scene_group): QueryItem<'w, '_, Self::ViewQuery>,
+        item: Option<QueryItem<'w, '_, Self::ItemQuery>>,
+        (meshes, allocator, prepass_draws): SystemParamItem<'w, '_, Self::Param>,
+        pass: &mut TrackedRenderPass<'w>,
+    ) -> RenderCommandResult {
+        let Some((data, gpu)) = item else {
+            return RenderCommandResult::Skip;
+        };
+        let Some(mesh) = meshes.into_inner().get(&data.mesh) else {
+            return RenderCommandResult::Skip;
+        };
+        let allocator = allocator.into_inner();
+        let Some(vertices) = allocator.mesh_vertex_slice(&data.mesh.id()) else {
+            return RenderCommandResult::Skip;
+        };
+        let count = visible_instance_count(data, view.world_from_view.translation()) as u32;
+        if count == 0 {
+            return RenderCommandResult::Skip;
+        }
+        if std::any::TypeId::of::<P>() == std::any::TypeId::of::<AlphaMask3dPrepass>()
+            && !prepass_draws
+                .0
+                .lock()
+                .unwrap()
+                .insert((view.retained_view_entity, phase.entity()))
+        {
+            return RenderCommandResult::Skip;
+        }
+        if std::any::TypeId::of::<P>() == std::any::TypeId::of::<AlphaMask3d>() {
+            let Some(group) = scene_group else {
+                return RenderCommandResult::Skip;
+            };
+            pass.set_bind_group(0, &group.main, &group.main_offsets);
+            pass.set_bind_group(1, &group.binding_array, &[]);
+            pass.set_bind_group(2, &gpu.bind_group, &[]);
+        } else {
+            pass.set_bind_group(0, &view_group.0, &[offset.offset]);
+            pass.set_bind_group(1, &gpu.bind_group, &[]);
+        }
+        pass.set_vertex_buffer(0, vertices.buffer.slice(..));
+        pass.set_vertex_buffer(1, gpu.buffer.slice(..));
+        match &mesh.buffer_info {
+            RenderMeshBufferInfo::Indexed {
+                index_format,
+                count: index_count,
+            } => {
+                let Some(indices) = allocator.mesh_index_slice(&data.mesh.id()) else {
+                    return RenderCommandResult::Skip;
+                };
+                pass.set_index_buffer(indices.buffer.slice(..), *index_format);
+                pass.draw_indexed(
+                    indices.range.start..indices.range.start + index_count,
+                    vertices.range.start as i32,
+                    0..count,
+                );
+            }
+            RenderMeshBufferInfo::NonIndexed => pass.draw(vertices.range, 0..count),
+        }
+        if std::any::TypeId::of::<P>() == std::any::TypeId::of::<AlphaMask3d>() {
+            data.drawn.store(true, Ordering::Release);
+        }
+        RenderCommandResult::Success
+    }
+}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::gltf::GltfPrimitive;
+
+    include!("grass_render_alpha_tests.rs");
 
     #[test]
     fn frustum_uses_whole_cell_blade_reach_and_propagated_transform() {
