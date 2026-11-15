@@ -1937,6 +1937,9 @@ fn spawn_cell(
             if let Some(rgb) = reference.emittance {
                 entity.insert(crate::emittance::ReferenceEmittance::from_srgb(rgb));
             }
+            if let Some(swaps) = catalog.object_texture_swaps(reference.base_form_id) {
+                entity.insert(swaps);
+            }
             // A child of the reference, so the light sits where the reference is and follows it
             // through a render-origin rebase - and, because it is a descendant of the cell root,
             // through the cell unload that despawns the reference.
@@ -4642,6 +4645,7 @@ fn is_safe_relative_asset_path(path: &str) -> bool {
         .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
+/// Orders stored layers, supplying the configured implicit base for an unpainted quadrant.
 pub(crate) fn quadrant_layers(
     terrain: &TerrainSnapshot,
     quadrant: u8,
@@ -4653,6 +4657,21 @@ pub(crate) fn quadrant_layers(
         .collect();
     layers.sort_by_key(|layer| (!layer.is_base, layer.layer, layer.texture_form_id));
     if layers.is_empty() {
+        // The cell cache omits a quadrant with no texture assignments. It still draws Skyrim's
+        // configured default land, just like an explicit null BTXT base.
+        static DEFAULT_BASES: std::sync::LazyLock<[TerrainLayerSnapshot; 4]> =
+            std::sync::LazyLock::new(|| {
+                std::array::from_fn(|quadrant| TerrainLayerSnapshot {
+                    texture_form_id: shared::terrain_mesh::DEFAULT_LAND_TEXTURE_FORM_ID,
+                    quadrant: quadrant as u8,
+                    layer: 0,
+                    is_base: true,
+                    weights: Vec::new(),
+                })
+            });
+        if let Some(base) = DEFAULT_BASES.get(usize::from(quadrant)) {
+            layers.push(base);
+        }
         return Ok(layers);
     }
     let base_count = layers.iter().filter(|layer| layer.is_base).count();
@@ -4694,8 +4713,9 @@ pub(crate) fn quadrant_layers(
     Ok(layers)
 }
 
-/// Validates terrain geometry while retaining unresolved texture layers and their weights.
-/// Missing diffuse images use the same material fallback as normalized zero-ID layers.
+/// Validates geometry and warns once per missing nonzero diffuse ID per cell. Null bases use
+/// the pack's default images; zero overlays and unresolved nonzero layers retain their slots
+/// and weights without requesting a diffuse image or an orphan normal.
 fn validate_terrain_snapshot(
     terrain: &TerrainSnapshot,
     catalog: &AssetCatalog,
@@ -7742,11 +7762,15 @@ mod tests {
         assert!(quadrant_layers(&terrain, 0).is_err());
     }
 
+    /// A fully unpainted quadrant uses the same default as a null BTXT.
     #[test]
     fn accepts_textureless_official_land_quadrant() {
         let mut terrain = terrain_fixture(1, 0.0);
         terrain.layers.clear();
-        assert!(quadrant_layers(&terrain, 0).unwrap().is_empty());
+        let layers = quadrant_layers(&terrain, 0).unwrap();
+        assert_eq!(layers.len(), 1);
+        assert!(layers[0].is_base);
+        assert_eq!(layers[0].texture_form_id, 0);
     }
 
     /// Zero and unresolved nonzero overlays retain ordered weights while malformed geometry
@@ -9756,6 +9780,50 @@ mod tests {
             .add_systems(Update, spawn_queued_references);
         app.update();
         app
+    }
+
+    /// Appearance belongs to each placed base, including instances that share a model.
+    #[test]
+    fn object_texture_swap_input_attaches_to_each_placed_base() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("catalogue.db");
+        write_empty_catalogue(&path);
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute_batch(
+            "CREATE TABLE base_texture_swaps(base_id INTEGER,position INTEGER,shape_name TEXT,shape_index INTEGER,texture_set_id INTEGER,disposition TEXT);
+             INSERT INTO base_texture_swaps VALUES(513,0,'Rock:0',0,100,'texture_set');
+             INSERT INTO base_texture_swaps VALUES(514,0,'Rock:0',0,101,'texture_set');"
+        ).unwrap();
+        let mut app = spawn_reference_cell_app(
+            vec![
+                lit_reference(1, None, None),
+                lit_reference(2, None, None),
+                lit_reference(3, None, None),
+            ],
+            false,
+        );
+        app.insert_resource(AssetCatalog::open(&path).unwrap());
+        app.update();
+        let mut query = app.world_mut().query::<(
+            &FormId,
+            Option<&crate::object_materials::ReferenceTextureSwaps>,
+        )>();
+        let root = app.world().resource::<SpawnedCellRoot>().0.unwrap();
+        let rows: Vec<_> = app
+            .world()
+            .get::<Children>(root)
+            .unwrap()
+            .iter()
+            .filter_map(|entity| query.get(app.world(), entity).ok())
+            .map(|(id, swaps)| (id.0, swaps.is_some()))
+            .collect();
+        assert_eq!(rows.len(), 3);
+        for id in [1, 2, 3] {
+            assert!(
+                rows.contains(&(id, id != 3)),
+                "base-specific appearance input for reference {id}"
+            );
+        }
     }
 
     /// The documented actor catalog DDL (db-schema.md §18), as an in-memory fixture.
