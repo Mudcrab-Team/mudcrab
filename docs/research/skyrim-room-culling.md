@@ -62,10 +62,10 @@ Research checked on 2026-11-15:
   establishes explicit unbounded-space traversal in this SkyrimSE build.
 
 Skyrim's native compound-frustum interpreter evaluates unions and intersections of plane sets,
-including occluder exclusions. Our screen rectangles approximate visible regions and merge
-multiple paths conservatively, then discard those regions before individual mesh filtering.
-We do not implement the native per-node visibility map or unbounded-space traversal, which is
-why unresolved connections draw the whole cell instead of being ignored.
+including occluder exclusions. Our runtime now retains unions of convex portal volumes and tests
+individual transformed mesh bounds against them. Separate paths retain their apertures rather
+than filling the screen rectangle between them. We do not implement occluder exclusions or
+unbounded-space traversal, which is why unresolved connections still draw the whole cell.
 
 No reconstruction source was copied into the engine. No original Skyrim runtime comparison was
 performed. The native trace now establishes how room volumes reach object culling and how
@@ -121,10 +121,23 @@ The tutorial recommends measuring performance and limiting long chains of visibl
 
 ## Runtime choices
 
-The camera's containing rooms start a portal walk. Projected doorway rectangles narrow the view
-region along each path. Explicit room links pass the region through unchanged. Static references
-with one containing room are hidden only if none of their containing or overlapping rooms is
-reached. Flagged multibound references, actors, doors, activators and movable objects remain exempt. Shadows and
+The camera's containing rooms start with the camera frustum. Each portal polygon is clipped
+against its incoming volume. The aperture edges and the plane behind the doorway constrain the
+next volume. Each room retains a union of these convex volumes. Explicit room links pass the
+incoming volume unchanged. Perspective views use converging rays and orthographic views use
+parallel rays.
+
+For static references with one containing room, each mesh's current AABB is transformed into
+cell-local space using its full affine transform. It stays drawn if it intersects any volume of
+its containing or overlapping rooms. The plane support test handles rotation, nonuniform and
+negative scale, and shear. A touching or straddling bound stays visible even if its center is
+outside the aperture. Missing or invalid bounds and `NoFrustumCulling` skip aperture filtering
+while retaining the prior unreached-room rule.
+
+The walk accepts up to 16 independent contributions per room and 64 planes per volume. Exceeding
+either budget widens that room to the camera frustum and propagates the wider result. These are
+conservative engine work limits, not Skyrim's native operator budget. Flagged multibound
+references, actors, doors, activators, and movable objects retain their exemptions. Shadows and
 lights retain their independent visibility.
 
 Some shipped open halls have room boxes without any valid portal. Their geometry can expose a
@@ -156,3 +169,23 @@ whose database lacks the four optional room tables. Keep geometry and all other 
 identical. Compare repeated, settled captures at the same poses, including a portal-less hall and
 an exterior return. This exercises the actual missing-table fallback without adding a product
 flag. Mesh-list reduction alone does not establish image parity or an FPS improvement.
+
+[The focused volume poses](../../crates/engine/tests/fixtures/room-volume-shots.json) cover the
+portal apertures, open-hall fallbacks, a fully portal-bearing cell, and the exterior return used
+to verify the retained volumes and mesh-bound filter. Capture three alternating repetitions of
+each mode. Reject timed-out captures and frames with pending or failed room-graph reads.
+
+The volume update passed 1,421 engine library tests, with seven ignored. Its new system regression
+first failed because a reached room retained a mesh outside the aperture. The passing test also
+covers transformed cell roots, separate camera volumes, and explicit frustum opt-outs. The real
+visibility-schedule fixture now verifies transform propagation before testing mesh bounds.
+
+[The native validation record](room-visibility-volumes-20261115.json) records 36 sequence captures
+and six additional fresh-process fallback captures at 1400x1050 on Vulkan. Across all nine
+cross-mode image pairings, the four portal-culling poses and exterior return have zero persistent
+differing pixels at RGB threshold 8. The unculled open hall has six differing pixels in the
+sequence, with identical mesh lists in every run. Replaying that pose alone in fresh processes
+has zero persistent differing pixels. This supports a capture-history explanation for the small
+sequence difference rather than an aperture rejection. No capture timed out or retained pending
+or failed room-graph reads. The record retains this distinction rather than reporting every
+sequence image as identical.
