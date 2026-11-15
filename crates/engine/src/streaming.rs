@@ -7622,7 +7622,6 @@ mod tests {
                 grass_uploads_per_frame: 0,
                 ..default()
             })
-            .init_resource::<VisualProfile>()
             .insert_resource(RenderOrigin(IVec2::ZERO))
             .insert_resource(CellCache::open(&terrain_path).unwrap())
             .insert_resource(crate::world::grass_cache::GrassCache::open(&grass_path).unwrap())
