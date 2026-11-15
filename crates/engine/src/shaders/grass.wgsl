@@ -22,7 +22,7 @@ struct Grass {
     model_normal: mat4x4<f32>,
     color: vec4<f32>,
     height_wind: vec4<f32>,
-    // x fade start, y fade end, z output scale cb2[16].w (s4-grass-shader.md), w fade disabled.
+    // x fade start, y fade end, z output scale cb2[16].w (RF-SHADER-004, RF-SHADER-001), w fade disabled.
     fade: vec4<f32>,
     absolute_grid: vec4<f32>,
     sun_direction: vec4<f32>,
@@ -136,7 +136,7 @@ fn vertex(input: Vertex) -> Varyings {
     n = normalize((grass.model_normal * vec4(input.normal,0.0)).xyz);
 #endif
     // Retail grass lights each vertex with the instance's up axis, not the mesh normal
-    // (s4-grass-shader.md; RF-GRASS-006): the terrain normal with Fit to Slope, else straight up.
+    // (RF-SHADER-003): the terrain normal with Fit to Slope, else straight up.
     var instance_normal = vec3(0.0,1.0,0.0);
     var t = vec3(1.0,0.0,0.0);
     var handedness = 0.0;
@@ -211,7 +211,7 @@ fn coverage(alpha:f32,sample_index:u32) -> u32 {
 }
 struct Fragment { @location(0) color:vec4<f32>, @builtin(sample_mask) mask:u32 }
 // Direct light per vertex: DirLightColor * NdotL, evaluated on the instance normal
-// (s4-grass-shader.md). With the retail tuning defaults the direct response is saturate(N.L).
+// (RF-SHADER-003). With the retail tuning defaults the direct response is saturate(N.L).
 fn lighting(normal:vec3<f32>) -> vec3<f32> {
     return grass.sun_color.rgb * tuning_diffuse(normal,grass.sun_direction.xyz,grass.tuning_light,grass.tuning_surface);
 }
@@ -278,13 +278,17 @@ fn fragment(vertex_input:Varyings,@builtin(sample_index) sample_index:u32) -> Fr
     let base = textureSample(albedo,albedo_sampler,input.uv) * input.color;
     var out:Fragment;
     out.mask = coverage(base.a,sample_index);
-    // Retail grass pixel output (s4-grass-shader.md; RF-GRASS-006, RF-GRASS-005):
+    // Retail grass pixel output (RF-SHADER-003; shadow floor RF-GRASS-005):
     //   (NdotL * C * DirLightColor * albedo * lerp(0.3, 1, shadowMask) + C * AmbientColor * albedo) * cb2[16].w
     // `base` is albedo * C (vertex colour times the per-instance brightness); input.light is
     // NdotL * DirLightColor from the vertex shader; the shadow floor 0.3 is grass.tuning_surface.z
     // (fShadowClampValue); the ambient term is not shadowed; grass.fade.z is cb2[16].w, the
-    // renderer-wide output scale 1/FramebufferRange. Exposure and 1/pi convert the engine's
-    // physical light units; Skyrim's own light constants have no such factor.
+    // output scale 1/FramebufferRange (RF-SHADER-001, RF-SHADER-004). Only grass applies it
+    // today; terrain, sky and water do not (open question: does retail apply it there too?).
+    // Exposure and 1/pi: 1/pi is exact for the sun (it equals Bevy's Lambert for the sun
+    // illuminance). Bevy's own ambient has no 1/pi, so this ambient is about pi times darker
+    // than a Bevy PBR surface with the same ambient input. Retail has no such factor. The
+    // sun:ambient balance is unverified until the engine light units match retail (#706).
     let shadow = directional_shadow(input);
     let light = tuning_illumination(grass.ambient.rgb,input.light,shadow,view.exposure,grass.tuning_light,grass.tuning_surface,grass.tuning_specular);
     let visibility = grass.tuning_surface.z + (1.0-grass.tuning_surface.z)*mix(1.0,shadow,grass.tuning_surface.y);

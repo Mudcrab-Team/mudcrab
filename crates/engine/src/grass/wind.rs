@@ -1,8 +1,8 @@
 //! Retail grass wind math, from the reverse-engineered `SkyrimSE.exe` 1.7.104.
 //!
 //! Sources are the registry entries RF-GRASS-001, RF-GRASS-002 and RF-GRASS-003, and the
-//! retail vertex shader (`s4-grass-shader.md`, RF-GRASS-006, high confidence: the displacement
-//! formula and its literals 0.4, 1/128, 0.3, 0.2 and 0.5 are in the retail bytecode). The
+//! retail vertex shader (RF-SHADER-002, high confidence: the displacement formula and its
+//! literals 0.4, 1/128, 0.3, 0.2 and 0.5 are in the retail bytecode). The
 //! engine has no blended `WTHR` wind speed and no wind direction yet, so the shader does not
 //! displace blades: nothing calls these functions in a render path until a sourced `w` and a
 //! sourced wind direction exist.

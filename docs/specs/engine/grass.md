@@ -136,15 +136,24 @@ The color pass uses the camera's Bevy tone-mapping method, LUT and color grading
 for non-HDR targets, matching the color treatment of standard scene materials.
 HDR targets defer tone mapping to the later shared pass; depth remains colorless.
 This prevents exposed sunlight from clipping directly into an LDR target.
-Lighting follows the retail grass shader (`s4-grass-shader.md`, RF-GRASS-004, RF-GRASS-005,
-RF-GRASS-006, from the retail bytecode). The vertex shader computes `NdotL = saturate(N_instance . L)`
+Lighting follows the retail grass shader (RF-SHADER-003, RF-GRASS-004, RF-GRASS-005, from the
+retail bytecode). The vertex shader computes `NdotL = saturate(N_instance . L)`
 on the instance normal (the terrain normal with Fit to Slope, else straight up), and passes
 `C = vertexColor * instance brightness`. The pixel output is
 `(NdotL * C * DirLightColor * albedo * lerp(0.3, 1, shadowMask) + C * AmbientColor * albedo) * cb2[16].w`.
 The ambient term is not shadowed. 0.3 is `fShadowClampValue`. `cb2[16].w` is the renderer-wide
-output scale `1/FramebufferRange` (0.8333333; 1.0 when the fog distances are both 0), kept in
-`output_scale.rs` for every pass. The engine adds only its physical light-unit conversion
-(exposure and 1/pi). Authored blade normals and normal maps do not enter the lighting sum.
+output scale `1/FramebufferRange` (RF-SHADER-001; 0.8333333, or 1.0 when the retail fog
+distances are both 0, RF-SHADER-004), kept in `output_scale.rs`. The engine does not read the
+retail fog distances: a `DistanceFog` component on the camera (exterior, Fog setting on) stands
+in for them. This proxy is unverified. Turning the Fog setting off makes grass about 20 percent
+brighter (1.0 against 0.8333) while terrain does not change. Only grass applies the scale;
+terrain, sky and water do not. Whether retail applies it to those passes too is an open
+question, so grass may be 0.8333 of terrain strength relative to retail.
+The engine adds exposure and 1/pi. The 1/pi is exact for the sun (it equals Bevy's Lambert for
+the sun illuminance). Bevy's own ambient has no 1/pi, so grass ambient is about pi times darker
+than a Bevy PBR surface with the same ambient input. Retail has no such factor. The sun:ambient
+balance is unverified until the engine light units match retail (#706). Authored blade normals
+and normal maps do not enter the lighting sum.
 Flag masks are `0x01` Vertex Lighting, `0x02` Uniform Scaling and `0x04` Fit to Slope;
 the audited official grasses use `0x06`. Retail lights every vertex on the instance normal,
 so the Vertex Lighting flag does not change the lighting path.
@@ -160,7 +169,8 @@ terrain view bindings, cascades, filtering and normal/depth bias. Direct light
 and shadow sampling use the same first prepared directional light for the view,
 respecting Bevy's ordering and render layers. Shadow visibility multiplies only
 the direct sun term, retaining the existing ambient response and exposure:
-`(ambient + sun * Lambert * visibility) * exposure / pi`. With no directional
+`(ambient + sun * Lambert * visibility) * exposure / pi` (see the 1/pi note above: exact for
+the sun, not for the ambient). With no directional
 light there is no direct term; disabled shadows use visibility 1. Shadowing never
 changes texture/material alpha, sample coverage or depth-prepass cutouts. Grass
 still does not cast shadows or add local lights; this is not full PBR parity.
@@ -289,8 +299,9 @@ These are the fifteen honoured grass keys. All retain their `[Grass]` section.
 Every default is retail data. `SkyrimSE.exe` 1.7.104 stores one static INI
 `Setting` per key (vtable, 8-byte default, name pointer); the address below is that
 `Setting`. `fGrassMinStartFadeDistance` is the exception: the compiled value is 400.0
-and the shipped INI files override it with 0.0. A capture setup's `Skyrim.ini`
-(`iMinGrassSize=40`, `fGrassFadeRange=1766`, `bEnableGrassFade=0`) is not a default.
+and the shipped INI files override it with 0.0. A local `Skyrim.ini` with other values
+(`iMinGrassSize=40`, `fGrassFadeRange=1766`, `bEnableGrassFade=0`) differs from the exe
+defaults; the exe defaults are used.
 
 | Section | Key | Default | Default source | Engine use |
 | --- | --- | --- | --- | --- |
@@ -327,7 +338,7 @@ exact Skyrim placement, variation, animation or visual parity.
 
 ## Normal maps and authored wind weight
 
-Retail grass lighting does not sample a normal map (`s4-grass-shader.md`), so this frame does not
+Retail grass lighting does not sample a normal map (RF-SHADER-003), so this frame does not
 enter the lighting sum; it is kept for the authored data and the shadow bias.
 
 Static grass keeps authored positions, normals and UVs; the converter builds
@@ -373,13 +384,15 @@ angle weight to 1. The only retail number is the shadow floor `fShadowClampValue
 The optional `mode` is `flat` (default), `d` or `e`. D equals the default. E sets the sun
 angle weight to 0 for comparison. Scalar fields override the selected preset. Modes and scalars share the same hot-reload uniform path.
 
-For normalized authored blade normal N and sun direction L, let c=dot(N,L).
-The direct response is `mix(1,clamp((c+wrap)/(1+wrap),0,1),sun_angle_weight)
-+ backlight*max(-c,0)`. GRAS vertex-lighting retains the interpolated vertex
-response; otherwise the fragment evaluates its interpolated normal.
+For the normalized instance normal N (RF-SHADER-003: the terrain normal with Fit to Slope, else
+straight up) and sun direction L, let c=dot(N,L). The vertex shader computes the direct
+response `mix(1,clamp((c+wrap)/(1+wrap),0,1),sun_angle_weight) + backlight*max(-c,0)` once
+per vertex and interpolates it; the pixel shader does not re-evaluate it, and the GRAS Vertex
+Lighting flag does not select a path.
 Shadow visibility V is `shadow_floor + (1-shadow_floor) *
 mix(1,native_shadow,shadow_strength)`. D/E illumination is
-`(ambient*ambient_strength + sun*direct_response*sun_strength*V)*exposure/pi`.
+`(ambient*ambient_strength + sun*direct_response*sun_strength*V)*exposure/pi`, then times the
+output scale above (the exposure/pi note applies: exact for the sun, not for the ambient).
 Alpha coverage,
 terrain shadow filtering and display tone mapping retain the production paths.
 
@@ -392,7 +405,7 @@ terrain shadow filtering and display tone mapping retain the production paths.
 | wrap | 0 | 0..1 | Wrapped Lambert response above |
 | shadow_strength | 1 | 0..1 | Interpolate native visibility toward no shadow |
 | shadow_floor | .3 | 0..1 | Minimum visibility; retail `fShadowClampValue` (RF-GRASS-005) |
-| backlight | 0 | 0..1 | Add response from away-facing authored normals |
+| backlight | 0 | 0..1 | Add response when the instance normal faces away from the sun |
 | specular_strength | 0 | 0..1 | Dielectric GGX sun sheen multiplier (D/E) |
 | specular_roughness | .5 | .089..1 | Perceptual roughness, squared to GGX alpha |
 | saturation | 1 | 0..4 | Linear HDR saturation around Rec.709 luminance |
@@ -456,5 +469,5 @@ No experimental gamma or alternate placement switches are included.
 The default tuning mode is `flat`; `d` and `e` remain explicit named presets
 for comparisons. Omitted mode selects `flat`, including an empty TOML file.
 All production startup paths use the tuning uniforms; there is no shading
-experiment environment switch. Authored normal maps use the preserved glTF frame
-and one DirectX Y conversion, consistent with the ordinary native material path.
+experiment environment switch. Authored normal maps keep the preserved glTF frame and one
+DirectX Y conversion, but they do not enter the lighting sum (instance-normal lighting).
