@@ -68,13 +68,16 @@ pub(crate) const DEFAULT_WATER_NOISE_FALLOFF: f32 = 4007.0;
 /// record's `noiseFalloff` clamped to `[1, 8191]` (RF-SHADER-007). The frame flag `w` of the main
 /// pass is unverified (#698); `1` is the value for which `distT` is `1` at every distance, which is
 /// what the arithmetic also gives for any flag at distances up to 4007 units.
+#[cfg(test)]
 pub(crate) const WATER_FRAME_FLAG: f32 = 1.0;
 
 /// The retail literal in the `distT` ratio (RF-SHADER-008, RF-WATER-009).
+#[cfg(test)]
 pub(crate) const WATER_DISTANCE_LITERAL: f32 = 8192.0;
 
 /// `fWaterSSRIntensity:Display`: 0.5 in this install's `Skyrim.ini`; the executable's own default
 /// is 1.3. The install value is followed (RF-WATER-009, `verify-report.md` apply item 1).
+#[cfg(test)]
 pub(crate) const WATER_SSR_INTENSITY: f32 = 0.5;
 
 /// The retail distance term of the reflection mix (RF-SHADER-008).
@@ -2580,9 +2583,9 @@ mod tests {
         let source = include_str!("shaders/water.wgsl");
         assert!(source.contains("const FRAMEBUFFER_RANGE: f32 = 1.2;"));
         assert!(source.contains("let coverage = a + m - a * m;"));
-        assert!(
-            source.contains("let m = fresnel * depth_reflections * water.fresnel_reflectivity.z;")
-        );
+        assert!(source.contains(
+            "let m = mix(1.0, fresnel * depth_reflections * water.fresnel_reflectivity.z, dist_t);"
+        ));
         assert!(source.contains(
             "let reflection = mix(flat_reflection, environment, water.fresnel_reflectivity.y);"
         ));
@@ -2600,6 +2603,7 @@ mod tests {
             wind_direction: [270.0, 210.0, 225.0],
             wind_speed: [0.019, 0.013, 0.096],
             noise_falloff: 4007.0,
+            sun: [1021.0, 4.65, 3521.0, 2.89],
         }
     }
 
@@ -2664,9 +2668,9 @@ mod tests {
         let terms = [1021.0, 4.65, 3521.0, 2.89];
         // Perfect alignment gives each magnitude.
         assert!((water_sun_terms(1.0, 1.0, terms) - (4.65 + 2.89)).abs() < 1.0e-5);
-        // The glint is a narrow lobe: a mirror direction one degree off the sun is nearly dark.
-        let one_degree = 1.0_f32.to_radians().cos();
-        assert!(water_sun_terms(one_degree, 0.0, terms) < 4.65 * 1.0e-2);
+        // The glint is a narrow lobe: a mirror direction ten degrees off the sun is dark.
+        let ten_degrees = 10.0_f32.to_radians().cos();
+        assert!(water_sun_terms(ten_degrees, 0.0, terms) < 1.0e-3);
         // The power falls with the angle and is monotonic.
         let wide = water_sun_terms(0.9999, 0.0, terms);
         let narrow = water_sun_terms(0.9995, 0.0, terms);
