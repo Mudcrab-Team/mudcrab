@@ -569,8 +569,6 @@ fn attach_grass_primitives(
     }
 }
 
-
-
 #[allow(clippy::too_many_arguments)] // Independent ECS queries/resources are scheduled by Bevy.
 /// Update propagated grass uniforms and readiness after deferred batch/primitive admission.
 fn update_grass_uniforms(
@@ -2247,6 +2245,7 @@ mod tests {
                 start: 1000.0,
                 end: 2000.0,
             })
+            .init_resource::<GrassModels>()
             .init_resource::<GrassRenderMetrics>()
             .add_systems(Update, update_grass_uniforms);
         app.world_mut().spawn((
@@ -2482,17 +2481,20 @@ mod tests {
                 start: 1000.0,
                 end: 2000.0,
             })
+            .init_resource::<GrassModels>()
             .init_resource::<GrassRenderMetrics>()
             .add_systems(Update, update_grass_uniforms);
         app.world_mut()
             .spawn((StreamingCamera, GlobalTransform::IDENTITY));
-        let batch = app.world_mut().spawn(batch()).id();
+        let batch_entity = app.world_mut().spawn(batch()).id();
         let data = primitive();
         let proof = data.drawn.clone();
         app.world_mut().spawn((data, GlobalTransform::IDENTITY));
         app.update();
         assert!(!app.world().resource::<GrassRenderMetrics>().ready);
-        app.world_mut().entity_mut(batch).insert(GrassAttached);
+        app.world_mut()
+            .entity_mut(batch_entity)
+            .insert(GrassAttached);
         app.update();
         assert!(
             !app.world().resource::<GrassRenderMetrics>().ready,
@@ -2520,11 +2522,103 @@ mod tests {
             app.world().resource::<GrassRenderMetrics>().ready,
             "fully faded primitives require no draw"
         );
+        let mut failed = GrassModel {
+            handle: Handle::default(),
+            templates: None,
+            build: TemplateBuild::default(),
+            failed: false,
+        };
+        fail_model(
+            &mut failed,
+            &batch().model_path,
+            "missing",
+            &mut app.world_mut().resource_mut::<GrassRenderMetrics>(),
+        );
         app.world_mut()
-            .resource_mut::<GrassRenderMetrics>()
-            .failures = 1;
+            .resource_mut::<GrassModels>()
+            .0
+            .insert(batch().model_path, failed);
         app.update();
         assert!(!app.world().resource::<GrassRenderMetrics>().ready);
+    }
+
+    /// Failed-model history follows the requested batches across bad, healthy and returning views.
+    #[test]
+    fn failed_model_history_only_blocks_current_required_batches() {
+        let mut failed = GrassModel {
+            handle: Handle::default(),
+            templates: None,
+            build: TemplateBuild::default(),
+            failed: false,
+        };
+        let failed_path = "meshes/broken-grass.glb".to_owned();
+        let mut metrics = GrassRenderMetrics::default();
+        fail_model(&mut failed, &failed_path, "missing", &mut metrics);
+        let mut app = App::new();
+        app.insert_resource(GrassFade {
+            enabled: true,
+            start: 1000.0,
+            end: 2000.0,
+        })
+        .insert_resource(GrassModels(HashMap::from([(failed_path.clone(), failed)])))
+        .insert_resource(metrics)
+        .add_systems(Update, update_grass_uniforms);
+        app.world_mut()
+            .spawn((StreamingCamera, GlobalTransform::IDENTITY));
+        let data = primitive();
+        data.drawn.store(true, Ordering::Release);
+        app.world_mut().spawn((data, GlobalTransform::IDENTITY));
+
+        let mut bad_batch = batch();
+        bad_batch.model_path.clone_from(&failed_path);
+        let first = app.world_mut().spawn(bad_batch.clone()).id();
+        let second = app.world_mut().spawn(bad_batch.clone()).id();
+        app.update();
+        let renderer = app.world().resource::<GrassRenderMetrics>();
+        assert_eq!(
+            renderer.failures, 1,
+            "one failed model shared by two batches"
+        );
+        assert!(!renderer.ready);
+        let cpu = crate::grass::GrassMetrics {
+            ready: true,
+            ..default()
+        };
+        let mut counts = crate::shots::SettleCounts::default();
+        counts.read_grass(true, Some(&cpu), Some(renderer));
+        assert_eq!(counts.grass_failures, 1);
+        assert!(counts.grass_pending);
+
+        app.world_mut().despawn(first);
+        app.world_mut().despawn(second);
+        let healthy = app.world_mut().spawn((batch(), GrassAttached)).id();
+        app.update();
+        let renderer = app.world().resource::<GrassRenderMetrics>();
+        assert_eq!(
+            renderer.failures, 0,
+            "a healthy view must not inherit an earlier model failure"
+        );
+        assert!(renderer.ready, "the healthy attached batch has draw proof");
+        counts.read_grass(true, Some(&cpu), Some(renderer));
+        assert_eq!(counts.grass_failures, 0);
+        assert!(!counts.grass_pending);
+        assert!(
+            app.world().resource::<GrassModels>().0[&failed_path].failed,
+            "model failure history remains available for later views"
+        );
+
+        app.world_mut().despawn(healthy);
+        app.world_mut().spawn(bad_batch);
+        app.update();
+        let renderer = app.world().resource::<GrassRenderMetrics>();
+        assert_eq!(
+            renderer.failures, 1,
+            "a returning failed model still blocks"
+        );
+        assert!(!renderer.ready);
+        counts.read_grass(true, Some(&cpu), Some(renderer));
+        assert_eq!(counts.grass_failures, 1);
+        assert!(counts.grass_pending);
     }
 
     #[test]
