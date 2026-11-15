@@ -45,6 +45,7 @@ impl Plugin for NifMaterialPlugin {
         }
         crate::skin_material::build(app);
         app.register_type::<NifSourceMaterial>()
+            .register_type::<crate::object_materials::ObjectGeometryIndex>()
             .register_type::<NifNativeMaterialSource>()
             .register_type::<EffectPaletteDepthSource>()
             .register_type::<ExternalEmittance>()
@@ -665,12 +666,16 @@ impl GltfExtensionHandler for NativeMaterialHandler {
     fn on_spawn_mesh_and_material(
         &mut self,
         context: &mut LoadContext<'_>,
-        _primitive: &gltf::Primitive<'_>,
+        primitive: &gltf::Primitive<'_>,
         _mesh: &gltf::Mesh<'_>,
         material: &gltf::Material<'_>,
         entity: &mut EntityWorldMut,
         label: &str,
     ) {
+        if let Some(shape) = crate::object_materials::ObjectGeometryIndex::from_primitive(primitive)
+        {
+            entity.insert(shape);
+        }
         if has_external_emittance(material) {
             entity.insert(ExternalEmittance);
         }
@@ -745,7 +750,7 @@ mod palette_shader_check;
 
 #[cfg(test)]
 #[path = "nif_material/skin_load_tests.rs"]
-mod skin_load_tests;
+pub(crate) mod skin_load_tests;
 
 #[cfg(test)]
 #[path = "nif_material/skin_shader_check.rs"]
