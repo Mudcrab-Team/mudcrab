@@ -6,7 +6,7 @@
 //! `records.data`; the caller hands the merged record map in and gets rows back.
 
 use crate::esm::{extractors::SubrecordView, load_order::StableId, records::RawRecord};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// `DefaultRace`, the armature race every humanoid body is shared through.
 pub const DEFAULT_RACE_FORM_ID: u32 = 25;
@@ -177,6 +177,9 @@ pub struct ActorModelCatalog {
     pub parts: Vec<ActorModelPartRow>,
     /// Diagnostics, sorted by `(npc_id, reason)`.
     pub diagnostics: Vec<ActorModelDiagnostic>,
+    /// Read failures keyed by RACE FormID, once per race regardless of NPC count.
+    /// Full database exports persist these through the RACE omission projection.
+    pub race_authoring_errors: BTreeMap<u32, String>,
 }
 
 /// Resolves every `NPC_` base in `records` into a body/head catalog.
@@ -256,12 +259,20 @@ pub fn resolve_actor_models(
         let race_view = SubrecordView::new(&race.subrecords);
 
         let skin_id = effective_skin(records, &view, &race_view, id, &mut catalog);
-        let authoring = crate::animation::authoring::read_race_authoring_fields(
+        let authoring = match crate::animation::authoring::read_race_authoring_fields(
             race.subrecords
                 .iter()
                 .map(|(tag, data)| (tag.as_slice(), data.as_slice())),
-        )
-        .ok();
+        ) {
+            Ok(authoring) => Some(authoring),
+            Err(error) => {
+                catalog
+                    .race_authoring_errors
+                    .entry(race_id)
+                    .or_insert_with(|| format!("{error:#}"));
+                None
+            }
+        };
         let creature_project = authoring
             .and_then(|row| {
                 if female {

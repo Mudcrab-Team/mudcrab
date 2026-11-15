@@ -1617,10 +1617,10 @@ actors in their skin when it is absent or invalid.
 
 ### 19. Projection Omissions (`projection_omission_stats`, `projection_omission_samples`)
 
-The light and emittance projections write no row for a record whose data cannot supply one. Each
+The light, emittance and RACE animation projections write no row for a record whose data cannot supply one. Each
 skip is counted under a stable category, so the conversion report can account for it instead of
 a terminal message alone (#297). The categories come from `insert_light` and
-`insert_emittance_sources` in `crates/converter/src/esm/exporter.rs`; the code is
+`insert_emittance_sources`, and `race_authoring_rows` in `crates/converter/src/esm/exporter.rs`; the code is
 `crates/converter/src/esm/projection_omissions.rs`.
 
 ```sql
@@ -1631,7 +1631,7 @@ CREATE TABLE IF NOT EXISTS projection_omission_stats (   -- one row per category
 );
 CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, at most 8 per category
     category TEXT NOT NULL,
-    form_id INTEGER NOT NULL,      -- the LIGH, or the XEMI target
+    form_id INTEGER NOT NULL,      -- the omitted record, or the XEMI target
     reason TEXT NOT NULL,          -- human-readable detail, e.g. the DATA length
     PRIMARY KEY (category, form_id)
 ) WITHOUT ROWID;
@@ -1641,13 +1641,15 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 |---|---|---|
 | `light_missing_data` | `LIGH` without `DATA`: no `lights` row | data loss |
 | `light_short_data` | `LIGH` whose `DATA` is shorter than the 20 bytes the row needs: no `lights` row | data loss |
+| `race_unreadable_authoring` | `RACE` with unreadable animation model slots: no `race_animation_sources` row | data loss |
 | `emittance_target_absent` | `XEMI` target not in the load order, or deleted: no `emittance` row | fallback |
 | `emittance_light_unusable_data` | `XEMI` target `LIGH` without a usable `DATA`: no `emittance` row | fallback |
 | `emittance_region_no_weather` | `XEMI` target `REGN` whose `RDWT` names no weather: no `emittance` row | fallback |
 | `emittance_weather_no_lighting` | `XEMI` target `REGN` whose weather has no Effect Lighting colours: no `emittance` row | fallback |
 | `emittance_target_wrong_type` | `XEMI` target that is neither a `LIGH` nor a `REGN`: no `emittance` row | fallback |
 
-**Severity.** A light without a `lights` row loses a light the runtime would draw, so a
+**Severity.** A light without a `lights` row or a RACE without readable animation authoring loses
+a supported runtime projection. Each RACE is counted once, including when many NPCs use it. A
 `data_loss` category adds one line to the conversion's `warnings` and makes the output
 incomplete. A reference whose emittance target does not resolve keeps the model's own emission
 (section 16), the documented fallback, so a `fallback` category adds one line to `notices` and the

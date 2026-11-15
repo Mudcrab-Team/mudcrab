@@ -1010,9 +1010,14 @@ fn export_records(
         insert_actor_models(&tx, master)?;
         let (authoring, unreadable) = race_authoring_rows(master);
         for (id, error) in unreadable {
-            // The race keeps no animation row, as before; the warning names it.
-            eprintln!(
-                "warning: RACE {id:08X} has unreadable animation authoring and no race_animation_sources row: {error}"
+            // Count each RACE once, even when several NPCs use it. Canonical records and
+            // unrelated runtime views survive, while data loss reaches the integration report.
+            omissions.record(
+                OmissionCategory::RaceUnreadableAuthoring,
+                id,
+                format!(
+                    "RACE animation authoring is unreadable; no race_animation_sources row: {error}"
+                ),
             );
         }
         crate::animation::authoring::replace_race_projection(&tx, authoring)?;
