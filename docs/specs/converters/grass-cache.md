@@ -44,16 +44,6 @@ and preserves authored GNAM species order. Only the grass artifact is invalidate
 Version seven excludes bases whose winning record header has Is Marker set,
 using the existing `statics.flags` projection. Older grass masks rebuild; the
 database schema, archive layout and other asset/cache identities are unchanged.
-Version eight accompanies static NIF tangent-frame output (`TANGENT` XYZ and
-handedness) reconstructed from retained positions, normals and UVs. The native
-area-weighted frame follows U/V coordinates, rather than assuming the packed NIF
-axis labels match them. Native Bevy-compatible bitangent handedness and the
-existing DirectX normal-texture tag keep the normal decode consistent. Packed
-normal textures use lossless linear RGBA8, retaining every supplied mip. Mesh
-and texture settings proofs invalidate earlier converted bytes; the grass cache
-rebuilds under the new producer version, including its 128-unit contact band.
-Vertex RGBA remains intact. Degenerate optional UV frames warn and are omitted;
-geometry remains usable and runtime can fall back to position/UV derivatives.
 Incomplete grass rules and missing model paths are skipped; unresolved/deleted
 species links are silently filtered. Raw database records remain available for diagnostics.
 Incomplete or invalid rules that have a model, and invalid terrain cells, produce
@@ -207,13 +197,3 @@ in the same transaction as the repaired assets and database.
 If `cell_cache_preserved.rkyv` is absent, normal conversion regenerates the full
 terrain projection. Metadata rebuild is another route when a complete verified
 asset pack is available; repair never substitutes the capped runtime terrain cache.
-
-## Optional ground-contact policy
-
-The native 128-unit band keeps intersections from terrain minus 8 through terrain
-plus 128, including ties. It derives from the measured terrestrial grass envelope
-(94.49 units), rounded to the 32-unit mask grid plus one interval of margin.
-Elevated surfaces above that band release their mask samples; grounded parts of
-the same model still block. Tall aquatic grass is outside that measured envelope.
-The dependency discriminator invalidates warm masks. This policy is prepared
-separately pending visual acceptance; it is not a category/model denylist.

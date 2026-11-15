@@ -1907,11 +1907,8 @@ fn reusable_manifest(
                     }
                 }
             }
-            // Combined metadata proofs cannot establish the lossless-normal recipe
-            // or fixed-producer mesh contracts. Require each kind's explicit proof.
-            matched
-                && kind != "dds"
-                && (kind != "nif" || !crate::cache::mesh_output_contracts_apply(producer))
+            // Combined metadata proofs cannot name fixed-producer mesh contracts.
+            matched && (kind != "nif" || !crate::cache::mesh_output_contracts_apply(producer))
         };
         compatible.insert(
             kind,
@@ -6807,18 +6804,9 @@ mod tests {
         );
     }
 
-    /// Historical combined proofs retain scripts without relabeling texture or mesh contracts.
+    /// An adapter-10 combined proof preserves DDS/PEX candidates but cannot prove NIF contracts.
     #[test]
-    fn adapter10_combined_asset_proof_reuses_only_pex_without_relabeling() {
-        assert_historical_combined_asset_proof(10);
-    }
-
-    #[test]
-    fn adapter11_combined_asset_proof_reuses_only_pex_without_relabeling() {
-        assert_historical_combined_asset_proof(11);
-    }
-
-    fn assert_historical_combined_asset_proof(adapter: u32) {
+    fn adapter10_combined_asset_proof_reuses_dds_and_pex_but_excludes_nif_without_relabeling() {
         let directory = tempfile::tempdir().unwrap();
         let mut config = PipelineConfig::new(
             directory.path().join("Data"),
@@ -6826,7 +6814,7 @@ mod tests {
         );
         config.record_reader = crate::config::RecordReader::Inhouse;
         let mut identity = crate::esm::inhouse::reader_identity(config.record_reader);
-        identity["adapter_version"] = serde_json::json!(adapter);
+        identity["adapter_version"] = serde_json::json!(10);
         let historical = serde_json::json!({
             "schema": CONVERTER_SCHEMA_VERSION,
             "texture_etc1s_quality": config.texture_fallback_quality,
@@ -6876,17 +6864,28 @@ mod tests {
         let reused = reusable_manifest(&config, manifest.clone()).unwrap();
         assert_eq!(
             reused.entries,
-            [(
-                "scripts/prior.pex".into(),
-                CacheEntry {
-                    source_hash: "native-script-proof".into(),
-                    output: "scripts/prior.luau".into(),
-                    output_hash: "script-byte-proof".into(),
-                    output_size: 389,
-                },
-            )]
+            [
+                (
+                    "textures/prior.dds".into(),
+                    CacheEntry {
+                        source_hash: "native-texture-proof".into(),
+                        output: "textures/prior.ktx2".into(),
+                        output_hash: "texture-byte-proof".into(),
+                        output_size: 251,
+                    },
+                ),
+                (
+                    "scripts/prior.pex".into(),
+                    CacheEntry {
+                        source_hash: "native-script-proof".into(),
+                        output: "scripts/prior.luau".into(),
+                        output_hash: "script-byte-proof".into(),
+                        output_size: 389,
+                    },
+                ),
+            ]
             .into(),
-            "combined metadata proof must retain PEX provenance and exclude unproven DDS/NIF"
+            "combined metadata proof must retain DDS/PEX provenance and exclude unproven NIF"
         );
         assert_eq!(reused.schema_version, CONVERTER_SCHEMA_VERSION);
         assert_eq!(reused.configuration_hash, recorded);
@@ -6970,14 +6969,15 @@ mod tests {
                     ..Default::default()
                 };
                 let reused = reusable_manifest(&config, manifest.clone()).unwrap();
-                // A combined proof cannot name the lossless-normal DDS recipe or the mesh
-                // contracts, so only the script proof stays reusable.
-                assert_eq!(reused.entries.len(), 1, "{reader:?}/{language}");
+                assert_eq!(reused.entries.len(), 2, "{reader:?}/{language}");
+                assert_eq!(
+                    reused.entries["textures/prior.dds"],
+                    manifest.entries["textures/prior.dds"]
+                );
                 assert_eq!(
                     reused.entries["scripts/prior.pex"],
                     manifest.entries["scripts/prior.pex"]
                 );
-                assert!(!reused.entries.contains_key("textures/prior.dds"));
                 assert!(!reused.entries.contains_key("meshes/prior.nif"));
                 assert_eq!(reused.configuration_hash, recorded);
                 let mut changed = config.clone();

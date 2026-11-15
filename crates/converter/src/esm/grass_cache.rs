@@ -1112,6 +1112,8 @@ fn exclusion_mask(
         f64::from(quadrant % 2) * size,
         f64::from(quadrant / 2) * size,
     ];
+    // The 64 by 64 grid (32 Creation units per sample) is an engineering approximation of the
+    // mask resolution, not a value taken from the retail engine.
     let step = size / GRASS_EXCLUSION_SIDE as f64;
     for reference in refs {
         if !reference.enabled {
@@ -1215,7 +1217,9 @@ fn exclusion_mask(
     mask
 }
 
-/// Ground-contact band in Creation units: measured terrestrial envelope plus one mask interval.
+/// Old precacher upward-ray policy, expressed in Creation XY/Z coordinates.
+/// No retail trace or REA registry entry (RF-GRASS) sources the -8 and +8192 window. The values
+/// come from the earlier precacher's policy and stay unverified against the retail engine.
 fn triangle_covers(t: Triangle, p: DVec3) -> bool {
     let a = t[1] - t[0];
     let b = t[2] - t[0];
@@ -1230,7 +1234,7 @@ fn triangle_covers(t: Triangle, p: DVec3) -> bool {
         return false;
     }
     let height = t[0].z + u * a.z + v * b.z;
-    height >= p.z - 8.0 && height <= p.z + 128.0
+    height >= p.z - 8.0 && height <= p.z + 8192.0
 }
 
 /// Interpolate the rendered LAND triangle topology at a cell-relative Creation XY position.
@@ -1263,7 +1267,6 @@ fn input_hash(
 ) -> Result<[u8; 32]> {
     let mut hash = Sha256::new();
     hash.update(b"MudCrab grass cell inputs\0");
-    hash.update(b"native-ground-contact-band128-v1");
     hash.update(GRASS_CACHE_VERSION.to_le_bytes());
     hash.update(coordinate.0.to_le_bytes());
     hash.update(coordinate.1.to_le_bytes());
@@ -2247,7 +2250,7 @@ mod tests {
             "v6 marker masks must never be reused"
         );
         let cache = read(&output);
-        assert_eq!(cache.version, shared::grass::GRASS_CACHE_VERSION);
+        assert_eq!(cache.version, 7);
         assert!(cache.cells.iter().all(|cell| {
             cell.quadrants
                 .iter()
@@ -2770,32 +2773,5 @@ mod tests {
             layers[0].weights[117], 0.25,
             "bare overlay still attenuates grassy base"
         );
-    }
-}
-
-#[cfg(test)]
-mod ground_contact_band_tests {
-    use super::*;
-    #[test]
-    fn ground_contact_band_keeps_ties_and_releases_elevated_surfaces() {
-        for (height, expected) in [
-            (-8.001, false),
-            (-8.0, true),
-            (40.0, true),
-            (128.0, true),
-            (128.001, false),
-            (500.0, false),
-        ] {
-            let triangle = [
-                DVec3::new(0.0, 0.0, height),
-                DVec3::new(4.0, 0.0, height),
-                DVec3::new(0.0, 6.0, height),
-            ];
-            assert_eq!(
-                triangle_covers(triangle, DVec3::new(1.0, 2.0, 0.0)),
-                expected,
-                "height {height}"
-            );
-        }
     }
 }

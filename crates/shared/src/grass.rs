@@ -2,9 +2,10 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// Version eight accompanies preserved grass tangent frames and lossless packed normals.
-pub const GRASS_CACHE_VERSION: u32 = 8;
+/// Version seven excludes marker-flagged bases using their persisted winning record headers.
+pub const GRASS_CACHE_VERSION: u32 = 7;
 pub const GRASS_BLEND_SIDE: usize = 17;
+/// Mask samples per quadrant side (32 Creation units each). An engineering approximation, not a retail value.
 pub const GRASS_EXCLUSION_SIDE: usize = 64;
 pub const GRASS_CELL_SIZE: f32 = 4096.0;
 
