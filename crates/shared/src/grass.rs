@@ -2,8 +2,8 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// Version nine limits permanent obstruction masks to static-like bases.
-pub const GRASS_CACHE_VERSION: u32 = 9;
+/// Version ten applies supported placed-STAT MODS visibility to obstruction masks.
+pub const GRASS_CACHE_VERSION: u32 = 10;
 pub const GRASS_BLEND_SIDE: usize = 17;
 pub const GRASS_EXCLUSION_SIDE: usize = 64;
 pub const GRASS_CELL_SIZE: f32 = 4096.0;

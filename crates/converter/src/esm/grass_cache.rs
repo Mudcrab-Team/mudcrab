@@ -128,9 +128,13 @@ struct ReferenceBounds {
     scale: f32,
     model_path: String,
     source_hash: [u8; 32],
+    /// Resolved NullTextureSet indices eligible for the current runtime swap path.
+    hidden_shapes: Vec<u32>,
 }
 
 type Triangle = [DVec3; 3];
+/// One model after the placed base's effective MODS visibility exclusions.
+type GeometryKey = (String, Vec<u32>);
 const GEOMETRY_BUDGET: usize = 64 * 1024 * 1024;
 
 mod enable;
@@ -149,20 +153,27 @@ mod review_tests;
 #[cfg(test)]
 mod placement_tests;
 
+#[cfg(test)]
+mod object_texture_tests;
+
 /// Fingerprints and evaluated offsets survive eviction; retained triangles have a byte budget.
 struct GeometryCache {
     #[cfg(test)]
     decodes: usize,
     potential_skins: HashMap<String, bool>,
+    swappable_shapes: HashMap<String, std::collections::BTreeSet<u32>>,
     reference_offsets: HashMap<u32, [DVec3; 2]>,
     expanded_cells: std::collections::BTreeSet<u32>,
     expanded_quadrants: std::collections::BTreeSet<(u32, u8)>,
     root: std::path::PathBuf,
     hashes: HashMap<String, [u8; 32]>,
     failures: BTreeMap<String, String>,
+    /// Read failures learned before geometry inspection remain optional model omissions.
+    unavailable_models: std::collections::BTreeSet<String>,
     /// Failed gets for the cell currently being baked, including memoized failures.
     cell_failures: std::collections::BTreeSet<String>,
-    meshes: HashMap<String, (Arc<Vec<Triangle>>, u64)>,
+    meshes: HashMap<GeometryKey, (Arc<Vec<Triangle>>, u64)>,
+    failed_meshes: std::collections::BTreeSet<GeometryKey>,
     bytes: usize,
     clock: u64,
     source_changed: bool,
@@ -175,14 +186,17 @@ impl GeometryCache {
             #[cfg(test)]
             decodes: 0,
             potential_skins: HashMap::new(),
+            swappable_shapes: HashMap::new(),
             reference_offsets: HashMap::new(),
             expanded_cells: Default::default(),
             expanded_quadrants: Default::default(),
             root: root.canonicalize()?,
             hashes: HashMap::new(),
             failures: BTreeMap::new(),
+            unavailable_models: Default::default(),
             cell_failures: Default::default(),
             meshes: HashMap::new(),
+            failed_meshes: Default::default(),
             bytes: 0,
             clock: 0,
             source_changed: false,
@@ -196,27 +210,34 @@ impl GeometryCache {
             match result {
                 Ok(bytes) => {
                     // Classification reads JSON only; corrupt containers stay spatially bounded.
-                    let skin = (|| -> Option<bool> {
-                        let glb = gltf::binary::Glb::from_slice(&bytes).ok()?;
-                        let json: serde_json::Value = serde_json::from_slice(&glb.json).ok()?;
-                        Some(
-                            json.get("nodes")?
-                                .as_array()?
-                                .iter()
-                                .any(|node| node.get("skin").is_some()),
-                        )
-                    })()
-                    .unwrap_or(false);
+                    let document = gltf::binary::Glb::from_slice(&bytes).ok().and_then(|glb| {
+                        serde_json::from_slice::<serde_json::Value>(&glb.json).ok()
+                    });
+                    let skin = document
+                        .as_ref()
+                        .and_then(|json| json.get("nodes"))
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|nodes| nodes.iter().any(|node| node.get("skin").is_some()));
                     self.potential_skins.insert(path.to_owned(), skin);
+                    self.swappable_shapes.insert(
+                        path.to_owned(),
+                        document
+                            .as_ref()
+                            .map(swappable_geometry_indices)
+                            .unwrap_or_default(),
+                    );
                     self.hashes
                         .insert(path.to_owned(), Sha256::digest(&bytes).into());
                 }
                 Err(error) => {
+                    self.unavailable_models.insert(path.to_owned());
                     self.hashes.insert(
                         path.to_owned(),
                         Sha256::digest(b"unavailable obstruction model").into(),
                     );
                     self.potential_skins.insert(path.to_owned(), false);
+                    self.swappable_shapes
+                        .insert(path.to_owned(), Default::default());
                     self.failures.insert(path.to_owned(), format!("{error:#}"));
                 }
             }
@@ -236,14 +257,21 @@ impl GeometryCache {
         Ok(std::fs::read(file)?)
     }
 
-    /// Decode eligible solid triangles with bounded retention and per-model diagnostics.
+    /// Inspect the unchanged model variant in focused geometry tests.
+    #[cfg(test)]
     fn get(&mut self, path: &str) -> Option<Arc<Vec<Triangle>>> {
+        self.get_with_hidden(path, &[])
+    }
+
+    /// Decode one visibility variant with bounded retention and per-model diagnostics.
+    fn get_with_hidden(&mut self, path: &str, hidden: &[u32]) -> Option<Arc<Vec<Triangle>>> {
+        let key = (path.to_owned(), hidden.to_vec());
         self.clock += 1;
-        if let Some((mesh, stamp)) = self.meshes.get_mut(path) {
+        if let Some((mesh, stamp)) = self.meshes.get_mut(&key) {
             *stamp = self.clock;
             return Some(Arc::clone(mesh));
         }
-        if self.failures.contains_key(path) {
+        if self.unavailable_models.contains(path) || self.failed_meshes.contains(&key) {
             self.cell_failures.insert(path.to_owned());
             return None;
         }
@@ -267,7 +295,7 @@ impl GeometryCache {
             {
                 self.decodes += 1;
             }
-            Ok(Arc::new(model_triangles(&bytes)?))
+            Ok(Arc::new(model_triangles_with_hidden(&bytes, hidden)?))
         })();
         match result {
             Ok(mesh) => {
@@ -286,12 +314,12 @@ impl GeometryCache {
                 // A single oversized mesh is processed transiently, never added to the cache.
                 if bytes <= GEOMETRY_BUDGET {
                     self.bytes += bytes;
-                    self.meshes
-                        .insert(path.to_owned(), (Arc::clone(&mesh), self.clock));
+                    self.meshes.insert(key, (Arc::clone(&mesh), self.clock));
                 }
                 Some(mesh)
             }
             Err(error) => {
+                self.failed_meshes.insert(key);
                 self.hashes
                     .entry(path.to_owned())
                     .or_insert_with(|| Sha256::digest(b"unavailable obstruction model").into());
@@ -301,6 +329,211 @@ impl GeometryCache {
             }
         }
     }
+}
+
+/// Resolve the current runtime's last-entry-per-index MODS visibility from projected rows.
+/// A later retexture or missing target restores the original visible shape.
+fn read_mods_hidden_shapes(conn: &Connection) -> Result<HashMap<u32, Vec<u32>>> {
+    let present: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='base_texture_swaps')",
+        [], |row| row.get(0),
+    )?;
+    if !present {
+        return Ok(HashMap::new());
+    }
+    let mut statement = conn.prepare(
+        "SELECT base_id,shape_index,disposition FROM base_texture_swaps ORDER BY base_id,position",
+    )?;
+    let mut latest = BTreeMap::<u32, BTreeMap<u32, bool>>::new();
+    for row in statement.query_map([], |row| {
+        Ok((
+            row.get::<_, u32>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })? {
+        let (base, index, disposition) = row?;
+        if let Ok(index) = u32::try_from(index) {
+            latest
+                .entry(base)
+                .or_default()
+                .insert(index, disposition == "null_texture_set");
+        }
+    }
+    Ok(latest
+        .into_iter()
+        .map(|(base, indices)| {
+            (
+                base,
+                indices
+                    .into_iter()
+                    .filter_map(|(index, hidden)| hidden.then_some(index))
+                    .collect(),
+            )
+        })
+        .collect())
+}
+
+/// Mirror the current standard-material MODS path's known material-binding exclusions.
+/// Native standard materials still participate; depth/skin/palette wrappers and external
+/// emittance keep their rendered shape, as the runtime swap query does.
+fn standard_mods_surface(material: Option<&serde_json::Value>) -> bool {
+    let Some(material) = material else {
+        return true;
+    };
+    let tag = material.pointer("/extras/openSkyrim");
+    let flags1 = tag
+        .and_then(|tag| tag.get("shaderFlags1"))
+        .and_then(serde_json::Value::as_u64);
+    if flags1.is_some_and(|flags| flags & (1 << 29) != 0) {
+        return false;
+    }
+    let flags2 = tag
+        .and_then(|tag| tag.get("shaderFlags2"))
+        .and_then(serde_json::Value::as_u64);
+    if let (Some(flags1), Some(flags2)) = (flags1, flags2) {
+        let (flags1, flags2) = (flags1 as u32, flags2 as u32);
+        let depth_test = flags1 & (1 << 31) != 0;
+        let depth_write = flags2 & 1 != 0;
+        let decal = flags1 & ((1 << 26) | (1 << 27)) != 0;
+        let blend = material
+            .get("alphaMode")
+            .and_then(serde_json::Value::as_str)
+            == Some("BLEND");
+        if decal || !depth_test || (!depth_write && !blend) {
+            return false;
+        }
+    }
+    let model_space = tag
+        .and_then(|tag| tag.get("normalConvention"))
+        .and_then(serde_json::Value::as_str)
+        == Some("model_space");
+    if model_space && material.get("normalTexture").is_some() {
+        return false;
+    }
+    let extension = material.pointer("/extensions/OPEN_SKYRIM_material");
+    let shader = extension
+        .and_then(|extension| extension.get("lightingShaderType"))
+        .and_then(serde_json::Value::as_str);
+    if !model_space
+        && shader == Some("hair_tint")
+        && extension
+            .and_then(|extension| extension.get("tintColor"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|colour| {
+                colour.len() >= 3
+                    && colour[..3].iter().all(|channel| {
+                        channel
+                            .as_f64()
+                            .is_some_and(|value| (value as f32).is_finite())
+                    })
+            })
+    {
+        return false;
+    }
+    // Converter tags name lighting shapes. Keep known palette wrappers visible when
+    // independently authored tags accompany the effect-material palette contract.
+    if let Some(extension) = extension
+        && extension
+            .get("shaderFamily")
+            .and_then(serde_json::Value::as_str)
+            == Some("effect")
+        && extension
+            .get("shaderFlags1")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|flags| flags & ((1 << 4) | (1 << 5)) != 0)
+        && extension
+            .get("textureSlots")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|slots| {
+                slots.iter().any(|slot| {
+                    slot.get("semantic").and_then(serde_json::Value::as_str) == Some("greyscale")
+                        && slot
+                            .get("texture")
+                            .and_then(serde_json::Value::as_u64)
+                            .is_some()
+                })
+            })
+    {
+        return false;
+    }
+    true
+}
+
+/// Read eligible geometry tags without decoding triangle or skin buffers.
+fn swappable_geometry_indices(document: &serde_json::Value) -> std::collections::BTreeSet<u32> {
+    let materials = document
+        .get("materials")
+        .and_then(serde_json::Value::as_array);
+    document
+        .get("meshes")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|mesh| {
+            mesh.get("primitives")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|primitive| {
+            let index = u32::try_from(
+                primitive
+                    .pointer("/extras/mudcrabGeometryIndex")?
+                    .as_u64()?,
+            )
+            .ok()?;
+            let material = primitive
+                .get("material")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|index| usize::try_from(index).ok())
+                .and_then(|index| materials?.get(index));
+            standard_mods_surface(material).then_some(index)
+        })
+        .collect()
+}
+
+/// Apply proven per-shape MODS hiding through the existing invisible-primitive cleanup.
+fn model_triangles_with_hidden(bytes: &[u8], hidden: &[u32]) -> Result<Vec<Triangle>> {
+    if hidden.is_empty() {
+        return model_triangles(bytes);
+    }
+    let mut container = gltf::binary::Glb::from_slice(bytes)?;
+    let mut document: serde_json::Value = serde_json::from_slice(&container.json)?;
+    if let Some(meshes) = document
+        .get_mut("meshes")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for mesh in meshes {
+            if let Some(primitives) = mesh
+                .get_mut("primitives")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for primitive in primitives {
+                    let index = primitive
+                        .pointer("/extras/mudcrabGeometryIndex")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|index| u32::try_from(index).ok());
+                    if index.is_some_and(|index| hidden.binary_search(&index).is_ok())
+                        && let Some(extras) = primitive
+                            .get_mut("extras")
+                            .and_then(serde_json::Value::as_object_mut)
+                    {
+                        let exclusion = extras
+                            .entry("openSkyrim")
+                            .or_insert_with(|| serde_json::json!({}));
+                        if !exclusion.is_object() {
+                            *exclusion = serde_json::json!({});
+                        }
+                        exclusion["materialExclusion"] =
+                            serde_json::json!("STAT MODS NullTextureSet");
+                    }
+                }
+            }
+        }
+    }
+    container.json = std::borrow::Cow::Owned(serde_json::to_vec(&document)?);
+    model_triangles(&container.to_vec()?)
 }
 
 /// The glTF reader assumes valid binary layouts even after JSON validation.
@@ -608,6 +841,9 @@ pub fn write_grass_cache_with_cancel(
         check_cancel()?;
         geometry.fingerprint(&reference.model_path);
         reference.potential_skin = geometry.potential_skins[&reference.model_path];
+        reference
+            .hidden_shapes
+            .retain(|index| geometry.swappable_shapes[&reference.model_path].contains(index));
     }
     for reference in &references {
         if reference.potential_skin {
@@ -918,6 +1154,7 @@ fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize, usize, Option
 
 /// Collect eligible exterior obstruction bounds and count references lacking valid bounds.
 fn read_reference_bounds(conn: &Connection) -> Result<(Vec<ReferenceBounds>, usize)> {
+    let hidden_shapes = read_mods_hidden_shapes(conn)?;
     let mut enable = enable::EnableStates::new(conn)?;
     let mut statement = conn.prepare("SELECT s.model_path,base.record_type FROM \"references\" r JOIN statics s ON s.id=r.base_form_id LEFT JOIN records base ON base.form_id=r.base_form_id WHERE r.is_exterior=1 AND (COALESCE(s.flags,0) & ?1)=0 AND COALESCE(s.bounds_valid,0)=0")?;
     let mut unbounded = 0;
@@ -998,6 +1235,11 @@ fn read_reference_bounds(conn: &Connection) -> Result<(Vec<ReferenceBounds>, usi
             scale,
             model_path,
             source_hash,
+            hidden_shapes: if kind.as_deref() == Some("STAT") {
+                hidden_shapes.get(&base_id).cloned().unwrap_or_default()
+            } else {
+                Vec::new()
+            },
         });
     }
     Ok((references, unbounded))
@@ -1188,7 +1430,9 @@ fn exclusion_mask(
         {
             continue;
         }
-        let Some(triangles) = geometry.get(&reference.model_path) else {
+        let Some(triangles) =
+            geometry.get_with_hidden(&reference.model_path, &reference.hidden_shapes)
+        else {
             continue;
         };
         let q = shared::coordinates::creation_euler_to_runtime_quaternion(reference.rotation);
@@ -1349,6 +1593,10 @@ fn input_hash(
         hash.update(reference.id.to_le_bytes());
         hash.update(reference.base_id.to_le_bytes());
         hash.update(reference.source_hash);
+        hash.update((reference.hidden_shapes.len() as u64).to_le_bytes());
+        for index in &reference.hidden_shapes {
+            hash.update(index.to_le_bytes());
+        }
         for value in reference.min.iter().chain(reference.max.iter()) {
             hash.update(value.to_le_bytes());
         }
