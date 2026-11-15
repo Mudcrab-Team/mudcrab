@@ -1210,6 +1210,11 @@ fn setup_water_reflection(mut commands: Commands, mut images: ResMut<Assets<Imag
         DepthPrepass,
         OcclusionCulling,
         RenderLayers::from_layers(REFLECTION_VIEW_LAYERS),
+        // The mirrored terrain carries the same scene fog as the direct view. Retail reads the
+        // already-fogged frame for its screen-space reflection (RF-WATER-009, RF-WATER-011: the
+        // fog is the scene fog). That the reflection should be fogged is REASONED from the SSR
+        // source, not traced: no reflection-fog setting was found (medium confidence).
+        crate::sky::FogCamera,
         WaterReflectionCamera,
     ));
 }
@@ -2601,6 +2606,20 @@ mod tests {
         // Fractions wrap at tile edges; a step this small does not cross one for these directions.
         let toward = -(after - before);
         toward.x.atan2(toward.y).to_degrees().rem_euclid(360.0)
+    }
+
+    #[test]
+    fn the_reflection_camera_carries_the_scene_fog() {
+        // RF-WATER-009 / RF-WATER-011 (reasoned, medium confidence): the mirrored terrain is fogged
+        // like the direct view, so the reflection camera is a FogCamera.
+        let mut app = App::new();
+        app.init_resource::<Assets<Image>>()
+            .add_systems(Startup, setup_water_reflection);
+        app.update();
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<Entity, (With<WaterReflectionCamera>, With<crate::sky::FogCamera>)>();
+        assert_eq!(cameras.iter(app.world()).count(), 1);
     }
 
     #[test]
