@@ -214,3 +214,15 @@ an occluder, a named override, `NONE`, and a moving object crossing a room bound
 The [existing policy report](skyrim-room-culling.md) records converter evidence and Mudcrab's
 earlier verification. Those captures compare Mudcrab with its own full-render control. They
 do not substitute for an original-runtime comparison.
+
+## Implementation after this research
+
+The first implementation replaces room booleans with unions of convex portal volumes and
+tests each eligible mesh's transformed AABB against its membership volumes. It preserves
+separate paths, clips portal polygons, and supports perspective and orthographic views.
+The native sphere test and our transformed AABB test can retain different conservative false
+positives, so identical submitted-object lists are not guaranteed by this implementation.
+The [current policy report](skyrim-room-culling.md#runtime-choices) describes the work limits,
+fallbacks, and exemptions. The table above remains a comparison against baseline `8624434`.
+Unbounded space, authored shared ownership, occluders, full assignment, and pass ownership
+remain separate work. This change does not claim exact Skyrim clipping or traversal parity.
