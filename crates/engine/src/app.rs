@@ -2366,7 +2366,7 @@ fn sun_rotation(config: &EngineConfig, direction: Option<Vec3>) -> Quat {
     let Some((azimuth_degrees, elevation_degrees)) = config.sun_position else {
         return match direction {
             Some(direction) => Quat::from_rotation_arc(Vec3::Z, direction),
-            None => Quat::IDENTITY,
+            None => crate::sun::NO_SUN_ROTATION,
         };
     };
     let azimuth = azimuth_degrees.to_radians();

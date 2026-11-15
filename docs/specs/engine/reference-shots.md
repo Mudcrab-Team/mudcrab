@@ -142,8 +142,12 @@ default of that setting, so the same formula runs: `fSunXExtreme` 400, `fSunYExt
 confirmed against the exe settings dump: record addresses 0x14209e940, 0x14209e958, 0x14209e970,
 0x14209e988, 0x14209e9a0, with the value at record + 8). A world without a usable climate timing has
 no sunrise or sunset, so no sun path applies and its sun has no authored direction (identity
-rotation). Retail worlds always carry climate timing, so this is not retail behaviour and affects
-only fixtures and benchmarks (a test-only path).
+rotation), both at startup and when travel enters such a world, so lighting does not depend on
+travel history. Retail worlds always carry climate timing, so this is not retail behaviour and
+affects only fixtures and benchmarks (a test-only path). A fade that makes the day window 24 hours
+or longer (for example `fSunAlphaTransTime` 14 with the 33/60/96/123 TNAM) is reported once with a
+warning that names the value and the climate; that world also gets no sun path, and no recovery
+value is invented.
 Invalid record/INI fields warn and are ignored.
 `--sun-position` remains a fixed explicit bearing/elevation override. Capture-frame receipts
 include the actual clock and engine-space toward-sun vector.

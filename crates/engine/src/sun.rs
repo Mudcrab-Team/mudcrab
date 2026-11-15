@@ -220,21 +220,67 @@ impl GameClock {
 #[derive(Component)]
 pub struct SunLight;
 
-/// Resolve the active world's climate timing and the pack's five GMSTs (retail exe defaults for a
-/// missing GMST), then apply explicit INI keys. `None` means the world has no climate timing, so no
-/// sunrise or sunset exists and no sun path applies. Retail worlds always carry climate timing, so
-/// this is not retail behaviour: it affects only fixtures and benchmarks without a pack (a
-/// test-only path).
+/// The sun rotation of a world that has no sun path: no authored direction exists, so the light
+/// keeps Bevy's own orientation and nothing is invented. Retail worlds always carry climate
+/// timing, so this is not retail behaviour (a fixture and benchmark path). Setup and the runtime
+/// update both use it, so lighting never depends on travel history.
+pub const NO_SUN_ROTATION: Quat = Quat::IDENTITY;
+
+/// The climate form id, timing and settings that decide the active world's sun path: the pack's
+/// five GMSTs (retail exe defaults for a missing GMST) with explicit INI keys applied. `None` means
+/// the world has no climate timing, so no sunrise or sunset exists.
+fn world_sun_inputs(
+    config: &EngineConfig,
+    catalog: Option<&EnvironmentCatalog>,
+    worldspace: u32,
+) -> Option<(u32, SunTiming, SunSettings)> {
+    let catalog = catalog?;
+    let climate = catalog.worldspace_climate(worldspace)?;
+    let timing = catalog.sun_timing(climate)?;
+    let settings = SunSettings::resolve(catalog.sun_settings(), config.sun_settings_overrides);
+    Some((climate, timing, settings))
+}
+
+/// Resolve the active world's sun direction. `None` means no sun path applies: the world has no
+/// climate timing, or `sun_path_problem` reports an incompatible fade.
 pub fn world_sun_direction(
     config: &EngineConfig,
     hour: f64,
     catalog: Option<&EnvironmentCatalog>,
     worldspace: u32,
 ) -> Option<Vec3> {
-    let catalog = catalog?;
-    let timing = catalog.sun_timing(catalog.worldspace_climate(worldspace)?)?;
-    let settings = SunSettings::resolve(catalog.sun_settings(), config.sun_settings_overrides);
+    let (_, timing, settings) = world_sun_inputs(config, catalog, worldspace)?;
     sun_direction(hour, timing, settings)
+}
+
+/// A climate whose timing cannot hold the resolved `fSunAlphaTransTime`: the fade window
+/// `A = riseMid - T/2` to `B = setMid + T/2` must be shorter than 24 hours.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SunPathProblem {
+    pub climate: u32,
+    pub transition: f32,
+    pub window_hours: f64,
+}
+
+/// Report why a world with climate timing gets no sun path. No recovery value is invented: the
+/// world keeps `NO_SUN_ROTATION` and the caller warns.
+pub fn sun_path_problem(
+    config: &EngineConfig,
+    catalog: Option<&EnvironmentCatalog>,
+    worldspace: u32,
+) -> Option<SunPathProblem> {
+    let (climate, timing, settings) = world_sun_inputs(config, catalog, worldspace)?;
+    if SunDay::new(timing, settings).is_some() {
+        return None;
+    }
+    let [rise_begin, rise_end, set_begin, set_end] = timing.0.map(|v| f64::from(v) / 6.0);
+    let transition = settings.0[4];
+    Some(SunPathProblem {
+        climate,
+        transition,
+        window_hours: (set_begin + set_end) * 0.5 - (rise_begin + rise_end) * 0.5
+            + f64::from(transition),
+    })
 }
 
 /// Advance before rendering; no allocations or database access occur per frame.
@@ -250,6 +296,7 @@ pub(crate) fn update_sun(
     catalog: Option<Res<EnvironmentCatalog>>,
     space: Option<Res<ActiveSpace>>,
     mut sun: Query<&mut Transform, With<SunLight>>,
+    mut reported: Local<Option<SunPathProblem>>,
 ) {
     clock.advance(time.delta_secs_f64());
     if config.sun_position.is_some() {
@@ -258,11 +305,29 @@ pub(crate) fn update_sun(
     let worldspace = space.as_deref().map_or(config.worldspace_id, |s| {
         s.exterior_worldspace(config.worldspace_id)
     });
-    let Some(direction) = world_sun_direction(&config, clock.hour, catalog.as_deref(), worldspace)
-    else {
-        return;
+    let direction = world_sun_direction(&config, clock.hour, catalog.as_deref(), worldspace);
+    let rotation = match direction {
+        Some(direction) => {
+            *reported = None;
+            Quat::from_rotation_arc(Vec3::Z, direction)
+        }
+        None => {
+            // Report an incompatible fade once per distinct problem, never every frame.
+            let problem = sun_path_problem(&config, catalog.as_deref(), worldspace);
+            if problem != *reported {
+                if let Some(problem) = problem {
+                    warn!(
+                        "sun: fSunAlphaTransTime={} gives a {:.2}-hour day window with climate {:#x}; \
+                         the window must be shorter than 24 hours, so this world gets no sun path \
+                         (no recovery value is invented)",
+                        problem.transition, problem.window_hours, problem.climate
+                    );
+                }
+                *reported = problem;
+            }
+            NO_SUN_ROTATION
+        }
     };
-    let rotation = Quat::from_rotation_arc(Vec3::Z, direction);
     for mut transform in &mut sun {
         if transform.rotation != rotation {
             transform.rotation = rotation;
@@ -384,10 +449,10 @@ mod tests {
         assert!((rotation * Vec3::Z).distance(direction) < 1e-5);
     }
 
-    /// A world with no climate timing has no sunrise or sunset: no sun path applies and the sun's
-    /// rotation stays as spawned.
+    /// A world with no climate timing has no sunrise or sunset: no sun path applies and the sun
+    /// gets the no-direction rotation, whatever rotation it had before.
     #[test]
-    fn a_world_without_a_climate_timing_leaves_the_sun_alone() {
+    fn a_world_without_a_climate_timing_gets_the_no_direction_rotation() {
         for environment in [None, Some(EnvironmentCatalog::default())] {
             let mut app = App::new();
             app.insert_resource(Time::<()>::default())
@@ -406,8 +471,62 @@ mod tests {
                 .spawn((SunLight, Transform::from_rotation(start)))
                 .id();
             app.update();
-            assert_eq!(app.world().get::<Transform>(light).unwrap().rotation, start);
+            assert_eq!(
+                app.world().get::<Transform>(light).unwrap().rotation,
+                NO_SUN_ROTATION
+            );
         }
+    }
+
+    /// Leaving a timed world for an untimed one gives the same no-direction rotation as starting
+    /// there, so lighting does not depend on travel history. An explicit `sun_position` still wins.
+    #[test]
+    fn entering_a_world_without_timing_resets_the_sun_rotation() {
+        let timed = EngineConfig::default().worldspace_id;
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default())
+            .insert_resource(EngineConfig::default())
+            .insert_resource(catalog(ESM_VALUES))
+            .insert_resource(GameClock {
+                hour: 9.0,
+                timescale: 0.0,
+            })
+            .add_systems(Update, update_sun);
+        let light = app.world_mut().spawn((SunLight, Transform::default())).id();
+        app.update();
+        let rotation = |app: &App| app.world().get::<Transform>(light).unwrap().rotation;
+        assert_ne!(rotation(&app), NO_SUN_ROTATION);
+        app.world_mut().resource_mut::<EngineConfig>().worldspace_id = timed + 1;
+        app.update();
+        assert_eq!(rotation(&app), NO_SUN_ROTATION);
+        app.world_mut().resource_mut::<EngineConfig>().worldspace_id = timed;
+        app.update();
+        assert_ne!(rotation(&app), NO_SUN_ROTATION);
+        let explicit = &mut app.world_mut().resource_mut::<EngineConfig>();
+        explicit.worldspace_id = timed + 1;
+        explicit.sun_position = Some((61.0, 74.0));
+        let before = rotation(&app);
+        app.update();
+        assert_eq!(rotation(&app), before);
+    }
+
+    /// With the climate timing 33/60/96/123, `fSunAlphaTransTime = 14` gives a 24.5-hour window
+    /// (`18.25 - 7.75 + 14`). It passes the per-value check, so the world-level check reports it
+    /// and the world gets no sun path; a compatible value reports nothing.
+    #[test]
+    fn an_incompatible_fade_is_reported_not_silently_dropped() {
+        let environment = catalog(ESM_VALUES);
+        let mut config = EngineConfig::default();
+        config.sun_settings_overrides[4] = Some(14.0);
+        assert!(SunSettings::valid(4, 14.0));
+        let worldspace = config.worldspace_id;
+        let problem = sun_path_problem(&config, Some(&environment), worldspace).unwrap();
+        assert_eq!(problem.transition, 14.0);
+        assert!((problem.window_hours - 24.5).abs() < 1e-9);
+        assert!(world_sun_direction(&config, 12.0, Some(&environment), worldspace).is_none());
+        let config = EngineConfig::default();
+        assert!(sun_path_problem(&config, Some(&environment), worldspace).is_none());
+        assert!(world_sun_direction(&config, 12.0, Some(&environment), worldspace).is_some());
     }
 
     /// RF-SUN-002: elevation is 36.7 degrees at A and at B and 82.4 degrees at the 13:00 midpoint.
