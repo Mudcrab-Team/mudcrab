@@ -1420,82 +1420,141 @@ fn verify_script_sources(
     Ok(())
 }
 
+/// Identified extraction failures and bounded diagnostics for unusable archive member names.
+#[derive(Default)]
+struct StagedScriptArchives {
+    unavailable: BTreeMap<String, String>,
+    skipped_names: u64,
+    warnings: Vec<String>,
+}
+
+/// Admit archive keys that remain stable through overlay and VFS source authentication.
+fn script_archive_member_key(path: &Path) -> Result<String> {
+    let key = canonical_asset_path(&path.to_string_lossy(), AssetKind::Script, "pex")?;
+    ensure!(
+        canonical_asset_path(&key, AssetKind::Script, "pex")? == key,
+        "script archive member name has an unstable canonical identity"
+    );
+    Ok(key)
+}
+
 /// Overlay complete archive selections, retrying failed batches one script at a time.
-/// Each failed winning key removes lower-priority bytes and names its extraction failure.
+/// Identified failed winners remove lower-priority bytes; unusable names produce local warnings.
 fn stage_script_archives(
     config: &PipelineConfig,
     staging: &Path,
     archives: &[PathBuf],
-) -> Result<BTreeMap<String, String>> {
+) -> Result<StagedScriptArchives> {
     let vfs = staging.join("vfs");
-    let mut unavailable = BTreeMap::new();
+    let mut staged = StagedScriptArchives::default();
     for (index, archive) in archives.iter().enumerate() {
         let scratch = staging.join(format!(".metadata-script-archive-{index}"));
         fs::create_dir(&scratch)?;
-        let extracted: Vec<PathBuf> =
-            match ArchiveExtractor::extract_script_inputs(archive, &scratch) {
-                Ok(extracted) => extracted.into_iter().map(|file| file.path).collect(),
-                Err(error) if config.fail_fast => {
-                    return Err(error).wrap_err_with(|| {
-                        format!("failed to extract scripts from {}", archive.display())
-                    });
-                }
-                Err(_) => {
-                    // A fresh directory gives each retry only its own fully written payload.
-                    fs::remove_dir_all(&scratch)?;
-                    fs::create_dir(&scratch)?;
-                    let selected =
-                        ArchiveExtractor::list_paths(archive)?
-                            .into_iter()
-                            .filter(|path| {
-                                path.extension()
-                                    .is_some_and(|extension| extension.eq_ignore_ascii_case("pex"))
-                            });
-                    let mut extracted = Vec::new();
-                    for path in selected {
-                        let key = canonical_asset_path(
-                            &path.to_string_lossy(),
-                            AssetKind::Script,
-                            "pex",
-                        )?;
-                        match ArchiveExtractor::extract_paths(
-                            archive,
-                            &scratch,
-                            &BTreeSet::from([path.clone()]),
-                        ) {
-                            Ok(_) => extracted.push(path),
-                            Err(error) => {
-                                let destination = vfs.join(&key);
-                                match fs::remove_file(&destination) {
-                                    Ok(()) => {}
-                                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                                    Err(error) => {
-                                        return Err(error)
-                                            .wrap_err("failed to discard overridden script");
-                                    }
-                                }
-                                unavailable.insert(
-                                    key.clone(),
-                                    format!(
-                                        "skipped script {key} from {}: {error:#}",
-                                        archive.display()
-                                    ),
-                                );
-                            }
+        let mut skipped_names = 0u64;
+        let mut first_bad_name = None;
+        let extracted = {
+            let mut usable_key = |path: &Path| -> Result<Option<String>> {
+                match script_archive_member_key(path) {
+                    Ok(key) => Ok(Some(key)),
+                    Err(error) if config.fail_fast => Err(error).wrap_err_with(|| {
+                        format!(
+                            "unusable script member {} in {}",
+                            path.display(),
+                            archive.display()
+                        )
+                    }),
+                    Err(error) => {
+                        skipped_names = skipped_names.saturating_add(1);
+                        if first_bad_name.is_none() {
+                            let name: String = path.to_string_lossy().chars().take(256).collect();
+                            let reason: String = format!("{error:#}").chars().take(256).collect();
+                            first_bad_name = Some(format!("{name}: {reason}"));
                         }
+                        Ok(None)
                     }
-                    extracted
                 }
             };
-        let files: Vec<_> = extracted.iter().map(|path| scratch.join(path)).collect();
+            let extracted: Vec<PathBuf> =
+                match ArchiveExtractor::extract_script_inputs(archive, &scratch) {
+                    Ok(extracted) => extracted.into_iter().map(|file| file.path).collect(),
+                    Err(error) if config.fail_fast => {
+                        return Err(error).wrap_err_with(|| {
+                            format!("failed to extract scripts from {}", archive.display())
+                        });
+                    }
+                    Err(_) => {
+                        // A fresh directory gives each retry only its own fully written payload.
+                        fs::remove_dir_all(&scratch)?;
+                        fs::create_dir(&scratch)?;
+                        let selected =
+                            ArchiveExtractor::list_paths(archive)?
+                                .into_iter()
+                                .filter(|path| {
+                                    path.extension().is_some_and(|extension| {
+                                        extension.eq_ignore_ascii_case("pex")
+                                    })
+                                });
+                        let mut extracted = Vec::new();
+                        for path in selected {
+                            let Some(key) = usable_key(&path)? else {
+                                continue;
+                            };
+                            match ArchiveExtractor::extract_paths(
+                                archive,
+                                &scratch,
+                                &BTreeSet::from([path.clone()]),
+                            ) {
+                                Ok(_) => extracted.push(path),
+                                Err(error) => {
+                                    let destination = vfs.join(&key);
+                                    match fs::remove_file(&destination) {
+                                        Ok(()) => {}
+                                        Err(error)
+                                            if error.kind() == std::io::ErrorKind::NotFound => {}
+                                        Err(error) => {
+                                            return Err(error)
+                                                .wrap_err("failed to discard overridden script");
+                                        }
+                                    }
+                                    staged.unavailable.insert(
+                                        key.clone(),
+                                        format!(
+                                            "skipped script {key} from {}: {error:#}",
+                                            archive.display()
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                        extracted
+                    }
+                };
+            let mut admitted = Vec::new();
+            for path in extracted {
+                if let Some(key) = usable_key(&path)? {
+                    admitted.push((path, key));
+                }
+            }
+            admitted
+        };
+        let files: Vec<_> = extracted
+            .iter()
+            .map(|(path, _)| scratch.join(path))
+            .collect();
         overlay_loose_assets(&scratch, &vfs, &files)?;
-        for path in extracted {
-            let key = canonical_asset_path(&path.to_string_lossy(), AssetKind::Script, "pex")?;
-            unavailable.remove(&key);
+        for (_, key) in extracted {
+            staged.unavailable.remove(&key);
         }
         fs::remove_dir_all(&scratch)?;
+        if let Some(first) = first_bad_name {
+            staged.skipped_names = staged.skipped_names.saturating_add(skipped_names);
+            staged.warnings.push(format!(
+                "skipped {skipped_names} script archive members with unusable names from {} (first: {first})",
+                archive.display()
+            ));
+        }
     }
-    Ok(unavailable)
+    Ok(staged)
 }
 
 /// Converts the scripts again from the Data scripts for the current script ABI and replaces the
@@ -1512,7 +1571,10 @@ async fn rebuild_scripts_from_data(
     progress: &Sender<ProgressEvent>,
 ) -> Result<()> {
     let vfs = staging.join("vfs");
-    let mut unavailable = stage_script_archives(config, staging, archives)?;
+    let staged = stage_script_archives(config, staging, archives)?;
+    let mut unavailable = staged.unavailable;
+    report.skipped = report.skipped.saturating_add(staged.skipped_names);
+    report.warnings.extend(staged.warnings);
     let loose: Vec<_> = files
         .iter()
         .filter(|path| {
