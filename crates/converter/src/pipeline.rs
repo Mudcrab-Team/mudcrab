@@ -14204,7 +14204,10 @@ mod tests {
         let mut bytes = dummy_content::esm::plugin(&dummy_content::esm::Plugin {
             author: "SnapshotRecoveryFixture",
             worldspace: "SnapshotRecoveryWorld",
-            cells: &[],
+            cells: &[dummy_content::esm::Cell {
+                grid_x: 0,
+                grid_y: 0,
+            }],
             model_path: "unused/model.nif",
             diffuse: "unused/diffuse.dds",
             normal_texture: "unused/normal.dds",
