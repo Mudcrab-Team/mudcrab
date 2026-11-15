@@ -253,7 +253,9 @@ mod tests {
     use super::*;
 
     fn pack(root: &Path, schema_bytes: &[u8]) -> std::path::PathBuf {
-        let path = root.join("pack # ? % ü");
+        // `?` is not a valid Windows file-name character; keep it elsewhere for URI escaping.
+        let name = if cfg!(windows) { "pack # % ü" } else { "pack # ? % ü" };
+        let path = root.join(name);
         std::fs::create_dir(&path).unwrap();
         let conn = Connection::open(path.join("skyrim_world.db")).unwrap();
         conn.execute_batch("CREATE TABLE records(form_id INTEGER PRIMARY KEY,record_type TEXT,data BLOB);
