@@ -59,6 +59,7 @@ pub mod terrain_upload;
 mod test_support;
 pub mod tone_mapping;
 mod underwater;
+mod underwater_pass;
 pub mod visibility_optimization;
 pub mod visual_profile;
 mod water_depth;

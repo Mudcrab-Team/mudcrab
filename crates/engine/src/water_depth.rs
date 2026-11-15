@@ -54,6 +54,13 @@ pub(crate) struct WaterDepthSnapshot {
     samples: u32,
 }
 
+impl WaterDepthSnapshot {
+    /// The snapshot image, when the water view has one.
+    pub(crate) fn image(&self) -> Option<&Handle<Image>> {
+        self.handle.as_ref()
+    }
+}
+
 impl Default for WaterDepthSnapshot {
     fn default() -> Self {
         Self {

@@ -610,8 +610,9 @@ fn apply_fog(
 ) {
     let fog_on = settings.as_deref().is_none_or(|settings| settings.fog);
     let wanted = match (*space, fog_on) {
-        // Below the surface retail replaces the view with the water's own fog (RF-WATER-031).
-        _ if fog_on && underwater.fog().is_some() => underwater.fog().map(|fog| fog.distance_fog()),
+        // Below the surface retail replaces the view with the water's own fog (RF-WATER-031), which
+        // the underwater post-pass draws over the whole frame; the atmospheric fog would fog it twice.
+        _ if underwater.fog().is_some() => None,
         (CameraSpace::Exterior, true) => {
             // The fog is the clear colour, so it takes the same brightness scale as the sky.
             let scaled = scaled_palette(&palette, settings.as_deref());

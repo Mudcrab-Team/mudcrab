@@ -370,6 +370,7 @@ impl Plugin for VercidiumRendererPlugin {
             MaterialPlugin::<WaterMaterial>::default(),
             crate::prepass_vertex_alpha::PrepassVertexAlphaPlugin,
             crate::water_depth::WaterDepthPlugin,
+            crate::underwater_pass::UnderwaterPassPlugin,
             ExtractComponentPlugin::<crate::world::components::StreamingCamera>::default(),
         ))
         .init_resource::<RendererMetrics>()

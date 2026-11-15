@@ -1,8 +1,8 @@
 //! The underwater view: the retail underwater fog, and the test that decides when it applies.
 //!
-//! What retail does (RF-WATER-031, RF-WATER-033): the underwater look is not a tint. It is the
-//! depth-of-field image-space effect's fog program, `out = lerp(scene, C, sat((d - near) / (far -
-//! near)))`, where `d` is the distance from the camera, `C` the water's Shallow Color times the
+//! What retail does (RF-WATER-031, RF-WATER-033, RF-WATER-052): the underwater look is not a tint.
+//! It is the depth-of-field image-space effect's fog program, `out = lerp(scene, C, sat((d - near)
+//! / (far - near)))`, where `d` is the view-space depth of the pixel, `C` the water's Shallow Color times the
 //! weather's Water Multiplier, and `near` and `far` the water record's underwater fog distances
 //! (`DNAM` +0x90 and +0x94). The pass applies when the camera is below the water surface, which retail
 //! decides by comparing the SURFACE HEIGHT with the heights of the four corners of the camera's
@@ -10,25 +10,25 @@
 //! surface picks the mode (above, crossing, below). The image space's tint and saturation fields
 //! have no reader in the executable and are not used.
 //!
-//! What Mudcrab does differently: it applies the fog through Bevy's distance fog on the world
-//! camera, so the fog follows Euclidean distance from the eye where retail follows view depth; it
-//! applies it only when the camera is fully below the surface (mode 2), because the crossing mode
-//! (mode 1) needs retail's underwater plane mask, which the engine has not got yet; and it does not
-//! blur the scene (the depth-of-field part needs the INAM blur block and a blur pass). Both are open
-//! in #698.
+//! What Mudcrab did before: Bevy's distance fog on the world camera, which follows the straight-line
+//! distance from the eye and fogs only what a lit material draws, not the sky.
+//!
+//! What Mudcrab does now, and differently from retail: the fog and the blur are one post-pass
+//! (`underwater_pass.rs`) over the view-space depth, and the atmospheric distance fog is switched
+//! off while it runs. The pass applies only when the camera is fully below the surface (mode 2),
+//! because the crossing mode (mode 1) needs retail's underwater plane mask, which the engine has not
+//! got yet (#698).
 
 use crate::{
     sky::SkyPalette,
+    underwater_pass::UnderwaterPass,
     world::{
         components::{CELL_SIZE, StreamingCamera, WaterSurface},
         database::AssetCatalog,
         water::FlatWaterBody,
     },
 };
-use bevy::{
-    pbr::{DistanceFog, FogFalloff},
-    prelude::*,
-};
+use bevy::prelude::*;
 
 /// Where the camera is relative to the water surface (RF-WATER-033: the mode word is 0 above, 1
 /// crossing, 2 below).
@@ -49,18 +49,9 @@ pub(crate) struct UnderwaterFog {
 }
 
 impl UnderwaterFog {
-    /// `lerp(scene, C, sat((d - near) / (far - near)))` as Bevy's linear distance fog. Bevy's
-    /// linear fog is exactly that term with `d` the distance from the eye.
-    pub(crate) fn distance_fog(&self) -> DistanceFog {
-        DistanceFog {
-            color: self.color,
-            directional_light_color: Color::NONE,
-            falloff: FogFalloff::Linear {
-                start: self.near,
-                end: self.far,
-            },
-            ..default()
-        }
+    /// The post-pass settings of this fog for a camera whose near plane is `camera_near`.
+    pub(crate) fn pass(&self, camera_near: f32) -> UnderwaterPass {
+        UnderwaterPass::new(self.color.to_linear(), self.near, self.far, camera_near)
     }
 }
 
@@ -157,48 +148,59 @@ pub(crate) fn underwater_fog_color(shallow: [u8; 3], multiplier: [u8; 3]) -> Col
 
 /// Finds the water the camera is in and what that does to the view.
 pub(crate) fn update_underwater_state(
+    mut commands: Commands,
     mut state: ResMut<UnderwaterState>,
-    camera: Query<(&GlobalTransform, &Projection), With<StreamingCamera>>,
+    camera: Query<
+        (Entity, &GlobalTransform, &Projection, Has<UnderwaterPass>),
+        With<StreamingCamera>,
+    >,
     waters: Query<(&GlobalTransform, &FlatWaterBody), With<WaterSurface>>,
     catalog: Option<Res<AssetCatalog>>,
+    settings: Option<Res<crate::settings::RenderingSettings>>,
 ) {
-    let found = camera.single().ok().and_then(|(transform, projection)| {
-        let Projection::Perspective(lens) = projection else {
-            return None;
-        };
-        let eye = transform.translation();
-        // The highest plane whose cell square holds the eye (the same rule as `water_at_point`).
-        let (surface, body) = waters
-            .iter()
-            .filter(|(plane, _)| {
-                let centre = plane.translation();
-                (eye.x - centre.x).abs() <= CELL_SIZE * 0.5
-                    && (eye.z - centre.z).abs() <= CELL_SIZE * 0.5
-            })
-            .map(|(plane, body)| (plane.translation().y, body))
-            .max_by(|a, b| a.0.total_cmp(&b.0))?;
-        let (lowest, highest) =
-            near_plane_heights(transform, lens.near, lens.fov, lens.aspect_ratio);
-        // The camera is "in water" when the eye is under the surface: the engine's stand-in for the
-        // physics water callback that sets retail's flag (RF-WATER-034).
-        let mode = underwater_mode(eye.y < surface, surface, lowest, highest);
-        let colors = catalog
-            .as_deref()
-            .zip(body.surface().water_type_form_id)
-            .and_then(|(catalog, id)| catalog.water_colors(id));
-        let shallow = colors.map_or(crate::render::DEFAULT_WATER_SHALLOW_COLOR, |c| c.shallow);
-        let [near, far] = colors
-            .and_then(|colors| colors.underwater_fog)
-            .unwrap_or(DEFAULT_UNDERWATER_FOG);
-        Some((
-            mode,
-            UnderwaterFog {
-                color: underwater_fog_color(shallow, SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER),
-                near,
-                far,
-            },
-        ))
-    });
+    let found = camera
+        .single()
+        .ok()
+        .and_then(|(_, transform, projection, _)| {
+            let Projection::Perspective(lens) = projection else {
+                return None;
+            };
+            let eye = transform.translation();
+            // The highest plane whose cell square holds the eye (the same rule as `water_at_point`).
+            let (surface, body) = waters
+                .iter()
+                .filter(|(plane, _)| {
+                    let centre = plane.translation();
+                    (eye.x - centre.x).abs() <= CELL_SIZE * 0.5
+                        && (eye.z - centre.z).abs() <= CELL_SIZE * 0.5
+                })
+                .map(|(plane, body)| (plane.translation().y, body))
+                .max_by(|a, b| a.0.total_cmp(&b.0))?;
+            let (lowest, highest) =
+                near_plane_heights(transform, lens.near, lens.fov, lens.aspect_ratio);
+            // The camera is "in water" when the eye is under the surface: the engine's stand-in for the
+            // physics water callback that sets retail's flag (RF-WATER-034).
+            let mode = underwater_mode(eye.y < surface, surface, lowest, highest);
+            let colors = catalog
+                .as_deref()
+                .zip(body.surface().water_type_form_id)
+                .and_then(|(catalog, id)| catalog.water_colors(id));
+            let shallow = colors.map_or(crate::render::DEFAULT_WATER_SHALLOW_COLOR, |c| c.shallow);
+            let [near, far] = colors
+                .and_then(|colors| colors.underwater_fog)
+                .unwrap_or(DEFAULT_UNDERWATER_FOG);
+            Some((
+                mode,
+                UnderwaterFog {
+                    color: underwater_fog_color(
+                        shallow,
+                        SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER,
+                    ),
+                    near,
+                    far,
+                },
+            ))
+        });
     let wanted = match found {
         Some((mode, fog)) => UnderwaterState {
             mode,
@@ -208,6 +210,25 @@ pub(crate) fn update_underwater_state(
     };
     if *state != wanted {
         *state = wanted;
+    }
+    // The post-pass rides on the camera while it is fully below the surface (and the player has
+    // not turned fog off); above it the component is gone and the pass costs nothing.
+    let fog_on = settings.as_deref().is_none_or(|settings| settings.fog);
+    let Ok((entity, _, projection, has_pass)) = camera.single() else {
+        return;
+    };
+    let near = match projection {
+        Projection::Perspective(lens) => lens.near,
+        _ => return,
+    };
+    match state.fog().filter(|_| fog_on) {
+        Some(fog) => {
+            commands.entity(entity).insert(fog.pass(near));
+        }
+        None if has_pass => {
+            commands.entity(entity).remove::<UnderwaterPass>();
+        }
+        None => {}
     }
 }
 
@@ -296,22 +317,18 @@ mod tests {
             near: DEFAULT_UNDERWATER_FOG[0],
             far: DEFAULT_UNDERWATER_FOG[1],
         };
-        let fog = fog.distance_fog();
-        let FogFalloff::Linear { start, end } = fog.falloff else {
-            panic!("the underwater fog is linear");
-        };
-        let share = |distance: f32| ((distance - start) / (end - start)).clamp(0.0, 1.0);
-        assert!((share(0.0) - 500.0 / 2100.0).abs() < 1.0e-6);
-        assert!((share(0.0) - 0.238).abs() < 1.0e-3);
-        assert_eq!(share(-500.0), 0.0);
-        assert_eq!(share(1600.0), 1.0);
-        assert_eq!(share(5000.0), 1.0);
         let expected = Color::srgb(
             38.0 / 255.0 * 175.0 / 255.0,
             39.0 / 255.0 * 237.0 / 255.0,
             24.0 / 255.0 * 214.0 / 255.0,
         );
         assert_eq!(fog.color, expected);
+        let pass = fog.pass(0.1);
+        let linear = expected.to_linear();
+        assert_eq!(
+            format!("{pass:?}"),
+            format!("{:?}", UnderwaterPass::new(linear, -500.0, 1600.0, 0.1))
+        );
         // The record's own distances are used when it has them.
         assert_eq!(DEFAULT_UNDERWATER_FOG, [-500.0, 1600.0]);
     }
@@ -336,5 +353,81 @@ mod tests {
         ));
         app.update();
         assert_eq!(app.world().resource::<UnderwaterState>().fog(), None);
+    }
+
+    #[test]
+    fn the_post_pass_rides_on_the_camera_only_while_it_is_fully_below_the_surface() {
+        use crate::world::{cache::TerrainSnapshot, database::CellKey};
+        let mut app = App::new();
+        app.init_resource::<UnderwaterState>()
+            .add_systems(Update, update_underwater_state);
+        // One exterior plane at height 100, its cell square centred on the origin.
+        let terrain = TerrainSnapshot {
+            cell_id: 1,
+            width: 33,
+            height: 33,
+            heights: vec![0.0; 33 * 33],
+            normals: vec![],
+            vertex_colors: vec![],
+            layers: vec![],
+            water_height: Some(100.0),
+            water_type_form_id: None,
+        };
+        let body = FlatWaterBody::from_terrain(
+            CellKey::Exterior {
+                worldspace_id: 60,
+                grid_x: 0,
+                grid_y: 0,
+            },
+            &terrain,
+        )
+        .expect("a body");
+        app.world_mut().spawn((
+            WaterSurface,
+            body,
+            GlobalTransform::from(Transform::from_xyz(0.0, 100.0, 0.0)),
+        ));
+        let lens = PerspectiveProjection::default();
+        // Looking straight down keeps the near plane flat, so only the eye's side of the surface
+        // decides (RF-WATER-033).
+        let down = Quat::from_rotation_x(-90.0_f32.to_radians());
+        let camera = app
+            .world_mut()
+            .spawn((
+                StreamingCamera,
+                Projection::Perspective(lens.clone()),
+                GlobalTransform::from(Transform::from_xyz(0.0, 50.0, 0.0).with_rotation(down)),
+            ))
+            .id();
+        app.update();
+        let pass = *app
+            .world()
+            .get::<UnderwaterPass>(camera)
+            .expect("the pass is on a camera under the surface");
+        // The record's own fog is not in this app, so DefaultWater's distances stand in, and the
+        // camera's near plane feeds the depth rebuild.
+        assert_eq!(
+            format!("{pass:?}"),
+            format!(
+                "{:?}",
+                UnderwaterFog {
+                    color: underwater_fog_color(
+                        crate::render::DEFAULT_WATER_SHALLOW_COLOR,
+                        SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER
+                    ),
+                    near: DEFAULT_UNDERWATER_FOG[0],
+                    far: DEFAULT_UNDERWATER_FOG[1],
+                }
+                .pass(lens.near)
+            )
+        );
+        // Above the surface the component is gone.
+        app.world_mut()
+            .entity_mut(camera)
+            .insert(GlobalTransform::from(
+                Transform::from_xyz(0.0, 150.0, 0.0).with_rotation(down),
+            ));
+        app.update();
+        assert!(app.world().get::<UnderwaterPass>(camera).is_none());
     }
 }
