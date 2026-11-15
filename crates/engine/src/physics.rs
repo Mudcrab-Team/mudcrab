@@ -4322,10 +4322,20 @@ mod noclip_tests {
     #[test]
     fn uncaptured_pointer_yields_no_look_intent() {
         let mut intent = LookIntent::default();
-        sample_look_intent(&CursorCapture::Released, Vec2::new(40.0, 20.0), &mut intent);
+        sample_look_intent(
+            &CursorCapture::Released,
+            Vec2::new(40.0, 20.0),
+            false,
+            &mut intent,
+        );
         assert_eq!(intent.yaw, 0.0);
         assert_eq!(intent.pitch, 0.0);
-        sample_look_intent(&CursorCapture::Captured, Vec2::new(40.0, 20.0), &mut intent);
+        sample_look_intent(
+            &CursorCapture::Captured,
+            Vec2::new(40.0, 20.0),
+            false,
+            &mut intent,
+        );
         assert!(intent.yaw < 0.0);
         assert!(intent.pitch < 0.0);
     }
