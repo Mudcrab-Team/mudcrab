@@ -54,7 +54,8 @@ Research checked on 2026-11-15:
   connects it. It also warns about disappearing dropped objects, misplaced object pivots, and
   overlapping or separated room bounds. Its performance section attributes overhead to many
   visible portals and their frustum operations. The page recommends `MBC` to toggle multibound
-  culling and `TCL` to inspect geometry, but those commands were not exercised in Skyrim here.
+  culling and `TCL` to inspect geometry. The later 1.7.104.0 runtime experiment used `TCL`, but
+  found that this executable's `MBC` callback returns success without changing multibound state.
 - Bethesda's [optimization tutorial for Fallout](https://geckwiki.com/index.php/Bethsoft_Tutorial_Optimization)
   additionally names a separate unbounded space connected through portals. That terminology and
   its exact traversal rules are not established by the supplied Skyrim pages. Skyrim's outside-
@@ -68,8 +69,10 @@ than filling the screen rectangle between them. Versioned graphs also traverse u
 and test portal-shared geometry against both endpoint volumes. Occluder exclusions remain absent;
 unresolved connections still draw the whole cell.
 
-No reconstruction source was copied into the engine. No original Skyrim runtime comparison was
-performed. The native trace now establishes how room volumes reach object culling and how
+No reconstruction source was copied into the engine. A later
+[four-pose original-game comparison](skyrim-original-comparison.md) supports the broad visibility
+decisions in three disputed shell views and retains the joined-room cave. It does not establish
+object-by-object or whole-engine parity. The native trace establishes how room volumes reach object culling and how
 unbounded space enters traversal. Exact clipping tolerances, path merging and revisits, full
 specialized assignment paths, actor updates, lights, and shadows still need further tracing
 or controlled Skyrim experiments.
