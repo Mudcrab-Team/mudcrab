@@ -108,6 +108,19 @@ pub(crate) fn water_sun_terms(r_dot_sun: f32, n_dot_sparkle: f32, terms: [f32; 4
     term(r_dot_sun, terms[0], terms[1]) + term(n_dot_sparkle, terms[2], terms[3])
 }
 
+/// The body colour of the retail variants that have no depth (RF-WATER-017): `lerp(Shallow, Deep, F)`
+/// times `sat(sunDir.N)` for the exterior no-depth program, and without that factor for the
+/// interior program, which has no sun and no light.
+#[cfg(test)]
+pub(crate) fn water_variant_body(
+    shallow: f32,
+    deep: f32,
+    fresnel: f32,
+    sun_dot_n: Option<f32>,
+) -> f32 {
+    (shallow + (deep - shallow) * fresnel) * sun_dot_n.map_or(1.0, |dot| dot.clamp(0.0, 1.0))
+}
+
 /// A phase below zero makes the shader run the waves on the frame clock instead of a phase the CPU
 /// uploaded, so an interactive run does not rewrite every water material every frame.
 pub(crate) const ANIMATED_WAVE_PHASE: f32 = -1.0;
@@ -914,7 +927,8 @@ struct WaterSettings {
     /// back to its ANAM opacity. It says nothing about whether this frame's depth is valid: a
     /// frame whose resolve was skipped leaves the texture bound but cleared to a negative sentinel,
     /// which the shader reads as unknown too. y = the record's noise falloff, clamped to
-    /// `[1, 8191]` (RF-SHADER-007). zw unused.
+    /// `[1, 8191]` (RF-SHADER-007). z = 1 for a water in an interior cell, which uses retail's
+    /// interior program (RF-WATER-017). w unused.
     depth_params: Vec4,
     /// xyz = the three noise layers' UV scales in world units per texture tile (WATR DNAM
     /// `uvScaleA`); w = 1 when the noise textures are bound, 0 for a flat surface.
@@ -1093,6 +1107,13 @@ impl WaterExtension {
     pub fn with_sun_color(mut self, color: Color) -> Self {
         let linear = color.to_linear();
         self.settings.sun_color = Vec4::new(linear.red, linear.green, linear.blue, 0.0);
+        self
+    }
+
+    /// Marks the water as one in an interior cell: retail draws it with its interior program, which
+    /// has no sun, no depth, no refraction, no reflection image and no light (RF-WATER-017).
+    pub fn with_interior(mut self, interior: bool) -> Self {
+        self.settings.depth_params.z = f32::from(u8::from(interior));
         self
     }
 
@@ -2587,7 +2608,7 @@ mod tests {
             "let m = mix(1.0, fresnel * depth_reflections * water.fresnel_reflectivity.z, dist_t);"
         ));
         assert!(source.contains(
-            "let reflection = mix(flat_reflection, environment, water.fresnel_reflectivity.y);"
+            "let reflection_planar = mix(flat_reflection, environment, water.fresnel_reflectivity.y);"
         ));
         // The Fresnel reflection no longer raises the alpha and no lit body colour remains.
         assert!(!source.contains("max(body"));
@@ -2660,6 +2681,26 @@ mod tests {
             .world_mut()
             .query_filtered::<Entity, (With<WaterReflectionCamera>, With<crate::sky::FogCamera>)>();
         assert_eq!(cameras.iter(app.world()).count(), 1);
+    }
+
+    #[test]
+    fn the_variants_without_depth_follow_retail() {
+        // RF-WATER-017: the exterior no-depth program is lerp(Shallow, Deep, F) * sat(sunDir.N), the
+        // interior program the same without the sun factor, and both use the ANAM opacity
+        // (RF-WATER-026: ANAM is read only in programs without depth).
+        assert_eq!(water_variant_body(0.2, 0.0, 0.25, Some(1.0)), 0.15);
+        assert_eq!(water_variant_body(0.2, 0.0, 0.25, Some(0.5)), 0.075);
+        assert_eq!(water_variant_body(0.2, 0.0, 0.25, Some(-1.0)), 0.0);
+        assert_eq!(water_variant_body(0.2, 0.0, 0.25, None), 0.15);
+        let interior = WaterExtension::default().with_interior(true);
+        assert_eq!(interior.settings.depth_params.z, 1.0);
+        assert_eq!(WaterExtension::default().settings.depth_params.z, 0.0);
+        let source = include_str!("shaders/water.wgsl");
+        assert!(source.contains("let interior = water.depth_params.z > 0.5;"));
+        assert!(source.contains("mix(water.shallow_color.rgb, deep, fresnel)"));
+        assert!(source.contains("let a = select(body.y, water.body.x, no_depth);"));
+        // Retail's reflected vector has no clamp; the engine's only guards the planar lookup.
+        assert!(source.contains("engineering guard"));
     }
 
     #[test]

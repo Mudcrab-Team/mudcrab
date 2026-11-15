@@ -1778,6 +1778,7 @@ fn spawn_cell(
                     reflection.0.clone(),
                     flow_normal.clone(),
                     noise.map(|noise| (noise, noise_textures.clone())),
+                    matches!(payload.key, CellKey::Interior(_)),
                 ));
                 let mut water = parent.spawn((
                     Name::new("Water"),
@@ -5405,6 +5406,7 @@ fn water_material(
     reflection: Handle<Image>,
     flow_normal: Option<Handle<Image>>,
     noise: Option<(&WaterNoise, [Option<Handle<Image>>; 3])>,
+    interior: bool,
 ) -> WaterMaterial {
     // Skyrim's DefaultWater deep colour after Update.esm, used when this water has no
     // decoded colours yet (a database converted before the WATR colour export). The
@@ -5568,9 +5570,15 @@ mod tests {
         drop(connection);
         let catalog = AssetCatalog::open(&path).unwrap();
         let body = |form_id| {
-            water_material(catalog.water_colors(form_id), Handle::default(), None, None)
-                .extension
-                .body()
+            water_material(
+                catalog.water_colors(form_id),
+                Handle::default(),
+                None,
+                None,
+                false,
+            )
+            .extension
+            .body()
         };
 
         // The retail copy writes (opacity, far - near, max(far, 1), max(4 * amount, 1)). A puddle

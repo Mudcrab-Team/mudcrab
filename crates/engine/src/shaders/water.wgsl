@@ -197,6 +197,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // The bed lies on the view ray, so the vertical depth is the path times the sine of the ray's
     // pitch.
     let to_surface = in.world_position.xyz - view.world_position.xyz;
+    // Interior cells use retail's interior program (RF-WATER-017). The sun is the engine's first
+    // directional light.
+    let interior = water.depth_params.z > 0.5;
+    var sun_direction = vec3<f32>(0.0, 1.0, 0.0);
+    if lights.n_directional_lights > 0u {
+        sun_direction = lights.directional_lights[0].direction_to_light;
+    }
     let vertical_depth = path * abs(to_surface.y) / max(length(to_surface), 1e-4);
     let body = water_body(path, vertical_depth);
 
@@ -219,6 +226,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let up = vec3<f32>(0.0, 1.0, 0.0);
     let reflected_normal = mix(up, normal, magnitude);
     var reflected = reflect(view_direction, reflected_normal);
+    // An engineering guard, not retail (retail has no clamp: it samples a cube map): a planar image
+    // cannot show a direction that points down, so it is turned level.
     reflected.y = max(reflected.y, 0.0);
     let flat_reflected = reflect(view_direction, up);
     let viewport_uv = (in.position.xy - view.viewport.xy) / view.viewport.zw;
@@ -244,7 +253,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         reflection_sample.rgb,
         clamp(dist_t * WATER_SSR_INTENSITY * reflection_sample.a, 0.0, 1.0),
     );
-    let reflection = mix(flat_reflection, environment, water.fresnel_reflectivity.y);
+    let reflection_planar = mix(flat_reflection, environment, water.fresnel_reflectivity.y);
 
     // F = FresnelRI.x + (1 - FresnelRI.x) * (1 - sat(-V.N))^5 (RF-SHADER-008).
     let fresnel_amount = water.fresnel_reflectivity.x;
@@ -260,11 +269,25 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // 1 - (1 - a)(1 - m) and the colour that makes the product match.
     let depth_reflections = water.depth_control.x * (body.x - 1.0) + 1.0;
     let m = mix(1.0, fresnel * depth_reflections * water.fresnel_reflectivity.z, dist_t);
-    let a = body.y;
-    // The body colour, lerp(Shallow, Deep, sat(L / F)), divided by FramebufferRange as the retail
-    // output is.
+    var reflection = reflection_planar;
+    if interior {
+        reflection = flat_reflection * water.fresnel_reflectivity.y;
+    }
+    // The variants without depth: the interior program and the exterior no-depth program use the
+    // ANAM opacity (RF-WATER-026) and a body of lerp(Shallow, Deep, F), times sat(sunDir.N) for the
+    // exterior one (RF-WATER-017). The interior program also has no reflection image, so its
+    // reflection is the flat colour times the Reflection Amount.
+    let no_depth = interior || path < 0.0;
+    let a = select(body.y, water.body.x, no_depth);
     let deep = pbr_input.material.base_color.rgb;
-    let water_colour = mix(water.shallow_color.rgb, deep, body.x) / FRAMEBUFFER_RANGE;
+    var water_colour = mix(water.shallow_color.rgb, deep, body.x) / FRAMEBUFFER_RANGE;
+    if no_depth {
+        var sun_lit = 1.0;
+        if !interior && lights.n_directional_lights > 0u {
+            sun_lit = clamp(dot(sun_direction, normal), 0.0, 1.0);
+        }
+        water_colour = mix(water.shallow_color.rgb, deep, fresnel) * sun_lit / FRAMEBUFFER_RANGE;
+    }
     let coverage = a + m - a * m;
     // The sun specular and sparkle (RF-WATER-010), added after the mix: spec =
     // sat(R.sunDir)^power * magnitude, sparkle = sat(N.(-0.099, -0.099, 0.99))^power * magnitude,
@@ -273,8 +296,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // are the full normal's (no Reflection Magnitude), as in retail. The sun is the engine's first
     // directional light; with none (an interior) the surface gets no sun, as in retail.
     var sun = vec3<f32>(0.0);
-    if lights.n_directional_lights > 0u {
-        let sun_direction = lights.directional_lights[0].direction_to_light;
+    if lights.n_directional_lights > 0u && !interior {
         let mirror = reflect(view_direction, normal);
         let spec_base = max(clamp(dot(mirror, sun_direction), 0.0, 1.0), WATER_POWER_FLOOR);
         let sparkle_base = max(clamp(dot(normal_skyrim, WATER_SPARKLE_DIRECTION), 0.0, 1.0), WATER_POWER_FLOOR);

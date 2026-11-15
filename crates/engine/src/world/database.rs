@@ -273,6 +273,9 @@ const WATER_DNAM_FOG_AMOUNT: usize = 132;
 /// subrecords. `None` when it does not decode or has no `DNAM`.
 struct WaterRecord {
     dnam: Vec<u8>,
+    /// `FNAM` (one byte, `TESWaterForm` +0xB9): bit 0 dangerous, bit 3 flow map, bit 4 blend
+    /// normals (RF-WATER-013).
+    flags: Option<u8>,
     noise_paths: [Option<String>; 3],
 }
 
@@ -301,6 +304,7 @@ fn parse_water_record(record: &[u8]) -> Option<WaterRecord> {
     };
     Some(WaterRecord {
         dnam: find(b"DNAM")?.to_vec(),
+        flags: find(b"FNAM").and_then(|bytes| bytes.first().copied()),
         noise_paths: [path(b"NAM2"), path(b"NAM3"), path(b"NAM4")],
     })
 }
@@ -430,6 +434,23 @@ pub struct WaterColors {
     /// `reflect(view, magnitude * normal + (0, 0, 1 - magnitude))`, so it is how much of the wave
     /// normal reaches the reflection. Read from the record bytes in `waters.data`.
     pub reflection_magnitude: Option<f32>,
+    /// The record's `FNAM` byte, read from the record bytes: `waters.flags` holds the record header
+    /// flags, not this (RF-WATER-013). Bit 3 selects retail's flow-map program, bit 4 blends the
+    /// normals. `None` when the record bytes cannot be read.
+    pub fnam: Option<u8>,
+}
+
+impl WaterColors {
+    /// FNAM bit 3: retail draws this water with its flow-map program (RF-WATER-013, RF-WATER-019).
+    /// The engine decodes it and does not draw that program yet (#698).
+    pub fn uses_flow_map(&self) -> bool {
+        self.fnam.is_some_and(|flags| flags & 0x08 != 0)
+    }
+
+    /// FNAM bit 4: blend normals (RF-WATER-013, RF-WATER-023).
+    pub fn blends_normals(&self) -> bool {
+        self.fnam.is_some_and(|flags| flags & 0x10 != 0)
+    }
 }
 
 fn unpack_color(value: u32) -> [u8; 3] {
@@ -540,6 +561,7 @@ impl AssetCatalog {
                                 opacity: row.get::<_, i64>(6)?.clamp(0, 100) as u8,
                                 fog,
                                 reflection_magnitude,
+                                fnam: parsed.as_ref().and_then(|record| record.flags),
                             },
                             noise,
                         ))
@@ -1553,6 +1575,7 @@ pub(crate) mod water_fixtures {
         pub wind_speed: [f32; 3],
         pub noise_falloff: f32,
         pub sun: [f32; 4],
+        pub fnam: u8,
         pub textures: [&'static str; 3],
     }
 
@@ -1590,7 +1613,11 @@ pub(crate) mod water_fixtures {
             );
             put(WATER_DNAM_WIND_SPEED + 4 * index, noise.wind_speed[index]);
         }
-        let mut subrecords = vec![(*b"EDID", b"TestWater\0".to_vec()), (*b"DNAM", dnam)];
+        let mut subrecords = vec![
+            (*b"EDID", b"TestWater\0".to_vec()),
+            (*b"FNAM", vec![noise.fnam]),
+            (*b"DNAM", dnam),
+        ];
         for (tag, path) in [b"NAM2", b"NAM3", b"NAM4"].into_iter().zip(noise.textures) {
             let mut bytes = path.as_bytes().to_vec();
             bytes.push(0);
@@ -2596,6 +2623,7 @@ mod tests {
                 opacity: 35,
                 fog: None,
                 reflection_magnitude: None,
+                fnam: None,
             })
         );
         // A waters row with no ANAM reads as DefaultWater's 50, and an out-of-range one clamps
@@ -2726,6 +2754,7 @@ mod tests {
         noise_falloff: 4007.0,
         // DefaultWater: sun specular 1021 x 4.65, sparkle 3521 x 2.89 (RF-WATER-010).
         sun: [1021.0, 4.65, 3521.0, 2.89],
+        fnam: 0,
         textures: [
             "Data\\Textures\\Water\\DefaultWater.dds",
             "Data\\Textures\\Water\\DefaultWater.dds",
@@ -2774,6 +2803,36 @@ mod tests {
         broken.amplitude[2] = f32::NAN;
         let record = parse_water_record(&water_record_with_noise(228, &broken)).unwrap();
         assert_eq!(water_noise_from_record(&record), None);
+    }
+
+    #[test]
+    fn the_fnam_flags_come_from_the_record_bytes() {
+        // RF-WATER-013: RiverWaterFlow and DefaultWaterFlow 0x08, the Blend records 0x18,
+        // DLC2ApocryphaWater 0x01, every other WATR 0.
+        let colors = |fnam: u8| {
+            let mut fixture = DEFAULT_WATER_NOISE;
+            fixture.fnam = fnam;
+            let record = parse_water_record(&water_record_with_noise(228, &fixture)).unwrap();
+            assert_eq!(record.flags, Some(fnam));
+            WaterColors {
+                shallow: [0; 3],
+                deep: [0; 3],
+                reflection: [0; 3],
+                fresnel: 0.1,
+                reflectivity: 0.8,
+                opacity: 50,
+                fog: None,
+                reflection_magnitude: None,
+                fnam: record.flags,
+            }
+        };
+        assert!(colors(0x08).uses_flow_map() && !colors(0x08).blends_normals());
+        assert!(colors(0x18).uses_flow_map() && colors(0x18).blends_normals());
+        assert!(!colors(0x01).uses_flow_map() && !colors(0x01).blends_normals());
+        assert!(!colors(0x00).uses_flow_map());
+        // A record with no FNAM has no flags, and an unreadable record neither.
+        let none = parse_water_record(&water_record(vec![(*b"DNAM", vec![0u8; 228])])).unwrap();
+        assert_eq!(none.flags, None);
     }
 
     #[test]
