@@ -118,10 +118,8 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    `cargo test --workspace --lib --bins --tests --examples` runs the same test targets (neither runs doctests; add
    `cargo test --workspace --doc` for those). The `clippy` / `test` (Linux) and
    `windows_clippy` / `windows_test` jobs run for Rust-related changes on PRs and feed
-   `tests_pass`. On Windows, append
-   `-E 'not test(hardware_repair_labels_gpu_output_but_not_native_blocks)'` to the nextest
-   command: hosted runners have no hardware GPU. Other GPU-only tests stay ignored by
-   default; Linux runs the two software Vulkan tests separately. CI also runs `cargo audit` and a release-mode
+   `tests_pass`. GPU-only tests stay ignored by default; Linux runs the two software Vulkan
+   tests separately. CI also runs `cargo audit` and a release-mode
    performance check; see `.github/workflows/run_tests.yml` for the exact commands.
 5. **Submit a Pull Request:**
    - Target the `main` branch and fill in the PR template; [`docs/contributing/writing-prs.md`](docs/contributing/writing-prs.md) shows how to write it so it is quick to review.

@@ -371,6 +371,9 @@ jobs:
         with:
           cache-dir: ${{ runner.temp }}/kache
           cache-key-prefix: kache-windows-clippy
+          # Save only from main; PRs restore it. Linux caches already fill the
+          # repository's 10 GB, so per-PR Windows entries would evict them.
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Clippy check
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -398,14 +401,15 @@ jobs:
           cache-dir: ${{ runner.temp }}/kache
           # Keep test artifacts separate from Clippy's immutable cache entry.
           cache-key-prefix: kache-windows-test
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install nextest
         uses: taiki-e/install-action@nextest
 
       - name: Run unit & integration tests
-        # This test opens a hardware GPU; GitHub-hosted Windows runners have none.
-        # Other GPU-only tests remain ignored by default, as in the Linux suite.
-        run: cargo nextest run --workspace --lib --bins --tests --examples --no-fail-fast --no-tests=warn -E 'not test(hardware_repair_labels_gpu_output_but_not_native_blocks)'
+        # Same command as Linux. GPU-only tests stay ignored by default, and the
+        # hardware repair test skips itself when no hardware GPU is present.
+        run: cargo nextest run --workspace --lib --bins --tests --examples --no-fail-fast --no-tests=warn
         env:
           NEXTEST_NO_TESTS: warn
 
