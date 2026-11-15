@@ -3,6 +3,47 @@
 use super::tests::{edit_mesh, fixture, read};
 use super::*;
 
+/// A reused visible failure stays scoped while a changed hidden variant keeps its healthy shape.
+#[test]
+fn grass_mods_partial_reuse_keeps_failed_and_healthy_variants_independent() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = tagged_fixture(dir.path());
+    edit_mesh(dir.path(), |json, _| {
+        json["meshes"][0]["primitives"][0]["attributes"]["POSITION"] = 999.into();
+    });
+    conn.execute_batch(
+        "INSERT INTO records(form_id,record_type,load_order,data) VALUES(41,'STAT',0,x'00');
+         INSERT INTO statics(id,model_path,flags,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid) SELECT 41,model_path,flags,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid FROM statics WHERE id=40;
+         INSERT INTO base_texture_swaps(base_id,position,shape_name,shape_index,texture_set_id,disposition) VALUES(41,0,'ignored',3,40,'null_texture_set');
+         INSERT INTO \"references\"(id,cell_id,worldspace_id,base_form_id,is_exterior,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale) VALUES(51,11,1,41,1,4224,64,0,0,0,0,1);",
+    ).unwrap();
+    let (_, cold) = bake(&conn, dir.path(), None, "cold.rkyv");
+    assert_eq!(cold.cells[0].obstruction_failures.len(), 1);
+    assert!(cold.cells[1].obstruction_failures.is_empty());
+    conn.execute("UPDATE \"references\" SET pos_x=4256 WHERE id=51", [])
+        .unwrap();
+    let (report, partial) = bake(
+        &conn,
+        dir.path(),
+        Some(&dir.path().join("cold.rkyv")),
+        "partial.rkyv",
+    );
+    assert_eq!(
+        (
+            report.baked_cells,
+            report.reused_cells,
+            report.geometry_decodes
+        ),
+        (1, 2, 1)
+    );
+    assert!(partial.cells[1].obstruction_failures.is_empty());
+    assert!(
+        blocked(&partial.cells[1]) > 0,
+        "the healthy sibling remains an obstruction"
+    );
+    assert_eq!(report.skipped_obstruction_models, 1);
+}
+
 /// Add a second independently tagged primitive to the shared blocker model.
 fn tagged_fixture(root: &Path) -> Connection {
     let conn = fixture(root);
