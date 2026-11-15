@@ -1,8 +1,9 @@
-//! Rebuild world metadata from package-matched plugins without reconverting assets.
+//! Rebuild world metadata from package-matched plugins and verified retained assets.
 //!
-//! Retained models, textures and scripts are verified against the source package's
-//! manifest, not refreshed from current Data. Data supplies checksum-matched plugins,
-//! LOD settings and terrain diffuse inputs. Use normal conversion after asset changes.
+//! Models and textures retain the source package's verified bytes. Scripts with a stale
+//! ABI or proof regenerate from checksum-matched Data, with local failures reported as
+//! incomplete publication. Data also supplies matched plugins, LOD settings and terrain
+//! diffuse inputs. Mesh and texture changes require normal conversion.
 
 use crate::{
     AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage,
@@ -1385,31 +1386,116 @@ fn take_script_entries(manifest: &mut ConversionManifest) -> BTreeMap<String, Ca
         .collect()
 }
 
-/// Requires the scripts converted again from Data to come from the sources the source package
-/// recorded. Different Data would make the rebuilt scripts belong to another conversion.
+/// Authenticate winning source keys and hashes before decoding. Only a recorded extraction
+/// failure can explain an unavailable script; every available script must match its producer.
 fn verify_script_sources(
     recorded: &BTreeMap<String, CacheEntry>,
-    rebuilt: &BTreeMap<String, CacheEntry>,
+    available: &BTreeMap<String, String>,
+    unavailable: &BTreeMap<String, String>,
 ) -> Result<()> {
     let mut differing = recorded
         .iter()
         .filter(|(key, entry)| {
-            rebuilt
-                .get(*key)
-                .is_none_or(|rebuilt| rebuilt.source_hash != entry.source_hash)
+            available.get(*key).map_or_else(
+                || !unavailable.contains_key(*key),
+                |hash| hash != &entry.source_hash,
+            )
         })
         .map(|(key, _)| key)
-        .chain(rebuilt.keys().filter(|key| !recorded.contains_key(*key)));
+        .chain(available.keys().filter(|key| !recorded.contains_key(*key)))
+        .chain(
+            unavailable
+                .keys()
+                .filter(|key| !recorded.contains_key(*key)),
+        );
     if let Some(first) = differing.next() {
         let count = 1 + differing.count();
         let first: String = first.chars().take(256).collect();
         bail!(
             "script sources in Data differ from the source package ({count} of {} scripts; first: {first}); \
              run normal conversion to regenerate assets",
-            recorded.len().max(rebuilt.len())
+            recorded.len().max(available.len() + unavailable.len())
         );
     }
     Ok(())
+}
+
+/// Overlay complete archive selections, retrying failed batches one script at a time.
+/// Each failed winning key removes lower-priority bytes and names its extraction failure.
+fn stage_script_archives(
+    config: &PipelineConfig,
+    staging: &Path,
+    archives: &[PathBuf],
+) -> Result<BTreeMap<String, String>> {
+    let vfs = staging.join("vfs");
+    let mut unavailable = BTreeMap::new();
+    for (index, archive) in archives.iter().enumerate() {
+        let scratch = staging.join(format!(".metadata-script-archive-{index}"));
+        fs::create_dir(&scratch)?;
+        let extracted: Vec<PathBuf> =
+            match ArchiveExtractor::extract_script_inputs(archive, &scratch) {
+                Ok(extracted) => extracted.into_iter().map(|file| file.path).collect(),
+                Err(error) if config.fail_fast => {
+                    return Err(error).wrap_err_with(|| {
+                        format!("failed to extract scripts from {}", archive.display())
+                    });
+                }
+                Err(_) => {
+                    // A fresh directory gives each retry only its own fully written payload.
+                    fs::remove_dir_all(&scratch)?;
+                    fs::create_dir(&scratch)?;
+                    let selected =
+                        ArchiveExtractor::list_paths(archive)?
+                            .into_iter()
+                            .filter(|path| {
+                                path.extension()
+                                    .is_some_and(|extension| extension.eq_ignore_ascii_case("pex"))
+                            });
+                    let mut extracted = Vec::new();
+                    for path in selected {
+                        let key = canonical_asset_path(
+                            &path.to_string_lossy(),
+                            AssetKind::Script,
+                            "pex",
+                        )?;
+                        match ArchiveExtractor::extract_paths(
+                            archive,
+                            &scratch,
+                            &BTreeSet::from([path.clone()]),
+                        ) {
+                            Ok(_) => extracted.push(path),
+                            Err(error) => {
+                                let destination = vfs.join(&key);
+                                match fs::remove_file(&destination) {
+                                    Ok(()) => {}
+                                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                                    Err(error) => {
+                                        return Err(error)
+                                            .wrap_err("failed to discard overridden script");
+                                    }
+                                }
+                                unavailable.insert(
+                                    key.clone(),
+                                    format!(
+                                        "skipped script {key} from {}: {error:#}",
+                                        archive.display()
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    extracted
+                }
+            };
+        let files: Vec<_> = extracted.iter().map(|path| scratch.join(path)).collect();
+        overlay_loose_assets(&scratch, &vfs, &files)?;
+        for path in extracted {
+            let key = canonical_asset_path(&path.to_string_lossy(), AssetKind::Script, "pex")?;
+            unavailable.remove(&key);
+        }
+        fs::remove_dir_all(&scratch)?;
+    }
+    Ok(unavailable)
 }
 
 /// Converts the scripts again from the Data scripts for the current script ABI and replaces the
@@ -1426,10 +1512,7 @@ async fn rebuild_scripts_from_data(
     progress: &Sender<ProgressEvent>,
 ) -> Result<()> {
     let vfs = staging.join("vfs");
-    for archive in archives {
-        ArchiveExtractor::extract_script_inputs(archive, &vfs)
-            .wrap_err_with(|| format!("failed to extract scripts from {}", archive.display()))?;
-    }
+    let mut unavailable = stage_script_archives(config, staging, archives)?;
     let loose: Vec<_> = files
         .iter()
         .filter(|path| {
@@ -1439,24 +1522,23 @@ async fn rebuild_scripts_from_data(
         .cloned()
         .collect();
     overlay_loose_assets(&config.data_dir, &vfs, &loose)?;
+    let mut available = BTreeMap::new();
+    for path in discover(&vfs)?.into_iter().filter(|path| {
+        path.extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("pex"))
+    }) {
+        let relative = path.strip_prefix(&vfs)?;
+        let key = canonical_asset_path(&relative.to_string_lossy(), AssetKind::Script, "pex")?;
+        available.insert(key.clone(), hash_file(&path)?);
+        unavailable.remove(&key);
+    }
+    verify_script_sources(recorded, &available, &unavailable)?;
+    for (key, message) in unavailable {
+        manifest.failures.insert(key, message.clone());
+        report.warnings.push(message);
+        report.skipped += 1;
+    }
     convert_staged_scripts(config, staging, manifest, report, progress).await?;
-    ensure!(
-        manifest.failures.is_empty(),
-        "scripts failed to convert for the current script ABI; first: {}",
-        manifest
-            .failures
-            .values()
-            .next()
-            .cloned()
-            .unwrap_or_default()
-    );
-    let rebuilt: BTreeMap<String, CacheEntry> = manifest
-        .entries
-        .iter()
-        .filter(|(_, entry)| entry.output.starts_with("scripts/"))
-        .map(|(key, entry)| (key.clone(), entry.clone()))
-        .collect();
-    verify_script_sources(recorded, &rebuilt)?;
     // The helper belongs to the ABI like the scripts do, so it is the current embedded one.
     let runtime = staging.join("scripts/papyrus_runtime.luau");
     fs::create_dir_all(runtime.parent().unwrap())?;
@@ -2247,25 +2329,72 @@ mod per_kind_tests {
             .collect()
     }
 
+    /// Available script hashes describe raw winning PEX bytes independently of decoding.
+    fn script_hashes(items: &[(&str, &str)]) -> BTreeMap<String, String> {
+        items
+            .iter()
+            .map(|(name, hash)| (format!("scripts/{name}.pex"), (*hash).into()))
+            .collect()
+    }
+
     /// Rebuilt scripts are accepted only for exactly the recorded sources.
     #[test]
     fn rebuilt_scripts_must_match_the_recorded_sources() {
         let recorded = scripts(&[("a", "h1"), ("b", "h2")]);
-        verify_script_sources(&recorded, &recorded.clone()).unwrap();
+        verify_script_sources(
+            &recorded,
+            &script_hashes(&[("a", "h1"), ("b", "h2")]),
+            &BTreeMap::new(),
+        )
+        .unwrap();
         for (label, rebuilt) in [
-            ("changed hash", scripts(&[("a", "h1"), ("b", "other")])),
-            ("missing script", scripts(&[("a", "h1")])),
+            (
+                "changed hash",
+                script_hashes(&[("a", "h1"), ("b", "other")]),
+            ),
+            ("missing script", script_hashes(&[("a", "h1")])),
             (
                 "extra script",
-                scripts(&[("a", "h1"), ("b", "h2"), ("c", "h3")]),
+                script_hashes(&[("a", "h1"), ("b", "h2"), ("c", "h3")]),
             ),
         ] {
-            let error = verify_script_sources(&recorded, &rebuilt).unwrap_err();
+            let error = verify_script_sources(&recorded, &rebuilt, &BTreeMap::new()).unwrap_err();
             assert!(
                 error.to_string().contains("script sources in Data differ"),
                 "{label}: {error}"
             );
         }
+    }
+
+    /// One failed selected archive member permits only that recorded key to be unavailable.
+    #[test]
+    fn metadata_script_recovery_authenticates_each_available_and_unavailable_key() {
+        let recorded = scripts(&[("a", "h1"), ("b", "h2"), ("c", "h3")]);
+        let unavailable =
+            BTreeMap::from([("scripts/b.pex".into(), "archive member failed".into())]);
+        verify_script_sources(
+            &recorded,
+            &script_hashes(&[("a", "h1"), ("c", "h3")]),
+            &unavailable,
+        )
+        .unwrap();
+        for available in [
+            script_hashes(&[("a", "h1")]),
+            script_hashes(&[("a", "changed"), ("c", "h3")]),
+            script_hashes(&[("a", "h1"), ("c", "h3"), ("extra", "h4")]),
+        ] {
+            assert!(verify_script_sources(&recorded, &available, &unavailable).is_err());
+        }
+        let extra_failure =
+            BTreeMap::from([("scripts/extra.pex".into(), "archive member failed".into())]);
+        assert!(
+            verify_script_sources(
+                &recorded,
+                &script_hashes(&[("a", "h1"), ("b", "h2"), ("c", "h3")]),
+                &extra_failure,
+            )
+            .is_err()
+        );
     }
 
     /// Script entries leave the manifest and keep their source hashes; others stay.

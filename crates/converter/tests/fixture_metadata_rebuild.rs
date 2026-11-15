@@ -2262,7 +2262,8 @@ fn assert_regeneration_note(error: &str) {
     }
 }
 
-/// Copy a pack tree. Stands in for an APFS clone on the tiny fixture.
+/// Copy a pack tree for the Unix inode-preservation fixture.
+#[cfg(unix)]
 fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).unwrap();
     for entry in fs::read_dir(from).unwrap() {
@@ -2480,4 +2481,281 @@ async fn output_inside_another_pack_is_refused() {
         .filter(|name| name.to_string_lossy().contains("rebuilt"))
         .collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+/// Snapshot every package file so rebuild recovery proves its source remained immutable.
+fn script_recovery_package_hashes(root: &Path) -> std::collections::BTreeMap<String, String> {
+    walkdir::WalkDir::new(root)
+        .into_iter()
+        .map(Result::unwrap)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| {
+            (
+                entry
+                    .path()
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                hash_file(entry.path()).unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// Verify incomplete publication retains world, grass, models, textures and healthy scripts.
+fn assert_script_recovery_publication(
+    source: &Path,
+    output: &Path,
+    report: &converter::PipelineReport,
+    originals: &std::collections::BTreeMap<String, Vec<u8>>,
+    omitted: &str,
+) {
+    assert!(
+        !report.complete,
+        "a skipped script must mark publication incomplete"
+    );
+    assert!(
+        !report.warnings.is_empty(),
+        "script loss needs a report warning"
+    );
+    assert!(report.skipped > 0);
+    let manifest = ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+    assert!(!manifest.complete);
+    assert!(
+        !manifest.failures.is_empty(),
+        "script loss needs a manifest failure"
+    );
+    assert!(!manifest.entries.contains_key(omitted));
+    let bad_output = omitted.replace(".pex", ".luau");
+    assert!(
+        !output.join(&bad_output).exists(),
+        "old ABI bytes must be omitted"
+    );
+    for (name, bytes) in originals {
+        if name != &bad_output {
+            assert_eq!(
+                &fs::read(output.join(name)).unwrap(),
+                bytes,
+                "healthy script {name}"
+            );
+        }
+    }
+    let source_manifest =
+        ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
+    for entry in source_manifest
+        .entries
+        .values()
+        .filter(|entry| entry.output.ends_with(".glb") || entry.output.ends_with(".ktx2"))
+    {
+        assert_eq!(
+            hash_file(&output.join(&entry.output)).unwrap(),
+            entry.output_hash
+        );
+    }
+    assert!(output.join("grass_cache.rkyv").is_file());
+    assert_eq!(
+        fs::read(output.join("scripts/papyrus_runtime.luau")).unwrap(),
+        include_bytes!("../../shared/src/papyrus_runtime.luau")
+    );
+    let connection = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let count: u64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM \"references\" WHERE id=4660",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "healthy neighboring world record must publish");
+}
+
+/// A recorded unchanged script rejected by the current decoder omits only that script.
+#[tokio::test]
+async fn metadata_script_recovery_skips_recorded_bad_pex_and_publishes_neighbors() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    fs::write(
+        data.join("scripts/bad.pex"),
+        dummy_content::pex::minimal("Bad").unwrap(),
+    )
+    .unwrap();
+    convert(&data, &source).await;
+    let originals = age_source(&source, &data, 1, None);
+    let broken = b"unchanged historical PEX rejected by the current decoder";
+    replace_file(&data.join("scripts/bad.pex"), broken);
+    edit_manifest(&source, |manifest| {
+        manifest
+            .entries
+            .get_mut("scripts/bad.pex")
+            .unwrap()
+            .source_hash = hash_bytes(broken);
+    });
+    let before = script_recovery_package_hashes(&source);
+    let result = rebuild(&data, &source, &output).await;
+    assert!(
+        result.is_ok(),
+        "one unchanged bad PEX must preserve publication: {result:?}"
+    );
+    let report = result.unwrap();
+    assert_script_recovery_publication(&source, &output, &report, &originals, "scripts/bad.pex");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("bad.pex")),
+        "{:?}",
+        report.warnings
+    );
+    assert_eq!(script_recovery_package_hashes(&source), before);
+}
+
+/// A valid archive table can identify a selected script whose compressed payload is corrupt.
+#[tokio::test]
+async fn metadata_script_recovery_skips_corrupt_selected_archive_and_publishes_neighbors() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    let bad_pex = dummy_content::pex::minimal("ArchivedBad").unwrap();
+    let good_pex = dummy_content::pex::minimal("ArchivedGood").unwrap();
+    let same_archive_pex = dummy_content::pex::minimal("SameArchiveGood").unwrap();
+    let archive = data.join("Skyrim - Scripts.bsa");
+    let mut bytes = bsa::v104(
+        &[
+            Entry {
+                name: "scripts/samearchivegood.pex",
+                data: &same_archive_pex,
+            },
+            Entry {
+                name: "scripts/archivebad.pex",
+                data: &bad_pex,
+            },
+        ],
+        bsa::Compression::Zlib,
+    )
+    .unwrap();
+    fs::write(&archive, &bytes).unwrap();
+    fs::write(
+        data.join("Skyrim - Neighbor.bsa"),
+        bsa::v105(
+            &[Entry {
+                name: "scripts/archivegood.pex",
+                data: &good_pex,
+            }],
+            bsa::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    convert(&data, &source).await;
+    let originals = age_source(&source, &data, 1, None);
+    assert!(originals.contains_key("scripts/archivebad.luau"));
+    assert!(originals.contains_key("scripts/archivegood.luau"));
+    assert!(originals.contains_key("scripts/samearchivegood.luau"));
+    let record = 36 + 16 + 1 + "scripts".len() + 1 + 16;
+    let payload = u32::from_le_bytes(bytes[record + 12..record + 16].try_into().unwrap()) as usize;
+    assert!(payload + 8 < bytes.len());
+    bytes[payload + 4..].fill(0xff);
+    replace_file(&archive, &bytes);
+    let before = script_recovery_package_hashes(&source);
+    let result = rebuild(&data, &source, &output).await;
+    assert!(
+        result.is_ok(),
+        "one corrupt selected archive must preserve publication: {result:?}"
+    );
+    let report = result.unwrap();
+    assert_script_recovery_publication(
+        &source,
+        &output,
+        &report,
+        &originals,
+        "scripts/archivebad.pex",
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Skyrim - Scripts.bsa")),
+        "{:?}",
+        report.warnings
+    );
+    assert_eq!(script_recovery_package_hashes(&source), before);
+    assert_eq!(fs::read(&archive).unwrap(), bytes);
+}
+
+/// Source authentication precedes decoding so changed invalid bytes remain a package refusal.
+#[tokio::test]
+async fn metadata_script_recovery_refuses_changed_invalid_pex_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    age_source(&source, &data, 1, None);
+    replace_file(&data.join("scripts/generated.pex"), b"changed invalid PEX");
+    let before = script_recovery_package_hashes(&source);
+    let error = rebuild(&data, &source, &output).await.unwrap_err();
+    assert!(
+        format!("{error:?}").contains("script sources in Data differ"),
+        "{error:?}"
+    );
+    assert!(!output.exists());
+    assert_eq!(script_recovery_package_hashes(&source), before);
+}
+
+/// Extra invalid scripts are authenticated as changed input even when the decoder rejects them.
+#[tokio::test]
+async fn metadata_script_recovery_refuses_extra_invalid_pex_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    age_source(&source, &data, 1, None);
+    fs::write(data.join("scripts/extra.pex"), b"extra invalid PEX").unwrap();
+    let before = script_recovery_package_hashes(&source);
+    let error = rebuild(&data, &source, &output).await.unwrap_err();
+    assert!(
+        format!("{error:?}").contains("script sources in Data differ"),
+        "{error:?}"
+    );
+    assert!(!output.exists());
+    assert_eq!(script_recovery_package_hashes(&source), before);
+}
+
+/// Explicit fail-fast still returns the script error before publishing the rebuilt directory.
+#[tokio::test]
+async fn metadata_script_recovery_respects_fail_fast() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    age_source(&source, &data, 1, None);
+    let broken = b"recorded invalid PEX for explicit fail-fast";
+    replace_file(&data.join("scripts/generated.pex"), broken);
+    edit_manifest(&source, |manifest| {
+        manifest
+            .entries
+            .get_mut("scripts/generated.pex")
+            .unwrap()
+            .source_hash = hash_bytes(broken);
+    });
+    let before = script_recovery_package_hashes(&source);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let mut config = common::cpu_lod_config(&data, &output);
+    config.fail_fast = true;
+    let result = AssetPipeline::rebuild_metadata_async(config, &source, tx).await;
+    drain.await.unwrap();
+    assert!(result.is_err(), "explicit fail-fast must stop publication");
+    assert!(!output.exists());
+    assert_eq!(script_recovery_package_hashes(&source), before);
 }

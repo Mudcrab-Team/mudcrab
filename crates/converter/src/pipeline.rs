@@ -1970,9 +1970,9 @@ struct ConversionBatch<'a> {
 /// Converts every `.pex` under `staging/vfs` again, with the normal conversion's script stage.
 ///
 /// A metadata rebuild uses it when the source pack's scripts were produced under an older
-/// script ABI. Nothing is reused: no previous manifest, no staged output and no cache entry
-/// can satisfy a script here. The caller owns the manifest's other kinds and later checks the
-/// recorded script source hashes against the new ones.
+/// script ABI. Every script is regenerated with empty reuse state. The caller authenticates
+/// winning staged source keys and hashes before invoking this stage and owns the manifest's
+/// other asset kinds.
 pub(crate) async fn convert_staged_scripts(
     config: &PipelineConfig,
     staging: &Path,
