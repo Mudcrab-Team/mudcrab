@@ -196,7 +196,7 @@ request:
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo nextest run --workspace --all-targets --no-fail-fast --no-tests=warn
+cargo nextest run --workspace --lib --bins --tests --examples --no-fail-fast --no-tests=warn
 ```
 
 - Used an AI assistant? Follow the [AI policy](docs/AI_POLICY.md).
