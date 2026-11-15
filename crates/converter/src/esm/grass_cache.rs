@@ -600,6 +600,14 @@ fn validate_accessor(accessor: &gltf::Accessor<'_>, blob: &[u8]) -> Result<()> {
             accessor.offset() == 0 && accessor.sparse().is_some(),
             "accessor has no backing data"
         );
+        // Limit the implicit base before sparse readers reserve its expanded length.
+        ensure!(
+            accessor
+                .count()
+                .checked_mul(accessor.size())
+                .is_some_and(|bytes| bytes <= GEOMETRY_BUDGET),
+            "implicit accessor exceeds geometry byte budget"
+        );
     }
     if let Some(sparse) = accessor.sparse() {
         ensure!(

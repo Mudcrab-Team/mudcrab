@@ -289,3 +289,11 @@ placement, retained non-emitting species slots and item-local LAND recovery. It
 rejects producer-10 artifacts as well as older masks; G6 retains producer 10 because
 its startup/settings changes preserve placement. Mesh, texture and terrain cache
 identities remain independently versioned.
+
+Runtime activates a reference's texture swaps as a group once its replacement
+textures are ready. If a replacement texture on another shape fails to load, the
+reference keeps its original shapes, including a shape targeted by NullTextureSet.
+The baked mask already omits that hidden shape, so grass can occupy geometry that
+stays visible in this failure case. Applying NullTextureSet hides independently of
+replacement-texture failures is a runtime follow-up; the current bake retains the
+bounded successful-swap contract above.
