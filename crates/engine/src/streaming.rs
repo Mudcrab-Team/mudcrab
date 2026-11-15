@@ -5548,6 +5548,7 @@ fn water_material(
                 wind_speed: noise.wind_speed,
                 noise_falloff: noise.noise_falloff,
                 sun: noise.sun,
+                refraction_magnitude: noise.refraction_magnitude,
             },
         );
     }
@@ -5557,7 +5558,13 @@ fn water_material(
             metallic: 0.15,
             perceptual_roughness: 0.06,
             reflectance: 0.9,
-            alpha_mode: AlphaMode::Blend,
+            // The water is drawn in Bevy's transmissive phase, which hands it a copy of the scene
+            // colour to refract (RF-WATER-049): `reads_view_transmission_texture` is true for a
+            // StandardMaterial with `specular_transmission > 0`, and the phase is chosen for the
+            // non-blended alpha modes. Neither value reaches the shader, which writes the whole
+            // colour itself and reads only the scene copy.
+            alpha_mode: AlphaMode::Opaque,
+            specular_transmission: crate::render::WATER_TRANSMISSION_FLAG,
             ..default()
         },
         extension,
@@ -5711,6 +5718,12 @@ mod tests {
         };
         let multiplier = crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER;
         let material = water_material(Some(colors), Handle::default(), None, None, None, false);
+        // The water is drawn in Bevy's transmissive phase so it can refract the scene copy
+        // (RF-WATER-049): an opaque alpha mode and a material that reads the transmission texture.
+        assert_eq!(material.base.alpha_mode, AlphaMode::Opaque);
+        assert!(bevy::pbr::Material::reads_view_transmission_texture(
+            &material
+        ));
         let scaled = |rgb: [u8; 3]| {
             Color::srgb(
                 f32::from(rgb[0]) / 255.0 * f32::from(multiplier[0]) / 255.0,

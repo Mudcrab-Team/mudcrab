@@ -13,9 +13,9 @@
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::main_pass_post_lighting_processing,
     forward_io::{VertexOutput, FragmentOutput},
-    view_transformations::{depth_ndc_to_view_z, position_world_to_view},
+    view_transformations::{depth_ndc_to_view_z, position_ndc_to_world, position_world_to_clip, position_world_to_view},
 }
-#import bevy_pbr::mesh_view_bindings::{globals, lights, view}
+#import bevy_pbr::mesh_view_bindings::{globals, lights, view, view_transmission_sampler, view_transmission_texture}
 
 struct WaterSettings {
     // x = multiplier on the noise UV scales, y = multiplier on the wind speeds, z = multiplier on
@@ -56,6 +56,8 @@ struct WaterSettings {
     // rgb = the sun colour the terms are multiplied by (linear), w unused. The sun intensity
     // `SunDir.w` is not traced and is 1 (#698).
     sun_color: vec4<f32>,
+    // x = the refraction magnitude in world units (WATR DNAM +0x98; RF-WATER-049); yzw unused.
+    refraction: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: WaterSettings;
@@ -94,6 +96,9 @@ const WATER_SSR_INTENSITY: f32 = 0.5;
 const WATER_FRAME_FLAG: f32 = 1.0;
 // The sparkle direction, a retail shader literal in Skyrim's frame (RF-WATER-010).
 const WATER_SPARKLE_DIRECTION: vec3<f32> = vec3<f32>(-0.099, -0.099, 0.99);
+// The smallest reverse-Z depth taken as a real point, so a pixel of sky (depth 0, infinitely far) still
+// gives a finite scene point for the plane test (an engineering guard; retail reads the depth as is).
+const WATER_DEPTH_FLOOR: f32 = 1.0e-7;
 // Floors the base of a power so log2 of a base of 0 does not give NaN (an engineering guard; the
 // retail shader writes exp2(power * log2(base)) without one).
 const WATER_POWER_FLOOR: f32 = 1.0e-30;
@@ -143,6 +148,46 @@ fn water_body(path: f32, vertical_depth: f32) -> vec3<f32> {
     let vertical = clamp(vertical_depth / far, 0.0, 1.0);
     let clear = clamp((far - min(path, far)) / range, 0.0, 1.0);
     return vec3<f32>(along, 1.0 - pow(clear, exponent), vertical);
+}
+
+// The scene colour the water is seen over, as the retail pixel shader reads it (RF-WATER-049): the
+// point on the water is moved by (N.xy * DNAM 0x98 * lerp(1, sat(L / F), DNAM 0xD4), 0) in Skyrim's
+// world XY and projected, and the scene copy is read there. The depth at that point is loaded and
+// its scene point tested against the water plane: a point on the camera's side of the plane is
+// something in front of the water (a bank, a reed), so the unperturbed pixel is used instead. The
+// copy is Bevy's view transmission texture, taken after the opaque pass and before any transmissive
+// draw, so it excludes the water itself, as retail's copy does. `normal_skyrim` is the surface
+// normal in Skyrim's axes, `along` is sat(L / F) and `depth_known` is false when the bed depth is
+// unknown (the interior and no-depth programs, which have no leak test and so no offset).
+fn refracted_scene(frag_coord: vec4<f32>, world_position: vec3<f32>, normal_skyrim: vec3<f32>, along: f32, depth_known: bool) -> vec3<f32> {
+    let unperturbed_uv = (frag_coord.xy - view.viewport.xy) / view.viewport.zw;
+    var uv = unperturbed_uv;
+    if depth_known {
+        let factor = water.depth_control.y * (along - 1.0) + 1.0;
+        // Skyrim's (x, y, z) is Bevy's (x, z, -y): the offset is in the water plane, so it has no
+        // Bevy y part.
+        let offset = vec3<f32>(normal_skyrim.x, 0.0, -normal_skyrim.y) * water.refraction.x * factor;
+        let clip = position_world_to_clip(world_position + offset);
+        let candidate = vec2<f32>(0.5 + 0.5 * clip.x / clip.w, 0.5 - 0.5 * clip.y / clip.w);
+        let size = vec2<i32>(textureDimensions(bed_depth));
+        let texel = clamp(vec2<i32>(candidate * view.viewport.zw + view.viewport.xy), vec2<i32>(0), size - vec2<i32>(1));
+        let ndc_depth = textureLoad(bed_depth, texel, 0).x;
+        // A negative depth is the unresolved sentinel: the leak cannot be tested, so no offset.
+        if ndc_depth >= 0.0 && clip.w > 0.0 {
+            // The scene point seen at the candidate pixel; reverse-Z 0 is infinitely far, which the
+            // engineering floor keeps finite.
+            let candidate_ndc = vec3<f32>(candidate.x * 2.0 - 1.0, 1.0 - candidate.y * 2.0, max(ndc_depth, WATER_DEPTH_FLOOR));
+            let scene_point = position_ndc_to_world(candidate_ndc);
+            // Both the camera and the scene point are tested against the water plane (horizontal at
+            // the surface's height); the same side means the point is in front of the water.
+            let camera_side = view.world_position.y - world_position.y;
+            let scene_side = scene_point.y - world_position.y;
+            if camera_side * scene_side <= 0.0 {
+                uv = candidate;
+            }
+        }
+    }
+    return textureSampleLevel(view_transmission_texture, view_transmission_sampler, clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
 }
 
 // One noise normal map sampled at a world-space UV. The map tiles, so the UV is wrapped by hand
@@ -274,9 +319,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     //   diffuse = lerp(what lies behind, water, a)        a = body.y
     //   color   = lerp(diffuse, reflection, m)            m = lerp(1, F * depthReflections, distT)
     // where depthReflections = lerp(1, sat(L / F), DepthControl.x). The main pass's frame flag is
-    // unverified (#698). The first lerp is the alpha
-    // blend with the bed already in the frame, so both lerps become one blend with coverage
-    // 1 - (1 - a)(1 - m) and the colour that makes the product match.
+    // unverified (#698). What lies behind is the refracted scene copy (`refracted_scene`).
     let depth_reflections = water.depth_control.x * (body.x - 1.0) + 1.0;
     let m = mix(1.0, fresnel * depth_reflections * water.fresnel_reflectivity.z, dist_t);
     var reflection = reflection_planar;
@@ -298,7 +341,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         }
         water_colour = mix(water.shallow_color.rgb, deep, fresnel) * sun_lit / FRAMEBUFFER_RANGE;
     }
-    let coverage = a + m - a * m;
+    let depth_known = !no_depth;
+    // The scene the water is seen over: what the retail first lerp, lerp(refr, body, a), blends the
+    // body with. Refraction offsets only the programs that have depth.
+    let refracted = refracted_scene(in.position, in.world_position.xyz, normal_skyrim, body.x, depth_known);
     // The sun specular and sparkle (RF-WATER-010), added after the mix: spec =
     // sat(R.sunDir)^power * magnitude, sparkle = sat(N.(-0.099, -0.099, 0.99))^power * magnitude,
     // both times the sun colour S and the specular depth factor dS = lerp(1, sat(h / F),
@@ -315,10 +361,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let specular_depth = water.depth_control.w * (body.z - 1.0) + 1.0;
         sun = (spec + sparkle) * water.sun_color.rgb * specular_depth / FRAMEBUFFER_RANGE;
     }
-    // The sun adds to the whole pixel, not through the coverage: dividing by the coverage before
-    // the blend multiplies it back, so the blended result gains exactly `sun`.
+    // The sun adds to the whole pixel after the mix (RF-WATER-010).
     var out: FragmentOutput;
-    out.color = vec4<f32>((water_colour * (1.0 - m) * a + reflection * m + sun) / max(coverage, 1.0e-6), coverage);
+    // color = lerp(lerp(refr, body, a), reflection, m) + sun, written opaque: the scene is already
+    // in the colour, so the water replaces the pixel instead of blending over it.
+    out.color = vec4<f32>(refracted * (1.0 - a) * (1.0 - m) + water_colour * (1.0 - m) * a + reflection * m + sun, 1.0);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
 }

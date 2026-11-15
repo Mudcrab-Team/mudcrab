@@ -357,6 +357,9 @@ pub struct WaterNoise {
     /// The sun terms of the retail water shader (RF-WATER-010): sun specular power (+0x10), sun
     /// specular magnitude (+0xCC), sparkle power (+0xE0), sparkle magnitude (+0xC8).
     pub sun: [f32; 4],
+    /// `DNAM` refraction magnitude (+0x98), world units: how far the wave normal moves the point
+    /// the bed is seen through (RF-WATER-049; 40 for the river records, 8 for the creek).
+    pub refraction_magnitude: f32,
 }
 
 /// Byte offsets in a WATR `DNAM` (`docs/research/water.md`, section 1.2).
@@ -373,6 +376,7 @@ const WATER_DNAM_SUN_SPECULAR_POWER: usize = 0x10;
 const WATER_DNAM_SUN_SPECULAR_MAGNITUDE: usize = 0xCC;
 const WATER_DNAM_SUN_SPARKLE_POWER: usize = 0xE0;
 const WATER_DNAM_SUN_SPARKLE_MAGNITUDE: usize = 0xC8;
+const WATER_DNAM_REFRACTION_MAGNITUDE: usize = 0x98;
 
 /// Skyrim's DefaultWater reflection magnitude (`DNAM` +0xC4, 0.42 in the retail records read for
 /// this PR), used when a water's record cannot be read.
@@ -410,6 +414,7 @@ fn water_noise_from_record(record: &WaterRecord) -> Option<WaterNoise> {
             dnam_float(&record.dnam, WATER_DNAM_SUN_SPARKLE_POWER)?,
             dnam_float(&record.dnam, WATER_DNAM_SUN_SPARKLE_MAGNITUDE)?,
         ],
+        refraction_magnitude: dnam_float(&record.dnam, WATER_DNAM_REFRACTION_MAGNITUDE)?,
     })
 }
 
@@ -1604,10 +1609,10 @@ pub(crate) mod water_fixtures {
     use super::{
         WATER_DNAM_AMPLITUDE, WATER_DNAM_DEPTH_PROPERTIES, WATER_DNAM_FOG_AMOUNT,
         WATER_DNAM_FOG_FAR, WATER_DNAM_FOG_NEAR, WATER_DNAM_NOISE_FALLOFF,
-        WATER_DNAM_REFLECTION_MAGNITUDE, WATER_DNAM_SUN_SPARKLE_MAGNITUDE,
-        WATER_DNAM_SUN_SPARKLE_POWER, WATER_DNAM_SUN_SPECULAR_MAGNITUDE,
-        WATER_DNAM_SUN_SPECULAR_POWER, WATER_DNAM_UV_SCALE, WATER_DNAM_WIND_DIRECTION,
-        WATER_DNAM_WIND_SPEED, WaterFog,
+        WATER_DNAM_REFLECTION_MAGNITUDE, WATER_DNAM_REFRACTION_MAGNITUDE,
+        WATER_DNAM_SUN_SPARKLE_MAGNITUDE, WATER_DNAM_SUN_SPARKLE_POWER,
+        WATER_DNAM_SUN_SPECULAR_MAGNITUDE, WATER_DNAM_SUN_SPECULAR_POWER, WATER_DNAM_UV_SCALE,
+        WATER_DNAM_WIND_DIRECTION, WATER_DNAM_WIND_SPEED, WaterFog,
     };
 
     /// A WATR record's archived subrecords, with a `DNAM` of `len` bytes holding the given fog at
@@ -1637,6 +1642,7 @@ pub(crate) mod water_fixtures {
         pub wind_speed: [f32; 3],
         pub noise_falloff: f32,
         pub sun: [f32; 4],
+        pub refraction_magnitude: f32,
         pub fnam: u8,
         pub textures: [&'static str; 3],
     }
@@ -1660,6 +1666,7 @@ pub(crate) mod water_fixtures {
         }
         put(WATER_DNAM_REFLECTION_MAGNITUDE, noise.reflection_magnitude);
         put(WATER_DNAM_NOISE_FALLOFF, noise.noise_falloff);
+        put(WATER_DNAM_REFRACTION_MAGNITUDE, noise.refraction_magnitude);
         for (offset, value) in [
             (WATER_DNAM_SUN_SPECULAR_POWER, noise.sun[0]),
             (WATER_DNAM_SUN_SPECULAR_MAGNITUDE, noise.sun[1]),
@@ -2817,6 +2824,8 @@ mod tests {
         noise_falloff: 4007.0,
         // DefaultWater: sun specular 1021 x 4.65, sparkle 3521 x 2.89 (RF-WATER-010).
         sun: [1021.0, 4.65, 3521.0, 2.89],
+        // DefaultWater (Update.esm): DNAM +0x98 = 40 (RF-WATER-056).
+        refraction_magnitude: 40.0,
         fnam: 0,
         textures: [
             "Data\\Textures\\Water\\DefaultWater.dds",
@@ -2837,6 +2846,7 @@ mod tests {
         assert_eq!(noise.wind_speed, [0.019, 0.013, 0.096]);
         assert_eq!(noise.noise_falloff, 4007.0);
         assert_eq!(noise.sun, [1021.0, 4.65, 3521.0, 2.89]);
+        assert_eq!(noise.refraction_magnitude, 40.0);
         // The record's own Windows path becomes the converted texture.
         let expected = Some("textures/water/defaultwater.ktx2".to_owned());
         assert_eq!(

@@ -1,6 +1,6 @@
 //! The depth of the opaque bed behind the water surface.
 //!
-//! Water is drawn in the transparent pass, which attaches the same depth texture the opaque pass
+//! Water is drawn in the transmissive pass, which attaches the same depth texture the opaque pass
 //! writes, so the water shader cannot sample that texture itself. This module snapshots the opaque
 //! depth into a plain `R32Float` image between the two passes and hands the image to every water
 //! material. It replaces the depth prepass the water shader used to read: the snapshot costs one
@@ -21,6 +21,7 @@ use bevy::{
         schedule::{Core3d, Core3dSystems},
     },
     image::Image,
+    pbr::main_transmissive_pass_3d,
     prelude::*,
     render::{
         Render, RenderApp, RenderStartup, RenderSystems,
@@ -99,6 +100,9 @@ impl Plugin for WaterDepthPlugin {
                 run_water_depth_snapshot
                     .in_set(Core3dSystems::MainPass)
                     .after(main_opaque_pass_3d)
+                    // The water is drawn in the transmissive pass and writes depth: the snapshot
+                    // must hold the opaque depth only, so it runs before that pass.
+                    .before(main_transmissive_pass_3d)
                     .before(main_transparent_pass_3d),
             );
     }

@@ -119,6 +119,9 @@ fn depth_ndc_to_view_z(ndc_depth: f32) -> f32 {
 fn position_world_to_view(world_pos: vec3<f32>) -> vec3<f32> {
     return world_pos;
 }
+fn position_ndc_to_world(ndc_pos: vec3<f32>) -> vec3<f32> {
+    return ndc_pos;
+}
 ";
 
 /// The two view-level values the water shader reads, with the fields it uses.
@@ -144,6 +147,8 @@ struct Lights {
 @group(0) @binding(2) var<uniform> lights: Lights;
 @group(0) @binding(0) var<uniform> view: View;
 @group(0) @binding(1) var<uniform> globals: Globals;
+@group(0) @binding(24) var view_transmission_texture: texture_2d<f32>;
+@group(0) @binding(25) var view_transmission_sampler: sampler;
 ";
 
 /// Composes the shader with `defs` plus the defs Bevy's own mesh pipeline adds for a mesh with

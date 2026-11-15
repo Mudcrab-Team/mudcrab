@@ -116,6 +116,31 @@ pub(crate) fn water_reflection_colour(
     flat + (environment - flat) * reflection_amount
 }
 
+/// The world-XY offset of the refracted point (RF-WATER-049): `N.xy * DNAM 0x98 * lerp(1, sat(L / F),
+/// DNAM 0xD4)`, `along` being `sat(L / F)` and `depth_refraction` the DNAM 0xD4 depth property.
+#[cfg(test)]
+pub(crate) fn water_refraction_offset(
+    normal_xy: [f32; 2],
+    magnitude: f32,
+    depth_refraction: f32,
+    along: f32,
+) -> [f32; 2] {
+    let factor = 1.0 + depth_refraction * (along.clamp(0.0, 1.0) - 1.0);
+    normal_xy.map(|component| component * magnitude * factor)
+}
+
+/// The leak test of the refraction (RF-WATER-049, medium-high on the sign): the scene point seen
+/// through the offset pixel is in front of the water when it is on the same side of the water plane
+/// as the camera, and the unperturbed pixel is used then.
+#[cfg(test)]
+pub(crate) fn water_refraction_leaks(
+    camera_height: f32,
+    surface_height: f32,
+    scene_height: f32,
+) -> bool {
+    (camera_height - surface_height) * (scene_height - surface_height) > 0.0
+}
+
 /// The two sun terms of the retail water pixel shader, before the sun colour (RF-WATER-010):
 /// `sat(R.sun)^specularPower * specularMagnitude + sat(N.(-0.099, -0.099, 0.99))^sparklePower *
 /// sparkleMagnitude`. `terms` is (specular power, specular magnitude, sparkle power, sparkle
@@ -184,6 +209,14 @@ fn extend_shader_clock(time: Option<ResMut<Time<Virtual>>>) {
 /// `crates/converter` started reading them.
 pub const DEFAULT_WATER_FRESNEL: f32 = 0.10;
 pub const DEFAULT_WATER_REFLECTIVITY: f32 = 0.8;
+/// The `specular_transmission` of the water's `StandardMaterial`. Only its being above zero matters:
+/// it makes Bevy draw the water in the transmissive phase and bind the scene copy the shader
+/// refracts (an engineering flag; the shader reads neither the value nor any transmission term).
+pub const WATER_TRANSMISSION_FLAG: f32 = 1.0;
+
+/// DefaultWater's refraction magnitude after Update.esm (WATR DNAM +0x98 = 40; RF-WATER-056), used
+/// when a water's record cannot be read.
+pub const DEFAULT_WATER_REFRACTION_MAGNITUDE: f32 = 40.0;
 /// DefaultWater's Reflection Color after Update.esm (`#778C9D`): what the water reflects where the
 /// reflection image holds nothing, and what a water with no decoded colours falls back to.
 pub const DEFAULT_WATER_REFLECTION_COLOR: [u8; 3] = [0x77, 0x8C, 0x9D];
@@ -886,6 +919,8 @@ pub struct WaterNoiseValues {
     /// Sun specular power, sun specular magnitude, sparkle power, sparkle magnitude (`DNAM` +0x10,
     /// +0xCC, +0xE0, +0xC8; RF-WATER-010).
     pub sun: [f32; 4],
+    /// World units the wave normal moves the refracted point by (`DNAM` +0x98; RF-WATER-049).
+    pub refraction_magnitude: f32,
 }
 
 impl WaterNoiseValues {
@@ -899,6 +934,7 @@ impl WaterNoiseValues {
             wind_speed: [0.0; 3],
             noise_falloff: DEFAULT_WATER_NOISE_FALLOFF,
             sun: [0.0; 4],
+            refraction_magnitude: DEFAULT_WATER_REFRACTION_MAGNITUDE,
         }
     }
 }
@@ -976,6 +1012,8 @@ struct WaterSettings {
     /// rgb = the sun colour `S` the terms are multiplied by (linear); the weather's sunlight
     /// colour. The sun intensity `SunDir.w` is not traced and taken as 1 (#698). w unused.
     sun_color: Vec4,
+    /// x = the refraction magnitude in world units (WATR DNAM +0x98; RF-WATER-049); yzw unused.
+    refraction: Vec4,
 }
 
 impl Default for WaterExtension {
@@ -1000,6 +1038,7 @@ impl Default for WaterExtension {
                 depth_control: Vec4::ZERO,
                 sun_terms: Vec4::ZERO,
                 sun_color: Vec4::ZERO,
+                refraction: Vec4::new(DEFAULT_WATER_REFRACTION_MAGNITUDE, 0.0, 0.0, 0.0),
             },
             reflection: None,
             flow_normal: None,
@@ -1067,6 +1106,7 @@ impl WaterExtension {
                 depth_control: Vec4::ZERO,
                 sun_terms: Vec4::ZERO,
                 sun_color: Vec4::ZERO,
+                refraction: Vec4::new(DEFAULT_WATER_REFRACTION_MAGNITUDE, 0.0, 0.0, 0.0),
             },
             bed_depth: None,
             noise_normal_0: None,
@@ -1131,6 +1171,7 @@ impl WaterExtension {
         // The retail clamp of the noise falloff (RF-SHADER-007).
         self.settings.depth_params.y = values.noise_falloff.clamp(1.0, 8191.0);
         self.settings.sun_terms = Vec4::from_array(values.sun);
+        self.settings.refraction.x = values.refraction_magnitude;
         let [first, second, third] = textures;
         self.noise_normal_0 = first;
         self.noise_normal_1 = second;
@@ -2653,10 +2694,11 @@ mod tests {
 
     #[test]
     fn the_shader_holds_the_retail_framebuffer_range_and_mix() {
-        // RF-SHADER-001: FramebufferRange 1.2. RF-SHADER-008: coverage 1 - (1 - a)(1 - m).
+        // RF-SHADER-001: FramebufferRange 1.2. RF-SHADER-008: color = lerp(lerp(refr, body, a),
+        // reflection, m), written opaque over the refracted scene copy.
         let source = include_str!("shaders/water.wgsl");
         assert!(source.contains("const FRAMEBUFFER_RANGE: f32 = 1.2;"));
-        assert!(source.contains("let coverage = a + m - a * m;"));
+        assert!(!source.contains("coverage = a + m - a * m"));
         assert!(source.contains(
             "let m = mix(1.0, fresnel * depth_reflections * water.fresnel_reflectivity.z, dist_t);"
         ));
@@ -2678,6 +2720,7 @@ mod tests {
             wind_speed: [0.019, 0.013, 0.096],
             noise_falloff: 4007.0,
             sun: [1021.0, 4.65, 3521.0, 2.89],
+            refraction_magnitude: 40.0,
         }
     }
 
@@ -2837,6 +2880,41 @@ mod tests {
             "let cube_direction = vec3<f32>(cube_reflected.x, -cube_reflected.z, cube_reflected.y);"
         ));
         assert!(source.contains("let reflection_planar = mix(flat_reflection, environment, water.fresnel_reflectivity.y);"));
+    }
+
+    #[test]
+    fn the_refraction_offset_and_leak_test_follow_retail() {
+        // RF-WATER-049: a river (DNAM 0x98 = 40, 0xD4 = 0.95) at a normal tilt of 0.1 moves the
+        // point 4 units where the water is deep and 0.05 of that at zero depth.
+        let deep = water_refraction_offset([0.1, -0.05], 40.0, 0.95, 1.0);
+        assert!((deep[0] - 4.0).abs() < 1.0e-5 && (deep[1] + 2.0).abs() < 1.0e-5);
+        let shallow = water_refraction_offset([0.1, 0.0], 40.0, 0.95, 0.0);
+        assert!((shallow[0] - 4.0 * 0.05).abs() < 1.0e-5);
+        // A creek's magnitude is 8, a flat normal moves nothing.
+        assert_eq!(
+            water_refraction_offset([0.0, 0.0], 8.0, 0.95, 0.5),
+            [0.0, 0.0]
+        );
+        // The bed below a camera above the water is not a leak; a bank above the water is.
+        assert!(!water_refraction_leaks(100.0, 0.0, -50.0));
+        assert!(water_refraction_leaks(100.0, 0.0, 30.0));
+        // A camera under the surface sees the surface from below: the ground below is on its side.
+        assert!(water_refraction_leaks(-100.0, 0.0, -50.0));
+        assert!(!water_refraction_leaks(-100.0, 0.0, 30.0));
+        // The shader holds the formula: the offset is in the water plane, the factor uses DNAM 0xD4,
+        // the scene copy is Bevy's transmission texture and the colour is written opaque.
+        let source = include_str!("shaders/water.wgsl");
+        assert!(source.contains("let factor = water.depth_control.y * (along - 1.0) + 1.0;"));
+        assert!(source.contains(
+            "vec3<f32>(normal_skyrim.x, 0.0, -normal_skyrim.y) * water.refraction.x * factor"
+        ));
+        assert!(source.contains("if camera_side * scene_side <= 0.0 {"));
+        assert!(
+            source.contains(
+                "textureSampleLevel(view_transmission_texture, view_transmission_sampler"
+            )
+        );
+        assert!(source.contains("refracted * (1.0 - a) * (1.0 - m) + water_colour * (1.0 - m) * a + reflection * m + sun, 1.0)"));
     }
 
     #[test]

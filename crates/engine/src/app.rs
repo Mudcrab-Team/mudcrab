@@ -1576,7 +1576,8 @@ fn setup_terrain_water_fixture(
                     metallic: 0.15,
                     perceptual_roughness: 0.06,
                     reflectance: 0.9,
-                    alpha_mode: AlphaMode::Blend,
+                    alpha_mode: AlphaMode::Opaque,
+                    specular_transmission: crate::render::WATER_TRANSMISSION_FLAG,
                     ..default()
                 },
                 extension: WaterExtension::with_reflection(reflection.0.clone(), Some(flow_normal))
