@@ -329,14 +329,17 @@ impl MeshConverter {
             output,
         )?;
         // A static fallback or a skin export does not prove the exported primitive for each source
-        // shape, and an unparsed block makes the geometry count unreliable. Those meshes keep their
-        // untagged form, so the engine leaves their materials alone.
-        let glb =
-            if declares_skin || used_static_fallback || !diagnostics.fallback_blocks.is_empty() {
-                glb
-            } else {
-                tag_geometry_indices(glb, &exported_material_contract, &shape_blocks, &nif)?
-            };
+        // shape, and an unparsed block other than Havok collision data makes the geometry count
+        // unreliable. Those meshes keep their untagged form, so the engine leaves their materials
+        // alone.
+        let glb = if declares_skin
+            || used_static_fallback
+            || has_unparsed_non_havok_block(&diagnostics)
+        {
+            glb
+        } else {
+            tag_geometry_indices(glb, &exported_material_contract, &shape_blocks, &nif)?
+        };
         ensure!(
             glb.len() >= 12 && &glb[..4] == b"glTF",
             "NIF exporter produced an invalid GLB header"
@@ -1028,6 +1031,25 @@ const SKIN_INSTANCE_BLOCKS: [&str; 3] = [
 /// Identifies header type names whose instances carry mesh-to-skeleton bindings.
 fn is_declared_skin_block(block_type: &str) -> bool {
     SKIN_INSTANCE_BLOCKS.contains(&block_type)
+}
+
+/// Whether a header type name is a Havok physics block. nif.xml names every Havok block `bhk*`,
+/// except `hkPackedNiTriStripsData`, and none of them derives from `NiAVObject`: collision hangs off
+/// a scene object's collision reference, never off a node's child list. Such a block is neither a
+/// scene node nor a geometry leaf, so leaving it unparsed cannot change the retail 3D Index count.
+fn is_havok_block(block_type: &str) -> bool {
+    block_type.starts_with("bhk") || block_type == "hkPackedNiTriStripsData"
+}
+
+/// Whether any block other than Havok collision data was left unparsed. The converter does not
+/// parse Havok blocks for rendering (collision decodes their raw bytes itself), so they are
+/// expected fallbacks. Any other fallback may be scene data, so geometry tagging refuses it.
+/// [`geometry_preorder_indices`] separately refuses any unparsed block in a child list.
+fn has_unparsed_non_havok_block(diagnostics: &NifParseDiagnostics) -> bool {
+    diagnostics
+        .fallback_blocks
+        .keys()
+        .any(|block_type| !is_havok_block(block_type))
 }
 
 /// Whether the NIF header declares a skin instance block, parsed or not.
@@ -3523,6 +3545,134 @@ mod tests {
         // An enormous node scale gives the primary export invalid bounds, so the static
         // fallback replaces it.
         assert!(tag("recovered", Some(1.0e35)).is_null());
+    }
+
+    /// [`static_nif`]'s shape plus a fixed box body on its own node. The Havok blocks
+    /// (`bhkCollisionObject`, `bhkRigidBody`, `bhkBoxShape`) hang off that node's collision
+    /// reference, as in a retail collidable static, and the render parser leaves them unparsed.
+    fn collidable_static_nif() -> Vec<u8> {
+        dummy_content::nif::static_shape_with_bodies(
+            &dummy_content::nif::StaticShape {
+                name: "PropertyQuad",
+                positions: &[
+                    [-1.0, -1.0, 0.0],
+                    [1.0, -1.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                    [-1.0, 1.0, 0.0],
+                ],
+                normals: &[[0.0, 0.0, 1.0]; 4],
+                uvs: &[[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+                indices: &[[0, 1, 2], [0, 2, 3]],
+                diffuse: "textures/generated_color.dds",
+                normal_texture: "textures/generated_normal.dds",
+            },
+            &[dummy_content::nif::fixed_box_body("Collision")],
+        )
+        .unwrap()
+    }
+
+    /// #723: unparsed Havok collision is not scene data, so it does not stop the tag. Renaming the
+    /// collision object's header type to a non-Havok name (same length, so the header stays
+    /// valid) leaves the scene and the count unchanged, but that unparsed block may be scene
+    /// data, so the same model is not tagged.
+    #[test]
+    fn havok_collision_does_not_stop_the_geometry_tag_but_other_unparsed_blocks_do() {
+        let directory = tempfile::tempdir().unwrap();
+        let convert = |name: &str, bytes: &[u8]| {
+            let input = directory.path().join(format!("{name}.nif"));
+            let output = input.with_extension("glb");
+            fs::write(&input, bytes).unwrap();
+            let fallbacks = MeshConverter::inspect_nif(&input).unwrap().fallback_blocks;
+            MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+            (
+                fallbacks,
+                glb_json_from_bytes(&fs::read(output).unwrap()).unwrap(),
+            )
+        };
+        let collidable = collidable_static_nif();
+        let (fallbacks, document) = convert("collidable", &collidable);
+        assert_eq!(
+            fallbacks.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["bhkBoxShape", "bhkCollisionObject", "bhkRigidBody"],
+            "the fixture's only unparsed blocks are Havok collision"
+        );
+        assert_eq!(
+            document["meshes"][0]["primitives"][0]["extras"]["mudcrabGeometryIndex"], 0,
+            "the collidable static's lighting shape carries its 3D Index"
+        );
+        let bodies = &document["scenes"][0]["extras"]["mudcrabCollision"]["bodies"];
+        assert_eq!(
+            bodies.as_array().map(Vec::len),
+            Some(1),
+            "collision is kept"
+        );
+
+        let mut renamed = collidable;
+        let from = b"bhkCollisionObject";
+        let to = b"MudcrabUnknownData";
+        assert_eq!(from.len(), to.len());
+        let at = renamed
+            .windows(from.len())
+            .position(|window| window == from)
+            .unwrap();
+        renamed[at..at + to.len()].copy_from_slice(to);
+        let (fallbacks, document) = convert("unknown", &renamed);
+        assert!(fallbacks.contains_key("MudcrabUnknownData"));
+        assert!(
+            document["meshes"][0]["primitives"][0]["extras"]["mudcrabGeometryIndex"].is_null(),
+            "a non-Havok unparsed block still refuses the tag"
+        );
+    }
+
+    /// Only Havok type names count as known non-scene data. A skin, an unparsed geometry or node
+    /// type, or any unknown type still refuses the tag, alone or next to collision.
+    #[test]
+    fn only_havok_fallbacks_are_known_non_scene_blocks() {
+        let refuses = |types: &[&str]| {
+            has_unparsed_non_havok_block(&NifParseDiagnostics {
+                fallback_blocks: types.iter().map(|name| ((*name).to_owned(), 1)).collect(),
+                ..Default::default()
+            })
+        };
+        assert!(!refuses(&[]));
+        assert!(!refuses(&[
+            "bhkCollisionObject",
+            "bhkRigidBody",
+            "bhkRigidBodyT",
+            "bhkMoppBvTreeShape",
+            "bhkCompressedMeshShape",
+            "bhkCompressedMeshShapeData",
+            "bhkConvexVerticesShape",
+            "bhkPackedNiTriStripsShape",
+            "hkPackedNiTriStripsData",
+        ]));
+        for other in [
+            "NiTriStrips",
+            "BSMeshLODTriShape",
+            "NiNode",
+            "NiSkinInstance",
+            "NiCollisionObject",
+            "hkUnknown",
+        ] {
+            assert!(refuses(&[other]), "{other}");
+            assert!(
+                refuses(&["bhkCollisionObject", other]),
+                "{other} with collision"
+            );
+        }
+    }
+
+    /// An unparsed block in a child list (for example an unhandled geometry type) is not
+    /// countable, whatever its type name.
+    #[test]
+    fn geometry_index_is_refused_for_an_unparsed_scene_child() {
+        let mut nif = tree_nif(&[vec![1, 2]], 2);
+        assert_eq!(
+            geometry_preorder_indices(&nif.blocks),
+            Some(BTreeMap::from([(1, 0), (2, 1)]))
+        );
+        nif.blocks[2] = NifBlock::Unhandled;
+        assert!(geometry_preorder_indices(&nif.blocks).is_none());
     }
 
     fn body_at(node: u32, target: &str) -> shared::collision::CollisionBody {

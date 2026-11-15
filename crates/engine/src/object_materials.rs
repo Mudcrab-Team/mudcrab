@@ -10,8 +10,8 @@
 //! `evidence/rea-20261114/registry.md`; the traces are in `q8-mods.md`.
 //!
 //! The converter writes each lighting primitive's source index as `mudcrabGeometryIndex`
-//! (`object-texture-swap-geometry-index-v1`), so the index is the number the game computes
-//! whatever order the glTF stores meshes in.
+//! (`object-texture-swap-geometry-index-v1`; `-v2` also tags models with Havok collision), so the
+//! index is the number the game computes whatever order the glTF stores meshes in.
 //!
 //! Limits, reported rather than guessed: a TXST that fills a slot other than TX00 (diffuse) and
 //! TX01 (normal) is not applied and the shape keeps its model material. Directional MATO layers
