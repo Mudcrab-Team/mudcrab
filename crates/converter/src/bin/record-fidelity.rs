@@ -254,7 +254,11 @@ mod tests {
 
     fn pack(root: &Path, schema_bytes: &[u8]) -> std::path::PathBuf {
         // `?` is not a valid Windows file-name character; keep it elsewhere for URI escaping.
-        let name = if cfg!(windows) { "pack # % ü" } else { "pack # ? % ü" };
+        let name = if cfg!(windows) {
+            "pack # % ü"
+        } else {
+            "pack # ? % ü"
+        };
         let path = root.join(name);
         std::fs::create_dir(&path).unwrap();
         let conn = Connection::open(path.join("skyrim_world.db")).unwrap();
