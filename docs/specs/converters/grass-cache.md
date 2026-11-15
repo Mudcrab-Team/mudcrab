@@ -234,3 +234,11 @@ Skyrim visual profile still declines MODS at runtime; these masks describe the n
 converted-world path. Producer 10 rejects producer-9 masks even when their other
 inputs happen to match. Mesh, texture and terrain cache identities are unchanged by
 this grass policy change.
+
+Runtime activates a reference's texture swaps as a group once its replacement
+textures are ready. If a replacement texture on another shape fails to load, the
+reference keeps its original shapes, including a shape targeted by NullTextureSet.
+The baked mask already omits that hidden shape, so grass can occupy geometry that
+stays visible in this failure case. Applying NullTextureSet hides independently of
+replacement-texture failures is a runtime follow-up; the current bake retains the
+bounded successful-swap contract above.

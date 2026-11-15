@@ -25,6 +25,124 @@ fn blocked(cell: &GrassCell) -> u32 {
         .sum()
 }
 
+/// Build a tiny sparse payload whose implicit base can describe a much larger accessor.
+fn sparse_only_mesh(root: &Path, count: u32, index_accessor: bool) -> Vec<u8> {
+    write_mesh(
+        root,
+        &[[[0.0, 0.0, 0.0], [16.0, 0.0, 0.0], [0.0, 16.0, 0.0]]],
+        "OPAQUE",
+    );
+    edit_mesh(root, |json, bin| {
+        let indices_offset = bin.len();
+        bin.extend(0u32.to_le_bytes());
+        let values_offset = bin.len();
+        if index_accessor {
+            bin.extend(0u32.to_le_bytes());
+        } else {
+            bin.extend([1.0f32, 2.0, 3.0].into_iter().flat_map(f32::to_le_bytes));
+        }
+        json["buffers"][0]["byteLength"] = bin.len().into();
+        json["bufferViews"].as_array_mut().unwrap().extend([
+            serde_json::json!({"buffer":0,"byteOffset":indices_offset,"byteLength":4}),
+            serde_json::json!({"buffer":0,"byteOffset":values_offset,"byteLength":if index_accessor {4} else {12}}),
+        ]);
+        let sparse = serde_json::json!({"count":1,"indices":{"bufferView":1,"componentType":5125},"values":{"bufferView":2}});
+        if index_accessor {
+            json["accessors"].as_array_mut().unwrap().push(serde_json::json!({"componentType":5125,"count":count,"type":"SCALAR","sparse":sparse}));
+            json["meshes"][0]["primitives"][0]["indices"] = 1.into();
+        } else {
+            json["accessors"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("bufferView");
+            json["accessors"][0]["count"] = count.into();
+            json["accessors"][0]["sparse"] = sparse;
+        }
+    });
+    std::fs::read(root.join("meshes/blocker.glb")).unwrap()
+}
+
+/// Reject huge implicit POSITION and index bases before constructing a dependency iterator.
+#[test]
+fn sparse_only_accessors_obey_geometry_byte_budget_before_decode() {
+    let dir = tempfile::tempdir().unwrap();
+    for index_accessor in [false, true] {
+        let bytes = sparse_only_mesh(dir.path(), u32::MAX, index_accessor);
+        let glb = gltf::Gltf::from_slice_without_validation(&bytes).unwrap();
+        let accessor = glb.accessors().nth(usize::from(index_accessor)).unwrap();
+        let result = validate_accessor(&accessor, glb.blob.as_deref().unwrap());
+        assert!(
+            result.is_err(),
+            "implicit sparse byte budget must reject the crafted count before allocation: indices={index_accessor}"
+        );
+        assert!(format!("{:#}", result.unwrap_err()).contains("geometry byte budget"));
+    }
+}
+
+/// A large valid zero base remains independent of the number of sparse overrides.
+#[test]
+fn sparse_only_accessor_budget_accepts_large_zero_base_with_one_override() {
+    let dir = tempfile::tempdir().unwrap();
+    for index_accessor in [false, true] {
+        let bytes = sparse_only_mesh(dir.path(), 65_535, index_accessor);
+        let glb = gltf::Gltf::from_slice_without_validation(&bytes).unwrap();
+        let accessor = glb.accessors().nth(usize::from(index_accessor)).unwrap();
+        validate_accessor(&accessor, glb.blob.as_deref().unwrap()).unwrap();
+    }
+}
+
+/// Bounded sparse-model failure publishes healthy neighboring masks and its omission diagnostic.
+#[test]
+fn sparse_only_large_model_skip_preserves_healthy_neighbor() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = fixture(dir.path());
+    let healthy = dir.path().join("meshes/healthy.glb");
+    std::fs::copy(dir.path().join("meshes/blocker.glb"), &healthy).unwrap();
+    let healthy_bytes = std::fs::read(&healthy).unwrap();
+    let bytes = sparse_only_mesh(dir.path(), u32::MAX, false);
+    let glb = gltf::Gltf::from_slice_without_validation(&bytes).unwrap();
+    let accessor = glb.accessors().next().unwrap();
+    assert!(
+        validate_accessor(&accessor, glb.blob.as_deref().unwrap()).is_err(),
+        "the crafted sparse model must be refused before the bake can allocate its implicit base"
+    );
+    conn.execute_batch("INSERT INTO records(form_id,record_type,load_order,data) VALUES(41,'STAT',0,x'01');
+        INSERT INTO statics(id,model_path,flags,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid) SELECT 41,'meshes/healthy.glb',flags,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid FROM statics WHERE id=40;
+        INSERT INTO \"references\"(id,cell_id,worldspace_id,base_form_id,is_exterior,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale) VALUES(51,12,2,41,1,4224,64,0,0,0,0,1);").unwrap();
+    let (report, cache) = bake(&conn, dir.path(), None, "bounded-sparse.rkyv");
+    assert_eq!(
+        (
+            report.baked_cells,
+            report.skipped_cells,
+            report.skipped_obstruction_models
+        ),
+        (3, 0, 1)
+    );
+    assert!(
+        report
+            .obstruction_diagnostics
+            .iter()
+            .any(|message| message.contains("meshes/blocker.glb")
+                && message.contains("geometry byte budget"))
+    );
+    assert!(
+        report
+            .notices()
+            .iter()
+            .any(|message| message.contains("geometry byte budget"))
+    );
+    assert_eq!(blocked(&cache.cells[0]) + blocked(&cache.cells[1]), 0);
+    assert!(
+        blocked(&cache.cells[2]) > 0,
+        "the healthy neighboring model still obstructs grass"
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("meshes/blocker.glb")).unwrap(),
+        bytes
+    );
+    assert_eq!(std::fs::read(healthy).unwrap(), healthy_bytes);
+}
+
 /// REFR header visibility applies before obstruction inspection.
 #[test]
 fn initially_disabled_blocker_does_not_obstruct() {
