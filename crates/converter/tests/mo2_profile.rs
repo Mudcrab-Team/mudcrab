@@ -593,7 +593,10 @@ async fn mo2_no_lod_locked_stale_default_is_withdrawn() {
                 );
                 assert_eq!(fs::read(&stale).unwrap(), bytes);
                 // ERROR_SHARING_VIOLATION: Rust's ErrorKind mapping varies by toolchain.
-                assert_eq!(fs::remove_file(&stale).unwrap_err().raw_os_error(), Some(32));
+                assert_eq!(
+                    fs::remove_file(&stale).unwrap_err().raw_os_error(),
+                    Some(32)
+                );
                 planted = true;
             }
             if locked.is_some() && event.stage == converter::ProgressStage::LodChunks {
