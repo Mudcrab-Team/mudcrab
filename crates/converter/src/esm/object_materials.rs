@@ -1,9 +1,19 @@
-//! Optional per-base appearance projection. This first slice supports STAT MODS diffuse swaps.
-//! NIF materials and MATO layers retain their existing owners; no shared mesh is specialized.
+//! Optional per-base appearance projection of STAT MODS (alternate texture) entries.
+//!
+//! Retail applies every entry of a MODS list at reference 3D load, keyed by the entry's 3D Index
+//! (RF-TEX-001, RF-TEX-002 in `evidence/rea-20261114/registry.md`). This projection therefore keeps
+//! every entry, in record order, with its 3D Index and its TXST link. It applies no gate: the
+//! engine resolves the TXST slots from `texture_sets` and decides which shape each index names.
 
 use super::{extractors::SubrecordView, records::RawRecord};
 use rusqlite::{Connection, Result, Transaction, params};
 use std::collections::HashMap;
+
+/// FormID of the engine's built-in `NullTextureSet`. An entry that names it hides the shape
+/// instead of retexturing it (RF-TEX-005; the hide is high confidence, the FormID value medium).
+/// The form is created by the executable, so no TXST record exists for it in any plugin; the
+/// registered pack holds 66 STAT MODS entries that name it.
+pub(super) const NULL_TEXTURE_SET_FORM_ID: u32 = 0x28;
 
 pub(super) const TABLE: &str = "base_texture_swaps";
 
@@ -36,7 +46,6 @@ pub(super) fn create_tables(conn: &Connection) -> Result<()> {
             shape_name TEXT NOT NULL,
             shape_index INTEGER NOT NULL,
             texture_set_id INTEGER NOT NULL,
-            diffuse_path TEXT,
             disposition TEXT NOT NULL,
             PRIMARY KEY(base_id, position)
         );",
@@ -45,6 +54,13 @@ pub(super) fn create_tables(conn: &Connection) -> Result<()> {
 
 /// Receives winning records after reader-specific FormID remapping. Clear owner rows on every
 /// subset update, including removal of MODS, so an old swap cannot survive an override.
+///
+/// `disposition` is `texture_set` (the target is a live TXST; the engine reads its slots from
+/// `texture_sets`), `null_texture_set` (RF-TEX-005) or `missing_texture_set` (the target is
+/// deleted, of another type or absent; retail behaviour for a null link is not traced, so the
+/// engine reports it and keeps the model's material). `shape_index` keeps the signed 3D Index,
+/// so -1 stays -1 (RF-TEX-001 skips it at runtime). `shape_name` is record data only: the
+/// retail apply path does not read the 3D Name or its `:N` suffix (RF-TEX-002).
 pub(super) fn insert(
     tx: &Transaction<'_>,
     master: &HashMap<u32, RawRecord>,
@@ -70,38 +86,21 @@ pub(super) fn insert(
         let target = master
             .get(&swap.texture_form_id)
             .filter(|target| !target.is_deleted() && target.record_type == *b"TXST");
-        let target_view = target.map(|target| SubrecordView::new(&target.subrecords));
-        let diffuse = target_view
-            .as_ref()
-            .and_then(|view| view.get_string(b"TX00"))
-            .filter(|path| !path.is_empty());
-        // Do not claim to replace a full texture set while applying only its diffuse. All eight
-        // existing TXST projections and terrain/skin encoding consumers remain unchanged.
-        let other_slots = target_view.as_ref().is_some_and(|view| {
-            [
-                b"TX01", b"TX02", b"TX03", b"TX04", b"TX05", b"TX06", b"TX07",
-            ]
-            .iter()
-            .any(|tag| view.get_string(tag).is_some_and(|path| !path.is_empty()))
-        });
-        let disposition = if target.is_none() {
-            "missing_texture_set"
-        } else if diffuse.is_none() {
-            "missing_diffuse"
-        } else if other_slots {
-            "unsupported_texture_slots"
+        let disposition = if target.is_some() {
+            "texture_set"
+        } else if swap.texture_form_id == NULL_TEXTURE_SET_FORM_ID {
+            "null_texture_set"
         } else {
-            "diffuse_only"
+            "missing_texture_set"
         };
         tx.execute(
-            "INSERT INTO base_texture_swaps VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            "INSERT INTO base_texture_swaps VALUES (?1,?2,?3,?4,?5,?6)",
             params![
                 record.form_id,
                 position as u32,
                 swap.name_3d,
-                swap.index_3d,
+                swap.index_3d as i32,
                 swap.texture_form_id,
-                diffuse,
                 disposition
             ],
         )?;
@@ -167,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn object_diffuse_projection_remaps_full_and_light_override_links_in_both_readers() {
+    fn object_texture_projection_remaps_full_and_light_override_links_in_both_readers() {
         for light in [false, true] {
             let root = tempfile::tempdir().unwrap();
             let base = plugin(
@@ -263,16 +262,12 @@ mod tests {
                 .unwrap();
                 let conn = Connection::open(database).unwrap();
                 for base in [0x800, expected_base] {
-                    let row: (u32, String, String) = conn.query_row(
-                        "SELECT texture_set_id,diffuse_path,disposition FROM base_texture_swaps WHERE base_id=?1", [base],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+                    let row: (u32, String) = conn.query_row(
+                        "SELECT texture_set_id,disposition FROM base_texture_swaps WHERE base_id=?1", [base],
+                        |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
                     assert_eq!(
                         row,
-                        (
-                            expected_texture,
-                            "textures/red.dds".into(),
-                            "diffuse_only".into()
-                        ),
+                        (expected_texture, "texture_set".into()),
                         "{reader:?}, light={light}"
                     );
                 }
@@ -285,8 +280,118 @@ mod tests {
         }
     }
 
+    fn entries(list: &[(&str, u32, i32)]) -> Vec<u8> {
+        let mut data = (list.len() as u32).to_le_bytes().to_vec();
+        for (name, texture, index) in list {
+            data.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            data.extend_from_slice(name.as_bytes());
+            data.extend_from_slice(&texture.to_le_bytes());
+            data.extend_from_slice(&index.to_le_bytes());
+        }
+        data
+    }
+
+    fn raw(id: u32, tag: &[u8; 4], fields: &[(&[u8; 4], Vec<u8>)]) -> RawRecord {
+        RawRecord {
+            form_id: id,
+            record_type: *tag,
+            flags: 0,
+            subrecords: fields
+                .iter()
+                .map(|(tag, bytes)| (tag.to_vec(), bytes.clone()))
+                .collect(),
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        }
+    }
+
+    /// RF-TEX-001, RF-TEX-002, RF-TEX-005: every entry of a list is kept in record order with its
+    /// signed 3D Index and its own disposition. The `:N` name suffix is stored but never needed.
+    /// The multi-entry shape, the `:N` names and the NullTextureSet link follow retail STATs of the
+    /// registered pack: 101534 `RockPileS04:0`, 126810 `RockCliff07:0` and 126829 `RockCliff05:0`
+    /// carry one entry each, and 655 of its 1,607 STATs with MODS carry several.
     #[test]
-    fn object_diffuse_mods_boundaries_reject_partial_arrays() {
+    fn object_texture_projection_keeps_every_entry_and_marks_null_and_missing_targets() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::esm::exporter::create_tables(&conn).unwrap();
+        let txst = |id| raw(id, b"TXST", &[(b"TX00", b"textures/a.dds\0".to_vec())]);
+        let stat = |id, list: &[(&str, u32, i32)]| {
+            raw(
+                id,
+                b"STAT",
+                &[
+                    (b"MODL", b"meshes/a.nif\0".to_vec()),
+                    (b"MODS", entries(list)),
+                ],
+            )
+        };
+        let records: HashMap<u32, RawRecord> = [
+            txst(0x101),
+            txst(0x102),
+            // Three real retail shapes (single entry, `:0` suffix), one multi-entry list with a
+            // repeated index, a skipped -1 index, a NullTextureSet link and an unresolved link.
+            stat(101534, &[("RockPileS04:0", 0x101, 0)]),
+            stat(126810, &[("RockCliff07:0", 0x101, 0)]),
+            stat(126829, &[("RockCliff05:0", 0x102, 0)]),
+            stat(
+                7,
+                &[
+                    ("A:0", 0x101, 2),
+                    ("B:1", 0x102, 0),
+                    ("C:2", NULL_TEXTURE_SET_FORM_ID, 1),
+                    ("D:3", 0x101, -1),
+                    ("E:4", 0x102, 2),
+                    ("F:5", 0x0000_0FFF, 3),
+                ],
+            ),
+        ]
+        .into_iter()
+        .map(|record| (record.form_id, record))
+        .collect();
+        crate::esm::exporter::export_to_db(&conn, &records).unwrap();
+        let rows = |base: u32| -> Vec<(i64, String, i32, u32, String)> {
+            let mut statement = conn
+                .prepare(
+                    "SELECT position,shape_name,shape_index,texture_set_id,disposition \
+                     FROM base_texture_swaps WHERE base_id=?1 ORDER BY position",
+                )
+                .unwrap();
+            statement
+                .query_map([base], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                })
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        assert_eq!(
+            rows(101534),
+            [(0, "RockPileS04:0".into(), 0, 0x101, "texture_set".into())]
+        );
+        assert_eq!(rows(126810).len(), 1);
+        assert_eq!(rows(126829)[0].3, 0x102);
+        assert_eq!(
+            rows(7),
+            [
+                (0, "A:0".into(), 2, 0x101, "texture_set".into()),
+                (1, "B:1".into(), 0, 0x102, "texture_set".into()),
+                (2, "C:2".into(), 1, 0x28, "null_texture_set".into()),
+                (3, "D:3".into(), -1, 0x101, "texture_set".into()),
+                (4, "E:4".into(), 2, 0x102, "texture_set".into()),
+                (5, "F:5".into(), 3, 0xFFF, "missing_texture_set".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn object_texture_mods_boundaries_reject_partial_arrays() {
         let valid = mods(0x800);
         assert_eq!(form_offsets(&valid), Some(vec![12]));
         for end in 0..valid.len() {

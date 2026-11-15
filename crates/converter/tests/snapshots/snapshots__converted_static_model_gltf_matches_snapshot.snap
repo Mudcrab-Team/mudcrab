@@ -1,6 +1,5 @@
 ---
 source: crates/converter/tests/snapshots.rs
-assertion_line: 176
 expression: document
 ---
 {
@@ -142,10 +141,7 @@ expression: document
             "TEXCOORD_0": 2
           },
           "extras": {
-            "mudcrabObjectDiffuseV1": {
-              "shapeIndex": 0,
-              "shapeName": "GeneratedQuad"
-            }
+            "mudcrabGeometryIndex": 0
           },
           "indices": 3,
           "material": 0

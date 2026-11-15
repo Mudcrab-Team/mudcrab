@@ -263,16 +263,9 @@ fn state_ready(app: &App, roots: [Entity; 2], case: usize) -> bool {
         }
         let state = app.world().get::<ObjectTextureSwapState>(root);
         if case < 2 {
-            let expected = if index == 1 {
-                102
-            } else if case == 0 {
-                101
-            } else {
-                103
-            };
             match state {
-                Some(ObjectTextureSwapState::Applied { texture_set }) => {
-                    assert_eq!(*texture_set, expected)
+                Some(ObjectTextureSwapState::Applied { textured, hidden }) => {
+                    assert_eq!((*textured, *hidden), (1, 0))
                 }
                 None | Some(ObjectTextureSwapState::Pending) => return false,
                 other => panic!("unexpected swap state: {other:?}"),
@@ -283,9 +276,10 @@ fn state_ready(app: &App, roots: [Entity; 2], case: usize) -> bool {
                 "no-MODS control must have no substitution state"
             );
         } else {
+            // An unresolved TXST is reported and skipped; the model material stays.
             match state {
-                Some(ObjectTextureSwapState::Unsupported(reason)) => {
-                    assert!(reason.contains("missing_texture_set"))
+                Some(ObjectTextureSwapState::Applied { textured, hidden }) => {
+                    assert_eq!((*textured, *hidden), (0, 0))
                 }
                 None | Some(ObjectTextureSwapState::Pending) => return false,
                 other => panic!("unexpected missing-link control: {other:?}"),
@@ -427,7 +421,7 @@ fn object_diffuse_two_instance_readback() {
         "files": files, "reader": "synthetic RawRecord -> production legacy SQL exporter -> AssetCatalog",
         "converter_head": std::env::var("MUDCRAB_OBJECT_SOURCE_HEAD").unwrap(),
         "source_packet_sha256": std::env::var("MUDCRAB_OBJECT_PACKET_SHA256").unwrap(),
-            "plugin_order": [], "schema": "world schema unchanged; MODS optional projection v5",
+            "plugin_order": [], "schema": "world schema unchanged; MODS optional projection v6",
             "profile": "mudcrab", "encoding": "BC1 ColorSrgb, one mip", "sampling": {"offset":[0.25,0.25],"scale":[2,1],"clamp_mode":2},
             "probes": PROBES, "low_channel_ratio_max":0.45, "min_signal":48, "min_channel_gap":32,
             "control_max_byte_difference":3, "settled_frame_max_byte_difference":2,

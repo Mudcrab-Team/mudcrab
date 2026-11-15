@@ -94,7 +94,7 @@ legacy stamps and full hashes remain recognized as their original retained-asset
 contracts and are not upgraded to the current projection.
 Adapter-14 metadata recognizes the exact adapter-10, adapter-11, adapter-12 and adapter-13
 retained-asset contracts (adapter 13 adds placed database rows; adapter 14 adds the STAT MODS
-diffuse table and the `single-shape-object-diffuse-v1` NIF contract, so retained DDS and PEX
+alternate-texture table and the `object-texture-swap-geometry-index-v1` NIF contract, so retained DDS and PEX
 candidates stay reusable and NIF output is rebuilt), and legacy projection 6 recognizes the exact
 projection-4 and projection-5 contracts, with matching original schema/add-on bytes, reader fields and combined settings
 hash. The original reader and asset producer remain recorded across repeated

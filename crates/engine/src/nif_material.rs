@@ -45,7 +45,7 @@ impl Plugin for NifMaterialPlugin {
         }
         crate::skin_material::build(app);
         app.register_type::<NifSourceMaterial>()
-            .register_type::<crate::object_materials::ObjectDiffuseShape>()
+            .register_type::<crate::object_materials::ObjectGeometryIndex>()
             .register_type::<NifNativeMaterialSource>()
             .register_type::<EffectPaletteDepthSource>()
             .register_type::<ExternalEmittance>()
@@ -672,7 +672,7 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         entity: &mut EntityWorldMut,
         label: &str,
     ) {
-        if let Some(shape) = crate::object_materials::ObjectDiffuseShape::from_primitive(primitive)
+        if let Some(shape) = crate::object_materials::ObjectGeometryIndex::from_primitive(primitive)
         {
             entity.insert(shape);
         }

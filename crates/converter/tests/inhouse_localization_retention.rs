@@ -1025,7 +1025,6 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
                 MoveSqlCell::Integer(0),
                 // The in-house reader clears links to absent TXST records before projection.
                 MoveSqlCell::Integer(0),
-                MoveSqlCell::Null,
                 MoveSqlCell::Text(b"missing_texture_set".to_vec()),
             ]],
             "the full export must preserve the exact material row before testing deferral"

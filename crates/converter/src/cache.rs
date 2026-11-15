@@ -466,7 +466,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "hidden-niavobject-excluded",
     "nif-root-transform-ignored",
     "skin-static-fallback",
-    "single-shape-object-diffuse-v1",
+    "object-texture-swap-geometry-index-v1",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
@@ -631,8 +631,8 @@ pub(crate) fn inhouse_adapter12_reader_identity(
     Some(identity)
 }
 
-/// Adapter 14 adds STAT MODS diffuse rows (`base_texture_swaps`) and rebuilds NIF output through
-/// the `single-shape-object-diffuse-v1` mesh contract. Adapter-13 DDS and PEX bytes stay valid.
+/// Adapter 14 adds STAT MODS texture-swap rows (`base_texture_swaps`) and rebuilds NIF output through
+/// the `object-texture-swap-geometry-index-v1` mesh contract. Adapter-13 DDS and PEX bytes stay valid.
 pub(crate) fn inhouse_adapter13_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
     language: &str,
@@ -2321,7 +2321,7 @@ mod tests {
     }
 
     #[test]
-    fn object_diffuse_legacy_retention_requires_exact_language_and_settings() {
+    fn object_texture_legacy_retention_requires_exact_language_and_settings() {
         for (language, projection) in [("english", 4), ("german", 4), ("english", 5), ("german", 5)]
         {
             let mut config = crate::config::PipelineConfig::new("Data", "output");

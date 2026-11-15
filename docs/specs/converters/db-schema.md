@@ -335,7 +335,7 @@ text uses Windows-1252. Both record readers publish the same UTF-8 text:
   (`crates/converter/src/esm/legacy_text.rs`). That covers `FULL` on every record type, and
   `DESC`, `RNAM` and others where the subrecord is unambiguous. This changed the legacy
   projection; version 4 introduced language/encoding. Version 5 also publishes every schema-declared
-  projectile/hazard placement and its base model (#498). Version 6 adds the STAT MODS diffuse
+  projectile/hazard placement and its base model (#498). Version 6 adds the STAT MODS alternate-texture
   table (`base_texture_swaps`). The in-house adapter is version 14.
   Version-3 retained proofs are accepted only for their historical English setting; all older
   metadata rebuilds use the configured language. Retained assets keep their independent proof.
@@ -1667,7 +1667,7 @@ them.
 
 ### 20. Per-Base Texture Assignments (`base_texture_swaps`)
 
-Optional STAT MODS projection; world schema version is unchanged.
+Optional STAT MODS (alternate texture) projection; world schema version is unchanged.
 
 ```sql
 CREATE TABLE base_texture_swaps (
@@ -1676,20 +1676,21 @@ CREATE TABLE base_texture_swaps (
     shape_name TEXT NOT NULL,
     shape_index INTEGER NOT NULL,
     texture_set_id INTEGER NOT NULL,
-    diffuse_path TEXT,
     disposition TEXT NOT NULL,
     PRIMARY KEY (base_id, position)
 );
 ```
 
-IDs use the reader's resolved load-order numbering. `position` preserves the authored MODS
-entry order; shape name/index select within the base model, not a global mesh. TXST paths
-and dispositions resolve from the same winning-record map. Owner updates clear the base's
+IDs use the reader's resolved load-order numbering. Every MODS entry gets a row, in authored
+order (`position`); no entry is dropped or gated. `shape_index` is the signed 3D Index: retail
+keys entries by it, skips -1 and lets a later entry with the same index win (RF-TEX-001), and the
+index counts geometry leaves in a pre-order depth-first walk of the model (RF-TEX-002).
+`shape_name` is the 3D Name (with its `:N` suffix) as record data; the retail apply path does not
+read it. `disposition` is `texture_set` (a live TXST; the runtime reads its slots from
+`texture_sets`), `null_texture_set` (the target is FormID 0x28, the engine's NullTextureSet, which
+hides the shape; RF-TEX-005) or `missing_texture_set` (deleted, wrong type or absent). Owner updates clear the base's
 rows before inserting replacements; complete exports replace the table transactionally and
 archive-only exports leave it empty. Subset exporters must supply referenced TXST records
-alongside the bases whose appearance they update.
-
-`diffuse_only` is the new runtime slice's supported input; other dispositions preserve explicit
-missing-link, absent-diffuse or unsupported-slot results. All eight existing `texture_sets`
+alongside the bases whose appearance they update. All eight existing `texture_sets`
 columns retain their consumers. See [per-record object appearance](../engine/object-materials.md)
-for selection, instance isolation, compatibility, diagnostics and the unimplemented MATO limits.
+for selection, instance isolation, retail coverage, diagnostics and the unimplemented MATO limits.

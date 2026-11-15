@@ -9763,15 +9763,15 @@ mod tests {
 
     /// Appearance belongs to each placed base, including instances that share a model.
     #[test]
-    fn object_diffuse_swap_input_attaches_to_each_placed_base() {
+    fn object_texture_swap_input_attaches_to_each_placed_base() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("catalogue.db");
         write_empty_catalogue(&path);
         let connection = rusqlite::Connection::open(&path).unwrap();
         connection.execute_batch(
-            "CREATE TABLE base_texture_swaps(base_id INTEGER,position INTEGER,shape_name TEXT,shape_index INTEGER,texture_set_id INTEGER,diffuse_path TEXT,disposition TEXT);
-             INSERT INTO base_texture_swaps VALUES(513,0,'Rock',0,100,'textures/red.dds','diffuse_only');
-             INSERT INTO base_texture_swaps VALUES(514,0,'Rock',0,101,'textures/blue.dds','diffuse_only');"
+            "CREATE TABLE base_texture_swaps(base_id INTEGER,position INTEGER,shape_name TEXT,shape_index INTEGER,texture_set_id INTEGER,disposition TEXT);
+             INSERT INTO base_texture_swaps VALUES(513,0,'Rock:0',0,100,'texture_set');
+             INSERT INTO base_texture_swaps VALUES(514,0,'Rock:0',0,101,'texture_set');"
         ).unwrap();
         let mut app = spawn_reference_cell_app(
             vec![
