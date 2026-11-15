@@ -45,8 +45,9 @@ nonzero diffuse ID per cell; it still rejects malformed terrain geometry and wei
 
 New conversions default to `skyrim-ini`, including built-in Dirt02 when no INI is supplied.
 Use `--terrain-default-texture white` to retain the previous generated-white policy; this option
-also applies without `--merged-terrain`. Reconvert existing packs, including LOD and merged
-arrays. Default images are rebuilt from current source bytes; LOD source hashes already
+also applies without `--merged-terrain`. Existing packs need no reconversion: a metadata rebuild
+(`--reuse-assets`) republishes the database table, default images, LOD and merged terrain.
+Default images are rebuilt from current source bytes; LOD source hashes already
 invalidate affected chunks without globally invalidating unrelated ingestion caches.
 
 MO2 conversions with `--no-lod` stage only the winning configured default DDS inputs;
@@ -60,8 +61,9 @@ and does not require default images. Texture-only and fully painted packs theref
 complete without otherwise unused Skyrim assets. A used but unusable default produces an
 advisory notice and uses the fallback above.
 
-Old packs without this metadata retain white in the quadrant path. Reconvert to record a
-configured default; regenerate LOD and, when enabled, merged arrays as one compatible pack.
+Old packs without this metadata retain white in the quadrant path. A metadata rebuild
+(`--reuse-assets`) records a configured default and regenerates LOD and, when enabled, merged
+arrays as one compatible pack. No reconversion is needed.
 Merged admission and baked array entry 0 are unchanged: the runtime does not fall back from
 usable merged terrain to the ordinary six-layer cache, which could discard painted layers.
 This addresses the white/null-base portion of #386 without claiming complete material parity.
