@@ -845,8 +845,14 @@ impl SettingsFile {
                 &self.persisted(settings),
                 self.metal_drawing_auto_unowned,
             ) {
-                Ok(()) if self.launch_overrides.iter().any(|flag| flag == "--start-shot") =>
-                    "Settings saved. Grass/radius/IO next start; launch framing kept.".into(),
+                Ok(())
+                    if self
+                        .launch_overrides
+                        .iter()
+                        .any(|flag| flag == "--start-shot") =>
+                {
+                    "Settings saved. Grass/radius/IO next start; launch framing kept.".into()
+                }
                 Ok(()) => "Settings saved. Grass, radius and IO threads apply next start.".into(),
                 Err(error) => format!("Could not save settings: {error}"),
             },
@@ -2202,10 +2208,7 @@ mod tests {
         );
         file.apply_start_shot(&mut settings, 60.0, (1920, 1080));
         file.save(&settings);
-        assert!(
-            file.status
-                .contains("launch framing kept")
-        );
+        assert!(file.status.contains("launch framing kept"));
     }
 
     #[test]
