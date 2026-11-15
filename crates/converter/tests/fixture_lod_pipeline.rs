@@ -448,7 +448,11 @@ async fn combined_export_keeps_grass_links_lod_origins_and_payloads() {
     plugin.extend(record(
         b"LTEX",
         0x802,
-        &sub(b"GNAM", &0x801u32.to_le_bytes()),
+        &[
+            sub(b"TNAM", &2u32.to_le_bytes()),
+            sub(b"GNAM", &0x801u32.to_le_bytes()),
+        ]
+        .concat(),
     ));
     fs::write(data.join("Grass.esp"), plugin).unwrap();
     let output = directory.path().join("combined");

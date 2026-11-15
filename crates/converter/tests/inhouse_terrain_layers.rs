@@ -541,13 +541,20 @@ async fn malformed_over_capacity_overrides_keep_usable_layers_and_valid_neighbor
             .unwrap();
     for name in ["badweights.esp", "badquadrant.esp"] {
         assert_eq!(diagnostics["decoder"][name]["skipped_records"], 0);
-        assert!(
-            diagnostics["adapter"][name][1]
-                .as_str()
-                .unwrap()
-                .contains("malformed LAND texture items")
-        );
     }
+    // Decoder loss remains visible for losing candidates; runtime preservation
+    // reports paint recovery only for the accepted winning LAND.
+    assert_eq!(
+        diagnostics["decoder"]["badweights.esp"]["skipped_fields"],
+        1
+    );
+    assert!(diagnostics["adapter"]["badweights.esp"].is_null());
+    assert!(
+        diagnostics["adapter"]["badquadrant.esp"][1]
+            .as_str()
+            .unwrap()
+            .contains("omitted 2 malformed LAND texture items")
+    );
     assert_eq!(diagnostics["decoder"]["torn.esp"]["skipped_records"], 1);
     let accepted_payload = frame_fields(&fixture.fields);
     let mut seen = 0;
