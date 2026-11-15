@@ -2384,12 +2384,8 @@ mod tests {
     /// LAND recovery accepts exact projection-four/five asset proofs in each language.
     #[test]
     fn legacy_projection_four_retained_assets_require_exact_settings_and_identity() {
-        for (projection, language) in [
-            (4, "english"),
-            (4, "french"),
-            (5, "english"),
-            (5, "french"),
-        ] {
+        for (projection, language) in [(4, "english"), (4, "french"), (5, "english"), (5, "french")]
+        {
             let mut config = crate::config::PipelineConfig::new("Data", "output");
             config.record_reader = crate::config::RecordReader::Legacy;
             config.language = language.to_owned();

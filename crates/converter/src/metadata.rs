@@ -1835,12 +1835,8 @@ mod metadata_schema_controls {
     /// Projection-four/five source assets retain exact language and encoding identities.
     #[test]
     fn legacy_projection_four_source_settings_preserve_language_and_reject_unproven_variants() {
-        for (projection, language) in [
-            (4, "english"),
-            (4, "french"),
-            (5, "english"),
-            (5, "french"),
-        ] {
+        for (projection, language) in [(4, "english"), (4, "french"), (5, "english"), (5, "french")]
+        {
             let config = PipelineConfig::new("Data", "output");
             let mut identity = serde_json::json!({
                 "mode": "legacy", "projection_version": projection, "language": language,
