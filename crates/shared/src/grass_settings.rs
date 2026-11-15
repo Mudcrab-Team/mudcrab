@@ -1,5 +1,11 @@
 //! Typed grass defaults and provenance. The engine's shared Skyrim INI reader
 //! supplies imported values; this module does not read files.
+//!
+//! Every default retains Taylor's verified retail data. The field comments record
+//! the default stored in each INI setting. The shipped INI files (`Skyrim_Default.ini`, `SkyrimPrefs.ini`)
+//! omit most of these keys. A local `Skyrim.ini` with other values (`iMinGrassSize=40`,
+//! `fGrassFadeRange=1766`, `bEnableGrassFade=0`) differs from the exe defaults; the exe
+//! defaults are used.
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -11,55 +17,55 @@ pub const SETTINGS_VERSION: u32 = 1;
 /// Grass values honoured by the engine, including reported-only Skyrim settings.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GrassSettings {
-    /// `iMinGrassSize`: MudCrab default 20 Creation units for the candidate-count calculation.
+    /// `iMinGrassSize`: retail default 20 Creation units for the candidate-count calculation.
     #[serde(rename = "iMinGrassSize")]
     pub min_grass_size: i32,
-    /// `iMaxGrassTypesPerTexure`: MudCrab default 2 species per texture.
+    /// `iMaxGrassTypesPerTexure`: retail default 2 species per texture.
     #[serde(rename = "iMaxGrassTypesPerTexure")]
     pub max_grass_types_per_texture: i32,
-    /// `fTexturePctThreshold`: MudCrab default 0.0 minimum texture contribution.
+    /// `fTexturePctThreshold`: retail default 0.0 minimum texture contribution.
     #[serde(rename = "fTexturePctThreshold")]
     pub texture_pct_threshold: f64,
-    /// `iGrassCellRadius`: MudCrab default 2 cells around the player.
+    /// `iGrassCellRadius`: retail default 2 cells around the player.
     #[serde(rename = "iGrassCellRadius")]
     pub cell_radius: i32,
-    /// `fGrassStartFadeDistance`: Shipped SkyrimPrefs.ini default 7000.0.
+    /// `fGrassStartFadeDistance`: retail default 7000.0; shipped `SkyrimPrefs.ini` also sets 7000.0.
     #[serde(rename = "fGrassStartFadeDistance")]
     pub start_fade_distance: f64,
-    /// `fGrassFadeRange`: MudCrab default 1000.0 Creation units.
+    /// `fGrassFadeRange`: retail default 1000.0 Creation units.
     #[serde(rename = "fGrassFadeRange")]
     pub fade_range: f64,
-    /// `fGrassMinStartFadeDistance`: Shipped SkyrimPrefs.ini default 0.0; reported only.
+    /// `fGrassMinStartFadeDistance`: 0.0 as shipped in `Skyrim_Default.ini` and `SkyrimPrefs.ini` (the compiled setting holds 400.0, which the shipped INI overrides); reported only.
     #[serde(rename = "fGrassMinStartFadeDistance")]
     pub min_start_fade_distance: f64,
-    /// `fGrassMaxStartFadeDistance`: Shipped SkyrimPrefs.ini default 7000.0; reported only.
+    /// `fGrassMaxStartFadeDistance`: retail default 7000.0, also shipped in `Skyrim_Default.ini`; reported only.
     #[serde(rename = "fGrassMaxStartFadeDistance")]
     pub max_start_fade_distance: f64,
-    /// `fGrassWindMagnitudeMin`: MudCrab default 5.0; reported only.
+    /// `fGrassWindMagnitudeMin`: retail default 5.0 (RF-GRASS-001); reported only.
     #[serde(rename = "fGrassWindMagnitudeMin")]
     pub wind_magnitude_min: f64,
-    /// `fGrassWindMagnitudeMax`: MudCrab default 125.0; reported only.
+    /// `fGrassWindMagnitudeMax`: retail default 125.0 (RF-GRASS-001); reported only.
     #[serde(rename = "fGrassWindMagnitudeMax")]
     pub wind_magnitude_max: f64,
-    /// `bDrawShaderGrass`: MudCrab default true; grass still requires --grass.
+    /// `bDrawShaderGrass`: retail default true; grass still requires --grass.
     #[serde(rename = "bDrawShaderGrass")]
     pub draw_shader_grass: bool,
-    /// `bEnableGrassFade`: MudCrab default true.
+    /// `bEnableGrassFade`: retail default true.
     #[serde(rename = "bEnableGrassFade")]
     pub enable_grass_fade: bool,
-    /// `bAllowCreateGrass`: MudCrab default true; reported legacy cache switch.
+    /// `bAllowCreateGrass`: retail default true; reported legacy cache switch.
     #[serde(rename = "bAllowCreateGrass")]
     pub allow_create_grass: bool,
-    /// `bAllowLoadGrass`: MudCrab default false; reported legacy cache switch.
+    /// `bAllowLoadGrass`: retail default false; reported legacy cache switch.
     #[serde(rename = "bAllowLoadGrass")]
     pub allow_load_grass: bool,
-    /// `bGenerateGrassDataFiles`: MudCrab default false; reported legacy cache switch.
+    /// `bGenerateGrassDataFiles`: retail default false; reported legacy cache switch.
     #[serde(rename = "bGenerateGrassDataFiles")]
     pub generate_grass_data_files: bool,
 }
 
 impl Default for GrassSettings {
-    /// Use shipped SkyrimPrefs.ini fade-start values and documented MudCrab fallbacks.
+    /// Use the retail defaults documented on each field.
     fn default() -> Self {
         Self {
             min_grass_size: 20,
@@ -220,7 +226,7 @@ impl GrassSettings {
             diagnostics: Vec::new(),
             has_unhandled_settings: false,
             notes: vec![
-                "Fade-start defaults match shipped SkyrimPrefs.ini; other built-in values are MudCrab defaults.",
+                "Built-in values are the retail defaults compiled into SkyrimSE.exe 1.7.104 (fGrassMinStartFadeDistance: shipped INI).",
                 "The shared --ini reader applies files in order; explicit numeric CLI options apply afterwards.",
                 "Settings only: no grass placements, cache files or rendering have been generated.",
                 "Legacy Skyrim GID creation/loading switches are reported but do not control MudCrab caching.",
@@ -291,4 +297,32 @@ fn hash(bytes: &[u8]) -> String {
 /// Hash the settings schema version and deterministically ordered effective values.
 fn settings_hash(settings: &BTreeMap<String, Value>) -> String {
     hash(&serde_json::to_vec(&json!((SETTINGS_VERSION, settings))).expect("JSON values serialize"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The defaults equal the values read from the `Setting` objects in `SkyrimSE.exe` 1.7.104,
+    /// not the values of a local `Skyrim.ini` (40, 1766 and 0 for the first three), which differs
+    /// from the exe defaults.
+    #[test]
+    fn defaults_equal_the_retail_compiled_values() {
+        let d = GrassSettings::default();
+        assert_eq!(d.min_grass_size, 20, "iMinGrassSize");
+        assert_eq!(d.fade_range, 1000.0, "fGrassFadeRange");
+        assert!(d.enable_grass_fade, "bEnableGrassFade");
+        assert_eq!(d.max_grass_types_per_texture, 2, "iMaxGrassTypesPerTexure");
+        assert_eq!(d.texture_pct_threshold, 0.0, "fTexturePctThreshold");
+        assert_eq!(d.cell_radius, 2, "iGrassCellRadius");
+        assert_eq!(d.start_fade_distance, 7000.0, "fGrassStartFadeDistance");
+        assert_eq!(
+            d.max_start_fade_distance, 7000.0,
+            "fGrassMaxStartFadeDistance"
+        );
+        assert_eq!(d.min_start_fade_distance, 0.0, "shipped INI value");
+        assert_eq!((d.wind_magnitude_min, d.wind_magnitude_max), (5.0, 125.0));
+        assert!(d.draw_shader_grass && d.allow_create_grass);
+        assert!(!d.allow_load_grass && !d.generate_grass_data_files);
+    }
 }

@@ -1847,7 +1847,7 @@ fn reusable_manifest(
             _ => unreachable!(),
         };
         let settings_match = if let Some(recorded) = manifest.asset_configuration_hashes.get(kind) {
-            crate::cache::compatible_asset_configuration_hash(config, producer, kind, recorded)?
+            recorded == &asset_configuration_hash_for_schema(config, producer, kind)?
         } else {
             // Older manifests have one combined proof. Require an exact known
             // historical settings hash; an opaque stale schema cannot prove it.
@@ -1917,9 +1917,7 @@ fn reusable_manifest(
                     }
                 }
             }
-            // Exact historical settings proofs can retain DDS candidates: the later
-            // per-source normal recipe rejects only packed normals that need rebuilding.
-            // Combined metadata still cannot establish fixed-producer mesh contracts.
+            // Combined metadata proofs retain DDS/PEX provenance and require named mesh contracts.
             matched && (kind != "nif" || !crate::cache::mesh_output_contracts_apply(producer))
         };
         compatible.insert(
@@ -2327,9 +2325,6 @@ impl ConversionBatch<'_> {
 
                         if let Some(encoding) = encoding {
                             hash.push_str(&format!(":texture-encoding:{encoding:?}"));
-                            if crate::texture::packed_normal_contract(&source, encoding) {
-                                hash.push_str(":normal-packed:lossless-rgba8-v1");
-                            }
                             // Marks the textures the GPU encodes. Natively preserved
                             // textures and those only the CPU encoder handles
                             // (volumes, arrays) convert the same way in either

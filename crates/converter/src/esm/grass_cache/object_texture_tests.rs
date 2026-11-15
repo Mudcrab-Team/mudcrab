@@ -274,6 +274,32 @@ fn grass_mods_material_binding_eligibility_matches_published_fields() {
     }
 }
 
+/// Out-of-range depth words keep the standard binding and still honor other wrapper tags.
+#[test]
+fn grass_mods_overflow_depth_flags_fall_through_to_other_bindings() {
+    use serde_json::json;
+    for (flags1, flags2) in [(4294967296u64, 1u64), (2147483648, 4294967296)] {
+        let standard =
+            json!({"extras":{"openSkyrim":{"shaderFlags1":flags1,"shaderFlags2":flags2}}});
+        assert!(
+            standard_mods_surface(Some(&standard)),
+            "overflow keeps standard binding: {standard}"
+        );
+        let mut wrapped = standard;
+        wrapped["extras"]["openSkyrim"]["normalConvention"] = json!("model_space");
+        wrapped["normalTexture"] = json!({"index":0});
+        assert!(
+            !standard_mods_surface(Some(&wrapped)),
+            "valid normal wrapper remains visible"
+        );
+    }
+    let valid_depth = json!({"extras":{"openSkyrim":{"shaderFlags1":0,"shaderFlags2":1}}});
+    assert!(
+        !standard_mods_surface(Some(&valid_depth)),
+        "valid depth wrapper remains visible"
+    );
+}
+
 /// Unsupported material bindings keep both their geometry and their effective input identity.
 #[test]
 fn grass_mods_keeps_external_and_depth_wrapped_shapes_visible() {
