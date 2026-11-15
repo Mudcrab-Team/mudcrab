@@ -19,6 +19,7 @@ use bevy::{
     },
     prelude::*,
     render::renderer::RenderAdapterInfo,
+    ui::RelativeCursorPosition,
     window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
 
@@ -78,6 +79,7 @@ pub(crate) struct SettingsUiSet;
 pub struct SettingsPlugin;
 
 impl Plugin for SettingsPlugin {
+    /// Registers menu input, the live sensitivity slider and the existing rendering consumers.
     fn build(&self, app: &mut App) {
         app.init_resource::<RenderingSettings>()
             .init_resource::<SettingsMenuState>()
@@ -101,6 +103,7 @@ impl Plugin for SettingsPlugin {
                 Update,
                 (
                     menu_actions,
+                    mouse_sensitivity_slider,
                     apply_render_settings,
                     refresh_menu,
                     style_rows,
@@ -173,6 +176,12 @@ struct SettingValue(usize);
 /// Accent bar at the start of a row whose value differs from the defaults.
 #[derive(Component)]
 struct SettingMark(usize);
+/// Track accepting mouse sensitivity drag input; MenuAction supplies keyboard adjustment.
+#[derive(Component)]
+struct MouseSensitivitySlider;
+/// The filled portion of the sensitivity track follows edits, file loads and Reset defaults.
+#[derive(Component)]
+struct MouseSensitivityFill;
 #[derive(Component)]
 struct StatusText;
 #[derive(Component)]
@@ -489,6 +498,7 @@ fn note(parent: &mut ChildSpawnerCommands, text: &str) -> Entity {
         .id()
 }
 
+/// Renders one inventoried setting, with a drag track for mouse sensitivity.
 fn setting_row(
     parent: &mut ChildSpawnerCommands,
     index: usize,
@@ -542,6 +552,9 @@ fn setting_row(
                     ("-", "+")
                 };
                 button(controls, less, MenuAction::Adjust(index, -1), 36.0);
+                if spec.label == "Mouse sensitivity (x)" {
+                    spawn_sensitivity_slider(controls, index);
+                }
                 controls.spawn((
                     SettingValue(index),
                     text_bundle(value, 16.0),
@@ -558,6 +571,123 @@ fn setting_row(
         });
 }
 
+/// A focusable track complements the existing minus/plus buttons and numeric value.
+fn spawn_sensitivity_slider(parent: &mut ChildSpawnerCommands, index: usize) {
+    parent
+        .spawn((
+            Button,
+            MouseSensitivitySlider,
+            RelativeCursorPosition::default(),
+            MenuAction::Adjust(index, 0),
+            TabIndex(0),
+            Node {
+                width: Val::Px(96.0),
+                height: Val::Px(32.0),
+                flex_shrink: 0.0,
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BackgroundColor(NEUTRAL.0),
+            BorderColor::all(BORDER),
+        ))
+        .with_children(|track| {
+            track
+                .spawn((
+                    MouseSensitivityFill,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        top: Val::Px(14.0),
+                        left: Val::Px(0.0),
+                        height: Val::Px(4.0),
+                        ..default()
+                    },
+                    BackgroundColor(ACCENT_DIM),
+                ))
+                .with_children(|fill| {
+                    fill.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            right: Val::Px(-4.0),
+                            top: Val::Px(-6.0),
+                            width: Val::Px(8.0),
+                            height: Val::Px(16.0),
+                            ..default()
+                        },
+                        BackgroundColor(ACCENT),
+                    ));
+                });
+        });
+}
+
+/// Maps a normalized track position to the same bounds and step as keyboard adjustment.
+fn sensitivity_at_position(min: f64, max: f64, step: f64, fraction: f64) -> f64 {
+    let value = min + (max - min) * fraction.clamp(0.0, 1.0);
+    (min + ((value - min) / step).round() * step).clamp(min, max)
+}
+
+/// Drags the sensitivity track while Controls owns input and refreshes its fill after any edit.
+#[allow(clippy::too_many_arguments)] // Bevy supplies each input resource and track query independently.
+fn mouse_sensitivity_slider(
+    menu: Res<SettingsMenuState>,
+    console: Option<Res<ConsoleState>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    tracks: Query<
+        (Entity, &Interaction, &RelativeCursorPosition, &MenuAction),
+        With<MouseSensitivitySlider>,
+    >,
+    mut fills: Query<&mut Node, With<MouseSensitivityFill>>,
+    mut settings: ResMut<RenderingSettings>,
+    mut file: ResMut<SettingsFile>,
+    mut dragging: Local<Option<Entity>>,
+) {
+    if !menu.open
+        || menu.closing
+        || menu.page != SettingsPage::Controls
+        || console.is_some_and(|console| console.open || console.closing)
+        || !mouse.pressed(MouseButton::Left)
+    {
+        *dragging = None;
+    } else {
+        for (entity, interaction, cursor, action) in &tracks {
+            if *interaction == Interaction::Pressed {
+                *dragging = Some(entity);
+            }
+            if *dragging != Some(entity) {
+                continue;
+            }
+            if let (Some(position), MenuAction::Adjust(index, _)) = (cursor.normalized, action)
+                && position.x.is_finite()
+            {
+                let spec = &SETTING_SPECS[*index];
+                let SettingKind::Number { min, max, step } = spec.kind else {
+                    continue;
+                };
+                let value = sensitivity_at_position(min, max, step, f64::from(position.x) + 0.5);
+                if ((spec.read)(&settings) - value).abs() > 1.0e-6 {
+                    (spec.write)(&mut settings, value);
+                    file.status = "Changed for this session. Choose Save to keep settings.".into();
+                }
+            }
+        }
+    }
+    for (_, _, _, action) in &tracks {
+        let MenuAction::Adjust(index, _) = action else {
+            continue;
+        };
+        let spec = &SETTING_SPECS[*index];
+        let SettingKind::Number { min, max, .. } = spec.kind else {
+            continue;
+        };
+        let percent = (((spec.read)(&settings) - min) / (max - min) * 100.0).clamp(0.0, 100.0);
+        for mut node in &mut fills {
+            let width = Val::Percent(percent as f32);
+            if node.width != width {
+                node.width = width;
+            }
+        }
+    }
+}
+
 /// Context shown after the last setting of a group.
 fn group_note(group: &str) -> Option<&'static str> {
     match group {
@@ -568,6 +698,9 @@ fn group_note(group: &str) -> Option<&'static str> {
         "Image" => Some(
             "HDR composition stays on. Material colors, texture tiling, and per-water factors \
              come from converted assets. Visual profile requires Save and a restart.",
+        ),
+        "Mouse look" => Some(
+            "1.00x uses retail mouse-look rates. Drag the slider or use minus/plus and Left/Right. Save keeps the setting.",
         ),
         "Threads" => Some(
             "Distance changes update streaming around the current camera. IO threads require \
@@ -674,6 +807,7 @@ fn spawn_tabs(panel: &mut ChildSpawnerCommands) {
         });
 }
 
+/// Adds a scrollable page of settings followed by the Controls binding reference.
 fn spawn_page(panel: &mut ChildSpawnerCommands, page: SettingsPage, settings: &RenderingSettings) {
     panel
         .spawn((
@@ -707,10 +841,9 @@ fn spawn_page(panel: &mut ChildSpawnerCommands, page: SettingsPage, settings: &R
                     },
                 ))
                 .with_children(|body| {
+                    spawn_settings(body, page, settings);
                     if page == SettingsPage::Controls {
                         spawn_controls(body);
-                    } else {
-                        spawn_settings(body, page, settings);
                     }
                 });
             frame.spawn((
@@ -1473,6 +1606,118 @@ mod tests {
             .set(button, FocusCause::Navigated);
         key(&mut app, KeyCode::Space, ButtonState::Pressed);
         assert!(!app.world().resource::<RenderingSettings>().point_lights);
+    }
+
+    /// Controls offers a drag track, keyboard adjustment and a reset to the retail baseline.
+    #[test]
+    fn mouse_sensitivity_slider_drags_adjusts_and_resets_only_on_controls() {
+        let mut app = menu_app();
+        key(&mut app, KeyCode::Escape, ButtonState::Pressed);
+        key(&mut app, KeyCode::Escape, ButtonState::Released);
+        app.world_mut().resource_mut::<SettingsMenuState>().page = SettingsPage::Controls;
+        let slider = app
+            .world_mut()
+            .query_filtered::<Entity, With<MouseSensitivitySlider>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().entity_mut(slider).insert((
+            Interaction::Pressed,
+            RelativeCursorPosition {
+                cursor_over: true,
+                normalized: Some(Vec2::ZERO),
+            },
+        ));
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        assert!(
+            (app.world()
+                .resource::<RenderingSettings>()
+                .mouse_sensitivity
+                - 2.4)
+                .abs()
+                < 1.0e-6
+        );
+        app.world_mut()
+            .entity_mut(slider)
+            .insert(RelativeCursorPosition {
+                cursor_over: true,
+                normalized: Some(Vec2::new(0.25, 0.0)),
+            });
+        app.update();
+        assert!(
+            (app.world()
+                .resource::<RenderingSettings>()
+                .mouse_sensitivity
+                - 3.2)
+                .abs()
+                < 1.0e-6
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .release(MouseButton::Left);
+        app.world_mut().entity_mut(slider).insert(Interaction::None);
+        app.update();
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(slider, FocusCause::Navigated);
+        key(&mut app, KeyCode::ArrowLeft, ButtonState::Pressed);
+        assert!(
+            (app.world()
+                .resource::<RenderingSettings>()
+                .mouse_sensitivity
+                - 3.15)
+                .abs()
+                < 1.0e-6
+        );
+        key(&mut app, KeyCode::ArrowLeft, ButtonState::Released);
+        app.world_mut().resource_mut::<SettingsMenuState>().page = SettingsPage::Graphics;
+        app.world_mut().entity_mut(slider).insert((
+            Interaction::Pressed,
+            RelativeCursorPosition {
+                cursor_over: true,
+                normalized: Some(Vec2::new(0.5, 0.0)),
+            },
+        ));
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        assert!(
+            (app.world()
+                .resource::<RenderingSettings>()
+                .mouse_sensitivity
+                - 3.15)
+                .abs()
+                < 1.0e-6
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .release(MouseButton::Left);
+        app.world_mut().entity_mut(slider).insert(Interaction::None);
+        let reset = app
+            .world_mut()
+            .query::<(Entity, &MenuAction)>()
+            .iter(app.world())
+            .find_map(|(entity, action)| matches!(action, MenuAction::Defaults).then_some(entity))
+            .unwrap();
+        app.world_mut()
+            .entity_mut(reset)
+            .insert(Interaction::Pressed);
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<RenderingSettings>()
+                .mouse_sensitivity,
+            1.0
+        );
+        let fill = app
+            .world_mut()
+            .query_filtered::<&Node, With<MouseSensitivityFill>>()
+            .single(app.world())
+            .unwrap();
+        assert!(matches!(fill.width, Val::Percent(value) if (value - 6.25).abs() < 1.0e-4));
     }
 
     #[test]

@@ -46,7 +46,27 @@ Startup-only inputs such as asset paths, worldspace/start cell, backend selectio
 
 ## Controls
 
-The Controls tab lists menu/cursor keys, console entry and completion, mouse look, movement, NOCLIP/WALK switching, flying/jumping, slow walking/fast flight, sprint, collision outlines, debug tankards, and console help. The HUD reports movement, sprint, speed, collision status, and blocked-walk reasons without repeating their bindings.
+The Controls tab starts with a **Mouse sensitivity (x)** slider. Drag its track, use the
+minus/plus buttons, or focus the track and press Left/Right. The multiplier ranges from
+**0.8x to 4.0x**, in **0.05x** steps, and applies immediately to both mouse-look axes in
+WALK and NOCLIP. **1.0x** preserves the unrounded default formulas from #709: yaw
+`0.0125 * 0.02 * pi` (approximately 0.000785 rad/count) and pitch
+`0.0125 * 0.85 * 0.1` (0.0010625 rad/count). Counts remain independent of frame time.
+Save persists `mouse_sensitivity` in the existing version-1 JSON file; older files that
+omit it use 1.0x. Reset defaults restores 1.0x for the session and Save persists it.
+
+The retail-derived bounds normalize the documented `fMouseHeadingSensitivityMin=0.01`
+and `fMouseHeadingSensitivityMax=0.05` by the nominal default
+`fMouseHeadingSensitivity=0.0125`. Sources:
+[STEP SkyrimSE Controls](https://stepmodifications.org/wiki/SkyrimSE:SkyrimPrefs_INI/Controls#fMouseHeadingSensitivity)
+and the author's [SE default-setting investigation](https://stepmodifications.org/forum/topic/11523-skyrim-special-edition-default-values-for-all-valid-ini-settings/).
+This normalization is MudCrab's choice of multiplier range. The sources establish
+nominal INI values rather than every retail version's UI interpolation or tuned INI overrides.
+
+Below the slider, Controls lists menu/cursor keys, console entry and completion, mouse look,
+movement, NOCLIP/WALK switching, flying/jumping, slow walking/fast flight, sprint, collision
+outlines, debug tankards, and console help. The HUD reports movement, sprint, speed, collision
+status, and blocked-walk reasons without repeating their bindings.
 
 ## Native preview
 
