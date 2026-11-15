@@ -348,71 +348,6 @@ jobs:
         env:
           WGPU_BACKEND: vulkan
 
-  windows_clippy:
-    needs: [orchestrate]
-    if: needs.orchestrate.outputs.check_rust == 'true'
-    runs-on: windows-latest
-    # Allow for slower Windows cold builds and cache misses.
-    timeout-minutes: 90
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          clean: false
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.98.1"
-          components: clippy
-
-      - name: Setup kache compiler cache
-        uses: kunobi-ninja/kache-action@v1
-        with:
-          cache-dir: ${{ runner.temp }}/kache
-          cache-key-prefix: kache-windows-clippy
-          # Save only from main; PRs restore it. Linux caches already fill the
-          # repository's 10 GB, so per-PR Windows entries would evict them.
-          save-cache: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Clippy check
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-  windows_test:
-    needs: [orchestrate]
-    if: needs.orchestrate.outputs.check_rust == 'true'
-    runs-on: windows-latest
-    # Allow for slower Windows cold builds and the full suite after compilation.
-    timeout-minutes: 90
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          clean: false
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.98.1"
-
-      - name: Setup kache compiler cache
-        uses: kunobi-ninja/kache-action@v1
-        with:
-          cache-dir: ${{ runner.temp }}/kache
-          # Keep test artifacts separate from Clippy's immutable cache entry.
-          cache-key-prefix: kache-windows-test
-          save-cache: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Install nextest
-        uses: taiki-e/install-action@nextest
-
-      - name: Run unit & integration tests
-        # Same command as Linux. GPU-only tests stay ignored by default, and the
-        # hardware repair test skips itself when no hardware GPU is present.
-        run: cargo nextest run --workspace --lib --bins --tests --examples --no-fail-fast --no-tests=warn
-        env:
-          NEXTEST_NO_TESTS: warn
-
   security:
     needs: [orchestrate]
     if: needs.orchestrate.outputs.check_rust == 'true'
@@ -472,8 +407,6 @@ jobs:
       - schema_validation
       - clippy
       - test
-      - windows_clippy
-      - windows_test
       - security
       - performance
     if: always()
@@ -501,8 +434,6 @@ jobs:
           check_result "schema_validation" "$RESULT_SCHEMA_VALIDATION"
           check_result "clippy" "$RESULT_CLIPPY"
           check_result "test" "$RESULT_TEST"
-          check_result "windows_clippy" "$RESULT_WINDOWS_CLIPPY"
-          check_result "windows_test" "$RESULT_WINDOWS_TEST"
           check_result "security" "$RESULT_SECURITY"
           check_result "performance" "$RESULT_PERFORMANCE"
 
@@ -517,7 +448,5 @@ jobs:
           RESULT_SCHEMA_VALIDATION: ${{ needs.schema_validation.result }}
           RESULT_CLIPPY: ${{ needs.clippy.result }}
           RESULT_TEST: ${{ needs.test.result }}
-          RESULT_WINDOWS_CLIPPY: ${{ needs.windows_clippy.result }}
-          RESULT_WINDOWS_TEST: ${{ needs.windows_test.result }}
           RESULT_SECURITY: ${{ needs.security.result }}
           RESULT_PERFORMANCE: ${{ needs.performance.result }}

@@ -116,9 +116,10 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    ```
    CI uses [`cargo-nextest`](https://nexte.st) (`cargo install cargo-nextest --locked`); plain
    `cargo test --workspace --lib --bins --tests --examples` runs the same test targets (neither runs doctests; add
-   `cargo test --workspace --doc` for those). The `clippy` / `test` (Linux) and
-   `windows_clippy` / `windows_test` jobs run for Rust-related changes on PRs and feed
-   `tests_pass`. GPU-only tests stay ignored by default; Linux runs the two software Vulkan
+   `cargo test --workspace --doc` for those). The Linux `clippy` / `test` jobs run for
+   Rust-related changes on PRs and feed `tests_pass`. The same checks run on Windows once a
+   night against `main` (`.github/workflows/windows.yml`; start it by hand from the Actions
+   tab to check a branch). GPU-only tests stay ignored by default; Linux runs the two software Vulkan
    tests separately. CI also runs `cargo audit` and a release-mode
    performance check; see `.github/workflows/run_tests.yml` for the exact commands.
 5. **Submit a Pull Request:**
