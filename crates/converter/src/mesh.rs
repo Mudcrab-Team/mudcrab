@@ -4884,8 +4884,10 @@ mod tests {
         .unwrap();
     }
 
-    /// Pin shallow-scene bytes including native-UV tangents and geometry-index tags.
-    /// The shared 256-node traversal bound preserves these output contracts.
+    /// Scenes well under the old 64-node collision limit convert to the same GLB bytes as before
+    /// the shared 256-node bound. The pinned hashes come from the converter before that bound,
+    /// except that both single-shape cases also carry the `mudcrabGeometryIndex` primitive tag
+    /// that `object-texture-swap-geometry-index-v1` adds; each case asserts that tag below.
     #[test]
     fn shallow_scene_glb_bytes_are_unchanged_by_the_depth_bound() {
         let directory = tempfile::tempdir().unwrap();
@@ -4893,15 +4895,14 @@ mod tests {
             (
                 "static",
                 static_nif(),
-                "d33c4cc0ca0ce66e694c7baed309a82f5b57fe0d493102b73a86945c1c6e525b",
+                "18b02762207493e8ad2489cc340839a3fb0a9383824034d5026081b7b0f2b773",
             ),
             (
                 "chain-40",
                 static_scene_chain_nif(40),
-                "e99a91a038915d444d5e262b82d83930da17ab404e1da5a532d6ff1af77227e4",
+                "ae4eb9a35aebaa7873a88fc3f51f10b35f501f296286fbb9cb46f79922d15fdc",
             ),
         ];
-        let mut differences = Vec::new();
         for (name, source, expected) in cases {
             let input = directory.path().join(format!("{name}.nif"));
             let output = input.with_extension("glb");
@@ -4914,15 +4915,11 @@ mod tests {
                 "{name}: the single shape carries its geometry index"
             );
             assert_eq!(
-                document["meshes"][0]["primitives"][0]["attributes"]["TANGENT"],
-                3
+                crate::cache::hash_bytes(&bytes),
+                expected,
+                "{name}: GLB bytes changed"
             );
-            let actual = crate::cache::hash_bytes(&bytes);
-            if actual != expected {
-                differences.push((name, actual, expected));
-            }
         }
-        assert!(differences.is_empty(), "GLB bytes changed: {differences:?}");
     }
 
     /// Inspection measures deep skeletons while every consuming entry point refuses them.
