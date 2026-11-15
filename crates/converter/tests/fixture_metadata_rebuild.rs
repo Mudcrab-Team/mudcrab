@@ -2759,3 +2759,170 @@ async fn metadata_script_recovery_respects_fail_fast() {
     assert!(!output.exists());
     assert_eq!(script_recovery_package_hashes(&source), before);
 }
+
+/// Publish verified neighboring scripts and world/assets while dropping unusable archive names.
+async fn metadata_odd_archive_names_publication(corrupt_payload: bool, fail_fast: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    let good = dummy_content::pex::minimal("OddNameNeighbor").unwrap();
+    let bad = dummy_content::pex::minimal("OddNameRecorded").unwrap();
+    let odd = dummy_content::pex::minimal("UnidentifiableExtra").unwrap();
+    let archive = data.join("Skyrim - Scripts.bsa");
+    let baseline = bsa::v104(
+        &[
+            Entry {
+                name: "scripts/samearchivegood.pex",
+                data: &good,
+            },
+            Entry {
+                name: "scripts/archivebad.pex",
+                data: &bad,
+            },
+        ],
+        bsa::Compression::Zlib,
+    )
+    .unwrap();
+    fs::write(&archive, baseline).unwrap();
+    convert(&data, &source).await;
+    let originals = age_source(&source, &data, 1, None);
+    assert!(originals.contains_key("scripts/samearchivegood.luau"));
+    assert!(originals.contains_key("scripts/archivebad.luau"));
+    let mut bytes = bsa::v104(
+        &[
+            Entry {
+                name: "scripts/samearchivegood.pex",
+                data: &good,
+            },
+            Entry {
+                name: "scripts/odd%25.pex",
+                data: &odd,
+            },
+            Entry {
+                name: "scripts/deep%2525.pex",
+                data: &odd,
+            },
+            Entry {
+                name: "scripts/archivebad.pex",
+                data: &bad,
+            },
+        ],
+        bsa::Compression::Zlib,
+    )
+    .unwrap();
+    if corrupt_payload {
+        // The fourth record is the last payload in this single-folder fixture.
+        let record = 36 + 16 + 1 + "scripts".len() + 1 + 3 * 16;
+        let payload =
+            u32::from_le_bytes(bytes[record + 12..record + 16].try_into().unwrap()) as usize;
+        assert!(payload + 8 < bytes.len());
+        bytes[payload + 4..].fill(0xff);
+    }
+    replace_file(&archive, &bytes);
+    // Inventory succeeds: each raw name has passed the extractor's first canonicalization.
+    let listed = converter::archive::ArchiveExtractor::list_paths(&archive).unwrap();
+    assert!(listed.contains(&"scripts/odd%.pex".into()));
+    assert!(listed.contains(&"scripts/deep%25.pex".into()));
+    let before = script_recovery_package_hashes(&source);
+    let archive_before = hash_file(&archive).unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let mut config = common::cpu_lod_config(&data, &output);
+    config.fail_fast = fail_fast;
+    let result = AssetPipeline::rebuild_metadata_async(config, &source, tx).await;
+    drain.await.unwrap();
+    assert_eq!(script_recovery_package_hashes(&source), before);
+    assert_eq!(hash_file(&archive).unwrap(), archive_before);
+    if fail_fast {
+        assert!(
+            result.is_err(),
+            "explicit fail-fast must retain the member-name refusal"
+        );
+        assert!(!output.exists());
+        return;
+    }
+    assert!(
+        result.is_ok(),
+        "unusable archive script names must preserve neighboring publication: corrupt={corrupt_payload}, result={result:?}"
+    );
+    let report = result.unwrap();
+    assert!(!report.complete);
+    assert!(report.skipped >= 2 + u64::from(corrupt_payload));
+    let name_warnings: Vec<_> = report
+        .warnings
+        .iter()
+        .filter(|warning| warning.contains("script archive members with unusable names"))
+        .collect();
+    assert_eq!(
+        name_warnings.len(),
+        1,
+        "one bounded warning per archive: {:?}",
+        report.warnings
+    );
+    assert!(name_warnings[0].contains("2 script archive members"));
+    assert!(name_warnings[0].contains("Skyrim - Scripts.bsa"));
+    let published = ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+    assert!(!published.complete);
+    assert!(!published.entries.contains_key("scripts/odd%.pex"));
+    assert!(!published.entries.contains_key("scripts/deep%25.pex"));
+    assert!(!output.join("scripts/odd%.luau").exists());
+    assert!(!output.join("scripts/deep%.luau").exists());
+    for (name, bytes) in &originals {
+        if corrupt_payload && name == "scripts/archivebad.luau" {
+            assert!(!output.join(name).exists());
+            assert!(published.failures.contains_key("scripts/archivebad.pex"));
+        } else {
+            assert_eq!(
+                &fs::read(output.join(name)).unwrap(),
+                bytes,
+                "healthy script {name}"
+            );
+        }
+    }
+    let original = ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
+    for entry in original
+        .entries
+        .values()
+        .filter(|entry| entry.output.ends_with(".glb") || entry.output.ends_with(".ktx2"))
+    {
+        assert_eq!(
+            hash_file(&output.join(&entry.output)).unwrap(),
+            entry.output_hash
+        );
+    }
+    assert!(output.join("grass_cache.rkyv").is_file());
+    assert_eq!(
+        fs::read(output.join("scripts/papyrus_runtime.luau")).unwrap(),
+        include_bytes!("../../shared/src/papyrus_runtime.luau")
+    );
+    let connection = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let count: u64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM \"references\" WHERE id=4660",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "healthy neighboring world record must publish");
+}
+
+/// A successful extraction batch drops only unidentifiable names before the VFS overlay.
+#[tokio::test]
+async fn metadata_script_recovery_skips_odd_names_after_successful_archive_batch() {
+    metadata_odd_archive_names_publication(false, false).await;
+}
+
+/// Per-member retry drops unidentifiable names while preserving authenticated healthy neighbors.
+#[tokio::test]
+async fn metadata_script_recovery_skips_odd_names_during_archive_member_retry() {
+    metadata_odd_archive_names_publication(true, false).await;
+}
+
+/// Explicit fail-fast preserves refusal for both unusable names and broken selected payloads.
+#[tokio::test]
+async fn metadata_script_recovery_odd_names_respect_fail_fast() {
+    metadata_odd_archive_names_publication(false, true).await;
+    metadata_odd_archive_names_publication(true, true).await;
+}
