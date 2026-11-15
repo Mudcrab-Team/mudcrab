@@ -84,8 +84,9 @@ instance plus 64 KiB, and retained heap to 16 bytes per potential instance plus
 compaction. The scratch allowance is therefore
 `slots * (8 * (2 * staging_bytes - 16) + staging_bytes) + 64 KiB`: two staging
 capacities per species minus final output, plus one buffer's growth/shrink overlap.
-This layer stages 16-byte instances, giving 144 bytes per candidate slot plus
-64 KiB. These are explicit fixture allocation limits, checked against the actual
+This layer stages 20-byte `(GrassInstance, f32)` height tuples, giving 212 bytes per
+candidate slot plus 64 KiB; the overlap also covers the final slot sort's temporary
+buffer. These are explicit fixture allocation limits, checked against the actual
 counting allocator; they include Vec growth and scratch but exclude mapped input,
 native allocations and GPU resources. The library test only checks
 the generator's reported output size (32 bytes per potential instance plus 32 KiB).
