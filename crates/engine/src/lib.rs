@@ -6,6 +6,7 @@ pub mod actor_outfit;
 pub mod actor_skin_tone;
 pub mod actors;
 pub mod app;
+mod background_window;
 pub mod bug_report;
 mod capture_frame;
 pub mod cell_commands;
