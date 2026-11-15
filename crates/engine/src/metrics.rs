@@ -460,6 +460,10 @@ struct Thresholds {
     minimum_average_fps: f64,
     maximum_p95_frame_ms: f64,
     maximum_memory_growth_gib: f64,
+    /// `--accept-frame-pass-bar` was given: the frame-budget bar decides the run.
+    frame_pass_bar_required: bool,
+    /// The frame-budget window met the bar (99.9% within budget, none over twice it).
+    frame_pass_bar_met: bool,
     no_streaming_failures: bool,
     commit_budget_respected: bool,
     streaming_lifecycle_validated: bool,
@@ -649,8 +653,23 @@ fn collect_and_finish(
         .first_process_memory_gib
         .zip(samples.last_process_memory_gib)
         .map(|(first, last)| (last - first).max(0.0));
+    // The frame-budget bar is computed before the verdict because the opt-in gate reads it. The
+    // window is the measured frames; a route run scores the route, as it does for the report.
+    let frame_budget = FrameBudgetReport::from_frames(
+        config.frame_budget_ms,
+        if route.is_some() || measurements.file_route.is_some() {
+            "route window: the frames from the first full frame on the route to the end of the measured window"
+        } else {
+            "measured window: every frame after the warm-up"
+        },
+        &samples.ledger.scored,
+    );
+    // Off by default. `None` (no scored frame) cannot meet the bar, but a run with no frames has
+    // already failed the frame rate gate; the `Some(true)` comparison keeps the two independent.
+    let frame_pass_bar_met = frame_budget.meets_pass_bar == Some(true);
     let passed = average_fps >= config.accept_min_fps
         && p95 <= config.accept_p95_ms
+        && (!config.accept_frame_pass_bar || frame_pass_bar_met)
         && memory_growth_gib.is_none_or(|growth| growth <= config.accept_max_memory_growth_gib)
         && no_streaming_failures
         && commit_budget_respected
@@ -688,15 +707,6 @@ fn collect_and_finish(
         core_count: value.core_count.clone(),
         memory: value.memory.clone(),
     });
-    let frame_budget = FrameBudgetReport::from_frames(
-        config.frame_budget_ms,
-        if route.is_some() || measurements.file_route.is_some() {
-            "route window: the frames from the first full frame on the route to the end of the measured window"
-        } else {
-            "measured window: every frame after the warm-up"
-        },
-        &samples.ledger.scored,
-    );
     let report = BenchmarkReport {
         format_version: 11,
         generated_unix_ms: SystemTime::now()
@@ -769,6 +779,8 @@ fn collect_and_finish(
             minimum_average_fps: config.accept_min_fps,
             maximum_p95_frame_ms: config.accept_p95_ms,
             maximum_memory_growth_gib: config.accept_max_memory_growth_gib,
+            frame_pass_bar_required: config.accept_frame_pass_bar,
+            frame_pass_bar_met,
             no_streaming_failures,
             commit_budget_respected,
             streaming_lifecycle_validated,
@@ -1950,6 +1962,62 @@ mod tests {
         let report = written_report(directory.path());
         assert_eq!(report["thresholds"]["screenshot_captured"], true);
         assert_eq!(report["passed"], true);
+    }
+
+    /// `--accept-frame-pass-bar` is off by default, so a 40 ms hitch is reported and does not fail
+    /// the run. With the flag the same window misses the bar (one frame over twice the 6.25 ms
+    /// budget) and the run fails, with the gate named in the report.
+    #[test]
+    fn the_frame_pass_bar_flag_fails_a_run_with_one_hitch() {
+        use crate::frame_budget::{FrameOwner, ScoredFrame};
+        use bevy::app::AppExit;
+        use bevy::ecs::message::Messages;
+        use std::time::Duration;
+
+        let run = |required: bool| {
+            let directory = tempfile::tempdir().unwrap();
+            let mut app = acceptance_report_app(directory.path(), None, Duration::ZERO);
+            {
+                let mut config = app.world_mut().resource_mut::<EngineConfig>();
+                config.accept_frame_pass_bar = required;
+                // Widen p95 so the hitch is judged by the pass bar alone, not by two gates.
+                config.accept_p95_ms = 100.0;
+            }
+            app.world_mut()
+                .resource_mut::<BenchmarkSamples>()
+                .ledger
+                .scored
+                .push(ScoredFrame {
+                    ms: 40.0,
+                    owner: FrameOwner::MainWorld,
+                    wait_ms: None,
+                });
+            app.update();
+            let exits: Vec<AppExit> = app
+                .world()
+                .resource::<Messages<AppExit>>()
+                .iter_current_update_messages()
+                .cloned()
+                .collect();
+            let report = written_report(directory.path());
+            (exits, report, directory)
+        };
+
+        let (exits, report, _directory) = run(false);
+        assert_eq!(report["thresholds"]["frame_pass_bar_required"], false);
+        assert_eq!(report["thresholds"]["frame_pass_bar_met"], false);
+        assert_eq!(report["frame_budget"]["meets_pass_bar"], false);
+        assert_eq!(report["passed"], true, "the bar is advisory unless asked");
+        assert_eq!(exits, vec![AppExit::Success], "a pass exits successfully");
+
+        let (exits, report, _directory) = run(true);
+        assert_eq!(report["thresholds"]["frame_pass_bar_required"], true);
+        assert_eq!(report["thresholds"]["frame_pass_bar_met"], false);
+        assert_eq!(
+            report["passed"], false,
+            "a 40 ms frame misses the 6.25 ms bar"
+        );
+        assert_eq!(exits, vec![AppExit::error()]);
     }
 
     /// A report that cannot be written fails the run even when every measured threshold passed.

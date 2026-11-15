@@ -188,6 +188,10 @@ pub struct EngineConfig {
     pub accept_min_fps: f64,
     pub accept_p95_ms: f64,
     pub accept_max_memory_growth_gib: f64,
+    /// `--accept-frame-pass-bar`: fail a benchmark run whose frame-budget window misses the pass
+    /// bar (at least 99.9% of frames within `--frame-budget-ms`, none over twice it). Off by
+    /// default: the bar was reported before it could fail a run.
+    pub accept_frame_pass_bar: bool,
     pub auto_fly_speed: f32,
     /// `--route <file>`: the camera follows a route file's waypoints at its speed (see
     /// [`crate::route`]). It owns the camera, like `--auto-fly-speed`.
@@ -311,6 +315,7 @@ impl Default for EngineConfig {
             accept_min_fps: 60.0,
             accept_p95_ms: 16.67,
             accept_max_memory_growth_gib: 0.5,
+            accept_frame_pass_bar: false,
             auto_fly_speed: 0.0,
             route: None,
             frame_budget_ms: crate::frame_budget::DEFAULT_FRAME_BUDGET_MS,
@@ -413,6 +418,8 @@ Benchmark and profiling:
   --accept-min-fps <fps>                fail the run below this average frame rate (default: 60)
   --accept-p95-ms <ms>                  fail the run above this p95 frame time (default: 16.67)
   --accept-max-memory-growth-gib <gib>  fail the run above this memory growth (default: 0.5)
+  --accept-frame-pass-bar               fail the run when the frame-budget window misses the bar
+                                     (99.9% within budget, none over twice it; default: off)
   --acceptance-screenshot <file>        write a screenshot when the run ends
   --screenshot-camera-offset <x,y,z>    camera offset for the acceptance screenshot
   --matched-route <file>                execute exact route steps with transition and settled checkpoints
@@ -1125,6 +1132,7 @@ impl EngineConfig {
                         args.next(),
                     )?;
                 }
+                "--accept-frame-pass-bar" => config.accept_frame_pass_bar = true,
                 "--auto-fly-speed" => {
                     config.auto_fly_speed = take_number(
                         "--auto-fly-speed",
@@ -1985,6 +1993,19 @@ mod tests {
         assert_eq!(config.max_cell_unloads_per_frame, 2);
         assert_eq!(config.max_model_spawns_per_frame, 32);
         assert_eq!(config.io_threads, 0);
+    }
+
+    /// The frame-budget pass bar is advisory unless the flag is given. Existing runs keep their
+    /// verdicts; an acceptance caller opts in.
+    #[test]
+    fn the_frame_pass_bar_gate_is_off_by_default_and_parsed_as_a_switch() {
+        assert!(!EngineConfig::default().accept_frame_pass_bar);
+        assert!(!run_config(&[]).accept_frame_pass_bar);
+        assert!(run_config(&["--accept-frame-pass-bar"]).accept_frame_pass_bar);
+        // A switch takes no value, so a following option is not swallowed.
+        let config = run_config(&["--accept-frame-pass-bar", "--benchmark-frames", "10"]);
+        assert!(config.accept_frame_pass_bar);
+        assert_eq!(config.benchmark_frames, Some(10));
     }
 
     /// Verify GPU inventory is opt-in and requires a profile output directory.
