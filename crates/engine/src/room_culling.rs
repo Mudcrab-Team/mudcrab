@@ -14,18 +14,21 @@
 //! Cycles and complex graphs have bounded work: exceeding a contribution or plane budget widens
 //! that room to the camera frustum and propagates the wider volume.
 //!
-//! Draw the whole cell if any reached room lacks a valid portal between two rooms of the cell,
-//! or has a portal with an unresolved side. Open halls can expose rooms across unboxed space;
-//! a portal on the starting room does not establish coverage further along the walk. A camera in
-//! no room also draws the whole cell.
+//! Versioned graphs distinguish rooms, authored unbounded endpoints, and unknown endpoints. A
+//! camera outside every room starts in unbounded space and enters rooms through their apertures.
+//! Unbounded geometry uses its accumulated volume, including when viewed from a room. Legacy
+//! graphs keep their outside-camera fallback. Unknown endpoints or a reached portal-less room
+//! still draw the whole cell while authored joins and incomplete graph coverage remain unresolved.
 //!
-//! An object is hidden from the view only when it is contained (pivot inside the box) in exactly
-//! one room and its mesh bounds miss every visibility volume of its containing and overlapping
-//! rooms. The mesh's current AABB is transformed into cell-local space with its full affine
+//! A static object's containing and overlapping rooms supply its candidate visibility volumes.
+//! An object with one pivot-containing room is hidden when its mesh bounds miss every candidate
+//! volume. The mesh's current AABB is transformed into cell-local space with its full affine
 //! transform, including rotation, scale, and shear. Missing or invalid bounds and `NoFrustumCulling`
-//! skip the aperture test but retain the existing unreached-room test. References in no room or
-//! with several containing rooms remain drawn. Missing room data and the whole-cell fallbacks
-//! above also leave the view alone.
+//! skip the aperture test but retain the unreached-space test. Versioned graphs also track
+//! references whose pivots are in no room as unbounded; their conservative overlap memberships
+//! remain candidates. Multiple containing rooms, unknown references, and legacy unassigned
+//! references stay drawn. References whose aggregate model bounds touch an attached portal gain
+//! the union of both endpoint volumes. Mesh filtering never inserts duplicate entries.
 //!
 //! # How an object is hidden, and why shadows keep it
 //!
@@ -60,7 +63,7 @@
 //! An edge to a portal-less room instead triggers the whole-cell fallback above.
 //!
 //! These edges approximate connectivity missing from our graph. They are not Skyrim's authored
-//! joined bounds. Box coverage gaps and the original unbounded-space traversal remain separate
+//! joined bounds. Box coverage gaps and exact native assignment remain separate
 //! parity work. See `docs/research/skyrim-native-culling.md`.
 //!
 //! # What is never culled by its room
@@ -107,7 +110,9 @@ use volume::{MeshBounds, RoomVisibility, VisibilityVolume};
 
 use crate::{
     config::EngineConfig,
-    world::components::{CellRef, ExteriorCellGrid, FormId, StreamedCellRoot, StreamingCamera},
+    world::components::{
+        CellRef, ExpectedModelBounds, ExteriorCellGrid, FormId, StreamedCellRoot, StreamingCamera,
+    },
 };
 use bevy::{
     camera::{
@@ -220,6 +225,41 @@ impl Room {
     }
 }
 
+/// A portal side distinguishes authored outside space from unresolved conversion data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortalSide {
+    Room(usize),
+    Unbounded,
+    Unknown,
+}
+
+impl PortalSide {
+    fn index(self, rooms: usize) -> Option<usize> {
+        match self {
+            Self::Room(index) if index < rooms => Some(index),
+            Self::Unbounded => Some(rooms),
+            _ => None,
+        }
+    }
+}
+
+/// Per-view volumes for the cell's rooms and its explicit outside space.
+#[derive(Default)]
+struct CellVisibility {
+    rooms: Vec<RoomVisibility>,
+    unbounded: RoomVisibility,
+}
+
+impl CellVisibility {
+    fn get(&self, side: PortalSide) -> Option<&RoomVisibility> {
+        match side {
+            PortalSide::Room(index) => self.rooms.get(index),
+            PortalSide::Unbounded => Some(&self.unbounded),
+            PortalSide::Unknown => None,
+        }
+    }
+}
+
 /// One `room_portals` row in cell-local runtime space.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Portal {
@@ -227,8 +267,8 @@ pub struct Portal {
     pub ref_id: u32,
     /// The doorway's corners in order around the rectangle.
     pub corners: [Vec3; 4],
-    /// The room indices on either side; `None` for a side the converter left empty.
-    pub rooms: [Option<usize>; 2],
+    /// Authored spaces on each side, with unresolved data kept distinct from outside.
+    pub rooms: [PortalSide; 2],
 }
 
 impl Portal {
@@ -238,7 +278,7 @@ impl Portal {
         position: [f32; 3],
         rotation: [f32; 3],
         half: [f32; 2],
-        rooms: [Option<usize>; 2],
+        rooms: [PortalSide; 2],
     ) -> Self {
         let center = Vec3::from_array(shared::coordinates::creation_to_runtime_vector(position));
         let rotation = Quat::from_array(shared::coordinates::creation_euler_to_runtime_quaternion(
@@ -366,6 +406,8 @@ pub struct Membership {
 /// The room graph of one interior cell, in the space of the cell root.
 #[derive(Debug, Clone, Default)]
 pub struct RoomGraph {
+    /// Full export with authored endpoint provenance and complete reference identities.
+    pub supports_unbounded: bool,
     pub rooms: Vec<Room>,
     pub portals: Vec<Portal>,
     /// `room_links` as undirected edges between room indices.
@@ -445,53 +487,56 @@ impl RoomGraph {
     }
 
     /// The rooms reachable from the rooms around `camera`, through doorways that lie inside the
-    /// view. `None` when the camera is in no room, or reaches a room with no portal of the cell, which
-    /// means draw everything. `clip_from_local` maps cell-local space to clip space.
+    /// view, including the unbounded node. `None` means incomplete data requires full rendering.
+    /// `clip_from_local` maps cell-local space to clip space.
     ///
     /// Every room that contains the camera is a start, which is the deterministic superset of
     /// "pick one": a camera in a doorway is in two boxes and sees into both.
-    fn visibility_volumes(
-        &self,
-        camera: Vec3,
-        clip_from_local: Mat4,
-    ) -> Option<Vec<RoomVisibility>> {
+    fn visibility_volumes(&self, camera: Vec3, clip_from_local: Mat4) -> Option<CellVisibility> {
         let full = VisibilityVolume::camera(clip_from_local)?;
-        let starts = self.rooms_containing(camera);
-        if starts.is_empty() {
+        let room_count = self.rooms.len();
+        if room_count == 0 {
             return None;
         }
-        let mut doorways: Vec<Vec<usize>> = vec![Vec::new(); self.rooms.len()];
-        let mut incomplete = vec![false; self.rooms.len()];
-        for (index, portal) in self.portals.iter().enumerate() {
-            if let [Some(a), Some(b)] = portal.rooms
-                && a != b
-            {
-                doorways[a].push(index);
-                doorways[b].push(index);
-            } else {
-                for room in portal.rooms.into_iter().flatten() {
-                    incomplete[room] = true;
-                }
+        let outside = room_count;
+        let mut starts = self.rooms_containing(camera);
+        if starts.is_empty() {
+            if !self.supports_unbounded {
+                return None;
             }
+            starts.push(outside);
         }
-        let mut linked: Vec<Vec<usize>> = vec![Vec::new(); self.rooms.len()];
+        let mut doorways: Vec<Vec<usize>> = vec![Vec::new(); room_count + 1];
+        for (index, portal) in self.portals.iter().enumerate() {
+            let [Some(a), Some(b)] = portal.rooms.map(|side| side.index(room_count)) else {
+                // Unknown endpoints may conceal outside connectivity. Never interpret them as
+                // authored outside, including when the camera starts outside all boxes.
+                return None;
+            };
+            if a == b {
+                continue;
+            }
+            doorways[a].push(index);
+            doorways[b].push(index);
+        }
+        let mut linked: Vec<Vec<usize>> = vec![Vec::new(); room_count + 1];
         for &(a, b) in &self.links {
-            if a != b && a < linked.len() && b < linked.len() {
+            if a != b && a < room_count && b < room_count {
                 linked[a].push(b);
                 linked[b].push(a);
             }
         }
-        let mut overlapping: Vec<Vec<usize>> = vec![Vec::new(); self.rooms.len()];
+        let mut overlapping: Vec<Vec<usize>> = vec![Vec::new(); room_count + 1];
         for &(a, b) in &self.overlaps {
-            if a != b && a < overlapping.len() && b < overlapping.len() {
+            if a != b && a < room_count && b < room_count {
                 overlapping[a].push(b);
                 overlapping[b].push(a);
             }
         }
-        // Only valid two-room portals describe an aperture. Reaching any other room draws the
-        // whole cell, including when an overlap queues it without clipping to its box.
+        // Rooms with no usable aperture still retain the open-hall fallback. The explicit
+        // unbounded node can legitimately have no portals and does not trigger that fallback.
         let has_portal: Vec<bool> = doorways.iter().map(|portals| !portals.is_empty()).collect();
-        let mut visibility: Vec<RoomVisibility> = (0..self.rooms.len())
+        let mut visibility: Vec<RoomVisibility> = (0..room_count + 1)
             .map(|_| RoomVisibility::default())
             .collect();
         let mut pending: Vec<_> = starts
@@ -499,10 +544,9 @@ impl RoomGraph {
             .map(|room| (room, full.clone()))
             .collect();
         while let Some((room, arriving)) = pending.pop() {
-            // A reached open hall can expose rooms across space the boxes do not cover. A portal
-            // on the camera's starting room does not make that later gap safe to cull through.
-            // An unresolved portal side may lead into unbounded space; its connectivity is unknown.
-            if !has_portal[room] || incomplete[room] {
+            // Open halls can expose rooms across uncovered box gaps. Keep their conservative
+            // fallback until authored joins and room assignment are available.
+            if room != outside && !has_portal[room] {
                 return None;
             }
             let Some(seen) = visibility[room].insert(arriving, &full) else {
@@ -510,7 +554,7 @@ impl RoomGraph {
             };
             for &portal_index in &doorways[room] {
                 let portal = &self.portals[portal_index];
-                let [Some(a), Some(b)] = portal.rooms else {
+                let [Some(a), Some(b)] = portal.rooms.map(|side| side.index(room_count)) else {
                     continue;
                 };
                 let other = if a == room { b } else { a };
@@ -556,32 +600,75 @@ impl RoomGraph {
                 }
             }
         }
-        Some(visibility)
+        let unbounded = visibility
+            .pop()
+            .expect("outside node allocated with the rooms");
+        Some(CellVisibility {
+            rooms: visibility,
+            unbounded,
+        })
     }
 
     /// Whether any membership volume intersects this mesh, or its policy exempts it.
     fn mesh_is_drawn(
         &self,
         form_id: u32,
-        visible: &[RoomVisibility],
+        visible: &CellVisibility,
         bounds: Option<&MeshBounds>,
+        reference_bounds: Option<&MeshBounds>,
     ) -> bool {
         let Some(membership) = self.membership.get(&form_id) else {
             return true;
         };
-        if membership.contained.len() != 1 {
+        if membership.contained.len() > 1 {
             return true;
+        }
+        // Portal overlap adds endpoint candidates. Keep geometric overlap candidates too:
+        // conservative aggregate bounds can touch a portal without establishing exact ownership.
+        if let Some(owner_bounds) = reference_bounds.or(bounds) {
+            for portal in &self.portals {
+                let attached = portal.rooms.iter().any(|side| match side {
+                    PortalSide::Room(room) => membership.contained.contains(room),
+                    PortalSide::Unbounded => {
+                        self.supports_unbounded && membership.contained.is_empty()
+                    }
+                    PortalSide::Unknown => false,
+                });
+                if !attached || !owner_bounds.intersects_portal(&portal.corners) {
+                    continue;
+                }
+                if portal.rooms.iter().any(|&side| {
+                    visible
+                        .get(side)
+                        .is_none_or(|volume| volume.intersects(bounds))
+                }) {
+                    return true;
+                }
+            }
+        }
+        if membership.contained.is_empty() {
+            if !self.supports_unbounded {
+                return true;
+            }
+            if visible.unbounded.intersects(bounds) {
+                return true;
+            }
         }
         membership
             .contained
             .iter()
             .chain(&membership.overlapping)
-            .any(|&room| visible.get(room).is_none_or(|room| room.intersects(bounds)))
+            .any(|&room| {
+                visible
+                    .rooms
+                    .get(room)
+                    .is_none_or(|room| room.intersects(bounds))
+            })
     }
 }
 
-/// The four tables of section 15 that the reader needs. `room_graph_stats` is a report counter and
-/// is not required.
+/// The four tables of section 15 that the reader needs. `room_graph_stats` additionally opts into
+/// verified outside endpoints; legacy graphs do not require it.
 const REQUIRED_TABLES: [&str; 4] = [
     "room_bounds",
     "room_portals",
@@ -629,16 +716,35 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
     if graph.rooms.is_empty() {
         return Ok(graph);
     }
+    let endpoint_columns: bool = connection.query_row(
+        "SELECT count(*)=2 FROM pragma_table_info('room_portals') WHERE name IN ('unbounded_a','unbounded_b')", [], |row| row.get(0))?;
+    let stats_present: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='room_graph_stats')",
+        [],
+        |row| row.get(0),
+    )?;
+    graph.supports_unbounded = endpoint_columns && stats_present && connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='visibility_version' AND value=2)", [], |row| row.get::<_,bool>(0))?;
     {
-        let mut statement = connection.prepare_cached(
-            "SELECT ref_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_z,room_a,room_b \
-             FROM room_portals WHERE cell_id=?1 ORDER BY ref_id",
-        )?;
+        let provenance = if graph.supports_unbounded {
+            "unbounded_a,unbounded_b"
+        } else {
+            "0,0"
+        };
+        let mut statement = connection.prepare_cached(&format!(
+            "SELECT ref_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_z,room_a,room_b,{provenance} FROM room_portals WHERE cell_id=?1 ORDER BY ref_id"))?;
         let rows = statement.query_map([cell_id], |row| {
-            let side = |index: usize| -> rusqlite::Result<Option<usize>> {
-                Ok(row
-                    .get::<_, Option<u32>>(index)?
-                    .and_then(|id| room_index.get(&id).copied()))
+            let side = |index: usize| -> rusqlite::Result<PortalSide> {
+                let id = row.get::<_, Option<u32>>(index)?;
+                Ok(match id {
+                    Some(id) => room_index
+                        .get(&id)
+                        .copied()
+                        .map(PortalSide::Room)
+                        .unwrap_or(PortalSide::Unknown),
+                    None if row.get::<_, bool>(index + 2)? => PortalSide::Unbounded,
+                    None => PortalSide::Unknown,
+                })
             };
             Ok(Portal::from_creation(
                 row.get(0)?,
@@ -677,7 +783,7 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
                 && !graph
                     .portals
                     .iter()
-                    .any(|portal| matches!(portal.rooms, [Some(x), Some(y)] if joined(&(x, y))))
+                    .any(|portal| matches!(portal.rooms, [PortalSide::Room(x), PortalSide::Room(y)] if joined(&(x, y))))
         })
         .collect();
     if !implicit.is_empty() {
@@ -710,6 +816,20 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
                 membership.contained.push(room);
             } else {
                 membership.overlapping.push(room);
+            }
+        }
+    }
+    if graph.supports_unbounded {
+        let references_present: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='references')",
+            [],
+            |row| row.get(0),
+        )?;
+        if references_present {
+            let mut statement =
+                connection.prepare_cached("SELECT id FROM \"references\" WHERE cell_id=?1")?;
+            for id in statement.query_map([cell_id], |row| row.get::<_, u32>(0))? {
+                graph.membership.entry(id?).or_default();
             }
         }
     }
@@ -958,6 +1078,7 @@ pub fn cull_room_views(
         Or<(With<StreamingCamera>, With<RoomCullingView>)>,
     >,
     mesh_bounds: Query<(&Aabb, &GlobalTransform), Without<NoFrustumCulling>>,
+    reference_bounds: Query<(&ExpectedModelBounds, &GlobalTransform)>,
     parents: Query<&ChildOf>,
     ids: Query<&FormId>,
     exemptions: Query<(Option<&RigidBody>, Has<RoomCullExempt>)>,
@@ -1024,9 +1145,22 @@ pub fn cull_room_views(
                 let bounds = mesh_bounds.get(entity).ok().and_then(|(aabb, transform)| {
                     MeshBounds::transformed(aabb, local_from_world * transform.affine())
                 });
-                loaded
-                    .graph
-                    .mesh_is_drawn(form_id, &volumes, bounds.as_ref())
+                let owner_bounds =
+                    reference_bounds
+                        .get(reference)
+                        .ok()
+                        .and_then(|(bounds, transform)| {
+                            MeshBounds::transformed(
+                                &Aabb::from_min_max(bounds.min, bounds.max),
+                                local_from_world * transform.affine(),
+                            )
+                        });
+                loaded.graph.mesh_is_drawn(
+                    form_id,
+                    &volumes,
+                    bounds.as_ref(),
+                    owner_bounds.as_ref(),
+                )
             });
             culled += before - list.len();
             // No `break`: every resident interior is kept until something unloads it, so a second
@@ -1086,14 +1220,18 @@ mod tests {
     };
 
     fn reached_rooms(graph: &RoomGraph, camera: Vec3, clip: Mat4) -> Option<Vec<bool>> {
-        graph
-            .visibility_volumes(camera, clip)
-            .map(|rooms| rooms.iter().map(RoomVisibility::is_reached).collect())
+        graph.visibility_volumes(camera, clip).map(|visible| {
+            visible
+                .rooms
+                .iter()
+                .map(RoomVisibility::is_reached)
+                .collect()
+        })
     }
 
-    fn visibility_for_rooms(reached: &[bool]) -> Vec<RoomVisibility> {
+    fn visibility_for_rooms(reached: &[bool]) -> CellVisibility {
         let full = VisibilityVolume::camera(clip_from_local()).unwrap();
-        reached
+        let rooms = reached
             .iter()
             .map(|&reached| {
                 let mut room = RoomVisibility::default();
@@ -1102,7 +1240,11 @@ mod tests {
                 }
                 room
             })
-            .collect()
+            .collect();
+        CellVisibility {
+            rooms,
+            unbounded: RoomVisibility::default(),
+        }
     }
 
     /// The section 15 tables, as the converter writes them.
@@ -1161,6 +1303,36 @@ mod tests {
     }
 
     #[test]
+    fn loader_preserves_outside_provenance_and_outside_reference_ids() {
+        let connection = database();
+        insert_room(&connection, 1, 7, [0.0; 3]);
+        connection
+            .execute_batch(
+                "ALTER TABLE room_portals ADD COLUMN unbounded_a INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE room_portals ADD COLUMN unbounded_b INTEGER NOT NULL DEFAULT 0;
+             INSERT INTO room_graph_stats VALUES ('visibility_version',2);
+             CREATE TABLE \"references\" (id INTEGER,cell_id INTEGER);
+             INSERT INTO \"references\" VALUES (100,7),(101,8);
+             INSERT INTO room_portals VALUES(10,7,0,0,0,0,0,0,4,6,1,NULL,0,1);",
+            )
+            .unwrap();
+        let graph = load_room_graph(&connection, 7).unwrap();
+        assert!(graph.supports_unbounded);
+        assert_eq!(
+            graph.portals[0].rooms,
+            [PortalSide::Room(0), PortalSide::Unbounded]
+        );
+        assert_eq!(graph.membership[&100], Membership::default());
+        assert!(!graph.membership.contains_key(&101));
+        // An inconsistent foreign-room ID must not acquire outside meaning from a flag.
+        connection
+            .execute("UPDATE room_portals SET room_b=999", [])
+            .unwrap();
+        let graph = load_room_graph(&connection, 7).unwrap();
+        assert_eq!(graph.portals[0].rooms[1], PortalSide::Unknown);
+    }
+
+    #[test]
     fn a_cell_without_rooms_loads_as_an_empty_graph() {
         let connection = database();
         insert_room(&connection, 1, 7, [0.0; 3]);
@@ -1168,7 +1340,7 @@ mod tests {
         assert!(graph.rooms.is_empty() && graph.portals.is_empty() && graph.membership.is_empty());
         // And an empty graph never hides anything.
         assert!(reached_rooms(&graph, Vec3::ZERO, Mat4::IDENTITY).is_none());
-        assert!(graph.mesh_is_drawn(5, &[], None));
+        assert!(graph.mesh_is_drawn(5, &CellVisibility::default(), None, None));
     }
 
     #[test]
@@ -1209,11 +1381,14 @@ mod tests {
         assert_eq!(graph.portals.len(), 2);
         // The doorway is the local X-Z rectangle in Creation axes: runtime X by runtime Y.
         let portal = &graph.portals[0];
-        assert_eq!(portal.rooms, [Some(0), Some(1)]);
+        assert_eq!(portal.rooms, [PortalSide::Room(0), PortalSide::Room(1)]);
         assert!(portal.corners[0].distance(Vec3::new(196.0, 44.0, -200.0)) < 1.0e-3);
         assert!(portal.corners[2].distance(Vec3::new(204.0, 56.0, -200.0)) < 1.0e-3);
         // A missing side stays missing.
-        assert_eq!(graph.portals[1].rooms, [Some(0), None]);
+        assert_eq!(
+            graph.portals[1].rooms,
+            [PortalSide::Room(0), PortalSide::Unknown]
+        );
         // Links outside the cell, or to a non-room, are dropped; the one from another cell too.
         assert_eq!(graph.links, vec![(0, 1)]);
         // The other cell's reference is not in this cell's membership.
@@ -1248,7 +1423,7 @@ mod tests {
                 center + Vec3::new(half, half, 0.0),
                 center + Vec3::new(-half, half, 0.0),
             ],
-            rooms: [Some(rooms[0]), Some(rooms[1])],
+            rooms: [PortalSide::Room(rooms[0]), PortalSide::Room(rooms[1])],
         }
     }
 
@@ -1262,7 +1437,7 @@ mod tests {
                 center + Vec3::new(0.0, half, half),
                 center + Vec3::new(0.0, half, -half),
             ],
-            rooms: [Some(rooms[0]), Some(rooms[1])],
+            rooms: [PortalSide::Room(rooms[0]), PortalSide::Room(rooms[1])],
         }
     }
 
@@ -1316,6 +1491,7 @@ mod tests {
             links: vec![],
             overlaps: vec![],
             membership: HashMap::new(),
+            supports_unbounded: false,
         }
     }
 
@@ -1383,7 +1559,7 @@ mod tests {
     fn a_reached_room_with_an_unresolved_portal_side_draws_the_whole_cell() {
         let mut graph = chain(doorway(11, Vec3::new(0.0, 0.0, -30.0), 3.0, [1, 2]));
         let mut unresolved = doorway(12, Vec3::new(0.0, 0.0, -20.0), 3.0, [1, 2]);
-        unresolved.rooms[1] = None;
+        unresolved.rooms[1] = PortalSide::Unknown;
         graph.portals.push(unresolved);
         assert!(reached_rooms(&graph, Vec3::ZERO, clip_from_local()).is_none());
     }
@@ -1392,6 +1568,114 @@ mod tests {
     fn a_camera_in_no_room_culls_nothing() {
         let graph = chain(doorway(11, Vec3::new(0.0, 0.0, -30.0), 3.0, [1, 2]));
         assert!(reached_rooms(&graph, Vec3::new(500.0, 0.0, 0.0), clip_from_local()).is_none());
+    }
+
+    fn outside_graph() -> RoomGraph {
+        let mut entrance = doorway(10, Vec3::new(0.0, 0.0, -10.0), 2.0, [0, 0]);
+        entrance.rooms = [PortalSide::Unbounded, PortalSide::Room(0)];
+        let mut offscreen = doorway(11, Vec3::new(40.0, 0.0, -10.0), 2.0, [1, 1]);
+        offscreen.rooms = [PortalSide::Unbounded, PortalSide::Room(1)];
+        RoomGraph {
+            supports_unbounded: true,
+            rooms: vec![
+                room(1, Vec3::new(0.0, 0.0, -20.0), 5.0),
+                room(2, Vec3::new(40.0, 0.0, -20.0), 5.0),
+            ],
+            portals: vec![entrance, offscreen],
+            membership: HashMap::from([
+                (
+                    100,
+                    Membership {
+                        contained: vec![0],
+                        overlapping: vec![],
+                    },
+                ),
+                (
+                    101,
+                    Membership {
+                        contained: vec![1],
+                        overlapping: vec![],
+                    },
+                ),
+                (102, Membership::default()),
+            ]),
+            ..default()
+        }
+    }
+
+    #[test]
+    fn unbounded_start_enters_only_rooms_seen_through_outside_portals() {
+        let graph = outside_graph();
+        let visible = graph
+            .visibility_volumes(Vec3::ZERO, clip_from_local())
+            .unwrap();
+        assert!(visible.unbounded.is_reached());
+        assert!(visible.rooms[0].is_reached());
+        assert!(!visible.rooms[1].is_reached());
+        assert!(graph.mesh_is_drawn(100, &visible, None, None));
+        assert!(!graph.mesh_is_drawn(101, &visible, None, None));
+        assert!(graph.mesh_is_drawn(102, &visible, None, None));
+    }
+
+    #[test]
+    fn a_room_can_see_unbounded_geometry_only_through_its_aperture() {
+        let graph = outside_graph();
+        let eye = Vec3::new(0.0, 0.0, -20.0);
+        let clip = clip_from_local()
+            * Mat4::from_rotation_y(std::f32::consts::PI)
+            * Mat4::from_translation(-eye);
+        let visible = graph.visibility_volumes(eye, clip).unwrap();
+        let bounds_at = |x| {
+            MeshBounds::transformed(
+                &Aabb::from_min_max(-Vec3::splat(0.1), Vec3::splat(0.1)),
+                Affine3A::from_translation(Vec3::new(x, 0.0, 0.0)),
+            )
+            .unwrap()
+        };
+        assert!(visible.unbounded.is_reached());
+        assert!(graph.mesh_is_drawn(102, &visible, Some(&bounds_at(0.0)), None));
+        assert!(!graph.mesh_is_drawn(102, &visible, Some(&bounds_at(8.0)), None));
+        let away = graph
+            .visibility_volumes(eye, clip_from_local() * Mat4::from_translation(-eye))
+            .unwrap();
+        assert!(!away.unbounded.is_reached());
+        assert!(!graph.mesh_is_drawn(102, &away, None, None));
+    }
+
+    #[test]
+    fn portal_sharing_includes_the_unbounded_endpoint_volume() {
+        let graph = outside_graph();
+        let visible = graph
+            .visibility_volumes(Vec3::ZERO, clip_from_local())
+            .unwrap();
+        let aggregate = MeshBounds::transformed(
+            &Aabb::from_min_max(-Vec3::splat(8.0), Vec3::splat(8.0)),
+            Affine3A::from_translation(Vec3::new(0.0, 0.0, -12.0)),
+        )
+        .unwrap();
+        let near_mesh = MeshBounds::transformed(
+            &Aabb::from_min_max(-Vec3::splat(0.1), Vec3::splat(0.1)),
+            Affine3A::from_translation(Vec3::new(4.0, 0.0, -8.0)),
+        )
+        .unwrap();
+        assert!(!graph.mesh_is_drawn(100, &visible, Some(&near_mesh), None));
+        assert!(graph.mesh_is_drawn(100, &visible, Some(&near_mesh), Some(&aggregate)));
+    }
+
+    #[test]
+    fn unknown_endpoints_do_not_become_unbounded_connections() {
+        let mut graph = outside_graph();
+        graph.portals[0].rooms[0] = PortalSide::Unknown;
+        assert!(
+            graph
+                .visibility_volumes(Vec3::ZERO, clip_from_local())
+                .is_none()
+        );
+        assert!(
+            graph
+                .visibility_volumes(Vec3::new(0.0, 0.0, -20.0), clip_from_local())
+                .is_none()
+        );
     }
 
     /// The start rule (analysis-1112): a camera in a room that has no `PortalMarker` of the cell
@@ -1485,26 +1769,40 @@ mod tests {
         );
         let reached = visibility_for_rooms(&[true, false, false]);
         assert!(
-            graph.mesh_is_drawn(100, &reached, None),
+            graph.mesh_is_drawn(100, &reached, None, None),
             "overlaps a reached room"
         );
+        let aggregate = MeshBounds::transformed(
+            &Aabb::from_min_max(-Vec3::splat(45.0), Vec3::splat(45.0)),
+            Affine3A::from_translation(Vec3::new(0.0, 0.0, -40.0)),
+        )
+        .unwrap();
+        let near_mesh = MeshBounds::transformed(
+            &Aabb::from_min_max(-Vec3::splat(0.1), Vec3::splat(0.1)),
+            Affine3A::from_translation(Vec3::new(0.0, 0.0, -5.0)),
+        )
+        .unwrap();
         assert!(
-            !graph.mesh_is_drawn(101, &reached, None),
+            graph.mesh_is_drawn(100, &reached, Some(&near_mesh), Some(&aggregate)),
+            "a conservative portal overlap must not discard other visible membership candidates"
+        );
+        assert!(
+            !graph.mesh_is_drawn(101, &reached, None, None),
             "only in an unreached room"
         );
         assert!(
-            graph.mesh_is_drawn(102, &reached, None),
+            graph.mesh_is_drawn(102, &reached, None, None),
             "pivot in no room is drawn"
         );
         assert!(
-            graph.mesh_is_drawn(103, &reached, None),
+            graph.mesh_is_drawn(103, &reached, None, None),
             "pivot in several is drawn"
         );
         assert!(
-            graph.mesh_is_drawn(999, &reached, None),
+            graph.mesh_is_drawn(999, &reached, None, None),
             "not in the graph is drawn"
         );
-        assert!(graph.mesh_is_drawn(101, &visibility_for_rooms(&[true, false, true]), None));
+        assert!(graph.mesh_is_drawn(101, &visibility_for_rooms(&[true, false, true]), None, None));
     }
 
     // --- The system ---------------------------------------------------------------------------
@@ -1543,6 +1841,7 @@ mod tests {
             links: vec![],
             overlaps: vec![],
             membership: HashMap::new(),
+            supports_unbounded: false,
         };
         graph.membership.insert(
             1,
@@ -1623,6 +1922,37 @@ mod tests {
         app.world_mut()
             .run_system_once(cull_room_views)
             .expect("cull_room_views runs");
+    }
+
+    #[test]
+    fn portal_shared_reference_uses_both_endpoint_volumes_for_its_meshes() {
+        let mut scene = scene();
+        {
+            let mut state = scene.app.world_mut().resource_mut::<RoomCullingState>();
+            let graph = &mut state.graphs.get_mut(&7).unwrap().graph;
+            graph.rooms[1].center.z = -20.0;
+            graph.portals[0] = doorway(10, Vec3::new(0.0, 0.0, -10.0), 3.0, [0, 1]);
+        }
+        let reference = scene
+            .app
+            .world()
+            .get::<ChildOf>(scene.far)
+            .unwrap()
+            .parent();
+        scene.app.world_mut().entity_mut(reference).insert((
+            crate::world::components::ExpectedModelBounds::new(-Vec3::splat(8.0), Vec3::splat(8.0))
+                .unwrap(),
+            GlobalTransform::from_translation(Vec3::new(0.0, 0.0, -12.0)),
+        ));
+        scene.app.world_mut().entity_mut(scene.far).insert((
+            Aabb::from_min_max(-Vec3::splat(0.25), Vec3::splat(0.25)),
+            GlobalTransform::from_translation(Vec3::new(4.0, 0.0, -8.0)),
+        ));
+        run_cull(&mut scene.app);
+        assert!(
+            mesh_list(&scene.app, scene.camera).contains(&scene.far),
+            "a portal-shared reference keeps meshes visible from the near endpoint, before the aperture"
+        );
     }
 
     #[test]
@@ -1753,10 +2083,10 @@ mod tests {
         let volumes = graph
             .visibility_volumes(Vec3::ZERO, clip_from_local())
             .unwrap();
-        assert!(graph.mesh_is_drawn(100, &volumes, Some(&bounds_at(-6.0))));
-        assert!(graph.mesh_is_drawn(100, &volumes, Some(&bounds_at(6.0))));
+        assert!(graph.mesh_is_drawn(100, &volumes, Some(&bounds_at(-6.0)), None));
+        assert!(graph.mesh_is_drawn(100, &volumes, Some(&bounds_at(6.0)), None));
         assert!(
-            !graph.mesh_is_drawn(100, &volumes, Some(&bounds_at(0.0))),
+            !graph.mesh_is_drawn(100, &volumes, Some(&bounds_at(0.0)), None),
             "the gap between paths stays hidden"
         );
         graph.links.push((0, 1));
@@ -1764,7 +2094,7 @@ mod tests {
             .visibility_volumes(Vec3::ZERO, clip_from_local())
             .unwrap();
         assert!(
-            graph.mesh_is_drawn(100, &volumes, Some(&bounds_at(0.0))),
+            graph.mesh_is_drawn(100, &volumes, Some(&bounds_at(0.0)), None),
             "an explicit link passes the full starting volume"
         );
     }
@@ -2003,6 +2333,7 @@ mod tests {
             .expect("the camera is in room 1, which carries a portal");
         assert_eq!(
             reached
+                .rooms
                 .iter()
                 .map(RoomVisibility::is_reached)
                 .collect::<Vec<_>>(),
@@ -2011,12 +2342,12 @@ mod tests {
         for reference in &references {
             // The key the engine uses is the delivered form_id; the base id would hit the wrong row.
             assert_eq!(
-                graph.mesh_is_drawn(reference.form_id, &reached, None),
+                graph.mesh_is_drawn(reference.form_id, &reached, None, None),
                 reference.form_id == 500
             );
         }
         assert!(
-            graph.mesh_is_drawn(references[1].base_form_id, &reached, None),
+            graph.mesh_is_drawn(references[1].base_form_id, &reached, None, None),
             "base id 500 would have made reference 501 look like reference 500"
         );
     }
@@ -2073,6 +2404,7 @@ mod tests {
             ))
             .id();
         let graph = RoomGraph {
+            supports_unbounded: false,
             rooms: vec![
                 room(1, Vec3::ZERO, 10.0),
                 room(2, Vec3::new(0.0, 0.0, -20.0), 10.0),
@@ -2393,6 +2725,7 @@ mod tests {
             links: vec![],
             overlaps: vec![],
             membership: HashMap::new(),
+            supports_unbounded: false,
             rooms: rooms.clone(),
         };
         let reached = reached_rooms(&graph, Vec3::ZERO, clip_from_local()).unwrap();
@@ -2516,6 +2849,7 @@ mod tests {
             links: vec![],
             overlaps: overlap_links(&rooms),
             membership: HashMap::new(),
+            supports_unbounded: false,
             rooms,
         }
     }
@@ -2638,6 +2972,7 @@ mod tests {
             links: vec![],
             overlaps: overlap_links(&rooms),
             membership: HashMap::new(),
+            supports_unbounded: false,
         };
         assert_eq!(
             graph.overlaps,
@@ -2682,6 +3017,7 @@ mod tests {
             links: vec![],
             overlaps: overlap_links(&rooms),
             membership: HashMap::new(),
+            supports_unbounded: false,
         };
         assert_eq!(
             graph.overlaps,

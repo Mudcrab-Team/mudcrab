@@ -826,6 +826,14 @@ fn remap_record_form_ids(
                                 record.form_id
                             ),
                         );
+                        // A null portal endpoint means unbounded space. An invalid link must
+                        // remain unknown, so discard this occurrence rather than inventing one.
+                        if record_type == *b"REFR"
+                            && tag.as_slice() == b"XPOD"
+                            && malformed_subrecords.last() != Some(&index)
+                        {
+                            malformed_subrecords.push(index);
+                        }
                         0
                     }
                 };

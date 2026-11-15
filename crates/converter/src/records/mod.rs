@@ -182,6 +182,10 @@ pub struct DecodedRecord {
 }
 
 impl DecodedRecord {
+    pub(crate) fn source_subrecord(&self, signature: &[u8; 4]) -> Option<&[u8]> {
+        decoder::source_subrecord(&self.raw_payload, signature)
+    }
+
     /// Adapt canonical bytes to the established record format, retaining opaque occurrences.
     pub fn to_raw_record(&self) -> RawRecord {
         RawRecord {

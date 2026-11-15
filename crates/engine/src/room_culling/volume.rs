@@ -15,6 +15,26 @@ pub(super) struct MeshBounds {
 }
 
 impl MeshBounds {
+    fn radius(&self, axis: Vec3) -> f32 {
+        self.half_axes
+            .iter()
+            .map(|half| axis.dot(*half).abs())
+            .sum()
+    }
+
+    /// Conservative overlap of the transformed bounds and a portal rectangle. False overlaps
+    /// only add endpoint visibility; they cannot remove a genuinely shared reference.
+    pub(super) fn intersects_portal(&self, corners: &[Vec3; 4]) -> bool {
+        let center = corners.iter().copied().sum::<Vec3>() * 0.25;
+        let u = (corners[1] - corners[0]) * 0.5;
+        let v = (corners[3] - corners[0]) * 0.5;
+        [u, v, u.cross(v)].iter().all(|axis| {
+            let axis = axis.normalize_or_zero();
+            let distance = axis.dot(self.center - center).abs();
+            let radius = self.radius(axis) + axis.dot(u).abs() + axis.dot(v).abs();
+            !distance.is_finite() || !radius.is_finite() || distance <= radius + PLANE_EPSILON
+        })
+    }
     pub(super) fn transformed(bounds: &Aabb, local_from_mesh: Affine3A) -> Option<Self> {
         let center = local_from_mesh.transform_point3(bounds.center.into());
         let half_axes = [
@@ -61,11 +81,7 @@ impl VisibilityVolume {
         self.planes.iter().all(|plane| {
             let normal = plane.truncate();
             let distance = normal.dot(bounds.center) + plane.w;
-            let radius: f32 = bounds
-                .half_axes
-                .iter()
-                .map(|axis| normal.dot(*axis).abs())
-                .sum();
+            let radius = bounds.radius(normal);
             !distance.is_finite() || !radius.is_finite() || distance + radius >= -PLANE_EPSILON
         })
     }

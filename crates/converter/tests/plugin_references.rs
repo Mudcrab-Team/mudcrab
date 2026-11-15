@@ -1877,6 +1877,106 @@ fn a_two_pair_xpod_is_remapped_in_every_pair() {
     );
 }
 
+#[test]
+fn broken_portal_links_do_not_become_authored_outside_endpoints() {
+    for (destination, kept) in [(0u32, true), (0x0900_0802, false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
+        let payload = [0x0100_0801u32.to_le_bytes(), destination.to_le_bytes()].concat();
+        let patch = plugin(
+            dir.path(),
+            "Patch.esm",
+            &["Base.esm"],
+            1,
+            record(b"REFR", 0x0100_0900, 0, sub(b"XPOD", &payload)),
+        );
+        let merged = EsmParser::merge_plugins(&[base, patch]).unwrap();
+        assert_eq!(
+            merged[&0x0100_0900]
+                .subrecords
+                .iter()
+                .any(|(tag, _)| tag.as_slice() == b"XPOD"),
+            kept
+        );
+    }
+}
+
+#[test]
+fn typed_room_export_publishes_outside_only_from_source_nulls() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let mut shape = vec![0; 32];
+    for offset in [0, 4, 8] {
+        shape[offset..offset + 4].copy_from_slice(&100f32.to_le_bytes());
+    }
+    let marker = |id: u32, base: u32, kind: u32, endpoint: Option<u32>| {
+        let mut shape = shape.clone();
+        shape[28..32].copy_from_slice(&kind.to_le_bytes());
+        let mut payload = [
+            sub(b"NAME", &base.to_le_bytes()),
+            sub(b"DATA", &[0; 24]),
+            sub(b"XPRM", &shape),
+        ]
+        .concat();
+        if let Some(endpoint) = endpoint {
+            payload.extend(sub(
+                b"XPOD",
+                &[0x800u32.to_le_bytes(), endpoint.to_le_bytes()].concat(),
+            ));
+        }
+        record(b"REFR", id, 0, payload)
+    };
+    plugin(
+        &data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            group(
+                6,
+                0x900,
+                group(
+                    9,
+                    0x900,
+                    [
+                        marker(0x800, 0x1F, 1, None),
+                        marker(0x801, 0x20, 3, Some(0)),
+                        marker(0x802, 0x20, 3, Some(0x0900_0800)),
+                    ]
+                    .concat(),
+                ),
+            ),
+        ]
+        .concat(),
+    );
+    let order = dir.path().join("plugins.txt");
+    fs::write(&order, "*Skyrim.esm\n").unwrap();
+    let output = dir.path().join("bundle");
+    converter::esm::inhouse::export_record_bundle_typed(&data, &order, &output, &[]).unwrap();
+    let conn = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+    for (id, outside) in [(0x801, true), (0x802, false)] {
+        let actual: (Option<u32>, bool) = conn
+            .query_row(
+                "SELECT room_b,unbounded_b FROM room_portals WHERE ref_id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(actual, (None, outside));
+    }
+    assert_eq!(
+        conn.query_row(
+            "SELECT value FROM room_graph_stats WHERE name='visibility_version'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+}
+
 /// Exterior cells are told apart in the real export by a grid position or a worldspace; markers
 /// in them write no room rows.
 #[test]

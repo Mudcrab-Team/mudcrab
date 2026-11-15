@@ -436,6 +436,20 @@ struct FramedSubrecords<'a> {
     complete: bool,
 }
 
+pub(crate) fn source_subrecord<'a>(payload: &'a [u8], signature: &[u8; 4]) -> Option<&'a [u8]> {
+    let framed = subrecords(payload, &mut PluginDiagnostics::default(), 0);
+    framed
+        .complete
+        .then(|| {
+            framed
+                .fields
+                .into_iter()
+                .find(|(tag, _)| tag == signature)
+                .map(|(_, bytes)| bytes)
+        })
+        .flatten()
+}
+
 /// Frame subrecords with XXXX lengths; an unrecoverable boundary drops only this remainder.
 fn subrecords<'a>(
     payload: &'a [u8],

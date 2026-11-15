@@ -306,6 +306,7 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     // here, and an older-shaped `room_portals` (no `pair_index`) is migrated in place.
     crate::esm::rooms::migrate_room_portals(conn)?;
     conn.execute_batch(crate::esm::rooms::ROOM_TABLES_SQL)?;
+    crate::esm::rooms::migrate_portal_endpoints(conn)?;
     // Typed race animation identity (db-schema.md, actor models). Archive-only snapshots keep
     // the same schema and defer its rows like the other runtime views.
     conn.execute_batch(crate::animation::authoring::RACE_ANIMATION_SOURCES_SQL)?;
@@ -398,6 +399,8 @@ struct ExportOptions {
     runtime_views: bool,
     /// Replace in-house script snapshots using their normalized scalar layout.
     scalar_scripts: bool,
+    /// Source remapping preserves authored nulls; typed canonical nulls need source verification.
+    trusted_portal_nulls: bool,
 }
 
 /// Export selected records without changing existing provenance. Grass records
@@ -415,6 +418,7 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
         ExportOptions {
             runtime_views: true,
             scalar_scripts: false,
+            trusted_portal_nulls: true,
         },
     )
 }
@@ -438,6 +442,7 @@ pub fn export_to_db_with_load_order(
         ExportOptions {
             runtime_views: true,
             scalar_scripts: false,
+            trusted_portal_nulls: true,
         },
     )
 }
@@ -462,6 +467,7 @@ pub(super) fn export_plugins_to_db(
         ExportOptions {
             runtime_views: true,
             scalar_scripts: false,
+            trusted_portal_nulls: true,
         },
     )
 }
@@ -485,6 +491,7 @@ pub(crate) fn export_inhouse_to_db(
         ExportOptions {
             runtime_views: true,
             scalar_scripts: true,
+            trusted_portal_nulls: false,
         },
     )
 }
@@ -507,6 +514,7 @@ pub(crate) fn export_inhouse_record_archive_to_db(
         ExportOptions {
             runtime_views: false,
             scalar_scripts: true,
+            trusted_portal_nulls: false,
         },
     )
 }
@@ -636,6 +644,7 @@ fn export_records(
     let ExportOptions {
         runtime_views,
         scalar_scripts,
+        trusted_portal_nulls,
     } = options;
     conn.set_prepared_statement_cache_capacity(64);
     let tx = conn.unchecked_transaction()?;
@@ -1012,6 +1021,15 @@ fn export_records(
         }
         crate::animation::authoring::replace_race_projection(&tx, authoring)?;
         crate::esm::rooms::export_room_graph(&tx, master, &interior_cells)?;
+        if !trusted_portal_nulls {
+            // Canonical nulls need their source provenance. Keep legacy-safe semantics until
+            // the full in-house source transaction verifies and publishes them.
+            tx.execute("UPDATE room_portals SET unbounded_a=0,unbounded_b=0", [])?;
+            tx.execute(
+                "DELETE FROM room_graph_stats WHERE name='visibility_version'",
+                [],
+            )?;
+        }
         insert_emittance_sources(&tx, master, &mut omissions)?;
         omissions.write(&tx)?;
         omissions.print_summary();
@@ -3125,6 +3143,26 @@ mod tests {
         .unwrap();
         assert_eq!(rooms::RoomGraphReport::read(&conn).unwrap(), expected);
         assert_eq!(rooms_of(&conn, 0x2001), vec![(0x1001, 1)]);
+        let outside: bool = conn
+            .query_row(
+                "SELECT unbounded_b FROM room_portals WHERE ref_id=0x3001",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            !outside,
+            "canonical nulls stay unknown until their source is verified"
+        );
+        assert!(
+            !conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='visibility_version')",
+                    [],
+                    |row| row.get::<_, bool>(0)
+                )
+                .unwrap()
+        );
     }
 
     // ---- Load door links (db-schema.md section 17) ----
@@ -3455,6 +3493,55 @@ mod tests {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap()
+    }
+
+    #[test]
+    fn only_authored_null_endpoints_name_unbounded_space() {
+        let (conn, _) = export_rooms(vec![
+            interior_cell(0x100),
+            room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            portal(0x3001, 0x100, Some((0x1001, 0))),
+            portal(0x3002, 0x100, Some((0x1001, 0x9999))),
+            portal(0x3003, 0x100, None),
+        ]);
+        let flags = |id| {
+            conn.query_row(
+                "SELECT unbounded_a,unbounded_b FROM room_portals WHERE ref_id=?1",
+                [id],
+                |r| Ok((r.get::<_, bool>(0)?, r.get::<_, bool>(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(flags(0x3001), (false, true));
+        assert_eq!(flags(0x3002), (false, false));
+        assert_eq!(flags(0x3003), (false, false));
+        // A typed reader can clear a failed nonzero link. Its original source disambiguates it.
+        let invalid = [word(0x1001), word(0x0900_1234)].concat();
+        rooms::restore_portal_endpoint_provenance(&conn, [(0x3001, Some(invalid.as_slice()))])
+            .unwrap();
+        assert_eq!(flags(0x3001), (false, false));
+        let outside = [word(0x1001), word(0)].concat();
+        rooms::restore_portal_endpoint_provenance(&conn, [(0x3001, Some(outside.as_slice()))])
+            .unwrap();
+        rooms::restore_portal_endpoint_provenance(&conn, [(0x3001, Some(outside.as_slice()))])
+            .unwrap();
+        assert_eq!(flags(0x3001), (false, true));
+    }
+
+    #[test]
+    fn endpoint_migration_keeps_legacy_nulls_unknown() {
+        let conn = old_shape_database();
+        create_tables(&conn).unwrap();
+        create_tables(&conn).unwrap();
+        let flags: (bool, bool) = conn
+            .query_row(
+                "SELECT unbounded_a,unbounded_b FROM room_portals WHERE ref_id=5",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(flags, (false, false));
+        assert_eq!(portal_rows(&conn, 5), vec![(0, None, None)]);
     }
 
     #[test]
