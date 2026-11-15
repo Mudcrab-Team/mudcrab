@@ -710,8 +710,14 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         // Music (`ZNAM`) as well, which the in-house schema remaps too.
         b"NAM2" | b"NAM3" | b"WNAM" | b"CNAM" | b"ZNAM" if record_type == b"WRLD" => Fixed(SINGLE),
         b"RNAM" | b"CNAM" | b"INAM" if record_type == b"NPC_" => Fixed(SINGLE),
-        // NPC Traits links: both are optional FormIDs in the actor schema.
-        b"WNAM" | b"TPLT" if record_type == b"NPC_" => Fixed(SINGLE),
+        // NPC Traits and default outfit are optional FormIDs in the actor schema.
+        // Outfit layouts follow xEdit xedit-4.1.5f's TES5 definitions (OTFT:9964-9967).
+        b"WNAM" | b"TPLT" | b"DOFT" if record_type == b"NPC_" => Fixed(SINGLE),
+        // INAM holds all outfit items; each word resolves independently, including NULLs.
+        b"INAM" if record_type == b"OTFT" => Array {
+            stride: 4,
+            form_ids: &[0],
+        },
         // xEdit 9fb016884bec138ea6c7b872cec831537d464c3e,
         // wbDefinitionsTES5.pas:9463-9468. Match the in-house actors schema.
         b"WKMV" | b"RNMV" | b"SWMV" | b"FLMV" | b"SNMV" | b"SPMV" if record_type == b"RACE" => {

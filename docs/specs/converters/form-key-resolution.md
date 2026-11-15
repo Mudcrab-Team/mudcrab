@@ -32,7 +32,10 @@ target checks. Both readers build
 a source-header catalogue so forward self links survive, while absent past-master
 field targets with no observed source header publish NULL and retain their prior
 source-context diagnostic. This includes primary VMAD objects, GRAS MODS, LAND BTXT/ATXT/VTEX
-and placed-reference NAME in both readers. NAME follows typed field recovery: the
+and placed-reference NAME in both readers. Handwritten NPC default-outfit DOFT and
+OTFT item-array INAM also use this optional-link policy before outfit lookup:
+each item resolves independently and a missing past-master target clears to NULL
+without dropping usable siblings or the containing record. NAME follows typed field recovery: the
 record survives an absent target; malformed NAME framing or unrepresentable required
 packing still rejects the handwritten candidate. Header identities and group labels
 do not require a target header. Deferred replay and lazy history use the same
