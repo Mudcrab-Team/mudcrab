@@ -79,9 +79,9 @@ the shader normalizes them. Missing-normal geometry uses the quantized fallback.
 Batch Z bounds cover the actual selected binary16 roots, including obstruction
 rejections, so packing does not clip high-elevation or extrapolated roots. The
 reference integer edge split can sample just beyond a square's vertex range.
-Workers temporarily stage each retained instance with its four-byte Z until selection
-finishes, then quantize all forms with one cell
-range; diagnostic callbacks receive that same finalized packing. A surface outside the
+Workers temporarily stage each retained instance with the binary16 world-root
+bits in its unpublished Z lane until selection finishes, then quantize all forms
+with one cell range; diagnostic callbacks receive that same finalized packing. A surface outside the
 finite binary16 range is skipped with a warning.
 Staging spare capacity is released before batch publication; the pool charges
 the final instance vector's retained capacity.
