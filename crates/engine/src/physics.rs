@@ -560,6 +560,8 @@ impl Plugin for PlayerControlsPlugin {
                 (
                     cursor_lifecycle_system,
                     apply_teleport_player,
+                    // The latch must settle before the look system reads it in the same update.
+                    sprint_latch_system.run_if(crate::door_crossing::no_door_crossing),
                     look_input_system,
                     noclip_flight_system.run_if(crate::door_crossing::no_door_crossing),
                     // Nothing walks during a door crossing: the landing has no collision yet.
@@ -2117,6 +2119,9 @@ mod walk_tests {
             .insert_resource(SprintLatch::default());
         app.world_mut().spawn((PlayerBody, Transform::default()));
         let sample = |app: &mut App| {
+            app.world_mut()
+                .run_system_once(sprint_latch_system)
+                .unwrap();
             app.world_mut().run_system_once(walk_intent_system).unwrap();
             app.world().resource::<WalkIntent>().target_speed
         };
@@ -3301,11 +3306,13 @@ pub const MOUSE_HEADING_Y_SCALE: f32 = 0.85;
 /// Retail GMST `fLookingSpeed:Camera` (default 0.1; RF-CAM-011; `0x1408fb2e0`).
 pub const LOOKING_SPEED: f32 = 0.1;
 /// Yaw speed (rad/s) of MOVT `0003580D` NPC_Default_MT, the walk and run movement type: the
-/// SPED rotate-in-place and rotate-while-moving values are all pi (RF-CAM-010; yaw at
-/// `0x1407a3fd0`). The registered pack keeps the record bytes, not a parsed column.
+/// SPED rotate-in-place and rotate-while-moving values are all pi (RF-CAM-010, RF-MOVE-003; yaw
+/// at `0x1407a3fd0`). The registered pack keeps the record bytes, not a parsed column.
 pub const ROTATE_SPEED_DEFAULT_MT: f32 = std::f32::consts::PI;
 /// Yaw speed (rad/s) of MOVT `00034D9C` NPC_Sprinting_MT: all three SPED rotate values are pi/2
-/// (RF-CAM-010; yaw at `0x1407a3fd0`).
+/// (RF-MOVE-003, RF-CAM-010; yaw at `0x1407a3fd0`). The registry rates the link from the yaw
+/// factor to the MOVT rotate speed as medium confidence (RF-CAM-010: formula high, factor
+/// source medium).
 pub const ROTATE_SPEED_SPRINTING_MT: f32 = std::f32::consts::FRAC_PI_2;
 /// Standing pitch limit, up and down: +-pi/2 (RF-CAM-012; `0x140693050`). The retail sitting,
 /// mounted and flying limits are not used: the engine has no such states yet.
@@ -3789,6 +3796,34 @@ fn noclip_flight_system(
     );
 }
 
+/// WASD movement input as (strafe, forward-back), each -1, 0 or 1; opposite keys cancel.
+fn movement_keys(keyboard: &ButtonInput<KeyCode>) -> Vec2 {
+    Vec2::new(
+        (keyboard.pressed(KeyCode::KeyD) as i8 - keyboard.pressed(KeyCode::KeyA) as i8) as f32,
+        (keyboard.pressed(KeyCode::KeyS) as i8 - keyboard.pressed(KeyCode::KeyW) as i8) as f32,
+    )
+}
+
+/// Updates the sprint latch. It runs before [`look_input_system`], so the mouse yaw of an
+/// update uses the sprint state of that same update (RF-CAM-010).
+fn sprint_latch_system(
+    mode: Res<MoveMode>,
+    capture: Res<CursorCapture>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut sprint: ResMut<SprintLatch>,
+    player: Query<(), (With<PlayerBody>, Without<StreamingCamera>)>,
+) {
+    if *mode != MoveMode::Walk || *capture != CursorCapture::Captured || player.single().is_err() {
+        sprint.0 = false;
+        return;
+    }
+    if movement_keys(&keyboard) == Vec2::ZERO {
+        sprint.0 = false;
+    } else if keyboard.just_pressed(KeyCode::AltLeft) || keyboard.just_pressed(KeyCode::AltRight) {
+        sprint.0 = !sprint.0;
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // Bevy system parameters are supplied independently.
 fn walk_intent_system(
     mode: Res<MoveMode>,
@@ -3797,33 +3832,23 @@ fn walk_intent_system(
     tuning: Res<MovementTuning>,
     look: Res<LookIntent>,
     mut intent: ResMut<WalkIntent>,
-    mut sprint: ResMut<SprintLatch>,
+    sprint: Res<SprintLatch>,
     mut player: Query<&mut Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
 ) {
     if *mode != MoveMode::Walk || *capture != CursorCapture::Captured {
-        sprint.0 = false;
         return;
     }
     let Ok(mut body) = player.single_mut() else {
-        sprint.0 = false;
         return;
     };
     // Yaw moves body, pitch moves view (V9).
     body.rotation = Quat::from_axis_angle(Vec3::Y, look.yaw);
     let forward = Vec3::new(-look.yaw.sin(), 0.0, -look.yaw.cos());
     let right = Vec3::new(look.yaw.cos(), 0.0, -look.yaw.sin());
-    let strafe = Vec2::new(
-        (keyboard.pressed(KeyCode::KeyD) as i8 - keyboard.pressed(KeyCode::KeyA) as i8) as f32,
-        (keyboard.pressed(KeyCode::KeyS) as i8 - keyboard.pressed(KeyCode::KeyW) as i8) as f32,
-    );
+    let strafe = movement_keys(&keyboard);
     let wish = (right * strafe.x - forward * strafe.y).normalize_or_zero();
     let slow = keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
     let moving = wish.length_squared() > 0.0;
-    if !moving {
-        sprint.0 = false;
-    } else if keyboard.just_pressed(KeyCode::AltLeft) || keyboard.just_pressed(KeyCode::AltRight) {
-        sprint.0 = !sprint.0;
-    }
     intent.wish_dir = wish;
     intent.target_speed = if moving {
         tuning.target_speed(strafe, slow, sprint.0)
@@ -4317,6 +4342,56 @@ mod noclip_tests {
         assert!((sprint.0 + 0.000_392_5).abs() < 1.0e-6);
         assert_eq!(sprint.1, fast.1);
         assert_eq!(turn(1.0 / 60.0, MoveMode::Noclip, true), fast);
+    }
+
+    #[test]
+    fn the_first_update_of_a_sprint_change_uses_that_updates_yaw_rate() {
+        use bevy::input::mouse::MouseMotion;
+        let mut app = App::new();
+        app.add_message::<MouseMotion>()
+            .insert_resource(MoveMode::Walk)
+            .insert_resource(CursorCapture::Captured)
+            .insert_resource(ButtonInput::<KeyCode>::default())
+            .insert_resource(SprintLatch::default())
+            .insert_resource(LookIntent::default())
+            .add_systems(Update, (sprint_latch_system, look_input_system).chain());
+        app.world_mut().spawn((PlayerBody, Transform::default()));
+        let update_with_counts = |app: &mut App| {
+            let before = app.world().resource::<LookIntent>().yaw;
+            app.world_mut().write_message(MouseMotion {
+                delta: Vec2::new(100.0, 0.0),
+            });
+            app.update();
+            before - app.world().resource::<LookIntent>().yaw
+        };
+        // Sprint starts (Alt pressed with W held) in this update: half rate at once.
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::KeyW);
+            keys.press(KeyCode::AltLeft);
+        }
+        let starting = update_with_counts(&mut app);
+        assert!(
+            (starting - 100.0 * 0.000_392_5).abs() < 1.0e-4,
+            "{starting}"
+        );
+        // Sprint continues.
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        let continuing = update_with_counts(&mut app);
+        assert!(
+            (continuing - 100.0 * 0.000_392_5).abs() < 1.0e-4,
+            "{continuing}"
+        );
+        // The last movement key is released in this update: full rate at once.
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear();
+            keys.release(KeyCode::KeyW);
+        }
+        let stopping = update_with_counts(&mut app);
+        assert!((stopping - 100.0 * 0.000_785).abs() < 1.0e-4, "{stopping}");
     }
 
     #[test]
