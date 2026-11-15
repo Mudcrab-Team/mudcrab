@@ -15,7 +15,7 @@ per-record materials or directional snow.
 |---|---|---|
 | A reference's MODS list is applied at its 3D load, and every entry applies. Entries are keyed by 3D Index; index -1 is skipped; a later entry with the same index replaces the earlier one. | RF-TEX-001 | `ObjectMaterialPlugin::apply_swaps` (`by_index`) |
 | 3D Index is a pre-order, depth-first count of the model's geometry leaves in child order. Every geometry counts, whether or not it is swapped. The 3D Name and its `:N` suffix are not read. | RF-TEX-002 | converter `geometry_preorder_indices`; the table keeps the name as record data only |
-| Only shapes with a lighting shader (and grass) property are swapped. Other shapes are skipped but still counted. | RF-TEX-003 | converter `tag_geometry_indices` tags lighting primitives only |
+| Only shapes with a lighting shader property are swapped (the converter has no grass shader family, so grass-shader shapes are not swapped). Other shapes are skipped but still counted. | RF-TEX-003 | converter `tag_geometry_indices` tags lighting primitives only |
 | The new texture set is built from the TXST alone. A slot the TXST leaves empty stays empty; the model's own texture is not kept. The whole set replaces the shape's material set (a shared material is cloned). | RF-TEX-004 | `apply_swaps` derives a material from a clone of the model material |
 | An entry that names the NullTextureSet (FormID 0x28) hides the shape. | RF-TEX-005 | `Plan::Hide` sets `Visibility::Hidden` |
 
