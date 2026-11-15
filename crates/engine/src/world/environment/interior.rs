@@ -1,21 +1,28 @@
-//! Authored interior lighting selection. The sun direction is applied (RF-LIGHT-CPU-004). Every
-//! other resolved value is reported, not applied.
+//! Authored interior lighting selection. The sun direction is applied (RF-LIGHT-CPU-004), and
+//! only for a cell with a local XCLL of 72 bytes or more. Every other resolved value is
+//! reported, not applied. No sky dome or clear colour consumer reads this selection.
 //! See docs/specs/engine/interior-environment.md for evidence and unresolved native semantics.
-//! Sources: q5-interior.md (REA 2026-11-14) and RF-LIGHT-CPU-001 to RF-LIGHT-CPU-009, and
-//! s3-image-space.md.
+//! Sources: q5-interior.md (REA 2026-11-14), RF-LIGHT-CPU-001 to RF-LIGHT-CPU-009,
+//! RF-LIGHT-GPU-001, RF-LIGHT-GPU-003, RF-LIGHT-GPU-006, RF-IMGS-001 and s3-image-space.md.
 
 use super::{DirectionalAmbient, EnvironmentCatalog, Lighting};
 use crate::streaming::{ActiveSpace, creation_to_bevy};
 use bevy::{prelude::*, transform::TransformSystems};
 use std::collections::BTreeMap;
 
+/// A local XCLL block shorter than this is rejected (db-schema.md). The sun direction applies
+/// only with a local block at least this long.
+const MIN_XCLL_SIZE: u32 = 72;
+
 const SHOW_SKY: u32 = 0x80;
 const USE_SKY_LIGHTING: u32 = 0x100;
 
-/// s3-image-space.md "Cell image space for interiors (XCIM)" (cell getter 0x1402bf340): an
-/// interior without the use-sky-lighting flag, `CELL DATA flags & 0x101 == 0x001`, takes its
-/// image space from the cell's XCIM. The same getter returns form 0x167 `DefaultImageSpace`
-/// when XCIM is absent.
+/// RF-IMGS-001 (high for the getter, `0x1402bf340`; s3-image-space.md "Cell image space for
+/// interiors (XCIM)"): an interior without the use-sky-lighting flag,
+/// `CELL DATA flags & 0x101 == 0x001`, takes its image space from the cell extra `0x56` (XCIM).
+/// The same getter returns form 0x167 `DefaultImageSpace` when XCIM is absent. Otherwise the
+/// weather block applies. RF-IMGS-001 also names a reference image space override (extra
+/// `0x77`, 3 s smoothstep blend, medium). That override is not implemented here.
 const IMAGE_SPACE_FLAGS_MASK: u32 = 0x101;
 const IMAGE_SPACE_FLAGS_INTERIOR_OWN: u32 = 0x001;
 const DEFAULT_IMAGE_SPACE_FORM: u32 = 0x167;
@@ -41,8 +48,8 @@ pub struct ImageSpaceSelection {
 }
 
 impl ImageSpaceSelection {
-    /// s3-image-space.md "Cell image space for interiors (XCIM)". `xcim` is `None` when the
-    /// database has no value for the cell, `Some(None)` when the cell has no XCIM. Missing data
+    /// RF-IMGS-001 (s3-image-space.md "Cell image space for interiors (XCIM)"). `xcim` is `None`
+    /// when the database has no value for the cell, `Some(None)` when the cell has no XCIM. Missing data
     /// returns `None`: no source is invented.
     fn for_interior(cell_flags: Option<u32>, xcim: Option<Option<u32>>) -> Option<Self> {
         let flags = cell_flags?;
@@ -94,14 +101,18 @@ fn unit_rgb(bytes: [u8; 3]) -> [f32; 3] {
 }
 
 /// The ambient cube the retail Sky update builds from the six DALC colours (RF-LIGHT-CPU-002,
-/// function 0x1414ec3b0, evaluated at 0x1414ec730). Per channel, with c[0..5] the six colours in
+/// function 0x1414ec3b0, evaluated at 0x1414ec730). RF-LIGHT-GPU-001 (high): this DALC cube is
+/// the only ambient input of the retail Lighting shader, `DirectionalAmbient (cb2[11..13]) . (N,1)`
+/// per channel with no clamp. Per channel, with c[0..5] the six colours in
 /// record order (bytes x 1/255):
 /// `mean = (c0+c1+c2+c3+c4+c5)/6`, `half_difference_x = (c1-c0)/2`,
 /// `half_difference_y = (c3-c2)/2`, `half_difference_z = (c5-c4)/2`.
 /// The specular colour passes through (x 1/255). `scale = max(DALC scale, 1.0)`.
-/// Confidence: high. The sign is settled by s3-image-space.md Q-B: record order, no negation, no
-/// clamp; a +X normal leans to record colour 1, +Y to colour 3, +Z to colour 5 (xEdit labels X-,
-/// Y-, Z- ... record colour 0 lights the -X face). This value is reported only. No ambient light
+/// Confidence: high. Face mapping (RF-LIGHT-GPU-003, high arithmetic, medium-high world space):
+/// record order, no negation, no clamp; a +X normal leans to record colour 1, +Y to colour 3,
+/// +Z to colour 5 (xEdit "X-" is record colour 1's face label; xEdit "X+" is light travelling
+/// toward +X). Registry row RF-LIGHT-CPU-002 still says "sign unverified"; RF-LIGHT-GPU-003
+/// settles it. This value is reported only. No ambient light
 /// or shader reads it here.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub struct AmbientCube {
@@ -137,11 +148,11 @@ impl AmbientCube {
 
     /// `ambient(n) = mean + n.x * half_difference_x + n.y * half_difference_y +
     /// n.z * half_difference_z` per channel (RF-LIGHT-CPU-002, 0x1414ec730).
-    /// Sign: settled by s3-image-space.md Q-B: record order, no negation, no clamp; a +X normal
-    /// leans to record colour 1, +Y to colour 3, +Z to colour 5 (xEdit labels X-, Y-, Z- ...
-    /// record colour 0 lights the -X face). `normal` is the world-space normal (s3-image-space.md
-    /// Q-A and Q-B: the evaluation is in world space, medium-high) in Creation axes. Reported
-    /// only: nothing applies this to `GlobalAmbientLight` or a shader.
+    /// Face mapping (RF-LIGHT-GPU-003): record order, no negation, no clamp; a +X normal leans to
+    /// record colour 1, +Y to colour 3, +Z to colour 5 (xEdit "X+" is light travelling toward
+    /// +X). The cube is the only ambient input of the Lighting shader (RF-LIGHT-GPU-001).
+    /// `normal` is the world-space normal (RF-LIGHT-GPU-003, medium-high) in Creation axes.
+    /// Reported only: nothing applies this to `GlobalAmbientLight` or a shader.
     pub fn ambient_at(&self, normal: Vec3) -> [f32; 3] {
         std::array::from_fn(|channel| {
             self.mean[channel]
@@ -201,6 +212,9 @@ pub fn point_light_fade_factor(q: f32, fade: &LightFade) -> f32 {
 /// light shines along its local X axis (RF-SUN-002 convention). In Creation axes that is
 /// `d = R_z(a) * R_y(b) * (1,0,0) = (cos a cos b, sin a cos b, -sin b)`. The engine's existing
 /// Creation-to-engine mapping, `(x, y, z) -> (x, z, -y)` (`creation_to_bevy`), converts it.
+/// RF-LIGHT-GPU-006 (high): the light travels along the NiLight local X axis, and the shader
+/// constant is `DirLightDirection = -(NiLight +0x140)`. `DirLightColor` is NiLight diffuse x
+/// NiLight fade x IMGS sunlight scale; that colour is not applied here.
 pub(crate) fn interior_sun_direction(rotation_xy_degrees: i32, rotation_z_degrees: i32) -> Vec3 {
     let (sin_a, cos_a) = (rotation_xy_degrees as f32).to_radians().sin_cos();
     let (sin_b, cos_b) = (rotation_z_degrees as f32).to_radians().sin_cos();
@@ -211,10 +225,11 @@ pub(crate) fn interior_sun_direction(rotation_xy_degrees: i32, rotation_z_degree
 #[derive(Component, Debug, Default, Clone, Copy)]
 pub(crate) struct WorldSun;
 
-/// The exterior rotation of the [`WorldSun`], kept while an interior sun direction is applied.
-/// Nothing rewrites the sun's rotation each frame in the exterior, so it is restored from here.
+/// The exterior sun rotation saved while an interior supplies the direction. When the clock sun
+/// system (#588) lands it should write its rotation here while this component exists and skip
+/// the Transform write, so the restore is never stale.
 #[derive(Component, Debug, Clone, Copy)]
-struct ExteriorSunRotation(Quat);
+pub(crate) struct ExteriorSunRotation(Quat);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub(crate) enum LightingSource {
@@ -288,7 +303,7 @@ impl EnvironmentCatalog {
                         (Some(id), Some(_)) => LightingSource::TemplateData(id),
                         _ => LightingSource::MissingTemplate(template_id),
                     }
-                } else if let Some(size) = result.xcll_size.filter(|size| *size < 72) {
+                } else if let Some(size) = result.xcll_size.filter(|size| *size < MIN_XCLL_SIZE) {
                     LightingSource::MalformedCellXcll(size)
                 } else if cell.is_some() {
                     LightingSource::CellXcll
@@ -347,7 +362,8 @@ impl EnvironmentCatalog {
     }
 }
 
-/// One scene selection shared by diagnostics and sky. ActiveSpace owns scene identity.
+/// One scene selection, reported for diagnostics. ActiveSpace owns scene identity. No sky
+/// consumer reads it.
 #[derive(Resource, Debug, Clone, PartialEq, Default, serde::Serialize)]
 pub(crate) struct SceneEnvironment {
     pub interior: Option<InteriorLighting>,
@@ -404,7 +420,7 @@ impl Plugin for InteriorEnvironmentPlugin {
     }
 }
 
-/// Runs after queued PostUpdate door switches, before sky and extraction. It records the
+/// Runs after queued PostUpdate door switches, before transform propagation. It records the
 /// selection only. It writes no Bevy light: the mapping from the other authored values to the
 /// renderer has no Skyrim source yet (#693 to #696). The sun direction is applied separately by
 /// [`apply_interior_sun_direction`].
@@ -428,9 +444,12 @@ fn select_environment(
     }
 }
 
-/// Applies the one sourced interior light value: the sun direction (RF-LIGHT-CPU-004, medium).
-/// It writes the [`WorldSun`] Transform rotation only, and only while the selected interior has
-/// both rotation fields. A missing field changes nothing. Colour, illuminance, cascades and
+/// Applies the one sourced interior light value: the sun direction (RF-LIGHT-CPU-004, medium;
+/// light axis and shader constant per RF-LIGHT-GPU-006). It writes the [`WorldSun`] Transform
+/// rotation only, and only while the selected interior has a local XCLL of at least
+/// [`MIN_XCLL_SIZE`] bytes and both rotation fields. An LTMP-only cell (no XCLL) and a rejected
+/// block (under 72 bytes) leave the sun unchanged: the template-only mask has no retail source
+/// (#695). A missing field changes nothing. Colour, illuminance, cascades and
 /// `GlobalAmbientLight` are never written. Nothing rewrites the sun rotation each frame in the
 /// exterior, so the exterior rotation is saved on the first interior write and restored when
 /// the interior no longer selects a rotation.
@@ -440,6 +459,9 @@ fn apply_interior_sun_direction(
     mut suns: Query<(Entity, &mut Transform, Option<&ExteriorSunRotation>), With<WorldSun>>,
 ) {
     let wanted = scene.interior.as_ref().and_then(|interior| {
+        if interior.xcll_size? < MIN_XCLL_SIZE {
+            return None;
+        }
         let direction = interior_sun_direction(
             interior.lighting.directional_rotation_xy?,
             interior.lighting.directional_rotation_z?,
@@ -1282,6 +1304,57 @@ mod tests {
         let sun = spawn_sun(&mut app, exterior);
         enter(&mut app, Some(10));
         assert!(selected(&app).missing.contains(&"directional_rotation_z"));
+        assert_eq!(
+            app.world().get::<Transform>(sun).unwrap().rotation,
+            exterior
+        );
+        assert!(app.world().get::<ExteriorSunRotation>(sun).is_none());
+    }
+
+    #[test]
+    fn an_ltmp_only_cell_with_a_template_rotation_leaves_the_sun_unchanged() {
+        let exterior = Quat::from_rotation_y(0.4);
+        let mut catalog = fixture();
+        {
+            // No local XCLL and no mask: the cell has only LTMP 20, whose rotation is 180/60.
+            let cell = catalog.cells.get_mut(&10).unwrap();
+            cell.xcll_size = None;
+            cell.inherit_flags = None;
+            cell.lighting = Lighting::default();
+        }
+        let mut app = app(catalog);
+        let sun = spawn_sun(&mut app, exterior);
+        enter(&mut app, Some(10));
+        // The rotation is still reported from the template.
+        assert!(selected(&app).template_only);
+        assert_eq!(selected(&app).lighting.directional_rotation_xy, Some(180));
+        assert_eq!(selected(&app).lighting.directional_rotation_z, Some(60));
+        assert_eq!(
+            app.world().get::<Transform>(sun).unwrap().rotation,
+            exterior
+        );
+        assert!(app.world().get::<ExteriorSunRotation>(sun).is_none());
+    }
+
+    #[test]
+    fn a_rejected_40_byte_xcll_block_leaves_the_sun_unchanged() {
+        let exterior = Quat::from_rotation_y(0.4);
+        let mut catalog = fixture();
+        {
+            // The local rotation fields are present, but the block is under 72 bytes.
+            let cell = catalog.cells.get_mut(&10).unwrap();
+            cell.xcll_size = Some(40);
+            cell.inherit_flags = None;
+        }
+        let mut app = app(catalog);
+        let sun = spawn_sun(&mut app, exterior);
+        enter(&mut app, Some(10));
+        assert_eq!(selected(&app).xcll_size, Some(40));
+        assert_eq!(
+            selected(&app).sources["directional_rotation_xy"],
+            LightingSource::MalformedCellXcll(40)
+        );
+        assert_eq!(selected(&app).lighting.directional_rotation_xy, Some(90));
         assert_eq!(
             app.world().get::<Transform>(sun).unwrap().rotation,
             exterior

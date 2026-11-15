@@ -243,8 +243,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     };
     // Authored lighting, weather, climate and image space, when the database has them (#269).
     // Read only; only the interior sun direction renders from it (RF-LIGHT-CPU-004).
-    // InteriorEnvironmentPlugin resolves the interior selection for diagnostics and sky flags
-    // below. It writes no other light.
+    // InteriorEnvironmentPlugin resolves the interior selection and reports it for diagnostics
+    // below. It writes no other light, and no sky dome or clear colour reads it.
     let environment = runtime_data.as_ref().map(|_| {
         crate::world::environment::EnvironmentCatalog::open(
             &config.assets_dir.join("skyrim_world.db"),

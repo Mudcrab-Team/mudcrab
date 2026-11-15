@@ -5,9 +5,9 @@
 //! optional: a database converted before them, or with a table of another shape, loads an empty
 //! map for that table and the engine keeps its built-in lighting. Only the interior sun direction
 //! renders from this catalog; it is the reader later lighting and sky work consumes (#264).
-//! [`interior`] selects the authored interior lighting for diagnostics and sky flags. It applies
-//! only the sun direction (RF-LIGHT-CPU-004) and reports the rest; exterior weather selection
-//! also remains open.
+//! [`interior`] selects the authored interior lighting and reports it for diagnostics. It applies
+//! only the sun direction (RF-LIGHT-CPU-004) and reports the rest, including Show Sky and Use Sky
+//! Lighting; exterior weather selection also remains open.
 
 pub mod interior;
 
