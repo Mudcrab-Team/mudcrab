@@ -74,6 +74,15 @@ const BOTTOMLESS_PATH: f32 = 1.0e7;
 // reflection colour) reach the screen divided by it. Only the console command `SetFramebufferRange`
 // changes it.
 const FRAMEBUFFER_RANGE: f32 = 1.2;
+// The retail literal of the near-camera distance ratio (RF-SHADER-008, RF-WATER-009).
+const WATER_DISTANCE_LITERAL: f32 = 8192.0;
+// fWaterSSRIntensity:Display, weighting the reflection image the way the retail pixel shader weights
+// its screen-space reflection (RF-WATER-009). 0.5 is this install's Skyrim.ini value; the
+// executable's own default is 1.3. The install value is followed.
+const WATER_SSR_INTENSITY: f32 = 0.5;
+// The main pass's frame flag `w` in `distT = sat(lerp(w, 1, ratio))`. UNVERIFIED (#698); 1 makes
+// `distT` 1 at every distance, as the arithmetic does for any flag up to 4007 units.
+const WATER_FRAME_FLAG: f32 = 1.0;
 
 // How far, in world units, the view ray travels through water before it reaches whatever opaque
 // lies behind this fragment; negative when that is unknown because this view has no bed-depth
@@ -208,11 +217,22 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         vec2<f32>(1.0),
     );
     let reflection_sample = textureSample(water_reflection, water_reflection_sampler, reflection_uv);
+    // distT = sat(lerp(flag, 1, (D - 8192) / (falloff - 8192))), D the eye distance and falloff the
+    // record's noise falloff clamped to [1, 8191] on the CPU (RF-SHADER-007, RF-SHADER-008).
+    let ratio = (length(to_surface) - WATER_DISTANCE_LITERAL) / (water.depth_params.y - WATER_DISTANCE_LITERAL);
+    let dist_t = clamp(mix(WATER_FRAME_FLAG, 1.0, ratio), 0.0, 1.0);
     // refl = lerp(ReflectionColor, env, Reflection Amount) (RF-SHADER-009). Retail multiplies env by
     // FramebufferRange and the result by its inverse, so env passes unchanged and the flat colour is
-    // divided. Where the planar image has no coverage (alpha 0) the environment is that flat colour.
+    // divided. env is the flat colour (standing in for the sky cube map, until one exists) toward
+    // the reflection image, weighted like retail's screen-space reflection:
+    // sat(distT * fWaterSSRIntensity * image alpha). Where the image has no coverage (alpha 0) the
+    // environment is the flat colour.
     let flat_reflection = water.reflection_color.rgb / FRAMEBUFFER_RANGE;
-    let environment = mix(flat_reflection, reflection_sample.rgb, reflection_sample.a);
+    let environment = mix(
+        flat_reflection,
+        reflection_sample.rgb,
+        clamp(dist_t * WATER_SSR_INTENSITY * reflection_sample.a, 0.0, 1.0),
+    );
     let reflection = mix(flat_reflection, environment, water.fresnel_reflectivity.y);
 
     // F = FresnelRI.x + (1 - FresnelRI.x) * (1 - sat(-V.N))^5 (RF-SHADER-008).
@@ -222,13 +242,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     // The retail mix (RF-SHADER-008, RF-SHADER-010):
     //   diffuse = lerp(what lies behind, water, a)        a = body.y
-    //   color   = lerp(diffuse, reflection, m)            m = F * depthReflections
-    // where depthReflections = lerp(1, sat(L / F), DepthControl.x). The weight is taken as F * dR,
-    // the value of the main pass's frame flag being unverified (#698). The first lerp is the alpha
+    //   color   = lerp(diffuse, reflection, m)            m = lerp(1, F * depthReflections, distT)
+    // where depthReflections = lerp(1, sat(L / F), DepthControl.x). The main pass's frame flag is
+    // unverified (#698). The first lerp is the alpha
     // blend with the bed already in the frame, so both lerps become one blend with coverage
     // 1 - (1 - a)(1 - m) and the colour that makes the product match.
     let depth_reflections = water.depth_control.x * (body.x - 1.0) + 1.0;
-    let m = fresnel * depth_reflections * water.fresnel_reflectivity.z;
+    let m = mix(1.0, fresnel * depth_reflections * water.fresnel_reflectivity.z, dist_t);
     let a = body.y;
     // The body colour, lerp(Shallow, Deep, sat(L / F)), divided by FramebufferRange as the retail
     // output is.

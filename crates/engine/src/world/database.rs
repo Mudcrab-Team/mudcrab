@@ -347,6 +347,9 @@ pub struct WaterNoise {
     pub wind_direction: [f32; 3],
     /// `DNAM` `noiseWindSpeedA`: noise-tile repeats per second.
     pub wind_speed: [f32; 3],
+    /// `DNAM` `noiseFalloff` (+0x60), world units: the distance the reflection weight blends over
+    /// (RF-SHADER-008).
+    pub noise_falloff: f32,
 }
 
 /// Byte offsets in a WATR `DNAM` (`docs/research/water.md`, section 1.2).
@@ -356,6 +359,7 @@ const WATER_DNAM_AMPLITUDE: usize = 0xB8;
 const WATER_DNAM_DEPTH_PROPERTIES: usize = 0xD0;
 const WATER_DNAM_WIND_DIRECTION: usize = 0x64;
 const WATER_DNAM_WIND_SPEED: usize = 0x70;
+const WATER_DNAM_NOISE_FALLOFF: usize = 0x60;
 
 /// Skyrim's DefaultWater reflection magnitude (`DNAM` +0xC4, 0.42 in the retail records read for
 /// this PR), used when a water's record cannot be read.
@@ -386,6 +390,7 @@ fn water_noise_from_record(record: &WaterRecord) -> Option<WaterNoise> {
         depth_properties: [depth(0)?, depth(1)?, depth(2)?, depth(3)?],
         wind_direction: triple(WATER_DNAM_WIND_DIRECTION)?,
         wind_speed: triple(WATER_DNAM_WIND_SPEED)?,
+        noise_falloff: dnam_float(&record.dnam, WATER_DNAM_NOISE_FALLOFF)?,
     })
 }
 
@@ -1501,8 +1506,9 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
 pub(crate) mod water_fixtures {
     use super::{
         WATER_DNAM_AMPLITUDE, WATER_DNAM_DEPTH_PROPERTIES, WATER_DNAM_FOG_AMOUNT,
-        WATER_DNAM_FOG_FAR, WATER_DNAM_FOG_NEAR, WATER_DNAM_REFLECTION_MAGNITUDE,
-        WATER_DNAM_UV_SCALE, WATER_DNAM_WIND_DIRECTION, WATER_DNAM_WIND_SPEED, WaterFog,
+        WATER_DNAM_FOG_FAR, WATER_DNAM_FOG_NEAR, WATER_DNAM_NOISE_FALLOFF,
+        WATER_DNAM_REFLECTION_MAGNITUDE, WATER_DNAM_UV_SCALE, WATER_DNAM_WIND_DIRECTION,
+        WATER_DNAM_WIND_SPEED, WaterFog,
     };
 
     /// A WATR record's archived subrecords, with a `DNAM` of `len` bytes holding the given fog at
@@ -1530,6 +1536,7 @@ pub(crate) mod water_fixtures {
         pub reflection_magnitude: f32,
         pub wind_direction: [f32; 3],
         pub wind_speed: [f32; 3],
+        pub noise_falloff: f32,
         pub textures: [&'static str; 3],
     }
 
@@ -1551,6 +1558,7 @@ pub(crate) mod water_fixtures {
             );
         }
         put(WATER_DNAM_REFLECTION_MAGNITUDE, noise.reflection_magnitude);
+        put(WATER_DNAM_NOISE_FALLOFF, noise.noise_falloff);
         for index in 0..3 {
             put(
                 WATER_DNAM_WIND_DIRECTION + 4 * index,
@@ -2691,6 +2699,7 @@ mod tests {
         reflection_magnitude: 0.42,
         wind_direction: [270.0, 210.0, 225.0],
         wind_speed: [0.019, 0.013, 0.096],
+        noise_falloff: 4007.0,
         textures: [
             "Data\\Textures\\Water\\DefaultWater.dds",
             "Data\\Textures\\Water\\DefaultWater.dds",
@@ -2708,6 +2717,7 @@ mod tests {
         assert_eq!(noise.depth_properties, [0.3, 0.95, 0.1, 0.9]);
         assert_eq!(noise.wind_direction, [270.0, 210.0, 225.0]);
         assert_eq!(noise.wind_speed, [0.019, 0.013, 0.096]);
+        assert_eq!(noise.noise_falloff, 4007.0);
         // The record's own Windows path becomes the converted texture.
         let expected = Some("textures/water/defaultwater.ktx2".to_owned());
         assert_eq!(

@@ -59,6 +59,39 @@ pub(crate) const DEFAULT_WAVE_SCALE: f32 = 0.006;
 /// the record's wind speeds.
 pub(crate) const DEFAULT_WAVE_SPEED: f32 = 0.15;
 
+/// DefaultWater's `noiseFalloff` (`DNAM` +0x60), from the retail records read for this PR; used for a
+/// water whose record bytes cannot be read.
+pub(crate) const DEFAULT_WATER_NOISE_FALLOFF: f32 = 4007.0;
+
+/// The weight of the retail near-camera blend of the reflection and the mix (RF-SHADER-008):
+/// `distT = sat(lerp(flag, 1, (D - 8192) / (falloff - 8192)))`, `D` the eye distance, `falloff` the
+/// record's `noiseFalloff` clamped to `[1, 8191]` (RF-SHADER-007). The frame flag `w` of the main
+/// pass is unverified (#698); `1` is the value for which `distT` is `1` at every distance, which is
+/// what the arithmetic also gives for any flag at distances up to 4007 units.
+pub(crate) const WATER_FRAME_FLAG: f32 = 1.0;
+
+/// The retail literal in the `distT` ratio (RF-SHADER-008, RF-WATER-009).
+pub(crate) const WATER_DISTANCE_LITERAL: f32 = 8192.0;
+
+/// `fWaterSSRIntensity:Display`: 0.5 in this install's `Skyrim.ini`; the executable's own default
+/// is 1.3. The install value is followed (RF-WATER-009, `verify-report.md` apply item 1).
+pub(crate) const WATER_SSR_INTENSITY: f32 = 0.5;
+
+/// The retail distance term of the reflection mix (RF-SHADER-008).
+#[cfg(test)]
+pub(crate) fn water_dist_t(eye_distance: f32, noise_falloff: f32, flag: f32) -> f32 {
+    let falloff = noise_falloff.clamp(1.0, 8191.0);
+    let ratio = (eye_distance - WATER_DISTANCE_LITERAL) / (falloff - WATER_DISTANCE_LITERAL);
+    (flag + (1.0 - flag) * ratio).clamp(0.0, 1.0)
+}
+
+/// The share of the sampled reflection image in the environment, as the retail pixel shader weights
+/// its screen-space reflection (RF-WATER-009): `sat(distT * fWaterSSRIntensity * ssr.a)`.
+#[cfg(test)]
+pub(crate) fn water_reflection_share(dist_t: f32, coverage: f32) -> f32 {
+    (dist_t * WATER_SSR_INTENSITY * coverage).clamp(0.0, 1.0)
+}
+
 /// A phase below zero makes the shader run the waves on the frame clock instead of a phase the CPU
 /// uploaded, so an interactive run does not rewrite every water material every frame.
 pub(crate) const ANIMATED_WAVE_PHASE: f32 = -1.0;
@@ -793,6 +826,8 @@ pub struct WaterNoiseValues {
     pub wind_direction: [f32; 3],
     /// Tiles per second (`noiseWindSpeedA`).
     pub wind_speed: [f32; 3],
+    /// World units (`noiseFalloff`, `DNAM` +0x60).
+    pub noise_falloff: f32,
 }
 
 impl WaterNoiseValues {
@@ -804,6 +839,7 @@ impl WaterNoiseValues {
             depth_properties: [0.0; 4],
             wind_direction: [0.0; 3],
             wind_speed: [0.0; 3],
+            noise_falloff: DEFAULT_WATER_NOISE_FALLOFF,
         }
     }
 }
@@ -857,7 +893,8 @@ struct WaterSettings {
     /// x = 1 when a snapshot texture is bound to `bed_depth`, 0 when none is and the body falls
     /// back to its ANAM opacity. It says nothing about whether this frame's depth is valid: a
     /// frame whose resolve was skipped leaves the texture bound but cleared to a negative sentinel,
-    /// which the shader reads as unknown too. yzw unused.
+    /// which the shader reads as unknown too. y = the record's noise falloff, clamped to
+    /// `[1, 8191]` (RF-SHADER-007). zw unused.
     depth_params: Vec4,
     /// xyz = the three noise layers' UV scales in world units per texture tile (WATR DNAM
     /// `uvScaleA`); w = 1 when the noise textures are bound, 0 for a flat surface.
@@ -886,7 +923,7 @@ impl Default for WaterExtension {
                 reflection_color: linear_rgb(water_srgb(DEFAULT_WATER_REFLECTION_COLOR, [1.0; 3])),
                 shallow_color: linear_rgb(water_srgb(DEFAULT_WATER_SHALLOW_COLOR, [1.0; 3])),
                 body: default_water_body(),
-                depth_params: Vec4::ZERO,
+                depth_params: Vec4::new(0.0, DEFAULT_WATER_NOISE_FALLOFF, 0.0, 0.0),
                 noise_uv_scale: Vec4::ZERO,
                 noise_amplitude: Vec4::ZERO,
                 depth_control: Vec4::ZERO,
@@ -949,7 +986,7 @@ impl WaterExtension {
                 reflection_color: linear_rgb(water_srgb(DEFAULT_WATER_REFLECTION_COLOR, [1.0; 3])),
                 shallow_color: linear_rgb(water_srgb(DEFAULT_WATER_SHALLOW_COLOR, [1.0; 3])),
                 body: default_water_body(),
-                depth_params: Vec4::ZERO,
+                depth_params: Vec4::new(0.0, DEFAULT_WATER_NOISE_FALLOFF, 0.0, 0.0),
                 noise_uv_scale: Vec4::ZERO,
                 noise_amplitude: Vec4::ZERO,
                 depth_control: Vec4::ZERO,
@@ -1005,6 +1042,8 @@ impl WaterExtension {
         self.settings.noise_wind_direction = Vec4::new(radians[0], radians[1], radians[2], 0.0);
         let speed = values.wind_speed;
         self.settings.noise_wind_speed = Vec4::new(speed[0], speed[1], speed[2], 0.0);
+        // The retail clamp of the noise falloff (RF-SHADER-007).
+        self.settings.depth_params.y = values.noise_falloff.clamp(1.0, 8191.0);
         let [first, second, third] = textures;
         self.noise_normal_0 = first;
         self.noise_normal_1 = second;
@@ -2519,6 +2558,7 @@ mod tests {
             depth_properties: [0.3, 0.95, 0.1, 0.9],
             wind_direction: [270.0, 210.0, 225.0],
             wind_speed: [0.019, 0.013, 0.096],
+            noise_falloff: 4007.0,
         }
     }
 
@@ -2561,6 +2601,69 @@ mod tests {
         // Fractions wrap at tile edges; a step this small does not cross one for these directions.
         let toward = -(after - before);
         toward.x.atan2(toward.y).to_degrees().rem_euclid(360.0)
+    }
+
+    #[test]
+    fn the_reflection_weight_follows_the_retail_ssr_weighting() {
+        // RF-WATER-009: sat(distT * fWaterSSRIntensity * coverage), 0.5 in this install.
+        assert_eq!(WATER_SSR_INTENSITY, 0.5);
+        assert_eq!(water_reflection_share(1.0, 1.0), 0.5);
+        assert_eq!(water_reflection_share(1.0, 0.0), 0.0);
+        assert_eq!(water_reflection_share(0.5, 1.0), 0.25);
+        // The share never exceeds one, even with the executable's own intensity of 1.3 scaled up.
+        assert_eq!(water_reflection_share(10.0, 1.0), 1.0);
+        // Coverage below one, as at the edge of a mirrored mountain, lowers it in proportion.
+        assert!((water_reflection_share(1.0, 0.4) - 0.2).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn the_distance_term_is_the_retail_one() {
+        // RF-SHADER-008: distT = sat(lerp(flag, 1, (D - 8192) / (falloff - 8192))), the falloff
+        // clamped to [1, 8191]. With the flag at 1 it is 1 everywhere.
+        for distance in [0.0, 100.0, 4000.0, 8192.0, 20000.0] {
+            assert_eq!(water_dist_t(distance, 4007.0, WATER_FRAME_FLAG), 1.0);
+        }
+        // With the flag at 0 the term follows the ratio: 1 up to the falloff (the ratio is above 1
+        // there), and a record whose falloff is outside the range is clamped first.
+        assert_eq!(water_dist_t(4007.0, 4007.0, 0.0), 1.0);
+        assert!(
+            (water_dist_t(6000.0, 4007.0, 0.0) - (6000.0 - 8192.0) / (4007.0 - 8192.0)).abs()
+                < 1.0e-6
+        );
+        assert_eq!(water_dist_t(9000.0, 4007.0, 0.0), 0.0);
+        assert_eq!(water_dist_t(100.0, 0.0, 0.0), water_dist_t(100.0, 1.0, 0.0));
+        assert_eq!(
+            water_dist_t(100.0, 90000.0, 0.0),
+            water_dist_t(100.0, 8191.0, 0.0)
+        );
+        // The noise falloff reaches the shader through the material, clamped as in retail.
+        let flat = |falloff| {
+            WaterExtension::default()
+                .with_noise(
+                    [None, None, None],
+                    WaterNoiseValues {
+                        noise_falloff: falloff,
+                        ..WaterNoiseValues::flat()
+                    },
+                )
+                .settings
+                .depth_params
+                .y
+        };
+        assert_eq!(flat(4007.0), 4007.0);
+        assert_eq!(flat(0.0), 1.0);
+        assert_eq!(flat(50000.0), 8191.0);
+        // The shader holds the same terms.
+        let source = include_str!("shaders/water.wgsl");
+        assert!(source.contains("const WATER_DISTANCE_LITERAL: f32 = 8192.0;"));
+        assert!(source.contains("const WATER_SSR_INTENSITY: f32 = 0.5;"));
+        assert!(source.contains("const WATER_FRAME_FLAG: f32 = 1.0;"));
+        assert!(
+            source.contains("clamp(dist_t * WATER_SSR_INTENSITY * reflection_sample.a, 0.0, 1.0)")
+        );
+        assert!(source.contains(
+            "let m = mix(1.0, fresnel * depth_reflections * water.fresnel_reflectivity.z, dist_t);"
+        ));
     }
 
     #[test]

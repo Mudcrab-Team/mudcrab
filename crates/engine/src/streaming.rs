@@ -5453,6 +5453,7 @@ fn water_material(
                 depth_properties: noise.depth_properties,
                 wind_direction: noise.wind_direction,
                 wind_speed: noise.wind_speed,
+                noise_falloff: noise.noise_falloff,
             },
         );
     }
