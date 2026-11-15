@@ -24,6 +24,7 @@ pub mod progress;
 pub mod reader_diff;
 pub mod records;
 pub mod repair;
+mod reuse;
 pub mod script;
 pub mod streaming_costs;
 pub mod terrain_arrays;
