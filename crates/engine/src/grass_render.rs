@@ -577,7 +577,6 @@ fn update_grass_uniforms(
     mut primitives: Query<(&GlobalTransform, &mut GrassPrimitive)>,
     shots: Option<Res<crate::shots::ShotsRun>>,
     controls: Option<Res<GrassCaptureControls>>,
-    config: Option<Res<crate::config::EngineConfig>>,
     fade: Res<GrassFade>,
     fogs: Query<(), (With<StreamingCamera>, With<bevy::pbr::DistanceFog>)>,
     tuning: Option<Res<crate::grass_tuning::GrassTuningState>>,
@@ -1283,6 +1282,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::asset::RenderAssetUsages;
     use bevy::gltf::GltfPrimitive;
 
     include!("grass_render_alpha_tests.rs");
