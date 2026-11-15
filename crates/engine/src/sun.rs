@@ -356,14 +356,14 @@ mod tests {
 
     /// A pack with a climate but without the sun GMSTs runs the same formula with the retail exe
     /// defaults. Reproduced by hand at A (6.75 h: `riseMid` 7.75 - T/2 with T = 2): `x = 400`,
-    /// `scale = 400 / 400 = 1`, so the toward-sun vector is `(400, 25, 100) / 413.1` in Creation
-    /// space and `(x, z, -y)` = (0.96825, 0.24206, -0.06052) in engine axes.
+    /// `scale = 400 / 400 = 1`, so the toward-sun vector is `(400, 25, 100) / 413.07` in Creation
+    /// space and `(x, z, -y)` = (0.96836, 0.24209, -0.06052) in engine axes.
     #[test]
     fn a_pack_without_the_gmsts_runs_the_exe_default_path() {
         let direction = sun_direction(6.75, CLIMATE, EXE_SUN_DEFAULTS).unwrap();
         let length = (400.0_f32.powi(2) + 25.0_f32.powi(2) + 100.0_f32.powi(2)).sqrt();
         assert!(direction.distance(Vec3::new(400.0, 100.0, -25.0) / length) < 1e-6);
-        assert!(direction.distance(Vec3::new(0.968_25, 0.242_06, -0.060_52)) < 1e-4);
+        assert!(direction.distance(Vec3::new(0.968_36, 0.242_09, -0.060_52)) < 1e-4);
         assert_eq!(SunSettings::resolve([None; 5], [None; 5]), EXE_SUN_DEFAULTS);
         let mut app = App::new();
         app.insert_resource(Time::<()>::default())
