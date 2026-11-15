@@ -181,7 +181,7 @@ scripts/compare_stage_receipts.py <reference>.stages.json <candidate>.stages.jso
 ```
 
 `--game-hour 12` pins the sun for the lighting stages: the default hour is the retail `GameHour`
-(8.0), and the native Riverwood reference captures use noon. Both receipts must use the same hour.
+record (GLOB 0x38, 8.0), and the native Riverwood reference captures use noon. Both receipts must use the same hour.
 
 The script exits 1 when a stage measured on both sides is out of tolerance, when only one side
 measured it, when the poses differ, when a probe's `world_position` or `patch_px` differs (a

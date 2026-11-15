@@ -103,9 +103,9 @@ cannot be combined with a benchmark, `--acceptance-screenshot`, `--auto-fly-spee
 
 ## Game clock and sun direction
 
-`--game-hour <hour>` starts the game clock at a finite hour in `[0,24)` (default 8, the retail `GameHour` global in the pack data). A capture that needs another hour
+`--game-hour <hour>` starts the game clock at a finite hour in `[0,24)` (default 8, the retail `GameHour` record: GLOB 0x38 in the pack data). A capture that needs another hour
 passes it explicitly, for example `--game-hour 12`.
-Ordinary play advances at `--timescale <scale>` game seconds per real second (default 20, the retail `TimeScale` global;
+Ordinary play advances at `--timescale <scale>` game seconds per real second (default 20, the retail `TimeScale` record: GLOB 0x3A;
 0 freezes). Shots, acceptance screenshots, benchmarks (including `--benchmark-only` alone) and matched routes freeze at the launch
 hour regardless of timescale, so streaming duration cannot move shadows between captures.
 The clock advances with Bevy virtual time, which clamps each frame delta to its default maximum
@@ -134,11 +134,15 @@ For the Skyrim.esm values (`fSunXExtreme` 400, `fSunYExtreme` 40, `fSunZExtreme`
 13:00, with a slight north tilt. The light keeps this geometry at night, so it never drops below
 36.7 degrees. The night look comes from the weather's night colours, not from this vector.
 
-The five GMSTs are the sun path itself, not fallbacks (RF-SUN-003). The winning canonical GMST
-records supply them. Optional `[Sky]` keys of the same names in `--ini` files override them
-individually (an engine extension; retail reads only the GMSTs). A pack that lacks any of the five
-values, or a world without a usable climate timing, gets no sun path: the sun keeps the fixed
-rotation it had before the clock drove it. Invalid record/INI fields warn and are ignored.
+The five GMSTs are the sun path itself (RF-SUN-003). The winning canonical GMST records supply
+them. Optional `[Sky]` keys of the same names in `--ini` files override them individually (an
+engine extension; retail reads only the GMSTs). A pack that lacks a GMST uses the retail exe
+default of that setting, so the same formula runs: `fSunXExtreme` 400, `fSunYExtreme` 25,
+`fSunZExtreme` -100, `fSunDirXExtreme` 400, `fSunAlphaTransTime` 2.0 (`rea-20261114/q4-sun.md`;
+data addresses 0x14209E960, 0x14209E978, 0x14209E990, 0x14209E9A8, 0x14209E948 from the PR #214
+research note, not re-traced by REA). A world without a usable climate timing has no sunrise or
+sunset, so no sun path applies and its sun has no authored direction (identity rotation).
+Invalid record/INI fields warn and are ignored.
 `--sun-position` remains a fixed explicit bearing/elevation override. Capture-frame receipts
 include the actual clock and engine-space toward-sun vector.
 

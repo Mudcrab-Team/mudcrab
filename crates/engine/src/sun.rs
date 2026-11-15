@@ -2,15 +2,17 @@
 //!
 //! The sun path is the retail one, traced in SkyrimSE.exe 1.7.104.0 `0x14041bd90` (registry
 //! RF-SUN-001 to RF-SUN-004, `rea-20261114/q4-sun.md`). Every value is read from the pack: the five
-//! sun GMSTs (RF-SUN-003) and the worldspace climate TNAM (RF-SUN-001). Nothing here is a fallback
-//! number. A world without all five settings or without a climate timing gets no sun path, and the
-//! engine keeps its fixed sun rotation (`app::sun_rotation`).
+//! sun GMSTs (RF-SUN-003) and the worldspace climate TNAM (RF-SUN-001). A GMST the pack lacks takes
+//! the retail exe default (`EXE_SUN_DEFAULTS`), so the same retail formula still runs. A world with
+//! no climate timing has no sunrise or sunset: it gets no sun path and `app::sun_rotation` gives its
+//! sun no authored direction (identity rotation).
 
 use crate::{config::EngineConfig, streaming::ActiveSpace, world::environment::EnvironmentCatalog};
 use bevy::prelude::*;
 
-/// Retail `GameHour` global (GLOB 0x38): 8.0 in the registered pack data. It is the default start
-/// hour and the replacement for a non-finite hour.
+/// Retail `GameHour` (GLOB record, form id 0x38, editor id `GameHour`): 8.0 in the registered pack
+/// data. It is the default start hour and the replacement for a non-finite hour. The matching
+/// `TimeScale` record (GLOB 0x3A, editor id `TimeScale`) is 20.0; see `EngineConfig::timescale`.
 pub const RETAIL_GAME_HOUR: f64 = 8.0;
 
 /// GMST names in `SunSettings` order; the same names may be explicitly overridden in `[Sky]` INI
@@ -23,16 +25,23 @@ pub const SUN_KEYS: [&str; 5] = [
     "fSunAlphaTransTime",
 ];
 
-/// The five sun GMSTs, all read from the pack (RF-SUN-003):
+/// The five sun GMSTs, read from the pack (RF-SUN-003):
 /// `[0]` `fSunXExtreme`, the east-west half-span of the sun path (Skyrim.esm 400, GMST 0x12FC9);
 /// `[1]` `fSunYExtreme`, the constant north offset of the path (40, 0x12FCB);
 /// `[2]` `fSunZExtreme`, the vertical component of the light direction (-150, 0x12FCA);
 /// `[3]` `fSunDirXExtreme`, the scale of the horizontal light direction (200, 0x93FA8);
 /// `[4]` `fSunAlphaTransTime`, the fade window in hours around the sunrise and sunset midpoints
-/// (0.5, 0x10FDC3). These are the sun path itself, not fallbacks. The values in the comment are
-/// the Skyrim.esm numbers for reference; the code never uses them.
+/// (0.5, 0x10FDC3). These are the sun path itself. The Skyrim.esm numbers above are for reference;
+/// the code reads the pack and uses `EXE_SUN_DEFAULTS` only for a GMST the pack lacks.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SunSettings(pub [f32; 5]);
+
+/// The retail exe defaults of the five sun settings, used only for a GMST the pack lacks (Skyrim.esm
+/// values win over them; RF-SUN-003, `rea-20261114/q4-sun.md` GMST table). The data addresses are
+/// from the PR #214 research note `skyrim-native-sun-trajectory-20261010` (not re-traced by REA):
+/// `fSunXExtreme` 400 (0x14209E960), `fSunYExtreme` 25 (0x14209E978), `fSunZExtreme` -100
+/// (0x14209E990), `fSunDirXExtreme` 400 (0x14209E9A8), `fSunAlphaTransTime` 2.0 (0x14209E948).
+pub const EXE_SUN_DEFAULTS: SunSettings = SunSettings([400.0, 25.0, -100.0, 400.0, 2.0]);
 
 impl SunSettings {
     /// Validate each setting before accepting it from optional records or INI input.
@@ -47,16 +56,19 @@ impl SunSettings {
             }
     }
 
-    /// Take the pack's values, replace them with validated explicit overrides, and return the
-    /// settings only when all five are present. A missing value is never invented.
-    pub fn resolve(pack: [Option<f32>; 5], overrides: [Option<f32>; 5]) -> Option<Self> {
-        let mut values = [0.0_f32; 5];
+    /// Take each value from a validated explicit override, else the pack's GMST, else the retail
+    /// exe default of that setting (`EXE_SUN_DEFAULTS`).
+    pub fn resolve(pack: [Option<f32>; 5], overrides: [Option<f32>; 5]) -> Self {
+        let mut values = EXE_SUN_DEFAULTS.0;
         for (index, value) in values.iter_mut().enumerate() {
-            *value = overrides[index]
+            if let Some(found) = overrides[index]
                 .filter(|v| Self::valid(index, *v))
-                .or(pack[index].filter(|v| Self::valid(index, *v)))?;
+                .or(pack[index].filter(|v| Self::valid(index, *v)))
+            {
+                *value = found;
+            }
         }
-        Some(Self(values))
+        Self(values)
     }
 }
 
@@ -137,7 +149,7 @@ fn sun_x(day: &SunDay, hour: f64, x_extreme: f64) -> f64 {
 /// travels is `normalize(-(DirX/X) * x, -(DirX/X) * Y, Z)`; this function returns its negation.
 /// The light keeps this geometry at night, so it never drops below the sunrise elevation; the
 /// night look comes from the weather's night colours, not from this vector. `None` when an input
-/// is invalid. A non-finite hour counts as the retail `GameHour` global.
+/// is invalid. A non-finite hour counts as the retail `GameHour` record (GLOB 0x38).
 pub fn sun_direction(hour: f64, timing: SunTiming, settings: SunSettings) -> Option<Vec3> {
     let day = SunDay::new(timing, settings)?;
     let [x_extreme, y_extreme, z_extreme, dir_x_extreme, _] = settings.0.map(f64::from);
@@ -206,8 +218,9 @@ impl GameClock {
 #[derive(Component)]
 pub struct SunLight;
 
-/// Resolve the active world's climate timing and the pack's five GMSTs, then apply explicit INI
-/// keys. `None` means the pack has no complete sun path; the caller keeps the fixed sun rotation.
+/// Resolve the active world's climate timing and the pack's five GMSTs (retail exe defaults for a
+/// missing GMST), then apply explicit INI keys. `None` means the world has no climate timing, so no
+/// sunrise or sunset exists and no sun path applies.
 pub fn world_sun_direction(
     config: &EngineConfig,
     hour: f64,
@@ -216,7 +229,7 @@ pub fn world_sun_direction(
 ) -> Option<Vec3> {
     let catalog = catalog?;
     let timing = catalog.sun_timing(catalog.worldspace_climate(worldspace)?)?;
-    let settings = SunSettings::resolve(catalog.sun_settings(), config.sun_settings_overrides)?;
+    let settings = SunSettings::resolve(catalog.sun_settings(), config.sun_settings_overrides);
     sun_direction(hour, timing, settings)
 }
 
@@ -341,16 +354,37 @@ mod tests {
         );
     }
 
-    /// A pack without the five GMSTs gets no sun path: the spawned rotation stays untouched.
+    /// A pack with a climate but without the sun GMSTs runs the same formula with the retail exe
+    /// defaults. Reproduced by hand at A (6.75 h: `riseMid` 7.75 - T/2 with T = 2): `x = 400`,
+    /// `scale = 400 / 400 = 1`, so the toward-sun vector is `(400, 25, 100) / 413.1` in Creation
+    /// space and `(x, z, -y)` = (0.96825, 0.24206, -0.06052) in engine axes.
     #[test]
-    fn a_pack_without_the_gmsts_leaves_the_sun_alone() {
-        let mut incomplete = ESM_VALUES;
-        incomplete[3] = None;
-        for environment in [
-            None,
-            Some(catalog(incomplete)),
-            Some(EnvironmentCatalog::default()),
-        ] {
+    fn a_pack_without_the_gmsts_runs_the_exe_default_path() {
+        let direction = sun_direction(6.75, CLIMATE, EXE_SUN_DEFAULTS).unwrap();
+        let length = (400.0_f32.powi(2) + 25.0_f32.powi(2) + 100.0_f32.powi(2)).sqrt();
+        assert!(direction.distance(Vec3::new(400.0, 100.0, -25.0) / length) < 1e-6);
+        assert!(direction.distance(Vec3::new(0.968_25, 0.242_06, -0.060_52)) < 1e-4);
+        assert_eq!(SunSettings::resolve([None; 5], [None; 5]), EXE_SUN_DEFAULTS);
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default())
+            .insert_resource(EngineConfig::default())
+            .insert_resource(catalog([None; 5]))
+            .insert_resource(GameClock {
+                hour: 6.75,
+                timescale: 0.0,
+            })
+            .add_systems(Update, update_sun);
+        let light = app.world_mut().spawn((SunLight, Transform::default())).id();
+        app.update();
+        let rotation = app.world().get::<Transform>(light).unwrap().rotation;
+        assert!((rotation * Vec3::Z).distance(direction) < 1e-5);
+    }
+
+    /// A world with no climate timing has no sunrise or sunset: no sun path applies and the sun's
+    /// rotation stays as spawned.
+    #[test]
+    fn a_world_without_a_climate_timing_leaves_the_sun_alone() {
+        for environment in [None, Some(EnvironmentCatalog::default())] {
             let mut app = App::new();
             app.insert_resource(Time::<()>::default())
                 .insert_resource(EngineConfig::default())
@@ -362,7 +396,7 @@ mod tests {
             if let Some(environment) = environment {
                 app.insert_resource(environment);
             }
-            let start = Quat::from_euler(EulerRot::XYZ, -0.8, -0.5, 0.0);
+            let start = Quat::from_rotation_y(0.7);
             let light = app
                 .world_mut()
                 .spawn((SunLight, Transform::from_rotation(start)))
@@ -494,23 +528,22 @@ mod tests {
         }
     }
 
-    /// Pack values and explicit overrides combine; a missing or invalid key leaves no sun path.
+    /// Override beats pack beats exe default; an invalid value is skipped for the next source.
     #[test]
-    fn settings_resolve_only_from_complete_valid_inputs() {
-        assert_eq!(SunSettings::resolve(ESM_VALUES, [None; 5]), Some(ESM));
+    fn settings_resolve_override_then_pack_then_exe_default() {
+        assert_eq!(SunSettings::resolve(ESM_VALUES, [None; 5]), ESM);
         let mut overrides = [None; 5];
         overrides[1] = Some(80.0);
-        assert_eq!(
-            SunSettings::resolve(ESM_VALUES, overrides).unwrap().0[1],
-            80.0
-        );
+        assert_eq!(SunSettings::resolve(ESM_VALUES, overrides).0[1], 80.0);
         let mut missing = ESM_VALUES;
         missing[0] = None;
-        assert_eq!(SunSettings::resolve(missing, [None; 5]), None);
-        assert!(SunSettings::resolve(missing, [Some(400.0), None, None, None, None]).is_some());
+        let resolved = SunSettings::resolve(missing, [None; 5]);
+        assert_eq!(resolved.0[0], EXE_SUN_DEFAULTS.0[0]);
+        assert_eq!(resolved.0[1], 40.0);
         let mut invalid = ESM_VALUES;
         invalid[4] = Some(24.0);
-        assert_eq!(SunSettings::resolve(invalid, [None; 5]), None);
+        let resolved = SunSettings::resolve(invalid, [None; 5]);
+        assert_eq!(resolved.0[4], EXE_SUN_DEFAULTS.0[4]);
     }
 
     /// Malformed input never produces NaN or a degenerate rotation: it gives no direction.

@@ -2358,13 +2358,13 @@ pub(crate) fn sun_shadow_cascades(config: &EngineConfig) -> CascadeShadowConfig 
 
 /// Rotate toward the evaluated sun unless an explicit Creation bearing/elevation overrides it.
 /// Directional lights emit along local -Z, opposite the toward-sun direction. Without an evaluated
-/// sun (a pack without the five sun GMSTs or a climate timing) the sun keeps the fixed rotation it
-/// had before the clock drove it.
+/// sun (a world with no climate timing, so no sunrise or sunset) the sun has no authored direction
+/// and keeps the identity rotation; no direction is invented.
 fn sun_rotation(config: &EngineConfig, direction: Option<Vec3>) -> Quat {
     let Some((azimuth_degrees, elevation_degrees)) = config.sun_position else {
         return match direction {
             Some(direction) => Quat::from_rotation_arc(Vec3::Z, direction),
-            None => Quat::from_euler(EulerRot::XYZ, -0.8, -0.5, 0.0),
+            None => Quat::IDENTITY,
         };
     };
     let azimuth = azimuth_degrees.to_radians();
@@ -4457,13 +4457,10 @@ mod tests {
         );
     }
 
-    /// A pack with no complete sun path keeps the fixed rotation the sun had before the clock.
+    /// A world with no climate timing has no authored sun direction: identity, nothing invented.
     #[test]
-    fn no_evaluated_sun_keeps_the_previous_fixed_rotation() {
-        assert_eq!(
-            sun_rotation(&EngineConfig::default(), None),
-            Quat::from_euler(EulerRot::XYZ, -0.8, -0.5, 0.0)
-        );
+    fn no_evaluated_sun_has_no_authored_direction() {
+        assert_eq!(sun_rotation(&EngineConfig::default(), None), Quat::IDENTITY);
     }
 
     /// The range is the camera's own distance to the far corner of the drawn grid, not the corner's

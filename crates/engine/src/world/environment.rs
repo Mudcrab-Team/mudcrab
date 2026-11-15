@@ -426,7 +426,7 @@ impl EnvironmentCatalog {
     }
 
     /// Winning GMST sun settings in `sun::SUN_KEYS` order. A key the pack lacks stays `None`;
-    /// there is no fallback value (RF-SUN-003).
+    /// `sun::SunSettings::resolve` then uses the retail exe default for it (RF-SUN-003).
     pub fn sun_settings(&self) -> [Option<f32>; 5] {
         self.sun_settings
     }
@@ -492,7 +492,7 @@ fn read_sun_timings(connection: &Connection) -> HashMap<u32, crate::sun::SunTimi
     }
     if invalid > 0 {
         eprintln!(
-            "warning: environment: ignored {invalid} unusable climate sun timings; using fallback for those climates"
+            "warning: environment: ignored {invalid} unusable climate sun timings; those climates get no sun path"
         );
     }
     timings

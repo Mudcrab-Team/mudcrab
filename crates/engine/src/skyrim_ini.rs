@@ -11,7 +11,7 @@
 //!
 //! | Section | Key | Engine setting |
 //! |---|---|---|
-//! | `[Sky]` | `fSunXExtreme`, `fSunYExtreme`, `fSunZExtreme`, `fSunDirXExtreme`, `fSunAlphaTransTime` | explicit sun-path overrides over GMST/fallback values |
+//! | `[Sky]` | `fSunXExtreme`, `fSunYExtreme`, `fSunZExtreme`, `fSunDirXExtreme`, `fSunAlphaTransTime` | explicit sun-path overrides over the pack's GMST (retail exe default for a missing GMST) |
 //! | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2` |
 //! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units |
 //! | `[TerrainManager]` | `fBlockLevel0Distance` | level-4 terrain LOD distance, before the multiplier |

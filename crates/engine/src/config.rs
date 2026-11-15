@@ -91,7 +91,7 @@ pub struct EngineConfig {
     /// for the native Riverwood comparison, passes `--game-hour` explicitly.
     pub game_hour: f64,
     /// Game seconds per real second during ordinary play; zero freezes the clock. The default 20
-    /// is the retail `TimeScale` global (GLOB 0x3A, 20.0).
+    /// is the retail `TimeScale` (GLOB record, form id 0x3A, editor id `TimeScale`): 20.0 in the pack.
     pub timescale: f64,
     /// Explicit `[Sky]` overrides in `sun::SUN_KEYS` order; absent keys retain winning GMST values.
     pub sun_settings_overrides: [Option<f32>; 5],
@@ -241,7 +241,7 @@ impl Default for EngineConfig {
             unload_radius: 3,
             sun_shadow_distance_limit: None,
             sun_position: None,
-            game_hour: crate::sun::RETAIL_GAME_HOUR, // retail GameHour global = 8.0 in the pack data
+            game_hour: crate::sun::RETAIL_GAME_HOUR, // GLOB 0x38 `GameHour` = 8.0 in the pack
             timescale: 20.0,
             sun_settings_overrides: [None; 5],
             terrain_lod: TerrainLodDistances::default(),
@@ -1922,7 +1922,7 @@ mod tests {
     /// Clock options validate finite ranges rather than admitting nonfinite runtime state.
     #[test]
     fn sun_clock_options_validate_hour_and_timescale() {
-        // The default start hour is the retail `GameHour` global; noon must be requested.
+        // The default start hour is the retail `GameHour` record (GLOB 0x38); noon must be requested.
         assert_eq!(run_config(&[]).game_hour, 8.0);
         assert_eq!(run_config(&["--game-hour", "12"]).game_hour, 12.0);
         let config = run_config(&["--game-hour", "9.25", "--timescale", "0"]);
