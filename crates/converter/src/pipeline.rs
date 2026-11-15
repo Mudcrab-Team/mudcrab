@@ -1898,6 +1898,10 @@ fn reusable_manifest(
                             settings.schemas()?.as_ref(),
                             &settings.language,
                         ),
+                        crate::cache::inhouse_adapter13_reader_identity(
+                            settings.schemas()?.as_ref(),
+                            &settings.language,
+                        ),
                     ]
                     .into_iter()
                     .flatten()
@@ -1908,8 +1912,12 @@ fn reusable_manifest(
                     }
                 }
                 if reader == crate::config::RecordReader::Legacy {
-                    if let Some(identity) =
-                        crate::cache::legacy_projection4_reader_identity(&settings.language)
+                    for identity in [
+                        crate::cache::legacy_projection4_reader_identity(&settings.language),
+                        crate::cache::legacy_projection5_reader_identity(&settings.language),
+                    ]
+                    .into_iter()
+                    .flatten()
                     {
                         matched |= crate::cache::retained_configuration_matches_for_reader(
                             &settings, producer, recorded, &identity,
@@ -1977,6 +1985,55 @@ struct ConversionBatch<'a> {
     report: &'a mut PipelineReport,
     progress_tx: &'a Sender<ProgressEvent>,
     cancellation: &'a Cancellation,
+}
+
+/// Converts every `.pex` under `staging/vfs` again, with the normal conversion's script stage.
+///
+/// A metadata rebuild uses it when the source pack's scripts were produced under an older
+/// script ABI. Nothing is reused: no previous manifest, no staged output and no cache entry
+/// can satisfy a script here. The caller owns the manifest's other kinds and later checks the
+/// recorded script source hashes against the new ones.
+pub(crate) async fn convert_staged_scripts(
+    config: &PipelineConfig,
+    staging: &Path,
+    manifest: &mut ConversionManifest,
+    report: &mut PipelineReport,
+    progress_tx: &Sender<ProgressEvent>,
+) -> Result<()> {
+    let vfs = staging.join("vfs");
+    let files = discover(&vfs)?;
+    let source_paths: BTreeMap<PathBuf, PathBuf> = files
+        .iter()
+        .filter(|path| extension(path, &["pex"]))
+        .map(|path| (path.clone(), path.clone()))
+        .collect();
+    let previous = ConversionManifest::default();
+    let mut journal = StagingJournal::open(staging)?;
+    let cancellation = Cancellation::new();
+    let result = ConversionBatch {
+        config,
+        staging,
+        previous: &previous,
+        staged: Arc::new(BTreeMap::new()),
+        journal: &mut journal,
+        manifest,
+        report,
+        progress_tx,
+        cancellation: &cancellation,
+    }
+    .convert_kind(
+        &files,
+        &source_paths,
+        "pex",
+        ProgressStage::Scripts,
+        None,
+        &BTreeSet::new(),
+    )
+    .await;
+    // The journal only resumes an interrupted normal run. A rebuild never resumes.
+    drop(journal);
+    let _ = fs::remove_file(StagingJournal::path_in(staging));
+    result
 }
 
 /// How a worker produced a conversion output.
@@ -6994,9 +7051,11 @@ mod tests {
 
     #[test]
     fn prior_language_bound_combined_proofs_reuse_only_proven_asset_kinds() {
-        for reader in [
-            crate::config::RecordReader::Inhouse,
-            crate::config::RecordReader::Legacy,
+        for (reader, prior) in [
+            (crate::config::RecordReader::Inhouse, 12),
+            (crate::config::RecordReader::Inhouse, 13),
+            (crate::config::RecordReader::Legacy, 4),
+            (crate::config::RecordReader::Legacy, 5),
         ] {
             for language in ["english", "french"] {
                 let directory = tempfile::tempdir().unwrap();
@@ -7010,9 +7069,9 @@ mod tests {
                 let mut identity =
                     crate::esm::inhouse::reader_identity_in_language(reader, language);
                 if reader == crate::config::RecordReader::Inhouse {
-                    identity["adapter_version"] = serde_json::json!(12);
+                    identity["adapter_version"] = serde_json::json!(prior);
                 } else {
-                    identity["projection_version"] = serde_json::json!(4);
+                    identity["projection_version"] = serde_json::json!(prior);
                 }
                 let historical = serde_json::json!({
                     "schema": CONVERTER_SCHEMA_VERSION,
