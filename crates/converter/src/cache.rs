@@ -650,7 +650,7 @@ pub(crate) fn inhouse_adapter13_reader_identity(
 }
 
 /// Historical database identities sharing the current language-bound asset proof contract.
-/// The asset floor advances only when assets change: database-only projection bumps
+/// The floor advances when shared asset settings change: database-only projection bumps
 /// automatically retain every intervening proof, without accepting future identities.
 /// These identities authorize asset settings only, never a database-cache restore.
 pub(crate) fn legacy_asset_reader_identities(

@@ -989,10 +989,10 @@ async fn unknown_output_producer_rebuilds_assets_without_reextracting_unchanged_
     assert_eq!(current.schema_version, CONVERTER_SCHEMA_VERSION);
 }
 
-/// Projection-5 packs rebuild database metadata while retaining exact asset proofs and bytes.
+/// Projection-5/6 packs retain old DDS/NIF proofs while missing PEX proofs rebuild scripts.
 #[tokio::test]
-async fn projection5_pack_rebuilds_metadata_and_keeps_asset_proofs() {
-    for language in ["english", "french"] {
+async fn prior_projection_packs_rebuild_metadata_and_keep_proven_asset_kinds() {
+    for (projection, language) in [(5, "english"), (5, "french"), (6, "english"), (6, "french")] {
         let fixture = Fixture::new(true);
         let mut config = fixture.config(RecordReader::Legacy);
         config.language = language.into();
@@ -1000,7 +1000,7 @@ async fn projection5_pack_rebuilds_metadata_and_keeps_asset_proofs() {
         let expected = asset_bytes(&fixture.output);
         let mut original = manifest(&fixture.output);
         let mut identity = serde_json::json!({
-            "mode": "legacy", "projection_version": 5,
+            "mode": "legacy", "projection_version": projection,
             "language": language, "text_encoding": "windows-1252"
         });
         if language == "french" {
@@ -1029,7 +1029,7 @@ async fn projection5_pack_rebuilds_metadata_and_keeps_asset_proofs() {
         )
         .unwrap();
         let source_hash = hash_file(&fixture.output.join("conversion-manifest.json")).unwrap();
-        let output = fixture.sibling_output("projection6-metadata");
+        let output = fixture.sibling_output("projection7-metadata");
         config.output_dir = output.clone();
         publish_metadata(config.clone(), &fixture.output).await;
         let retained = manifest(&output);
@@ -1037,14 +1037,25 @@ async fn projection5_pack_rebuilds_metadata_and_keeps_asset_proofs() {
             retained.retained_asset_configuration_hash.as_deref(),
             Some(original.configuration_hash.as_str())
         );
-        assert_eq!(
-            retained.asset_configuration_hashes,
-            original.asset_configuration_hashes
+        let mut expected_proofs = original.asset_configuration_hashes.clone();
+        expected_proofs.insert(
+            "pex".into(),
+            crate::cache::asset_configuration_hash_for_schema(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                "pex",
+            )
+            .unwrap(),
         );
+        assert_eq!(retained.asset_configuration_hashes, expected_proofs);
+        let provenance = json_artifact(&output, "metadata-rebuild.json");
+        assert_eq!(provenance["asset_kinds"]["nif"]["action"], "reused");
+        assert_eq!(provenance["asset_kinds"]["dds"]["action"], "reused");
+        assert_eq!(provenance["asset_kinds"]["pex"]["action"], "rebuilt");
         assert_ne!(retained.configuration_hash, original.configuration_hash);
         assert_eq!(
             json_artifact(&output, "record-reader.json")["projection_version"],
-            6
+            7
         );
         assert_eq!(
             json_artifact(&output, "metadata-rebuild.json")["retained_asset_record_reader"],

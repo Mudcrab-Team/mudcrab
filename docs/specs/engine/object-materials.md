@@ -98,7 +98,7 @@ read for this count.
 
 ## Rebuild and verification
 
-The table is additive; world schema stays unchanged. In-house adapter 14 and legacy projection 6
+The table is additive; world schema stays unchanged. In-house adapter 14 and legacy projection 7
 identify the metadata change. `object-texture-swap-geometry-index-v1` enters the mesh output
 contract, so normal conversion invalidates old GLB reuse. Metadata-only rebuilding requires a
 retained mesh configuration proof that matches this contract; a proof from before this contract is
