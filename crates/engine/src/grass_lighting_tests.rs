@@ -130,6 +130,7 @@ fn lighting_fixture_expression(
                         .collect()
                 }
                 M::Abs => a.into_iter().map(f32::abs).collect(),
+                M::Sqrt => a.into_iter().map(f32::sqrt).collect(),
                 M::Normalize => {
                     let length = a.iter().map(|value| value * value).sum::<f32>().sqrt();
                     a.into_iter().map(|value| value / length).collect()
@@ -209,13 +210,24 @@ fn lighting_fixture_block(
                 }
             }
             Statement::Store { pointer, value } => {
-                let wgpu::naga::Expression::LocalVariable(local) = function.expressions[*pointer]
-                else {
-                    panic!("unsupported lighting store destination");
-                };
-                locals[local.index()] = Some(lighting_fixture_expression(
-                    function, *value, arguments, locals, emitted,
-                ));
+                let value =
+                    lighting_fixture_expression(function, *value, arguments, locals, emitted);
+                match function.expressions[*pointer] {
+                    wgpu::naga::Expression::LocalVariable(local) => {
+                        locals[local.index()] = Some(value);
+                    }
+                    wgpu::naga::Expression::AccessIndex { base, index } => {
+                        let wgpu::naga::Expression::LocalVariable(local) =
+                            function.expressions[base]
+                        else {
+                            panic!("unsupported lighting component store base");
+                        };
+                        assert_eq!(value.len(), 1);
+                        locals[local.index()].as_mut().expect("initialized vector")
+                            [index as usize] = value[0];
+                    }
+                    _ => panic!("unsupported lighting store destination"),
+                }
             }
             statement => panic!("unsupported lighting statement: {statement:?}"),
         }
@@ -870,6 +882,7 @@ fn grass_tuning_specular_strength_and_f_bypass() {
 
 /// Evaluate the production decoder with a tilted, asymmetric normal and rotated
 /// frame; unlike a flat normal this distinguishes swapped tangent axes/signs.
+/// Cover full RGB, positive-Z BC5 reconstruction and XY values outside the unit disk.
 #[test]
 fn directional_normal_fixture_uses_authored_axes_and_handedness() {
     let assert_normal = |actual: Vec<f32>, expected: [f32; 3]| {
@@ -888,13 +901,24 @@ fn directional_normal_fixture_uses_authored_axes_and_handedness() {
         vec![0.0, 0.0, -1.0],
         vec![1.0, 0.0, 0.0],
     ];
-    let actual = lighting_fixture_run(&source, &args);
-    let length = 1.16_f32.sqrt();
-    assert_normal(actual, [-0.4 / length, 0.8 / length, -0.6 / length]);
-    let mut mirrored = args.clone();
-    mirrored[3][0] = -1.0;
-    let actual = lighting_fixture_run(&source, &mirrored);
-    assert_normal(actual, [0.4 / length, 0.8 / length, -0.6 / length]);
+    for (bc5, z, length) in [(false, 0.8, 1.16_f32.sqrt()), (true, 0.48_f32.sqrt(), 1.0)] {
+        let source = source.replace("grass.normal_params.z", if bc5 { "1.0" } else { "0.0" });
+        let actual = lighting_fixture_run(&source, &args);
+        assert_normal(actual, [-0.4 / length, z / length, -0.6 / length]);
+        let mut mirrored = args.clone();
+        mirrored[3][0] = -1.0;
+        let actual = lighting_fixture_run(&source, &mirrored);
+        assert_normal(actual, [0.4 / length, z / length, -0.6 / length]);
+        if bc5 {
+            let mut outside_disk = args.clone();
+            outside_disk[0] = vec![1.0, 1.0, 0.9];
+            let length = 2.0_f32.sqrt();
+            assert_normal(
+                lighting_fixture_run(&source, &outside_disk),
+                [1.0 / length, 0.0, -1.0 / length],
+            );
+        }
+    }
 }
 
 #[test]
