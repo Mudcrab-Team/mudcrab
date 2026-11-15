@@ -47,6 +47,8 @@ mod emittance_parity_tests;
 #[cfg(test)]
 mod environment_parity_tests;
 #[cfg(test)]
+mod input_snapshot_recovery_tests;
+#[cfg(test)]
 mod light_details_parity_tests;
 #[cfg(test)]
 mod plugin_table_tests;

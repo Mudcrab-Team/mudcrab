@@ -92,4 +92,17 @@ mod tests {
         let reader = EsmReader::open(&path).unwrap();
         assert_eq!(reader.as_slice().len(), 24);
     }
+
+    /// Windows rejects truncation of source-backed maps; snapshot readers release that coupling.
+    #[test]
+    #[cfg(windows)]
+    fn reader_snapshot_survives_external_truncation() {
+        let mut bytes = vec![0; 24];
+        bytes[..4].copy_from_slice(b"TES4");
+        let (_guard, path) = temp_plugin("mutable.esm", &bytes);
+        let reader = EsmReader::open(&path).unwrap();
+        let truncated = File::options().write(true).open(&path).unwrap().set_len(0);
+        assert!(truncated.is_ok(), "source is still mapped: {truncated:?}");
+        assert_eq!(reader.as_slice(), bytes);
+    }
 }

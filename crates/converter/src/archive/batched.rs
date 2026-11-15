@@ -2993,4 +2993,45 @@ mod tests {
             fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
         }
     }
+
+    /// Windows mutation is safe on the unfixed code: the OS refuses to truncate its mapping.
+    #[test]
+    #[cfg(windows)]
+    fn archive_snapshot_allows_external_truncation_then_rejects_changed_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = fixture(
+            directory.path(),
+            "MutableMod.bsa",
+            &[("scripts/a.pex", b"original")],
+        );
+        let cache = directory.path().join("cache");
+        let attempted = AtomicBool::new(false);
+        let truncated = AtomicBool::new(false);
+        let observer = |event| {
+            if matches!(event, WriterEvent::Sealed) && !attempted.swap(true, Ordering::AcqRel) {
+                let result = File::options()
+                    .write(true)
+                    .open(&archive)
+                    .unwrap()
+                    .set_len(0);
+                truncated.store(result.is_ok(), Ordering::Release);
+            }
+        };
+        let result = extract(
+            &archive,
+            &directory.path().join("vfs"),
+            Path::new("unused"),
+            &cache,
+            None,
+            &options(),
+            None,
+            None,
+            Some(&observer),
+        );
+        assert!(attempted.load(Ordering::Acquire));
+        assert!(truncated.load(Ordering::Acquire), "source is still mapped");
+        let error = result.unwrap_err();
+        assert!(format!("{error:#}").contains("archive inputs changed"));
+        assert!(packs(&cache).is_empty());
+    }
 }

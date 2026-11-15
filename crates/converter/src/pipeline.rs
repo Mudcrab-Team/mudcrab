@@ -14193,4 +14193,73 @@ mod tests {
             .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default()
     }
+
+    /// Truncated mod inputs warn during publication while valid records on both sides survive.
+    #[tokio::test]
+    async fn truncated_input_publishes_usable_record_neighbors() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        let mut bytes = dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+            author: "SnapshotRecoveryFixture",
+            worldspace: "SnapshotRecoveryWorld",
+            cells: &[],
+            model_path: "unused/model.nif",
+            diffuse: "unused/diffuse.dds",
+            normal_texture: "unused/normal.dds",
+        })
+        .unwrap();
+        bytes.extend(dummy_content::esm::texture_set(0x1001, [None; 8]).unwrap());
+        let mut corrupt = vec![0; 24];
+        corrupt[..4].copy_from_slice(b"STAT");
+        corrupt[4..8].copy_from_slice(&5u32.to_le_bytes());
+        corrupt[8..12].copy_from_slice(&0x40000u32.to_le_bytes());
+        corrupt[12..16].copy_from_slice(&0x1002u32.to_le_bytes());
+        corrupt.extend([0, 0, 0, 0, 99]);
+        bytes.extend(corrupt);
+        bytes.extend(dummy_content::esm::texture_set(0x1003, [None; 8]).unwrap());
+        fs::write(data.join("Skyrim.esm"), bytes).unwrap();
+        let archive = data.join("TruncatedMod.bsa");
+        fs::write(&archive, b"BSA\0longer original input").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&archive)
+            .unwrap()
+            .set_len(7)
+            .unwrap();
+        let mut config = cpu_lod_config(&data, &output);
+        config.record_reader = crate::config::RecordReader::Inhouse;
+        config.no_lod = true;
+        let report = run_without_progress(config).await;
+        assert!(!report.complete);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|line| line.contains("TruncatedMod.bsa"))
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|line| line.contains("Skyrim.esm") && line.contains("skipped"))
+        );
+        let manifest = published_manifest(&output);
+        assert!(!manifest.complete);
+        let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+        let neighbors: u32 = conn.query_row(
+            "SELECT count(*) FROM inhouse_source_records WHERE source_form_id IN (4097,4099) AND record_type='TXST'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(neighbors, 2);
+        let corrupt: u32 = conn
+            .query_row(
+                "SELECT count(*) FROM inhouse_source_records WHERE source_form_id=4098",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(corrupt, 0);
+    }
 }

@@ -319,4 +319,81 @@ mod tests {
         payload[..4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(inflate(&payload).is_err());
     }
+
+    /// Source edits report independently of malformed records while captured neighbors survive.
+    #[test]
+    #[cfg(windows)]
+    fn scanner_snapshot_warns_for_source_truncation_and_keeps_neighbors() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("MutableMod.esp");
+        let mut bytes = frame(b"TES4", 0, 0, &[]);
+        bytes.extend(frame(b"STAT", 0x101, 0, b"EDID\x02\x00a\0"));
+        bytes.extend(frame(b"STAT", 0x102, 0x40000, &[0, 0, 0, 0, 99]));
+        bytes.extend(frame(b"STAT", 0x103, 0, b"EDID\x02\x00b\0"));
+        std::fs::write(&path, &bytes).unwrap();
+        let mut diagnostics = PluginDiagnostics::default();
+        let mut ids = Vec::new();
+        let mut truncated = None;
+        scan_plugin(
+            &path,
+            &mut diagnostics,
+            |_| {
+                if truncated.is_none() {
+                    truncated = Some(File::options().write(true).open(&path).unwrap().set_len(0));
+                }
+            },
+            |record, _| ids.push(record.source_form_id),
+        )
+        .unwrap();
+        assert!(truncated.unwrap().is_ok(), "source is still mapped");
+        assert_eq!(ids, [0, 0x101, 0x103]);
+        assert_eq!(diagnostics.skipped_records, 1);
+        assert_eq!(diagnostics.skipped_fields, 0);
+        let warnings = diagnostics.warning_summary_lines("MutableMod.esp");
+        assert!(
+            warnings
+                .iter()
+                .any(|line| line.contains("input changed during conversion"))
+        );
+        assert!(warnings.iter().any(|line| line.contains("MutableMod.esp")));
+    }
+
+    /// Atomic replacement leaves the old mapped inode untouched, so this red test is safe on Unix.
+    #[test]
+    #[cfg(unix)]
+    fn scanner_snapshot_reports_source_replacement_and_keeps_captured_neighbors() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("MutableMod.esp");
+        let replacement = directory.path().join("replacement.esp");
+        let mut bytes = frame(b"TES4", 0, 0, &[]);
+        bytes.extend(frame(b"STAT", 0x201, 0, b"EDID\x02\x00a\0"));
+        bytes.extend(frame(b"STAT", 0x202, 0, b"EDID\x02\x00b\0"));
+        std::fs::write(&path, &bytes).unwrap();
+        std::fs::write(&replacement, b"replacement source").unwrap();
+        let mut diagnostics = PluginDiagnostics::default();
+        let mut ids = Vec::new();
+        let mut replaced = false;
+        scan_plugin(
+            &path,
+            &mut diagnostics,
+            |_| {
+                if !replaced {
+                    std::fs::rename(&replacement, &path).unwrap();
+                    replaced = true;
+                }
+            },
+            |record, _| ids.push(record.source_form_id),
+        )
+        .unwrap();
+        assert!(replaced);
+        assert_eq!(ids, [0, 0x201, 0x202]);
+        assert_eq!(diagnostics.skipped_records, 0);
+        assert_eq!(diagnostics.skipped_fields, 0);
+        let warnings = diagnostics.warning_summary_lines("MutableMod.esp");
+        assert!(
+            warnings
+                .iter()
+                .any(|line| line.contains("input changed during conversion"))
+        );
+    }
 }
