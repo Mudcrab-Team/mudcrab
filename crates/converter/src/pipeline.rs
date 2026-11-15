@@ -6840,11 +6840,13 @@ mod tests {
         );
     }
 
+    /// Database-only legacy revisions preserve combined DDS/PEX proofs in either language.
     #[test]
     fn prior_language_bound_combined_proofs_reuse_only_proven_asset_kinds() {
-        for reader in [
-            crate::config::RecordReader::Inhouse,
-            crate::config::RecordReader::Legacy,
+        for (reader, version) in [
+            (crate::config::RecordReader::Legacy, 5),
+            (crate::config::RecordReader::Legacy, 4),
+            (crate::config::RecordReader::Inhouse, 12),
         ] {
             for language in ["english", "french"] {
                 let directory = tempfile::tempdir().unwrap();
@@ -6858,9 +6860,9 @@ mod tests {
                 let mut identity =
                     crate::esm::inhouse::reader_identity_in_language(reader, language);
                 if reader == crate::config::RecordReader::Inhouse {
-                    identity["adapter_version"] = serde_json::json!(12);
+                    identity["adapter_version"] = serde_json::json!(version);
                 } else {
-                    identity["projection_version"] = serde_json::json!(4);
+                    identity["projection_version"] = serde_json::json!(version);
                 }
                 let historical = serde_json::json!({
                     "schema": CONVERTER_SCHEMA_VERSION,
@@ -6898,7 +6900,7 @@ mod tests {
                     ..Default::default()
                 };
                 let reused = reusable_manifest(&config, manifest.clone()).unwrap();
-                assert_eq!(reused.entries.len(), 2, "{reader:?}/{language}");
+                assert_eq!(reused.entries.len(), 2, "{reader:?}/{version}/{language}");
                 assert_eq!(
                     reused.entries["textures/prior.dds"],
                     manifest.entries["textures/prior.dds"]

@@ -976,3 +976,76 @@ async fn unknown_output_producer_rebuilds_assets_without_reextracting_unchanged_
     assert_eq!(current.archives, recorded.archives);
     assert_eq!(current.schema_version, CONVERTER_SCHEMA_VERSION);
 }
+
+/// Projection-5 packs rebuild database metadata while retaining exact asset proofs and bytes.
+#[tokio::test]
+async fn projection5_pack_rebuilds_metadata_and_keeps_asset_proofs() {
+    for language in ["english", "french"] {
+        let fixture = Fixture::new(true);
+        let mut config = fixture.config(RecordReader::Legacy);
+        config.language = language.into();
+        publish(config.clone()).await;
+        let expected = asset_bytes(&fixture.output);
+        let mut original = manifest(&fixture.output);
+        let mut identity = serde_json::json!({
+            "mode": "legacy", "projection_version": 5,
+            "language": language, "text_encoding": "windows-1252"
+        });
+        if language == "french" {
+            identity["string_table_encoding"] = serde_json::json!("utf-8-or-windows-1252");
+        }
+        let historical = serde_json::json!({
+            "schema": CONVERTER_SCHEMA_VERSION,
+            "texture_etc1s_quality": config.texture_fallback_quality,
+            "texture_uastc_level": config.texture_uastc_level,
+            "texture_zstd_level": config.texture_zstd_level,
+            "texture_encoder": {"mode": "cpu"},
+            "script_abi_version": config.script_abi_version,
+            "record_reader": identity,
+        });
+        original.configuration_hash = hash_bytes(&serde_json::to_vec(&historical).unwrap());
+        // Keep the independent current NIF proof; DDS/PEX must use the old combined proof.
+        original
+            .asset_configuration_hashes
+            .retain(|kind, _| kind == "nif");
+        original
+            .save(&fixture.output.join("conversion-manifest.json"))
+            .unwrap();
+        fs::write(
+            fixture.output.join("record-reader.json"),
+            serde_json::to_vec(&identity).unwrap(),
+        )
+        .unwrap();
+        let source_hash = hash_file(&fixture.output.join("conversion-manifest.json")).unwrap();
+        let output = fixture.sibling_output("projection6-metadata");
+        config.output_dir = output.clone();
+        publish_metadata(config.clone(), &fixture.output).await;
+        let retained = manifest(&output);
+        assert_eq!(
+            retained.retained_asset_configuration_hash.as_deref(),
+            Some(original.configuration_hash.as_str())
+        );
+        assert_eq!(
+            retained.asset_configuration_hashes,
+            original.asset_configuration_hashes
+        );
+        assert_ne!(retained.configuration_hash, original.configuration_hash);
+        assert_eq!(
+            json_artifact(&output, "record-reader.json")["projection_version"],
+            6
+        );
+        assert_eq!(
+            json_artifact(&output, "metadata-rebuild.json")["retained_asset_record_reader"],
+            identity
+        );
+        assert_asset_bytes(&output, &expected);
+        assert_eq!(
+            hash_file(&fixture.output.join("conversion-manifest.json")).unwrap(),
+            source_hash
+        );
+        let warm = publish(config).await;
+        assert_eq!(warm.converted, 1);
+        assert_eq!(warm.cache_hits, 5);
+        assert_asset_bytes(&output, &expected);
+    }
+}

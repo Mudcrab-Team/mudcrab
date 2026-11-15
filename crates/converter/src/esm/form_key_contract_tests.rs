@@ -712,6 +712,8 @@ fn handwritten_special_layouts_clear_and_warn_without_self_notices() {
         (b"REFR", b"NAME", 0x0200_1234u32.to_le_bytes().to_vec()),
         (b"NPC_", b"DOFT", 0x0200_1234u32.to_le_bytes().to_vec()),
         (b"OTFT", b"INAM", 0x0200_1234u32.to_le_bytes().to_vec()),
+        (b"ARMA", b"NAM0", 0x0200_1234u32.to_le_bytes().to_vec()),
+        (b"ARMA", b"NAM1", 0x0200_1234u32.to_le_bytes().to_vec()),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("Base.esm");
