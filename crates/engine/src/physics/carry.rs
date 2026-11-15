@@ -32,26 +32,36 @@
 //!   game units. Lag above 96 units (hard-coded) drops the object. Lag above
 //!   `fZKeyMaxContactDistance` (10) with a touching body more than `fZKeyMaxContactMassRatio` (4)
 //!   times the held mass drops it. Havok metres are 69.99125 units (`RF-UNIT-001`).
-//! - **Hold distance.** The grab distance, at least the player's radius plus 5 units. Retail's
-//!   radius term is not verified (the trace shows `radius * 70 + 5`); Mudcrab uses its capsule
-//!   radius.
+//! - **Hold distance** (`m3-carry-gaps` section 1). The distance from the eye to the pick hit
+//!   point, shortened by any obstacle between them, and at least the player's character-controller
+//!   capsule radius times 69.99125 plus 5 units (the constant 5.0 is at `0x141b5be6c`). Mudcrab's
+//!   nearest-hit pick refuses a grab with an obstacle in front, and its minimum uses the player's
+//!   capsule radius, which is the same term.
 //! - **No throw, `RF-CARRY-007`.** Release removes the spring and applies no impulse; there is no
 //!   throw setting for this path. The object keeps the velocity the spring left it.
 //!
-//! The spring's parameters have Havok `hkpMouseSpringAction` semantics, and the binary passes them
-//! through; the solver internals were not traced. [`spring_step`] is therefore a step-by-step port
-//! of the algorithm in `apply_grab` in spud (<https://github.com/chasmlol/spud>, MIT, commit
-//! `e5f2de4b`, `src/physics/world.cpp`): damp both velocities, take the point velocity, solve the
-//! impulse through the point's effective mass, clamp it per kilogram. It was written from the
-//! project's audit of that source (`docs/research/spud/`), not by copying code, and spud's licence
-//! notice is in `THIRD_PARTY.md`. The contact-mass scan follows spud's too.
+//! [`spring_step`] is the retail Havok mouse-spring solver (`hkpMouseSpringAction::applyAction`
+//! at `0x140b99e20`, once per 1/60 s step; `m3-carry-gaps` section 2, high confidence): multiply
+//! both velocities by 0.75, take the point velocity `v + w x r`, apply at the point the impulse
+//! `J = -K^-1 (0.5 v_p + 0.2 E e / dt)` with `K = I/m + [r]x W [r]x^T`, clamp `|J|` to
+//! `100 * S * m * dt`, and apply nothing if K is singular. It was first written as a step-by-step
+//! port of the algorithm in `apply_grab` in spud (<https://github.com/chasmlol/spud>, MIT, commit
+//! `e5f2de4b`, `src/physics/world.cpp`), from the project's audit of that source
+//! (`docs/research/spud/`) and not by copying code; the trace shows the retail solver does the same
+//! steps, so the two agree. Spud's licence notice stays in `THIRD_PARTY.md`. The contact-mass scan
+//! follows spud's too.
 //!
-//! Not implemented, each with a follow-up (#691): the layer-14 and constraint-type-0xB special
-//! cases of the spring (`RF-CARRY-004`: S and E change), the complex helper
-//! (`fZKeyComplexHelper*`, formula partly traced), the movement block while holding a body above
-//! `fZKeyHeavyWeight` (75 kg; `RF-CARRY-006`: which movement it blocks is unverified), and the
-//! retail held-object collision layer. spud's stand-on drop has no retail source and is not
-//! implemented either.
+//! - **Heavy carry, `RF-CARRY-006`.** Holding a body above `fZKeyHeavyWeight` (75 kg) makes the
+//!   player's "may run" test fail, and every direction's run speed is replaced by its walk speed.
+//!   Sprint was not traced separately; Mudcrab drops it while the block holds, because it builds on
+//!   the run state (derived, unverified).
+//!
+//! Not implemented, each with a follow-up (#691), all medium confidence (`m3-carry-gaps`
+//! sections 3 and 4): the layer-14 (trap) case (S = 0.5, E = 0.1) and the all-contacts constraint
+//! case (S x 0.2, E = 0.1; `RF-CARRY-004`), the complex helper (`fZKeyComplexHelper*`; extra pull
+//! `(1 - m/100) * 2 * (L - 6) / L` toward the target for flagged objects and ragdolls when the lag
+//! L is over 6 units), and the retail held-object collision layer. spud's stand-on drop has no
+//! retail source and is not implemented either.
 //!
 //! Not from retail, and without constants of its own (Mudcrab engineering): the steep-look target
 //! clamp (it reuses the retail radius plus 5), the interrupt rules (WALK end, door crossing,
@@ -123,6 +133,10 @@ pub struct CarryTuning {
     /// retail hold check compares the lag, in units, with the hard-coded constant 96.0 at
     /// `0x14181ab88` (`RF-CARRY-005`).
     pub lag_break: f32,
+    /// `fZKeyHeavyWeight`, kg: holding a body heavier than this makes the "may run" test fail, so
+    /// the run speed is replaced by the walk speed (`RF-CARRY-006`, resolved by the REA-3 note
+    /// `m3-carry-gaps` section 5). Retail executable default 75.
+    pub heavy_weight: f32,
     /// `fZKeyMaxContactDistance`, in units. A lag above this arms the contact-mass rule. Retail
     /// executable default 10.
     pub contact_distance: f32,
@@ -146,6 +160,7 @@ impl Default for CarryTuning {
             max_force_scale_low: 0.2,
             max_force_scale_high: 1.0,
             grab_max_weight: 100.0,
+            heavy_weight: 75.0,
             lag_break: 96.0,
             contact_distance: 10.0,
             contact_mass_ratio: 4.0,
@@ -178,6 +193,12 @@ impl CarryTuning {
     /// per kg) times [`Self::max_force_scale`], in units.
     pub fn max_acceleration_for(&self, mass: f32) -> f32 {
         self.max_force * self.max_force_scale(mass) * UNITS_PER_METRE
+    }
+
+    /// True while holding a body of `held_mass` kg blocks running: a mass above `fZKeyHeavyWeight`
+    /// (`RF-CARRY-006`). The walk intent then uses the walk speed in place of the run speed.
+    pub fn blocks_running(&self, held_mass: f32) -> bool {
+        held_mass.is_finite() && held_mass > self.heavy_weight
     }
 
     /// Closest hold distance from the camera: the player's radius plus 5 units, as in the retail
@@ -230,6 +251,7 @@ impl CarryTuning {
         take("fZKeyMaxForceScaleLow", &mut self.max_force_scale_low);
         take("fZKeyMaxForceScaleHigh", &mut self.max_force_scale_high);
         take("fGrabMaxWeightWalking", &mut self.grab_max_weight);
+        take("fZKeyHeavyWeight", &mut self.heavy_weight);
         take("fZKeyMaxContactDistance", &mut self.contact_distance);
         take("fZKeyMaxContactMassRatio", &mut self.contact_mass_ratio);
         // `fZKeyMaxForceWeightLow` is 0 in the retail executable, and `apply_gmst` skips zero
@@ -377,12 +399,12 @@ pub fn spring_step(
         (target - anchor) * tuning.spring_gain(dt) - point_velocity * tuning.spring_damping;
     let skew_r = skew(r);
     let response = Mat3::IDENTITY * (1.0 / body.mass) - skew_r * body.inv_inertia * skew_r;
+    // Retail applies nothing in a step where K is singular (`m3-carry-gaps` section 2).
     let determinant = response.determinant();
-    let mut impulse = if determinant.is_finite() && determinant != 0.0 {
-        response.inverse() * wanted
-    } else {
-        wanted * body.mass
-    };
+    if !(determinant.is_finite() && determinant != 0.0) {
+        return damped_only;
+    }
+    let mut impulse = response.inverse() * wanted;
     impulse = impulse.clamp_length_max(tuning.max_acceleration_for(body.mass) * body.mass * dt);
     linear += impulse / body.mass;
     angular += body.inv_inertia * r.cross(impulse);
@@ -826,6 +848,7 @@ mod tests {
         // in units with the retail 69.99125 units per metre.
         assert!((tuning.max_acceleration_for(0.0) - 6999.125).abs() < 0.01);
         assert_eq!(tuning.grab_max_weight, 100.0);
+        assert_eq!(tuning.heavy_weight, 75.0);
         assert_eq!(tuning.lag_break, 96.0);
         assert_eq!(tuning.contact_distance, 10.0);
         assert_eq!(tuning.contact_mass_ratio, 4.0);
@@ -940,6 +963,17 @@ mod tests {
             );
             assert_eq!(outcome.impulse, Vec3::ZERO);
         }
+    }
+
+    /// `RF-CARRY-006`: a held mass over `fZKeyHeavyWeight` (75 kg) blocks running.
+    #[test]
+    fn a_held_mass_over_75_kg_blocks_running() {
+        let tuning = CarryTuning::default();
+        assert!(!tuning.blocks_running(74.9));
+        assert!(!tuning.blocks_running(75.0));
+        assert!(tuning.blocks_running(75.1));
+        assert!(tuning.blocks_running(100.0));
+        assert!(!tuning.blocks_running(f32::NAN));
     }
 
     #[test]
@@ -1360,6 +1394,42 @@ mod tests {
             velocity.linear.length() < 60.0,
             "released with {velocity:?}"
         );
+    }
+
+    fn press_w(app: &mut App) {
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::KeyW,
+            logical_key: Key::Character("w".into()),
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        });
+        app.update();
+    }
+
+    /// `RF-CARRY-006`: holding 50 kg leaves the run speed; holding 90 kg (over 75) makes the run
+    /// speed equal the walk speed.
+    #[test]
+    fn a_heavy_hold_walks_and_a_light_hold_runs() {
+        let target_speed = |mass: f32| {
+            let mut app = carry_app();
+            spawn_box_ahead(&mut app, mass, 100.0);
+            frames(&mut app, 2);
+            hold_activate(&mut app);
+            assert!(held(&app).is_some(), "{mass} kg: not held");
+            press_w(&mut app);
+            frames(&mut app, 2);
+            app.world()
+                .resource::<crate::physics::WalkIntent>()
+                .target_speed
+        };
+        let tuning = MovementTuning::default();
+        let walk = tuning.walk_speed;
+        let run = tuning.run_speed;
+        assert!(run > walk);
+        assert!((target_speed(50.0) - run).abs() < 1.0e-3, "light hold");
+        assert!((target_speed(90.0) - walk).abs() < 1.0e-3, "heavy hold");
     }
 
     #[test]

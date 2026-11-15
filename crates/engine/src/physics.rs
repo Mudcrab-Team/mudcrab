@@ -3652,6 +3652,8 @@ fn walk_intent_system(
     mut intent: ResMut<WalkIntent>,
     mut sprint: ResMut<SprintLatch>,
     mut player: Query<&mut Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
+    held: Option<Res<carry::HeldObject>>,
+    carry_tuning: Option<Res<carry::CarryTuning>>,
 ) {
     if *mode != MoveMode::Walk || *capture != CursorCapture::Captured {
         sprint.0 = false;
@@ -3678,8 +3680,15 @@ fn walk_intent_system(
         sprint.0 = !sprint.0;
     }
     intent.wish_dir = wish;
+    // Holding a body over `fZKeyHeavyWeight` makes the run speed equal the walk speed (the same
+    // block as over-encumbrance, `RF-CARRY-006`); sprint builds on the run state, so it goes too.
+    let heavy = held
+        .as_deref()
+        .and_then(|held| held.held)
+        .zip(carry_tuning.as_deref())
+        .is_some_and(|(held, carry)| carry.blocks_running(held.mass));
     intent.target_speed = if moving {
-        tuning.target_speed(strafe, slow, sprint.0)
+        tuning.target_speed(strafe, slow || heavy, sprint.0 && !heavy)
     } else {
         0.0
     };
