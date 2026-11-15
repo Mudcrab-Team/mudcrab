@@ -832,6 +832,8 @@ impl AssetPipeline {
         fs::remove_dir_all(&vfs_dir)?;
         fs::create_dir_all(&vfs_dir)?;
 
+        let mut control_sources = BTreeMap::new();
+
         // Bytes already extracted, so each archive reports progress against the whole run instead
         // of restarting at zero.
         let mut extracted_bytes = 0u64;
@@ -988,6 +990,12 @@ impl AssetPipeline {
                     } else {
                         report.converted += outcome.files.len() as u64;
                     }
+                    crate::controls::record_archive(
+                        &mut control_sources,
+                        &archive_key,
+                        &outcome.files,
+                        &vfs_dir,
+                    );
                     ingestion_journal.record(&archive_key, &outcome.cache_entry)?;
                     manifest.archives.insert(archive_key, outcome.cache_entry);
                 }
@@ -1020,6 +1028,18 @@ impl AssetPipeline {
                 },
             )?;
         }
+        if config.mo2.is_some() {
+            for (relative, source) in &resolved_files {
+                crate::controls::record_loose(&mut control_sources, Path::new(relative), source);
+            }
+        } else {
+            for source in &files {
+                if let Ok(relative) = source.strip_prefix(&config.data_dir) {
+                    crate::controls::record_loose(&mut control_sources, relative, source);
+                }
+            }
+        }
+        crate::controls::publish(staging, control_sources, &mut report)?;
         report.phase_elapsed_ms.insert(
             "archive_ingestion_and_loose_overlay".into(),
             extraction_started.elapsed().as_millis(),
@@ -14198,28 +14218,64 @@ mod tests {
         let path = "interface/controls/pc/controlmap.txt";
         for (name, entries) in [
             ("a.bsa", vec![dummy_content::Entry::new(path, b"earlier")]),
-            ("z.bsa", vec![
-                dummy_content::Entry::new(path, control),
-                dummy_content::Entry::new("interface/controls/pc/keyboard_english.txt", b"0x11\tSynth\xa5\r\n"),
-                dummy_content::Entry::new("interface/controls/pc/gamepad.txt", b"SYNTH_A\t0x1000\r\n"),
-                dummy_content::Entry::new("interface/controls/pc/notes.txt", b"not runtime"),
-            ]),
+            (
+                "z.bsa",
+                vec![
+                    dummy_content::Entry::new("Interface/Controls/PC/ControlMap.TXT", control),
+                    dummy_content::Entry::new(
+                        "interface/controls/pc/keyboard_english.txt",
+                        b"Synth\xa5\t0x11\r\n",
+                    ),
+                    dummy_content::Entry::new(
+                        "interface/controls/pc/gamepad.txt",
+                        b"SYNTH_A\t0x1000\r\n",
+                    ),
+                    dummy_content::Entry::new("interface/controls/pc/notes.txt", b"not runtime"),
+                ],
+            ),
         ] {
-            fs::write(data.join(name), dummy_content::bsa::v105(&entries, dummy_content::bsa::Compression::None).unwrap()).unwrap();
+            fs::write(
+                data.join(name),
+                dummy_content::bsa::v105(&entries, dummy_content::bsa::Compression::None).unwrap(),
+            )
+            .unwrap();
         }
         let config = cpu_lod_config(&data, &output);
         let report = run_without_progress(config.clone()).await;
-        assert!(output.join(path).is_file(), "controlmap must reach published pack");
+        assert!(
+            output.join(path).is_file(),
+            "controlmap must reach published pack"
+        );
         let sanitized = fs::read(output.join(path)).unwrap();
-        assert!(!sanitized.windows(6).any(|bytes| bytes == b"broken"));
-        assert_eq!(sanitized.split(|byte| *byte == b'\n').filter(|line| line.contains(&b'\t')).count(), 4);
+        assert_eq!(sanitized, b"Forward\t0x11\t0xff\t0x0001\t1\t1\t1\t0x1\r\nBack\t0x1f\t0xff\t0x0002\t1\t1\t1\r\n\r\nAccept\t0x1c\t0x00\t0x1000\t1\t0\t1\r\nTween Menu\t0x0f\t0xff\t!0,Pause\t1\t1\t1\r\n");
+        assert_eq!(
+            sanitized
+                .split(|byte| *byte == b'\n')
+                .filter(|line| line.contains(&b'\t'))
+                .count(),
+            4
+        );
         assert!(sanitized.windows(4).any(|bytes| bytes == b"\r\n\r\n"));
-        assert_eq!(fs::read(output.join("interface/controls/pc/keyboard_english.txt")).unwrap(), b"0x11\tSynth\xa5\r\n");
+        assert_eq!(
+            fs::read(output.join("interface/controls/pc/keyboard_english.txt")).unwrap(),
+            b"Synth\xa5\t0x11\r\n"
+        );
         assert!(!output.join("interface/controls/pc/notes.txt").exists());
-        assert_eq!(report.warnings.iter().filter(|warning| warning.contains("controlmap.txt:3")).count(), 1);
-        let provenance: serde_json::Value = serde_json::from_slice(&fs::read(output.join("interface/controls/pc/provenance.json")).unwrap()).unwrap();
+        assert_eq!(
+            report
+                .warnings
+                .iter()
+                .filter(|warning| warning.contains("controlmap.txt:3"))
+                .count(),
+            1
+        );
+        let provenance: serde_json::Value = serde_json::from_slice(
+            &fs::read(output.join("interface/controls/pc/provenance.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(provenance[path]["provider"], "archive:z.bsa");
         assert_eq!(provenance[path]["source_sha256"], hash_bytes(control));
+        assert_eq!(provenance[path]["output_sha256"], hash_bytes(&sanitized));
         assert_eq!(provenance[path]["skipped_lines"], serde_json::json!([3]));
         assert!(!conversion_is_complete(&report));
         let warm = run_without_progress(config.clone()).await;
@@ -14232,8 +14288,14 @@ mod tests {
         let overridden = run_without_progress(config).await;
         assert_eq!(fs::read(output.join(path)).unwrap(), replacement);
         assert!(overridden.warnings.is_empty(), "{:?}", overridden.warnings);
-        let provenance: serde_json::Value = serde_json::from_slice(&fs::read(output.join("interface/controls/pc/provenance.json")).unwrap()).unwrap();
-        assert_eq!(provenance[path]["provider"], "loose:interface/controls/pc/controlmap.txt");
+        let provenance: serde_json::Value = serde_json::from_slice(
+            &fs::read(output.join("interface/controls/pc/provenance.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            provenance[path]["provider"],
+            "loose:interface/controls/pc/controlmap.txt"
+        );
     }
 
     /// Classifies a validation fixture by its output extension.

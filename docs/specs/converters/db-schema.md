@@ -14,6 +14,57 @@ for both frontends. MOD3 is an ARMA model slot, not an ARMO world-model path.
 
 ---
 
+## Optional PC control files
+
+The converter publishes `interface/controls/pc/controlmap.txt`,
+`keyboard_english.txt`, and `gamepad.txt` as optional copied files beside the
+world database. Their presence adds no database tables or required capability;
+older packs without these paths remain readable. This preserves the original
+text contract for future input/menu consumers without a SQL-specific parser.
+
+Both filtered ingestion selections include exactly these three text paths.
+Their recipes are `converter-inputs-v5` and `runtime-english-v5`; earlier
+filtered recipes cannot prove coverage. An all-files inventory still proves
+coverage. Mesh, texture, database and script schema/cache versions stay the same.
+Archives overlay in the existing plugin load order, last provider wins, then
+loose Data files (or the effective MO2 loose winner) override archives. Paths
+match case-insensitively and publish in lowercase.
+
+Rows receive structural validation, preserving binding expressions as opaque
+text for the input layer. Controlmap rows have seven tab-separated fields
+(event, keyboard, mouse, gamepad, three 0/1 remap flags), optionally followed by
+hexadecimal event flags. Consecutive tabs provide alignment; spaces inside
+names and aliases remain meaningful. Keyboard rows contain a key name and hex
+hardware code, optionally a decimal Flash code; gamepad rows contain a name
+and hex hardware code. Alias, alternative and chord binding expressions are
+retained; this pass does not resolve or semantically validate them.
+
+Original bytes, comments (`//`), blank context separators and line endings are
+preserved, including legacy Windows-1252 names and an optional leading UTF-8
+BOM. A malformed physical line is removed entirely, including its newline, so
+it cannot introduce a new context. Each omission warns with the logical path
+and original 1-based line number in the conversion report, making the report
+and manifest incomplete while valid neighboring lines and files still publish.
+An unreadable winning file warns and is omitted. Output I/O failures remain
+errors. An empty or absent optional file is permitted.
+
+`interface/controls/pc/provenance.json` is an object keyed by published logical
+path. Each entry has `provider` (`archive:<relative archive path>` or
+`loose:<logical path>`), `source_sha256` (original bytes), `output_sha256`
+(sanitized bytes), and `skipped_lines` (original 1-based line numbers). Loose
+provider paths describe the effective logical winner, including MO2, rather
+than machine-specific installation paths. The source hash identifies its exact
+content. The sidecar is absent when no control files publish.
+
+A metadata rebuild (`--reuse-assets <source-pack>` into a new output) can add or
+refresh these files: it extracts only the three paths from the existing matched
+plugin archive selection and applies loose overrides, retaining verified
+GLB/KTX2/Luau bytes. Existing metadata restrictions still apply (complete
+compatible source pack, matching plugins, disjoint new output, no MO2 mode).
+An ingestion-only extraction does not publish runtime files. Normal conversion
+also refreshes the files while reusing unrelated compatible assets; a full
+mesh/texture reconversion is unnecessary for this addition.
+
 ## 1. Schema Overview
 
 `skyrim_world.db` is built by `crates/converter` by parsing master files (`Skyrim.esm`) and plugin files (`.esp`/`.esl`). With `PipelineConfig.plugins_file` (CLI `--plugins-file`), the converter reads Windows-1252 selection, keeps the last duplicate entry's position and checkbox, and matches installed filenames case-insensitively. Installed Skyrim, Update, Dawnguard, HearthFires and Dragonborn masters are always active in that fixed order, followed by installed entries of readable `Skyrim.ccc`. `skyrim_ccc_file` (`--skyrim-ccc-file`) overrides the default file beside Data. Only checked player entries load, including mod masters; official and Creation entries keep their implicit positions. An explicit `skyrim_ini_file` (`--skyrim-ini-file`) supplies General `sTestFile1` through `sTestFile10`: listed plugins retain their listed positions even if unchecked, while unlisted entries append by ascending file modification time (filename breaks ties). No ambient user profile is read. Missing entries and optional CCC/INI read errors warn and continue. Plugins with missing, disabled or unusable masters and their transitive dependents are omitted with bounded notices; an empty usable selection gives a clear error.

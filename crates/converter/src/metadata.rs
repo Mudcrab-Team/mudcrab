@@ -2,7 +2,7 @@
 //!
 //! Retained models, textures and scripts are verified against the source package's
 //! manifest, not refreshed from current Data. Data supplies checksum-matched plugins,
-//! LOD settings and terrain diffuse inputs. Use normal conversion after asset changes.
+//! LOD settings, optional PC controls and terrain diffuse inputs. Use normal conversion after asset changes.
 
 use crate::{
     AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage,
@@ -705,6 +705,34 @@ async fn rebuild_into(
     for archive in &archives {
         ArchiveExtractor::extract_lod_settings(archive, &vfs)?;
     }
+    // Reingest only the optional controls; verified meshes/textures/scripts remain retained.
+    let control_paths = crate::controls::PATHS.iter().map(PathBuf::from).collect();
+    let control_scratch = tempfile::tempdir_in(staging.parent().unwrap_or(staging))?;
+    let mut control_sources = BTreeMap::new();
+    for (index, archive) in archives.iter().enumerate() {
+        let root = control_scratch.path().join(index.to_string());
+        match ArchiveExtractor::extract_paths(archive, &root, &control_paths) {
+            Ok(inputs) => {
+                let provider = archive
+                    .strip_prefix(&config.data_dir)
+                    .unwrap_or(archive)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+                    .to_ascii_lowercase();
+                crate::controls::record_archive(&mut control_sources, &provider, &inputs, &root);
+            }
+            Err(error) => report.warnings.push(format!(
+                "{}: control input extraction failed: {error:#}",
+                archive.file_name().unwrap_or_default().to_string_lossy()
+            )),
+        }
+    }
+    for file in &files {
+        if let Ok(relative) = file.strip_prefix(&config.data_dir) {
+            crate::controls::record_loose(&mut control_sources, relative, file);
+        }
+    }
+    crate::controls::publish(staging, control_sources, &mut report)?;
     let loose: Vec<_> = files
         .iter()
         .filter(|path| {

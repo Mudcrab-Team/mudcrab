@@ -819,13 +819,14 @@ fn write_batch(
     Ok(written)
 }
 
+/// Names a pack directory only for the current proven input recipes.
 fn pack_directory(cache: &Path, source_hash: &str, recipe: &str) -> Result<PathBuf> {
     // The same validation as a blob key prevents provenance-controlled paths.
     blob_path(cache, source_hash)?;
     ensure!(
         matches!(
             recipe,
-            "all-v1" | "converter-inputs-v4" | "runtime-english-v4"
+            "all-v1" | "converter-inputs-v5" | "runtime-english-v5"
         ),
         "unknown ingestion recipe"
     );

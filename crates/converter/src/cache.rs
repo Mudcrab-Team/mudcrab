@@ -268,7 +268,7 @@ pub enum IngestionSelection {
     /// Older manifests extracted every archive entry.
     #[default]
     All,
-    /// Runtime mesh/texture/script inputs, LOD settings, and English string banks.
+    /// Runtime mesh/texture/script inputs, LOD settings, English string banks and PC controls.
     RuntimeEnglishV1,
     ConverterInputsV1,
 }

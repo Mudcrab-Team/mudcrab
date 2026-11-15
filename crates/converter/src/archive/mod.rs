@@ -462,11 +462,12 @@ pub struct ArchiveExtractor;
 pub type ArchiveSelection = IngestionSelection;
 
 impl IngestionSelection {
+    /// Versioned input coverage, independent of mesh/texture conversion recipes.
     pub fn recipe(self) -> &'static str {
         match self {
             Self::All => "all-v1",
-            Self::ConverterInputsV1 => "converter-inputs-v4",
-            Self::RuntimeEnglishV1 => "runtime-english-v4",
+            Self::ConverterInputsV1 => "converter-inputs-v5",
+            Self::RuntimeEnglishV1 => "runtime-english-v5",
         }
     }
 
@@ -477,8 +478,8 @@ impl IngestionSelection {
     fn accepts_recipe(self, recipe: &str) -> bool {
         let proven = match recipe {
             "" | "all-v1" => Self::All,
-            "converter-inputs-v4" => Self::ConverterInputsV1,
-            "runtime-english-v4" => Self::RuntimeEnglishV1,
+            "converter-inputs-v5" => Self::ConverterInputsV1,
+            "runtime-english-v5" => Self::RuntimeEnglishV1,
             _ => return false,
         };
         proven.can_satisfy(self)
@@ -958,8 +959,12 @@ pub(crate) fn is_animation_input(path: &Path) -> bool {
     lower.starts_with("meshes/") && lower.ends_with(".hkx")
 }
 
+/// Select converter inputs without broadening unrelated text-file ingestion.
 fn selection_includes(selection: IngestionSelection, path: &Path) -> bool {
     if selection == IngestionSelection::All {
+        return true;
+    }
+    if crate::controls::input_key(path).is_some() {
         return true;
     }
     if is_animation_input(path) {
@@ -1292,6 +1297,9 @@ pub(crate) fn safe_relative_path(name: &str) -> Result<PathBuf> {
     }
     if safe.as_os_str().is_empty() {
         bail!("archive contains an empty path");
+    }
+    if let Some(key) = crate::controls::input_key(&safe) {
+        return Ok(PathBuf::from(key));
     }
     let extension = safe.extension().and_then(|value| value.to_str());
     let kind = extension.and_then(|extension| {
@@ -2211,7 +2219,10 @@ mod tests {
     #[test]
     /// Filtered inventories must include controls and reject recipes that omitted them.
     fn control_files_require_current_filtered_recipe() {
-        for selection in [IngestionSelection::ConverterInputsV1, IngestionSelection::RuntimeEnglishV1] {
+        for selection in [
+            IngestionSelection::ConverterInputsV1,
+            IngestionSelection::RuntimeEnglishV1,
+        ] {
             for name in ["controlmap.txt", "keyboard_english.txt", "gamepad.txt"] {
                 let path = format!("Interface/Controls/PC/{name}");
                 assert!(selection.includes(Path::new(&path)), "{path}");
