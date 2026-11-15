@@ -271,13 +271,19 @@ async fn check_placeholder_publication(reader: RecordReader) {
     data[0] = 63;
     data[2] = 90;
     data[12..16].copy_from_slice(&73.0f32.to_le_bytes());
+    // Replace source definitions rather than appending colliding same-plugin records.
     // The first species loses only its model; the next loses DATA entirely.
-    bytes.extend(record(b"GRAS", HIGH, field(b"DATA", &data)));
-    bytes.extend(record(
-        b"GRAS",
-        LOW,
-        field(b"MODL", b"grass/incomplete.nif\0"),
-    ));
+    for (id, fields) in [
+        (HIGH, field(b"DATA", &data)),
+        (LOW, field(b"MODL", b"grass/incomplete.nif\0")),
+    ] {
+        let offset = bytes
+            .windows(16)
+            .position(|header| header[..4] == *b"GRAS" && header[12..16] == id.to_le_bytes())
+            .unwrap();
+        let size = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        bytes.splice(offset..offset + 24 + size, record(b"GRAS", id, fields));
+    }
     fs::write(path, bytes).unwrap();
     let (sender, mut receiver) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while receiver.recv().await.is_some() {} });

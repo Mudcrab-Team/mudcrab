@@ -485,7 +485,33 @@ async fn check_broken_null_paint(reader: RecordReader) {
         field(b"BTXT", &[1, 2, 3]),
     ]
     .concat();
-    bytes.extend(group(1, 1, &group(8, 0x30, &record(b"LAND", 0x31, fields))));
+    let original = land(0x30, true, false);
+    let offsets: Vec<_> = bytes
+        .windows(original.len())
+        .enumerate()
+        .filter_map(|(offset, window)| (window == original).then_some(offset))
+        .collect();
+    assert_eq!(
+        offsets.len(),
+        1,
+        "replace one source LAND, avoiding duplicate-record admission"
+    );
+    let replacement = group(8, 0x30, &record(b"LAND", 0x31, fields));
+    let old_world = group(
+        1,
+        1,
+        &[land(0x10, false, true), land(0x20, true, true), original].concat(),
+    );
+    let world_start = bytes
+        .windows(old_world.len())
+        .position(|window| window == old_world)
+        .unwrap();
+    let new_world = group(
+        1,
+        1,
+        &[land(0x10, false, true), land(0x20, true, true), replacement].concat(),
+    );
+    bytes.splice(world_start..world_start + old_world.len(), new_world);
     fs::write(path, bytes).unwrap();
     let (sender, mut receiver) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while receiver.recv().await.is_some() {} });
@@ -594,7 +620,33 @@ async fn check_duplicate_land_precedence(reader: RecordReader) {
         ),
     ]
     .concat();
-    bytes.extend(group(1, 1, &group(8, 0x30, &record(b"LAND", 0x31, fields))));
+    let original = land(0x30, true, false);
+    let offsets: Vec<_> = bytes
+        .windows(original.len())
+        .enumerate()
+        .filter_map(|(offset, window)| (window == original).then_some(offset))
+        .collect();
+    assert_eq!(
+        offsets.len(),
+        1,
+        "replace one source LAND, avoiding duplicate-record admission"
+    );
+    let replacement = group(8, 0x30, &record(b"LAND", 0x31, fields));
+    let old_world = group(
+        1,
+        1,
+        &[land(0x10, false, true), land(0x20, true, true), original].concat(),
+    );
+    let world_start = bytes
+        .windows(old_world.len())
+        .position(|window| window == old_world)
+        .unwrap();
+    let new_world = group(
+        1,
+        1,
+        &[land(0x10, false, true), land(0x20, true, true), replacement].concat(),
+    );
+    bytes.splice(world_start..world_start + old_world.len(), new_world);
     fs::write(path, bytes).unwrap();
     let (sender, mut receiver) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while receiver.recv().await.is_some() {} });

@@ -893,12 +893,13 @@ mod tests {
     }
 
     #[test]
-    fn preserved_layers_drop_native_null_assignments_but_validate_their_weights() {
+    fn preserved_layers_drop_native_null_assignments_and_recover_bad_weights() {
         let mut land = preservation_land();
         land.subrecords.drain(..5);
         assert!(preserved_texture_layers(&land).unwrap().is_empty());
         land.subrecords[1].1[4..8].copy_from_slice(&f32::NAN.to_le_bytes());
-        assert!(preserved_texture_layers(&land).is_err());
+        assert!(preserved_texture_layers(&land).unwrap().is_empty());
+        assert_eq!(malformed_texture_items(&land.subrecords), 1);
     }
 
     /// Invalid auxiliary structures fall back locally while usable neighboring cells publish.

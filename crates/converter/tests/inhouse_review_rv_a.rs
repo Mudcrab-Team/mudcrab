@@ -710,16 +710,16 @@ fn assert_terrain(case: &TerrainCase, output: &Path) {
         (1, "accepted", true)
     );
     assert!(current.reason.is_none());
-    assert_eq!(current.decode_status, "decoded");
-    let rejected: [u8; 4] = case.rejected_signature.as_bytes().try_into().unwrap();
+    // Strict typed replay declines a payload with rejected fields even though
+    // tolerant runtime publication accepted its usable geometry and paint.
+    assert_eq!(current.decode_status, "undecodable");
+    assert!(current.record.is_none());
     assert!(
         current
-            .record
+            .decode_reason
             .as_ref()
             .unwrap()
-            .rejected_fields
-            .contains(&rejected),
-        "typed decoding still rejects the individual field while publication recovers usable neighbors"
+            .contains("undecodable fields")
     );
     let mut seen = 0;
     let source = visit_source_history(

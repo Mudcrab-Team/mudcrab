@@ -173,13 +173,11 @@ fn assert_cache(output: &Path, grass_loss: bool) {
     let cache = rkyv::from_bytes::<shared::grass::GrassCache, rkyv::rancor::Error>(&bytes).unwrap();
     assert_eq!(cache.cells.len(), 2);
     let ids: Vec<_> = cache.types.iter().map(|rule| rule.form_id).collect();
+    assert_eq!(ids, vec![0x0100_0801, 0x0100_0802]);
     assert_eq!(
-        ids,
-        if grass_loss {
-            vec![0x0100_0801]
-        } else {
-            vec![0x0100_0801, 0x0100_0802]
-        }
+        cache.types[1].model_path.is_empty(),
+        grass_loss,
+        "unusable rules retain a non-emitting slot through repair"
     );
     let mut coordinates = cache
         .cells

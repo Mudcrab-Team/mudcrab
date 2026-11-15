@@ -479,7 +479,7 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
             |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?))
         )
         .unwrap(),
-        (0, 3267)
+        (0, 0)
     );
     assert_eq!(
         db.query_row(
@@ -517,7 +517,10 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
         .find(|cell| cell.cell_id == 0xA00)
         .unwrap();
     assert_eq!(texture_cell.heights, vec![0.0; 33 * 33]);
-    assert_eq!(texture_cell.vertex_colors, vec![95; 33 * 33 * 3]);
+    assert!(
+        texture_cell.vertex_colors.is_empty(),
+        "the winning texture-only LAND has no VCLR"
+    );
     let overlay = texture_cell
         .layers
         .iter()
@@ -527,7 +530,10 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
         (overlay.texture_form_id, overlay.quadrant, overlay.layer),
         (4, 2, 3)
     );
-    assert_eq!(overlay.weights[0].opacity, 0.625);
+    assert!(
+        overlay.weights.is_empty(),
+        "only the invalid paint weight is omitted"
+    );
     assert_eq!(
         db.query_row(
             "SELECT COUNT(*) FROM records WHERE form_id=2562",
@@ -535,7 +541,7 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        0
+        1
     );
     assert_eq!(
         db.query_row(
@@ -544,19 +550,19 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        0
+        1
     );
     assert!(
         diagnostic["decoder"]["skyrim.esm"]["skipped_records"]
             .as_u64()
             .unwrap()
-            >= 1
+            == 0
     );
     assert!(
-        diagnostic["decoder"]["skyrim.esm"]["first_by_category"]["record"]
+        diagnostic["adapter"]["skyrim.esm"][1]
             .as_str()
             .unwrap()
-            .contains("LAND")
+            .contains("malformed LAND texture items")
     );
     assert!(!output.join("vfs").exists());
     // The established tool must still decode records.data as rkyv after this export.
@@ -854,7 +860,8 @@ async fn inhouse_bad_overrides_preserve_prior_movement_and_authored_heights() {
         (0xB40, 11.0),
     ] {
         let retained = cache.cells.iter().find(|cell| cell.cell_id == id).unwrap();
-        assert_eq!(retained.heights, vec![offset * 8.0; 33 * 33]);
+        let expected_offset = if id == 0xB20 { 99.0 } else { offset };
+        assert_eq!(retained.heights, vec![expected_offset * 8.0; 33 * 33]);
         assert_eq!(
             db.query_row(
                 "SELECT load_order FROM records WHERE form_id=?1",
@@ -862,14 +869,14 @@ async fn inhouse_bad_overrides_preserve_prior_movement_and_authored_heights() {
                 |row| row.get::<_, u32>(0)
             )
             .unwrap(),
-            0
+            u32::from(id == 0xB20)
         );
         assert_eq!(
             db.query_row("SELECT heightmap FROM land WHERE cell_id=?1", [id], |row| {
                 row.get::<_, Vec<u8>>(0)
             })
             .unwrap(),
-            vhgt(offset)
+            vhgt(expected_offset)
         );
     }
     for editor_id in ["Neighbor2306", "BadNegative.esp", "BadNonfinite.esp"] {

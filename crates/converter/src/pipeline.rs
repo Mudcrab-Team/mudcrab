@@ -12699,8 +12699,13 @@ mod tests {
             .unwrap();
         let archived =
             rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&cache).unwrap();
-        assert_eq!(archived.types.len(), 1);
+        assert_eq!(archived.types.len(), 2);
         assert_eq!(archived.types[0].form_id.to_native(), 0x0100_0801);
+        assert_eq!(archived.types[1].form_id.to_native(), 0x0100_0802);
+        assert!(
+            archived.types[1].model_path.is_empty(),
+            "bad rules retain a non-emitting slot"
+        );
         assert_eq!(archived.cells.len(), 2);
         assert!(
             !ConversionManifest::load(&output.join("conversion-manifest.json"))
