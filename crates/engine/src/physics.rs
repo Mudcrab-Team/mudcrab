@@ -3681,14 +3681,14 @@ fn walk_intent_system(
     }
     intent.wish_dir = wish;
     // Holding a body over `fZKeyHeavyWeight` makes the run speed equal the walk speed (the same
-    // block as over-encumbrance, `RF-CARRY-012`); sprint builds on the run state, so it goes too.
+    // block as over-encumbrance, `RF-CARRY-012`). Sprint is not traced and is left unchanged.
     let heavy = held
         .as_deref()
         .and_then(|held| held.held)
         .zip(carry_tuning.as_deref())
         .is_some_and(|(held, carry)| carry.blocks_running(held.mass));
     intent.target_speed = if moving {
-        tuning.target_speed(strafe, slow || heavy, sprint.0 && !heavy)
+        tuning.target_speed(strafe, slow || heavy, sprint.0)
     } else {
         0.0
     };

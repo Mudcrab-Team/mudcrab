@@ -90,8 +90,8 @@ further setting that the converter publishes (#595).
 
 | Constant | Value used | Executable default | `Skyrim.esm` | Notes |
 |---|---|---|---|---|
-| `fZKeyDelay:Controls` | 0.2 s | 0.2 | none (not in `Skyrim.ini`) | |
-| `fActivatePickLength:Interface` | 180 | 180 | none | **Not a GMST**: not in `Skyrim.esm`, the pack or `Skyrim.ini`, so it cannot be read from the pack. It is the compiled default of an INI-style setting; no registry ID yet. The executable also has `fActivatePickRadius` 16 (not used, #691) |
+| `fZKeyDelay:Controls` | 0.2 s | 0.2 (exe setting record `0x1420b8638`) | none (not in `Skyrim.ini`) | |
+| `fActivatePickLength:Interface` | 180 | 180 (exe setting record `0x14209e4c0`) | none | **Not a GMST**: not in `Skyrim.esm`, the pack or `Skyrim.ini`, so it cannot be read from the pack. Source: the REA dump of the executable's settings table. The executable also has `fActivatePickRadius` 16 (record `0x14209e4a8`; not used, #691) |
 | `fZKeySpringElasticity` | 0.2 | 0.2 | none | |
 | `fZKeySpringDamping` | 0.5 | 0.5 | none | |
 | `fZKeyObjectDamping` | 0.75 | 0.75 | none | |
@@ -132,8 +132,8 @@ All tracked in [#691](https://github.com/Mudcrab-Team/mudcrab/issues/691).
 
 `RF-CARRY-012` (medium-high; supersedes `RF-CARRY-006`): holding a body above `fZKeyHeavyWeight` (75 kg)
 makes the player's "may run" test fail, the same test that over-encumbrance uses. Every direction's
-run speed is then replaced by its walk speed. Sprint builds on the run state and was not traced
-separately, so Mudcrab drops sprint while the block holds (derived, unverified).
+run speed is then replaced by its walk speed. Sprint was not traced and is left unchanged
+(#691).
 
 ## Sources
 

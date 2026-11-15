@@ -51,8 +51,7 @@
 //! - **Heavy carry, `RF-CARRY-012`** (medium-high; supersedes `RF-CARRY-006`). Holding a body above
 //!   `fZKeyHeavyWeight` (75 kg) makes the "may run" test fail, the test that over-encumbrance
 //!   uses, and every direction's run speed is replaced by its walk speed. Sprint was not traced
-//!   separately; Mudcrab drops it while the block holds, because it builds on the run state
-//!   (derived, unverified).
+//!   and is left unchanged (#691).
 //! - **No throw, `RF-CARRY-007`.** Release removes the spring and applies no impulse; there is no
 //!   throw setting for this path. The object keeps the velocity the spring left it.
 //!
@@ -96,13 +95,12 @@ pub const UNITS_PER_METRE: f32 = 69.99125;
 /// read from the pack by [`Self::from_world_database`].
 #[derive(Resource, Debug, Clone, PartialEq)]
 pub struct CarryTuning {
-    /// `fActivatePickLength:Interface`, 180 units: the compiled default of an INI-style setting in
-    /// the executable's settings table. It is not a GMST: it is not in `Skyrim.esm`, the pack or
-    /// `Skyrim.ini`, so no master or pack can override it, and it has no registry ID yet (the
-    /// registry queue item 7, "Activation and grab reach").
+    /// `fActivatePickLength:Interface`, 180 units: exe setting record `0x14209e4c0`, default 180
+    /// (the REA dump of the executable's settings table). It is an INI-style setting, not a GMST:
+    /// it is not in `Skyrim.esm`, the pack or `Skyrim.ini`, so no master or pack overrides it.
     pub reach: f32,
     /// `fZKeyDelay:Controls`, seconds the key must stay down before it grabs (`RF-CARRY-001`, strict
-    /// `>`).
+    /// `>`): exe setting record `0x1420b8638`, default 0.2.
     /// Executable default 0.2; not in `Skyrim.ini`.
     pub key_delay: f32,
     /// `fZKeySpringElasticity` (`RF-CARRY-003`): the fraction of the position error that the spring asks to remove
@@ -231,7 +229,7 @@ impl CarryTuning {
             }
         }
         let mut tuning = Self::default();
-        tuning.apply_gmst(|name| values.get(name).copied());
+        tuning.apply_gmst(|name| values.get(&name.to_ascii_lowercase()).copied());
         info!(
             "carry settings: {} carry GMSTs from the pack; fZKeyMaxForce={} fZKeyMaxForceWeightHigh={}",
             values.len(),
@@ -269,8 +267,10 @@ impl CarryTuning {
     }
 }
 
-/// A carry GMST (`fZKey*` or `fGrab*`) from a `records.data` archive: its editor ID and float
-/// value. `None` for any other record, and for a record that does not decode.
+/// A carry GMST (`fZKey*` or `fGrab*`) from a `records.data` archive: its editor ID, lowercased,
+/// and float value. The converter treats GMST names without regard to case and keeps the winning
+/// spelling, so the name is compared and keyed in lowercase. `None` for any other record, and for
+/// a record that does not decode.
 fn decode_carry_gmst(bytes: &[u8]) -> Option<(String, f32)> {
     // SQLite gives no alignment guarantee for the blob, and the archive check needs one.
     let mut aligned = rkyv::util::AlignedVec::<16>::with_capacity(bytes.len());
@@ -285,8 +285,8 @@ fn decode_carry_gmst(bytes: &[u8]) -> Option<(String, f32)> {
     };
     let name = String::from_utf8_lossy(field(b"EDID")?)
         .trim_matches('\0')
-        .to_owned();
-    if !(name.starts_with("fZKey") || name.starts_with("fGrab")) {
+        .to_ascii_lowercase();
+    if !(name.starts_with("fzkey") || name.starts_with("fgrab")) {
         return None;
     }
     let data: [u8; 4] = field(b"DATA")?.try_into().ok()?;
@@ -313,7 +313,8 @@ pub enum DropReason {
     HeavyContact,
     /// The body no longer exists (its cell unloaded).
     Gone,
-    /// WALK ended, a door crossing started, or the cursor was released.
+    /// WALK ended, a door crossing started, the cursor was released, or the console or a menu
+    /// opened.
     Interrupted,
 }
 
@@ -471,19 +472,16 @@ pub fn carry_input_system(
     capture: Res<CursorCapture>,
     time: Res<Time>,
     tuning: Res<CarryTuning>,
-    held: Res<HeldObject>,
+    mut held: ResMut<HeldObject>,
     mut input: ResMut<CarryInput>,
+    mut commands: Commands,
 ) {
-    let holding = held.held.is_some();
     if *capture != CursorCapture::Captured {
-        input.down = false;
-        input.pending = if holding || input.pending == Some(CarryRequest::Grab) {
-            Some(CarryRequest::Release)
-        } else {
-            input.pending
-        };
+        // The cursor was released (focus loss, F3): let go now, in this schedule.
+        cancel_carry(&mut input, &mut held, &mut commands);
         return;
     }
+    let holding = held.held.is_some();
     if keyboard.just_pressed(KeyCode::KeyE) {
         input.down = true;
         input.down_secs = 0.0;
@@ -510,14 +508,24 @@ pub fn carry_input_system(
     }
 }
 
-/// While the console or a menu owns the keyboard, the key counts as released.
-pub fn carry_cancel_system(held: Res<HeldObject>, mut input: ResMut<CarryInput>) {
+/// While the console or a menu owns the keyboard, the key counts as released and the object is
+/// dropped right here. A menu pauses virtual time, so no fixed step runs while it is open; the
+/// drop must not wait for the first step after it closes.
+pub fn carry_cancel_system(
+    mut held: ResMut<HeldObject>,
+    mut input: ResMut<CarryInput>,
+    mut commands: Commands,
+) {
+    cancel_carry(&mut input, &mut held, &mut commands);
+}
+
+/// Forget the key and any pending request, and drop a held object immediately.
+fn cancel_carry(input: &mut CarryInput, held: &mut HeldObject, commands: &mut Commands) {
     input.down = false;
     input.attempted = false;
     input.grabbed_by_press = false;
-    if held.held.is_some() || input.pending == Some(CarryRequest::Grab) {
-        input.pending = Some(CarryRequest::Release);
-    }
+    input.pending = None;
+    release(commands, held, DropReason::Interrupted);
 }
 
 /// Inverse inertia in world space from a Rapier body.
@@ -1177,6 +1185,24 @@ mod tests {
         assert!((tuning.max_force_scale(150.0) - 0.6).abs() < 1.0e-6);
     }
 
+    /// The converter treats GMST names without regard to case and keeps the winning spelling, so a
+    /// pack can hold `fzkeymaxforce` or `FZKeyMaxForceWeightHigh`.
+    #[test]
+    fn gmst_names_match_without_regard_to_case() {
+        let pack = pack_with(&[
+            (1, "GMST", gmst_row("fzkeymaxforce", 250.0)),
+            (2, "GMST", gmst_row("FZKEYMAXFORCEWEIGHTHIGH", 300.0)),
+            (3, "GMST", gmst_row("FGrabMaxWeightWalking", 90.0)),
+            (4, "GMST", gmst_row("fZkEyHeavyWeight", 60.0)),
+        ]);
+        let tuning =
+            CarryTuning::from_world_database(&pack.path().join("skyrim_world.db")).unwrap();
+        assert_eq!(tuning.max_force, 250.0);
+        assert_eq!(tuning.max_force_weight_high, 300.0);
+        assert_eq!(tuning.grab_max_weight, 90.0);
+        assert_eq!(tuning.heavy_weight, 60.0);
+    }
+
     #[test]
     fn a_pack_without_gmst_records_keeps_the_defaults() {
         let pack = pack_with(&[(1, "STAT", vec![1, 2, 3])]);
@@ -1744,11 +1770,14 @@ mod tests {
         frames(&mut app, 2);
         hold_activate(&mut app);
         assert!(held(&app).is_some());
+        // Opening the console pauses virtual time, so no fixed step runs: the drop must happen in
+        // the Update that sees the console open, with no step after it.
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
         app.insert_resource(crate::console::ConsoleState {
             open: true,
             ..default()
         });
-        frames(&mut app, 3);
+        app.update();
         assert!(held(&app).is_none(), "still held with the console open");
         // Pressing and holding the key while the console is open grabs nothing.
         key(&mut app, ButtonState::Released);
