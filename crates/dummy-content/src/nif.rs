@@ -1038,7 +1038,7 @@ fn skin_partition(
     Ok(block)
 }
 
-/// Serialize a static shape with optional vertex colors, collision bodies and alpha testing.
+/// Serialize a static shape with optional vertex colors, collision bodies and material flags.
 fn build_static_shape(
     shape: &StaticShape<'_>,
     colors: &[[u8; 4]],
@@ -1049,6 +1049,7 @@ fn build_static_shape(
     build_static_shape_sampled(shape, colors, bodies, root, material_flags, None, None)
 }
 
+/// Serialize authored sampling and optional alpha testing alongside static shape inputs.
 fn build_static_shape_sampled(
     shape: &StaticShape<'_>,
     colors: &[[u8; 4]],
