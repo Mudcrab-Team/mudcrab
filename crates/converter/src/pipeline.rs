@@ -1851,6 +1851,10 @@ fn reusable_manifest(
                             settings.schemas()?.as_ref(),
                             &settings.language,
                         ),
+                        crate::cache::inhouse_adapter13_reader_identity(
+                            settings.schemas()?.as_ref(),
+                            &settings.language,
+                        ),
                     ]
                     .into_iter()
                     .flatten()
@@ -1861,8 +1865,12 @@ fn reusable_manifest(
                     }
                 }
                 if reader == crate::config::RecordReader::Legacy {
-                    if let Some(identity) =
-                        crate::cache::legacy_projection4_reader_identity(&settings.language)
+                    for identity in [
+                        crate::cache::legacy_projection4_reader_identity(&settings.language),
+                        crate::cache::legacy_projection5_reader_identity(&settings.language),
+                    ]
+                    .into_iter()
+                    .flatten()
                     {
                         matched |= crate::cache::retained_configuration_matches_for_reader(
                             &settings, producer, recorded, &identity,
@@ -6887,9 +6895,11 @@ mod tests {
 
     #[test]
     fn prior_language_bound_combined_proofs_reuse_only_proven_asset_kinds() {
-        for reader in [
-            crate::config::RecordReader::Inhouse,
-            crate::config::RecordReader::Legacy,
+        for (reader, prior) in [
+            (crate::config::RecordReader::Inhouse, 12),
+            (crate::config::RecordReader::Inhouse, 13),
+            (crate::config::RecordReader::Legacy, 4),
+            (crate::config::RecordReader::Legacy, 5),
         ] {
             for language in ["english", "french"] {
                 let directory = tempfile::tempdir().unwrap();
@@ -6903,9 +6913,9 @@ mod tests {
                 let mut identity =
                     crate::esm::inhouse::reader_identity_in_language(reader, language);
                 if reader == crate::config::RecordReader::Inhouse {
-                    identity["adapter_version"] = serde_json::json!(12);
+                    identity["adapter_version"] = serde_json::json!(prior);
                 } else {
-                    identity["projection_version"] = serde_json::json!(4);
+                    identity["projection_version"] = serde_json::json!(prior);
                 }
                 let historical = serde_json::json!({
                     "schema": CONVERTER_SCHEMA_VERSION,
