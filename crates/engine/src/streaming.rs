@@ -7625,7 +7625,6 @@ mod tests {
                 grass_uploads_per_frame: 0,
                 ..default()
             })
-            .init_resource::<VisualProfile>()
             .insert_resource(RenderOrigin(IVec2::ZERO))
             .insert_resource(CellCache::open(&terrain_path).unwrap())
             .insert_resource(crate::world::grass_cache::GrassCache::open(&grass_path).unwrap())
@@ -7638,6 +7637,7 @@ mod tests {
             .init_resource::<StreamingMetrics>()
             .init_resource::<TerrainContinuity>()
             .init_resource::<ProfilingState>()
+            .init_resource::<VisualProfile>()
             .add_systems(
                 Update,
                 (reset_grass_commit_test_budget, collect_cells).chain(),

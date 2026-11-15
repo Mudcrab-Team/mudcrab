@@ -130,6 +130,7 @@ fn lighting_fixture_expression(
                         .collect()
                 }
                 M::Abs => a.into_iter().map(f32::abs).collect(),
+                M::Sqrt => a.into_iter().map(f32::sqrt).collect(),
                 M::Normalize => {
                     let length = a.iter().map(|value| value * value).sum::<f32>().sqrt();
                     a.into_iter().map(|value| value / length).collect()
@@ -923,6 +924,15 @@ fn directional_normal_fixture_uses_authored_axes_and_handedness() {
             );
         }
     }
+    // The positive-Z reconstruction clamps XY samples outside the unit disk.
+    let mut outside_disk = args.clone();
+    outside_disk[0] = vec![1.0, 1.0, 0.9];
+    outside_disk[4][0] = 1.0;
+    let length = 2.0_f32.sqrt();
+    assert_normal(
+        lighting_fixture_run(&source, &outside_disk),
+        [1.0 / length, 0.0, -1.0 / length],
+    );
 }
 
 #[test]

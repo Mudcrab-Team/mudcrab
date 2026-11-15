@@ -434,6 +434,18 @@ fn grass_ini_preserves_streaming_and_grass_radius_boundaries() {
     let config = parse(&["--grass", "--stream-radius", &maximum]);
     assert_eq!(config.unload_radius, super::MAX_STREAM_RADIUS + 1);
     assert!(
+        parse(&[
+            "--grass",
+            "--stream-radius",
+            "2",
+            "--grass-radius",
+            "2147483647"
+        ])
+        .validate_grass()
+        .unwrap_err()
+        .contains("terrain streaming coordinate range")
+    );
+    assert!(
         parse(&["--grass", "--grass-radius", "2147483647"])
             .validate_grass()
             .unwrap_err()
