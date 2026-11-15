@@ -84,9 +84,13 @@ instance plus 64 KiB, and retained heap to 16 bytes per potential instance plus
 compaction. The scratch allowance is therefore
 `slots * (8 * (2 * staging_bytes - 16) + staging_bytes) + 64 KiB`: two staging
 capacities per species minus final output, plus one buffer's growth/shrink overlap.
-This layer stages 20-byte `(GrassInstance, f32)` height tuples, giving 212 bytes per
-candidate slot plus 64 KiB; the overlap also covers the final slot sort's temporary
-buffer. These are explicit fixture allocation limits, checked against the actual
+The unpublished instance Z lane stores the exact binary16 height until final
+quantization, so staging stays within each 16-byte instance. This gives 144 bytes
+per candidate slot plus 64 KiB. Each species vector is compacted to exact capacity
+once at publication, before the stable slot sort; the overlap also covers that
+sort's temporary buffer. Placement writes each instance directly into its vector,
+and compaction happens outside the per-instance generation loop. These are explicit
+fixture allocation limits, checked against the actual
 counting allocator; they include Vec growth and scratch but exclude mapped input,
 native allocations and GPU resources. The library test only checks
 the generator's reported output size (32 bytes per potential instance plus 32 KiB).

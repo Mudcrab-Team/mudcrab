@@ -318,8 +318,8 @@ fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: 
             .load(std::sync::atomic::Ordering::SeqCst)
             .saturating_sub(baseline);
         let instance_bytes = std::mem::size_of::<GrassInstance>();
-        // Placement retains authored height beside each instance until final quantization.
-        let staging_bytes = std::mem::size_of::<(GrassInstance, f32)>();
+        // The unpublished Z lane holds binary16 height within each 16-byte instance.
+        let staging_bytes = instance_bytes;
         let potential_instances = slots as usize * GRASS_COUNT as usize;
         let peak_budget = potential_instances * 48 + 64 * 1024;
         let retained_budget = potential_instances * instance_bytes + 64 * 1024;
@@ -369,6 +369,11 @@ fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: 
         );
         total_instances += count;
         for batch in &warm.batches {
+            assert_eq!(
+                batch.instances.capacity(),
+                batch.instances.len(),
+                "published instances retain exact capacity"
+            );
             assert_eq!(batch.slot_count, 262144);
             assert!(
                 batch

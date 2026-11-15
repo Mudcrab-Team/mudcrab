@@ -526,8 +526,9 @@ fn generate_field<const OBSERVE: bool>(
             let height = staged_height(instance.position[2]);
             instance.position[2] = quantize(height - height_min, height_span);
         }
-        // Keep and charge the actual 16-byte vector capacity. Tuple staging and
-        // shrinking temporarily duplicate allocations beyond the scratch budget.
+        // Compact once per species before sorting and publication. Boxing gives the
+        // retained vector exact capacity while preserving the staged instance order.
+        let mut values = values.into_boxed_slice().into_vec();
         values.sort_by_key(GrassInstance::candidate_slot);
         let rule = cache.species(id).expect("generated species is mapped");
         result.bytes += values.capacity() * std::mem::size_of::<GrassInstance>()
