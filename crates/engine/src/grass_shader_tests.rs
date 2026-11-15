@@ -444,12 +444,7 @@ fn production_grass_validation_rejects_a_missing_shadow_function() {
 #[test]
 /// Compile every experimental branch against real Bevy imports, coverage and shadow filters.
 fn unlit_shadow_variants_validate_with_real_bevy() {
-    for definition in [
-        None,
-        Some("GRASS_SHADING_E"),
-        Some("GRASS_SHADING_F"),
-        Some("GRASS_TUNING"),
-    ] {
+    for definition in [None::<&str>] {
         for attributes in 0..16 {
             for scene in [false, true] {
                 for samples in [1, 4] {

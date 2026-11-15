@@ -4,6 +4,11 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{io::Read, path::PathBuf, time::Duration};
 
+/// RF-GRASS-005: retail grass shadow floor, `fShadowClampValue:Display` (`Setting` at
+/// `0x1420d6d40`, default 0.3). The value has high confidence; its use in the pixel shader is
+/// medium confidence (the CPU side writes it to the grass constants at `0x141522d44`).
+pub const SHADOW_CLAMP_VALUE: f32 = 0.3;
+
 /// Maximum settings input; bounds both polling allocations and TOML parsing work.
 const MAX_FILE_BYTES: u64 = 65_536;
 
@@ -15,7 +20,6 @@ pub enum GrassMode {
     Flat,
     D,
     E,
-    F,
 }
 
 /// Validated, effective appearance parameters, independent of file syntax.
@@ -39,21 +43,25 @@ pub struct GrassTuning {
 }
 
 impl Default for GrassTuning {
-    /// Flat-b appearance; authored colour variation remains enabled.
+    /// Retail grass light: RF-GRASS-004 passes the sun direction, diffuse colour and ambient
+    /// colour to the shader unscaled, so every multiplier is the identity (1.0) and the
+    /// sun-angle weight is the full Lambert response. RF-GRASS-005: the only retail number is
+    /// the shadow floor, `fShadowClampValue:Display` 0.3 (`Setting` at `0x1420d6d40`).
+    /// Authored colour variation stays on.
     fn default() -> Self {
         Self {
             mode: GrassMode::Flat,
-            brightness: 1.15,
-            ambient_strength: 1.15,
-            sun_strength: 0.1,
-            sun_angle_weight: 0.0,
+            brightness: 1.0,
+            ambient_strength: 1.0,
+            sun_strength: 1.0,
+            sun_angle_weight: 1.0,
             wrap: 0.0,
-            shadow_strength: 0.3,
-            shadow_floor: 0.0,
+            shadow_strength: 1.0,
+            shadow_floor: SHADOW_CLAMP_VALUE,
             backlight: 0.0,
             specular_strength: 0.0,
             specular_roughness: 0.5,
-            saturation: 0.75,
+            saturation: 1.0,
             vclr_tint_strength: 1.0,
             color_range_strength: 1.0,
             root_darkening: 0.0,
@@ -62,24 +70,15 @@ impl Default for GrassTuning {
 }
 
 impl GrassTuning {
-    /// Resolve the prior D/E/F switch into parameters, before user overrides.
+    /// Resolve the prior D/E switch into parameters, before user overrides. D is the retail
+    /// default; E removes the blade/sun angle for comparison.
     pub fn preset(mode: GrassMode) -> Self {
         let mut values = Self {
             mode,
             ..Self::default()
         };
-        if mode != GrassMode::Flat {
-            values.brightness = 1.0;
-            values.ambient_strength = 1.0;
-            values.sun_strength = 1.0;
-            values.sun_angle_weight = 1.0;
-            values.shadow_strength = 1.0;
-            values.saturation = 1.0;
-        }
-        match mode {
-            GrassMode::Flat | GrassMode::D => {}
-            GrassMode::E => values.sun_angle_weight = 0.0,
-            GrassMode::F => values.shadow_floor = 0.68,
+        if mode == GrassMode::E {
+            values.sun_angle_weight = 0.0;
         }
         values
     }
@@ -105,12 +104,7 @@ impl GrassTuning {
                 self.color_range_strength,
                 self.root_darkening,
             ),
-            Vec4::new(
-                self.specular_strength,
-                self.specular_roughness,
-                f32::from(self.mode == GrassMode::F),
-                0.0,
-            ),
+            Vec4::new(self.specular_strength, self.specular_roughness, 0.0, 0.0),
         ]
     }
 
@@ -127,8 +121,7 @@ impl GrassTuning {
                 Some("flat") => GrassMode::Flat,
                 Some("d") => GrassMode::D,
                 Some("e") => GrassMode::E,
-                Some("f") => GrassMode::F,
-                _ => return Err("mode must be \"flat\", \"d\", \"e\", or \"f\"".into()),
+                _ => return Err("mode must be \"flat\", \"d\", or \"e\"".into()),
             },
         };
         let mut values = Self::preset(mode);
@@ -283,7 +276,8 @@ pub fn reload_grass_tuning(time: Res<Time>, mut state: ResMut<GrassTuningState>)
 mod tests {
     use super::*;
 
-    /// Empty input and no selected file retain the literal flat-b defaults.
+    /// Empty input and no selected file retain the retail defaults: identity multipliers and
+    /// the 0.3 shadow floor (RF-GRASS-004, RF-GRASS-005).
     #[test]
     fn grass_tuning_default_and_presets() {
         let d = GrassTuning::parse("").unwrap().0;
@@ -292,9 +286,9 @@ mod tests {
         assert_eq!(
             d.as_uniforms(),
             [
-                Vec4::new(1.15, 1.15, 0.1, 0.),
-                Vec4::new(0., 0.3, 0., 0.),
-                Vec4::new(0.75, 1., 1., 0.),
+                Vec4::new(1., 1., 1., 1.),
+                Vec4::new(0., 1., 0.3, 0.),
+                Vec4::new(1., 1., 1., 0.),
                 Vec4::new(0., 0.5, 0., 0.)
             ]
         );
@@ -302,9 +296,10 @@ mod tests {
             GrassTuning::parse("mode='e'").unwrap().0.sun_angle_weight,
             0.0
         );
-        let f = GrassTuning::parse("mode='f'").unwrap().0;
-        assert_eq!(f.shadow_floor, 0.68);
-        assert_eq!(f.as_uniforms()[3].z, 1.0);
+        assert!(
+            GrassTuning::parse("mode='f'").is_err(),
+            "F had an unsourced 0.68 floor"
+        );
         assert!(GrassTuning::parse("brightness=.5\nmode='e'").is_err());
         assert_eq!(
             GrassTuning::parse("brightness=0.5\nmode='e'")
@@ -312,6 +307,29 @@ mod tests {
                 .0
                 .brightness,
             0.5
+        );
+    }
+
+    /// RF-GRASS-004 and RF-GRASS-005: the defaults carry no multiplier and the shadow floor is
+    /// `fShadowClampValue` 0.3 (`Setting` at `0x1420d6d40`).
+    #[test]
+    fn retail_defaults_have_identity_multipliers_and_the_0_3_shadow_floor() {
+        let d = GrassTuning::default();
+        assert_eq!(SHADOW_CLAMP_VALUE, 0.3);
+        assert_eq!(d.shadow_floor, SHADOW_CLAMP_VALUE);
+        for multiplier in [
+            d.brightness,
+            d.ambient_strength,
+            d.sun_strength,
+            d.sun_angle_weight,
+            d.shadow_strength,
+            d.saturation,
+        ] {
+            assert_eq!(multiplier, 1.0);
+        }
+        assert_eq!(
+            (d.wrap, d.backlight, d.specular_strength, d.root_darkening),
+            (0.0, 0.0, 0.0, 0.0)
         );
     }
 
@@ -390,14 +408,14 @@ mod tests {
         assert_eq!(state.effective.brightness, 0.3);
         assert_eq!(state.receipt()["sha256"], hash);
         assert_eq!(state.receipt()["revision"], 2);
-        std::fs::write(&path, "mode='f'").unwrap();
+        std::fs::write(&path, "mode='e'").unwrap();
         app.world_mut()
             .resource_mut::<Time>()
             .advance_by(Duration::from_secs(1));
         app.update();
         assert_eq!(
             app.world().resource::<GrassTuningState>().effective.mode,
-            GrassMode::F
+            GrassMode::E
         );
     }
 
@@ -407,7 +425,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("later.toml");
         let mut state = GrassTuningState::new(Some(path.clone()));
-        assert_eq!(state.effective.brightness, 1.15);
+        assert_eq!(state.effective.brightness, 1.0);
         std::fs::write(&path, "brightness=0.6").unwrap();
         assert!(!state.poll_at(Duration::from_millis(999)));
         assert!(state.poll_at(Duration::from_secs(1)));

@@ -557,6 +557,7 @@ fn update_grass_uniforms(
     shots: Option<Res<crate::shots::ShotsRun>>,
     controls: Option<Res<GrassCaptureControls>>,
     fade: Res<GrassFade>,
+    fogs: Query<(), (With<StreamingCamera>, With<bevy::pbr::DistanceFog>)>,
     tuning: Option<Res<crate::grass_tuning::GrassTuningState>>,
     ambient: Option<Res<GlobalAmbientLight>>,
     batches: Query<Option<&GrassAttached>, With<GrassBatch>>,
@@ -588,7 +589,8 @@ fn update_grass_uniforms(
         primitive.uniform.fade = Vec4::new(
             fade.start,
             fade.end,
-            0.0,
+            // cb2[16].w: the renderer-wide output scale (s4-grass-shader.md; output_scale.rs).
+            crate::output_scale::framebuffer_output_scale(!fogs.is_empty()),
             if fade.enabled { 0.0 } else { 1.0 },
         );
         if let Some(ambient) = &ambient {
@@ -693,7 +695,6 @@ impl SpecializedMeshPipeline for GrassPipeline {
     ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
         let mut attributes = vec![Mesh::ATTRIBUTE_POSITION.at_shader_location(0)];
         let mut defs = vec![];
-        defs.push("GRASS_TUNING".into());
         for (attribute, location, name) in [
             (Mesh::ATTRIBUTE_NORMAL, 1, "NORMAL"),
             (Mesh::ATTRIBUTE_UV_0, 2, "UV"),
@@ -1387,7 +1388,7 @@ mod tests {
 
     /// Parse and validate the real shared shader coverage function for either MSAA variant.
     fn shader_coverage_samples(alpha: f32, cutoff: f32, width: f32, samples: u32) -> usize {
-        let shader = grass_lighting_tests::shading_source(include_str!("shaders/grass.wgsl"), "d");
+        let shader = include_str!("shaders/grass.wgsl");
         let uniform = shader
             .split("struct Grass {")
             .nth(1)
@@ -1594,13 +1595,6 @@ mod tests {
                 &layout,
             )
             .unwrap();
-        assert!(
-            descriptor
-                .vertex
-                .shader_defs
-                .contains(&"GRASS_TUNING".into()),
-            "fileless production pipeline must include tuning"
-        );
         let mut defs = super::grass_shader_tests::definitions(false, 4, 15, false);
         for def in &descriptor.vertex.shader_defs {
             match def {
@@ -2206,8 +2200,7 @@ mod tests {
 
         // Parse the actual shared shader declaration, rather than a second copy
         // of its fields, to check the CPU upload's member offset and total span.
-        let shader =
-            grass_lighting_tests::shading_source(include_str!("shaders/grass.wgsl"), "tuning");
+        let shader = include_str!("shaders/grass.wgsl");
         let start = shader.find("struct Grass {").unwrap();
         let end = shader[start..].find("@group(").unwrap() + start;
         let module = wgpu::naga::front::wgsl::parse_str(&shader[start..end]).unwrap();
@@ -2220,28 +2213,6 @@ mod tests {
             panic!("grass shader uniform must be a structure");
         };
         assert_eq!(*span, GrassUniform::min_size().get() as u32);
-        let baseline =
-            grass_lighting_tests::shading_source(include_str!("shaders/grass.wgsl"), "d");
-        let baseline_start = baseline.find("struct Grass {").unwrap();
-        let baseline_end = baseline[baseline_start..].find("@group(").unwrap() + baseline_start;
-        let baseline_module =
-            wgpu::naga::front::wgsl::parse_str(&baseline[baseline_start..baseline_end]).unwrap();
-        let baseline_uniform = baseline_module
-            .types
-            .iter()
-            .find(|(_, ty)| ty.name.as_deref() == Some("Grass"))
-            .unwrap()
-            .1;
-        let wgpu::naga::TypeInner::Struct {
-            span: baseline_span,
-            ..
-        } = &baseline_uniform.inner
-        else {
-            panic!("baseline grass structure");
-        };
-        assert_eq!(*baseline_span, 368);
-        assert_eq!(*baseline_span + 64, *span);
-
         let transform = members
             .iter()
             .find(|member| member.name.as_deref() == Some("uv_transform"))
