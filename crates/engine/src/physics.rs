@@ -561,7 +561,9 @@ impl Plugin for PlayerControlsPlugin {
                     cursor_lifecycle_system,
                     apply_teleport_player,
                     // The latch must settle before the look system reads it in the same update.
-                    sprint_latch_system.run_if(crate::door_crossing::no_door_crossing),
+                    // Not gated by a door crossing: the look system is not gated either, so a
+                    // frozen latch would turn the mouse at the wrong rate after the crossing.
+                    sprint_latch_system,
                     look_input_system,
                     noclip_flight_system.run_if(crate::door_crossing::no_door_crossing),
                     // Nothing walks during a door crossing: the landing has no collision yet.
@@ -2773,6 +2775,25 @@ mod world_startup_tests {
         tick(&mut app, 1);
         assert_mode(&mut app, MoveMode::Noclip);
         assert!(!app.world().resource::<WalkSpawnHold>().active);
+    }
+
+    #[test]
+    fn a_door_crossing_does_not_freeze_the_sprint_latch_under_the_mouse() {
+        // Look input is not paused by a crossing, so the latch it reads must keep updating.
+        let mut app = world_app();
+        app.insert_resource(CursorCapture::Captured);
+        app.insert_resource(crate::door_crossing::DoorCrossing::holding_for_test());
+        app.world_mut().resource_mut::<SprintLatch>().0 = true;
+        let yaw = |app: &App| app.world().resource::<LookIntent>().yaw;
+        let before = yaw(&app);
+        app.world_mut()
+            .write_message(bevy::input::mouse::MouseMotion {
+                delta: Vec2::new(100.0, 0.0),
+            });
+        tick(&mut app, 1);
+        // No movement key is held, so the latch is off and yaw uses the full walk rate.
+        assert!(!app.world().resource::<SprintLatch>().0);
+        assert!((before - yaw(&app) - 100.0 * 0.000_785).abs() < 1.0e-4);
     }
 
     #[test]
