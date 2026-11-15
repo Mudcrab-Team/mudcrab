@@ -697,6 +697,7 @@ fn handwritten_special_layouts_clear_and_warn_without_self_notices() {
     .concat();
     for (kind, tag, payload) in [
         (b"ACTI", b"VMAD", vmad),
+        (b"STAT", b"MODS", mods.clone()),
         (b"GRAS", b"MODS", mods),
         (
             b"LAND",
