@@ -3,12 +3,13 @@
 //! The converter publishes the environment tables documented in db-schema.md ("Cell and
 //! Worldspace Environment", "Weather, Climate, Image Space and Lighting Templates"). They are
 //! optional: a database converted before them, or with a table of another shape, loads an empty
-//! map for that table and the engine keeps its built-in lighting. Nothing renders from this
-//! catalog yet; it is the reader later lighting and sky work consumes (#264).
+//! map for that table and the engine keeps its built-in lighting. Only the interior sun direction
+//! renders from this catalog; it is the reader later lighting and sky work consumes (#264).
 //! [`interior`] selects the authored interior lighting for diagnostics and sky flags. It applies
-//! no light; exterior weather selection also remains open.
+//! only the sun direction (RF-LIGHT-CPU-004) and reports the rest; exterior weather selection
+//! also remains open.
 
-pub(crate) mod interior;
+pub mod interior;
 
 use bevy::prelude::*;
 use rusqlite::{Connection, OpenFlags, Row};
@@ -158,6 +159,9 @@ pub struct ClimateWeather {
 pub struct EnvironmentCatalog {
     cells: HashMap<u32, CellLighting>,
     cell_flags: HashMap<u32, Option<u32>>,
+    /// `cell_environment.image_space_id` (XCIM) by cell. A cell is absent when the table or the
+    /// column is missing. A present entry may hold `None` (the cell has no XCIM).
+    cell_image_spaces: HashMap<u32, Option<u32>>,
     worldspaces: HashMap<u32, WorldspaceEnvironment>,
     templates: HashMap<u32, LightingTemplate>,
     weathers: HashMap<u32, Weather>,
@@ -275,6 +279,14 @@ impl EnvironmentCatalog {
             "cell_environment",
             |row| Ok((row.get(0)?, row.get(1)?)),
         );
+        // A separate read: a database converted without the `image_space_id` column still loads
+        // its flags, and reports the cell image space as missing.
+        let cell_image_spaces = read(
+            connection,
+            "SELECT cell_id, image_space_id FROM cell_environment",
+            "cell_environment.image_space_id",
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        );
         let worldspaces = read(
             connection,
             "SELECT worldspace_id, data_flags, parent_flags, climate_id, water_id, \
@@ -377,6 +389,7 @@ impl EnvironmentCatalog {
         Self {
             cells,
             cell_flags,
+            cell_image_spaces,
             worldspaces,
             templates,
             weathers,
@@ -388,6 +401,12 @@ impl EnvironmentCatalog {
     /// CELL DATA flags, including independent Show Sky and Use Sky Lighting bits.
     pub fn cell_flags(&self, cell_id: u32) -> Option<u32> {
         self.cell_flags.get(&cell_id).copied().flatten()
+    }
+
+    /// The cell's XCIM image space (`cell_environment.image_space_id`). `None` means the database
+    /// has no value for the cell (old database or no row). `Some(None)` means the cell has no XCIM.
+    pub fn cell_image_space(&self, cell_id: u32) -> Option<Option<u32>> {
+        self.cell_image_spaces.get(&cell_id).copied()
     }
 
     /// The cell's authored lighting, or `None` when it has none or the database predates it.

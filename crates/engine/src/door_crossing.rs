@@ -1483,6 +1483,15 @@ mod tests {
             interior_door(),
             EnvironmentCatalog::from_connection(&connection),
         );
+        let exterior_rotation = Quat::from_rotation_y(0.4);
+        let sun = app
+            .world_mut()
+            .spawn((
+                DirectionalLight::default(),
+                crate::world::environment::interior::WorldSun,
+                Transform::from_rotation(exterior_rotation),
+            ))
+            .id();
         press_e(&mut app);
         let mut saw_interior = false;
         let mut saw_restore = false;
@@ -1500,6 +1509,10 @@ mod tests {
                     scene.interior.as_ref().unwrap().lighting.directional,
                     Some([40, 50, 60])
                 );
+                // RF-LIGHT-CPU-004: rotation XY 90, Z 30. Creation d = (cos90 cos30, sin90 cos30,
+                // -sin30) = (0, 0.8660254, -0.5). Engine (x, z, -y) = (0, -0.5, -0.8660254).
+                let rays = app.world().get::<Transform>(sun).unwrap().rotation * Vec3::NEG_Z;
+                assert!(rays.distance(Vec3::new(0.0, -0.5, -0.866_025_4)) < 1.0e-5);
                 if fail_destination {
                     app.world_mut()
                         .resource_mut::<StreamingWorld>()
@@ -1509,6 +1522,10 @@ mod tests {
                 // The real failure or timeout path queues the exterior restoration.
                 saw_restore = true;
                 assert!(scene.show_sky && scene.use_sky_lighting);
+                assert_eq!(
+                    app.world().get::<Transform>(sun).unwrap().rotation,
+                    exterior_rotation
+                );
                 break;
             }
         }

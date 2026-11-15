@@ -3,8 +3,8 @@
 `EnvironmentCatalog` resolves CELL/XCLL/LTMP/LGTM inputs into one `SceneEnvironment`.
 `ActiveSpace.interior` selects the cell. The selection runs in PostUpdate, after scene switches
 and before sky updates, transform propagation and render extraction. The sky consumes only the
-CELL DATA flags. No Bevy light consumes the authored lighting (see "No interior light is
-applied"). Door crossings also run in PostUpdate: `DoorCrossingSet` precedes `EnvironmentSet`,
+CELL DATA flags. One authored lighting value is applied: the directional light direction. All
+other lighting values are reported only (see "What is applied and reported"). Door crossings also run in PostUpdate: `DoorCrossingSet` precedes `EnvironmentSet`,
 including its deferred scene-switch commands, so the selection changes in the same frame as
 `ActiveSpace`.
 
@@ -18,7 +18,10 @@ including its deferred scene-switch commands, so the selection changes in the sa
   A clear bit selects the cell field. A missing selected template or field stays missing; it does
   not silently borrow the unselected cell/template value. The resolver retains the source per
   field, the original mask/link, and a list of missing fields.
-- Groups: `0x1` ambient and ambient cube; `0x2` directional color; `0x4` both fog colors;
+- Groups (bits `0x1`, `0x2`, `0x4`, `0x20`, `0x40` and `0x400` come from the retail trace,
+  RF-LIGHT-CPU-001; bits `0x80`, `0x100` and `0x200` come from the retail trace too,
+  RF-LIGHT-CPU-009, high; bits `0x8` and `0x10` are covered by neither registry row, keep the
+  xEdit definitions, and are reported but unused): `0x1` ambient and ambient cube; `0x2` directional color; `0x4` both fog colors;
   `0x8` fog near; `0x10` fog far; `0x20` both rotations; `0x40` directional fade;
   `0x80` fog clip; `0x100` fog power; `0x200` fog max; `0x400` both light fade distances.
 - Inherited ambient cubes use the separate LGTM DALC subrecord. The embedded LGTM DATA ambient
@@ -34,23 +37,89 @@ including its deferred scene-switch commands, so the selection changes in the sa
   implicit template groups, and report `MalformedCellXcll` sources with missing lighting fields.
   An absent XCLL alone selects the LTMP-only policy. Older packs can have already collapsed these
   cases; recovering that distinction requires regeneration from source, not a runtime guess.
-- Fog and light fade distances are resolved and inspectable, but their renderer consumers remain
-  outside this slice. Interior weather fog remains disabled; showing sky alone does not add it.
+- Fog and light fade distances are resolved and inspectable, but no renderer consumer applies
+  them (see "What is applied and reported"). Interior weather fog remains disabled; showing sky alone does not add it.
 
-## No interior light is applied
+## What is applied and reported
 
-The engine resolves and reports the authored interior lighting, but it applies none of it to the
-renderer. Selecting an interior cell writes no Bevy light: the directional light (colour,
-illuminance, rotation), its shadow cascades and `GlobalAmbientLight` keep the exterior baseline
-and the user preferences. No Skyrim source for the mapping from authored values to the renderer
-exists yet. Open research:
+Sources: `q5-interior.md` (REA 2026-11-14, SkyrimSE.exe 1.7.104.0, static CPU-side trace) and
+the registry rows RF-LIGHT-CPU-001 to RF-LIGHT-CPU-006. No number or mapping rule is used
+without a Skyrim data or retail source. Each value has its source ID in a code comment.
+
+**Applied (A): the directional light direction only.** RF-LIGHT-CPU-004 (medium): the retail
+rotation is `R_z(rotation XY) x R_y(rotation Z)`, both in degrees x pi/180, and the light shines
+along its local X axis. In Creation axes the direction is `d = (cos a cos b, sin a cos b, -sin b)`
+with `a` = rotation XY and `b` = rotation Z. The engine's existing Creation-to-engine mapping
+`(x, y, z) -> (x, z, -y)` (`creation_to_bevy`) converts `d`. The result is written to the
+rotation of the marked sun (`WorldSun`) only, and only when both rotation fields of the selected
+interior are present. A missing field changes nothing. The sun's exterior rotation is saved on the
+first interior write and restored when the selected interior no longer supplies both fields.
+Nothing rewrites the sun rotation each frame in the exterior. The sign and axis convention is
+unverified (medium).
+
+Colour, illuminance, shadow cascades and `GlobalAmbientLight` are never written by the selection.
+
+**Reported only (B), no render effect:**
+
+- `ambient_cube` (RF-LIGHT-CPU-002, retail `0x1414ec3b0`, high).
+  Per channel, with the six DALC colours in record order c0 to c5 (bytes x 1/255): mean
+  `(c0+c1+c2+c3+c4+c5)/6`; half-differences `(c1-c0)/2`, `(c3-c2)/2`, `(c5-c4)/2` for X, Y, Z;
+  specular colour passes through; `scale = max(DALC scale, 1.0)`. The pure function
+  `AmbientCube::ambient_at(normal)` is `mean + n.x*hx + n.y*hy + n.z*hz`. The sign is settled
+  by s3-image-space.md Q-B: record order, no negation, no clamp. A +X normal leans to record
+  colour 1, +Y to colour 3 and +Z to colour 5 (xEdit labels X-, Y-, Z- ...; record colour 0
+  lights the -X face). The normal is in world space (medium-high).
+- `ambient_color` and `directional_color`: the authored RGBA8 bytes x 1/255 (q5-interior.md,
+  "Inheritance", high).
+- `light_fade`: the selected begin and end (inheritance bit `0x400`, RF-LIGHT-CPU-001) and their
+  squares (RF-LIGHT-CPU-003). The pure function `point_light_fade_factor(q, fade)` follows
+  RF-LIGHT-CPU-003 with `q = |camera - light|^2 - r^2`: 1 below `begin^2`,
+  `1 - (q - begin^2) / (end^2 - begin^2)` up to `end^2`, 0 beyond. Retail applies it only to a
+  light whose BSLight `+0x63` flag is set. That flag is set unless the LIGH reference has REFR
+  flag `0x00010000` ("Never Fades"), and defaults to 1 (RF-LIGHT-CPU-007, high). The function is
+  reported only and is not applied to any light.
+- Directional fade: the raw selected value only. RF-LIGHT-CPU-008 (supersedes RF-LIGHT-CPU-005):
+  the getter has no runtime reader and retail only stores the value (medium-high, absence of
+  evidence).
+- `image_space` on `SceneEnvironment`: the base image space source per s3-image-space.md "Cell
+  image space for interiors (XCIM)" (cell getter `0x1402bf340`). An interior with
+  `CELL DATA flags & 0x101 == 0x001` reports source `xcim` with the form id of
+  `cell_environment.image_space_id`, or `default_image_space` with form `0x167` when XCIM is
+  absent. An exterior, or an interior that uses sky lighting (`flags & 0x101 != 0x001`), reports
+  `weather_global` with no form id. A database without the `image_space_id` column, or without
+  the cell flags, reports it as missing (null). Reported only: no image space is applied. The
+  reference image space override (extra `0x77`), the override pointer and IMAD blending are
+  not traced.
+- Everything else the resolver already reported: sources, missing fields, fog values, flags.
+
+A missing source field serializes as null. No substitute value is reported or applied.
+
+**Waits, with the reason:**
+
+- Ambient application: the cube needs a normal-dependent shader term. s3-image-space.md Q-A
+  finds that the retail Lighting shader reads the DALC cube only (the XCLL ambient colour reaches
+  grass, effect and distant-tree shaders). The engine has one uniform ambient colour. Neither
+  ambient is proven as the cause of dark interiors.
+- Directional colour and intensity: the unit conversion from colour bytes to render units and the
+  combine are unresolved (S3).
+- Point-light fade application: the per-light flag is named now (BSLight `+0x63`,
+  RF-LIGHT-CPU-007), but the local-light path belongs to #488. It receives the resolved begin
+  and end values and the flag rule.
+- Fog colours: no fog consumer is in this slice.
+- Cell image space application (XCIM): the selection is reported. Applying it needs the image
+  space chain, see #696.
+- The renderer-wide output scale `cb2[16].w`: not traced.
+- Directional fade: no runtime reader (RF-LIGHT-CPU-008).
+- Fog colours, clip distance, fog power and fog max (RF-LIGHT-CPU-009) are reported only.
+
+Waits for #693 to #696 and #706 (#706 is the retail interior lighting path under the skyrim
+profile):
 
 - #693: directional fade and rotation semantics.
 - #694: six-face DALC ambient and the colour domain of authored colour bytes.
 - #695: missing template and short XCLL behaviour.
 - #696: interior image space (CELL XCIM) through #361.
 
-Colours are reported as the raw authored bytes and missing fields are reported as missing.
 Sky visibility composes Show Sky with the existing user sky toggle. A cell's lighting choice
 never forces the dome on. The clear colour follows the selected sky visibility domain using the
 existing sky presentation policy. No image-space or default-colour correction is included.
@@ -87,12 +156,21 @@ not a retail live-source trace. No registered pack, settings file or playtest ch
 Procedural plugin overrides pass through converter publication, SQLite loading and resolution
 into `SceneEnvironment`. Additional CPU tests cover local/inherited/zero/missing values, absent
 masks, old databases, separate template DALC, all sky flag combinations and actual dome
-visibility with preferences. One test checks that selecting an interior leaves the directional
-light, its shadow cascades and `GlobalAmbientLight` unchanged. The opt-in
+visibility with preferences. Image space selection tests cover an interior with XCIM, an interior that uses sky lighting, an
+interior without XCIM, and a database without the `image_space_id` column. Three registered-pack
+cells (428953, 86654 and 78792, copied from
+`cell_lighting` and template 659862 of `user-testing-main-b5259d33-clusters` with read-only
+sqlite3) check the reported ambient cube, colour bytes, fade squares and the applied sun
+direction against hand-computed values. The ambient test checks `ambient_at(+X)`, `+Y` and `+Z`
+against the record colour pairs (1, 0), (3, 2) and (5, 4). Unit tests cover the DALC scale rule, the fade factor,
+a missing rotation field, and the exterior restore. One test checks that selecting an interior
+leaves the directional light colour and illuminance, its shadow cascades and
+`GlobalAmbientLight` unchanged. The opt-in
 `managed_farm_cells_reach_the_scene_environment_without_modifying_pack` test opens only the
 explicitly provided `MUDCRAB_INTERIOR_TEST_DB` with read-only SQLite flags. It asserts package
 selection, not displayed output. Test logs and source identities belong in task evidence.
 
-Remaining research: #693 to #696 above, retail template and ambient selection, raw-domain light
+Remaining research: #693 to #696 and #706 above, the rotation order and sign check for the sun
+direction (RF-LIGHT-CPU-004, medium), retail template and ambient selection, raw-domain light
 transport, dynamic weather/time and XCCM selection, fog consumers, native render behavior,
 performance and matched Skyrim captures.

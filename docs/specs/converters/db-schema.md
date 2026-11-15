@@ -545,8 +545,9 @@ Rules beyond the ones above:
 `world::environment::EnvironmentCatalog` (cell lighting, worldspace environment, lighting
 templates, weathers with their colours and directional ambient, image spaces, climate weather
 lists). A table that is missing or lacks a column the reader needs loads as empty, with one log
-line. Nothing renders from the catalog yet: the hard-coded `SkyrimClear` lighting in `sky.rs` is
-unchanged.
+line. Only the interior directional light direction renders from the catalog (RF-LIGHT-CPU-004,
+see `docs/specs/engine/interior-environment.md`): the hard-coded `SkyrimClear` lighting in `sky.rs`
+is otherwise unchanged.
 
 | Case | Converter writes | Engine |
 |---|---|---|
