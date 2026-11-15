@@ -1851,6 +1851,65 @@ mod tests {
         }
     }
 
+    /// Reset, apply the live grass minimum, then save and reload the actual preferences file.
+    fn assert_grass_reset_saves_default_radii(saved: (i32, i32), startup: (i32, i32)) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_settings(
+            &path,
+            &RenderingSettings {
+                stream_radius: saved.0,
+                unload_radius: saved.1,
+                ..default()
+            },
+        )
+        .unwrap();
+        let mut config = launch(&["--grass", "--grass-radius", "7"].map(String::from));
+        let (settings, file) = prepare_settings_at(&mut config, Some(path.clone()));
+        assert_eq!((settings.stream_radius, settings.unload_radius), startup);
+        assert_eq!(file.grass_coverage, Some(startup));
+        let (mut app, _, _) = msaa_settings_app(config, settings, file);
+        app.update();
+        app.world_mut()
+            .resource_scope(|world, mut file: Mut<SettingsFile>| {
+                file.restore_defaults(&mut world.resource_mut::<RenderingSettings>());
+            });
+        {
+            let settings = app.world().resource::<RenderingSettings>();
+            assert_eq!((settings.stream_radius, settings.unload_radius), (2, 3));
+        }
+        app.update();
+        {
+            let settings = app.world().resource::<RenderingSettings>();
+            assert_eq!(
+                (settings.stream_radius, settings.unload_radius),
+                (8, 9),
+                "active grass still needs terrain coverage after Reset"
+            );
+        }
+        save_app_settings(&mut app);
+        let file = app.world().resource::<SettingsFile>();
+        assert!(file.status.starts_with("Settings saved"), "{}", file.status);
+        let (reloaded, _) = prepare_settings_at(&mut launch(&[]), Some(path));
+        assert_eq!(
+            (reloaded.stream_radius, reloaded.unload_radius),
+            (2, 3),
+            "Reset must save default radii after live grass coverage, starting from {saved:?}"
+        );
+    }
+
+    /// Automatic coverage replacing smaller saved radii retains Reset's default preference intent.
+    #[test]
+    fn g3_grass_reset_defaults_saves_default_radii_from_narrow_preferences() {
+        assert_grass_reset_saves_default_radii((4, 6), (8, 9));
+    }
+
+    /// Reset recomputes automatic coverage when startup previously retained wider saved radii.
+    #[test]
+    fn g3_grass_reset_defaults_saves_default_radii_from_wider_preferences() {
+        assert_grass_reset_saves_default_radii((10, 12), (10, 12));
+    }
+
     /// Menu radius edits persist independently while the unload ring keeps covering terrain.
     #[test]
     fn g3_grass_menu_radius_edits_persist() {
