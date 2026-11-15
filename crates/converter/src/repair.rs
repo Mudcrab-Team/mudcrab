@@ -45,16 +45,14 @@ pub struct RepairReport {
     /// Record data was verified complete by its last authoritative conversion.
     /// False also covers historical manifests without that proof.
     pub record_data_complete: bool,
-    /// Data-loss warnings from rebuilding the repaired pack's grass cache.
+    /// Data-loss warnings from rebuilding the repaired pack's grass cache, and optional
+    /// capability declarations dropped because their payload is no longer valid.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     /// Advisory grass omissions that do not affect the completeness proof.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notices: Vec<String>,
     pub failures: BTreeMap<String, String>,
-    /// Optional capability declarations dropped because their payload is no longer valid.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -222,7 +220,6 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         warnings: Vec::new(),
         notices: Vec::new(),
         failures: BTreeMap::new(),
-        warnings: Vec::new(),
     };
 
     let mut selection_notices = Vec::new();
@@ -803,8 +800,10 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         })?;
         validate_grass_cache(&grass_path)?;
         report.notices.extend(grass.notices());
-        report.warnings.extend(grass.warnings());
-        if !report.warnings.is_empty() {
+        let grass_warnings = grass.warnings();
+        let grass_data_lost = !grass_warnings.is_empty();
+        report.warnings.extend(grass_warnings);
+        if grass_data_lost {
             // Grass loss can clear the proof, but a healthy bake cannot certify prior record loss.
             manifest.record_data_complete = Some(false);
             report.record_data_complete = false;
@@ -1764,7 +1763,6 @@ mod tests {
                 warnings: Vec::new(),
                 notices: Vec::new(),
                 failures: BTreeMap::new(),
-                warnings: Vec::new(),
             };
             attempt(
                 &config,
@@ -1824,7 +1822,6 @@ mod tests {
             warnings: Vec::new(),
             notices: Vec::new(),
             failures: BTreeMap::new(),
-            warnings: Vec::new(),
         };
 
         attempt(
