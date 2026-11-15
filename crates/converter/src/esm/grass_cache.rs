@@ -983,6 +983,18 @@ pub fn write_grass_cache_with_cancel(
         {
             let cell = rkyv::deserialize::<GrassCell, Error>(previous)?;
             for failure in &cell.obstruction_failures {
+                // Reused failures memoize only an unambiguous visibility variant.
+                let mut variants = refs
+                    .iter()
+                    .filter(|reference| reference.model_path == failure.model_path)
+                    .map(|reference| &reference.hidden_shapes);
+                if let Some(first) = variants.next()
+                    && variants.all(|candidate| candidate == first)
+                {
+                    geometry
+                        .failed_meshes
+                        .insert((failure.model_path.clone(), first.clone()));
+                }
                 // A current read error is authoritative, even for an unavailable hash match.
                 geometry
                     .failures
