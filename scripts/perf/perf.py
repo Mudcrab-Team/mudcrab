@@ -1701,6 +1701,11 @@ def visual_compare(base_dir, cand_dir, out_dir, *, noise_floor=None, margin_mean
     if result.get("suspect_black_run"):
         result["review"] = sorted(names)
     result["overall"] = "fail" if result["review"] else "pass"
+    if not names:
+        # Nothing to compare is no evidence, so it must not pass the gate.
+        result["overall"] = "fail"
+        result["no_evidence"] = True
+        result.setdefault("warnings", []).append(f"no PNG shots found in {base_dir} or {cand_dir}: nothing was compared")
     (out_dir / "visual.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result
 
@@ -2723,6 +2728,11 @@ def cmd_scenarios(_args):
     return 0
 
 
+def absolute_path(text):
+    """Resolve a path argument once, at parse time, so every later use sees the same directory."""
+    return str(Path(text).expanduser().resolve())
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -2808,7 +2818,7 @@ def build_parser():
 
     p = sub.add_parser("build", help="build the engine at a git ref into a binary directory")
     p.add_argument("ref")
-    p.add_argument("--worktree-root", required=True)
+    p.add_argument("--worktree-root", required=True, type=absolute_path)
     p.add_argument("--bin-dir", required=True)
     p.add_argument("--repo")
     p.add_argument("--keep-worktree", action="store_true")

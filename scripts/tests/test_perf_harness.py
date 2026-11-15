@@ -736,6 +736,21 @@ class VisualTest(unittest.TestCase):
             self.textured(cand / f"{name}.png", shift=shift, size=20 + i)
         return base, cand
 
+    def test_empty_directories_fail_as_no_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base, cand = self.make_dirs(tmp, [])
+            result = perf.visual_compare(base, cand, Path(tmp, "out"), force_stdlib=True)
+            self.assertEqual(result["overall"], "fail")
+            self.assertTrue(result["no_evidence"])
+            self.assertEqual(perf.main(["visual", "--base", str(base), "--cand", str(cand),
+                                        "--out", str(Path(tmp, "out2")), "--stdlib"]), 3)
+
+    def test_missing_directories_fail_as_no_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = perf.visual_compare(Path(tmp, "no-base"), Path(tmp, "no-cand"), Path(tmp, "out"),
+                                         force_stdlib=True)
+            self.assertEqual(result["overall"], "fail")
+
     def test_identical_captures_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
             base, cand = self.make_dirs(tmp, ["a", "b"])
@@ -986,6 +1001,26 @@ class BuildTest(unittest.TestCase):
         self.assertTrue(plan["reused"])
         self.assertFalse(self.cargo_calls())
         self.assertFalse(self.worktrees.exists())
+
+    def test_relative_worktree_root_resolves_to_one_absolute_directory(self):
+        previous = Path.cwd()
+        launch = Path(self.tmp.name, "launch")
+        launch.mkdir()
+        os.chdir(launch)
+        self.addCleanup(os.chdir, previous)
+        args = perf.build_parser().parse_args(["build", "HEAD", "--worktree-root", "rel-worktrees",
+                                               "--bin-dir", str(self.bins)])
+        self.assertTrue(Path(args.worktree_root).is_absolute())
+        expected = launch.resolve() / "rel-worktrees"
+        self.assertEqual(Path(args.worktree_root), expected)
+        # The build runs from a different directory than the one the argument was given in.
+        os.chdir(self.repo)
+        self.build(worktree_root=args.worktree_root)
+        added = [c for c, _ in self.calls if c[:4] == ["git", "-C", str(self.repo), "worktree"] and c[4] == "add"]
+        self.assertEqual(len(added), 1)
+        self.assertEqual(Path(added[0][-2]).parent, expected)
+        self.assertTrue(expected.is_dir())
+        self.assertFalse((self.repo / "rel-worktrees").exists())
 
     def test_dry_run_builds_nothing(self):
         plan = self.build(dry_run=True)
