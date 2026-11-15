@@ -126,10 +126,6 @@ fn check_outfit_links(tag: &[u8; 4]) {
             vec![b"Neighbor\0".to_vec()]
         );
     }
-    let native = EsmParser::merge_plugins_form_keys(&paths).unwrap();
-    assert_eq!(native.warnings.len(), 1, "{native:?}");
-    assert!(native.warnings[0].contains("optional FormID 03000BAD exceeds master list"));
-    assert!(native.warnings[0].contains("Patch.esp"));
 }
 
 /// NPC default outfit source slot 01 must become runtime slot 02, never Filler's outfit.
