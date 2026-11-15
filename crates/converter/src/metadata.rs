@@ -440,13 +440,18 @@ fn settings_for_source_reader_in_lineage(
                     crate::cache::inhouse_adapter10_reader_identity(&schemas),
                     crate::cache::inhouse_adapter11_reader_identity(&schemas),
                     crate::cache::inhouse_adapter12_reader_identity(&schemas, &language),
+                    crate::cache::inhouse_adapter13_reader_identity(&schemas, &language),
                 ]
                 .iter()
                 .any(|prior| prior.as_ref() == Some(identity)))
             || (reader == crate::config::RecordReader::Legacy
                 && schemas.identities().is_empty()
-                && crate::cache::legacy_projection4_reader_identity(&language).as_ref()
-                    == Some(identity))
+                && [
+                    crate::cache::legacy_projection4_reader_identity(&language),
+                    crate::cache::legacy_projection5_reader_identity(&language),
+                ]
+                .iter()
+                .any(|prior| prior.as_ref() == Some(identity)))
             || (reader == crate::config::RecordReader::Legacy
                 && (identity == &serde_json::json!({"mode": "legacy"})
                     || identity
@@ -1930,7 +1935,7 @@ mod metadata_schema_controls {
     /// Known prior adapters retain the exact original schema and reject unproven variants.
     #[test]
     fn adapter10_source_settings_require_original_saved_schema_and_identity() {
-        for adapter in [10, 11, 12] {
+        for adapter in [10, 11, 12, 13] {
             let original = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
             let mut identity =
                 crate::esm::inhouse::reader_identity_with_schemas(RecordReader::Inhouse, &original);
@@ -1955,7 +1960,7 @@ mod metadata_schema_controls {
                 ORIGINAL
             );
             assert_eq!(identity["adapter_version"], adapter);
-            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 13);
+            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 14);
             assert!(
                 settings_for_source_reader(
                     &config,
@@ -1965,7 +1970,11 @@ mod metadata_schema_controls {
                 .is_err()
             );
             for (key, value) in [
+                // Rule: a metadata-only migration to adapter 14 accepts retained-asset sources
+                // of adapters 10 to 13 (the loop above) and nothing else. Adapter 8 and any
+                // adapter newer than the producer are unproven and must regenerate assets.
                 ("adapter_version", serde_json::json!(8)),
+                ("adapter_version", serde_json::json!(15)),
                 ("schema_sha256", serde_json::json!("different-schema")),
                 ("schema_addons", serde_json::json!([])),
                 ("language", serde_json::json!("french")),
@@ -1998,6 +2007,17 @@ mod metadata_schema_controls {
             ORIGINAL
         );
         assert_eq!(identity["adapter_version"], 12);
+        assert_eq!(identity["string_table_encoding"], "utf-8-or-windows-1252");
+    }
+
+    #[test]
+    fn adapter13_retains_exact_non_english_source_settings() {
+        let schemas = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
+        let identity = crate::cache::inhouse_adapter13_reader_identity(&schemas, "french").unwrap();
+        let config = PipelineConfig::new("Data", "output");
+        let recovered = settings_for_source_reader(&config, &identity, schemas).unwrap();
+        assert_eq!(recovered.language, "french");
+        assert_eq!(identity["adapter_version"], 13);
         assert_eq!(identity["string_table_encoding"], "utf-8-or-windows-1252");
     }
 
@@ -2059,6 +2079,7 @@ mod metadata_schema_controls {
             serde_json::json!({"mode": "legacy", "projection_version": 2}),
             serde_json::json!({"mode": "legacy", "projection_version": 3}),
             crate::cache::legacy_projection4_reader_identity("english").unwrap(),
+            crate::cache::legacy_projection5_reader_identity("english").unwrap(),
             crate::esm::inhouse::reader_identity(RecordReader::Legacy),
         ] {
             let settings = settings_for_source_reader(
@@ -2071,7 +2092,7 @@ mod metadata_schema_controls {
         }
         for identity in [
             serde_json::json!({"mode": "legacy", "projection_version": 0}),
-            serde_json::json!({"mode": "legacy", "projection_version": 6}),
+            serde_json::json!({"mode": "legacy", "projection_version": 7}),
             serde_json::json!({"mode": "legacy", "unproven": true}),
         ] {
             assert!(
