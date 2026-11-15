@@ -263,9 +263,7 @@ impl WalkLanding<'_, '_> {
         }
         self.hold.as_ref().is_some_and(|hold| !hold.is_active())
             && self.player.single().is_ok_and(|(state, output)| {
-                state.grounded
-                    && state.vertical_velocity == 0.0
-                    && state.horizontal_velocity == Vec3::ZERO
+                state.horizontal_velocity == Vec3::ZERO
                     && output.grounded
                     && output.effective_translation.length_squared() < 1e-6
             })
@@ -467,8 +465,8 @@ fn switch_space(world: &mut World, landing: Landing) {
     });
 }
 
-/// Places the player on `landing` again as the fade-in starts. The walking systems paused during
-/// the crossing, so this only undoes anything else that moved the body or the camera while black.
+/// Re-place NOCLIP or a failed-return recovery on `landing` as the fade-in starts, undoing
+/// other movement while black. A successful WALK landing keeps its settled pose instead.
 fn place_again(commands: &mut Commands, landing: &Landing) {
     let landing = *landing;
     commands.queue(move |world: &mut World| {
@@ -1149,6 +1147,134 @@ mod tests {
             floor.insert(ColliderDisabled);
         }
         floor.id()
+    }
+
+    /// Real Update teleport consumption must stay ordered before the PostUpdate landing commit.
+    #[test]
+    fn pause704_integrated_focus_pause_across_door_stages() {
+        let mut app = walking_app(interior_door(), false);
+        let window = app
+            .world_mut()
+            .spawn((Window::default(), bevy::window::PrimaryWindow))
+            .id();
+        press_e(&mut app);
+        assert!(matches!(
+            app.world()
+                .resource::<DoorCrossing>()
+                .active
+                .as_ref()
+                .unwrap()
+                .stage,
+            Stage::FadeOut { .. }
+        ));
+        let fading_out = app.world().resource::<DoorCrossing>().active.clone();
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = false;
+        for _ in 0..4 {
+            app.update();
+        }
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
+        assert_eq!(app.world().resource::<DoorCrossing>().active, fading_out);
+        assert_eq!(
+            *app.world().resource::<ActiveSpace>(),
+            ActiveSpace::default()
+        );
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = true;
+        run_until_black(&mut app);
+        // switch_space just ran in PostUpdate; the real teleport consumer has not run yet.
+        let landing = current_landing(&app);
+        let body_before = player_position(&mut app);
+        let camera_before = app
+            .world_mut()
+            .query_filtered::<&Transform, With<StreamingCamera>>()
+            .single(app.world())
+            .unwrap()
+            .translation;
+        assert_eq!(
+            camera_before,
+            body_and_camera_for_feet(app.world().resource::<MovementTuning>(), landing.position).1
+        );
+        let budget_before = app.world().resource::<RenderAssetBytesPerFrame>().max_bytes;
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = false;
+        app.update(); // Pause starts on the frame immediately after FadeOut completed.
+        register_floor(&mut app, landing, false, false); // Streaming finishes while paused.
+        for _ in 0..10 {
+            app.update();
+        } // Teleport message expires; the consumer must retain it.
+        assert_eq!(player_position(&mut app), body_before);
+        assert_eq!(
+            app.world_mut()
+                .query_filtered::<&Transform, With<StreamingCamera>>()
+                .single(app.world())
+                .unwrap()
+                .translation,
+            camera_before
+        );
+        assert_eq!(
+            app.world().resource::<RenderAssetBytesPerFrame>().max_bytes,
+            budget_before
+        );
+        assert!(
+            matches!(app.world().resource::<DoorCrossing>().active.as_ref().unwrap().stage,
+            Stage::Landing { restoring: false, ready_frames, .. } if ready_frames >= SETTLE_FRAMES)
+        );
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = true;
+        app.update();
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        assert_eq!(
+            player_position(&mut app),
+            body_and_camera_for_feet(app.world().resource::<MovementTuning>(), landing.position).0
+        );
+        for _ in 0..80 {
+            if matches!(
+                app.world()
+                    .resource::<DoorCrossing>()
+                    .active
+                    .as_ref()
+                    .unwrap()
+                    .stage,
+                Stage::FadeIn { .. }
+            ) {
+                break;
+            }
+            app.update();
+        }
+        let fading_in = app.world().resource::<DoorCrossing>().active.clone();
+        assert!(matches!(
+            fading_in.as_ref().unwrap().stage,
+            Stage::FadeIn { .. }
+        ));
+        let settled = player_position(&mut app);
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = false;
+        for _ in 0..10 {
+            app.update();
+        }
+        assert_eq!(app.world().resource::<DoorCrossing>().active, fading_in);
+        assert_eq!(player_position(&mut app), settled);
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = true;
+        for _ in 0..20 {
+            app.update();
+        }
+        assert!(!app.world().resource::<DoorCrossing>().is_active());
+        assert_eq!(app.world().resource::<ActiveSpace>().interior, Some(77));
+    }
+
+    /// Paused E input cannot queue a crossing for a later unpaused frame.
+    #[test]
+    fn pause704_activate_is_ignored_while_paused() {
+        let (mut app, _) = app_with_extra(interior_door(), |app| {
+            app.init_resource::<ButtonInput<MouseButton>>()
+                .add_message::<bevy::input::mouse::MouseMotion>()
+                .add_plugins(crate::physics::PlayerControlsPlugin);
+        });
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        press_e(&mut app);
+        assert!(!app.world().resource::<DoorCrossing>().is_active());
+        app.world_mut().resource_mut::<Time<Virtual>>().unpause();
+        app.update();
+        assert!(!app.world().resource::<DoorCrossing>().is_active());
+        app.insert_resource(CursorCapture::Captured);
+        press_e(&mut app);
+        assert!(app.world().resource::<DoorCrossing>().is_active());
     }
 
     /// A live menu cannot prevent safe WALK placement behind a door's black hold.

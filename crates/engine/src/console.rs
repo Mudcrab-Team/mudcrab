@@ -134,7 +134,7 @@ pub struct ConsoleState {
     /// Capture to give back one frame after a backtick close. It is held back so the movement and
     /// look systems, which read the capture, ignore the input the closing frame carried.
     pub restore_capture: Option<CursorCapture>,
-    /// Whether virtual time was already paused when the console opened.
+    /// Pause that existed before this menu, excluding the independent focus reason.
     pub was_paused: bool,
     /// Lines entered with Enter, run by the dispatch system.
     pub pending: Vec<String>,

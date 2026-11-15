@@ -136,6 +136,11 @@ and performance were not exercised. CI on the published head remains a merge gat
 The primary game window pauses virtual world time when it loses focus, including normal
 minimisation that loses focus. `[General] bAlwaysActive=1` in a file supplied by `--ini`, or
 `--always-active`, opts out; the default is `0`. Other windows do not own this pause reason.
+Visible `--stdin-console` sessions driven from a terminal should pass `--always-active`
+to keep physics, door transitions and time-driven animation running while unfocused.
+The `collision-measure` feature with `MUDCRAB_COLLISION_MEASURE` set also keeps simulation
+active for its automated measurement route. Each focus-pause acquisition logs an info line
+pointing to `--always-active`.
 Focus loss releases input without resetting airborne velocity or jump state, with either policy.
 Regaining focus discards background elapsed time before resuming simulation. Closing Settings
 or the console while still unfocused releases only that menu's pause. Automated/hidden capture

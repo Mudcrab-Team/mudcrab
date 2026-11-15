@@ -7,6 +7,13 @@ Opening pauses virtual time and releases the cursor. Closing preserves a pre-exi
 backtick restores prior cursor capture after the closing frame. Gameplay input remains blocked
 while open and on the closing frame. Tab completes command names through the existing registry.
 
+## Stdin control
+
+`--stdin-console` accepts the same commands through standard input, without opening the
+console UI. For visible sessions driven from a terminal, add `--always-active` so focus
+pause does not stop physics, door transitions or time-driven animation while the game
+window is unfocused. The bridge is opt-in and has no network listener.
+
 ## Reference selection
 
 With the console open, left-click an object in the world above the overlay. The selection row
