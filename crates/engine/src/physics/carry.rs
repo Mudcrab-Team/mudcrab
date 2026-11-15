@@ -95,13 +95,13 @@ pub const UNITS_PER_METRE: f32 = 69.99125;
 /// read from the pack by [`Self::from_world_database`].
 #[derive(Resource, Debug, Clone, PartialEq)]
 pub struct CarryTuning {
-    /// `fActivatePickLength:Interface`, 180 units: exe setting record `0x14209e4c0`, default 180
-    /// (the REA dump of the executable's settings table). It is an INI-style setting, not a GMST:
+    /// `fActivatePickLength:Interface`, 180 units (`RF-SET-001`, record `0x14209e4c0`; reader function
+    /// not traced; the value is high confidence). It is an INI-style setting, not a GMST:
     /// it is not in `Skyrim.esm`, the pack or `Skyrim.ini`, so no master or pack overrides it.
     pub reach: f32,
     /// `fZKeyDelay:Controls`, seconds the key must stay down before it grabs (`RF-CARRY-001`, strict
-    /// `>`): exe setting record `0x1420b8638`, default 0.2.
-    /// Executable default 0.2; not in `Skyrim.ini`.
+    /// `>`): 0.2 s (`RF-SET-002`, record `0x1420b8638`; reader function not traced; the value is high
+    /// confidence). Not in `Skyrim.ini`.
     pub key_delay: f32,
     /// `fZKeySpringElasticity` (`RF-CARRY-003`): the fraction of the position error that the spring asks to remove
     /// in one 60 Hz step, 0.2 (12 per second). Retail executable default.

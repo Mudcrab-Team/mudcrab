@@ -7,7 +7,7 @@ Tracking: [#104](https://github.com/Mudcrab-Team/mudcrab/issues/104), phase (b).
 
 Rule for this feature: every number comes from Skyrim's own data or code. Where no source has been
 found, the behaviour is not implemented, not guessed. The source is the reverse-engineering
-analysis of retail `SkyrimSE.exe` 1.7.104.0, cited as `RF-CARRY-001` to `RF-CARRY-012`, `RF-GMST-001` and
+analysis of retail `SkyrimSE.exe` 1.7.104.0, cited as `RF-CARRY-001` to `RF-CARRY-012`, `RF-GMST-001`, `RF-SET-001`, `RF-SET-002` and
 `RF-UNIT-001` (activate handler at `0x1407b2660`, grab start at `0x140751870`, hold checks at
 `0x140753580`).
 
@@ -90,8 +90,8 @@ further setting that the converter publishes (#595).
 
 | Constant | Value used | Executable default | `Skyrim.esm` | Notes |
 |---|---|---|---|---|
-| `fZKeyDelay:Controls` | 0.2 s | 0.2 (exe setting record `0x1420b8638`) | none (not in `Skyrim.ini`) | |
-| `fActivatePickLength:Interface` | 180 | 180 (exe setting record `0x14209e4c0`) | none | **Not a GMST**: not in `Skyrim.esm`, the pack or `Skyrim.ini`, so it cannot be read from the pack. Source: the REA dump of the executable's settings table. The executable also has `fActivatePickRadius` 16 (record `0x14209e4a8`; not used, #691) |
+| `fZKeyDelay:Controls` | 0.2 s | 0.2 (`RF-SET-002`, record `0x1420b8638`; reader function not traced) | none (not in `Skyrim.ini`) | |
+| `fActivatePickLength:Interface` | 180 | 180 (`RF-SET-001`, record `0x14209e4c0`; reader function not traced) | none | **Not a GMST**: not in `Skyrim.esm`, the pack or `Skyrim.ini`, so it cannot be read from the pack. Source: `RF-SET-001`, from the executable's settings table dump. The executable also has `fActivatePickRadius` 16 (record `0x14209e4a8`; not used, #691) |
 | `fZKeySpringElasticity` | 0.2 | 0.2 | none | |
 | `fZKeySpringDamping` | 0.5 | 0.5 | none | |
 | `fZKeyObjectDamping` | 0.75 | 0.75 | none | |
