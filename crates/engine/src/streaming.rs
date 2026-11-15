@@ -7637,6 +7637,7 @@ mod tests {
             .init_resource::<StreamingMetrics>()
             .init_resource::<TerrainContinuity>()
             .init_resource::<ProfilingState>()
+            .init_resource::<VisualProfile>()
             .add_systems(
                 Update,
                 (reset_grass_commit_test_budget, collect_cells).chain(),

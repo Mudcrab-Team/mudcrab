@@ -76,17 +76,36 @@ fn registry_roots() -> Vec<PathBuf> {
         .collect()
 }
 
+/// Read one package's locked version with either checkout line ending.
+fn locked_crate_directory(lock: &str, name: &str) -> String {
+    let marker = format!("name = \"{name}\"");
+    let package = lock
+        .split("[[package]]")
+        .find(|package| package.lines().any(|line| line.trim() == marker))
+        .expect("locked Bevy crate");
+    let version = package
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("version = \"")?.strip_suffix('"'))
+        .expect("locked Bevy version");
+    format!("{name}-{version}")
+}
+
+#[test]
+fn locked_bevy_version_discovery_accepts_lf_and_crlf() {
+    let lock = "[[package]]\nname = \"bevy_pbr_macros\"\nversion = \"1.2.3\"\n\n\
+                [[package]]\nname = \"bevy_pbr\"\nversion = \"4.5.6\"\n";
+    for lock in [lock.to_owned(), lock.replace('\n', "\r\n")] {
+        assert_eq!(locked_crate_directory(&lock, "bevy_pbr"), "bevy_pbr-4.5.6");
+    }
+}
+
 /// Load one coherent registry's real dependencies once, failing clearly if they are absent.
 fn real_sources() -> &'static Sources {
     static SOURCES: OnceLock<Sources> = OnceLock::new();
     SOURCES.get_or_init(|| {
         let lock = include_str!("../../../Cargo.lock");
-        let crates = ["bevy_pbr", "bevy_render", "bevy_core_pipeline"].map(|name| {
-            let marker = format!("name = \"{name}\"\nversion = \"");
-            let start = lock.find(&marker).expect("locked Bevy crate") + marker.len();
-            let version = lock[start..].split('"').next().unwrap();
-            format!("{name}-{version}")
-        });
+        let crates = ["bevy_pbr", "bevy_render", "bevy_core_pipeline"]
+            .map(|name| locked_crate_directory(lock, name));
         let roots = registry_roots();
         for root in &roots {
             let entries = match std::fs::read_dir(root) {
