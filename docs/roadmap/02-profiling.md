@@ -476,7 +476,8 @@ baseline therefore measures a moving scene and reports the frame-time distributi
 **The pass bar (proposed).** At least 99.9% of the frames of a travel window are within the budget
 (6.25 ms) and no frame is over twice the budget (12.5 ms). `--frame-budget-ms` changes the budget
 (default 6.25); the report says whether the window met the bar (`meets_pass_bar`) for whatever budget
-it was given. The bar is a proposal, not a decision.
+it was given. The bar is a proposal, not a decision: `--accept-frame-pass-bar` makes a missed bar
+fail the run, and it is off by default.
 
 **The routes.** `--route <file>` makes the camera follow a route file (`scripts/routes/`): waypoints in
 Skyrim world units, a speed in units per second (Skyrim running is about 400), an eye height above
