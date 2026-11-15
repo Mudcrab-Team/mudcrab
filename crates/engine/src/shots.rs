@@ -860,7 +860,7 @@ fn grass_capture_counts(
     batches: &Query<&crate::grass::GrassBatch>,
     config: &crate::config::EngineConfig,
     phase: &str,
-) {
+) -> Result<(), String> {
     let shot = &run.file.shots[run.shot];
     let (sy, cy) = shot.yaw.to_radians().sin_cos();
     let (sp, cp) = shot.pitch.to_radians().sin_cos();
@@ -917,16 +917,19 @@ fn grass_capture_counts(
     }
     let value = serde_json::json!({"shot": shot.name, "phase": phase, "grass_off": run.grass_draws_off(),
         "columns": ["spawned_resident", "roots_in_frustum", "fade_kept_roots_in_frustum", "roots_in_first_30m", "submitted_single_primitive_instances"],
-        "visible_after_toggle": !run.grass_draws_off(), "wind_seconds": 1.0, "species": species});
+        "visible_after_toggle": !run.grass_draws_off(), "wind_rendered": false, "species": species});
     let path = run.output_dir.join("grass-counts.jsonl");
-    let result = fs::OpenOptions::new()
+    fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)
-        .and_then(|mut file| writeln!(file, "{value}"));
-    if let Err(error) = result {
-        error!(%error, "v3 grass count evidence write failed");
-    }
+        .open(&path)
+        .and_then(|mut file| writeln!(file, "{value}"))
+        .map_err(|error| {
+            format!(
+                "grass count evidence {phase} write to {} failed: {error}",
+                path.display()
+            )
+        })
 }
 
 /// Capture resources, including the opt-in controls and resident species-count query.
@@ -1099,8 +1102,13 @@ fn run_shots(
                     );
                 }
                 run.window_size = Some((run.file.width, run.file.height));
-                if controls.as_ref().is_some_and(|c| c.capture) {
-                    grass_capture_counts(run, &grass_batches, &config, "settled");
+                if controls.as_ref().is_some_and(|c| c.capture)
+                    && let Err(message) =
+                        grass_capture_counts(run, &grass_batches, &config, "settled")
+                {
+                    run.fail(message);
+                    run.advance();
+                    return;
                 }
                 let path = run.shot_path(shot);
                 if let Err(message) = discard_previous_shot(&path) {
@@ -1153,8 +1161,13 @@ fn run_shots(
                     }
                     None => {}
                 }
-                if controls.as_ref().is_some_and(|c| c.capture) {
-                    grass_capture_counts(run, &grass_batches, &config, "captured");
+                if controls.as_ref().is_some_and(|c| c.capture)
+                    && let Err(message) =
+                        grass_capture_counts(run, &grass_batches, &config, "captured")
+                {
+                    run.fail(message);
+                    run.advance();
+                    return;
                 }
                 let path = run.shot_path(shot);
                 let line = run.log_line(shot, &path);
@@ -2661,6 +2674,53 @@ mod tests {
             let log = fs::read_to_string(directory.path().join("shots.log")).unwrap();
             assert!(log.contains("timed_out"), "{log}");
         }
+    }
+
+    /// A late settled-count append failure fails the installed shots run.
+    #[test]
+    fn grass_count_evidence_write_failures_fail_settled_shots() {
+        assert_grass_count_write_failure(false);
+    }
+
+    /// A late captured-count append failure fails the installed shots run.
+    #[test]
+    fn grass_count_evidence_write_failures_fail_captured_shots() {
+        assert_grass_count_write_failure(true);
+    }
+
+    /// Obstruct the evidence path after output preparation, in the selected production phase.
+    fn assert_grass_count_write_failure(captured: bool) {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = g3_shots_app(directory.path(), false);
+        app.insert_resource(crate::grass_render::GrassCaptureControls { capture: true });
+        app.update();
+        if captured {
+            g3_shots_frames(&mut app, SETTLE_QUIET_FRAMES + 1);
+            assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Capture);
+            fs::rename(
+                directory.path().join("grass-counts.jsonl"),
+                directory.path().join("settled-counts.jsonl"),
+            )
+            .unwrap();
+            app.world_mut().resource_mut::<ShotsRun>().capture = Some(Ok(()));
+        }
+        fs::create_dir(directory.path().join("grass-counts.jsonl")).unwrap();
+        if captured {
+            app.update();
+        } else {
+            g3_shots_frames(&mut app, SETTLE_QUIET_FRAMES + 1);
+        }
+        assert!(
+            app.world().resource::<ShotsRun>().failed,
+            "count evidence failure must fail the shot: captured={captured}"
+        );
+        assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Done);
+        app.update();
+        let exits = app.world().resource::<Messages<AppExit>>();
+        let mut cursor = exits.get_cursor();
+        assert!(cursor.read(exits).any(|exit| exit.is_error()));
+        let log = fs::read_to_string(directory.path().join("shots.log")).unwrap();
+        assert!(log.contains("grass count evidence"), "{log}");
     }
 
     /// Disabled grass keeps existing shots behavior, regardless of absent or failing resources.

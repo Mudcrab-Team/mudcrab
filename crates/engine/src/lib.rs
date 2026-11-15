@@ -32,6 +32,7 @@ pub mod metrics;
 pub mod nif_depth;
 pub mod nif_material;
 pub mod object_materials;
+pub mod output_scale;
 pub mod pacing;
 pub mod papyrus_runtime;
 pub mod physics;
