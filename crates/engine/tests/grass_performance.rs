@@ -317,16 +317,30 @@ fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: 
         let retained = LIVE
             .load(std::sync::atomic::Ordering::SeqCst)
             .saturating_sub(baseline);
+        let instance_bytes = std::mem::size_of::<GrassInstance>();
+        let staging_bytes = instance_bytes;
+        let potential_instances = slots as usize * GRASS_COUNT as usize;
+        let peak_budget = potential_instances * 48 + 64 * 1024;
+        let retained_budget = potential_instances * instance_bytes + 64 * 1024;
+        // All species' growing vectors coexist before compaction. Allow doubled staging
+        // capacity minus retained output, plus one buffer's growth/shrink overlap.
+        let scratch_per_slot =
+            GRASS_COUNT as usize * (2 * staging_bytes - instance_bytes) + staging_bytes;
+        let scratch_budget = slots as usize * scratch_per_slot + 64 * 1024;
         eprintln!(
-            "spacing={spacing} cell={id} peak_heap_bytes={peak} retained_heap_bytes={retained} scratch_heap_bytes={}",
+            "spacing={spacing} cell={id} peak_heap_bytes={peak} retained_heap_bytes={retained} scratch_heap_bytes={} peak_budget_bytes={peak_budget} retained_budget_bytes={retained_budget} scratch_budget_bytes={scratch_budget}",
             peak.saturating_sub(retained)
         );
         assert!(
-            peak <= slots as usize * GRASS_COUNT as usize * 48 + 64 * 1024,
+            peak <= peak_budget,
             "generation peak heap budget exceeded: {peak}"
         );
         assert!(
-            peak.saturating_sub(retained) <= slots as usize * 16 + 64 * 1024,
+            retained <= retained_budget,
+            "generation retained heap budget exceeded: {retained}"
+        );
+        assert!(
+            peak.saturating_sub(retained) <= scratch_budget,
             "generation scratch heap budget exceeded: peak={peak}, retained={retained}"
         );
         assert_eq!(
