@@ -293,9 +293,9 @@ async fn reader_switch_reuses_archives_and_assets_but_rebuilds_database_and_cell
     assert!(fixture.output.join("cell_cache_preserved.rkyv").is_file());
 }
 
-/// Known full legacy proofs retain PEX, but cannot prove newer DDS/NIF output contracts.
+/// Known full settings retain unchanged BC1/BC5 textures and PEX, but cannot prove mesh contracts.
 #[tokio::test]
-async fn known_legacy_full_hashes_reuse_pex_but_regenerate_dds_and_nif_without_kind_keys() {
+async fn known_legacy_full_hashes_retain_textures_and_pex_without_nif_kind_keys() {
     for contract in [
         "historical",
         "projection-1",
@@ -361,8 +361,8 @@ async fn known_legacy_full_hashes_reuse_pex_but_regenerate_dds_and_nif_without_k
         }
         let report = publish(config.clone()).await;
         let rejected = matches!(contract, "unproven" | "projection-3-nonenglish");
-        assert_eq!(report.converted, if rejected { 5 } else { 3 });
-        assert_eq!(report.cache_hits, if rejected { 1 } else { 3 });
+        assert_eq!(report.converted, if rejected { 5 } else { 1 });
+        assert_eq!(report.cache_hits, if rejected { 1 } else { 5 });
         assert_asset_bytes(&fixture.output, &expected);
         let published = manifest(&fixture.output);
         assert_eq!(published.archives, archive_proof);
@@ -695,8 +695,8 @@ async fn historical_legacy_reader_identity_with_current_nif_proof_survives_repea
             .unwrap(),
             _ => unreachable!(),
         };
-        // Retain the fresh mesh proof. Historical combined proofs cover PEX;
-        // normal conversion must rebuild DDS without an explicit current recipe.
+        // Retain the fresh mesh proof. Known combined settings cover PEX and
+        // unchanged BC1/BC5 texture candidates; packed-normal recipes are checked per source.
         original
             .asset_configuration_hashes
             .retain(|kind, _| kind == "nif");
@@ -766,16 +766,19 @@ async fn historical_legacy_reader_identity_with_current_nif_proof_survives_repea
         );
         let report = publish(second_config.clone()).await;
         assert_eq!(
-            report.converted, 3,
-            "metadata retention lacks the archive cache and explicit DDS proofs"
+            report.converted, 1,
+            "metadata retention lacks only the archive cache; these DDS recipes are unchanged"
         );
         assert_eq!(
-            report.cache_hits, 3,
-            "current NIF and historical PEX proofs remain valid"
+            report.cache_hits, 5,
+            "current NIF and known historical DDS/PEX proofs remain valid"
         );
         assert_asset_bytes(&second_output, &expected);
         let warm = publish(second_config).await;
-        assert_eq!(warm.converted, 0, "rebuilt DDS must become reusable");
+        assert_eq!(
+            warm.converted, 0,
+            "re-extracted archive must become reusable"
+        );
         assert_eq!(warm.cache_hits, 6);
         assert_asset_bytes(&second_output, &expected);
     }
