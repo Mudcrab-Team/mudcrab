@@ -81,6 +81,8 @@ fn texture_layer(id: u32, quadrant: u8, index: u16) -> Vec<u8> {
 #[test]
 fn every_single_form_id_field_remaps_relocated_full_and_light_plugins() {
     let cases: &[(&[u8; 4], &[u8; 4], usize)] = &[
+        (b"REFR", b"XMBR", 4),
+        (b"ACHR", b"XMBR", 4),
         (b"TREE", b"SNAM", 4),
         (b"TREE", b"PFIG", 4),
         (b"LTEX", b"TNAM", 4),
@@ -1919,6 +1921,11 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
             sub(b"XPRM", &shape),
         ]
         .concat();
+        if id == 0x800 {
+            payload.extend(sub(b"XRMR", &[2, 0, 1, 0]));
+            payload.extend(sub(b"XLRM", &0x811u32.to_le_bytes()));
+            payload.extend(sub(b"XLRM", &0x810u32.to_le_bytes()));
+        }
         if let Some(endpoint) = endpoint {
             payload.extend(sub(
                 b"XPOD",
@@ -1944,6 +1951,39 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
                         marker(0x800, 0x1F, 1, None),
                         marker(0x801, 0x20, 3, Some(0)),
                         marker(0x802, 0x20, 3, Some(0x0900_0800)),
+                        marker(0x810, 0x1F, 1, None),
+                        marker(0x811, 0x1F, 1, None),
+                        record(
+                            b"REFR",
+                            0x820,
+                            0x8000_0000,
+                            [
+                                sub(b"NAME", &0x999u32.to_le_bytes()),
+                                sub(b"DATA", &[0; 24]),
+                                sub(b"XMBR", &0x810u32.to_le_bytes()),
+                            ]
+                            .concat(),
+                        ),
+                        record(
+                            b"REFR",
+                            0x821,
+                            0x8000_0000,
+                            [
+                                sub(b"NAME", &0x999u32.to_le_bytes()),
+                                sub(b"DATA", &[0; 24]),
+                            ]
+                            .concat(),
+                        ),
+                        record(
+                            b"REFR",
+                            0x822,
+                            0,
+                            [
+                                sub(b"NAME", &0x999u32.to_le_bytes()),
+                                sub(b"DATA", &[0; 24]),
+                            ]
+                            .concat(),
+                        ),
                     ]
                     .concat(),
                 ),
@@ -1975,6 +2015,48 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
         .unwrap(),
         2
     );
+    assert_eq!(
+        conn.query_row(
+            "SELECT value FROM room_graph_stats WHERE name='assignment_version'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    let links: Vec<(u32, u32)> = conn
+        .prepare(
+            "SELECT linked_ref,link_index FROM room_links WHERE room_ref=2048 ORDER BY link_index",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(links, [(0x811, 0), (0x810, 1)]);
+    assert_eq!(
+        conn.query_row(
+            "SELECT flags FROM room_bounds WHERE ref_id=2048",
+            [],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        0x100
+    );
+    for (id, kind, target) in [
+        (0x820, "target", Some(0x810)),
+        (0x821, "none", None),
+        (0x822, "auto", None),
+    ] {
+        let rule: (String, Option<u32>) = conn
+            .query_row(
+                "SELECT assignment,target_ref FROM room_reference_rules WHERE reference_id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(rule, (kind.to_owned(), target));
+    }
 }
 
 /// Exterior cells are told apart in the real export by a grid position or a worldspace; markers

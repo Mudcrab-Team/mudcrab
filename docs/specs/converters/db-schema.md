@@ -1204,9 +1204,10 @@ CREATE TABLE IF NOT EXISTS room_portals (      -- one row per XPOD pair of an in
 );
 CREATE INDEX IF NOT EXISTS idx_room_portals_cell ON room_portals(cell_id);
 
-CREATE TABLE IF NOT EXISTS room_links (        -- XLRM: rooms seen together without a portal
+CREATE TABLE IF NOT EXISTS room_links (        -- ordered authored room-group links
     room_ref INTEGER NOT NULL,
     linked_ref INTEGER NOT NULL,
+    link_index INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (room_ref, linked_ref)
 );
 
@@ -1218,7 +1219,23 @@ CREATE TABLE IF NOT EXISTS reference_rooms (   -- room membership, interiors wit
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_reference_rooms_room ON reference_rooms(room_ref);
 
-CREATE TABLE IF NOT EXISTS room_graph_stats (  -- report counters and visibility_version marker
+CREATE TABLE IF NOT EXISTS room_reference_rules (
+    reference_id INTEGER PRIMARY KEY,
+    cell_id INTEGER NOT NULL,
+    assignment TEXT NOT NULL CHECK(assignment IN ('auto','none','target','unknown')),
+    target_ref INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_room_reference_rules_cell ON room_reference_rules(cell_id);
+CREATE TABLE IF NOT EXISTS room_model_bounds (
+    base_form_id INTEGER PRIMARY KEY,
+    center_x REAL NOT NULL, center_y REAL NOT NULL, center_z REAL NOT NULL,
+    radius REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS room_graph_cells (
+    cell_id INTEGER PRIMARY KEY,
+    complete INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS room_graph_stats (  -- report counters and version markers
     name TEXT PRIMARY KEY,
     value INTEGER NOT NULL
 );
@@ -1252,9 +1269,16 @@ Columns and rules:
   A broken nonzero link also drops the legacy reader's `XPOD` occurrence rather than clearing
   it to an authored null. The typed reader restores the flags from original source framing;
   its canonical cleared links cannot establish outside connectivity.
-- **`room_links`**: one row per `XLRM` as stored on the room, with no mirror rows. A link joins
-  rooms that may have no portal between them but must be seen together: if one is visible, so is
-  the other. The target is stored as written, even if it is not a `room_bounds` row.
+- **`room_links`**: one row per `XLRM` as stored, with its original zero-based `link_index` and
+  no synthesized mirror rows. Migration adds the column with zero defaults; only a fresh export
+  publishes the authored-assignment version. The target is retained even if no room row exists.
+  In authored mode, `XRMR[2] != 0` marks a master (`(flags >> 8) & 255` in `room_bounds`).
+  An unlinked marker is also a master. Slaves resolve linked masters, preferring direct masters
+  before recursive links and traversing reverse source order. Explicit masters install missing
+  reciprocal links during resolution. Distinct masters remain distinct, even within a connected
+  component. Unresolvable cycles or construction-order ambiguity retain the whole-cell fallback.
+  The room is the union of its primary and joined bounds; gaps are not filled by an enclosing box.
+  Legacy graphs continue treating links as open visibility edges.
 - **`reference_rooms`**: written for every placed object (`REFR`, `ACHR`, `ACRE`, `PGRE`,
   `PMIS`) in an interior cell that has at least one room, except the room and portal markers
   themselves. `contained = 1` rows come from the ESM export: the object's pivot (its position)
@@ -1279,6 +1303,8 @@ Columns and rules:
   pair), `portals_with_trailing_xpod_bytes` (markers whose `XPOD` length is not a multiple of 8),
   `non_box_rooms_skipped`, `portals_without_size_skipped`, `invalid_markers_skipped` (rooms and portals with a non-finite size or transform), `objects_in_no_room` and
   `objects_in_several_rooms` (both by pivot), and `overlap_rows`.
+  `assignment_version = 1` enables authored master/slave resolution and reference ownership,
+  together with the three assignment tables, `link_index`, and `visibility_version = 2`.
   `visibility_version = 2` additionally marks graphs whose outside endpoints have verified
   source provenance. The typed reader publishes this marker and the flags in the source-data
   transaction. Until that transaction commits, the runtime uses legacy fallback behavior.
@@ -1295,21 +1321,47 @@ Older conversions retain their conservative outside-camera behavior until a full
 In a versioned graph, the engine reads the cell's `references.id` values to distinguish known
 unbounded references from references belonging to other cells or unknown runtime objects.
 
-Placed references carrying the `Multibound` header flag (`0x80000000`) have an authored visibility
-policy, including `NONE`. Both pivot and bounds-overlap export omit their geometric memberships;
-integration also removes stale rows for these references. The engine reads the existing
-`references.header_flags` column and exempts flagged roots even when an older conversion still
-contains geometric room rows. Named overrides are conservatively kept visible too.
+Authored assignment metadata:
 
-| Case | Converter writes | Engine |
-|---|---|---|
-| Interior without room markers | no rows | draw everything, as today |
-| Old database, tables absent | n/a | feature off, no error |
-| Portal side 0, missing or not a room | `room_a`/`room_b` NULL | ignore that edge |
-| Object in no room / several | no `contained = 1` row / several | always drawn |
-| Camera outside every room | n/a | draw everything |
-| Non-box room shape | skipped, counted | its objects are in no room, so drawn |
-| Exterior markers | not written | out of scope (#106) |
+- **`room_reference_rules`** records ordinary placements independently of geometric overlap rows.
+  A nonzero, remapped `XMBR` is `target`; a Multibound header flag with no `XMBR` is `none`;
+  an ordinary placement is `auto`. Malformed/zero targets and unsupported primitive overrides
+  are `unknown`. Missing/foreign targets remain visible. An absent `XMBR` alone does not mean `NONE`.
+- **`room_model_bounds`** stores source NIF spheres in runtime axes and Creation units, without
+  metre scaling. Mesh conversion writes GLB root extras `mudcrabRoomSphere` version 1, and model
+  integration rebuilds this table transactionally. It merges supported source child spheres in
+  native order, ignoring the placed root's source transform. Skinned/specialized or unsupported
+  trees have no row. Render AABBs are not substituted for missing native assignment bounds.
+- **`room_graph_cells`** marks cells whose authored geometry was fully exported. A skipped
+  unsupported room shape or invalid/missing marker size makes the cell incomplete. Incomplete
+  cells retain full rendering in authored mode.
+
+Initial attachment honors a valid named target directly, including targets whose bounds do not
+contain the object. Later reference-transform changes reclassify supported bounds. Automatic
+assignment uses the sphere center, tests the union of each master's bounds, and classifies zero,
+one, or multiple touched physical portals as ordinary-space, portal-shared, or common-node
+ownership. Portal sharing uses the native sphere test, and each child mesh tests the resulting
+volume with its current affine AABB. Ambiguous overlapping masters retain all possible owners;
+native runtime handle/hash order is not reconstructed from FormIDs. `NONE`, unknown bounds,
+unsupported transforms, actors, doors, and activators remain drawn. Named-target neighboring-room
+priority and specialized/forced native assignment paths are not fully reproduced.
+
+Legacy `reference_rooms` rows remain for compatibility. Multibound-flagged references are omitted
+from both pivot and overlap membership; integration removes stale rows. Legacy runtime exemptions
+protect these references even before reconversion. Reconvert normally to obtain authored assignment:
+the compiled converter digest invalidates old base-database cache bundles, and the
+`native-room-assignment-spheres` mesh-output contract regenerates source-sphere metadata. These
+additive tables do not change the global world schema or add a feature flag.
+
+| Case | Engine |
+|---|---|
+| Interior without room markers or absent room tables | normal rendering |
+| Verified source NULL endpoint in a versioned graph | unbounded-space traversal |
+| Unknown portal endpoint | whole-cell fallback |
+| Incomplete authored cell or unresolved master | whole-cell fallback |
+| Camera outside every authored room union | start in unbounded space |
+| Reference with no recoverable assignment | keep visible |
+| Exterior markers | outside this feature's scope |
 
 ---
 

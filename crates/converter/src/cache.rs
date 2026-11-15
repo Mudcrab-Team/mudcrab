@@ -466,6 +466,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "hidden-niavobject-excluded",
     "nif-root-transform-ignored",
     "skin-static-fallback",
+    "native-room-assignment-spheres",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical

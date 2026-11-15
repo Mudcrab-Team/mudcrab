@@ -122,6 +122,11 @@ pub fn finalize_world_database_with_sources(
     // this pass, so both successful bounds and errors can be shared by key.
     let mut model_bounds = HashMap::new();
     let transaction = connection.transaction()?;
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS room_model_bounds (
+         base_form_id INTEGER PRIMARY KEY,center_x REAL NOT NULL,center_y REAL NOT NULL,
+         center_z REAL NOT NULL,radius REAL NOT NULL); DELETE FROM room_model_bounds;",
+    )?;
     for (form_id, model_path, record_type, plugin) in static_models {
         let key = match converted_key(&model_path, "meshes", "glb") {
             Ok(key) => key,
@@ -169,12 +174,24 @@ pub fn finalize_world_database_with_sources(
             .entry(key)
             .or_insert_with(|| read_glb_bounds(path).map_err(|error| format!("{error:#}")));
         match bounds {
-            Ok(bounds) => {
+            Ok((bounds, sphere)) => {
                 transaction.execute(
                     "UPDATE statics SET bounds_min_x=?1,bounds_min_y=?2,bounds_min_z=?3,bounds_max_x=?4,bounds_max_y=?5,bounds_max_z=?6,bounds_valid=1 WHERE id=?7",
                     params![bounds.min[0], bounds.min[1], bounds.min[2], bounds.max[0], bounds.max[1], bounds.max[2], form_id],
                 )?;
                 report.bounds_updated += 1;
+                if let Some(sphere) = sphere {
+                    transaction.execute(
+                        "INSERT INTO room_model_bounds VALUES (?1,?2,?3,?4,?5)",
+                        params![
+                            form_id,
+                            sphere.center[0],
+                            sphere.center[1],
+                            sphere.center[2],
+                            sphere.radius
+                        ],
+                    )?;
+                }
             }
             Err(error) => {
                 report.unbounded_model_count += 1;
@@ -323,23 +340,50 @@ fn asset_file_index(root: &Path, folders: &[&str]) -> Result<HashMap<String, Pat
     Ok(files)
 }
 
-fn read_glb_bounds(path: &Path) -> Result<shared::Bounds3> {
+fn read_glb_bounds(
+    path: &Path,
+) -> Result<(
+    shared::Bounds3,
+    Option<shared::room_assignment::ModelSphere>,
+)> {
     let mut file =
         fs::File::open(path).wrap_err_with(|| format!("failed to open {}", path.display()))?;
     let file_length = file.metadata()?.len();
-    read_glb_bounds_from_reader(&mut file, file_length)
-        .wrap_err_with(|| format!("failed to extract bounds from {}", path.display()))
+    let prefix = read_glb_prefix(&mut file, file_length)
+        .wrap_err_with(|| format!("failed to extract bounds from {}", path.display()))?;
+    let document: serde_json::Value = serde_json::from_slice(&prefix[20..])?;
+    let metadata = &document["extras"]["mudcrabRoomSphere"];
+    let sphere = (metadata["version"].as_u64() == Some(1))
+        .then(|| {
+            serde_json::from_value::<shared::room_assignment::ModelSphere>(metadata.clone()).ok()
+        })
+        .flatten()
+        .filter(|sphere| sphere.valid() && sphere.radius > 0.0);
+    Ok((glb_bounds_from_bytes(&prefix)?, sphere))
 }
 
+#[cfg(test)]
 fn read_glb_bounds_from_reader(
     reader: &mut impl Read,
     file_length: u64,
 ) -> Result<shared::Bounds3> {
+    glb_bounds_from_bytes(&read_glb_prefix(reader, file_length)?)
+}
+
+fn read_glb_prefix(reader: &mut impl Read, file_length: u64) -> Result<Vec<u8>> {
     let mut header = [0u8; 20];
     reader
         .read_exact(&mut header)
         .wrap_err("invalid GLB container")?;
     ensure!(&header[..4] == b"glTF", "invalid GLB container");
+    ensure!(
+        u32::from_le_bytes(header[4..8].try_into().unwrap()) == 2,
+        "unsupported GLB version"
+    );
+    ensure!(
+        u64::from(u32::from_le_bytes(header[8..12].try_into().unwrap())) == file_length,
+        "GLB length is inconsistent"
+    );
     ensure!(&header[16..20] == b"JSON", "GLB JSON chunk is missing");
     let json_length = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
     ensure!(
@@ -356,7 +400,7 @@ fn read_glb_bounds_from_reader(
     reader
         .read_exact(&mut prefix[header.len()..])
         .wrap_err("truncated GLB JSON chunk")?;
-    glb_bounds_from_bytes(&prefix)
+    Ok(prefix)
 }
 
 fn converted_key(source: &str, kind: &str, extension: &str) -> Result<String> {
@@ -573,11 +617,17 @@ mod tests {
                 .unwrap();
         }
         drop(connection);
-        write_file(
-            directory.path(),
-            "Meshes/Architecture/Wall.GLB",
-            &bounded_glb([-2.0, -3.0, -4.0], [5.0, 6.0, 7.0], [3.0, 4.0, 5.0]),
+        let original = bounded_glb([-2.0, -3.0, -4.0], [5.0, 6.0, 7.0], [3.0, 4.0, 5.0]);
+        let length = u32::from_le_bytes(original[12..16].try_into().unwrap()) as usize;
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&original[20..20 + length]).unwrap();
+        document["extras"]["mudcrabRoomSphere"] =
+            serde_json::json!({"version":1,"center":[9.0,8.0,7.0],"radius":6.0});
+        let wall = glb_with_json(
+            serde_json::to_vec(&document).unwrap(),
+            &original[20 + length + 8..],
         );
+        write_file(directory.path(), "Meshes/Architecture/Wall.GLB", &wall);
         write_file(
             directory.path(),
             "Meshes/Architecture/Other.GLB",
@@ -607,6 +657,22 @@ mod tests {
             rows,
             [(1, 1.0, 12.0, 1), (2, 1.0, 12.0, 1), (3, 20.0, 43.0, 1)]
         );
+        let spheres = connection
+            .prepare(
+                "SELECT base_form_id,center_x,radius FROM room_model_bounds ORDER BY base_form_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, f32>(1)?,
+                    row.get::<_, f32>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(spheres, [(1, 9.0, 6.0), (2, 9.0, 6.0)]);
     }
 
     #[test]
