@@ -440,6 +440,8 @@ pub struct ExtractionOutcome {
     pub cache_entry: IngestionCacheEntry,
     pub cache_hit: bool,
     pub timings: ExtractionTimings,
+    /// Full archive-directory counts for paths omitted by the selected recipe.
+    pub ignored_inputs_by_extension: BTreeMap<String, u64>,
 }
 
 /// Current reader version of BSA archives, stored in their ingestion cache entries. Version 1
@@ -470,7 +472,8 @@ impl IngestionSelection {
         }
     }
 
-    fn includes(self, path: &Path) -> bool {
+    /// Apply the extraction policy without changing which input paths it selects.
+    pub(crate) fn includes(self, path: &Path) -> bool {
         selection_includes(self, path)
     }
 

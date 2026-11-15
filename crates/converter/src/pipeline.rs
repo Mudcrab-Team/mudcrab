@@ -638,6 +638,7 @@ impl AssetPipeline {
             inputs_by_kind: Default::default(),
             failures: Default::default(),
             excluded_inputs: Default::default(),
+            ignored_inputs_by_extension: Default::default(),
             pruned_texture_references: Default::default(),
             archives: Default::default(),
             entries: Default::default(),
@@ -700,6 +701,25 @@ impl AssetPipeline {
             })?
         };
         refuse_to_replace_complete_pack(&config.output_dir, &config.data_dir, &undiscovered)?;
+        // Discovery inventories loose paths once (MO2 contributes only overlay winners).
+        // Plugins, containers and authority files are handled by their own pipeline stages.
+        if config.mo2.is_some() {
+            for relative in resolved_files.keys() {
+                crate::input_inventory::count_loose(
+                    &mut manifest.ignored_inputs_by_extension,
+                    Path::new(relative),
+                );
+            }
+        } else {
+            for path in &files {
+                let relative = path.strip_prefix(&config.data_dir).unwrap_or(path);
+                crate::input_inventory::count_loose(
+                    &mut manifest.ignored_inputs_by_extension,
+                    relative,
+                );
+            }
+        }
+
         let archive_keys: BTreeMap<_, _> = resolved_files
             .iter()
             .filter(|(_, source)| extension(source, &["bsa", "ba2"]))
@@ -976,6 +996,12 @@ impl AssetPipeline {
 
             match result {
                 Ok(outcome) => {
+                    for (extension, count) in outcome.ignored_inputs_by_extension {
+                        *manifest
+                            .ignored_inputs_by_extension
+                            .entry(extension)
+                            .or_default() += count;
+                    }
                     report
                         .archive_timings
                         .insert(archive_key.clone(), outcome.timings);
@@ -1002,6 +1028,17 @@ impl AssetPipeline {
                 }
                 Err(error) => return Err(error),
             }
+        }
+
+        if !manifest.ignored_inputs_by_extension.is_empty() {
+            let ignored: u64 = manifest.ignored_inputs_by_extension.values().sum();
+            let message = format!(
+                "ignored {ignored} inputs in {} extension groups outside the selected input policy (counts in conversion-manifest.json)",
+                manifest.ignored_inputs_by_extension.len()
+            );
+            // The CLI prints report notices in its final summary; do not also emit a live
+            // notice, which would print the same inventory twice.
+            report.notices.push(message);
         }
 
         if config.mo2.is_none() {

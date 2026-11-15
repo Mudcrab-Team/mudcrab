@@ -258,6 +258,7 @@ pub(super) fn extract(
     )
 }
 
+/// Inventory source paths once, count recipe exclusions and recover durable selected batches.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn extract_with_session(
     archive_path: &Path,
@@ -302,6 +303,7 @@ pub(super) fn extract_with_session(
     };
     let mut seen = BTreeMap::new();
     let mut selected = Vec::new();
+    let mut ignored_inputs_by_extension = BTreeMap::new();
     for (name, payload) in raw {
         let path = safe_relative_path(&name)?;
         // Validate the whole namespace before filtering: unsupported files do
@@ -314,6 +316,8 @@ pub(super) fn extract_with_session(
                 bytes,
                 payload,
             });
+        } else {
+            crate::input_inventory::record_ignored(&mut ignored_inputs_by_extension, &path);
         }
     }
     let total_bytes = selected.iter().map(|entry| entry.bytes as u64).sum();
@@ -403,6 +407,7 @@ pub(super) fn extract_with_session(
                 files,
                 cache_entry: entry,
                 cache_hit: true,
+                ignored_inputs_by_extension,
                 timings,
             });
         }
@@ -617,6 +622,7 @@ pub(super) fn extract_with_session(
         files,
         cache_entry: entry,
         cache_hit,
+        ignored_inputs_by_extension,
     })
 }
 

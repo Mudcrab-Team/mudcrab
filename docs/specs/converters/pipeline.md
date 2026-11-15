@@ -669,3 +669,33 @@ Conversion failed after 0:12:31 during Textures: failed to convert textures\rock
 asset in flight rather than the run. The manifest is written once, at the end of a run, so a
 stopped run has recorded nothing as converted: the resume re-checks each staged file instead, and
 deleting the folder only costs the work the next run has to redo.
+
+
+## Input selection inventory
+
+Discovery counts input occurrences outside its selected policy by lowercase extension
+in the manifest's optional `ignored_inputs_by_extension` map. `<none>` groups paths
+without an extension. One bounded notice reports the total input count and number of
+extension groups; individual ignored paths stay out of that notice. These policy
+exclusions are notices and do not make a conversion incomplete. Conversion failures
+and malformed plugin records retain their existing warning/completeness behavior.
+
+| Input source or kind | Existing selection policy | Inventory treatment |
+| --- | --- | --- |
+| Loose DDS, NIF, PEX and LOD | Existing asset/LOD stages consume their supported paths | Accepted input kinds; selection is unchanged |
+| Loose HKX | Existing animation path predicate selects consumed skeleton/project/clip inputs | Other HKX paths count as ignored |
+| STRINGS, DLSTRINGS, ILSTRINGS | Existing localized reader selects required banks | Accepted loose input kind; unused individual keys/banks are outside this extension inventory |
+| ESM, ESP, ESL; BSA, BA2 | Existing plugin activation and archive policy select usable inputs | Containers/plugins are metadata inputs, not ignored extensions; inactive containers are not inspected |
+| `plugins.txt`, `loadorder.txt`, `Skyrim.ccc` at Data root | Existing selection authority | Not counted as unsupported content |
+| Enabled archive entries | Actual extraction selection (`runtime-english`, converter superset, or `All`) remains authoritative | Every filtered entry counts, including nonselected language/path variants; `All` filters no entries |
+| MO2 loose inputs | Existing resolved overlay contributes only its winning source for each path | Same loose-kind inventory; losing loose sources are not counted again |
+| Other loose kinds, including WAV, SWF and TRI | Existing pipeline leaves them unconverted | Count each occurrence by extension |
+
+Each enabled archive contributes its full directory inventory on fresh extraction and
+cache reuse. Counts are recomputed for every run, rather than accumulated from a prior
+manifest. Archive copies and loose copies are distinct discovered input occurrences;
+this inventory does not claim to count only final VFS winners. Existing
+`excluded_inputs` still records per-path authoring-resource reasons independently.
+The inventory shares the existing converter-input selection predicate for supported
+paths, so support changes such as control-map input selection can update that policy
+without changing counting code. No input-selection rule is added here.

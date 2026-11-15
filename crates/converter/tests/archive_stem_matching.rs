@@ -600,3 +600,63 @@ async fn metadata_rebuild_rejects_dash_and_underscore_longer_owner_settings() {
         );
     }
 }
+
+/// Ignored loose/profile and archived inputs remain visible without changing valid publication.
+#[tokio::test]
+async fn ignored_input_extensions_publish_counts_and_one_notice_across_resume() {
+    for selection in [
+        Selection::Automatic,
+        Selection::Player,
+        Selection::Mo2Mod,
+        Selection::Mo2Overwrite,
+    ] {
+        let fixture = Fixture::new(selection);
+        for (name, bytes) in [
+            ("sound/loose.WAV", &b"unsupported wave"[..]),
+            ("interface/loose.swf", &b"unsupported movie"[..]),
+            ("meshes/loose.tri", &b"unsupported morph"[..]),
+        ] {
+            let path = fixture.owner_path(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+        let healthy = texture(4, 23);
+        fixture.archive(
+            "Good.bsa",
+            &[
+                Entry::new("textures/shared.dds", &healthy),
+                Entry::new("interface/archived.SWF", b"unsupported movie"),
+                Entry::new("meshes/archived.tri", b"unsupported morph"),
+            ],
+        );
+        for pass in 0..2 {
+            let report = publish(fixture.config()).await;
+            assert!(fixture.output.join("textures/shared.ktx2").is_file());
+            assert_eq!(database_provenance(&fixture.output).len(), 2);
+            let manifest = fixture.manifest();
+            assert_eq!(
+                manifest["ignored_inputs_by_extension"],
+                serde_json::json!({"swf":2,"tri":2,"wav":1}),
+                "{selection:?} pass {pass}"
+            );
+            let notices: Vec<_> = report
+                .notices
+                .iter()
+                .filter(|notice| notice.starts_with("ignored "))
+                .collect();
+            assert_eq!(notices.len(), 1, "{report:?}");
+            assert!(
+                notices[0].contains("ignored 5 inputs in 3 extension groups"),
+                "{}",
+                notices[0]
+            );
+            assert!(report.warnings.is_empty(), "{report:?}");
+            if pass == 1 {
+                assert!(
+                    report.cache_hits > 0,
+                    "the second pass must exercise archive reuse"
+                );
+            }
+        }
+    }
+}
