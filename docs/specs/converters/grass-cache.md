@@ -303,3 +303,9 @@ Skyrim visual profile still declines MODS at runtime; these masks describe the n
 converted-world path. Producer 10 rejects producer-9 masks even when their other
 inputs happen to match. Mesh, texture and terrain cache identities are unchanged by
 this grass policy change.
+
+Producer 11 combines producer-10 MODS-aware obstruction masks with reference-order
+placement, retained non-emitting species slots and item-local LAND recovery. It
+rejects producer-10 artifacts as well as older masks; G6 retains producer 10 because
+its startup/settings changes preserve placement. Mesh, texture and terrain cache
+identities remain independently versioned.

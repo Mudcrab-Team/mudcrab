@@ -31,3 +31,16 @@ fn mods_visibility_policy_rejects_v9_masks() {
     let archived = rkyv::access::<ArchivedGrassCache, Error>(&bytes).unwrap();
     assert!(validate_archived_cache(archived).is_err());
 }
+
+/// Producer eleven rebuilds producer-ten masks for reference-order placement and LAND recovery.
+#[test]
+fn reference_placement_policy_rejects_v10_masks() {
+    let legacy = GrassCache {
+        version: 10,
+        types: vec![],
+        cells: vec![],
+    };
+    let bytes = rkyv::to_bytes::<Error>(&legacy).unwrap();
+    let archived = rkyv::access::<ArchivedGrassCache, Error>(&bytes).unwrap();
+    assert!(validate_archived_cache(archived).is_err());
+}
