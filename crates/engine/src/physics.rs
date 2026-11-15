@@ -4293,6 +4293,15 @@ mod noclip_tests {
         assert!(intent.pitch < 0.0);
     }
 
+    /// The default look input preserves the unrounded retail rates used by #709.
+    #[test]
+    fn mouse_sensitivity_default_uses_retail_axis_rates() {
+        let mut intent = LookIntent::default();
+        sample_look_intent(&CursorCapture::Captured, Vec2::new(100.0, 200.0), &mut intent);
+        assert!((intent.yaw + 0.078_539_82).abs() < 1.0e-7, "{}", intent.yaw);
+        assert!((intent.pitch + 0.212_5).abs() < 1.0e-7, "{}", intent.pitch);
+    }
+
     #[test]
     fn noclip_flies_relative_to_view_with_fast_multiplier() {
         let slow = noclip_displacement(

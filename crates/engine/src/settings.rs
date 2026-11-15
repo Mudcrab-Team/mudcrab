@@ -1896,6 +1896,17 @@ mod tests {
         }
     }
 
+    /// Mouse sensitivity belongs to Controls and preserves the retail baseline at 1x.
+    #[test]
+    fn mouse_sensitivity_has_a_control_setting_at_one_times() {
+        let spec = SETTING_SPECS
+            .iter()
+            .find(|spec| spec.label == "Mouse sensitivity (x)")
+            .expect("Controls must expose mouse sensitivity");
+        assert!(spec.page == SettingsPage::Controls);
+        assert_eq!((spec.read)(&RenderingSettings::default()), 1.0);
+    }
+
     #[test]
     fn dependent_settings_report_relevance_and_modification() {
         let budget = SETTING_SPECS
