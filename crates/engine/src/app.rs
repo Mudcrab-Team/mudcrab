@@ -290,6 +290,14 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         && !config.streaming_fixture)
         .then(|| MovementTuning::from_world_database(&config.assets_dir.join("skyrim_world.db")))
         .transpose()?;
+    let carry_tuning =
+        (interactive_world_physics && runtime_data.is_some() && !config.streaming_fixture)
+            .then(|| {
+                crate::physics::carry::CarryTuning::from_world_database(
+                    &config.assets_dir.join("skyrim_world.db"),
+                )
+            })
+            .transpose()?;
     let benchmark_active = config.benchmark_frames.is_some()
         || config.benchmark_duration_secs.is_some()
         || config.streaming_benchmark_route_speed.is_some();
@@ -334,6 +342,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         app.add_plugins(crate::live_console::StdinConsolePlugin);
     }
     if let Some(tuning) = movement_tuning {
+        app.insert_resource(tuning);
+    }
+    if let Some(tuning) = carry_tuning {
         app.insert_resource(tuning);
     }
     if let Some(asset_lock) = asset_lock {
