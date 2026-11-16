@@ -2,7 +2,7 @@
 use color_eyre::{Result, eyre::ensure};
 use converter::{
     archive::ArchiveExtractor,
-    asset_path::{AssetKind, canonical_asset_path},
+    asset_path::{AssetKind, AssetSourceIndex, canonical_asset_path},
     esm::{exporter::create_tables, records::RawRecord, rooms},
     mesh::MeshConverter,
 };
@@ -99,39 +99,16 @@ fn main() -> Result<()> {
     }
     tx.commit()?;
     drop(conn);
-    let sources = assets.parent().unwrap().join("room-assignment-nifs");
-    fs::create_dir_all(&sources)?;
     let plugins: Vec<String> = Connection::open(assets.join("skyrim_world.db"))?
         .prepare("SELECT name FROM plugins ORDER BY priority")?
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
-    let mut archives: Vec<_> = fs::read_dir(data)?
-        .filter_map(|p| p.ok().map(|p| p.path()))
-        .filter(|p| p.extension().is_some_and(|s| s.eq_ignore_ascii_case("bsa")))
-        .collect();
-    archives.sort();
-    let mut extracted = 0;
-    for plugin in plugins {
-        let stem = Path::new(&plugin)
-            .file_stem()
-            .unwrap()
-            .to_string_lossy()
-            .to_lowercase();
-        for archive in &archives {
-            let name = archive
-                .file_stem()
-                .unwrap()
-                .to_string_lossy()
-                .to_lowercase();
-            if name == stem || name.starts_with(&(stem.clone() + " - ")) {
-                extracted += ArchiveExtractor::extract_paths(archive, &sources, &models)?.len();
-            }
-        }
-    }
+    let (sources, extracted) =
+        prepare_model_sources(data, assets.parent().unwrap(), &models, &plugins)?;
     let results: Vec<_> = models
         .par_iter()
         .map(|model| {
-            let source = sources.join(model);
+            let source = sources.path().join(model);
             let output = assets.join(model).with_extension("glb");
             let converted = source.is_file().then(|| {
                 MeshConverter::convert_nif_to_glb(&source, &output)
@@ -167,4 +144,107 @@ fn main() -> Result<()> {
         models.len()
     );
     Ok(())
+}
+
+fn prepare_model_sources(
+    data: &Path,
+    parent: &Path,
+    models: &BTreeSet<PathBuf>,
+    plugins: &[String],
+) -> Result<(tempfile::TempDir, usize)> {
+    let sources = tempfile::Builder::new()
+        .prefix("room-assignment-nifs-")
+        .tempdir_in(parent)?;
+    let mut archives: Vec<_> = fs::read_dir(data)?
+        .filter_map(|p| p.ok().map(|p| p.path()))
+        .filter(|p| p.extension().is_some_and(|s| s.eq_ignore_ascii_case("bsa")))
+        .collect();
+    archives.sort();
+    let mut extracted = 0;
+    for plugin in plugins {
+        let stem = Path::new(&plugin)
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .to_lowercase();
+        for archive in &archives {
+            let name = archive
+                .file_stem()
+                .unwrap()
+                .to_string_lossy()
+                .to_lowercase();
+            if name == stem || name.starts_with(&(stem.clone() + " - ")) {
+                extracted +=
+                    ArchiveExtractor::extract_paths(archive, sources.path(), models)?.len();
+            }
+        }
+    }
+    let loose = AssetSourceIndex::build(&[data.to_path_buf()], AssetKind::Mesh)?;
+    for model in models {
+        if let Some(source) = loose.get(&model.to_string_lossy()) {
+            let destination = sources.path().join(model);
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            if destination.exists() {
+                fs::remove_file(&destination)?;
+            }
+            fs::copy(&source.path, destination)?;
+        }
+    }
+    Ok((sources, extracted))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn archive(data: &Path) -> PathBuf {
+        fs::create_dir_all(data).unwrap();
+        let path = data.join("Skyrim - Meshes.bsa");
+        fs::write(
+            &path,
+            dummy_content::bsa::v105(
+                &[dummy_content::Entry::new("meshes/test.nif", b"archive")],
+                dummy_content::bsa::Compression::None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn repeated_preparations_do_not_reuse_removed_archive_sources() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("Data");
+        let archive = archive(&data);
+        let models = BTreeSet::from([PathBuf::from("meshes/test.nif")]);
+        let plugins = vec!["Skyrim.esm".to_owned()];
+        let (first, count) = prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
+        assert_eq!(count, 1);
+        assert!(first.path().join("meshes/test.nif").is_file());
+        fs::remove_file(archive).unwrap();
+        let (second, count) = prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
+        assert_eq!(count, 0);
+        assert_ne!(first.path(), second.path());
+        assert!(!second.path().join("meshes/test.nif").exists());
+    }
+
+    #[test]
+    fn selected_loose_meshes_override_archive_bytes_case_insensitively() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("Data");
+        archive(&data);
+        fs::create_dir(data.join("Meshes")).unwrap();
+        fs::write(data.join("Meshes/Test.NIF"), b"loose").unwrap();
+        let models = BTreeSet::from([PathBuf::from("meshes/test.nif")]);
+        let (sources, count) =
+            prepare_model_sources(&data, root.path(), &models, &["Skyrim.esm".to_owned()]).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(
+            fs::read(sources.path().join("meshes/test.nif")).unwrap(),
+            b"loose"
+        );
+    }
 }

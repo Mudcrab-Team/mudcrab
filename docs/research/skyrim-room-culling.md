@@ -141,9 +141,10 @@ overlap edges and the portal-less-room heuristic.
 
 Supported model bounds retain native source spheres and ordered child merges. They are not rebuilt
 from render AABBs. A reference's current cell-local transform places that sphere; its center selects
-containing master rooms. Initial named targets override geometric containment. Later transform changes
-recompute ownership, including after a moving object returns to its spawn pose. `NONE`, unknown
-targets/bounds, nonuniform or sheared assignment transforms, actors, and doors stay visible.
+containing master rooms. Initial named targets override geometric containment without requiring
+a source sphere. Later transform changes
+recompute ownership, including after a moving object returns to its spawn pose. Missing bounds remain visible during automatic assignment and updates. `NONE`, unknown
+targets, nonuniform or sheared assignment transforms, actors, and doors stay visible.
 Activators with supported source bounds now use authored assignment. The
 [geometry-mismatch investigation](skyrim-culling-mismatches.md) verifies the web and foliage fixes
 against live native bounds and matched camera captures.

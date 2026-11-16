@@ -25,7 +25,8 @@
 //! the native sphere/portal test. One touched portal supplies both endpoint volumes; several
 //! touched portals use the common node and remain drawn. Ownership is cached across views and
 //! recomputed when the reference transform changes. Uncertain native room-map order retains all
-//! possible owners. Missing source spheres remain drawn. Each mesh still tests its own bounds.
+//! possible owners. Automatic assignment and updates keep missing source spheres drawn. Initial
+//! named targets follow direct native attachment. Each mesh still tests its own bounds.
 //!
 //! In legacy graphs, a static object's containing and overlapping rooms supply candidate volumes.
 //! An object with one pivot-containing room is hidden when its mesh bounds miss every candidate

@@ -94,6 +94,36 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
         path.pop();
         result.valid().then_some(result)
     }
+    // Static fallback exports disconnected geometry as additional roots. A bound computed only
+    // from block zero must not claim ownership of those extra meshes. Follow structural children
+    // even below fixed-bound nodes: their authored bound still represents that whole subtree.
+    let mut reachable = std::collections::HashSet::new();
+    let mut pending = vec![0u32];
+    while let Some(index) = pending.pop() {
+        if !reachable.insert(index) {
+            continue;
+        }
+        if let Ok(node) = nif.blocks.get(index as usize)?.as_node() {
+            pending.extend(
+                node.children
+                    .iter()
+                    .copied()
+                    .filter(|&child| child != u32::MAX),
+            );
+        }
+    }
+    if nif.blocks.iter().enumerate().any(|(index, block)| {
+        matches!(
+            block,
+            NifBlock::BSTriShape(_)
+                | NifBlock::BSDynamicTriShape(_)
+                | NifBlock::BSSubIndexTriShape(_)
+                | NifBlock::BSLODTriShape(_)
+                | NifBlock::NiTriShape(_)
+        ) && !reachable.contains(&(index as u32))
+    }) {
+        return None;
+    }
     let mut sphere = visit(nif, 0, Affine3A::IDENTITY, 1.0, &mut Vec::new())?;
     sphere.center = shared::coordinates::creation_to_runtime_vector(sphere.center);
     (sphere.radius > 0.0).then_some(sphere)
