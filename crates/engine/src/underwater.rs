@@ -70,6 +70,15 @@ impl UnderwaterState {
             .flatten()
     }
 
+    /// A state fully below the surface with `fog`, for tests.
+    #[cfg(test)]
+    pub(crate) fn below(fog: UnderwaterFog) -> Self {
+        Self {
+            mode: UnderwaterMode::Below,
+            fog: Some(fog),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn mode(&self) -> UnderwaterMode {
         self.mode
