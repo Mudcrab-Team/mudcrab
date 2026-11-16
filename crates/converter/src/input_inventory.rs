@@ -12,7 +12,8 @@ pub(crate) fn record_ignored(counts: &mut BTreeMap<String, u64>, path: &Path) {
 }
 
 /// Count a discovered loose input unless a pipeline stage accepts its kind.
-/// Reuse the archive superset policy so newly supported paths enter both inventories.
+/// Reuse the archive superset policy; stages that publish additional paths must also
+/// update the counter's supported set and its regression test.
 pub(crate) fn count_loose(counts: &mut BTreeMap<String, u64>, relative: &Path) {
     let lower = relative
         .to_string_lossy()

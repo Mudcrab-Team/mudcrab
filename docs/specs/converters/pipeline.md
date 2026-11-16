@@ -697,5 +697,5 @@ manifest. Archive copies and loose copies are distinct discovered input occurren
 this inventory does not claim to count only final VFS winners. Existing
 `excluded_inputs` still records per-path authoring-resource reasons independently.
 The inventory shares the existing converter-input selection predicate for supported
-paths, so support changes such as control-map input selection can update that policy
-without changing counting code. No input-selection rule is added here.
+paths. Stages that publish additional inputs outside that predicate must also update
+the counter's supported set and its regression test. No input-selection rule is added here.
