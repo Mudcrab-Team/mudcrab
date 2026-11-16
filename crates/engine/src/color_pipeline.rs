@@ -392,7 +392,12 @@ impl SceneGradeSource {
             "mode": mode.name(),
             "source_kind": if mode == SceneGradeMode::RecordSrgb { "authored-image-space-record" } else if mode == SceneGradeMode::SnapshotSrgb { "approved-artistic-override" } else { "legacy-preset" },
             "grade_base_identity": if mode == SceneGradeMode::RecordSrgb { "loaded-image-space-record" } else if mode == SceneGradeMode::SnapshotSrgb { self.approved_path.as_str() } else { preset.name() },
-            "approved_override": { "path": self.approved_path, "data": self.approved, "applied_to_grade": mode == SceneGradeMode::SnapshotSrgb, "applied_to_sky": preset == SceneVisualPreset::CoolGray },
+            "approved_override": { "path": self.approved_path, "data": self.approved, "applied_to_grade": mode == SceneGradeMode::SnapshotSrgb, "applied_to_sky": preset == SceneVisualPreset::CoolGray && self.weather.is_none() },
+            "forced_weather": self.weather.as_ref().map(|weather| serde_json::json!({
+                "form_id": format!("{:08X}", weather.form_id),
+                "editor_id": weather.editor_id,
+                "sky_palette": "day colours of the weather record",
+            })),
             "loaded_record": self.record,
             "base_grade": base.as_ref().ok().map(|resolved| resolved.grade),
             "grade_overrides": overrides,
@@ -1300,6 +1305,14 @@ mod tests {
             forced,
             "the settings system rebuilds the palette from the source, so it keeps the weather"
         );
+        // The evidence records the forced weather and no longer claims the approved sky.
+        let evidence = app
+            .world()
+            .resource::<SceneGradeSource>()
+            .evidence(SceneGradeMode::SnapshotSrgb, preset);
+        assert_eq!(evidence["approved_override"]["applied_to_sky"], false);
+        assert_eq!(evidence["forced_weather"]["form_id"], "00012F89");
+        assert_eq!(evidence["forced_weather"]["editor_id"], "TestCloudy");
         assert!(run(&mut app, "Weather Nothing").starts_with("error: "));
         assert_eq!(
             *app.world().resource::<SkyPalette>(),
@@ -1311,6 +1324,12 @@ mod tests {
             "weather: none forced (the preset's sky)"
         );
         assert_eq!(*app.world().resource::<SkyPalette>(), preset_palette);
+        let cleared = app
+            .world()
+            .resource::<SceneGradeSource>()
+            .evidence(SceneGradeMode::SnapshotSrgb, preset);
+        assert_eq!(cleared["approved_override"]["applied_to_sky"], true);
+        assert!(cleared["forced_weather"].is_null());
     }
 
     #[test]

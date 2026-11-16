@@ -1259,10 +1259,13 @@ mod tests {
     #[test]
     fn a_weather_is_found_by_editor_id_or_form_id() {
         let mut catalog = EnvironmentCatalog::default();
+        // 0x1234 is named "Face" and a different weather has the id 0xFACE, so a lookup that tried
+        // the hex spelling first would find the wrong one.
         for (id, name) in [
             (0x81A, "SkyrimClear"),
             (0x12F89, "SkyrimCloudy"),
-            (0xFACE, "Face"),
+            (0x1234, "Face"),
+            (0xFACE, "Other"),
         ] {
             catalog.weathers.insert(
                 id,
@@ -1279,7 +1282,13 @@ mod tests {
         assert_eq!(id_of("0X00081a"), Ok(0x81A));
         assert_eq!(id_of("81A"), Ok(0x81A));
         assert_eq!(id_of(" SkyrimClear "), Ok(0x81A));
-        assert_eq!(id_of("Face"), Ok(0xFACE), "a name wins over bare hex");
+        assert_eq!(id_of("Face"), Ok(0x1234), "a name wins over bare hex");
+        assert_eq!(id_of("0xFACE"), Ok(0xFACE));
+        assert_eq!(
+            id_of("FACE"),
+            Ok(0x1234),
+            "the name matches before the hex spelling"
+        );
         assert!(id_of("0x999").is_err());
         assert!(id_of("Nothing").is_err());
         assert!(id_of("").is_err());
