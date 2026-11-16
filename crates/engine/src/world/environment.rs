@@ -3,8 +3,8 @@
 //! The converter publishes the environment tables documented in db-schema.md ("Cell and
 //! Worldspace Environment", "Weather, Climate, Image Space and Lighting Templates"). They are
 //! optional: a database converted before them, or with a table of another shape, loads an empty
-//! map for that table and the engine keeps its built-in lighting. Nothing renders from this
-//! catalog yet; it is the reader later lighting and sky work consumes (#264).
+//! map for that table and the engine keeps its built-in lighting. The clock/climate sun path
+//! consumes this catalog; other lighting and sky work can consume the remaining fields (#264).
 
 use bevy::prelude::*;
 use rusqlite::{Connection, OpenFlags, Row};
@@ -103,7 +103,31 @@ pub struct WeatherFog {
     pub night_max: Option<f32>,
 }
 
-/// A weather (`WTHR`): fog, image spaces, `NAM0` colours and directional ambient by time of day.
+/// A weather's `DATA` block: the 19 raw bytes that drive wind, transitions, precipitation and
+/// lightning. A field is `None` when the block is absent or too short to hold it.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct WeatherData {
+    pub wind_speed: Option<u8>,
+    pub transition_delta: Option<u8>,
+    pub sun_glare: Option<u8>,
+    pub sun_damage: Option<u8>,
+    pub precipitation_begin: Option<u8>,
+    pub precipitation_end: Option<u8>,
+    pub lightning_begin: Option<u8>,
+    pub lightning_end: Option<u8>,
+    pub lightning_frequency: Option<u8>,
+    /// `DATA[11]`: `0x1` pleasant, `0x2` cloudy, `0x4` rainy, `0x8` snow.
+    pub classification_flags: Option<u8>,
+    /// `DATA[12..14]` as one colour; `None` unless all three are present.
+    pub lightning_color: Option<[u8; 3]>,
+    pub visual_effect_begin: Option<u8>,
+    pub visual_effect_end: Option<u8>,
+    pub wind_direction: Option<u8>,
+    pub wind_direction_range: Option<u8>,
+}
+
+/// A weather (`WTHR`): fog, image spaces, `NAM0` colours, directional ambient, the `DATA` block
+/// and the record links a consumer needs (`SPGD`, `RFCT`, `STAT`, `LENS`, `VOLI`).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Weather {
     pub editor_id: Option<String>,
@@ -113,6 +137,19 @@ pub struct Weather {
     /// `NAM0` colours by colour type (`sky_upper`, `fog_near`, `ambient`, `sunlight`, ...).
     pub colors: HashMap<(String, TimeOfDay), [u8; 3]>,
     pub directional_ambient: HashMap<TimeOfDay, DirectionalAmbient>,
+    pub data: WeatherData,
+    /// `MNAM` -> `SPGD`.
+    pub precipitation: Option<u32>,
+    /// `NNAM` -> `RFCT`.
+    pub visual_effect: Option<u32>,
+    /// The first `TNAM` -> `STAT`. The authored list is longer; only one id is published.
+    pub sky_static: Option<u32>,
+    /// `GNAM` -> `LENS`.
+    pub sun_glare_lens: Option<u32>,
+    /// `HNAM`, indexed like [`TimeOfDay::ALL`].
+    pub volumetric_lighting: [Option<u32>; 4],
+    /// The published `disabled_cloud_layers` bit mask (bit n set: cloud layer n is disabled).
+    pub disabled_cloud_layers: Option<u32>,
 }
 
 impl Weather {
@@ -156,6 +193,10 @@ pub struct EnvironmentCatalog {
     weathers: HashMap<u32, Weather>,
     image_spaces: HashMap<u32, ImageSpace>,
     climate_weathers: HashMap<u32, Vec<ClimateWeather>>,
+    sun_timings: HashMap<u32, crate::sun::SunTiming>,
+    parent_worlds: HashMap<u32, u32>,
+    /// The pack's winning sun GMSTs in `sun::SUN_KEYS` order; `None` where the pack has none.
+    sun_settings: [Option<f32>; 5],
 }
 
 /// A directional ambient block's 22 columns after `prefix`.
@@ -242,6 +283,7 @@ impl EnvironmentCatalog {
         Ok(Self::from_connection(&connection))
     }
 
+    /// Load optional authored tables and sun game settings without requiring a complete pack.
     pub fn from_connection(connection: &Connection) -> Self {
         let cells = read(
             connection,
@@ -330,6 +372,14 @@ impl EnvironmentCatalog {
                 ))
             },
         );
+        let parent_worlds = read(
+            connection,
+            "SELECT id, parent_world FROM worldspaces WHERE parent_world IS NOT NULL",
+            "worldspaces",
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        );
+        let sun_timings = read_sun_timings(connection);
+        let sun_settings = read_sun_settings(connection);
         let weathers = read_weathers(connection);
         let mut climate_weathers: HashMap<u32, Vec<ClimateWeather>> = HashMap::new();
         for (climate, entry) in read_rows(
@@ -367,6 +417,9 @@ impl EnvironmentCatalog {
             weathers,
             image_spaces,
             climate_weathers,
+            sun_timings,
+            parent_worlds,
+            sun_settings,
         }
     }
 
@@ -391,6 +444,51 @@ impl EnvironmentCatalog {
         self.image_spaces.get(&id)
     }
 
+    /// Resolve WRLD PNAM bit 0x10 (use parent's climate). Missing parents or cycles return None.
+    /// The catalog size bounds traversal without allocating a visited set each frame.
+    pub fn worldspace_climate(&self, mut worldspace: u32) -> Option<u32> {
+        for _ in 0..=self.worldspaces.len() {
+            let environment = self.worldspaces.get(&worldspace)?;
+            if environment.parent_flags.unwrap_or(0) & 0x10 == 0 {
+                return environment.climate;
+            }
+            worldspace = *self.parent_worlds.get(&worldspace)?;
+        }
+        None
+    }
+
+    /// Authored TNAM in ten-minute units, absent for incomplete or invalid climates.
+    pub fn sun_timing(&self, climate_id: u32) -> Option<crate::sun::SunTiming> {
+        self.sun_timings.get(&climate_id).copied()
+    }
+
+    /// Winning GMST sun settings in `sun::SUN_KEYS` order. A key the pack lacks stays `None`;
+    /// `sun::SunSettings::resolve` then uses the retail exe default for it (RF-SUN-003).
+    pub fn sun_settings(&self) -> [Option<f32>; 5] {
+        self.sun_settings
+    }
+
+    /// Test catalog with one worldspace climate, its sun timing and the given GMSTs.
+    #[cfg(test)]
+    pub(crate) fn with_sun_for_tests(
+        worldspace: u32,
+        climate: u32,
+        timing: crate::sun::SunTiming,
+        settings: [Option<f32>; 5],
+    ) -> Self {
+        let mut catalog = Self::default();
+        catalog.worldspaces.insert(
+            worldspace,
+            WorldspaceEnvironment {
+                climate: Some(climate),
+                ..Default::default()
+            },
+        );
+        catalog.sun_timings.insert(climate, timing);
+        catalog.sun_settings = settings;
+        catalog
+    }
+
     /// A climate's weather list in authored order; empty when unknown.
     pub fn climate_weathers(&self, climate_id: u32) -> &[ClimateWeather] {
         self.climate_weathers
@@ -399,12 +497,182 @@ impl EnvironmentCatalog {
     }
 }
 
+/// Retain good climate rows when one optional TNAM row is incomplete or malformed.
+fn read_sun_timings(connection: &Connection) -> HashMap<u32, crate::sun::SunTiming> {
+    let mut timings = HashMap::new();
+    let Ok(mut query) = connection
+        .prepare("SELECT id, sunrise_begin, sunrise_end, sunset_begin, sunset_end FROM climates")
+    else {
+        return timings;
+    };
+    let Ok(rows) = query.query_map([], |row| {
+        Ok((
+            row.get::<_, u32>(0)?,
+            [
+                row.get::<_, u8>(1)?,
+                row.get::<_, u8>(2)?,
+                row.get::<_, u8>(3)?,
+                row.get::<_, u8>(4)?,
+            ],
+        ))
+    }) else {
+        return timings;
+    };
+    let mut invalid = 0;
+    for row in rows {
+        match row {
+            Ok((id, values)) if crate::sun::SunTiming(values).valid() => {
+                timings.insert(id, crate::sun::SunTiming(values));
+            }
+            _ => invalid += 1,
+        }
+    }
+    if invalid > 0 {
+        eprintln!(
+            "warning: environment: ignored {invalid} unusable climate sun timings; those climates get no sun path"
+        );
+    }
+    timings
+}
+
+/// Read winning canonical GMST payloads already published by the converter. A corrupt optional
+/// record must not discard valid neighbors, and a missing table or record leaves its key `None`.
+fn read_sun_settings(connection: &Connection) -> [Option<f32>; 5] {
+    let mut settings = [None; 5];
+    let Ok(mut query) = connection
+        .prepare("SELECT data FROM records WHERE record_type='GMST' ORDER BY load_order, form_id")
+    else {
+        return settings;
+    };
+    let Ok(rows) = query.query_map([], |row| row.get::<_, Vec<u8>>(0)) else {
+        return settings;
+    };
+    let mut invalid = 0;
+    for row in rows {
+        let Ok(bytes) = row else {
+            invalid += 1;
+            continue;
+        };
+        let mut aligned = rkyv::util::AlignedVec::<16>::with_capacity(bytes.len());
+        aligned.extend_from_slice(&bytes);
+        let Ok(record) =
+            rkyv::from_bytes::<shared::records::ArchivedRecordData, rkyv::rancor::Error>(&aligned)
+        else {
+            invalid += 1;
+            continue;
+        };
+        let mut edids = record.subrecords.iter().filter(|sub| sub.tag == *b"EDID");
+        let Some(edid) = edids.next() else {
+            continue;
+        };
+        let Ok(name) = std::str::from_utf8(&edid.data) else {
+            continue;
+        };
+        let Some(index) = crate::sun::SUN_KEYS
+            .iter()
+            .position(|key| key.eq_ignore_ascii_case(name.trim_end_matches('\0')))
+        else {
+            continue;
+        };
+        let mut blocks = record.subrecords.iter().filter(|sub| sub.tag == *b"DATA");
+        let value = blocks
+            .next()
+            .and_then(|sub| <[u8; 4]>::try_from(sub.data.as_slice()).ok())
+            .map(f32::from_le_bytes);
+        if edids.next().is_none()
+            && blocks.next().is_none()
+            && let Some(value) = value.filter(|v| crate::sun::SunSettings::valid(index, *v))
+        {
+            settings[index] = Some(value);
+        } else {
+            invalid += 1;
+        }
+    }
+    if invalid > 0 {
+        eprintln!(
+            "warning: environment: ignored {invalid} unusable optional GMST sun inputs; retaining valid settings"
+        );
+    }
+    settings
+}
+
+/// The `weathers` columns behind [`WeatherData`], in read order.
+const WEATHER_DATA_COLUMNS: [&str; 17] = [
+    "wind_speed",
+    "transition_delta",
+    "sun_glare",
+    "sun_damage",
+    "precipitation_begin",
+    "precipitation_end",
+    "lightning_begin",
+    "lightning_end",
+    "lightning_frequency",
+    "classification_flags",
+    "lightning_r",
+    "lightning_g",
+    "lightning_b",
+    "visual_effect_begin",
+    "visual_effect_end",
+    "wind_direction",
+    "wind_direction_range",
+];
+
+/// The weather record links, in read order.
+const WEATHER_LINK_COLUMNS: [&str; 8] = [
+    "precipitation_id",
+    "visual_effect_id",
+    "sky_static_id",
+    "sun_glare_lens_id",
+    "volumetric_lighting_sunrise_id",
+    "volumetric_lighting_day_id",
+    "volumetric_lighting_sunset_id",
+    "volumetric_lighting_night_id",
+];
+
+/// Other published `weathers` columns, read after the links.
+const WEATHER_EXTRA_COLUMNS: [&str; 1] = ["disabled_cloud_layers"];
+
+/// The names `weathers` actually has. Empty when the table is absent.
+fn weather_column_names(connection: &Connection) -> Vec<String> {
+    let Ok(mut statement) = connection.prepare("SELECT name FROM pragma_table_info('weathers')")
+    else {
+        return Vec::new();
+    };
+    let Ok(rows) = statement.query_map([], |row| row.get::<_, String>(0)) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
+}
+
 fn read_weathers(connection: &Connection) -> HashMap<u32, Weather> {
+    // The `DATA` columns and the links are additive: a database converted before them reads
+    // NULL and every consumer keeps its fallback, as with the other optional environment tables.
+    let known = weather_column_names(connection);
+    let column = |name: &str| {
+        if known.iter().any(|known| known == name) {
+            name.to_owned()
+        } else {
+            format!("NULL AS {name}")
+        }
+    };
+    let data: Vec<String> = WEATHER_DATA_COLUMNS
+        .iter()
+        .map(|name| column(name))
+        .collect();
+    let links: Vec<String> = WEATHER_LINK_COLUMNS
+        .iter()
+        .chain(WEATHER_EXTRA_COLUMNS.iter())
+        .map(|name| column(name))
+        .collect();
     let mut weathers = read(
         connection,
-        "SELECT id, editor_id, fog_day_near, fog_day_far, fog_night_near, fog_night_far, \
-         fog_day_power, fog_night_power, fog_day_max, fog_night_max, image_space_sunrise_id, \
-         image_space_day_id, image_space_sunset_id, image_space_night_id FROM weathers",
+        &format!(
+            "SELECT id, editor_id, fog_day_near, fog_day_far, fog_night_near, fog_night_far, \
+             fog_day_power, fog_night_power, fog_day_max, fog_night_max, image_space_sunrise_id, \
+             image_space_day_id, image_space_sunset_id, image_space_night_id, {}, {} FROM weathers",
+            data.join(", "),
+            links.join(", "),
+        ),
         "weathers",
         |row| {
             Ok((
@@ -422,6 +690,29 @@ fn read_weathers(connection: &Connection) -> HashMap<u32, Weather> {
                         night_max: row.get(9)?,
                     },
                     image_spaces: [row.get(10)?, row.get(11)?, row.get(12)?, row.get(13)?],
+                    data: WeatherData {
+                        wind_speed: row.get(14)?,
+                        transition_delta: row.get(15)?,
+                        sun_glare: row.get(16)?,
+                        sun_damage: row.get(17)?,
+                        precipitation_begin: row.get(18)?,
+                        precipitation_end: row.get(19)?,
+                        lightning_begin: row.get(20)?,
+                        lightning_end: row.get(21)?,
+                        lightning_frequency: row.get(22)?,
+                        classification_flags: row.get(23)?,
+                        lightning_color: rgb(row, 24)?,
+                        visual_effect_begin: row.get(27)?,
+                        visual_effect_end: row.get(28)?,
+                        wind_direction: row.get(29)?,
+                        wind_direction_range: row.get(30)?,
+                    },
+                    precipitation: row.get(31)?,
+                    visual_effect: row.get(32)?,
+                    sky_static: row.get(33)?,
+                    sun_glare_lens: row.get(34)?,
+                    volumetric_lighting: [row.get(35)?, row.get(36)?, row.get(37)?, row.get(38)?],
+                    disabled_cloud_layers: row.get(39)?,
                     ..Default::default()
                 },
             ))
@@ -498,6 +789,55 @@ fn read_rows<T>(
 mod tests {
     use super::*;
 
+    /// A child uses the parent climate only when PNAM requests it; cycles are safely absent.
+    #[test]
+    fn sun_climate_respects_parent_flags_and_bounds_cycles() {
+        let connection = Connection::open_in_memory().unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        connection.execute_batch("INSERT INTO worldspaces(id,editor_id,parent_world,flags) VALUES (100,'parent',NULL,0),(101,'inherit',100,0),(102,'own',100,0),(103,'cycle',103,0),(104,'missing',999,0);
+            INSERT INTO worldspace_environment(worldspace_id,parent_flags,climate_id) VALUES (100,0,123),(101,16,456),(102,0,456),(103,16,123),(104,16,123);").unwrap();
+        let catalog = EnvironmentCatalog::from_connection(&connection);
+        assert_eq!(catalog.worldspace_climate(101), Some(123));
+        assert_eq!(catalog.worldspace_climate(102), Some(456));
+        assert_eq!(catalog.worldspace_climate(103), None);
+        assert_eq!(catalog.worldspace_climate(104), None);
+        assert_eq!(catalog.worldspace_climate(999), None);
+    }
+
+    /// Synthetic optional records are read independently; malformed neighbors preserve good data.
+    #[test]
+    fn sun_catalog_reads_winning_settings_and_retains_valid_neighbors() {
+        let connection = Connection::open_in_memory().unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        connection.execute_batch("INSERT INTO climates(id,sunrise_begin,sunrise_end,sunset_begin,sunset_end) VALUES (123,18,42,108,132),(456,200,1,2,3),(789,NULL,NULL,NULL,NULL);").unwrap();
+        for (id, name, value) in [
+            (1, "fSunYExtreme", 40.0_f32),
+            (2, "fSunZExtreme", -150.0),
+            (3, "fSunDirXExtreme", 200.0),
+            (4, "fSunAlphaTransTime", 0.5),
+            (5, "fSunXExtreme", 0.0),
+        ] {
+            let bytes = converter::esm::extractors::serialize_subrecords(&[
+                (b"EDID".to_vec(), format!("{name}\0").into_bytes()),
+                (b"DATA".to_vec(), value.to_le_bytes().to_vec()),
+            ]);
+            connection.execute("INSERT INTO records(form_id,record_type,load_order,data) VALUES(?1,'GMST',0,?2)",rusqlite::params![id,bytes]).unwrap();
+        }
+        connection.execute("INSERT INTO records(form_id,record_type,load_order,data) VALUES(6,'GMST',0,X'010203')",[]).unwrap();
+        let catalog = EnvironmentCatalog::from_connection(&connection);
+        assert_eq!(
+            catalog.sun_timing(123),
+            Some(crate::sun::SunTiming([18, 42, 108, 132]))
+        );
+        assert_eq!(catalog.sun_timing(456), None);
+        assert_eq!(catalog.sun_timing(789), None);
+        // The invalid fSunXExtreme record (0.0) leaves that key absent; nothing replaces it.
+        assert_eq!(
+            catalog.sun_settings(),
+            [None, Some(40.0), Some(-150.0), Some(200.0), Some(0.5)]
+        );
+    }
+
     #[test]
     fn a_database_without_the_tables_gives_an_empty_catalog() {
         let connection = Connection::open_in_memory().unwrap();
@@ -525,6 +865,150 @@ mod tests {
         assert!(catalog.cell_lighting(1).is_none());
         assert!(catalog.worldspace(60).is_none());
         assert!(catalog.weather(7).is_none());
+    }
+
+    #[test]
+    fn published_weather_data_and_links_reach_the_catalog() {
+        let connection = Connection::open_in_memory().unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO weathers(id, editor_id, fog_day_near, fog_day_far, fog_night_near, \
+                 fog_night_far, fog_day_power, fog_night_power, fog_day_max, fog_night_max, \
+                 image_space_sunrise_id, image_space_day_id, image_space_sunset_id, \
+                 image_space_night_id, wind_speed, transition_delta, sun_glare, sun_damage, \
+                 precipitation_begin, precipitation_end, lightning_begin, lightning_end, \
+                 lightning_frequency, classification_flags, lightning_r, lightning_g, \
+                 lightning_b, visual_effect_begin, visual_effect_end, wind_direction, \
+                 wind_direction_range, precipitation_id, visual_effect_id, sky_static_id, \
+                 sun_glare_lens_id, volumetric_lighting_sunrise_id, volumetric_lighting_day_id, \
+                 volumetric_lighting_sunset_id, volumetric_lighting_night_id, \
+                 disabled_cloud_layers) \
+                 VALUES (2074, 'SkyrimClear', 0, 80000, 0, 40000, 0.4, 0.4, 0.85, 0.85, \
+                 101, 102, 103, 104, 25, 125, 255, 0, 6, 7, 8, 9, 10, 1, 200, 100, 50, \
+                 15, 16, 200, 10, 900, 901, 902, 903, 904, 905, 906, 907, 4024925952);",
+            )
+            .unwrap();
+        let catalog = EnvironmentCatalog::from_connection(&connection);
+        let weather = catalog.weather(2074).unwrap();
+        assert_eq!(weather.data.wind_speed, Some(25));
+        assert_eq!(weather.data.transition_delta, Some(125));
+        assert_eq!(weather.data.sun_glare, Some(255));
+        assert_eq!(weather.data.sun_damage, Some(0));
+        assert_eq!(weather.data.precipitation_begin, Some(6));
+        assert_eq!(weather.data.precipitation_end, Some(7));
+        assert_eq!(weather.data.lightning_begin, Some(8));
+        assert_eq!(weather.data.lightning_end, Some(9));
+        assert_eq!(weather.data.lightning_frequency, Some(10));
+        assert_eq!(weather.data.classification_flags, Some(1));
+        assert_eq!(weather.data.lightning_color, Some([200, 100, 50]));
+        assert_eq!(weather.data.visual_effect_begin, Some(15));
+        assert_eq!(weather.data.visual_effect_end, Some(16));
+        assert_eq!(weather.data.wind_direction, Some(200));
+        assert_eq!(weather.data.wind_direction_range, Some(10));
+        assert_eq!(weather.precipitation, Some(900));
+        assert_eq!(weather.visual_effect, Some(901));
+        assert_eq!(weather.sky_static, Some(902));
+        assert_eq!(weather.sun_glare_lens, Some(903));
+        assert_eq!(
+            weather.volumetric_lighting,
+            [Some(904), Some(905), Some(906), Some(907)]
+        );
+        assert_eq!(weather.disabled_cloud_layers, Some(4_024_925_952));
+    }
+
+    /// A raw source row: `SkyrimClear` as the v0.1.0 candidate pack stores it (read with
+    /// `sqlite3 -readonly`, `select * from weathers where editor_id='SkyrimClear'`). Every
+    /// value below is copied from that row, NULL links included, so a column swap or a wrong
+    /// type shows here. The distinct-value test above guards the column order.
+    #[test]
+    fn the_skyrim_clear_row_from_a_real_pack_reads_back_unchanged() {
+        let connection = Connection::open_in_memory().unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO weathers(id, editor_id, fog_day_near, fog_day_far, fog_night_near, \
+                 fog_night_far, fog_day_power, fog_night_power, fog_day_max, fog_night_max, \
+                 wind_speed, transition_delta, sun_glare, sun_damage, precipitation_begin, \
+                 precipitation_end, lightning_begin, lightning_end, lightning_frequency, \
+                 classification_flags, lightning_r, lightning_g, lightning_b, \
+                 visual_effect_begin, visual_effect_end, wind_direction, wind_direction_range, \
+                 disabled_cloud_layers, precipitation_id, visual_effect_id, sky_static_id, \
+                 sun_glare_lens_id, image_space_sunrise_id, image_space_day_id, \
+                 image_space_sunset_id, image_space_night_id, volumetric_lighting_sunrise_id, \
+                 volumetric_lighting_day_id, volumetric_lighting_sunset_id, \
+                 volumetric_lighting_night_id) \
+                 VALUES (2074, 'SkyrimClear', 0.0, 80000.0, 0.0, 40000.0, 0.40000000596046448, \
+                 0.40000000596046448, 0.85000002384185791, 0.85000002384185791, 25, 125, 191, \
+                 255, 0, 0, 0, 0, 255, 1, 0, 0, 0, 0, 0, 43, 43, 4024925952, NULL, NULL, \
+                 1098961, NULL, 819720, 77704, 819721, 819722, 16780627, 16780625, 16780626, \
+                 16780632);",
+            )
+            .unwrap();
+        let catalog = EnvironmentCatalog::from_connection(&connection);
+        let weather = catalog.weather(2074).unwrap();
+        assert_eq!(weather.editor_id.as_deref(), Some("SkyrimClear"));
+        assert_eq!(weather.fog.day_far, Some(80_000.0));
+        assert_eq!(weather.fog.night_far, Some(40_000.0));
+        assert_eq!(
+            weather.image_spaces,
+            [Some(819_720), Some(77_704), Some(819_721), Some(819_722)]
+        );
+        let data = weather.data;
+        assert_eq!(
+            (
+                data.wind_speed,
+                data.transition_delta,
+                data.sun_glare,
+                data.sun_damage
+            ),
+            (Some(25), Some(125), Some(191), Some(255))
+        );
+        assert_eq!(data.lightning_frequency, Some(255));
+        assert_eq!(data.classification_flags, Some(1));
+        assert_eq!(data.lightning_color, Some([0, 0, 0]));
+        assert_eq!(
+            (data.wind_direction, data.wind_direction_range),
+            (Some(43), Some(43))
+        );
+        assert_eq!(weather.precipitation, None);
+        assert_eq!(weather.visual_effect, None);
+        assert_eq!(weather.sky_static, Some(1_098_961));
+        assert_eq!(weather.sun_glare_lens, None);
+        assert_eq!(
+            weather.volumetric_lighting,
+            [
+                Some(16_780_627),
+                Some(16_780_625),
+                Some(16_780_626),
+                Some(16_780_632)
+            ]
+        );
+        assert_eq!(weather.disabled_cloud_layers, Some(4_024_925_952));
+    }
+
+    #[test]
+    fn a_weathers_table_without_the_data_columns_still_reads_fog() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE weathers(id INTEGER PRIMARY KEY, editor_id TEXT, fog_day_near REAL, \
+                 fog_day_far REAL, fog_night_near REAL, fog_night_far REAL, fog_day_power REAL, \
+                 fog_night_power REAL, fog_day_max REAL, fog_night_max REAL, \
+                 image_space_sunrise_id INTEGER, image_space_day_id INTEGER, \
+                 image_space_sunset_id INTEGER, image_space_night_id INTEGER);
+                 INSERT INTO weathers VALUES(1, 'Old', 0, 100, 0, 50, 0.2, 0.3, 0.4, 0.5, \
+                 NULL, NULL, NULL, NULL);",
+            )
+            .unwrap();
+        let catalog = EnvironmentCatalog::from_connection(&connection);
+        let weather = catalog.weather(1).unwrap();
+        assert_eq!(weather.fog.day_far, Some(100.0));
+        assert_eq!(weather.fog.night_power, Some(0.3));
+        assert_eq!(weather.data, WeatherData::default());
+        assert_eq!(weather.precipitation, None);
+        assert_eq!(weather.volumetric_lighting, [None; 4]);
+        assert_eq!(weather.disabled_cloud_layers, None);
     }
 
     #[test]

@@ -28,12 +28,19 @@ per-record materials or directional snow.
    slot gate. Invalid array boundaries are warned and omitted.
 2. Ordinary mesh conversion computes each geometry block's retail 3D Index from the source NIF
    and writes it on the exported lighting primitive as `extras.mudcrabGeometryIndex`
-   (contract `object-texture-swap-geometry-index-v1`). The number comes from the NIF, not from
-   the order of meshes in the GLB, so exporter ordering does not matter. Shapes the converter
-   excludes or whose shader is not lighting still take part in the count and carry no tag. No
-   tag is written when the count is not provable (several scene roots, a block reached twice, an
-   unparsed block), for skinned models, or for a static fallback: a fallback keeps no
-   per-shape proof, so such a mesh receives no swaps and keeps its material.
+   (contracts `object-texture-swap-geometry-index-v1` and `-v2`). The number comes from the NIF,
+   not from the order of meshes in the GLB, so exporter ordering does not matter. Shapes the
+   converter excludes or whose shader is not lighting still take part in the count and carry no
+   tag. No tag is written when the count is not provable (several scene roots, a block reached
+   twice, an unparsed block in a child list, or an unparsed block of any type other than Havok
+   collision), for skinned models, or for a static fallback: a fallback keeps no per-shape proof,
+   so such a mesh receives no swaps and keeps its material.
+   Havok blocks (`bhk*` and `hkPackedNiTriStripsData`) are the one known exception. The render
+   parser does not parse them, but none of them derives from `NiAVObject`: collision hangs off a
+   scene object's collision reference, never off a node's child list, so it cannot change the
+   count. Contract `-v2` ([#723](https://github.com/Mudcrab-Team/mudcrab/issues/723)) tags
+   collidable statics; under `-v1` every NIF with collision stayed untagged, which left
+   1,588 of 1,607 swap bases in the `4c30b187` candidate pack without swaps.
 3. `AssetCatalog` loads the optional projection once and resolves each entry's TXST slots from
    `texture_sets`. `streaming::spawn_cell` attaches each base's immutable input to its placed
    root. Missing tables preserve old-package behavior.
@@ -89,6 +96,12 @@ read for this count.
 - Retail behaviour for a MODS entry whose TXST link does not resolve was not traced (RF-TEX has no
   entry). The engine reports it and keeps the model's material.
 - The FormID 0x28 of the NullTextureSet is medium confidence (RF-TEX-005); the hide itself is high.
+- A tagged lighting shape that the NIF material plugin draws with a native depth material (a decal,
+  or a shape without depth test or depth write) is not swapped. `apply_swaps` reaches only
+  `StandardMaterial` surfaces. Its entry applies to nothing, and a model whose only tagged shapes
+  are such surfaces reports the "no geometry-index tags" reason. Retail swaps these shapes too
+  (RF-TEX-003). Examples: shape 0 of `Landscape\DirtCliffs\DirtCliffs01.nif` and of
+  `Landscape\Mountains\MountainTrim02.nif`, and shape 1 of `Landscape\Rocks\RockPileM02.nif`.
 - STAT DNAM's MATO link, maximum angle and SSE considered-snow flag, and MATO's projection,
   falloff, UV, colour and pass flags remain outside this implementation. #435's existing local
   prototype owns that continuation. No maximum-angle cutoff, snow colour or layer is invented.
@@ -100,7 +113,10 @@ read for this count.
 
 The table is additive; world schema stays unchanged. In-house adapter 14 and legacy projection 7
 identify the metadata change. `object-texture-swap-geometry-index-v1` enters the mesh output
-contract, so normal conversion invalidates old GLB reuse. Metadata-only rebuilding requires a
+contract, so normal conversion invalidates old GLB reuse. `object-texture-swap-geometry-index-v2`
+changes only the `nif` proof again (the DDS and PEX proofs stay the same), so a pack converted
+under `-v1` needs a normal conversion of its meshes; a metadata rebuild with `--reuse-assets`
+refuses its `nif` kind. Metadata-only rebuilding requires a
 retained mesh configuration proof that matches this contract; a proof from before this contract is
 rejected before publication and requires normal conversion. At runtime, a GLB without tags
 reports `Unsupported`; metadata alone never certifies a shape. Use a separate output, never
@@ -110,7 +126,8 @@ Procedural CPU fixtures cover both readers' relocated full/light-plugin links an
 overrides, MODS truncation, optional tables, unchanged TXST slots, kept entry order and signed
 indices, the three retail STATs 101534, 126810 and 126829, a multi-entry list applied by index,
 index -1, a repeated index, an untagged (non-lighting) shape that is counted but not swapped, an
-empty TXST slot, a NullTextureSet hide, a pre-order index over a built scene tree and the cases
+empty TXST slot, a NullTextureSet hide, a collidable static that is tagged and swapped, a
+non-Havok unparsed block that refuses the tag, a pre-order index over a built scene tree and the cases
 that refuse a count, placed-root plumbing, actual NIF conversion/glTF loading/scene
 instantiation, shared mesh identity, distinct bound image bytes, same-input reuse,
 unload/reload, missing images, cube/non-colour rejection, old scene tags, aggregated reports and the
