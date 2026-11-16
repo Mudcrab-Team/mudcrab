@@ -72,7 +72,7 @@ Promotion happens in the open, in an issue or a pull request, so everyone can se
 - **Maintainer to Core:** sustained, good judgment on reviews and design, sponsored by two Core members, with no objection from other Core members within a week.
 - **Owner hat:** a Core decision, with no objection within a week. Keep the number of Owners small.
 
-A promotion uses the same checklist as adding a person: change the grant, and for Core, change CODEOWNERS in the same change.
+A promotion uses the same checklist as adding a person: change the grant, and for Core, change CODEOWNERS in the same change. For the Owner hat, an Owner also gives the person the organization owner role and the repository Admin role. They are already in CODEOWNERS as Core. Removing the hat reverses both and leaves the Core grant.
 
 ## Stepping back and leaving
 
@@ -82,8 +82,8 @@ A promotion uses the same checklist as adding a person: change the grant, and fo
 
 **Checklist for removing access (an Owner does this):**
 
-1. Lower or remove the repository grant (direct collaborator role, or team membership after teams exist). Remove the organization owner role if they held the Owner hat.
-2. In the same change, open a pull request that removes their handle from every line of [CODEOWNERS](.github/CODEOWNERS).
+1. For alumni and removals, remove the repository grant completely (direct collaborator role, or team membership after teams exist) and remove them from the organization. Remove the organization owner role if they held the Owner hat. Lower a grant instead of removing it only for a rank change that Core agreed, for example Core to Maintainer.
+2. In the same change, open a pull request that removes their handle from every line of [CODEOWNERS](.github/CODEOWNERS), if it is there.
 3. Unassign them from open issues, and label work they left behind `help wanted` so others can pick it up.
 4. Comment on the issue that records the change with what was removed and the date.
 
@@ -97,4 +97,4 @@ When teams exist, each rank with GitHub access maps to a team in the `Mudcrab-Te
 
 ## As the project grows
 
-When an area has a clear expert, such as the converter or the renderer, add a path-scoped line to CODEOWNERS (for example `/crates/converter/ @Mudcrab-Team/converter-owners`) and keep the Core fallback. Add extra approval requirements only for changes that are controversial, not for everything.
+When an area has a clear expert, such as the converter or the renderer, a path-scoped line in CODEOWNERS can name them. In CODEOWNERS the last matching line replaces the catch-all, and an approval from any one owner on that line is enough. So a path-scoped owner must be a Core member, and the line also names Core, for example `/crates/converter/ @Mudcrab-Team/converter-owners @Mudcrab-Team/core`. Otherwise someone outside Core could approve changes to that path alone. Add extra approval requirements only for changes that are controversial, not for everything.
