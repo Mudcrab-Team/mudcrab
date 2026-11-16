@@ -4337,6 +4337,11 @@ mod tests {
         // beside the engine arguments it builds. Only complete option literals
         // outside its parser declarations are engine arguments.
         let harness_tool = is_perf_harness(path);
+        // This capture comparison removes enable switches before assembling engine arguments.
+        // Scope its exact literal-only filter to this tool; emitted options remain audited.
+        let capture_tool = path
+            .file_name()
+            .is_some_and(|name| name == "capture_tonemap_tuning.py");
         let engine_lines: String;
         let scanned = if harness_tool {
             engine_lines = emitted_python_options(script);
@@ -4348,6 +4353,13 @@ mod tests {
                     line.split(|c: char| !c.is_alphanumeric())
                         .any(|word| word == "engine")
                 })
+                .collect::<Vec<_>>()
+                .join("\n");
+            engine_lines.as_str()
+        } else if capture_tool {
+            engine_lines = script
+                .lines()
+                .filter(|line| line.trim() != r#"if argument not in ("--grass", "--no-grass")]"#)
                 .collect::<Vec<_>>()
                 .join("\n");
             engine_lines.as_str()
@@ -4512,6 +4524,33 @@ mod tests {
             index += 1;
         }
         emitted.join(" ")
+    }
+
+    /// Capture normalization compares disabled flags locally while emitted options stay checked.
+    #[test]
+    fn the_capture_audit_distinguishes_removed_switches_from_emitted_options() {
+        let capture = std::path::Path::new("capture_tonemap_tuning.py");
+        let filter = r#"arguments = [argument for argument in arguments
+            if argument not in ("--grass", "--no-grass")]
+            arguments.append("--grass")"#;
+        assert_eq!(checked_script_engine_flags(filter, capture), 1);
+        for flag in ["--no-grass", "--unknown-engine-option"] {
+            let emitted = format!("{filter}\ncommand = [engine,\n    \"{flag}\"]");
+            if parser_options().contains(&flag) {
+                assert_eq!(checked_script_engine_flags(&emitted, capture), 2);
+            } else {
+                assert!(
+                    std::panic::catch_unwind(|| checked_script_engine_flags(&emitted, capture))
+                        .is_err()
+                );
+            }
+        }
+        let other = std::path::Path::new("another_capture.py");
+        if !parser_options().contains(&"--no-grass") {
+            assert!(
+                std::panic::catch_unwind(|| checked_script_engine_flags(filter, other)).is_err()
+            );
+        }
     }
 
     #[test]
