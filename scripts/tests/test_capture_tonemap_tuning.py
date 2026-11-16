@@ -112,12 +112,11 @@ class CaptureEvidenceTests(unittest.TestCase):
                 changed["captured_frame"]["work"]["grass_pending"] = value
                 self.validate(changed)
 
-    def test_missing_grass_pending_is_rejected(self):
-        """A receipt needs explicit boolean grass readiness evidence."""
+    def test_missing_grass_pending_is_accepted_for_receipts_without_grass(self):
+        """Approved receipts from builds without grass streaming carry no grass_pending field."""
         changed = copy.deepcopy(self.receipt)
         del changed["captured_frame"]["work"]["grass_pending"]
-        with self.assertRaisesRegex(ValueError, "grass_pending"):
-            self.validate(changed)
+        self.assertTrue(self.validate(changed)["passed"])
 
     def test_settled_receipt_passes_and_pose_or_fov_drift_fails(self):
         self.assertTrue(self.validate(self.receipt)["passed"])

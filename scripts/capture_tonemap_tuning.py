@@ -134,7 +134,10 @@ def validate_capture(receipt, baseline, camera, image, expected=None, require_gr
     require(isinstance(frame, dict), "Missing captured-frame evidence")
     work = frame.get("work", {})
     require(work.get("renderer_ready") is True, "Captured frame renderer is not ready")
-    require(work.get("grass_pending") is False, "Captured frame grass_pending must be boolean false")
+    # Receipts from builds without grass streaming have no grass_pending field;
+    # when the field is present it must be the boolean false.
+    if "grass_pending" in work:
+        require(work["grass_pending"] is False, "Captured frame grass_pending must be boolean false")
     require(MINIMUM_WORK_COUNTERS <= work.keys(), "Captured frame is missing readiness counters")
     for key, value in work.items():
         if key not in {"quiet_frames", "renderer_ready", "grass_pending"}:
