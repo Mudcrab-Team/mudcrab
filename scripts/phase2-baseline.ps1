@@ -484,14 +484,21 @@ function Get-FrameMetric($Report, [string]$Metric) {
 # counts the repeats whose report says `passed: false`, `runs` is every repeat of the window, and
 # `failed_gates` is the sorted union of the names in those reports' `thresholds` whose value is the
 # boolean `false`: the numeric thresholds beside them are neutralised in a baseline run, so a `false`
-# boolean is a real gate. A report that does not carry `passed` is not counted as a failed one.
+# boolean is a real gate, except the frame pass bar's two fields (see below). A report that does not
+# carry `passed` is not counted as a failed one.
 function Get-Acceptance($Reports) {
     $failedRuns = 0
     $failedGates = @()
     foreach ($report in $Reports) {
         if ($report.passed -eq $false) { $failedRuns++ }
         if ($null -eq $report.thresholds) { continue }
+        # `frame_pass_bar_required` is the --accept-frame-pass-bar setting, not a gate, and
+        # `frame_pass_bar_met` only gates a run that asked for it: with the switch off both read
+        # `false` on a passing run, so neither may be named as a cause.
+        $passBarRequired = $report.thresholds['frame_pass_bar_required'] -eq $true
         foreach ($name in @($report.thresholds.Keys)) {
+            if ($name -eq 'frame_pass_bar_required') { continue }
+            if ($name -eq 'frame_pass_bar_met' -and -not $passBarRequired) { continue }
             if ($report.thresholds[$name] -is [bool] -and -not $report.thresholds[$name]) { $failedGates += $name }
         }
     }
