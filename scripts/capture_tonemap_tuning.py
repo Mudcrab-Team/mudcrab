@@ -134,9 +134,10 @@ def validate_capture(receipt, baseline, camera, image, expected=None, require_gr
     require(isinstance(frame, dict), "Missing captured-frame evidence")
     work = frame.get("work", {})
     require(work.get("renderer_ready") is True, "Captured frame renderer is not ready")
+    require(work.get("grass_pending") is False, "Captured frame grass_pending must be boolean false")
     require(MINIMUM_WORK_COUNTERS <= work.keys(), "Captured frame is missing readiness counters")
     for key, value in work.items():
-        if key not in {"quiet_frames", "renderer_ready"}:
+        if key not in {"quiet_frames", "renderer_ready", "grass_pending"}:
             require(type(value) is int and value == 0, f"Captured-frame work remains: {key}={value!r}")
     require(frame.get("pending_specializations") == 0, "Captured-frame specializations are pending or unknown")
     for key in POSE_KEYS:
