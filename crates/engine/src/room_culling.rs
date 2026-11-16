@@ -970,8 +970,8 @@ impl Plugin for RoomCullingPlugin {
             Update,
             (
                 collect_loaded_graphs,
-                request_room_graphs,
                 drop_stale_graphs,
+                request_room_graphs,
             )
                 .chain()
                 .in_set(RoomGraphReadiness),
@@ -2323,6 +2323,29 @@ mod tests {
             mesh_list(&scene.app, scene.camera),
             vec![scene.near, scene.far, scene.loose]
         );
+    }
+
+    #[test]
+    fn replacing_an_interior_root_requests_its_graph_before_capture_readiness() {
+        AsyncComputeTaskPool::get_or_init(Default::default);
+        let mut scene = scene();
+        let old = scene.app.world().resource::<RoomCullingState>().graphs[&7].root;
+        scene.app.world_mut().despawn(old);
+        let replacement = scene
+            .app
+            .world_mut()
+            .spawn((StreamedCellRoot, CellRef(7)))
+            .id();
+        scene.app.world_mut().run_schedule(Update);
+        let state = scene.app.world().resource::<RoomCullingState>();
+        assert!(!state.graphs.contains_key(&7));
+        assert_eq!(
+            state.pending_reads(),
+            1,
+            "the replacement must hold the capture gate"
+        );
+        assert_eq!(state.failed_reads(), 0);
+        assert!(scene.app.world().get_entity(replacement).is_ok());
     }
 
     #[test]
