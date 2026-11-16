@@ -700,3 +700,94 @@ fn deferred_self_link_replay_and_history_share_source_headers() {
         .unwrap();
     assert_eq!(neighbor, 1);
 }
+
+/// Invalid movement settings keep the earlier value and leave their source alias reusable.
+#[test]
+fn malformed_gmst_values_preserve_native_and_published_winners() {
+    for bad_data in [vec![1], f32::NAN.to_le_bytes().to_vec(), Vec::new()] {
+        let root = tempfile::tempdir().unwrap();
+        let good = [
+            sub(b"EDID", b"fJumpHeightMin\0"),
+            sub(b"DATA", &76.0f32.to_le_bytes()),
+        ]
+        .concat();
+        plugin(
+            root.path(),
+            "Base.esm",
+            &[],
+            record(b"GMST", 0x800, 0, &good),
+        );
+        let mut bad = sub(b"EDID", b"fJumpHeightMin\0");
+        if !bad_data.is_empty() {
+            bad.extend(sub(b"DATA", &bad_data));
+        }
+        plugin(
+            root.path(),
+            "Broken.esp",
+            &["Base.esm"],
+            [
+                record(b"GMST", 0x0100_0810, 0, &bad),
+                record(b"GMST", 0x0100_0811, 0, &bad),
+                record(b"STAT", 0x0100_0810, 0, &sub(b"EDID", b"neighbor\0")),
+            ]
+            .concat(),
+        );
+        let paths = [root.path().join("Base.esm"), root.path().join("Broken.esp")];
+        let db = root.path().join("world.db");
+        let (native, outcome) = EsmParser::convert_form_key_plugins(&paths, &db).unwrap();
+        assert_eq!(
+            outcome,
+            converter::esm::form_key_merge::LegacyWriterOutcome::Published
+        );
+        let winner = native
+            .records
+            .values()
+            .find(|r| r.source.record_type == *b"GMST")
+            .unwrap();
+        assert_eq!(
+            winner.source.load_order, 0,
+            "invalid GMST override must retain the previous valid native winner"
+        );
+        assert!(
+            winner
+                .source
+                .subrecords
+                .iter()
+                .any(|(tag, bytes)| tag == b"DATA" && bytes == &76.0f32.to_le_bytes())
+        );
+        assert_eq!(
+            native.records.len(),
+            2,
+            "rejected GMST must leave its source alias available to the valid neighbor"
+        );
+        assert_eq!(
+            native.warnings.len(),
+            1,
+            "one bounded warning per plugin: {:?}",
+            native.warnings
+        );
+        assert!(
+            native.warnings[0].contains("Broken.esp")
+                && native.warnings[0].contains("2 unusable record candidate"),
+            "{:?}",
+            native.warnings
+        );
+        let conn = Connection::open(db).unwrap();
+        let value: f64 = conn
+            .query_row(
+                "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(value, 76.0);
+        let ids: Vec<u32> = conn
+            .prepare("SELECT form_id FROM records ORDER BY form_id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(ids, [0x800, 0x0100_0810]);
+    }
+}
