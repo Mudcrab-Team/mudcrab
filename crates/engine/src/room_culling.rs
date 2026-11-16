@@ -442,6 +442,8 @@ pub struct RoomGraph {
     pub(crate) authored: Option<assignment::Assignments>,
     /// Full export with authored endpoint provenance and complete reference identities.
     pub supports_unbounded: bool,
+    /// Explicit per-cell metadata says some authored geometry could not be exported.
+    pub incomplete: bool,
     pub rooms: Vec<Room>,
     pub portals: Vec<Portal>,
     /// `room_links` as undirected edges between room indices.
@@ -539,7 +541,7 @@ impl RoomGraph {
     fn visibility_volumes(&self, camera: Vec3, clip_from_local: Mat4) -> Option<CellVisibility> {
         let full = VisibilityVolume::camera(clip_from_local)?;
         let room_count = self.rooms.len();
-        if room_count == 0 {
+        if room_count == 0 || self.incomplete {
             return None;
         }
         if self.authored.as_ref().is_some_and(|authored| {
@@ -768,6 +770,21 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
     if graph.rooms.is_empty() {
         return Ok(graph);
     }
+    let completeness_present: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='room_graph_cells')",
+        [],
+        |row| row.get(0),
+    )?;
+    let complete: Option<bool> = if completeness_present {
+        connection.query_row(
+            "SELECT (SELECT complete FROM room_graph_cells WHERE cell_id=?1)",
+            [cell_id],
+            |row| row.get(0),
+        )?
+    } else {
+        None
+    };
+    graph.incomplete = complete == Some(false);
     let endpoint_columns: bool = connection.query_row(
         "SELECT count(*)=2 FROM pragma_table_info('room_portals') WHERE name IN ('unbounded_a','unbounded_b')", [], |row| row.get(0))?;
     let stats_present: bool = connection.query_row(
@@ -775,7 +792,7 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
         [],
         |row| row.get(0),
     )?;
-    graph.supports_unbounded = endpoint_columns && stats_present && connection.query_row(
+    graph.supports_unbounded = complete == Some(true) && endpoint_columns && stats_present && connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='visibility_version' AND value=2)", [], |row| row.get::<_,bool>(0))?;
     {
         let provenance = if graph.supports_unbounded {
@@ -1577,6 +1594,8 @@ mod tests {
                 "ALTER TABLE room_portals ADD COLUMN unbounded_a INTEGER NOT NULL DEFAULT 0;
              ALTER TABLE room_portals ADD COLUMN unbounded_b INTEGER NOT NULL DEFAULT 0;
              INSERT INTO room_graph_stats VALUES ('visibility_version',2);
+             CREATE TABLE room_graph_cells (cell_id INTEGER PRIMARY KEY,complete INTEGER NOT NULL);
+             INSERT INTO room_graph_cells VALUES (7,1);
              CREATE TABLE \"references\" (id INTEGER,cell_id INTEGER);
              INSERT INTO \"references\" VALUES (100,7),(101,8);
              INSERT INTO room_portals VALUES(10,7,0,0,0,0,0,0,4,6,1,NULL,0,1);",
@@ -1596,6 +1615,33 @@ mod tests {
             .unwrap();
         let graph = load_room_graph(&connection, 7).unwrap();
         assert_eq!(graph.portals[0].rooms[1], PortalSide::Unknown);
+    }
+
+    #[test]
+    fn incomplete_exported_cells_draw_all_without_disabling_complete_neighbors() {
+        let connection = database();
+        insert_room(&connection, 1, 7, [0.0; 3]);
+        insert_room(&connection, 2, 8, [0.0; 3]);
+        connection
+            .execute_batch(
+                "ALTER TABLE room_portals ADD COLUMN unbounded_a INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE room_portals ADD COLUMN unbounded_b INTEGER NOT NULL DEFAULT 0;
+             INSERT INTO room_graph_stats VALUES ('visibility_version',2);
+             CREATE TABLE room_graph_cells (cell_id INTEGER PRIMARY KEY, complete INTEGER NOT NULL);
+             INSERT INTO room_graph_cells VALUES (7,0),(8,1);
+             CREATE TABLE [references] (id INTEGER,cell_id INTEGER);",
+            )
+            .unwrap();
+        let camera = Vec3::splat(1000.0);
+        let incomplete = load_room_graph(&connection, 7).unwrap();
+        assert!(reached_rooms(&incomplete, camera, clip_from_local()).is_none());
+        let complete = load_room_graph(&connection, 8).unwrap();
+        assert!(reached_rooms(&complete, camera, clip_from_local()).is_some());
+        connection
+            .execute("DROP TABLE room_graph_cells", [])
+            .unwrap();
+        let legacy = load_room_graph(&connection, 8).unwrap();
+        assert!(reached_rooms(&legacy, camera, clip_from_local()).is_none());
     }
 
     #[test]
@@ -1756,6 +1802,7 @@ mod tests {
             ],
             links: vec![],
             unresolved_link_rooms: HashSet::new(),
+            incomplete: false,
             overlaps: vec![],
             membership: HashMap::new(),
             authored: None,
@@ -2010,6 +2057,7 @@ mod tests {
         park_portals(&mut rooms, &mut portals, &[0]);
         let graph = RoomGraph {
             unresolved_link_rooms: HashSet::new(),
+            incomplete: false,
             overlaps: overlap_links(&rooms),
             portals,
             rooms,
@@ -2144,6 +2192,7 @@ mod tests {
             portals: vec![doorway(10, Vec3::new(0.0, 0.0, 10.0), 3.0, [0, 1])],
             links: vec![],
             unresolved_link_rooms: HashSet::new(),
+            incomplete: false,
             overlaps: vec![],
             membership: HashMap::new(),
             authored: None,
@@ -2720,6 +2769,7 @@ mod tests {
             portals: vec![doorway(10, Vec3::new(0.0, 0.0, -10.0), 3.0, [0, 1])],
             links: vec![],
             unresolved_link_rooms: HashSet::new(),
+            incomplete: false,
             overlaps: vec![],
             membership: (0..3)
                 .map(|room| {
@@ -3032,6 +3082,7 @@ mod tests {
             portals,
             links: vec![],
             unresolved_link_rooms: HashSet::new(),
+            incomplete: false,
             overlaps: vec![],
             membership: HashMap::new(),
             authored: None,
@@ -3158,6 +3209,7 @@ mod tests {
             portals,
             links: vec![],
             unresolved_link_rooms: HashSet::new(),
+            incomplete: false,
             overlaps: overlap_links(&rooms),
             membership: HashMap::new(),
             authored: None,
@@ -3195,6 +3247,7 @@ mod tests {
         park_portals(&mut rooms, &mut portals, &[0, 1]);
         let graph = RoomGraph {
             unresolved_link_rooms: HashSet::new(),
+            incomplete: false,
             overlaps: overlap_links(&rooms),
             portals,
             rooms,
@@ -3215,6 +3268,7 @@ mod tests {
         park_portals(&mut rooms, &mut portals, &marked);
         RoomGraph {
             unresolved_link_rooms: HashSet::new(),
+            incomplete: false,
             overlaps: overlap_links(&rooms),
             portals,
             rooms,
@@ -3285,6 +3339,7 @@ mod tests {
             portals,
             links: vec![],
             unresolved_link_rooms: HashSet::new(),
+            incomplete: false,
             overlaps: overlap_links(&rooms),
             membership: HashMap::new(),
             authored: None,
@@ -3332,6 +3387,7 @@ mod tests {
             portals: vec![doorway(20, Vec3::new(0.0, -3000.0, -4000.0), 150.0, [2, 3])],
             links: vec![],
             unresolved_link_rooms: HashSet::new(),
+            incomplete: false,
             overlaps: overlap_links(&rooms),
             membership: HashMap::new(),
             authored: None,
@@ -3378,6 +3434,7 @@ mod tests {
             // A portal already joins the hall and the corridor, so the pair keeps the doorway's
             // narrowing and gets no implicit edge (as `load_room_graph` builds it).
             unresolved_link_rooms: HashSet::new(),
+            incomplete: false,
             overlaps: vec![(1, 2)],
             portals,
             rooms,
@@ -3405,6 +3462,7 @@ mod tests {
         park_portals(&mut rooms, &mut portals, &[0, 1, 2]);
         let graph = RoomGraph {
             unresolved_link_rooms: HashSet::new(),
+            incomplete: false,
             overlaps: overlap_links(&rooms),
             portals,
             rooms,

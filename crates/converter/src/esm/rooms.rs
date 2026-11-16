@@ -126,7 +126,7 @@ pub(crate) fn restore_portal_endpoint_provenance<'a>(
         if clear.execute([id])? == 0 {
             continue;
         }
-        if let Some(source) = source {
+        if let Some(source) = source.filter(|bytes| bytes.len().is_multiple_of(4)) {
             for (index, pair) in source.as_chunks::<8>().0.iter().enumerate() {
                 set.execute(params![
                     id,
