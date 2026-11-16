@@ -335,7 +335,8 @@ text uses Windows-1252. Both record readers publish the same UTF-8 text:
   (`crates/converter/src/esm/legacy_text.rs`). That covers `FULL` on every record type, and
   `DESC`, `RNAM` and others where the subrecord is unambiguous. This changed the legacy
   projection; version 4 introduced language/encoding. Version 5 also publishes every schema-declared
-  projectile/hazard placement and its base model (#498). The in-house adapter is version 13.
+  projectile/hazard placement and its base model (#498). Version 6 adds the STAT MODS alternate-texture
+  table (`base_texture_swaps`). The in-house adapter is version 14.
   Version-3 retained proofs are accepted only for their historical English setting; all older
   metadata rebuilds use the configured language. Retained assets keep their independent proof.
 
@@ -1587,6 +1588,33 @@ tables empty. `NPC_` bases are never written into `statics`.
 **These tables are optional and do not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`** (still 9):
 they only add tables, and consumers must check that they exist before reading them. No mandatory
 join is added to `REFERENCE_JOIN`; a database without them still opens and renders statics.
+### 18a. Worn Outfit Catalog (`actor-outfits.json`)
+
+A sidecar file beside the world database, not a table. It holds what each resolved `NPC_` base
+wears by default: `NPC_/DOFT` -> `OTFT/INAM` -> `ARMO/MODL` -> `ARMA`, with each armature matched to
+the base's race and sex by the same rule skin armor uses (exact or additional race first, then
+`DefaultRace`; `MOD3` for female with a `MOD2` fallback) and named as a converted `meshes/**.glb`
+scene. The type is `shared::actor_outfits::ActorOutfitCatalog`; `version` is 1.
+
+Each row is `npc_id`, `outfit_id` and `parts`. A part is `armo_id`, `armature_id`, `biped_mask`
+(`ARMA/BOD2` slots: body bit 2, hands bit 3, feet bit 7), `armature_race_id` and `scene`. A race
+armature wins its slots over a `DefaultRace` armature of the same `ARMO`. A part whose scene is not
+in the pack is skipped. `skipped` counts every item that did not become a part, by reason:
+`leveled_list`, `not_armor`, `item_missing`, `armor_without_armature`, `no_compatible_armature`,
+`armature_without_slots`, `armature_without_model`, `invalid_model_path`,
+`converted_model_missing`.
+
+Scope: the default outfit only. Leveled lists, inventory armor (`CNTO`) and the sleeping outfit
+(`SOFT`) are not resolved. An actor with a Use Inventory template and no own `DOFT` takes the
+template's outfit. The own `DOFT` wins when both exist (9 retail bases differ; not checked against
+the game).
+
+Producer: `converter derive-outfits <clone> --registry <packs.json> --clone-of <pack>` reads the
+records the pack already holds and writes `actor-outfits.json` and `actor-outfits-receipt.json`
+into an APFS clone of a registered pack. It reads no game data, needs no conversion, and refuses a
+registered pack as target. The engine reads the file if present, validates it whole, and spawns
+actors in their skin when it is absent or invalid.
+
 ### 19. Projection Omissions (`projection_omission_stats`, `projection_omission_samples`)
 
 The light and emittance projections write no row for a record whose data cannot supply one. Each
@@ -1636,3 +1664,44 @@ omissions. A database without the tables reports none.
 **These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`**: they only
 add tables, `create_tables` adds them to an older reused database, and the engine does not read
 them.
+
+### 20. Per-Base Texture Assignments (`base_texture_swaps`)
+
+Optional STAT MODS (alternate texture) projection; world schema version is unchanged.
+
+```sql
+CREATE TABLE base_texture_swaps (
+    base_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    shape_name TEXT NOT NULL,
+    shape_index INTEGER NOT NULL,
+    texture_set_id INTEGER NOT NULL,
+    disposition TEXT NOT NULL,
+    PRIMARY KEY (base_id, position)
+);
+```
+
+IDs use the reader's resolved load-order numbering. Every MODS entry gets a row, in authored
+order (`position`); no entry is dropped or gated. `shape_index` is the signed 3D Index: retail
+keys entries by it, skips -1 and lets a later entry with the same index win (RF-TEX-001), and the
+index counts geometry leaves in a pre-order depth-first walk of the model (RF-TEX-002).
+`shape_name` is the 3D Name (with its `:N` suffix) as record data; the retail apply path does not
+read it. `disposition` is `texture_set` (a live TXST; the runtime reads its slots from
+`texture_sets`), `null_texture_set` (the target is FormID 0x28, the engine's NullTextureSet, which
+hides the shape; RF-TEX-005) or `missing_texture_set` (deleted, wrong type or absent). Owner updates clear the base's
+rows before inserting replacements; complete exports replace the table transactionally and
+archive-only exports leave it empty. Subset exporters must supply referenced TXST records
+alongside the bases whose appearance they update. All eight existing `texture_sets`
+columns retain their consumers. See [per-record object appearance](../engine/object-materials.md)
+for selection, instance isolation, retail coverage, diagnostics and the unimplemented MATO limits.
+
+## Optional terrain default metadata
+
+`terrain_default_texture` is generated after texture conversion for every pack. Its singleton
+row has `id = 0`, nullable `diffuse_path` and `normal_path` (canonical relative KTX2 paths),
+and nullable `source_diffuse` (the canonical DDS path used by the LOD bake). A null diffuse
+means white and has no normal or source. The engine probes for the table so old databases
+keep their white default. Invalid diffuse metadata warns and falls back to white without a
+normal. Invalid normal metadata warns and disables only the normal, keeping a valid diffuse.
+This additive metadata does not change LAND geometry, the cell-cache format, or texture
+producer versions.

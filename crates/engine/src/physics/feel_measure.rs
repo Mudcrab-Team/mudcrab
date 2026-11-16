@@ -830,10 +830,10 @@ fn measure_view_between_ticks_by_render_rate() {
 #[ignore = "measure: prints the controller-feel table, asserts no feel value; run with --ignored --nocapture --test-threads=1"]
 fn measure_mouse_turn_and_body_scale() {
     let mut look = LookIntent::default();
-    sample_look_intent(&CursorCapture::Captured, Vec2::new(1.0, 0.0), &mut look);
+    sample_look_intent(&CursorCapture::Captured, Vec2::new(1.0, 0.0), false, &mut look);
     let yaw = look.yaw.abs();
     let mut look = LookIntent::default();
-    sample_look_intent(&CursorCapture::Captured, Vec2::new(0.0, 1.0), &mut look);
+    sample_look_intent(&CursorCapture::Captured, Vec2::new(0.0, 1.0), false, &mut look);
     let pitch = look.pitch.abs();
     row("mouse", "yaw_per_count", yaw as f64, "rad");
     row(

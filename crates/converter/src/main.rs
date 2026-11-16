@@ -118,6 +118,9 @@ enum Command {
 /// Problem lines printed before "and N more".
 const CHECK_PROBLEM_LINES: usize = 20;
 
+/// Usage line of `derive-outfits`, printed by its help and its errors.
+const DERIVE_OUTFITS_USAGE: &str = "usage: converter derive-outfits <target> --registry <packs.json> --clone-of <pack> [--replace] [--converter-head <sha>]";
+
 #[derive(Debug, Serialize)]
 struct FailureReport {
     complete: bool,
@@ -216,6 +219,10 @@ async fn main() -> Result<()> {
     {
         println!("{}", usage());
         return Ok(());
+    }
+    if args.first().and_then(|argument| argument.to_str()) == Some("derive-outfits") {
+        let command_line = std::env::args().collect::<Vec<String>>();
+        return derive_outfits(&args[1..], command_line);
     }
     let command = parse_command(args)?;
     let mo2 = match &command {
@@ -600,6 +607,11 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
     // the stage reads must not be switched silently.
     if cli.merged_terrain {
         command.push_str(" --merged-terrain");
+    }
+    if cli.merged_terrain
+        || cli.terrain_default_texture != TerrainDefaultTexture::default()
+        || cli.terrain_ini.is_some()
+    {
         command.push_str(match cli.terrain_default_texture {
             TerrainDefaultTexture::White => " --terrain-default-texture white",
             TerrainDefaultTexture::SkyrimIni => " --terrain-default-texture skyrim-ini",
@@ -793,6 +805,9 @@ fn parse_command(args: Vec<OsString>) -> Result<Command> {
     }
     if args.first().and_then(|argument| argument.to_str()) == Some("repair-failed") {
         let apply = args.iter().any(|argument| argument == "--apply");
+        let terrain_selection = args
+            .iter()
+            .any(|argument| argument == "--terrain-default-texture" || argument == "--terrain-ini");
         let gpu_tuning = args
             .iter()
             .any(|argument| argument == "--gpu-quality" || argument == "--gpu-batch-mb");
@@ -812,6 +827,11 @@ fn parse_command(args: Vec<OsString>) -> Result<Command> {
         if cli.merged_terrain {
             bail!(
                 "repair-failed does not build merged terrain; drop --merged-terrain and its options"
+            );
+        }
+        if terrain_selection {
+            bail!(
+                "repair-failed does not rebuild default land; use normal conversion for terrain defaults"
             );
         }
         if cli.resume_staging.is_some()
@@ -853,6 +873,89 @@ fn parse_check(args: impl Iterator<Item = OsString>) -> Result<CheckCli> {
     Ok(CheckCli {
         output: positional.remove(0),
         full,
+    })
+}
+
+/// Parse `derive-outfits` options and report what the overlay produced.
+fn derive_outfits(args: &[OsString], command_line: Vec<String>) -> Result<()> {
+    if args.len() == 1 && matches!(args[0].to_str(), Some("--help" | "-h")) {
+        println!("{DERIVE_OUTFITS_USAGE}");
+        return Ok(());
+    }
+    let options = parse_derive_outfits_options(args, command_line)?;
+    let report = converter::derive_outfits::run(&options)?;
+    println!(
+        "Derived worn outfits {} ({} bytes added, {} ms)",
+        report.catalog.display(),
+        report.bytes_added,
+        report.elapsed_ms
+    );
+    println!("Receipt: {}", report.receipt.display());
+    println!(
+        "{} actors wear {} parts; skipped items by reason: {:?}",
+        report.actors_with_outfit, report.parts, report.skipped
+    );
+    Ok(())
+}
+
+/// Parse the target and the clone inputs of `derive-outfits`.
+fn parse_derive_outfits_options(
+    args: &[OsString],
+    command_line: Vec<String>,
+) -> Result<converter::derive_outfits::DeriveOutfitsOptions> {
+    let mut positional = Vec::new();
+    let mut registry = None;
+    let mut clone_of = None;
+    let mut replace = false;
+    let mut converter_head = None;
+    let mut args = args.iter().cloned();
+    let utf8 = |value: OsString, flag: &str| {
+        value
+            .into_string()
+            .map_err(|_| color_eyre::eyre::eyre!("{flag} value is not valid UTF-8"))
+    };
+    while let Some(argument) = args.next() {
+        match argument.to_str() {
+            Some("--registry") => {
+                registry = Some(PathBuf::from(next_value(&mut args, "--registry")?))
+            }
+            Some("--clone-of") => {
+                clone_of = Some(utf8(next_value(&mut args, "--clone-of")?, "--clone-of")?);
+            }
+            Some("--converter-head") => {
+                converter_head = Some(utf8(
+                    next_value(&mut args, "--converter-head")?,
+                    "--converter-head",
+                )?);
+            }
+            Some("--replace") => replace = true,
+            Some(flag) if flag.starts_with('-') => {
+                bail!("unknown derive-outfits option {flag:?}")
+            }
+            _ => {
+                if !positional.is_empty() {
+                    bail!("{DERIVE_OUTFITS_USAGE}");
+                }
+                positional.push(PathBuf::from(argument));
+            }
+        }
+    }
+    let Some(target) = positional.into_iter().next() else {
+        bail!("{DERIVE_OUTFITS_USAGE}");
+    };
+    let Some(registry) = registry else {
+        bail!("derive-outfits requires --registry");
+    };
+    let Some(clone_of) = clone_of else {
+        bail!("derive-outfits requires --clone-of");
+    };
+    Ok(converter::derive_outfits::DeriveOutfitsOptions {
+        target,
+        registry,
+        clone_of,
+        replace,
+        converter_head,
+        command: command_line,
     })
 }
 
@@ -994,7 +1097,6 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             Some("--no-lod") => no_lod = true,
             Some("--merged-terrain") => merged_terrain = true,
             Some("--terrain-default-texture") => {
-                terrain_option.get_or_insert("--terrain-default-texture");
                 let value = next_value(&mut args, "--terrain-default-texture")?;
                 terrain_default_texture = match value.to_str() {
                     Some("white") => TerrainDefaultTexture::White,
@@ -1003,7 +1105,6 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
                 };
             }
             Some("--terrain-ini") => {
-                terrain_option.get_or_insert("--terrain-ini");
                 terrain_ini = Some(next_path_value(&mut args, "--terrain-ini")?)
             }
             Some("--terrain-allow-downscale") => {
@@ -1202,6 +1303,7 @@ fn usage() -> &'static str {
                  [--terrain-ini FILE] [--terrain-allow-downscale]
                  [--plugins-file FILE] [--skyrim-ccc-file FILE] [--skyrim-ini-file FILE]
        converter check <output directory> [--full]
+       converter derive-outfits <target> --registry <packs.json> --clone-of <pack> [--replace] [--converter-head <sha>]
        converter repair-failed <Skyrim Data> <output directory> [--mo2-instance DIR]
                  [--mo2-profile NAME] [--no-lod] [--apply]
                  [--texture-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
@@ -1267,10 +1369,12 @@ terrain and ordinary assets remain available. Omit it on a later run to build LO
 textures: the land texture arrays, one merged mesh per exterior cell and the terrain chunk
 files. It is off by default because the engine does not read those outputs yet.
 --terrain-default-texture picks what a cell quadrant with no BTXT blends: the generated
-white texture (default), or the game's own [Landscape] default.
+white texture, or the game's own [Landscape] default (the default selection).
 --terrain-ini names the Skyrim.ini that default is read from; without it the built-in
 textures/landscape/Dirt02.dds and Dirt02_N.dds stand in, as they do for a key the ini does
-not name. A default that cannot be converted leaves the white texture, and the report says so.
+not name. An unusable default diffuse leaves white; an unusable optional normal keeps a valid
+diffuse. These recoverable fallbacks are report notices and do not make conversion incomplete
+or make it exit 1. Failures that prevent publishing usable output still fail conversion.
 --terrain-allow-downscale downscales a land texture larger than the largest array size class
 into it instead of stopping the merged-terrain build; the report lists every one downscaled.
 --language selects the string tables that localized plugins' names are read from,
@@ -1294,7 +1398,10 @@ the existence and size of every file, and with --full their hashes too. Exit cod
 package. Data supplies matching plugins, LOD settings and terrain diffuse inputs; retained
 models, textures and scripts are not refreshed from Data. Use normal conversion after
 changing those source assets. This route does not support MO2 selection; use a normal
-conversion with --mo2-instance. It cannot resume or cooperatively cancel."
+conversion with --mo2-instance. It cannot resume or cooperatively cancel.
+
+derive-outfits writes only actor-outfits.json and a receipt into an APFS clone of a registered pack,
+from the records the pack already holds. It reads no game data and never writes into a registered pack."
 }
 
 #[cfg(test)]
@@ -1812,6 +1919,64 @@ mod tests {
         assert!(usage.contains("converter check <output directory> [--full]"));
     }
 
+    /// The derive-outfits subcommand keeps every overlay input and the recorded command line.
+    #[test]
+    fn parses_derive_outfits_options() {
+        let command_line: Vec<String> = ["converter", "derive-outfits", "clone"]
+            .map(String::from)
+            .to_vec();
+        let options = parse_derive_outfits_options(
+            &args(&[
+                "clone",
+                "--registry",
+                "packs.json",
+                "--clone-of",
+                "base",
+                "--replace",
+                "--converter-head",
+                "abc123",
+            ]),
+            command_line.clone(),
+        )
+        .unwrap();
+        assert_eq!(options.target, PathBuf::from("clone"));
+        assert_eq!(options.registry, PathBuf::from("packs.json"));
+        assert_eq!(options.clone_of, "base");
+        assert!(options.replace);
+        assert_eq!(options.converter_head.as_deref(), Some("abc123"));
+        assert_eq!(options.command, command_line);
+    }
+
+    #[test]
+    fn rejects_malformed_derive_outfits_arguments() {
+        let error = |list: &[&str]| {
+            parse_derive_outfits_options(&args(list), Vec::new())
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(error(&["--registry", "p.json", "--clone-of", "b"]).contains("usage:"));
+        assert!(error(&["clone", "--clone-of", "b"]).contains("requires --registry"));
+        assert!(error(&["clone", "--registry", "p.json"]).contains("requires --clone-of"));
+        assert!(
+            error(&[
+                "clone",
+                "--registry",
+                "p.json",
+                "--clone-of",
+                "b",
+                "--bogus"
+            ])
+            .contains("unknown derive-outfits option")
+        );
+        assert!(
+            error(&["clone", "second", "--registry", "p.json", "--clone-of", "b"])
+                .contains("usage:")
+        );
+        for incomplete in [["clone", "--registry"], ["clone", "--clone-of"]] {
+            assert!(parse_derive_outfits_options(&args(&incomplete), Vec::new()).is_err());
+        }
+    }
+
     #[test]
     fn keeps_the_conversion_form_without_a_subcommand() {
         let Command::Convert(cli) = parse_command(args(&["Data", "check"])).unwrap() else {
@@ -1960,7 +2125,7 @@ mod tests {
             verify_cache: true,
             no_lod: false,
             merged_terrain: false,
-            terrain_default_texture: TerrainDefaultTexture::White,
+            terrain_default_texture: TerrainDefaultTexture::SkyrimIni,
             terrain_ini: None,
             terrain_allow_downscale: false,
             verbose: false,
@@ -2000,7 +2165,7 @@ mod tests {
         assert!(terrain.merged_terrain);
         assert_eq!(
             terrain.terrain_default_texture,
-            TerrainDefaultTexture::White
+            TerrainDefaultTexture::SkyrimIni
         );
         let terrain = parse_cli(vec![
             "Data".into(),
@@ -2020,7 +2185,13 @@ mod tests {
         );
         // The default texture is named even when it is the default, and the ini and the
         // downscale allowance travel with the resume: none of them may switch silently.
-        let white = parse_cli(vec!["Data".into(), "--merged-terrain".into()]).unwrap();
+        let white = parse_cli(args(&[
+            "Data",
+            "--merged-terrain",
+            "--terrain-default-texture",
+            "white",
+        ]))
+        .unwrap();
         assert!(
             resume_command("converter", &white, staging)
                 .ends_with(" --merged-terrain --terrain-default-texture white")
@@ -2082,24 +2253,13 @@ mod tests {
         ));
     }
 
-    /// Merged-terrain options mean nothing without --merged-terrain, an ini needs the skyrim-ini
-    /// default, --terrain-ini takes a path and never another option, and repair refuses the option.
+    /// Array options need merged terrain; defaults apply to all terrain paths and INI values are paths.
     #[test]
     fn merged_terrain_options_need_the_option_and_their_own_values() {
-        for dependent in [
-            vec!["--terrain-default-texture", "skyrim-ini"],
-            vec!["--terrain-default-texture", "white"],
-            vec!["--terrain-allow-downscale"],
-            vec!["--terrain-ini", "Skyrim.ini"],
-        ] {
-            let mut values = vec!["Data"];
-            values.extend(dependent.iter().copied());
-            let error = parse_cli(args(&values)).unwrap_err().to_string();
-            assert!(
-                error.contains("requires --merged-terrain"),
-                "{values:?}: {error}"
-            );
-        }
+        let error = parse_cli(args(&["Data", "--terrain-allow-downscale"]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("requires --merged-terrain"), "{error}");
         // Explicit white with an ini is refused: the ini is only read by skyrim-ini.
         let error = parse_cli(args(&[
             "Data",
@@ -2121,7 +2281,10 @@ mod tests {
             "--terrain-ini",
             "S.ini",
         ]));
-        assert!(ini_without_default.is_err(), "the default is white");
+        assert!(
+            ini_without_default.is_ok(),
+            "the default now reads Skyrim INI settings"
+        );
 
         // The ini value is a path: the next option is not taken as one.
         let error = parse_cli(args(&[
@@ -2164,6 +2327,29 @@ mod tests {
             ]))
             .is_err()
         );
+    }
+
+    /// Repair must reject explicitly supplied defaults, including the current default value.
+    #[test]
+    fn repair_rejects_default_land_options() {
+        for options in [
+            vec!["--terrain-default-texture", "white"],
+            vec!["--terrain-default-texture", "skyrim-ini"],
+            vec![
+                "--terrain-default-texture",
+                "skyrim-ini",
+                "--terrain-ini",
+                "custom.ini",
+            ],
+        ] {
+            let mut values = vec!["repair-failed", "Data", "out", "--apply"];
+            values.extend(options);
+            let error = parse_command(args(&values)).unwrap_err().to_string();
+            assert!(
+                error.contains("repair-failed does not rebuild default land"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

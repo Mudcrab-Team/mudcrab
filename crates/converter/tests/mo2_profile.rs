@@ -469,6 +469,298 @@ async fn reads_sources_without_materializing_mo2_inputs() {
     );
 }
 
+/// A winner lost after ingestion must fall back without publishing a lower-priority copy.
+#[tokio::test]
+async fn mo2_no_lod_lost_default_winner_is_advisory() {
+    let (directory, mut config, instance) = fixture();
+    let winner = instance.join("overwrite/textures/landscape/custombase.dds");
+    let bytes = fs::read(config.data_dir.join("textures/landscape/dirt02.dds")).unwrap();
+    write(
+        &instance,
+        "overwrite/textures/landscape/custombase.dds",
+        &bytes,
+    );
+    let ini = directory.path().join("terrain.ini");
+    fs::write(
+        &ini,
+        "[Landscape]\nsDefaultLandDiffuseTexture=Textures\\Landscape\\CustomBase.dds\n",
+    )
+    .unwrap();
+    config.no_lod = true;
+    config.terrain_ini = Some(ini);
+    config.terrain_default_texture = converter::config::TerrainDefaultTexture::SkyrimIni;
+    let output = config.output_dir.clone();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<converter::ProgressEvent>(1);
+    let inspect = tokio::spawn(async move {
+        let mut removed = false;
+        while let Some(event) = rx.recv().await {
+            if !removed && event.stage == converter::ProgressStage::Scripts {
+                let (staging, _) = converter::config::find_resumable_staging(&output).unwrap();
+                write(
+                    &staging.join("vfs"),
+                    "textures/landscape/custombase.dds",
+                    &bytes,
+                );
+                fs::remove_file(&winner).unwrap();
+                removed = true;
+            }
+        }
+        removed
+    });
+    let report = AssetPipeline::run_async(config.clone(), tx).await.unwrap();
+    assert!(
+        inspect.await.unwrap(),
+        "fixture must remove the winner after texture ingestion"
+    );
+    assert!(report.complete, "{report:?}");
+    assert!(report.warnings.is_empty(), "{report:?}");
+    assert!(
+        report
+            .notices
+            .iter()
+            .any(|notice| notice.contains("default land input omitted")),
+        "{report:?}"
+    );
+    assert!(
+        !config
+            .output_dir
+            .join("terrain/default-diffuse.ktx2")
+            .exists()
+    );
+    let database = Connection::open(config.output_dir.join("skyrim_world.db")).unwrap();
+    let diffuse: Option<String> = database
+        .query_row(
+            "SELECT diffuse_path FROM terrain_default_texture WHERE id=0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(diffuse, None);
+    let neighbor: u32 = database
+        .query_row(
+            "SELECT COUNT(*) FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(neighbor, 1);
+}
+
+/// A locked, readable stale DDS must not become the default or abort publication.
+#[cfg(windows)]
+#[tokio::test]
+async fn mo2_no_lod_locked_stale_default_is_withdrawn() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let (directory, mut config, instance) = fixture();
+    let bytes = fs::read(config.data_dir.join("textures/landscape/dirt02.dds")).unwrap();
+    write(
+        &instance,
+        "overwrite/textures/landscape/custombase.dds",
+        &bytes,
+    );
+    let ini = directory.path().join("terrain.ini");
+    fs::write(
+        &ini,
+        "[Landscape]\nsDefaultLandDiffuseTexture=Textures\\Landscape\\CustomBase.dds\n",
+    )
+    .unwrap();
+    config.no_lod = true;
+    config.terrain_ini = Some(ini);
+    config.terrain_default_texture = converter::config::TerrainDefaultTexture::SkyrimIni;
+    let output = config.output_dir.clone();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<converter::ProgressEvent>(1);
+    let inspect = tokio::spawn(async move {
+        let mut planted = false;
+        let mut survived = false;
+        let mut locked = None;
+        while let Some(event) = rx.recv().await {
+            if !planted && event.stage == converter::ProgressStage::Scripts {
+                let (staging, _) = converter::config::find_resumable_staging(&output).unwrap();
+                let stale = staging.join("vfs/textures/landscape/custombase.dds");
+                write(
+                    &staging.join("vfs"),
+                    "textures/landscape/custombase.dds",
+                    &bytes,
+                );
+                // FILE_SHARE_READ allows decoding these valid bytes but denies replacement/removal.
+                locked = Some(
+                    fs::OpenOptions::new()
+                        .read(true)
+                        .share_mode(1)
+                        .open(&stale)
+                        .unwrap(),
+                );
+                assert_eq!(fs::read(&stale).unwrap(), bytes);
+                // ERROR_SHARING_VIOLATION: Rust's ErrorKind mapping varies by toolchain.
+                assert_eq!(
+                    fs::remove_file(&stale).unwrap_err().raw_os_error(),
+                    Some(32)
+                );
+                planted = true;
+            }
+            if locked.is_some() && event.stage == converter::ProgressStage::LodChunks {
+                let (staging, _) = converter::config::find_resumable_staging(&output).unwrap();
+                assert_eq!(
+                    fs::read(staging.join("vfs/textures/landscape/custombase.dds")).unwrap(),
+                    bytes
+                );
+                assert!(!staging.join("terrain/default-diffuse.ktx2").exists());
+                // Release before the output directory is published; the stale copy still exists.
+                locked.take();
+                survived = true;
+            }
+        }
+        (planted, survived)
+    });
+    let result = AssetPipeline::run_async(config.clone(), tx).await;
+    assert_eq!(inspect.await.unwrap(), (true, true));
+    let report = result.expect("a stale optional default must not abort conversion");
+    assert!(report.complete && report.warnings.is_empty(), "{report:?}");
+    assert!(
+        report.notices.iter().any(|notice| {
+            notice.contains("configured default withdrawn")
+                && notice.contains("vfs")
+                && notice.contains("custombase.dds")
+                && notice.contains("os error")
+        }),
+        "{report:?}"
+    );
+    assert!(
+        !config
+            .output_dir
+            .join("terrain/default-diffuse.ktx2")
+            .exists()
+    );
+    assert!(
+        !config
+            .output_dir
+            .join("terrain/default-normal.ktx2")
+            .exists()
+    );
+    let database = Connection::open(config.output_dir.join("skyrim_world.db")).unwrap();
+    let default: (Option<String>, Option<String>, Option<String>) = database.query_row(
+        "SELECT diffuse_path,normal_path,source_diffuse FROM terrain_default_texture WHERE id=0",
+        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).unwrap();
+    assert_eq!(default, (None, None, None));
+    let neighbor: f32 = database
+        .query_row(
+            "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(neighbor, 444.0);
+    assert!(
+        converter::cache::ConversionManifest::load(
+            &config.output_dir.join("conversion-manifest.json")
+        )
+        .unwrap()
+        .complete
+    );
+}
+
+/// Winning loose defaults are converted without LOD, through both record readers.
+#[tokio::test]
+async fn mo2_no_lod_uses_winning_configured_default_images() {
+    use converter::texture::{TextureConverter, TextureEncoding};
+    use dummy_content::{dds, rng::Rng};
+    let (directory, mut config, instance) = fixture();
+    let diffuse = |seed| {
+        dds::generate(
+            &dds::Spec::new(dds::Format::Bc1Unorm, 16, 16),
+            &mut Rng::new(seed),
+        )
+        .unwrap()
+    };
+    let normal = |seed| {
+        dds::generate(
+            &dds::Spec::new(dds::Format::Bc5Unorm, 16, 16),
+            &mut Rng::new(seed),
+        )
+        .unwrap()
+    };
+    let winning = diffuse(29);
+    let winning_normal = normal(31);
+    assert_ne!(winning, diffuse(11));
+    assert_ne!(winning_normal, normal(13));
+    write(
+        &instance,
+        "mods/Low/textures/landscape/custombase.dds",
+        diffuse(11),
+    );
+    write(
+        &instance,
+        "mods/High/textures/landscape/custombase.dds",
+        diffuse(17),
+    );
+    write(
+        &instance,
+        "overwrite/textures/landscape/custombase.dds",
+        &winning,
+    );
+    write(
+        &instance,
+        "mods/Low/textures/landscape/custombase_n.dds",
+        normal(13),
+    );
+    write(
+        &instance,
+        "mods/High/textures/landscape/custombase_n.dds",
+        &winning_normal,
+    );
+    write(
+        &instance,
+        "mods/Disabled/textures/landscape/custombase.dds",
+        b"disabled broken image",
+    );
+    let ini = directory.path().join("terrain.ini");
+    fs::write(&ini,"[Landscape]\nsDefaultLandDiffuseTexture=Textures\\Landscape\\CustomBase.dds\nsDefaultLandNormalTexture=Textures\\Landscape\\CustomBase_N.dds\n").unwrap();
+    config.no_lod = true;
+    config.terrain_default_texture = converter::config::TerrainDefaultTexture::SkyrimIni;
+    config.terrain_ini = Some(ini);
+    let encode = |bytes: &[u8], encoding| {
+        TextureConverter::convert_with_options(
+            bytes,
+            encoding,
+            config.texture_fallback_quality,
+            config.texture_uastc_level,
+            config.texture_zstd_level,
+        )
+        .unwrap()
+    };
+    let expected = encode(&winning, TextureEncoding::ColorSrgb);
+    let expected_normal = encode(&winning_normal, TextureEncoding::NormalLinear);
+    for reader in [
+        converter::config::RecordReader::Legacy,
+        converter::config::RecordReader::Inhouse,
+    ] {
+        config.record_reader = reader;
+        config.output_dir = directory.path().join(format!("default-{reader:?}"));
+        let report = publish(&config).await;
+        assert!(report.complete, "{:?}", report.warnings);
+        assert_eq!(report.lod_chunks, 0);
+        assert_eq!(
+            fs::read(config.output_dir.join("terrain/default-diffuse.ktx2")).unwrap(),
+            expected
+        );
+        assert_eq!(
+            fs::read(config.output_dir.join("terrain/default-normal.ktx2")).unwrap(),
+            expected_normal
+        );
+        let connection = Connection::open(config.output_dir.join("skyrim_world.db")).unwrap();
+        let source: String = connection
+            .query_row(
+                "SELECT source_diffuse FROM terrain_default_texture WHERE id=0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, "textures/landscape/custombase.dds");
+    }
+}
+
 /// Game-folder CCC entries beyond the formerly fixed Creations publish without profile entries.
 #[tokio::test]
 async fn extra_ccc_creation_and_profile_neighbors_publish() {

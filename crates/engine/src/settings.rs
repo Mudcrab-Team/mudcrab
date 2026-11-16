@@ -101,6 +101,11 @@ pub struct RenderingSettings {
     pub diagnostic_asset_fallbacks: bool,
     /// [`crate::visual_profile::VisualProfile`] index; read only at startup.
     pub visual_profile: usize,
+    /// Session-only window size from an interactive start shot, in logical points like
+    /// [`WINDOW_SIZES`]. A window control edit or reset returns to the selected preference size;
+    /// this value is never serialized.
+    #[serde(skip)]
+    pub window_size_override: Option<(u32, u32)>,
 }
 
 impl Default for RenderingSettings {
@@ -172,6 +177,7 @@ impl Default for RenderingSettings {
             io_threads: config.io_threads,
             diagnostic_asset_fallbacks: config.diagnostic_asset_fallbacks,
             visual_profile: config.visual_profile.index(),
+            window_size_override: None,
         }
     }
 }
@@ -704,9 +710,30 @@ pub struct SettingsFile {
     launch_overrides: Vec<String>,
     preserve_unavailable_record_mode: bool,
     unavailable_record_mode_replaced: bool,
+    /// The Metal drawing default applies only when no saved setting owns this choice.
+    metal_drawing_default_available: bool,
+    metal_drawing_auto_unowned: bool,
 }
 
 impl SettingsFile {
+    pub(crate) fn apply_start_shot(
+        &mut self,
+        settings: &mut RenderingSettings,
+        fov_degrees: f32,
+        dimensions: (u32, u32),
+    ) {
+        settings.fov_degrees = fov_degrees;
+        settings.window_mode = 0;
+        settings.window_size_override = Some(dimensions);
+        if !self
+            .launch_overrides
+            .iter()
+            .any(|flag| flag == "--start-shot")
+        {
+            self.launch_overrides.push("--start-shot".into());
+        }
+    }
+
     pub fn session_only() -> Self {
         Self {
             path: None,
@@ -715,7 +742,18 @@ impl SettingsFile {
             launch_overrides: Vec::new(),
             preserve_unavailable_record_mode: false,
             unavailable_record_mode_replaced: false,
+            metal_drawing_default_available: true,
+            metal_drawing_auto_unowned: false,
         }
+    }
+
+    fn take_metal_drawing_default(&mut self) -> bool {
+        std::mem::replace(&mut self.metal_drawing_default_available, false)
+    }
+
+    pub(crate) fn note_drawing_selection(&mut self) {
+        self.metal_drawing_auto_unowned = false;
+        self.metal_drawing_default_available = false;
     }
 
     pub(crate) fn note_grade_mode_selection(&mut self) {
@@ -726,13 +764,29 @@ impl SettingsFile {
 
     pub(crate) fn restore_defaults(&mut self, settings: &mut RenderingSettings) {
         self.note_grade_mode_selection();
+        self.metal_drawing_default_available = true;
+        self.metal_drawing_auto_unowned = true;
         *settings = RenderingSettings::default();
-        self.status = "Defaults restored for this session. Choose Save to keep them.".into();
+        self.status = if self
+            .launch_overrides
+            .iter()
+            .any(|flag| flag == "--start-shot")
+        {
+            "Defaults restored for this session. Save preserves the pre-launch FOV, window mode, and window size.".into()
+        } else {
+            "Defaults restored for this session. Choose Save to keep them.".into()
+        };
     }
 
     pub fn save(&mut self, settings: &RenderingSettings) {
         self.status = match self.path.as_ref() {
-            Some(path) => match save_settings(path, &self.persisted(settings)) {
+            Some(path) => match save_settings_with_drawing_ownership(
+                path,
+                &self.persisted(settings),
+                self.metal_drawing_auto_unowned,
+            ) {
+                Ok(()) if self.launch_overrides.iter().any(|flag| flag == "--start-shot") =>
+                    "Settings saved. IO-thread changes apply after restart. Save preserves the pre-launch FOV, window mode, and window size.".into(),
                 Ok(()) => "Settings saved. IO-thread changes apply after restart.".into(),
                 Err(error) => format!("Could not save settings: {error}"),
             },
@@ -746,7 +800,17 @@ impl SettingsFile {
     /// launch value stays in effect until the next run.
     fn persisted(&self, settings: &RenderingSettings) -> RenderingSettings {
         let mut persisted = settings.clone();
+        persisted.window_size_override = None;
         persisted.take_launch_owned_values(&self.stored, &self.launch_overrides);
+        if self
+            .launch_overrides
+            .iter()
+            .any(|flag| flag == "--start-shot")
+        {
+            persisted.fov_degrees = self.stored.fov_degrees;
+            persisted.window_mode = self.stored.window_mode;
+            persisted.window_size = self.stored.window_size;
+        }
         if self.preserve_unavailable_record_mode && !self.unavailable_record_mode_replaced {
             persisted.color_grade = self.stored.color_grade;
         }
@@ -772,12 +836,13 @@ pub(crate) fn prepare_settings(config: &mut EngineConfig) -> (RenderingSettings,
     prepare_settings_at(config, preferences_path())
 }
 
-fn prepare_settings_at(
+pub(crate) fn prepare_settings_at(
     config: &mut EngineConfig,
     path: Option<PathBuf>,
 ) -> (RenderingSettings, SettingsFile) {
     let mut settings = RenderingSettings::default();
     settings.take_launch_values(config);
+    let no_preferences_path = path.is_none();
     let mut file = SettingsFile {
         path,
         status: "Changes apply now. Choose Save to keep them across runs.".into(),
@@ -785,6 +850,8 @@ fn prepare_settings_at(
         launch_overrides: config.settings_overrides.clone(),
         preserve_unavailable_record_mode: false,
         unavailable_record_mode_replaced: false,
+        metal_drawing_default_available: no_preferences_path,
+        metal_drawing_auto_unowned: false,
     };
     if let Some(path) = &file.path {
         match std::fs::read(path) {
@@ -796,6 +863,11 @@ fn prepare_settings_at(
                     Ok(saved) => {
                         file.stored = saved.clone();
                         settings = saved;
+                        file.metal_drawing_default_available =
+                            serde_json::from_slice::<serde_json::Value>(&bytes).is_ok_and(|raw| {
+                                raw.get("indirect_drawing").is_none()
+                                    && raw.get("occlusion_culling").is_none()
+                            });
                         settings.retain_explicit_launch_values(config);
                         if settings.color_grade
                             == crate::color_pipeline::SceneGradeMode::RecordSrgb.index()
@@ -813,10 +885,13 @@ fn prepare_settings_at(
                     Err(error) => {
                         file.status = format!("Saved settings ignored: {error}");
                         warn!(%error, "saved rendering settings ignored");
+                        file.metal_drawing_default_available = true;
                     }
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                file.metal_drawing_default_available = true;
+            }
             Err(error) => file.status = format!("Could not read settings: {error}"),
         }
     }
@@ -829,9 +904,26 @@ fn prepare_settings_at(
     (settings, file)
 }
 
+#[cfg(test)]
 fn save_settings(path: &Path, settings: &RenderingSettings) -> Result<(), String> {
+    save_settings_with_drawing_ownership(path, settings, false)
+}
+
+fn save_settings_with_drawing_ownership(
+    path: &Path,
+    settings: &RenderingSettings,
+    omit_automatic_drawing: bool,
+) -> Result<(), String> {
     settings.validate()?;
-    let bytes = serde_json::to_vec_pretty(settings).map_err(|e| e.to_string())?;
+    let mut value = serde_json::to_value(settings).map_err(|e| e.to_string())?;
+    if omit_automatic_drawing {
+        let object = value
+            .as_object_mut()
+            .expect("settings serialize as an object");
+        object.remove("indirect_drawing");
+        object.remove("occlusion_culling");
+    }
+    let bytes = serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?;
     let parent = path.parent().ok_or("settings path has no parent")?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let stamp = std::time::SystemTime::now()
@@ -913,6 +1005,61 @@ pub(crate) struct RenderSettingsTargets<'w, 's> {
     >,
 }
 
+/// Applies the automatic Metal drawing default to noninteractive runs.
+/// Interactive runs apply the same default through `apply_render_settings`.
+pub struct RenderSettingsPlugin;
+
+impl Plugin for RenderSettingsPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<RenderingSettings>()
+            .add_systems(Update, apply_metal_direct_default);
+        if !app.world().contains_resource::<SettingsFile>() {
+            app.insert_resource(SettingsFile::session_only());
+        }
+    }
+}
+
+fn should_enable_metal_direct_default(
+    settings: &RenderingSettings,
+    file: &mut SettingsFile,
+    metal_backend: bool,
+) -> bool {
+    let eligible = metal_backend && file.take_metal_drawing_default();
+    let apply = eligible && settings.indirect_drawing && settings.occlusion_culling;
+    if apply {
+        file.metal_drawing_auto_unowned = true;
+    }
+    apply
+}
+
+fn apply_metal_direct_default(
+    mut settings: ResMut<RenderingSettings>,
+    adapter: Option<Res<bevy::render::renderer::RenderAdapterInfo>>,
+    mut file: ResMut<SettingsFile>,
+    mut commands: Commands,
+    world_views: Query<Entity, With<StreamingCamera>>,
+    reflection_views: Query<Entity, With<crate::render::WaterReflectionCamera>>,
+) {
+    let metal = adapter.is_some_and(|info| info.backend == wgpu::Backend::Metal);
+    if !should_enable_metal_direct_default(&settings, &mut file, metal) {
+        return;
+    }
+    settings.indirect_drawing = false;
+    settings.occlusion_culling = false;
+    for entity in &world_views {
+        commands
+            .entity(entity)
+            .insert(NoIndirectDrawing)
+            .remove::<OcclusionCulling>();
+    }
+    for entity in &reflection_views {
+        commands
+            .entity(entity)
+            .insert(NoIndirectDrawing)
+            .remove::<OcclusionCulling>();
+    }
+}
+
 /// Apply only on preference changes. Weather, light budgets and water read the same resource.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_render_settings(
@@ -928,8 +1075,19 @@ pub(crate) fn apply_render_settings(
     mut targets: RenderSettingsTargets,
     mut previous: Local<Option<RenderingSettings>>,
     adapter: Option<Res<RenderAdapter>>,
+    adapter_info: Option<Res<bevy::render::renderer::RenderAdapterInfo>>,
     mut file: Option<ResMut<SettingsFile>>,
 ) {
+    if let Some(file) = file.as_deref_mut()
+        && should_enable_metal_direct_default(
+            &settings,
+            file,
+            adapter_info.is_some_and(|info| info.backend == wgpu::Backend::Metal),
+        )
+    {
+        settings.indirect_drawing = false;
+        settings.occlusion_culling = false;
+    }
     // This system writes some of its own inputs (the shown grade values, the MSAA fallback and
     // the engine config), so the resource tick alone cannot mean "a preference changed": compare
     // against the snapshot left by the previous run, and also run when the engine config or the
@@ -943,6 +1101,11 @@ pub(crate) fn apply_render_settings(
         || !targets.sun.p1().is_empty();
     if !preferences_changed {
         return;
+    }
+    if previous.as_ref().is_some_and(|previous| {
+        previous.window_size != settings.window_size || previous.window_mode != settings.window_mode
+    }) {
+        settings.window_size_override = None;
     }
     let old_mode = current_mode
         .as_deref()
@@ -1123,11 +1286,18 @@ pub(crate) fn apply_render_settings(
             };
         }
         if added
-            || previous
-                .as_ref()
-                .is_none_or(|previous| previous.window_size != settings.window_size)
+            || (settings.window_mode == 0
+                && previous.as_ref().is_none_or(|previous| {
+                    previous.window_size != settings.window_size
+                        || previous.window_mode != settings.window_mode
+                        || previous.window_size_override != settings.window_size_override
+                }))
         {
-            let (width, height) = WINDOW_SIZES[settings.window_size];
+            // Both sizes are logical points: the window backend multiplies them by the display
+            // scale factor, so a 2.0 display gets twice as many physical pixels.
+            let (width, height) = settings
+                .window_size_override
+                .unwrap_or(WINDOW_SIZES[settings.window_size]);
             window.resolution.set(width as f32, height as f32);
         }
     }
@@ -1234,6 +1404,105 @@ mod tests {
         app.world_mut()
             .resource_mut::<SettingsFile>()
             .save(&settings);
+    }
+
+    #[test]
+    fn start_shot_reset_reports_preserved_framing() {
+        let mut file = SettingsFile::session_only();
+        let mut settings = RenderingSettings::default();
+        file.restore_defaults(&mut settings);
+        assert_eq!(
+            file.status,
+            "Defaults restored for this session. Choose Save to keep them."
+        );
+        file.apply_start_shot(&mut settings, 60.0, (1920, 1080));
+        file.restore_defaults(&mut settings);
+        assert!(
+            file.status
+                .contains("Save preserves the pre-launch FOV, window mode, and window size")
+        );
+    }
+
+    #[test]
+    fn start_shot_save_reports_preserved_framing() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut file = SettingsFile::session_only();
+        file.path = Some(directory.path().join("settings.json"));
+        let mut settings = RenderingSettings::default();
+        file.save(&settings);
+        assert_eq!(
+            file.status,
+            "Settings saved. IO-thread changes apply after restart."
+        );
+        file.apply_start_shot(&mut settings, 60.0, (1920, 1080));
+        file.save(&settings);
+        assert!(
+            file.status
+                .contains("Save preserves the pre-launch FOV, window mode, and window size")
+        );
+    }
+
+    #[test]
+    fn start_shot_size_is_logical_points_at_any_display_scale() {
+        let (width, height) = (1280, 800);
+        for scale in [1.0_f32, 2.0] {
+            let mut app = App::new();
+            let settings = RenderingSettings {
+                window_size_override: Some((width, height)),
+                ..default()
+            };
+            app.add_plugins(MinimalPlugins)
+                .insert_resource(EngineConfig::default())
+                .insert_resource(settings)
+                .add_systems(Update, apply_render_settings);
+            let window = app
+                .world_mut()
+                .spawn((Window::default(), PrimaryWindow))
+                .id();
+            app.world_mut()
+                .get_mut::<Window>(window)
+                .unwrap()
+                .resolution
+                .set_scale_factor(scale);
+            app.update();
+            let physical = |app: &App| {
+                let resolution = &app.world().get::<Window>(window).unwrap().resolution;
+                assert_eq!(resolution.scale_factor_override(), None);
+                assert_eq!((resolution.width(), resolution.height()), (1280.0, 800.0));
+                (resolution.physical_width(), resolution.physical_height())
+            };
+            // 1280x800 requests 1280x800 logical points: 2560x1600 physical at scale 2.0.
+            let expected = (
+                (width as f32 * scale) as u32,
+                (height as f32 * scale) as u32,
+            );
+            assert_eq!(physical(&app), expected);
+            // A fullscreen round trip keeps the logical size and never forces a scale factor.
+            app.world_mut()
+                .resource_mut::<RenderingSettings>()
+                .window_mode = 1;
+            app.update();
+            app.world_mut()
+                .resource_mut::<RenderingSettings>()
+                .window_mode = 0;
+            app.update();
+            let resolution = &app.world().get::<Window>(window).unwrap().resolution;
+            assert_eq!(resolution.scale_factor_override(), None);
+            // Leaving fullscreen releases the session size for the preference size, also logical.
+            let (preset_width, preset_height) =
+                WINDOW_SIZES[RenderingSettings::default().window_size];
+            assert_eq!(
+                (resolution.width(), resolution.height()),
+                (preset_width as f32, preset_height as f32)
+            );
+            assert_eq!(
+                (resolution.physical_width(), resolution.physical_height()),
+                (
+                    (preset_width as f32 * scale) as u32,
+                    (preset_height as f32 * scale) as u32
+                )
+            );
+        }
     }
 
     #[test]
@@ -2049,6 +2318,8 @@ mod tests {
                 launch_overrides: Vec::new(),
                 preserve_unavailable_record_mode: false,
                 unavailable_record_mode_replaced: false,
+                metal_drawing_default_available: false,
+                metal_drawing_auto_unowned: false,
             };
             file.save(&invalid);
             assert!(file.status.contains("Could not save"));
@@ -2231,6 +2502,8 @@ mod tests {
             launch_overrides: Vec::new(),
             preserve_unavailable_record_mode: false,
             unavailable_record_mode_replaced: false,
+            metal_drawing_default_available: false,
+            metal_drawing_auto_unowned: false,
         };
         file.save(&invalid);
         assert!(file.status.contains("Could not save"));
@@ -2296,6 +2569,241 @@ mod tests {
             None
         );
         assert_eq!(app.world().resource::<EngineConfig>().io_threads, 0);
+    }
+
+    #[test]
+    fn direct_drawing_settings_reach_world_and_reflection_cameras() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(EngineConfig::default())
+            .insert_resource(RenderingSettings {
+                indirect_drawing: false,
+                occlusion_culling: false,
+                ..default()
+            })
+            .add_systems(Update, apply_render_settings);
+        let world = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                StreamingCamera,
+                Exposure::default(),
+                Tonemapping::TonyMcMapface,
+                Projection::default(),
+                Msaa::Off,
+                DepthPrepass,
+                OcclusionCulling,
+            ))
+            .id();
+        let reflection = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                crate::render::WaterReflectionCamera,
+                Msaa::Off,
+                DepthPrepass,
+                OcclusionCulling,
+            ))
+            .id();
+
+        app.update();
+
+        for camera in [world, reflection] {
+            assert!(app.world().get::<NoIndirectDrawing>(camera).is_some());
+            assert!(app.world().get::<OcclusionCulling>(camera).is_none());
+            assert!(app.world().get::<DepthPrepass>(camera).is_some());
+        }
+    }
+
+    #[test]
+    fn interactive_metal_default_reaches_world_camera() {
+        use bevy::render::renderer::{RenderAdapterInfo, WgpuWrapper};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(EngineConfig::default())
+            .insert_resource(RenderingSettings::default())
+            .insert_resource(SettingsFile::session_only())
+            .insert_resource(RenderAdapterInfo(WgpuWrapper::new(wgpu::AdapterInfo {
+                name: "test Metal adapter".into(),
+                vendor: 0,
+                device: 0,
+                device_type: wgpu::DeviceType::IntegratedGpu,
+                device_pci_bus_id: String::new(),
+                driver: String::new(),
+                driver_info: String::new(),
+                backend: wgpu::Backend::Metal,
+                subgroup_min_size: 0,
+                subgroup_max_size: 0,
+                transient_saves_memory: false,
+            })))
+            .add_systems(Update, apply_render_settings);
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                StreamingCamera,
+                Exposure::default(),
+                Tonemapping::TonyMcMapface,
+                Projection::default(),
+                Msaa::Off,
+                DepthPrepass,
+                OcclusionCulling,
+            ))
+            .id();
+        app.update();
+        assert!(app.world().get::<NoIndirectDrawing>(camera).is_some());
+        assert!(app.world().get::<OcclusionCulling>(camera).is_none());
+        let settings = app.world().resource::<RenderingSettings>();
+        assert!(!settings.indirect_drawing && !settings.occlusion_culling);
+    }
+
+    #[test]
+    fn noninteractive_metal_default_reaches_benchmark_world_and_reflection_cameras() {
+        use bevy::render::renderer::{RenderAdapterInfo, WgpuWrapper};
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, RenderSettingsPlugin))
+            .insert_resource(RenderAdapterInfo(WgpuWrapper::new(wgpu::AdapterInfo {
+                name: "test Metal adapter".into(),
+                vendor: 0,
+                device: 0,
+                device_type: wgpu::DeviceType::IntegratedGpu,
+                device_pci_bus_id: String::new(),
+                driver: String::new(),
+                driver_info: String::new(),
+                backend: wgpu::Backend::Metal,
+                subgroup_min_size: 0,
+                subgroup_max_size: 0,
+                transient_saves_memory: false,
+            })));
+        let world = app
+            .world_mut()
+            .spawn((Camera3d::default(), StreamingCamera, OcclusionCulling))
+            .id();
+        let reflection = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                crate::render::WaterReflectionCamera,
+                OcclusionCulling,
+            ))
+            .id();
+
+        app.update();
+
+        for camera in [world, reflection] {
+            assert!(app.world().get::<NoIndirectDrawing>(camera).is_some());
+            assert!(app.world().get::<OcclusionCulling>(camera).is_none());
+        }
+        let settings = app.world().resource::<RenderingSettings>();
+        assert!(!settings.indirect_drawing && !settings.occlusion_culling);
+    }
+
+    #[test]
+    fn saved_settings_disable_the_automatic_metal_drawing_default() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_settings(&path, &RenderingSettings::default()).unwrap();
+
+        let mut missing_config = EngineConfig::default();
+        let (_, mut missing_file) = prepare_settings_at(&mut missing_config, None);
+        assert!(missing_file.take_metal_drawing_default());
+
+        let mut saved_config = EngineConfig::default();
+        let (_, mut saved_file) = prepare_settings_at(&mut saved_config, Some(path));
+        assert!(!saved_file.take_metal_drawing_default());
+    }
+
+    #[test]
+    fn unknown_out_of_range_number_does_not_panic_or_enable_metal_default() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        std::fs::write(&path, r#"{"version":1,"hud":false,"x":1e999}"#).unwrap();
+        let (settings, mut file) = prepare_settings_at(&mut EngineConfig::default(), Some(path));
+        assert!(!settings.hud);
+        assert!(!file.take_metal_drawing_default());
+    }
+
+    #[test]
+    fn restore_defaults_rearms_metal_drawing_default_and_does_not_pin_it_on_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_settings(&path, &RenderingSettings::default()).unwrap();
+        let (mut settings, mut file) =
+            prepare_settings_at(&mut EngineConfig::default(), Some(path.clone()));
+        file.restore_defaults(&mut settings);
+        // A save before the next update must not persist a backend-specific value either.
+        file.save(&settings);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(saved.get("indirect_drawing").is_none());
+        assert!(saved.get("occlusion_culling").is_none());
+        assert!(should_enable_metal_direct_default(
+            &settings, &mut file, true
+        ));
+        settings.indirect_drawing = false;
+        settings.occlusion_culling = false;
+        file.save(&settings);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(saved.get("indirect_drawing").is_none());
+        assert!(saved.get("occlusion_culling").is_none());
+    }
+
+    #[test]
+    fn missing_drawing_fields_remain_unowned_until_user_changes_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        std::fs::write(&path, br#"{"version":1,"hud":false}"#).unwrap();
+        let mut config = EngineConfig::default();
+        let (mut settings, mut file) = prepare_settings_at(&mut config, Some(path.clone()));
+        assert!(should_enable_metal_direct_default(
+            &settings, &mut file, true
+        ));
+        settings.indirect_drawing = false;
+        settings.occlusion_culling = false;
+        file.save(&settings);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(saved.get("indirect_drawing").is_none());
+        assert!(saved.get("occlusion_culling").is_none());
+        assert_eq!(saved["hud"], false);
+
+        file.note_drawing_selection();
+        settings.indirect_drawing = true;
+        file.save(&settings);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["indirect_drawing"], true);
+        assert_eq!(saved["occlusion_culling"], false);
+    }
+
+    #[test]
+    fn metal_default_changes_only_unowned_drawing_preferences() {
+        let settings = RenderingSettings::default();
+        let mut file = SettingsFile::session_only();
+        assert!(!should_enable_metal_direct_default(
+            &settings, &mut file, false
+        ));
+        assert!(settings.indirect_drawing && settings.occlusion_culling);
+
+        let explicit = RenderingSettings {
+            indirect_drawing: false,
+            occlusion_culling: false,
+            ..default()
+        };
+        let mut file = SettingsFile::session_only();
+        assert!(!should_enable_metal_direct_default(
+            &explicit, &mut file, true
+        ));
+        assert!(!explicit.indirect_drawing && !explicit.occlusion_culling);
+
+        let defaults = RenderingSettings::default();
+        let mut file = SettingsFile::session_only();
+        assert!(should_enable_metal_direct_default(
+            &defaults, &mut file, true
+        ));
+        assert!(defaults.indirect_drawing && defaults.occlusion_culling);
     }
 
     #[test]

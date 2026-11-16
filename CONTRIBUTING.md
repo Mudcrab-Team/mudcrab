@@ -112,11 +112,15 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    ```bash
    cargo fmt --all -- --check
    cargo clippy --workspace --all-targets --all-features -- -D warnings
-   cargo nextest run --workspace --all-targets --no-fail-fast --no-tests=warn
+   cargo nextest run --workspace --lib --bins --tests --examples --no-fail-fast --no-tests=warn
    ```
    CI uses [`cargo-nextest`](https://nexte.st) (`cargo install cargo-nextest --locked`); plain
-   `cargo test --workspace --all-targets` runs the same test targets (neither runs doctests; add
-   `cargo test --workspace --doc` for those). CI also runs `cargo audit` and a release-mode
+   `cargo test --workspace --lib --bins --tests --examples` runs the same test targets (neither runs doctests; add
+   `cargo test --workspace --doc` for those). The Linux `clippy` / `test` jobs run for
+   Rust-related changes on PRs and feed `tests_pass`. The same checks run on Windows once a
+   night against `main` (`.github/workflows/windows.yml`; start it by hand from the Actions
+   tab to check a branch). GPU-only tests stay ignored by default; Linux runs the two software Vulkan
+   tests separately. CI also runs `cargo audit` and a release-mode
    performance check; see `.github/workflows/run_tests.yml` for the exact commands.
 5. **Submit a Pull Request:**
    - Target the `main` branch and fill in the PR template; [`docs/contributing/writing-prs.md`](docs/contributing/writing-prs.md) shows how to write it so it is quick to review.

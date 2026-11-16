@@ -133,9 +133,16 @@ impl ShotsFile {
     }
 
     /// Initial window size matching the requested image target. Display scaling may alter the
-    /// window, while the dedicated capture target retains the exact requested dimensions.
+    /// window, while the dedicated capture target retains the exact requested dimensions. This
+    /// is the capture path: it pins the window to physical pixels (scale factor override 1.0).
     pub fn window_resolution(&self) -> WindowResolution {
         WindowResolution::new(self.width, self.height).with_scale_factor_override(1.0)
+    }
+
+    /// Initial window size for an interactive `--start-shot` run. The file's width and height are
+    /// logical points, like the window size presets, so the display scale factor applies to them.
+    pub fn interactive_window_resolution(&self) -> WindowResolution {
+        WindowResolution::new(self.width, self.height)
     }
 
     /// Width over height: the shape of every frame in the file.
@@ -1591,6 +1598,20 @@ mod tests {
         let resolution = file.window_resolution();
         let physical = (resolution.physical_width(), resolution.physical_height());
         assert_eq!(physical, (1400, 1050));
+
+        // An interactive start shot uses logical points: no scale override, so a 2.0 display
+        // creates a window with twice the physical pixels.
+        let mut interactive = file.interactive_window_resolution();
+        assert_eq!(interactive.scale_factor_override(), None);
+        interactive.set_scale_factor_and_apply_to_physical_size(2.0);
+        assert_eq!(
+            (interactive.width(), interactive.height()),
+            (1400.0, 1050.0)
+        );
+        assert_eq!(
+            (interactive.physical_width(), interactive.physical_height()),
+            (2800, 2100)
+        );
     }
 
     #[test]
