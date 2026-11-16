@@ -68,6 +68,9 @@ pub(super) struct LodStreaming {
     visibility_revision: u64,
     terrain_batch_commit_used: bool,
     visibility_camera_grid: Option<IVec2>,
+    /// The worldspace's LOD origin, in cells, taken from its chunks. LOD blocks align to it
+    /// (RF-LOD-001). Zero until a chunk arrives.
+    grid_origin: IVec2,
     visibility_stream_radius: Option<i32>,
     terrain_batch_prepared_chunks: u64,
     terrain_batch_activated_chunks: u64,
@@ -469,6 +472,9 @@ pub(super) fn collect_lod_chunks(
                     perspective.far = perspective
                         .far
                         .max(lod_camera_far(config.terrain_lod.max_reach_cells()));
+                }
+                if let Some(first) = chunks.first() {
+                    streaming.grid_origin = IVec2::new(first.origin.grid_x, first.origin.grid_y);
                 }
                 streaming.pending_chunks.extend(
                     chunks
@@ -1115,6 +1121,7 @@ fn apply_quadrant_selection(
     key: (IVec2, u8),
     quadrant: &mut QuadrantPatches,
     camera_grid: IVec2,
+    grid_origin: IVec2,
     apply: bool,
     distances: &TerrainLodDistances,
     batch_available: &HashMap<(IVec2, u8), u8, bevy::platform::hash::FixedHasher>,
@@ -1129,7 +1136,9 @@ fn apply_quadrant_selection(
         .fold(0u8, |bits, (tier, _)| bits | *tier as u8)
         | batch_available.get(&key).copied().unwrap_or(0);
     let selected = select_terrain_lod_tier(
-        chebyshev_grid_distance(key.0, camera_grid),
+        camera_grid,
+        key.0,
+        grid_origin,
         quadrant.full_detail_ready > 0 || merged_full.contains(&key),
         available,
         distances,
@@ -1240,6 +1249,7 @@ pub(super) fn update_terrain_lod_visibility(
         .count()
         != 0;
     let merged_changed = merged_removed || merged_drawn;
+    let grid_origin = streaming.p0().grid_origin;
     let (force_apply, camera_moved, radius_changed) = {
         let state = streaming.p0();
         (
@@ -1309,6 +1319,7 @@ pub(super) fn update_terrain_lod_visibility(
                     *key,
                     quadrant,
                     camera_grid,
+                    grid_origin,
                     apply_all || changed.contains(key),
                     &config.terrain_lod,
                     &batch_available,
@@ -1326,6 +1337,7 @@ pub(super) fn update_terrain_lod_visibility(
                     key,
                     quadrant,
                     camera_grid,
+                    grid_origin,
                     true,
                     &config.terrain_lod,
                     &batch_available,
@@ -1357,7 +1369,9 @@ pub(super) fn update_terrain_lod_visibility(
                     return None;
                 }
                 select_terrain_lod_tier(
-                    chebyshev_grid_distance(key.0, camera_grid),
+                    camera_grid,
+                    key.0,
+                    grid_origin,
                     false,
                     available,
                     &config.terrain_lod,
@@ -1670,10 +1684,14 @@ fn validate_lod_quadrant_mesh(mesh: &Mesh) -> Result<(), String> {
     Ok(())
 }
 
-/// The finest ready tier whose configured reach covers the cell, or `None` once
-/// full detail is drawable or the cell is beyond every reach.
+/// The finest ready tier at least as coarse as the tier retail's terrain rule draws for `cell`
+/// ([`TerrainLodDistances::terrain_tier`]), or `None` once full detail is drawable or the cell is
+/// beyond the outer reach. A coarser ready tier stands in until the wanted tier is ready: retail
+/// keeps the parent block until its children are loaded (RF-LOD-011, apply list item 7).
 fn select_terrain_lod_tier(
-    grid_distance: i32,
+    camera: IVec2,
+    cell: IVec2,
+    origin: IVec2,
     full_detail_ready: bool,
     available: u8,
     distances: &TerrainLodDistances,
@@ -1681,16 +1699,10 @@ fn select_terrain_lod_tier(
     if full_detail_ready {
         return None;
     }
-    LodTier::ALL.into_iter().find(|tier| {
-        grid_distance <= distances.reach_cells(*tier) && available & (*tier as u8) != 0
-    })
-}
-
-fn chebyshev_grid_distance(left: IVec2, right: IVec2) -> i32 {
-    left.x
-        .saturating_sub(right.x)
-        .saturating_abs()
-        .max(left.y.saturating_sub(right.y).saturating_abs())
+    let wanted = distances.terrain_tier(camera, cell, origin)?;
+    LodTier::ALL
+        .into_iter()
+        .find(|tier| *tier >= wanted && available & (*tier as u8) != 0)
 }
 
 fn quadrant_from_node_name(name: &str) -> Option<u8> {
@@ -2005,9 +2017,11 @@ mod tests {
         tiers.into_iter().fold(0, |mask, tier| mask | tier as u8)
     }
 
-    /// The pre-bitmask selection rule is the oracle for every legal ready set.
+    /// The pre-bitmask selection rule is the oracle for every legal ready set: the finest ready
+    /// tier at least as coarse as the tier the retail terrain rule wants.
     fn reference_tier_selection(
-        distance: i32,
+        camera: IVec2,
+        cell: IVec2,
         full_ready: bool,
         available: &HashSet<LodTier>,
         distances: &TerrainLodDistances,
@@ -2015,9 +2029,10 @@ mod tests {
         if full_ready {
             None
         } else {
+            let wanted = distances.terrain_tier(camera, cell, IVec2::ZERO)?;
             LodTier::ALL
                 .into_iter()
-                .find(|tier| distance <= distances.reach_cells(*tier) && available.contains(tier))
+                .find(|tier| *tier >= wanted && available.contains(tier))
         }
     }
 
@@ -2052,10 +2067,24 @@ mod tests {
                     boundaries.extend([reach.saturating_sub(1), reach, reach.saturating_add(1)]);
                 }
                 for distance in boundaries {
+                    let cell = IVec2::new(distance, 0);
                     for full_ready in [false, true] {
                         assert_eq!(
-                            select_terrain_lod_tier(distance, full_ready, available, distances),
-                            reference_tier_selection(distance, full_ready, &reference, distances),
+                            select_terrain_lod_tier(
+                                IVec2::ZERO,
+                                cell,
+                                IVec2::ZERO,
+                                full_ready,
+                                available,
+                                distances
+                            ),
+                            reference_tier_selection(
+                                IVec2::ZERO,
+                                cell,
+                                full_ready,
+                                &reference,
+                                distances
+                            ),
                             "subset {subset:03b}, distance {distance}, full ready {full_ready}"
                         );
                     }
@@ -2105,7 +2134,7 @@ mod tests {
                     ));
                 }
                 let expected =
-                    reference_tier_selection(distance, full_ready, &reference, &distances);
+                    reference_tier_selection(center, grid, full_ready, &reference, &distances);
                 expected_visible += usize::from(expected.is_some());
                 for tier in LodTier::ALL {
                     let mut entity = world.spawn((
@@ -2150,32 +2179,52 @@ mod tests {
         }
     }
 
-    /// `SkyrimPrefs.ini` distances move each tier's reach, not the chunk sizes.
-    /// The defaults are Skyrim's own, so level 4 reaches 12 cells, not 4.
+    /// Selection for a cell `distance` cells east of the camera's cell, camera and LOD origin at
+    /// zero.
+    fn select_east(
+        distance: i32,
+        available: u8,
+        distances: &TerrainLodDistances,
+    ) -> Option<LodTier> {
+        select_terrain_lod_tier(
+            IVec2::ZERO,
+            IVec2::new(distance, 0),
+            IVec2::ZERO,
+            false,
+            available,
+            distances,
+        )
+    }
+
+    /// The retail terrain rule (RF-LOD-003) with the High-preset defaults: a level-8 block splits
+    /// to tier 4 below 34,756 units, a level-16 block to tier 8 below 69,512, and the rest is
+    /// tier 16 out to the outer reach. The camera is the centre of cell zero.
     #[test]
     fn configured_skyrim_distances_set_each_tier_reach() {
         let skyrim = TerrainLodDistances::default();
+        // Query radius: split distance of the parent level plus the parent's cells.
         assert_eq!(
             LodTier::ALL.map(|tier| skyrim.reach_cells(tier)),
-            [12, 25, 91]
+            [17, 33, 92]
         );
-        let short = side_reach();
-        assert_eq!(LodTier::ALL.map(|tier| short.reach_cells(tier)), [4, 8, 16]);
         let available = tier_mask(LodTier::ALL);
+        // The level-8 block [8, 16) starts 30,720 units from the camera: split, so tier 4.
+        assert_eq!(select_east(12, available, &skyrim), Some(LodTier::Tier4));
+        // The level-8 block [16, 24) starts 63,488 units away: not split. The level-16 block
+        // [16, 32) is under 69,512 units: split, so tier 8 draws.
+        assert_eq!(select_east(17, available, &skyrim), Some(LodTier::Tier8));
+        // The level-16 block [32, 48) starts 129,024 units away: tier 16 (no tier 32 compiled).
+        assert_eq!(select_east(40, available, &skyrim), Some(LodTier::Tier16));
+        assert_eq!(select_east(92, available, &skyrim), Some(LodTier::Tier16));
+        assert_eq!(select_east(93, available, &skyrim), None);
+        // A smaller `fSplitDistanceMult` shortens the terrain tiers, not the chunk sizes.
+        let short = side_reach();
         assert_eq!(
-            select_terrain_lod_tier(12, false, available, &skyrim),
-            Some(LodTier::Tier4)
+            LodTier::ALL.map(|tier| short.reach_cells(tier)),
+            [14, 28, 16]
         );
-        assert_eq!(
-            select_terrain_lod_tier(12, false, available, &short),
-            Some(LodTier::Tier16)
-        );
-        assert_eq!(
-            select_terrain_lod_tier(91, false, available, &skyrim),
-            Some(LodTier::Tier16)
-        );
-        assert_eq!(select_terrain_lod_tier(92, false, available, &skyrim), None);
-        assert_eq!(query_unload_radius(skyrim.reach_cells(LodTier::Tier4)), 14);
+        assert_eq!(select_east(12, available, &short), Some(LodTier::Tier8));
+        assert_eq!(query_unload_radius(skyrim.reach_cells(LodTier::Tier4)), 19);
         assert!(lod_camera_far(skyrim.max_reach_cells()) > lod_camera_far(16));
         let unbounded = TerrainLodDistances {
             block_maximum_distance: f32::MAX,
@@ -2221,7 +2270,8 @@ mod tests {
 
     #[test]
     fn tier_residency_bounds_near_chunks_and_preserves_coarse_inner_fallback() {
-        assert_eq!(LodTier::ALL.map(default_unload_radius), [6, 10, 18]);
+        // The query radius of each tier plus the unload margin: 14, 28 and 16 cells of reach.
+        assert_eq!(LodTier::ALL.map(default_unload_radius), [16, 30, 18]);
         for tier in LodTier::ALL {
             let origin = LodOrigin::new(-4, -4);
             let inner = ChunkKey::new(1, tier, origin.chunk_for_cell(tier, -1, -1));
@@ -2231,7 +2281,7 @@ mod tests {
                 (-1, -1),
                 default_unload_radius(tier)
             ));
-            let outer = ChunkKey::new(1, tier, origin.chunk_for_cell(tier, 30, 30));
+            let outer = ChunkKey::new(1, tier, origin.chunk_for_cell(tier, 60, 60));
             assert!(!chunk_within_radius(
                 outer,
                 origin,
@@ -2265,7 +2315,7 @@ mod tests {
                             key,
                             origin,
                             (i64::from(center.x), i64::from(center.y)),
-                            18,
+                            radius + 2 * tier.side_cells(),
                         ));
                         if within {
                             let min = chunk_min_grid(key, origin);
@@ -2283,9 +2333,7 @@ mod tests {
                         }
                     }
                 }
-                if tier != LodTier::Tier16 {
-                    assert!(bounded < previous);
-                }
+                assert!(bounded < previous, "a wider radius keeps more chunks");
                 for dx in -tier.side_cells()..=tier.side_cells() {
                     for dy in -tier.side_cells()..=tier.side_cells() {
                         let cell = center + IVec2::new(dx, dy);
@@ -2714,30 +2762,31 @@ mod tests {
     fn tier_handoff_is_per_quadrant_and_falls_back_to_ready_coarser_data() {
         let defaults = side_reach();
         let available = tier_mask(LodTier::ALL);
+        // With multiplier 1.0 a level-8 block splits below 23,170 units and a level-16 block
+        // below 46,341, so the tier is 4 inside the first, 8 inside the second, 16 beyond.
+        assert_eq!(select_east(2, available, &defaults), Some(LodTier::Tier4));
+        assert_eq!(select_east(8, available, &defaults), Some(LodTier::Tier8));
+        assert_eq!(select_east(12, available, &defaults), Some(LodTier::Tier8));
+        assert_eq!(select_east(16, available, &defaults), Some(LodTier::Tier16));
         assert_eq!(
-            select_terrain_lod_tier(2, false, available, &defaults),
-            Some(LodTier::Tier4)
+            select_terrain_lod_tier(
+                IVec2::ZERO,
+                IVec2::new(2, 0),
+                IVec2::ZERO,
+                true,
+                available,
+                &defaults
+            ),
+            None
         );
-        assert_eq!(
-            select_terrain_lod_tier(6, false, available, &defaults),
-            Some(LodTier::Tier8)
-        );
-        assert_eq!(
-            select_terrain_lod_tier(12, false, available, &defaults),
-            Some(LodTier::Tier16)
-        );
-        assert_eq!(select_terrain_lod_tier(2, true, available, &defaults), None);
 
         let coarse_only = tier_mask([LodTier::Tier16]);
         assert_eq!(
-            select_terrain_lod_tier(2, false, coarse_only, &defaults),
+            select_east(2, coarse_only, &defaults),
             Some(LodTier::Tier16)
         );
-        assert_eq!(
-            select_terrain_lod_tier(17, false, coarse_only, &defaults),
-            None
-        );
-        assert_eq!(select_terrain_lod_tier(2, false, 0, &defaults), None);
+        assert_eq!(select_east(17, coarse_only, &defaults), None);
+        assert_eq!(select_east(2, 0, &defaults), None);
     }
 
     #[test]
@@ -2857,7 +2906,9 @@ mod tests {
             );
         let camera = Transform::from_xyz(CELL_SIZE * 0.5, 0.0, CELL_SIZE * 0.5);
         let center = streaming_center(false, IVec2::ZERO, &camera);
-        let grid = center + IVec2::new(6, 0);
+        // Twelve cells east: its level-8 block starts 30,720 units from the camera's cell centre,
+        // inside the split distance at multiplier 1.5 (34,756) and outside it at 1.0 (23,170).
+        let grid = center + IVec2::new(12, 0);
         let world = app.world_mut();
         world.spawn((StreamingCamera, camera));
         // Both tiers are resident for the same quadrant, and neither the camera nor any readiness
@@ -2892,18 +2943,18 @@ mod tests {
         assert_eq!(
             visibility(&app, coarse),
             Visibility::Inherited,
-            "six cells is past the fine tier's reach, so the coarse tier draws"
+            "at multiplier 1.0 the level-8 block is not split, so the coarse tier draws"
         );
 
         app.world_mut()
             .resource_mut::<EngineConfig>()
             .terrain_lod
-            .block_level0_distance = 6.0 * CELL_SIZE;
+            .split_distance_mult = 1.5;
         app.update();
         assert_eq!(
             visibility(&app, fine),
             Visibility::Inherited,
-            "raising the fine tier's distance re-selects it on the next frame"
+            "raising the split multiplier re-selects the fine tier on the next frame"
         );
         assert_eq!(visibility(&app, coarse), Visibility::Hidden);
     }
@@ -2924,8 +2975,9 @@ mod tests {
                 Transform::from_xyz(CELL_SIZE * 0.5, 0.0, -CELL_SIZE * 0.5),
             ))
             .id();
-        // Tier 16 reaches 91 cells with the default distances: cell 91 draws, cell 92 does not
-        // until the camera crosses one cell east.
+        // Tier 16 reaches 92 cells with the default distances (the box of cell 92 is 374,784 units
+        // from the camera cell's centre, under the 375,000 outer reach): cell 92 draws, cell 93
+        // does not until the camera crosses one cell east.
         let patches: HashMap<i32, Entity> = (-3..=95)
             .map(|x| {
                 let patch = world
@@ -2945,8 +2997,8 @@ mod tests {
         let visibility = |app: &App, x: i32| *app.world().get::<Visibility>(patches[&x]).unwrap();
 
         app.update();
-        assert_eq!(visibility(&app, 91), Visibility::Inherited);
-        assert_eq!(visibility(&app, 92), Visibility::Hidden);
+        assert_eq!(visibility(&app, 92), Visibility::Inherited);
+        assert_eq!(visibility(&app, 93), Visibility::Hidden);
         let visible_before = app
             .world()
             .resource::<StreamingMetrics>()
@@ -2963,7 +3015,7 @@ mod tests {
             .translation
             .x += CELL_SIZE;
         app.update();
-        assert_eq!(visibility(&app, 92), Visibility::Inherited);
+        assert_eq!(visibility(&app, 93), Visibility::Inherited);
         assert_eq!(
             visibility(&app, 5),
             Visibility::Hidden,
@@ -2974,7 +3026,7 @@ mod tests {
                 .resource::<StreamingMetrics>()
                 .visible_lod_terrain_patches,
             visible_before + 1,
-            "cell 92 enters the reach"
+            "cell 93 enters the reach"
         );
     }
 
@@ -3343,16 +3395,18 @@ mod tests {
             );
         }
 
-        world.get_mut::<Transform>(camera).unwrap().translation.x = CELL_SIZE * 10.5;
+        // Cell zero is 14 cells west of the camera's cell: its level-8 block is 26,624 units away,
+        // past the level-8 split distance (23,170), inside the level-16 one (46,341).
+        world.get_mut::<Transform>(camera).unwrap().translation.x = CELL_SIZE * 14.5;
         world
             .run_system_once(update_terrain_lod_visibility)
             .unwrap();
         assert_eq!(
             *world
-                .get::<Visibility>(lod_patches[&(IVec2::ZERO, LodTier::Tier16, 1)])
+                .get::<Visibility>(lod_patches[&(IVec2::ZERO, LodTier::Tier8, 1)])
                 .unwrap(),
             Visibility::Inherited,
-            "teleporting outward selects tier 16 for cell zero"
+            "teleporting outward selects tier 8 for cell zero"
         );
         assert_eq!(
             *world
@@ -3366,6 +3420,25 @@ mod tests {
             .resource::<StreamingMetrics>()
             .visible_lod_terrain_patches;
         world
+            .entity_mut(lod_patches[&(IVec2::ZERO, LodTier::Tier8, 1)])
+            .despawn();
+        world
+            .run_system_once(update_terrain_lod_visibility)
+            .unwrap();
+        assert_eq!(
+            world
+                .resource::<StreamingMetrics>()
+                .visible_lod_terrain_patches,
+            visible_before_removal,
+            "the ready coarser tier stands in for a removed patch (retail keeps the parent)"
+        );
+        assert_eq!(
+            *world
+                .get::<Visibility>(lod_patches[&(IVec2::ZERO, LodTier::Tier16, 1)])
+                .unwrap(),
+            Visibility::Inherited
+        );
+        world
             .entity_mut(lod_patches[&(IVec2::ZERO, LodTier::Tier16, 1)])
             .despawn();
         world
@@ -3376,7 +3449,7 @@ mod tests {
                 .resource::<StreamingMetrics>()
                 .visible_lod_terrain_patches,
             visible_before_removal - 1,
-            "removing a selected patch updates visibility metrics"
+            "removing the last ready patch updates visibility metrics"
         );
 
         let current = LodStreaming {
@@ -3394,8 +3467,196 @@ mod tests {
         assert!(!chunk_within_radius(
             fine_chunk,
             LodOrigin::new(0, 0),
-            (22, 0),
+            (40, 0),
             side_reach().max_reach_cells() + LOD_UNLOAD_MARGIN_CELLS,
         ));
+    }
+
+    /// Characterization of the near/far seam (#284, L04). Retail hides the LOD land of a cell
+    /// while that cell is attached (RF-LOD-008, one cell at a time, no morph, skirt or drop).
+    /// Mudcrab hides it per quadrant once the full-detail quadrant is surface-ready. These tests
+    /// pin what the engine does today in both arrival orders. They do not change behaviour.
+    struct SeamWorld {
+        world: World,
+        schedule: bevy::ecs::schedule::Schedule,
+    }
+
+    impl SeamWorld {
+        /// A world whose camera stands in cell (0, 0) with every tier in reach of the cells used.
+        fn new() -> Self {
+            let mut world = World::new();
+            world.insert_resource(EngineConfig {
+                terrain_lod: side_reach(),
+                ..EngineConfig::default()
+            });
+            world.insert_resource(RenderOrigin(IVec2::ZERO));
+            world.insert_resource(StreamingMetrics::default());
+            world.insert_resource(ProfilingState::default());
+            world.insert_resource(LodStreaming::default());
+            world.spawn((
+                StreamingCamera,
+                Transform::from_xyz(CELL_SIZE * 0.5, 0.0, -CELL_SIZE * 0.5),
+            ));
+            let mut schedule = bevy::ecs::schedule::Schedule::default();
+            schedule.add_systems(update_terrain_lod_visibility);
+            Self { world, schedule }
+        }
+
+        /// One full-detail quadrant, optionally already surface-ready.
+        fn full_quadrant(&mut self, grid: IVec2, quadrant: u8, ready: bool) -> Entity {
+            let mut entity = self.world.spawn((
+                super::super::TerrainPatch,
+                TerrainCoverage {
+                    grid,
+                    quadrant,
+                    tier: None,
+                },
+                Visibility::Inherited,
+            ));
+            if ready {
+                entity.insert(TerrainSurfaceReady);
+            }
+            entity.id()
+        }
+
+        /// One tier-4 LOD quadrant, hidden until the selector shows it.
+        fn lod_quadrant(&mut self, grid: IVec2, quadrant: u8) -> Entity {
+            self.world
+                .spawn((
+                    TerrainCoverage {
+                        grid,
+                        quadrant,
+                        tier: Some(LodTier::Tier4),
+                    },
+                    TerrainSurfaceReady,
+                    Visibility::Hidden,
+                ))
+                .id()
+        }
+
+        fn run(&mut self) {
+            self.schedule.run(&mut self.world);
+        }
+
+        fn visibility(&self, entity: Entity) -> Visibility {
+            *self.world.get::<Visibility>(entity).unwrap()
+        }
+    }
+
+    #[test]
+    fn seam_lod_arriving_after_full_detail_never_shows_over_it() {
+        let mut seam = SeamWorld::new();
+        for quadrant in 0..4 {
+            seam.full_quadrant(IVec2::ZERO, quadrant, true);
+        }
+        seam.run();
+        let lod: Vec<_> = (0..4)
+            .map(|quadrant| seam.lod_quadrant(IVec2::ZERO, quadrant))
+            .collect();
+        seam.run();
+        for entity in lod {
+            assert_eq!(
+                seam.visibility(entity),
+                Visibility::Hidden,
+                "LOD that arrives after the full-detail cell stays hidden"
+            );
+        }
+    }
+
+    #[test]
+    fn seam_full_detail_arriving_after_lod_leaves_no_hole_and_then_hides_it() {
+        let mut seam = SeamWorld::new();
+        let lod: Vec<_> = (0..4)
+            .map(|quadrant| seam.lod_quadrant(IVec2::ZERO, quadrant))
+            .collect();
+        seam.run();
+        for entity in &lod {
+            assert_eq!(seam.visibility(*entity), Visibility::Inherited);
+        }
+        // The full-detail quadrants exist but are not surface-ready: the LOD keeps drawing.
+        let full: Vec<_> = (0..4)
+            .map(|quadrant| seam.full_quadrant(IVec2::ZERO, quadrant, false))
+            .collect();
+        seam.run();
+        for entity in &lod {
+            assert_eq!(
+                seam.visibility(*entity),
+                Visibility::Inherited,
+                "no hole while the full-detail cell is still preparing"
+            );
+        }
+        for entity in full {
+            seam.world.entity_mut(entity).insert(TerrainSurfaceReady);
+        }
+        seam.run();
+        for entity in &lod {
+            assert_eq!(
+                seam.visibility(*entity),
+                Visibility::Hidden,
+                "LOD hides in the frame the full-detail quadrant is surface-ready"
+            );
+        }
+    }
+
+    #[test]
+    fn seam_edge_between_a_full_detail_cell_and_a_lod_cell_has_one_surface_each() {
+        let mut seam = SeamWorld::new();
+        let full_cell = IVec2::ZERO;
+        let lod_cell = IVec2::new(1, 0);
+        let mut full_lod = Vec::new();
+        let mut far_lod = Vec::new();
+        for quadrant in 0..4 {
+            seam.full_quadrant(full_cell, quadrant, true);
+            full_lod.push(seam.lod_quadrant(full_cell, quadrant));
+            far_lod.push(seam.lod_quadrant(lod_cell, quadrant));
+        }
+        seam.run();
+        for quadrant in 0..4 {
+            assert_eq!(seam.visibility(full_lod[quadrant]), Visibility::Hidden);
+            assert_eq!(seam.visibility(far_lod[quadrant]), Visibility::Inherited);
+        }
+    }
+
+    #[test]
+    fn seam_hides_lod_per_quadrant_where_retail_hides_it_per_cell() {
+        // Mudcrab today: one ready full-detail quadrant hides only its own LOD quadrant.
+        // Retail (RF-LOD-008) hides the LOD land of a whole cell, one cell at a time, while the
+        // cell is in state 6 or 7. This test records the quadrant rule so a later change shows.
+        let mut seam = SeamWorld::new();
+        seam.full_quadrant(IVec2::ZERO, 0, true);
+        let lod: Vec<_> = (0..4)
+            .map(|quadrant| seam.lod_quadrant(IVec2::ZERO, quadrant))
+            .collect();
+        seam.run();
+        assert_eq!(seam.visibility(lod[0]), Visibility::Hidden);
+        for entity in &lod[1..] {
+            assert_eq!(seam.visibility(*entity), Visibility::Inherited);
+        }
+    }
+
+    #[test]
+    fn seam_lod_returns_when_full_detail_loses_surface_readiness() {
+        let mut seam = SeamWorld::new();
+        let full: Vec<_> = (0..4)
+            .map(|quadrant| seam.full_quadrant(IVec2::ZERO, quadrant, true))
+            .collect();
+        let lod: Vec<_> = (0..4)
+            .map(|quadrant| seam.lod_quadrant(IVec2::ZERO, quadrant))
+            .collect();
+        seam.run();
+        for entity in &lod {
+            assert_eq!(seam.visibility(*entity), Visibility::Hidden);
+        }
+        for entity in full {
+            seam.world.entity_mut(entity).despawn();
+        }
+        seam.run();
+        for entity in &lod {
+            assert_eq!(
+                seam.visibility(*entity),
+                Visibility::Inherited,
+                "an unloaded cell falls back to its LOD land"
+            );
+        }
     }
 }
