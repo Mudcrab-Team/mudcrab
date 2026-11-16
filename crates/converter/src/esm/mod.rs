@@ -886,8 +886,8 @@ fn remap_record_form_ids(
             let malformed = malformed_subrecords.binary_search(&index).is_ok();
             index += 1;
             if malformed
-                && record_type == *b"REFR"
-                && matches!(tag.as_slice(), b"XPOD" | b"XMBR" | b"XLRM")
+                && ((record_type == *b"REFR" && matches!(tag.as_slice(), b"XPOD" | b"XLRM"))
+                    || (tag.as_slice() == b"XMBR" && is_placed_record_type(&record_type)))
             {
                 data.clear();
                 true

@@ -1345,8 +1345,9 @@ Authored assignment metadata:
 - **`room_reference_rules`** records ordinary placements independently of geometric overlap rows.
   A nonzero, remapped `XMBR` is `target`; a Multibound header flag with no `XMBR` is `none`;
   an ordinary placement is `auto`. Malformed/zero targets and unsupported primitive overrides
-  are `unknown`. Both readers preserve malformed `XMBR` presence for this rule, including
-  references carrying the Multibound flag; rejection cannot turn it into `auto` or `none`.
+  are `unknown`. Both readers preserve malformed `XMBR` presence for every supported placed
+  record type, including references carrying the Multibound flag; rejection cannot turn it
+  into `auto` or `none`.
   Missing/foreign targets remain visible. An absent `XMBR` alone does not mean `NONE`.
 - **`room_model_bounds`** stores source NIF spheres in runtime axes and Creation units, without
   metre scaling. Mesh conversion writes GLB root extras `mudcrabRoomSphere` version 1, and model
