@@ -750,10 +750,16 @@ pub fn export_room_graph(
             }
         }
     }
+    let mut dangling_links = tx.prepare_cached(
+        "SELECT EXISTS(SELECT 1 FROM room_links l JOIN room_bounds source ON source.ref_id=l.room_ref \
+         WHERE source.cell_id=?1 AND NOT EXISTS(SELECT 1 FROM room_bounds target \
+         WHERE target.ref_id=l.linked_ref AND target.cell_id=?1))",
+    )?;
     for &cell in rooms_by_cell.keys() {
+        let dangling: bool = dangling_links.query_row([cell], |row| row.get(0))?;
         tx.execute(
             "INSERT INTO room_graph_cells VALUES (?1,?2)",
-            params![cell, !incomplete.contains(&cell)],
+            params![cell, !incomplete.contains(&cell) && !dangling],
         )?;
     }
     report.write(tx)?;

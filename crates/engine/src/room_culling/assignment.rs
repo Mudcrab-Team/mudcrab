@@ -460,6 +460,21 @@ mod tests {
     }
 
     #[test]
+    fn named_initial_targets_do_not_require_source_spheres() {
+        let rooms = [room(1, 0.0), room(2, 25.0)];
+        let mut assignment = automatic(None);
+        assignment.rules.get_mut(&100).unwrap().rule = Rule::Target(PortalSide::Room(1));
+        assert_eq!(
+            assignment.initial_owners(100, Affine3A::IDENTITY, &rooms, &[]),
+            [Owner::Room(1)]
+        );
+        assert_eq!(
+            assignment.owners(100, Some(Affine3A::IDENTITY), &rooms, &[]),
+            [Owner::Always]
+        );
+    }
+
+    #[test]
     fn authored_targets_override_initial_geometry_and_movement_rechecks_containment() {
         let rooms = [room(1, 0.0), room(2, 25.0)];
         let mut assignment = automatic(Some(ModelSphere {

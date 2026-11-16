@@ -4860,6 +4860,24 @@ mod tests {
     }
 
     #[test]
+    fn assignment_sphere_declines_disconnected_exported_geometry() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("disconnected.nif");
+        fs::write(&input, static_nif()).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let (mut second, _, _) = open_nif_resilient(&input).unwrap();
+        let mut orphan = second.blocks.remove(1);
+        let NifBlock::BSTriShape(shape) = &mut orphan else {
+            unreachable!()
+        };
+        shape.av.translation.0.0.x = 1000.0;
+        nif.blocks.push(orphan);
+        let model = project_wormhole_nif::nif_file::nif_to_static_model(&nif).unwrap();
+        assert_eq!(model.static_meshes.len(), 2);
+        assert!(room_bounds::source_sphere(&nif).is_none());
+    }
+
+    #[test]
     fn assignment_sphere_keeps_source_bounds_and_ignores_the_reference_root_transform() {
         use project_wormhole_shared::glam::{Mat3, Vec3};
         let directory = tempfile::tempdir().unwrap();

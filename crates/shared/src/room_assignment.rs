@@ -73,10 +73,6 @@ pub fn joined_masters(rooms: &[JoinedRoom]) -> Vec<Option<usize>> {
     let is_master = |index: usize| rooms[index].master || links[index].is_empty();
     (0..rooms.len())
         .map(|start| {
-            if !rooms[start].master && incoming[start] > 1 {
-                // The native insertion order depends on runtime master construction.
-                return None;
-            }
             if is_master(start) {
                 return Some(start);
             }
@@ -85,6 +81,10 @@ pub fn joined_masters(rooms: &[JoinedRoom]) -> Vec<Option<usize>> {
             while let Some(room) = pending.pop() {
                 if !seen.insert(room) {
                     continue;
+                }
+                if !rooms[room].master && incoming[room] > 1 {
+                    // Native construction order remains unknown through recursive links too.
+                    return None;
                 }
                 let room_links = &links[room];
                 if let Some(master) = room_links
@@ -136,6 +136,33 @@ mod tests {
                 Some(7)
             ]
         );
+    }
+
+    #[test]
+    fn recursive_joined_links_preserve_ambiguous_ownership() {
+        let rooms = [
+            JoinedRoom {
+                ref_id: 1,
+                master: true,
+                links: vec![2],
+            },
+            JoinedRoom {
+                ref_id: 2,
+                master: false,
+                links: vec![],
+            },
+            JoinedRoom {
+                ref_id: 3,
+                master: true,
+                links: vec![2],
+            },
+            JoinedRoom {
+                ref_id: 4,
+                master: false,
+                links: vec![2],
+            },
+        ];
+        assert_eq!(joined_masters(&rooms), [Some(0), None, Some(2), None]);
     }
 
     #[test]

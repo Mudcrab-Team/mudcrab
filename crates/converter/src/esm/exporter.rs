@@ -3964,6 +3964,57 @@ mod tests {
     }
 
     #[test]
+    fn dangling_authored_room_links_mark_only_their_cell_incomplete() {
+        for target in [0x9999, 0x3001] {
+            let (conn, _) = export_rooms(vec![
+                interior_cell(0x100),
+                interior_cell(0x200),
+                room(
+                    0x1001,
+                    0x100,
+                    [0.0; 3],
+                    [0.0; 3],
+                    [10.0; 3],
+                    vec![(b"XRMR", vec![0, 0, 1, 0]), (b"XLRM", word(target))],
+                ),
+                room(
+                    0x1002,
+                    0x100,
+                    [100.0, 0.0, 0.0],
+                    [0.0; 3],
+                    [10.0; 3],
+                    vec![],
+                ),
+                room(0x3001, 0x200, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            ]);
+            let complete: bool = conn
+                .query_row(
+                    "SELECT complete FROM room_graph_cells WHERE cell_id=0x100",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(!complete);
+            let unrelated: bool = conn
+                .query_row(
+                    "SELECT complete FROM room_graph_cells WHERE cell_id=0x200",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(unrelated);
+            let stored: u32 = conn
+                .query_row(
+                    "SELECT linked_ref FROM room_links WHERE room_ref=0x1001",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, target);
+        }
+    }
+
+    #[test]
     fn skips_markers_with_non_finite_sizes() {
         let (conn, report) = export_rooms(vec![
             interior_cell(0x100),

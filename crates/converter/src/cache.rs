@@ -469,6 +469,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "object-texture-swap-geometry-index-v1",
     "object-texture-swap-geometry-index-v2",
     "native-room-assignment-spheres",
+    "complete-root-room-spheres",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical

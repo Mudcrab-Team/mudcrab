@@ -138,9 +138,10 @@ overlap edges and the portal-less-room heuristic.
 
 Supported model bounds retain native source spheres and ordered child merges. They are not rebuilt
 from render AABBs. A reference's current cell-local transform places that sphere; its center selects
-containing master rooms. Initial named targets override geometric containment. Later transform changes
-recompute ownership, including after a moving object returns to its spawn pose. `NONE`, unknown
-targets/bounds, nonuniform or sheared assignment transforms, actors, doors, and activators stay visible.
+containing master rooms. Initial named targets override geometric containment without requiring
+a source sphere. Later transform changes
+recompute ownership, including after a moving object returns to its spawn pose. Missing bounds remain visible during automatic assignment and updates. `NONE`, unknown
+targets, nonuniform or sheared assignment transforms, actors, doors, and activators stay visible.
 Native overlapping-room hash order cannot be reconstructed from persistent IDs, so possible owners
 are combined. Named-target neighbor priority and specialized native paths remain conservative limits.
 
