@@ -1,5 +1,6 @@
 use super::*;
 use crate::nif_material::skin_load_tests::{loader_app_with_formats, wait_for_dependencies};
+use crate::streaming::validate_standard_material;
 use bevy::{
     gltf::GltfAssetLabel,
     image::CompressedImageFormats,
@@ -117,23 +118,25 @@ const TEXTURES: [(&str, u64); 7] = [
     ("landscape/rocks01", 8),
 ];
 
+const ROCK: nif::StaticShape<'static> = nif::StaticShape {
+    name: "Rock",
+    positions: &[[0., 0., 0.], [100., 0., 0.], [0., 100., 0.]],
+    normals: &[[0., 0., 1.]; 3],
+    uvs: &[[0., 0.], [1., 0.], [0., 1.]],
+    indices: &[[0, 1, 2]],
+    diffuse: "textures/original.dds",
+    normal_texture: "textures/original_n.dds",
+};
+
+/// Lighting-shader flag words of an ordinary surface: depth test, cast shadows, depth write.
+/// A shape without depth test or write gets a native depth material, which swaps do not reach.
+const ORDINARY_FLAGS: (u32, u32) = ((1 << 31) | (1 << 9), 1);
+
 fn fixture(directory: &Path) {
     fs::create_dir_all(directory.join("meshes")).unwrap();
     fs::create_dir_all(directory.join("textures/landscape")).unwrap();
-    let bytes = nif::static_shape_with_material_flags(
-        &nif::StaticShape {
-            name: "Rock",
-            positions: &[[0., 0., 0.], [100., 0., 0.], [0., 100., 0.]],
-            normals: &[[0., 0., 1.]; 3],
-            uvs: &[[0., 0.], [1., 0.], [0., 1.]],
-            indices: &[[0, 1, 2]],
-            diffuse: "textures/original.dds",
-            normal_texture: "textures/original_n.dds",
-        },
-        (1 << 31) | (1 << 9),
-        1,
-    ) // Depth test, cast shadows, depth write: an ordinary surface.
-    .unwrap();
+    let (flags_1, flags_2) = ORDINARY_FLAGS;
+    let bytes = nif::static_shape_with_material_flags(&ROCK, flags_1, flags_2).unwrap();
     let source = directory.join("shared.nif");
     fs::write(&source, bytes).unwrap();
     MeshConverter::convert_nif_to_glb(&source, &directory.join("meshes/shared.glb")).unwrap();
@@ -146,8 +149,10 @@ fn fixture(directory: &Path) {
         let bytes =
             TextureConverter::convert_uncompressed(&bytes, TextureEncoding::ColorSrgb).unwrap();
         fs::write(directory.join(format!("textures/{name}.ktx2")), bytes).unwrap();
+        // BC3, as the converter writes retail normals. Bevy gives BC1, BC3 and BC7 an sRGB twin,
+        // so the colour-space flag matters for them. BC5 has no twin and would hide the flag.
         let normal = dds::generate(
-            &dds::Spec::new(dds::Format::Bc5Unorm, 4, 4),
+            &dds::Spec::new(dds::Format::Bc3Unorm, 4, 4),
             &mut Rng::new(seed + 100),
         )
         .unwrap();
@@ -167,9 +172,15 @@ fn fixture(directory: &Path) {
             TextureConverter::convert_uncompressed(&bytes, TextureEncoding::DataLinear).unwrap();
         fs::write(directory.join(format!("textures/{name}.ktx2")), bytes).unwrap();
     }
-    // Normal publication supplies byte-identical colour/wrap aliases. Honor the actual URIs
-    // emitted above rather than leaving the headless scene with an unresolved dependency.
-    for uri in MeshConverter::glb_texture_uris(&directory.join("meshes/shared.glb")).unwrap() {
+    alias_texture_dependencies(directory, &directory.join("meshes/shared.glb"));
+    multi_geometry_glb(directory);
+}
+
+/// Normal publication supplies byte-identical colour/wrap aliases. Honor the actual URIs a
+/// converted fixture GLB emits rather than leaving the headless scene with an unresolved
+/// dependency.
+fn alias_texture_dependencies(directory: &Path, glb: &Path) {
+    for uri in MeshConverter::glb_texture_uris(glb).unwrap() {
         assert!(
             uri.starts_with("../textures/original"),
             "unexpected fixture dependency {uri}"
@@ -185,7 +196,6 @@ fn fixture(directory: &Path) {
             fs::write(target, canonical).unwrap();
         }
     }
-    multi_geometry_glb(directory);
 }
 
 /// `meshes/multi.glb`: four primitives that stand for source geometry 0 to 3. Geometry 2 stands
@@ -216,6 +226,51 @@ fn multi_geometry_glb(directory: &Path) {
     container.json = std::borrow::Cow::Owned(serde_json::to_vec(&document).unwrap());
     fs::write(
         directory.join("meshes/multi.glb"),
+        container.to_vec().unwrap(),
+    )
+    .unwrap();
+}
+
+/// `meshes/native.glb`: the shared model with its own normal map replaced by `PineForest02`'s,
+/// the file the `PINE` swap also asks for. Rock and trim models share landscape normals this way.
+const NATIVE_NORMAL: &str = "../textures/landscape/pineforest02_n.ktx2";
+
+fn native_normal_glb(directory: &Path) {
+    let bytes = fs::read(directory.join("meshes/shared.glb")).unwrap();
+    let mut container = gltf::binary::Glb::from_slice(&bytes).unwrap();
+    let mut document: serde_json::Value = serde_json::from_slice(&container.json).unwrap();
+    let mut replaced = Vec::new();
+    for (index, image) in document["images"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .enumerate()
+    {
+        if image["uri"]
+            .as_str()
+            .is_some_and(|uri| uri.starts_with("../textures/original_n"))
+        {
+            image["uri"] = NATIVE_NORMAL.into();
+            replaced.push(index);
+        }
+    }
+    assert_eq!(replaced.len(), 1, "the fixture GLB has one normal image");
+    // A plain texture path repeats (the converter gives every other wrap its own `.opensky-wrapN`
+    // alias), as `rockpilel01.glb` does for the same normal.
+    let repeat = serde_json::json!(
+        {"magFilter": 9729, "minFilter": 9987, "wrapS": 10497, "wrapT": 10497}
+    );
+    let samplers = document["samplers"].as_array_mut().unwrap();
+    samplers.push(repeat);
+    let sampler = samplers.len() - 1;
+    for texture in document["textures"].as_array_mut().unwrap() {
+        if texture["source"] == replaced[0] {
+            texture["sampler"] = sampler.into();
+        }
+    }
+    container.json = std::borrow::Cow::Owned(serde_json::to_vec(&document).unwrap());
+    fs::write(
+        directory.join("meshes/native.glb"),
         container.to_vec().unwrap(),
     )
     .unwrap();
@@ -457,6 +512,67 @@ fn retail_stat_examples_replace_the_whole_texture_set_per_instance() {
     assert_eq!(
         fs::read(directory.path().join("meshes/shared.glb")).unwrap(),
         original_glb
+    );
+}
+
+/// #723: the converter tags a model whose NIF carries Havok collision, so its MODS entry applies
+/// to the shape at that 3D Index like any other model's.
+#[test]
+fn a_model_with_havok_collision_receives_its_swap() {
+    let directory = tempfile::tempdir().unwrap();
+    fixture(directory.path());
+    let source = directory.path().join("collidable.nif");
+    // The same ordinary surface as `shared.glb`, plus a Havok box body on its own node.
+    let (flags_1, flags_2) = ORDINARY_FLAGS;
+    let bytes = nif::static_shape_with_bodies_and_material_flags(
+        &ROCK,
+        &[nif::fixed_box_body("RockCollision")],
+        flags_1,
+        flags_2,
+    );
+    fs::write(&source, bytes.unwrap()).unwrap();
+    let glb = directory.path().join("meshes/collidable.glb");
+    MeshConverter::convert_nif_to_glb(&source, &glb).unwrap();
+    let written = gltf::Gltf::from_slice(&fs::read(&glb).unwrap()).unwrap();
+    let primitive = written
+        .meshes()
+        .next()
+        .unwrap()
+        .primitives()
+        .next()
+        .unwrap();
+    assert_eq!(
+        ObjectGeometryIndex::from_primitive(&primitive),
+        Some(ObjectGeometryIndex(0)),
+        "the converter tags the collidable model's lighting primitive"
+    );
+    alias_texture_dependencies(directory.path(), &glb);
+    let (conn, _) = database();
+    let catalog = ObjectTextureCatalog::read(&conn).unwrap();
+    let mut app = object_app(directory.path());
+    let scene = load_scene(&mut app, "collidable.glb");
+    let swapped = spawn(&mut app, &scene, catalog.get(1));
+    let control = spawn(&mut app, &scene, None);
+    settle(&mut app, &[swapped]);
+    assert_eq!(
+        app.world().get::<ObjectTextureSwapState>(swapped),
+        Some(&ObjectTextureSwapState::Applied {
+            textured: 1,
+            hidden: 0
+        })
+    );
+    assert_eq!(
+        surfaces_of(&app, swapped)[0].0,
+        Some(0),
+        "3D Index 0 is tagged"
+    );
+    let (_, swapped_material) = surface(&app, swapped);
+    let (_, control_material) = surface(&app, control);
+    assert_ne!(swapped_material, control_material);
+    assert_ne!(
+        image_data(&app, &swapped_material),
+        image_data(&app, &control_material),
+        "the TXST diffuse replaces the model's own"
     );
 }
 
@@ -953,4 +1069,128 @@ fn refusals_warn_once_per_base_record_and_reason() {
     let bases: std::collections::BTreeSet<_> = reported.iter().map(|(base, _)| *base).collect();
     assert_eq!(reported.len(), 2, "{reported:?}");
     assert_eq!(bases, [4, 6].into());
+}
+
+/// The model's own normal image under `root`, after the strict validator the streaming path runs
+/// (`validate_standard_material`) has accepted the model's material.
+fn validated_native_normal(app: &App, root: Entity) -> Image {
+    let (_, material) = surface(app, root);
+    let images = app.world().resource::<Assets<Image>>();
+    let material = material_of(app, &material);
+    validate_standard_material(material, images, true)
+        .unwrap_or_else(|error| panic!("strict validation failed: {error}"));
+    images
+        .get(material.normal_map_texture.as_ref().unwrap())
+        .unwrap()
+        .clone()
+}
+
+/// Bevy keys an image by path, so whichever consumer asks first decides its colour space. A model
+/// and a swap both use the same landscape normal map; neither order may give the model an sRGB view
+/// of its own normals, which strict validation refuses and which hides the model. The fixture
+/// normals are BC3 because BC3 has an sRGB twin: with BC5 the flag changes nothing and the test
+/// cannot fail.
+#[test]
+fn a_shared_normal_map_loads_linear_whichever_consumer_asks_first() {
+    let mut outcomes = Vec::new();
+    for swap_first in [true, false] {
+        let directory = tempfile::tempdir().unwrap();
+        fixture(directory.path());
+        native_normal_glb(directory.path());
+        let (conn, _) = database();
+        let catalog = ObjectTextureCatalog::read(&conn).unwrap();
+        let mut app = object_app(directory.path());
+        let donor = load_scene(&mut app, "shared.glb");
+        let (swapped, native);
+        if swap_first {
+            // Nothing has loaded the PineForest02 normal yet, so the swap asks first.
+            swapped = spawn(&mut app, &donor, catalog.get(PINE));
+            settle(&mut app, &[swapped]);
+            let scene = load_scene(&mut app, "native.glb");
+            native = spawn(&mut app, &scene, None);
+        } else {
+            let scene = load_scene(&mut app, "native.glb");
+            native = spawn(&mut app, &scene, None);
+            swapped = spawn(&mut app, &donor, catalog.get(PINE));
+            settle(&mut app, &[swapped]);
+        }
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(matches!(
+            app.world().get::<ObjectTextureSwapState>(swapped),
+            Some(ObjectTextureSwapState::Applied { textured: 1, .. })
+        ));
+        let image = validated_native_normal(&app, native);
+        assert!(
+            !image.texture_descriptor.format.is_srgb(),
+            "swap_first={swap_first}: {:?}",
+            image.texture_descriptor.format
+        );
+        let (_, swapped_material) = surface(&app, swapped);
+        normal_data(&app, &swapped_material);
+        outcomes.push((image.texture_descriptor.format, image.sampler.clone()));
+    }
+    assert_eq!(
+        outcomes[0], outcomes[1],
+        "the shared entry must not depend on the load order"
+    );
+}
+
+/// Another loader may have claimed the path with the default (sRGB) settings before the swap asks.
+/// The shared entry then stays sRGB, but the swap's own copy must still be linear.
+#[test]
+fn a_swap_normal_is_linear_even_when_another_loader_claimed_the_path_as_srgb() {
+    let directory = tempfile::tempdir().unwrap();
+    fixture(directory.path());
+    let (conn, _) = database();
+    let catalog = ObjectTextureCatalog::read(&conn).unwrap();
+    let mut app = object_app(directory.path());
+    let claimed = app
+        .world()
+        .resource::<AssetServer>()
+        .load::<Image>("textures/landscape/pineforest02_n.ktx2");
+    wait_for_dependencies(&mut app, &claimed);
+    assert!(
+        app.world()
+            .resource::<Assets<Image>>()
+            .get(&claimed)
+            .unwrap()
+            .texture_descriptor
+            .format
+            .is_srgb(),
+        "the setup must reproduce the sRGB first claim"
+    );
+    let scene = load_scene(&mut app, "shared.glb");
+    let root = spawn(&mut app, &scene, catalog.get(PINE));
+    settle(&mut app, &[root]);
+    let (_, material) = surface(&app, root);
+    normal_data(&app, &material);
+    image_data(&app, &material);
+}
+
+/// The swap loader requests each image with the colour space of its slot and the sampler the glTF
+/// loader gives a plain texture path (the default sampler, repeating), because the first request
+/// fixes both for every later consumer of the path.
+#[test]
+fn swap_images_are_requested_with_their_slot_colour_space_and_the_glb_sampler() {
+    let directory = tempfile::tempdir().unwrap();
+    fixture(directory.path());
+    let mut app = object_app(directory.path());
+    let server = app.world().resource::<AssetServer>().clone();
+    let default = app.world().resource::<DefaultGltfImageSampler>();
+    let sampler = swap_image_sampler(Some(default));
+    assert_eq!(sampler.address_mode_u, ImageAddressMode::Repeat);
+    assert_eq!(sampler.address_mode_v, ImageAddressMode::Repeat);
+    assert_eq!(sampler.anisotropy_clamp, default.get().anisotropy_clamp);
+    let colour = load_swap_image(&server, "textures/red.ktx2", true, &sampler);
+    let data = load_swap_image(&server, "textures/red_n.ktx2", false, &sampler);
+    wait_for_dependencies(&mut app, &colour);
+    wait_for_dependencies(&mut app, &data);
+    let images = app.world().resource::<Assets<Image>>();
+    for (handle, srgb) in [(&colour, true), (&data, false)] {
+        let image = images.get(handle).unwrap();
+        assert_eq!(image.texture_descriptor.format.is_srgb(), srgb);
+        assert_eq!(image.sampler, ImageSampler::Descriptor(sampler.clone()));
+    }
 }
