@@ -190,6 +190,7 @@ impl Plugin for ConversionPanelPlugin {
         app.add_plugins(ConversionLogicPlugin)
             .init_resource::<OutputReady>()
             .init_resource::<OutputHasManifest>()
+            .init_resource::<panel::PendingDamagedOutput>()
             .add_systems(Startup, panel::detect_skyrim_at_start)
             .add_systems(
                 Update,
