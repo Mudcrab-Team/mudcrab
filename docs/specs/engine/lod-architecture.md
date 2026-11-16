@@ -70,8 +70,8 @@ command-line options override every file wherever they appear
 | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2`; odd values only |
 | `[TerrainManager]` | `fSplitDistanceMult` | terrain split rule (below) |
 | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists |
-| `[TerrainManager]` | `fBlockLevel0Distance` | read and stored, unused until object LOD lands (object LOD: level 8 hands over to level 4) |
-| `[TerrainManager]` | `fBlockLevel1Distance` | read and stored, unused until object LOD lands (object LOD: level 16 hands over to level 8) |
+| `[TerrainManager]` | `fBlockLevel0Distance` | parsed and kept for the object LOD rule (level 8 hands over to level 4); does not affect terrain, so it changes nothing on screen until object LOD lands |
+| `[TerrainManager]` | `fBlockLevel1Distance` | parsed and kept for the object LOD rule (level 16 hands over to level 8); does not affect terrain, so it changes nothing on screen until object LOD lands |
 
 Terrain follows retail's block rule (RF-LOD-001, RF-LOD-003, RF-LOD-011). A
 block of `level` cells is replaced by its four children while the planar

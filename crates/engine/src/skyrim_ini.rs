@@ -17,8 +17,8 @@
 //! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units |
 //! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD split rule: a block of `level` cells splits into its four children under `fSplitDistanceMult` x `level` x 2,048 x sqrt(2) units (34,756 / 69,512 at levels 8 / 16 with 1.5) |
 //! | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists (not a retail terrain cut) |
-//! | `[TerrainManager]` | `fBlockLevel0Distance` | read and stored, but unused until object LOD lands (object LOD: level 8 hands over to level 4) |
-//! | `[TerrainManager]` | `fBlockLevel1Distance` | read and stored, but unused until object LOD lands (object LOD: level 16 hands over to level 8) |
+//! | `[TerrainManager]` | `fBlockLevel0Distance` | parsed and kept for the object LOD rule (level 8 hands over to level 4); does not affect terrain, so it changes nothing on screen until object LOD lands |
+//! | `[TerrainManager]` | `fBlockLevel1Distance` | parsed and kept for the object LOD rule (level 16 hands over to level 8); does not affect terrain, so it changes nothing on screen until object LOD lands |
 
 use crate::config::{EngineConfig, MAX_STREAM_RADIUS};
 use std::{collections::HashMap, path::Path};

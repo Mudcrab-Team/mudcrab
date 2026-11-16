@@ -25,10 +25,14 @@ const IO_THREADS_EXPECTED: &str = "a thread count from 0 to 64";
 /// children when the block's box distance is under `fSplitDistanceMult` x level x 2,048 x sqrt(2)
 /// ([`Self::terrain_split_distance`]). Objects (`.bto`) use `fBlockLevel0Distance` and
 /// `fBlockLevel1Distance`, scaled by the worldspace NAMA value, and drop beyond
-/// `fBlockMaximumDistance`. The object rule has no consumer yet: no object LOD is drawn. Terrain
-/// reads only `fSplitDistanceMult`, plus `fBlockMaximumDistance` as the outer guard below.
-/// `fBlockLevel0Distance` and `fBlockLevel1Distance` are therefore unused until the object LOD
-/// importer lands.
+/// `fBlockMaximumDistance`. The object rule has no consumer yet: no object LOD is drawn.
+///
+/// What each key does today: `fSplitDistanceMult` and `fBlockMaximumDistance` drive terrain (the
+/// split rule, and the outer reach of tier 16 as an engineering guard, see
+/// [`Self::terrain_tier`]). `fBlockLevel0Distance` and `fBlockLevel1Distance` are parsed and kept
+/// for the object LOD rule but do not affect terrain, so changing them changes nothing on screen
+/// until the object LOD importer lands.
+///
 /// `--ini` reads these from a `SkyrimPrefs.ini`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerrainLodDistances {
