@@ -2381,33 +2381,41 @@ fn malformed_authored_assignments_stay_unknown_in_both_readers() {
         let data = directory.path().join("Data");
         let mut references = Vec::new();
         let mut expected = Vec::new();
-        for (index, assignment) in [
-            None,
-            Some(vec![0; 3]),
-            Some(vec![0; 4]),
-            Some(0x800u32.to_le_bytes().to_vec()),
+        for (type_index, record_type) in [
+            b"REFR", b"ACHR", b"ACRE", b"PGRE", b"PMIS", b"PHZD", b"PARW", b"PBAR", b"PBEA",
+            b"PCON", b"PFLA",
         ]
         .into_iter()
         .enumerate()
         {
-            for (flag_index, flags) in [0, 0x8000_0000].into_iter().enumerate() {
-                let id = 0x820 + (index * 2 + flag_index) as u32;
-                let mut fields = [
-                    sub(b"NAME", &0x999u32.to_le_bytes()),
-                    sub(b"DATA", &[0; 24]),
-                ]
-                .concat();
-                if let Some(bytes) = &assignment {
-                    fields.extend(sub(b"XMBR", bytes));
+            for (index, assignment) in [
+                None,
+                Some(vec![0; 3]),
+                Some(vec![0; 4]),
+                Some(0x800u32.to_le_bytes().to_vec()),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                for (flag_index, flags) in [0, 0x8000_0000].into_iter().enumerate() {
+                    let id = 0x820 + (type_index * 8 + index * 2 + flag_index) as u32;
+                    let mut fields = [
+                        sub(b"NAME", &0x999u32.to_le_bytes()),
+                        sub(b"DATA", &[0; 24]),
+                    ]
+                    .concat();
+                    if let Some(bytes) = &assignment {
+                        fields.extend(sub(b"XMBR", bytes));
+                    }
+                    references.push(record(record_type, id, flags, fields));
+                    let rule = match index {
+                        0 if flags != 0 => "none",
+                        0 => "auto",
+                        3 => "target",
+                        _ => "unknown",
+                    };
+                    expected.push((id, rule.to_owned()));
                 }
-                references.push(record(b"REFR", id, flags, fields));
-                let rule = match index {
-                    0 if flags != 0 => "none",
-                    0 => "auto",
-                    3 => "target",
-                    _ => "unknown",
-                };
-                expected.push((id, rule.to_owned()));
             }
         }
         room_graph_review_fixture_with_fields(&data, None, None, references);
