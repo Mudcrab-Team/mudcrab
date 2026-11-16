@@ -35,7 +35,7 @@ $baselineFunctions = @(
     "Assert-WindowComparable", "Get-ComparisonRefusal", "Get-Comparison",
     "Get-RouteShortfall", "Get-BaselineProblem", "Get-RouteTravelSeconds", "Get-WindowDuration", "Get-WindowReport",
     "Get-WindowArguments", "Get-WindowInvocationParameters", "Get-WindowKinds", "Get-KnownScenarioInputs",
-    "Get-PlannedWorkloads", "Assert-ComparisonWorkloads"
+    "Get-PlannedWorkloads", "Assert-ComparisonWorkloads", "Get-Acceptance"
 )
 # The constants the imported functions read, taken from the script's own assignments so a changed
 # value cannot leave the fixtures testing a different workload.
@@ -290,6 +290,22 @@ $tokens = $null; $errors = $null
 $windowReportAst = [System.Management.Automation.Language.Parser]::ParseFile($baselineScript, [ref]$tokens, [ref]$errors).FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq "Get-WindowReport" }, $true)[0]
 $shortfallCalls = @($windowReportAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq "Get-RouteShortfall" }, $true))
 Assert-True ($shortfallCalls.Count -eq 1) "Get-WindowReport refuses a partial route before it builds the window's numbers"
+
+# The acceptance summary names a gate only when it failed the run. The frame pass bar's setting is
+# never a gate, and a missed bar counts only when the run required it.
+function New-AcceptanceReport([bool]$Required, [bool]$Met, [bool]$Passed, [bool]$OtherGate) {
+    return @{ passed = $Passed; thresholds = @{ frame_pass_bar_required = $Required; frame_pass_bar_met = $Met; no_streaming_failures = $OtherGate } }
+}
+$barOffOtherGate = Get-Acceptance @(New-AcceptanceReport $false $false $false $false)
+Assert-True ((@($barOffOtherGate.failed_gates) -join ",") -eq "no_streaming_failures" -and $barOffOtherGate.runs_failed_gates -eq 1) "with the bar off, only the gate that failed is named" (@($barOffOtherGate.failed_gates) -join ",")
+$barOffPassing = Get-Acceptance @(New-AcceptanceReport $false $false $true $true)
+Assert-True (@($barOffPassing.failed_gates).Count -eq 0 -and $barOffPassing.runs_failed_gates -eq 0) "with the bar off and the run passing, no gate is named" (@($barOffPassing.failed_gates) -join ",")
+$barMissed = Get-Acceptance @(New-AcceptanceReport $true $false $false $true)
+Assert-True ((@($barMissed.failed_gates) -join ",") -eq "frame_pass_bar_met" -and $barMissed.runs_failed_gates -eq 1) "a required and missed bar is named, and its setting is not" (@($barMissed.failed_gates) -join ",")
+$barMet = Get-Acceptance @(New-AcceptanceReport $true $true $true $true)
+Assert-True (@($barMet.failed_gates).Count -eq 0) "a required and met bar names nothing" (@($barMet.failed_gates) -join ",")
+$beforeTheSwitch = Get-Acceptance @(@{ passed = $false; thresholds = @{ no_streaming_failures = $false } })
+Assert-True ((@($beforeTheSwitch.failed_gates) -join ",") -eq "no_streaming_failures") "a report from before the switch still names its failed gate" (@($beforeTheSwitch.failed_gates) -join ",")
 
 Remove-Item -LiteralPath $fixtureDirectory -Recurse -Force
 

@@ -152,6 +152,9 @@ jobs:
       - name: Test Windows installer checksum handling
         run: pwsh -NoProfile -File scripts/tests/test_install_checksum.ps1
 
+      - name: Test release payload binaries and notices
+        run: python3 -B -m unittest discover -s scripts/tests -p test_stage_release_payload.py -v
+
       - name: PowerShell scripts with non-ASCII text keep a UTF-8 BOM
         run: |
           set -euo pipefail

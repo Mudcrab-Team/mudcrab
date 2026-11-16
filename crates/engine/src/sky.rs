@@ -213,6 +213,14 @@ pub struct SkyPalette {
 }
 
 impl SkyPalette {
+    /// `SkyrimClear` (`WTHR` 0x0000081A): the day column of its `NAM0` Water Multiplier colour, which
+    /// the retail water shader multiplies into the shallow, deep and reflection colours
+    /// (`evidence/rea-20261114/s1-water-mix.md`, RF-SHADER-007: the Sky `+0x150` colour, written once
+    /// per frame). Read from the `weather_colors` table of the registered packs. The engine's sky is
+    /// this static day palette, so this is the matching value; a weather and time-of-day driven
+    /// multiplier is not implemented.
+    pub const SKYRIM_CLEAR_DAY_WATER_MULTIPLIER: [u8; 3] = [175, 237, 214];
+
     /// `SkyrimClear` (`WTHR` 0x0000081A, as left by Update.esm): the day column of its `NAM0`
     /// Sky-Upper, Sky-Lower and Horizon colours and of its Fog Far colour. Weather colours are
     /// 8-bit sRGB values.
@@ -441,6 +449,7 @@ impl Plugin for SkyPlugin {
         app.add_plugins(MaterialPlugin::<SkyMaterial>::default())
             .init_resource::<SkyPalette>()
             .init_resource::<CameraSpace>()
+            .init_resource::<crate::underwater::UnderwaterState>()
             .add_systems(
                 PostUpdate,
                 sky_systems().before(TransformSystems::Propagate),
@@ -551,9 +560,21 @@ fn apply_sky(
     mut domes: Query<(&MeshMaterial3d<SkyMaterial>, &mut Visibility), With<SkyDome>>,
     mut materials: ResMut<Assets<SkyMaterial>>,
     settings: Option<Res<crate::settings::RenderingSettings>>,
+    underwater: Res<crate::underwater::UnderwaterState>,
 ) {
     let adjusted_palette = scaled_palette(&palette, settings.as_deref());
-    let clear = adjusted_palette.clear_colour(*space);
+    // Under the surface retail fogs every pixel, the sky included, to the water's fog colour
+    // (RF-WATER-052). The underwater post-pass does that from the depth, but a pixel on the edge of
+    // alpha-tested leaves mixes leaf and sky after the multisample resolve, and the pass can only
+    // fog it by the nearest sample's depth: the sky share of that pixel would stay the bright sky
+    // colour as a pale fringe. So the sky itself is already the fog colour: no dome, and the fog
+    // colour as the clear colour.
+    let below = settings
+        .as_deref()
+        .is_none_or(|settings| settings.fog)
+        .then(|| underwater.fog())
+        .flatten();
+    let clear = below.map_or_else(|| adjusted_palette.clear_colour(*space), |fog| fog.color);
     for mut camera in &mut cameras {
         let current = match camera.clear_color {
             ClearColorConfig::Custom(colour) => Some(colour),
@@ -567,6 +588,7 @@ fn apply_sky(
         *space,
         settings.as_ref().is_none_or(|settings| settings.sky),
     ) {
+        _ if below.is_some() => Visibility::Hidden,
         (CameraSpace::Exterior, true) => Visibility::Inherited,
         _ => Visibility::Hidden,
     };
@@ -582,20 +604,49 @@ fn apply_sky(
 
 /// The sky systems in order. `apply_fog` reads `InteriorFog`, which `EnvironmentSet` writes in
 /// the same schedule, so it runs after that set: a door or room crossing changes the fog in the
-/// same frame as the light.
+/// same frame as the light. The order of the rest is main's (underwater state, then sky, then the
+/// water's copy of the sky).
 fn sky_systems() -> ScheduleConfigs<ScheduleSystem> {
     (
         spawn_sky_domes,
         follow_sky_cameras,
+        crate::underwater::update_underwater_state,
         apply_sky,
+        sync_water_sky,
         apply_fog.after(crate::world::environment::interior::EnvironmentSet),
     )
         .chain()
 }
 
+/// Points every exterior water material at the sky the camera sees, so the water reflects the dome
+/// as it is now (the weather's colours and the player's brightness). Only a material whose sky
+/// differs is written.
+fn sync_water_sky(
+    palette: Res<SkyPalette>,
+    settings: Option<Res<crate::settings::RenderingSettings>>,
+    materials: Option<ResMut<Assets<crate::render::WaterMaterial>>>,
+    mut ids: Local<Vec<AssetId<crate::render::WaterMaterial>>>,
+) {
+    let Some(mut materials) = materials else {
+        return;
+    };
+    let sky = SkyUniform::new(&scaled_palette(&palette, settings.as_deref()));
+    ids.clear();
+    ids.extend(materials.ids());
+    for &id in ids.iter() {
+        let stale = materials.get(id).is_some_and(|material| {
+            material.extension.reflects_sky() && !material.extension.sky_matches(&sky)
+        });
+        if stale && let Some(mut material) = materials.get_mut(id) {
+            material.extension = material.extension.clone().with_sky(Some(&sky));
+        }
+    }
+}
+
 /// Gives every [`FogCamera`] the weather's distance fog outside. Inside an interior it gives the
-/// cell fog of sky modes 1 and 2 (`InteriorFog`), or no fog when there is none. The component is
-/// written only when the wanted fog differs from the camera's.
+/// cell fog of sky modes 1 and 2 (`InteriorFog`), or no fog when there is none. Under water it
+/// gives neither (RF-WATER-031). The component is written only when the wanted fog differs from
+/// the camera's.
 fn apply_fog(
     mut commands: Commands,
     palette: Res<SkyPalette>,
@@ -603,11 +654,13 @@ fn apply_fog(
     cameras: Query<(Entity, Option<&DistanceFog>), With<FogCamera>>,
     settings: Option<Res<crate::settings::RenderingSettings>>,
     interior_fog: Option<Res<crate::world::environment::interior::InteriorFog>>,
+    underwater: Res<crate::underwater::UnderwaterState>,
 ) {
-    let wanted = match (
-        *space,
-        settings.as_deref().is_none_or(|settings| settings.fog),
-    ) {
+    let fog_on = settings.as_deref().is_none_or(|settings| settings.fog);
+    let wanted = match (*space, fog_on) {
+        // Below the surface retail replaces the view with the water's own fog (RF-WATER-031), which
+        // the underwater post-pass draws over the whole frame; the atmospheric fog would fog it twice.
+        _ if underwater.fog().is_some() => None,
         (CameraSpace::Exterior, true) => {
             // The fog is the clear colour, so it takes the same brightness scale as the sky.
             let scaled = scaled_palette(&palette, settings.as_deref());
@@ -859,13 +912,83 @@ mod tests {
         );
     }
 
+    #[test]
+    fn exterior_waters_follow_the_sky_and_interior_waters_have_none() {
+        use crate::render::{WaterExtension, WaterMaterial};
+        let mut app = App::new();
+        app.init_resource::<Assets<WaterMaterial>>()
+            .init_resource::<SkyPalette>()
+            .add_systems(Update, sync_water_sky);
+        let stale = SkyUniform::new(&SkyPalette {
+            brightness: 0.25,
+            ..SkyPalette::default()
+        });
+        let (outside, inside) = {
+            let mut materials = app.world_mut().resource_mut::<Assets<WaterMaterial>>();
+            let material = |extension| WaterMaterial {
+                base: StandardMaterial::default(),
+                extension,
+            };
+            (
+                materials.add(material(WaterExtension::default().with_sky(Some(&stale)))),
+                materials.add(material(WaterExtension::default())),
+            )
+        };
+        app.update();
+        let current = SkyUniform::new(&SkyPalette::default());
+        let materials = app.world().resource::<Assets<WaterMaterial>>();
+        assert!(
+            materials
+                .get(&outside)
+                .unwrap()
+                .extension
+                .sky_matches(&current)
+        );
+        // An interior water has no sky to follow and keeps its flat reflection colour.
+        assert!(!materials.get(&inside).unwrap().extension.reflects_sky());
+    }
+
+    #[test]
+    fn below_the_surface_the_sky_is_the_fog_colour_and_the_dome_is_hidden() {
+        use crate::underwater::{UnderwaterFog, UnderwaterState};
+        let mut app = sky_app();
+        let camera = app
+            .world_mut()
+            .spawn((Camera::default(), Transform::default(), SkyCamera))
+            .id();
+        app.update();
+        let clear = |app: &App| match app.world().get::<Camera>(camera).unwrap().clear_color {
+            ClearColorConfig::Custom(colour) => colour,
+            _ => panic!("the sky camera clears to a colour"),
+        };
+        let above = clear(&app);
+        let fog = UnderwaterFog {
+            color: Color::srgb(0.1, 0.2, 0.05),
+            near: -500.0,
+            far: 1600.0,
+        };
+        app.insert_resource(UnderwaterState::below(fog));
+        app.update();
+        assert_eq!(clear(&app), fog.color);
+        let (_, _, _, visibility) = only_dome(&mut app);
+        assert_eq!(visibility, Visibility::Hidden);
+        // Out of the water the sky comes back.
+        app.insert_resource(UnderwaterState::default());
+        app.update();
+        assert_eq!(clear(&app), above);
+    }
+
     fn sky_app() -> App {
         let mut app = App::new();
         app.init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<SkyMaterial>>()
             .init_resource::<SkyPalette>()
             .init_resource::<CameraSpace>()
-            .add_systems(Update, sky_systems());
+            .init_resource::<crate::underwater::UnderwaterState>()
+            .add_systems(
+                Update,
+                (spawn_sky_domes, follow_sky_cameras, apply_sky, apply_fog).chain(),
+            );
         app
     }
 
@@ -918,6 +1041,7 @@ mod tests {
             .init_resource::<Assets<SkyMaterial>>()
             .init_resource::<SkyPalette>()
             .init_resource::<CameraSpace>()
+            .init_resource::<crate::underwater::UnderwaterState>()
             .insert_resource(EnvironmentCatalog::from_connection(&connection))
             .init_resource::<ActiveSpace>();
         if sky_first {
