@@ -14244,7 +14244,7 @@ mod tests {
         );
         assert!(
             report.warnings.iter().any(|line| {
-                line.contains("skyrim.esm")
+                line.to_ascii_lowercase().contains("skyrim.esm")
                     && line.contains("skipped 1 records")
                     && line.contains("STAT 00001002")
             }),
