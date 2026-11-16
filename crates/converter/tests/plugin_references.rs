@@ -1858,7 +1858,7 @@ fn a_two_pair_xpod_is_remapped_in_every_pair() {
         &[word(0x0200_0801), word(0x0200_0802), word(0x0200_0803)].concat()
     );
 
-    // A length that is not a multiple of four is dropped, like any other array.
+    // An invalid XPOD keeps empty framing, so it cannot hide conflicting sibling fields.
     let dir = tempfile::tempdir().unwrap();
     let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
     let patch = plugin(
@@ -1873,7 +1873,8 @@ fn a_two_pair_xpod_is_remapped_in_every_pair() {
         merged[&0x0100_0900]
             .subrecords
             .iter()
-            .all(|(name, _)| name.as_slice() != b"XPOD")
+            .filter(|(name, _)| name.as_slice() == b"XPOD")
+            .all(|(_, data)| data.is_empty())
     );
 }
 
@@ -1895,7 +1896,7 @@ fn broken_portal_links_do_not_become_authored_outside_endpoints() {
             merged[&0x0100_0900]
                 .subrecords
                 .iter()
-                .any(|(tag, _)| tag.as_slice() == b"XPOD"),
+                .any(|(tag, data)| tag.as_slice() == b"XPOD" && !data.is_empty()),
             kept
         );
     }
@@ -2165,17 +2166,25 @@ fn export_room_review_fixture(data: &Path, output: &Path, typed: bool) -> PathBu
 #[test]
 fn conflicting_portal_occurrences_keep_both_readers_conservative() {
     for typed in [false, true] {
-        for duplicate in [false, true] {
+        for second in [
+            None,
+            Some(vec![0x800, 0x801]),
+            Some(vec![0x800, 0x0900_0801]),
+            Some(vec![0x800]),
+        ] {
             let directory = tempfile::tempdir().unwrap();
             let data = directory.path().join("Data");
             let mut endpoints = sub(
                 b"XPOD",
                 &[0x800u32.to_le_bytes(), 0u32.to_le_bytes()].concat(),
             );
-            if duplicate {
+            if let Some(values) = &second {
                 endpoints.extend(sub(
                     b"XPOD",
-                    &[0x800u32.to_le_bytes(), 0x801u32.to_le_bytes()].concat(),
+                    &values
+                        .iter()
+                        .flat_map(|id: &u32| id.to_le_bytes())
+                        .collect::<Vec<_>>(),
                 ));
             }
             room_graph_review_fixture(&data, None, Some(endpoints));
@@ -2188,7 +2197,11 @@ fn conflicting_portal_occurrences_keep_both_readers_conservative() {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(complete, !duplicate, "typed={typed}, duplicate={duplicate}");
+            assert_eq!(
+                complete,
+                second.is_none(),
+                "typed={typed}, second={second:?}"
+            );
             let outside: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM room_portals WHERE unbounded_a OR unbounded_b",
@@ -2196,11 +2209,37 @@ fn conflicting_portal_occurrences_keep_both_readers_conservative() {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(outside, i64::from(!duplicate));
+            assert_eq!(outside, i64::from(second.is_none()));
             let rooms: i64 = conn
                 .query_row("SELECT COUNT(*) FROM room_bounds", [], |r| r.get(0))
                 .unwrap();
             assert_eq!(rooms, 2);
         }
+    }
+}
+
+#[test]
+fn trailing_portal_endpoints_keep_both_readers_conservative() {
+    for typed in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let endpoints = [0x800u32, 0, 0x801]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        room_graph_review_fixture(&data, None, Some(sub(b"XPOD", &endpoints)));
+        let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let complete: bool = conn
+            .query_row(
+                "SELECT complete FROM room_graph_cells WHERE cell_id=0x900",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            !complete,
+            "typed={typed}: an unmatched endpoint cannot prove complete connectivity"
+        );
     }
 }

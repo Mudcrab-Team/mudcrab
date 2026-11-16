@@ -848,7 +848,7 @@ fn remap_record_form_ids(
                             ),
                         );
                         // A null portal endpoint means unbounded space. An invalid link must
-                        // remain unknown, so discard this occurrence rather than inventing one.
+                        // remain unknown, so empty this occurrence rather than inventing one.
                         if record_type == *b"REFR"
                             && tag.as_slice() == b"XPOD"
                             && malformed_subrecords.last() != Some(&index)
@@ -877,13 +877,19 @@ fn remap_record_form_ids(
         }
     }
     if !malformed_subrecords.is_empty() {
-        // Indices are sorted by traversal order. Remove only those occurrences, so a
-        // repeated field such as XAPR keeps its valid siblings and their relative order.
+        // Keep an empty XPOD occurrence: dropping it could make conflicting source fields
+        // appear unique. It carries no usable endpoints and keeps the room graph incomplete.
+        // Other optional fields retain their valid siblings and their relative order.
         let mut index = 0;
-        record.subrecords.retain(|_| {
-            let keep = malformed_subrecords.binary_search(&index).is_err();
+        record.subrecords.retain_mut(|(tag, data)| {
+            let malformed = malformed_subrecords.binary_search(&index).is_ok();
             index += 1;
-            keep
+            if malformed && record_type == *b"REFR" && tag.as_slice() == b"XPOD" {
+                data.clear();
+                true
+            } else {
+                !malformed
+            }
         });
     }
     Ok(())

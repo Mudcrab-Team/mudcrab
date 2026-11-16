@@ -101,7 +101,10 @@ impl VisibilityVolume {
             return Some(self.clone());
         }
         let mut polygon = corners.to_vec();
-        for plane in &self.planes {
+        // A doorway between the viewpoint and the near plane can reveal meshes beyond it.
+        // Keep the near plane for mesh tests, but clip traversal only by the other constraints.
+        let near = normalized(clip.row(3) - clip.row(2));
+        for plane in self.planes.iter().filter(|plane| Some(**plane) != near) {
             let mut clipped = Vec::with_capacity(polygon.len() + 1);
             for (index, &a) in polygon.iter().enumerate() {
                 let b = polygon[(index + 1) % polygon.len()];
@@ -237,6 +240,28 @@ mod tests {
             Affine3A::from_translation(center),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn portals_before_the_near_plane_still_admit_visible_geometry() {
+        for clip in [
+            Mat4::perspective_infinite_reverse_rh(std::f32::consts::FRAC_PI_3, 1.0, 16.0),
+            Mat4::orthographic_rh(-10.0, 10.0, -10.0, 10.0, 100.0, 16.0),
+        ] {
+            let camera = VisibilityVolume::camera(clip).unwrap();
+            let visible = camera
+                .through_portal(
+                    &portal(Vec3::new(0.0, 0.0, -12.0), Quat::IDENTITY),
+                    Vec3::ZERO,
+                    clip,
+                )
+                .expect("a portal in front of the viewpoint must survive traversal clipping");
+            assert!(visible.intersects(&bounds(Vec3::new(0.0, 0.0, -24.0), Vec3::splat(0.1))));
+            assert!(
+                !visible.intersects(&bounds(Vec3::new(0.0, 0.0, -14.0), Vec3::splat(0.1))),
+                "mesh testing still applies the near plane"
+            );
+        }
     }
 
     #[test]
