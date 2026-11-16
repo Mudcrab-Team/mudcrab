@@ -16,7 +16,7 @@ Settings are grouped under headings (for example Point lights, Sun shadows, Wate
 - Sky dome, sky-brightness multiplier, exterior distance fog and fog-density multiplier. Interior cells retain their existing sky/fog rules.
 - Water reflections and reflection multiplier; waves, flow normals, wave scale, speed and strength. The reflection multiplier layers over each water's converted Fresnel and reflectivity values.
 - CPU frustum culling, GPU indirect drawing, GPU occlusion culling and depth prepass. Enabling occlusion enables its depth-prepass and indirect-drawing dependencies; disabling either dependency disables occlusion.
-- MSAA, exposure, tone mapping, vertical FOV, VSync, window mode and windowed resolution. Walking sprint adds its existing FOV bonus to the chosen base FOV.
+- MSAA, exposure, tone mapping, vertical FOV, VSync, window mode and windowed resolution.
 - Color grading: Off, Saturation, Full (legacy), Approved sRGB, Snapshot linear and Record sRGB, with live saturation, brightness, contrast, pivot, tint amount and tint RGB. Defaults preserve the approved Sleeping Giant sRGB appearance and Cool Gray sky/fog. Stage-dependent rows dim while inactive. Reflections stay ungraded. Console commands synchronize the menu. See the integration contract below for domains, persistence, launch precedence and capture isolation.
 - Status HUD and diagnostic asset fallbacks for subsequent loads. Existing failed instances keep their current fallback state. Collision outlines remain a session-only toggle available in the Graphics tab and the console.
 
@@ -49,9 +49,16 @@ Startup-only inputs such as asset paths, worldspace/start cell, backend selectio
 The Controls tab starts with a **Mouse sensitivity (x)** slider. Drag its track, use the
 minus/plus buttons, or focus the track and press Left/Right. The multiplier ranges from
 **0.8x to 4.0x**, in **0.05x** steps, and applies immediately to both mouse-look axes in
-WALK and NOCLIP. **1.0x** preserves the unrounded default formulas from #709: yaw
-`0.0125 * 0.02 * pi` (approximately 0.000785 rad/count) and pitch
-`0.0125 * 0.85 * 0.1` (0.0010625 rad/count). Counts remain independent of frame time.
+WALK and NOCLIP. It scales `fMouseHeadingSensitivity` from the named retail default
+`MOUSE_HEADING_SENSITIVITY` (0.0125), leaving the axis and movement-type factors intact.
+**1.0x** preserves main's exact default formulas from #709: yaw uses heading sensitivity,
+`MOUSE_HEADING_X_SCALE` (0.02), and the movement type's rotate speed (pi for default MT,
+pi/2 for sprinting MT). WALK sprint yaw is therefore half of walk/run yaw at every
+multiplier; NOCLIP uses default MT even when the sprint latch is set. Pitch uses heading
+sensitivity, `MOUSE_HEADING_Y_SCALE` (0.85), and `LOOKING_SPEED` (0.1), independent of sprint.
+At 1.0x the default rates are approximately 0.000785 rad/count yaw, half that for sprint,
+and 0.0010625 rad/count pitch. The pitch clamp stays exactly +/-pi/2 at every multiplier.
+Counts remain independent of frame time; sensitivity adds no smoothing or acceleration.
 Save persists `mouse_sensitivity` in the existing version-1 JSON file; older files that
 omit it use 1.0x. Reset defaults restores 1.0x for the session and Save persists it.
 
@@ -150,3 +157,24 @@ At commit `52266688`, 1,054 engine-library CPU tests passed with 1 ignored,
 strict engine/shared Clippy passed for all targets and features with `-D warnings`,
 and workspace formatting passed. Native UI, GPU behavior, visual parity, gameplay
 and performance were not exercised. CI on the published head remains a merge gate.
+
+## Window focus and world simulation
+
+The primary game window pauses virtual world time when it loses focus, including normal
+minimisation that loses focus. `[General] bAlwaysActive=1` in a file supplied by `--ini`, or
+`--always-active`, opts out; the default is `0`. Other windows do not own this pause reason.
+Visible `--stdin-console` sessions driven from a terminal should pass `--always-active`
+to keep physics, door transitions and time-driven animation running while unfocused.
+The `collision-measure` feature with `MUDCRAB_COLLISION_MEASURE` set also keeps simulation
+active for its automated measurement route. Each focus-pause acquisition logs an info line
+pointing to `--always-active`.
+Focus loss releases input without resetting airborne velocity or jump state, with either policy.
+Regaining focus discards background elapsed time before resuming simulation. Closing Settings
+or the console while still unfocused releases only that menu's pause. Automated/hidden capture
+modes keep their existing focus-independent simulation policy. Occlusion alone does not pause;
+platform-specific minimisation without focus loss is not covered by this policy.
+
+Menu input ownership is separate from physics: on admitted fixed ticks WALK integrates neutral
+input, retaining inertia and gravity, and safe spawn/door placement continues. Unsafe door holds
+remain guarded. During a world pause, async loading and rendering continue, but door landing,
+rollback, space/teleport commits and automatic held-object target assignments wait for resume.

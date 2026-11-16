@@ -18,10 +18,11 @@
 //!    WALK also waits for safe capsule placement and grounded, motionless controller output.
 //! 4. **Fade in** (0.25 s). WALK keeps its settled pose; NOCLIP is placed on the landing point again.
 //!
-//! The player's walking and noclip systems pause for the whole crossing ([`no_door_crossing`]): nothing under
-//! the landing point has collision until its cell is ready, so a WALK body would fall (and WASD
-//! would move it) while the screen is black.
-//! Only input-free WALK physics runs once the landing assets have settled, still behind black.
+//! Player input and noclip motion stay blocked throughout the crossing ([`no_door_crossing`]).
+//! The unsafe-door guard holds WALK until the landing assets settle; then input-free placement
+//! and gravity run behind black, even when a live menu owns input.
+//! Virtual pause defers stage/space changes, rollback and teleport commits. Asset readiness and
+//! render settling still progress, so a ready landing can commit on the first unpaused update.
 //!
 //! There is no preload: the fade simply holds until the destination is resident and uploaded.
 
@@ -262,9 +263,7 @@ impl WalkLanding<'_, '_> {
         }
         self.hold.as_ref().is_some_and(|hold| !hold.is_active())
             && self.player.single().is_ok_and(|(state, output)| {
-                state.grounded
-                    && state.vertical_velocity == 0.0
-                    && state.horizontal_velocity == Vec3::ZERO
+                state.horizontal_velocity == Vec3::ZERO
                     && output.grounded
                     && output.effective_translation.length_squared() < 1e-6
             })
@@ -466,8 +465,8 @@ fn switch_space(world: &mut World, landing: Landing) {
     });
 }
 
-/// Places the player on `landing` again as the fade-in starts. The walking systems paused during
-/// the crossing, so this only undoes anything else that moved the body or the camera while black.
+/// Re-place NOCLIP or a failed-return recovery on `landing` as the fade-in starts, undoing
+/// other movement while black. A successful WALK landing keeps its settled pose instead.
 fn place_again(commands: &mut Commands, landing: &Landing) {
     let landing = *landing;
     commands.queue(move |world: &mut World| {
@@ -687,7 +686,7 @@ fn set_alpha(overlay: &mut Query<&mut BackgroundColor, With<FadeOverlay>>, alpha
 fn drive_door_crossing(
     keyboard: Res<ButtonInput<KeyCode>>,
     capture: Res<CursorCapture>,
-    time: Res<Time>,
+    time: Res<Time<Virtual>>,
     config: Res<crate::config::EngineConfig>,
     tuning: Res<MovementTuning>,
     space: Res<ActiveSpace>,
@@ -707,8 +706,15 @@ fn drive_door_crossing(
     ),
     mut commands: Commands,
 ) {
-    let delta = time.delta_secs();
+    let delta = if time.is_paused() {
+        0.0
+    } else {
+        time.delta_secs()
+    };
     let Some(active) = crossing.active.as_mut() else {
+        if time.is_paused() {
+            return;
+        }
         // Idle: E at a door starts a crossing.
         if !keyboard.just_pressed(KeyCode::KeyE) || *capture != CursorCapture::Captured {
             return;
@@ -776,6 +782,9 @@ fn drive_door_crossing(
     active.since_press += delta;
     match active.stage {
         Stage::FadeOut { elapsed } => {
+            if time.is_paused() {
+                return;
+            }
             let elapsed = elapsed + delta;
             set_alpha(&mut overlay, elapsed / FADE_SECONDS);
             if elapsed >= FADE_SECONDS {
@@ -804,6 +813,31 @@ fn drive_door_crossing(
             } else {
                 active.target
             };
+            // Only the landing cell's own work counts: other cells of a stream window may stay
+            // busy for a long time without affecting what the player sees.
+            let root = streaming.resident_root(landing.key);
+            let pending = root.map_or(0, |root| pending_under.count(root));
+            let report = root.map(|root| landing_assets.inspect_under(root));
+            let loaded = report
+                .as_ref()
+                .is_some_and(|report| pending == 0 && report.waiting == 0);
+            // Once loaded, a few more frames let extraction and preparation upload with the budget
+            // still lifted: the fade-in starts on the SETTLE_FRAMES-th loaded frame.
+            let ready_frames = if loaded {
+                ready_frames.saturating_add(1)
+            } else {
+                0
+            };
+            // Extraction/uploads and load failure discovery keep progressing while paused.
+            // Store service readiness, but defer every world-changing branch until resumed.
+            if time.is_paused() {
+                active.stage = Stage::Landing {
+                    waited,
+                    restoring,
+                    ready_frames,
+                };
+                return;
+            }
             if streaming.is_failed(landing.key) {
                 if restoring {
                     warn!(
@@ -839,17 +873,7 @@ fn drive_door_crossing(
                 }
                 return;
             }
-            // Only the landing cell's own work counts: other cells of a stream window may stay
-            // busy for a long time without affecting what the player sees.
-            let root = streaming.resident_root(landing.key);
-            let pending = root.map_or(0, |root| pending_under.count(root));
-            let report = root.map(|root| landing_assets.inspect_under(root));
-            let loaded = report
-                .as_ref()
-                .is_some_and(|report| pending == 0 && report.waiting == 0);
-            // Once loaded, a few more frames let extraction and preparation upload with the budget
-            // still lifted: the fade-in starts on the SETTLE_FRAMES-th loaded frame.
-            let ready_frames = if loaded { ready_frames + 1 } else { 0 };
+
             let ready = ready_frames >= SETTLE_FRAMES && walk_landing.ready();
             if !ready && waited >= LANDING_TIMEOUT_SECONDS && !restoring {
                 warn!(
@@ -920,6 +944,9 @@ fn drive_door_crossing(
             }
         }
         Stage::FadeIn { elapsed, recovery } => {
+            if time.is_paused() {
+                return;
+            }
             let elapsed = elapsed + delta;
             set_alpha(&mut overlay, 1.0 - elapsed / FADE_SECONDS);
             if elapsed >= FADE_SECONDS {
@@ -1120,6 +1147,158 @@ mod tests {
             floor.insert(ColliderDisabled);
         }
         floor.id()
+    }
+
+    /// Real Update teleport consumption must stay ordered before the PostUpdate landing commit.
+    #[test]
+    fn pause704_integrated_focus_pause_across_door_stages() {
+        let mut app = walking_app(interior_door(), false);
+        let window = app
+            .world_mut()
+            .spawn((Window::default(), bevy::window::PrimaryWindow))
+            .id();
+        press_e(&mut app);
+        assert!(matches!(
+            app.world()
+                .resource::<DoorCrossing>()
+                .active
+                .as_ref()
+                .unwrap()
+                .stage,
+            Stage::FadeOut { .. }
+        ));
+        let fading_out = app.world().resource::<DoorCrossing>().active.clone();
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = false;
+        for _ in 0..4 {
+            app.update();
+        }
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
+        assert_eq!(app.world().resource::<DoorCrossing>().active, fading_out);
+        assert_eq!(
+            *app.world().resource::<ActiveSpace>(),
+            ActiveSpace::default()
+        );
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = true;
+        run_until_black(&mut app);
+        // switch_space just ran in PostUpdate; the real teleport consumer has not run yet.
+        let landing = current_landing(&app);
+        let body_before = player_position(&mut app);
+        let camera_before = app
+            .world_mut()
+            .query_filtered::<&Transform, With<StreamingCamera>>()
+            .single(app.world())
+            .unwrap()
+            .translation;
+        assert_eq!(
+            camera_before,
+            body_and_camera_for_feet(app.world().resource::<MovementTuning>(), landing.position).1
+        );
+        let budget_before = app.world().resource::<RenderAssetBytesPerFrame>().max_bytes;
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = false;
+        app.update(); // Pause starts on the frame immediately after FadeOut completed.
+        register_floor(&mut app, landing, false, false); // Streaming finishes while paused.
+        for _ in 0..10 {
+            app.update();
+        } // Teleport message expires; the consumer must retain it.
+        assert_eq!(player_position(&mut app), body_before);
+        assert_eq!(
+            app.world_mut()
+                .query_filtered::<&Transform, With<StreamingCamera>>()
+                .single(app.world())
+                .unwrap()
+                .translation,
+            camera_before
+        );
+        assert_eq!(
+            app.world().resource::<RenderAssetBytesPerFrame>().max_bytes,
+            budget_before
+        );
+        assert!(
+            matches!(app.world().resource::<DoorCrossing>().active.as_ref().unwrap().stage,
+            Stage::Landing { restoring: false, ready_frames, .. } if ready_frames >= SETTLE_FRAMES)
+        );
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = true;
+        app.update();
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        assert_eq!(
+            player_position(&mut app),
+            body_and_camera_for_feet(app.world().resource::<MovementTuning>(), landing.position).0
+        );
+        for _ in 0..80 {
+            if matches!(
+                app.world()
+                    .resource::<DoorCrossing>()
+                    .active
+                    .as_ref()
+                    .unwrap()
+                    .stage,
+                Stage::FadeIn { .. }
+            ) {
+                break;
+            }
+            app.update();
+        }
+        let fading_in = app.world().resource::<DoorCrossing>().active.clone();
+        assert!(matches!(
+            fading_in.as_ref().unwrap().stage,
+            Stage::FadeIn { .. }
+        ));
+        let settled = player_position(&mut app);
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = false;
+        for _ in 0..10 {
+            app.update();
+        }
+        assert_eq!(app.world().resource::<DoorCrossing>().active, fading_in);
+        assert_eq!(player_position(&mut app), settled);
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = true;
+        for _ in 0..20 {
+            app.update();
+        }
+        assert!(!app.world().resource::<DoorCrossing>().is_active());
+        assert_eq!(app.world().resource::<ActiveSpace>().interior, Some(77));
+    }
+
+    /// Paused E input cannot queue a crossing for a later unpaused frame.
+    #[test]
+    fn pause704_activate_is_ignored_while_paused() {
+        let (mut app, _) = app_with_extra(interior_door(), |app| {
+            app.init_resource::<ButtonInput<MouseButton>>()
+                .add_message::<bevy::input::mouse::MouseMotion>()
+                .add_plugins(crate::physics::PlayerControlsPlugin);
+        });
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        press_e(&mut app);
+        assert!(!app.world().resource::<DoorCrossing>().is_active());
+        app.world_mut().resource_mut::<Time<Virtual>>().unpause();
+        app.update();
+        assert!(!app.world().resource::<DoorCrossing>().is_active());
+        app.insert_resource(CursorCapture::Captured);
+        press_e(&mut app);
+        assert!(app.world().resource::<DoorCrossing>().is_active());
+    }
+
+    /// A live menu cannot prevent safe WALK placement behind a door's black hold.
+    #[test]
+    fn pause704_live_menu_allows_walk_door_landing_to_finish() {
+        let mut app = walking_app(interior_door(), false);
+        press_e(&mut app);
+        run_until_black(&mut app);
+        let landing = current_landing(&app);
+        register_floor(&mut app, landing, false, false);
+        app.insert_resource(crate::console::ConsoleState {
+            open: true,
+            ..default()
+        });
+        app.insert_resource(CursorCapture::Released);
+        for _ in 0..80 {
+            app.update();
+        }
+        assert!(
+            !app.world().resource::<DoorCrossing>().is_active(),
+            "live menu stalled WALK landing"
+        );
+        assert!(app.world().resource::<crate::console::ConsoleState>().open);
+        assert_eq!(app.world().resource::<ActiveSpace>().interior, Some(77));
     }
 
     #[test]
@@ -1883,6 +2062,69 @@ mod tests {
         assert!(app.world().resource::<DoorCrossing>().needs_recovery());
         assert!(!app.world_mut().run_system_once(no_door_crossing).unwrap());
         assert_eq!(budget(&app), configured_budget());
+    }
+
+    /// Async success/failure can arrive behind a paused menu; neither may commit a landing.
+    #[test]
+    fn pause704_loading_progress_defers_landing_and_rollback_commits() {
+        for failed in [false, true] {
+            let (mut app, _) = app_with(interior_door());
+            press_e(&mut app);
+            run_until_black(&mut app);
+            app.world_mut().resource_mut::<Time<Virtual>>().pause();
+            let teleports = app.world().resource::<Teleports>().0.len();
+            if failed {
+                app.world_mut()
+                    .resource_mut::<StreamingWorld>()
+                    .set_failed_for_test(CellKey::Interior(77));
+            } else {
+                let root = app.world_mut().spawn_empty().id();
+                app.world_mut()
+                    .resource_mut::<StreamingWorld>()
+                    .set_resident_for_test(CellKey::Interior(77), root);
+            }
+            for _ in 0..6 {
+                app.update();
+            }
+            let active = app
+                .world()
+                .resource::<DoorCrossing>()
+                .active
+                .as_ref()
+                .unwrap();
+            assert!(
+                matches!(
+                    active.stage,
+                    Stage::Landing {
+                        restoring: false,
+                        ..
+                    }
+                ),
+                "paused landing must not commit success or rollback: {:?}",
+                active.stage
+            );
+            assert_eq!(app.world().resource::<ActiveSpace>().interior, Some(77));
+            assert_eq!(app.world().resource::<Teleports>().0.len(), teleports);
+            app.world_mut().resource_mut::<Time<Virtual>>().unpause();
+            app.update();
+            let active = app
+                .world()
+                .resource::<DoorCrossing>()
+                .active
+                .as_ref()
+                .unwrap();
+            assert!(if failed {
+                matches!(
+                    active.stage,
+                    Stage::Landing {
+                        restoring: true,
+                        ..
+                    }
+                )
+            } else {
+                matches!(active.stage, Stage::FadeIn { .. })
+            });
+        }
     }
 
     #[test]

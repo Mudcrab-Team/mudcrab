@@ -81,7 +81,7 @@ pub struct RenderingSettings {
     pub grade_pivot: f32,
     /// Bit mask of explicitly edited grade fields; zero leaves source values intact.
     pub grade_override_mask: u16,
-    /// Dimensionless multiplier on both retail mouse-look axis rates; 1 preserves defaults.
+    /// Multiplier on retail fMouseHeadingSensitivity; 1 preserves the movement-type defaults.
     pub mouse_sensitivity: f32,
     pub fov_degrees: f32,
     pub vsync: bool,
@@ -1350,7 +1350,7 @@ mod tests {
     fn launch(args: &[String]) -> EngineConfig {
         match EngineConfig::from_args(args.iter().cloned()).unwrap() {
             ConfigAction::Run(config) => *config,
-            ConfigAction::Help => panic!("expected a run"),
+            ConfigAction::Help | ConfigAction::Version => panic!("expected a run"),
         }
     }
 

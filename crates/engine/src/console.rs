@@ -134,7 +134,7 @@ pub struct ConsoleState {
     /// Capture to give back one frame after a backtick close. It is held back so the movement and
     /// look systems, which read the capture, ignore the input the closing frame carried.
     pub restore_capture: Option<CursorCapture>,
-    /// Whether virtual time was already paused when the console opened.
+    /// Pause that existed before this menu, excluding the independent focus reason.
     pub was_paused: bool,
     /// Lines entered with Enter, run by the dispatch system.
     pub pending: Vec<String>,
@@ -421,6 +421,7 @@ fn console_input_system(
     mut time: ResMut<Time<Virtual>>,
     registry: Res<ConsoleRegistry>,
     mut motion: MotionReset,
+    focus_pause: Option<Res<crate::focus_pause::FocusPause>>,
     menu: Option<Res<crate::settings_ui::SettingsMenuState>>,
 ) {
     if state.closing {
@@ -443,12 +444,20 @@ fn console_input_system(
     // The physical key under Escape on every layout (the same key Skyrim uses), not the character.
     if keys.just_pressed(KeyCode::Backquote) {
         if state.open {
-            close_console(&mut state, &mut capture, &mut time, false);
+            close_console(
+                &mut state,
+                &mut capture,
+                &mut time,
+                false,
+                focus_pause.as_deref(),
+            );
         } else {
             state.open = true;
             state.buffer.clear();
             state.previous_capture = state.restore_capture.take().unwrap_or(*capture);
-            state.was_paused = time.is_paused();
+            state.was_paused = focus_pause
+                .as_deref()
+                .map_or_else(|| time.is_paused(), |focus| focus.without_focus(&time));
             *capture = CursorCapture::Released;
             // Virtual time already advanced this frame in `First`; the pause bites from the next.
             time.pause();
@@ -466,7 +475,13 @@ fn console_input_system(
             continue;
         }
         match event.key_code {
-            KeyCode::Escape => close_console(&mut state, &mut capture, &mut time, true),
+            KeyCode::Escape => close_console(
+                &mut state,
+                &mut capture,
+                &mut time,
+                true,
+                focus_pause.as_deref(),
+            ),
             KeyCode::Backspace => {
                 state.buffer.pop();
             }
@@ -497,6 +512,7 @@ fn close_console(
     capture: &mut CursorCapture,
     time: &mut Time<Virtual>,
     escape: bool,
+    focus_pause: Option<&crate::focus_pause::FocusPause>,
 ) {
     state.open = false;
     state.closing = true;
@@ -504,7 +520,7 @@ fn close_console(
     // The capture stays Released for the closing frame; Escape leaves it released for good.
     *capture = CursorCapture::Released;
     state.restore_capture = (!escape).then_some(state.previous_capture);
-    if !state.was_paused {
+    if !state.was_paused && !focus_pause.is_some_and(|focus| focus.active) {
         time.unpause();
     }
 }

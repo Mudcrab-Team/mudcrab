@@ -29,7 +29,8 @@ pub struct SettingsMenuState {
     pub closing: bool,
     pub page: SettingsPage,
     previous_capture: CursorCapture,
-    was_paused: bool,
+    /// Pause that existed before this menu, excluding the independent focus reason.
+    pub(crate) was_paused: bool,
 }
 
 impl Default for SettingsMenuState {
@@ -49,25 +50,34 @@ impl SettingsMenuState {
         self.open || self.closing
     }
 
+    /// Acquire menu input and pause, preserving motion and any pause independent of focus.
     fn show(
         &mut self,
         capture: &mut CursorCapture,
         time: &mut Time<Virtual>,
         motion: &mut MotionReset,
+        focus_pause: Option<&crate::focus_pause::FocusPause>,
     ) {
         self.open = true;
         self.previous_capture = *capture;
-        self.was_paused = time.is_paused();
+        self.was_paused =
+            focus_pause.map_or_else(|| time.is_paused(), |focus| focus.without_focus(time));
         *capture = CursorCapture::Released;
         time.pause();
         motion.clear_input();
     }
 
-    fn close(&mut self, capture: &mut CursorCapture, time: &mut Time<Virtual>) {
+    /// Release only the menu pause; an unfocused primary window still owns its reason.
+    fn close(
+        &mut self,
+        capture: &mut CursorCapture,
+        time: &mut Time<Virtual>,
+        focus_pause: Option<&crate::focus_pause::FocusPause>,
+    ) {
         self.open = false;
         self.closing = true;
         *capture = CursorCapture::Released;
-        if !self.was_paused {
+        if !self.was_paused && !focus_pause.is_some_and(|focus| focus.active) {
             time.unpause();
         }
     }
@@ -249,6 +259,7 @@ fn menu_keyboard(
     mut capture: ResMut<CursorCapture>,
     mut time: ResMut<Time<Virtual>>,
     mut motion: MotionReset,
+    focus_pause: Option<Res<crate::focus_pause::FocusPause>>,
     mut options: Query<&mut CursorOptions, With<PrimaryWindow>>,
     mut focus: ResMut<InputFocus>,
 ) {
@@ -261,10 +272,10 @@ fn menu_keyboard(
     }
     if keys.just_pressed(KeyCode::Escape) {
         if menu.open {
-            menu.close(&mut capture, &mut time);
+            menu.close(&mut capture, &mut time, focus_pause.as_deref());
             focus.clear();
         } else {
-            menu.show(&mut capture, &mut time, &mut motion);
+            menu.show(&mut capture, &mut time, &mut motion, focus_pause.as_deref());
         }
     }
     if menu.blocks_gameplay() {
@@ -297,6 +308,7 @@ fn menu_actions(
     mut debug: Option<ResMut<bevy_rapier3d::prelude::DebugRenderContext>>,
     mut pages: Query<&mut ScrollPosition, With<PageRoot>>,
     mut motion: MotionReset,
+    focus_pause: Option<Res<crate::focus_pause::FocusPause>>,
     console: Option<Res<ConsoleState>>,
 ) {
     let keyboard_activation = keys.just_pressed(KeyCode::Enter)
@@ -349,7 +361,7 @@ fn menu_actions(
     for action in actions {
         match action {
             MenuAction::Open => {
-                menu.show(&mut capture, &mut time, &mut motion);
+                menu.show(&mut capture, &mut time, &mut motion, focus_pause.as_deref());
             }
             MenuAction::Page(page) => {
                 menu.page = page;
@@ -377,7 +389,7 @@ fn menu_actions(
                 file.restore_defaults(&mut settings);
             }
             MenuAction::Resume => {
-                menu.close(&mut capture, &mut time);
+                menu.close(&mut capture, &mut time, focus_pause.as_deref());
                 focus.clear();
             }
         }
@@ -1422,11 +1434,12 @@ mod tests {
         },
     };
 
+    /// The real menu/console schedules with a headless focus-reason adapter.
     fn menu_app() -> App {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, bevy::input::InputPlugin, ConsolePlugin))
             .insert_resource(EngineConfig::default())
-            .add_plugins(SettingsPlugin);
+            .add_plugins((SettingsPlugin, crate::focus_pause::FocusPausePlugin));
         app.finish();
         app.update();
         app
@@ -1546,6 +1559,51 @@ mod tests {
         assert_eq!(state.vertical_velocity, 200.0);
         assert!(state.jump_active);
         assert!(!state.grounded);
+    }
+
+    /// Closing either menu must release only that menu, regardless of focus acquisition order.
+    #[test]
+    fn pause704_menu_close_cannot_release_focus_or_latch_a_stale_focus_pause() {
+        for code in [KeyCode::Escape, KeyCode::Backquote] {
+            for blur_first in [false, true] {
+                for prepaused in [false, true] {
+                    let mut app = menu_app();
+                    app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                        std::time::Duration::from_millis(20),
+                    ));
+                    let window = app
+                        .world_mut()
+                        .spawn((Window::default(), PrimaryWindow))
+                        .id();
+                    if prepaused {
+                        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+                    }
+                    if blur_first {
+                        app.world_mut().get_mut::<Window>(window).unwrap().focused = false;
+                        app.update();
+                    }
+                    key(&mut app, code, ButtonState::Pressed);
+                    key(&mut app, code, ButtonState::Released);
+                    if !blur_first {
+                        app.world_mut().get_mut::<Window>(window).unwrap().focused = false;
+                        app.update();
+                    }
+                    key(&mut app, code, ButtonState::Pressed);
+                    assert!(
+                        app.world().resource::<Time<Virtual>>().is_paused(),
+                        "menu close while unfocused"
+                    );
+                    key(&mut app, code, ButtonState::Released);
+                    app.world_mut().get_mut::<Window>(window).unwrap().focused = true;
+                    app.update();
+                    assert_eq!(
+                        app.world().resource::<Time<Virtual>>().is_paused(),
+                        prepaused,
+                        "code={code:?}, blur_first={blur_first}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -34,6 +34,8 @@ The workflow refuses a tag whose commit has no successful `tests_pass` run, so w
 
 Each release carries archives per target, a Windows setup wizard (`mudcrab-vX.Y.Z-windows-x64-setup.exe`), `SHA256SUMS.txt` and `release-metadata.json`.
 
+Every archive and wizard install also carries the licence notices: `LICENSE` (the GNU GPL v3 text), `THIRD_PARTY.md` (derived and vendored code terms) and `LEGAL.md` (trademark and no-asset statements). `scripts/stage-release.sh` refuses to stage a payload when any of the three is missing, and the `scripts` job checks the staged files.
+
 - **Windows, interactive**: the setup wizard (Start Menu entries, uninstaller; per-user install, no admin rights needed). This is the recommended path.
 - **Windows, scripted**: `scripts/install.ps1` unpacks the zip into `%LOCALAPPDATA%\Mudcrab\bin` and creates shortcuts. It does not touch `PATH`, because the binaries have generic names (`engine.exe`, `converter.exe`), and it has no uninstaller.
 - **Linux and macOS**: `scripts/install.sh` installs into `~/.local/share/mudcrab` and links the binaries into `~/.local/bin` as `mudcrab-launcher`, `mudcrab-engine`, `mudcrab-converter` and `mudcrab-world-inspect`. The real files keep their plain names because the launcher looks for `engine` next to itself.
