@@ -17,7 +17,13 @@
 //! TX01 (normal) is not applied and the shape keeps its model material. Directional MATO layers
 //! and a general TXST shader remain with their own owners.
 
-use bevy::{app::SceneSpawnerSystems, asset::LoadState, prelude::*};
+use bevy::{
+    app::SceneSpawnerSystems,
+    asset::LoadState,
+    gltf::DefaultGltfImageSampler,
+    image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor},
+    prelude::*,
+};
 use rusqlite::Connection;
 use std::{
     collections::{HashMap, HashSet},
@@ -271,6 +277,41 @@ type SwapSurfaces<'w, 's> = Query<
     Without<crate::nif_material::ExternalEmittance>,
 >;
 
+/// The sampler a swap image is requested with: the one `bevy_gltf` gives a texture that names no
+/// sampler. That is the glTF default sampler with the glTF default wrap, which repeats. Models,
+/// terrain and swaps share images by path, and the first request fixes the sampler for all of
+/// them, so a swap that asks first must ask the way the model loader would have.
+fn swap_image_sampler(default: Option<&DefaultGltfImageSampler>) -> ImageSamplerDescriptor {
+    let mut sampler = default.map_or_else(crate::render::terrain_layer_sampler, |default| {
+        default.get()
+    });
+    sampler.address_mode_u = ImageAddressMode::Repeat;
+    sampler.address_mode_v = ImageAddressMode::Repeat;
+    sampler
+}
+
+/// The one place a swap requests an image. Bevy keys an image by path and the first request's
+/// settings win for every later consumer of that path, so the settings must match what the other
+/// consumers of the path would have asked for. Landscape textures serve swaps and models alike: a
+/// rock model reads the same `_n.ktx2` normal map a swap names. A normal map is data, never sRGB
+/// (`srgb` false); asking with the default, sRGB, would give the model an sRGB view of its own
+/// normal map, which strict validation refuses and which hides the model.
+fn load_swap_image(
+    server: &AssetServer,
+    path: &str,
+    srgb: bool,
+    sampler: &ImageSamplerDescriptor,
+) -> Handle<Image> {
+    let sampler = sampler.clone();
+    server
+        .load_builder()
+        .with_settings(move |settings: &mut ImageLoaderSettings| {
+            settings.is_srgb = srgb;
+            settings.sampler = ImageSampler::Descriptor(sampler.clone());
+        })
+        .load(path.to_owned())
+}
+
 /// What one matched shape will receive once its images are ready.
 enum Plan<'a> {
     Hide,
@@ -293,6 +334,7 @@ fn apply_swaps(
     tagged: Query<(), With<ObjectGeometryIndex>>,
     mut surfaces: SwapSurfaces,
     server: Res<AssetServer>,
+    default_sampler: Option<Res<DefaultGltfImageSampler>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut cache: ResMut<DiffuseMaterials>,
@@ -358,6 +400,7 @@ fn apply_swaps(
             }
             let mut handles: HashMap<String, Handle<Image>> =
                 requested.map(|held| held.0.clone()).unwrap_or_default();
+            let sampler = swap_image_sampler(default_sampler.as_deref());
             let mut new_request = false;
             let mut pending = false;
             for (_, plan) in &plans {
@@ -367,10 +410,14 @@ fn apply_swaps(
                 else {
                     continue;
                 };
-                for path in [diffuse, normal].into_iter().flatten() {
-                    let handle = handles.entry((*path).to_owned()).or_insert_with(|| {
+                // TX00 is colour and TX01 is direction data.
+                for (path, srgb) in [(diffuse, true), (normal, false)]
+                    .into_iter()
+                    .filter_map(|(path, srgb)| Some(((*path)?, srgb)))
+                {
+                    let handle = handles.entry(path.to_owned()).or_insert_with(|| {
                         new_request = true;
-                        server.load((*path).to_owned())
+                        load_swap_image(&server, path, srgb, &sampler)
                     });
                     if let LoadState::Failed(error) = server.load_state(handle.id()) {
                         return ObjectTextureSwapState::Failed(format!("{path}: {error}"));
@@ -443,10 +490,12 @@ fn apply_swaps(
                                     use bevy::render::render_resource::{
                                         TextureDimension, TextureViewDimension,
                                     };
+                                    // The shared image keeps the colour space its first
+                                    // requester chose; this copy takes the slot's own.
                                     let format = if srgb {
                                         image.texture_descriptor.format.add_srgb_suffix()
                                     } else {
-                                        image.texture_descriptor.format
+                                        image.texture_descriptor.format.remove_srgb_suffix()
                                     };
                                     if image.texture_descriptor.dimension != TextureDimension::D2
                                         || image.texture_descriptor.size.depth_or_array_layers != 1
