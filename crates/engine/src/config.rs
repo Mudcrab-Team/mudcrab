@@ -27,12 +27,16 @@ const IO_THREADS_EXPECTED: &str = "a thread count from 0 to 64";
 /// `fBlockLevel1Distance`, scaled by the worldspace NAMA value, and drop beyond
 /// `fBlockMaximumDistance`. The object rule has no consumer yet: no object LOD is drawn. Terrain
 /// reads only `fSplitDistanceMult`, plus `fBlockMaximumDistance` as the outer guard below.
+/// `fBlockLevel0Distance` and `fBlockLevel1Distance` are therefore unused until the object LOD
+/// importer lands.
 /// `--ini` reads these from a `SkyrimPrefs.ini`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerrainLodDistances {
-    /// `fBlockLevel0Distance`: object LOD, level 8 hands over to level 4 (not used by terrain).
+    /// `fBlockLevel0Distance`: object LOD, level 8 hands over to level 4. Unused until object LOD
+    /// lands (terrain does not read it).
     pub block_level0_distance: f32,
-    /// `fBlockLevel1Distance`: object LOD, level 16 hands over to level 8 (not used by terrain).
+    /// `fBlockLevel1Distance`: object LOD, level 16 hands over to level 8. Unused until object LOD
+    /// lands (terrain does not read it).
     pub block_level1_distance: f32,
     /// `fBlockMaximumDistance`: object LOD drops beyond it (RF-LOD-004). Terrain has no such cut
     /// in retail. Mudcrab keeps it, times `fSplitDistanceMult`, as the outer reach of tier 16
@@ -75,8 +79,10 @@ impl TerrainLodDistances {
     /// at the worldspace LOD origin (RF-LOD-001, block coordinate formula).
     ///
     /// Engineering guard: retail measures from the camera position. Mudcrab refreshes the LOD
-    /// selection when the camera crosses a cell, so it uses the cell centre. The position error is
-    /// at most half a cell (2,048 units), at most 5.9% of the smallest split distance (34,756).
+    /// selection when the camera crosses a cell, so it uses the cell centre. The camera can be up
+    /// to 2,048 units from the centre on each axis, so the position error in the plane is up to
+    /// 2,048 x sqrt(2) = 2,896 units, which is 8.3% of the smallest default split distance
+    /// (34,756).
     pub fn terrain_block_distance(camera: IVec2, cell: IVec2, origin: IVec2, level: i32) -> f32 {
         let cell_size = f64::from(CELL_SIZE);
         let level = f64::from(level.max(1));

@@ -52,7 +52,7 @@ so fast travel cannot strand half-loaded chunks. Unload uses hysteresis:
 drop a tier only when the camera leaves tier range plus a margin ring, so
 boundary oscillation does not thrash loads.
 Each tier queries, admits, retains and unloads at its own reach plus two
-cells. With the default reach of 12/25/91 cells that is 14/27/93 cells for
+cells. With the default reach of 17/33/92 cells that is 19/35/94 cells for
 tiers 4/8/16. Coarse tiers retain inner coverage for fallback while finer data is
 pending or unavailable.
 
@@ -68,26 +68,44 @@ command-line options override every file wherever they appear
 | Section | Key | Effect |
 |---|---|---|
 | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2`; odd values only |
-| `[TerrainManager]` | `fBlockLevel0Distance` | tier-4 reach before the multiplier |
-| `[TerrainManager]` | `fBlockLevel1Distance` | tier-8 reach before the multiplier |
-| `[TerrainManager]` | `fBlockMaximumDistance` | tier-16 reach before the multiplier |
-| `[TerrainManager]` | `fSplitDistanceMult` | terrain multiplier on the three block distances |
+| `[TerrainManager]` | `fSplitDistanceMult` | terrain split rule (below) |
+| `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists |
+| `[TerrainManager]` | `fBlockLevel0Distance` | read and stored, unused until object LOD lands (object LOD: level 8 hands over to level 4) |
+| `[TerrainManager]` | `fBlockLevel1Distance` | read and stored, unused until object LOD lands (object LOD: level 16 hands over to level 8) |
 
-A tier's reach in cells is `floor(block distance * fSplitDistanceMult / 4096)`,
-compared with the Chebyshev cell distance from the camera's cell, so each
-tier covers a square of cells around the camera. The terrain multiplier follows DynDOLOD's definition: the object LOD
-distances times `fSplitDistanceMult` give the terrain LOD distances. Object LOD
-(Phase 2) will read the same three block distances without the multiplier.
+Terrain follows retail's block rule (RF-LOD-001, RF-LOD-003, RF-LOD-011). A
+block of `level` cells is replaced by its four children while the planar
+distance from the camera to the block's box is under `fSplitDistanceMult` x
+`level` x 2,048 x sqrt(2) units: 34,756 / 69,512 / 139,023 units at levels 8 /
+16 / 32 with the default 1.5. The blocks are the aligned `level`-cell blocks
+that start at the worldspace LOD origin. A level-16 block that is not split
+draws tier 16, a level-8 block that is not split draws tier 8, and otherwise
+tier 4 draws. So tier 4 covers cells 0 to 15 and tier 8 covers cells 16 to 31 on
+the camera axis. No level-32 tier is compiled, so tier 16 draws wherever retail
+would draw level 16 or 32, out to `fBlockMaximumDistance` x `fSplitDistanceMult`
+(375,000 units, 92 cells) as an engineering guard. Retail has no such cut for
+terrain. A coarser ready tier stands in until the wanted tier is ready.
+
+Engineering guard: the camera position is the centre of its cell, because the
+selection refreshes when the camera crosses a cell. The position error in the
+plane is up to 2,048 x sqrt(2) = 2,896 units, 8.3% of the smallest default split
+distance (34,756).
+
+The query and keep radius of a tier is its parent's split distance plus the
+parent's cells: 17 / 33 / 92 cells at the defaults
+(`TerrainLodDistances::reach_cells`). Object LOD (Phase 2) will use
+`fBlockLevel0Distance`, `fBlockLevel1Distance` and the worldspace NAMA
+multiplier, and drop beyond `fBlockMaximumDistance` (RF-LOD-004).
 
 Defaults are Skyrim Special Edition's own `SkyrimPrefs.ini` values: 35000,
 70000 and 250000 with a multiplier of 1.5
-([STEP](https://stepmodifications.org/wiki/SkyrimSE:SkyrimPrefs_INI/TerrainManager)),
-which reach 12/25/91 cells. The initial terrain slice was measured and
-accepted at a 4/8/16-cell reach (`fSplitDistanceMult=1` with block distances
-16384/32768/65536). The [`cb617fc0` candidate](../../research/lod-rc-20261002.md)
-was approved visually at the Skyrim defaults; performance at that reach was
-deferred and has not been measured. Pass the old values through `--ini` to
-reproduce the earlier runs.
+([STEP](https://stepmodifications.org/wiki/SkyrimSE:SkyrimPrefs_INI/TerrainManager)). The initial terrain slice was measured and
+accepted at a 4/8/16-cell reach under the earlier rule (block distances times
+`fSplitDistanceMult`, compared by Chebyshev cell distance). The
+[`cb617fc0` candidate](../../research/lod-rc-20261002.md) was approved visually
+at the Skyrim defaults under that earlier rule (12/25/91 cells); performance at
+that reach was deferred and has not been measured. The retail terrain rule above
+replaced it, so `--ini` values no longer reproduce those runs.
 The camera far plane follows the largest configured reach.
 
 Not yet honoured: level-32 terrain (no compiled tier), `fTreeLoadDistance`
