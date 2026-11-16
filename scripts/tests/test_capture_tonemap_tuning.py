@@ -312,6 +312,26 @@ fixture=json.loads(Path(arguments[arguments.index('--fixture')+1]).read_text())
         with self.assertRaisesRegex(ValueError, "Frozen grass tuning changed"):
             TUNING.validate_existing(output)
 
+    def test_grass_tuning_matrix_enables_grass_for_every_capture(self):
+        """A file matrix requests grass for default, disabled and enabled campaign inputs."""
+        config_path, engine, assets, source = self.make_campaign()
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        common = config["common_args"]
+        tuning = self.root / "matrix-tuning.toml"
+        tuning.write_text("brightness = 0.6\n", encoding="utf-8")
+        for name, switches in (("default", []), ("disabled", ["--no-grass"]),
+                               ("enabled", ["--grass"])):
+            with self.subTest(common_args=switches):
+                config["common_args"] = [*common, *switches]
+                TUNING.write_json(config_path, config)
+                with patch.object(TUNING, "source_snapshot", return_value=source):
+                    manifest = TUNING.capture(config_path, engine, assets, self.root / name, [tuning])
+                self.assertEqual(manifest["common_args"].count("--grass"), 1)
+                self.assertNotIn("--no-grass", manifest["common_args"])
+                for run in manifest["runs"]:
+                    self.assertEqual(run["command"].count("--grass"), 1)
+                    self.assertNotIn("--no-grass", run["command"])
+
     def test_grass_tuning_callback_and_frame_must_match_authoritative_receipt(self):
         expected = {"path": "settings.toml", "sha256": "hash", "effective": {"brightness": 0.6}, "selection": "cli"}
         receipt = copy.deepcopy(self.receipt)
