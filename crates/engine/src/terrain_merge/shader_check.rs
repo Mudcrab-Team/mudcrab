@@ -28,6 +28,7 @@ struct PbrInput {
     material: StandardMaterial,
     world_normal: vec3<f32>,
     N: vec3<f32>,
+    V: vec3<f32>,
 }
 ";
 
@@ -112,6 +113,51 @@ const VIEW_TRANSFORMATIONS: &str = "
 fn position_world_to_clip(world_pos: vec3<f32>) -> vec4<f32> {
     return vec4<f32>(world_pos, 1.0);
 }
+fn depth_ndc_to_view_z(ndc_depth: f32) -> f32 {
+    return -1.0 / max(ndc_depth, 1.0e-6);
+}
+fn position_world_to_view(world_pos: vec3<f32>) -> vec3<f32> {
+    return world_pos;
+}
+fn position_ndc_to_world(ndc_pos: vec3<f32>) -> vec3<f32> {
+    return ndc_pos;
+}
+";
+
+/// The two view-level values the water shader reads, with the fields it uses.
+const MESH_VIEW_BINDINGS: &str = "
+#define_import_path bevy_pbr::mesh_view_bindings
+struct View {
+    clip_from_view: mat4x4<f32>,
+    view_from_world: mat4x4<f32>,
+    world_position: vec3<f32>,
+    viewport: vec4<f32>,
+}
+struct Globals {
+    time: f32,
+}
+struct DirectionalLight {
+    color: vec4<f32>,
+    direction_to_light: vec3<f32>,
+}
+struct Lights {
+    directional_lights: array<DirectionalLight, 1>,
+    n_directional_lights: u32,
+}
+@group(0) @binding(2) var<uniform> lights: Lights;
+@group(0) @binding(0) var<uniform> view: View;
+@group(0) @binding(1) var<uniform> globals: Globals;
+@group(0) @binding(24) var view_transmission_texture: texture_2d<f32>;
+@group(0) @binding(25) var view_transmission_sampler: sampler;
+";
+
+/// The fullscreen vertex stage's output, as `bevy_core_pipeline` declares it.
+const FULLSCREEN_VERTEX_SHADER: &str = "
+#define_import_path bevy_core_pipeline::fullscreen_vertex_shader
+struct FullscreenVertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
 ";
 
 /// Composes the shader with `defs` plus the defs Bevy's own mesh pipeline adds for a mesh with
@@ -146,6 +192,8 @@ fn compose_module(
         ("pbr_fragment.wgsl", PBR_FRAGMENT),
         ("pbr_functions.wgsl", PBR_FUNCTIONS),
         ("view_transformations.wgsl", VIEW_TRANSFORMATIONS),
+        ("mesh_view_bindings.wgsl", MESH_VIEW_BINDINGS),
+        ("fullscreen_vertex_shader.wgsl", FULLSCREEN_VERTEX_SHADER),
     ] {
         composer
             .add_composable_module(ComposableModuleDescriptor {
@@ -223,6 +271,21 @@ fn quadrant_shader_compiles_with_every_weight_carrier() {
             compose_source(include_str!("../shaders/terrain.wgsl"), defs).unwrap();
         }
     }
+}
+
+/// The underwater post-pass shader compiles and validates against the fullscreen stand-in.
+#[test]
+fn the_underwater_shader_compiles() {
+    compose_source(include_str!("../shaders/underwater.wgsl"), Vec::new())
+        .unwrap_or_else(|error| panic!("underwater.wgsl failed:\n{error}"));
+}
+
+/// The water shader compiles and validates: types, bindings, and that every derivative is called
+/// in uniform control flow. It does not replace one run on a device.
+#[test]
+fn the_water_shader_compiles() {
+    compose_source(include_str!("../shaders/water.wgsl"), Vec::new())
+        .unwrap_or_else(|error| panic!("water.wgsl failed:\n{error}"));
 }
 
 /// Evaluate the small pure material-parameter function in the actual WGSL, without a GPU.
