@@ -1694,6 +1694,7 @@ mod tests {
             let mut app = App::new();
             app.add_plugins((
                 bevy::app::TaskPoolPlugin::default(),
+                bevy::transform::TransformPlugin,
                 bevy::asset::AssetPlugin::default(),
             ))
             .insert_resource(crate::config::EngineConfig::default())
@@ -1725,7 +1726,11 @@ mod tests {
                 );
             }
             app.edit_schedule(PostUpdate, |schedule| {
-                schedule.set_executor_kind(bevy::ecs::schedule::ExecutorKind::SingleThreaded);
+                schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::default());
+                schedule.set_build_settings(bevy::ecs::schedule::ScheduleBuildSettings {
+                    ambiguity_detection: bevy::ecs::schedule::LogLevel::Error,
+                    ..default()
+                });
             });
             app.world_mut().spawn((
                 StreamingCamera,
@@ -1736,6 +1741,14 @@ mod tests {
                 .world_mut()
                 .spawn((primitive(), GlobalTransform::IDENTITY))
                 .id();
+            app.world_mut()
+                .schedule_scope(PostUpdate, |world, schedule| {
+                    let failure = schedule.initialize(world).err();
+                    assert!(
+                        failure.is_none(),
+                        "grass camera projection order is unambiguous: {failure:?}"
+                    );
+                });
             app.update();
             assert_eq!(
                 app.world()
