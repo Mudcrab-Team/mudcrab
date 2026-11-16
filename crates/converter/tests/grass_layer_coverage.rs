@@ -451,12 +451,12 @@ async fn legacy_broken_rule_keeps_neighbor_cells() {
 }
 
 /// Malformed weights and assignments drop individually, preserving valid paint in the same cell.
-async fn check_broken_null_paint(reader: RecordReader) {
+async fn check_broken_null_paint(reader: RecordReader, broken_links: bool) {
     let directory = tempfile::tempdir().unwrap();
     let config = fixture(directory.path(), reader);
     let path = config.data_dir.join("Layers.esp");
     let mut bytes = fs::read(&path).unwrap();
-    let fields = [
+    let mut fields = [
         field(b"BTXT", &[GRASS_TEXTURE.to_le_bytes(), [0; 4]].concat()),
         field(b"ATXT", &[0; 8]),
         field(
@@ -485,6 +485,13 @@ async fn check_broken_null_paint(reader: RecordReader) {
         field(b"BTXT", &[1, 2, 3]),
     ]
     .concat();
+    if broken_links {
+        fields.extend(field(
+            b"ATXT",
+            &[0xFF00_0001u32.to_le_bytes(), [1, 0, 1, 0]].concat(),
+        ));
+        fields.extend(field(b"ATXT", &[0xFF, 0xFF, 0xFF, 0xFF, 0]));
+    }
     let original = land(0x30, true, false);
     let offsets: Vec<_> = bytes
         .windows(original.len())
@@ -551,7 +558,7 @@ async fn check_broken_null_paint(reader: RecordReader) {
         report
             .warnings
             .iter()
-            .any(|w| w.contains("LAND selection") && w.contains("6")),
+            .any(|w| w.contains("LAND selection") && w.contains(if broken_links { "7" } else { "6" })),
         "{:?}",
         report.warnings
     );
@@ -570,13 +577,25 @@ async fn check_broken_null_paint(reader: RecordReader) {
 /// In-house malformed LAND publication keeps valid neighboring grass.
 #[tokio::test]
 async fn inhouse_broken_null_paint_keeps_neighbor() {
-    check_broken_null_paint(RecordReader::Inhouse).await;
+    check_broken_null_paint(RecordReader::Inhouse, false).await;
 }
 
 /// Legacy malformed LAND publication keeps valid neighboring grass.
 #[tokio::test]
 async fn legacy_broken_null_paint_keeps_neighbor() {
-    check_broken_null_paint(RecordReader::Legacy).await;
+    check_broken_null_paint(RecordReader::Legacy, false).await;
+}
+
+/// Mixed invalid links and weights preserve usable paint through in-house publication.
+#[tokio::test]
+async fn inhouse_broken_links_and_paint_keep_neighbor() {
+    check_broken_null_paint(RecordReader::Inhouse, true).await;
+}
+
+/// Legacy publication uses the same item-local paint recovery for broken optional links.
+#[tokio::test]
+async fn legacy_broken_links_and_paint_keep_neighbor() {
+    check_broken_null_paint(RecordReader::Legacy, true).await;
 }
 
 /// Producer-ten masks must rebuild after selection recovery changes.
