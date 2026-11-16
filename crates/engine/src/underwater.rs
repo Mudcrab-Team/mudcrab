@@ -51,6 +51,7 @@ pub(crate) struct UnderwaterFog {
 }
 
 /// Which record an underwater fog was read from, or why it fell back to DefaultWater's values.
+/// Displays the record id in hex, as the registry and the pack's tables write it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnderwaterFogSource {
     /// The water record `0x...` has colours in the catalog; its shallow colour and, when its
@@ -170,6 +171,18 @@ pub(crate) fn underwater_fog_color(shallow: [u8; 3], multiplier: [u8; 3]) -> Col
     Color::srgb(channel(0), channel(1), channel(2))
 }
 
+impl std::fmt::Display for UnderwaterFogSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Record(id) => write!(formatter, "record {id:08X}"),
+            Self::RecordMissing(id) => {
+                write!(formatter, "record {id:08X} (no colours in the catalog)")
+            }
+            Self::NoRecord => write!(formatter, "no record"),
+        }
+    }
+}
+
 /// The underwater fog of a water plane that names `form_id` (RF-WATER-031): the record's Shallow
 /// Color times the weather's Water Multiplier, over the record's own underwater fog distances
 /// (`DNAM` +0x90, +0x94). A record the catalog does not know, or a plane with no record, gets
@@ -258,7 +271,7 @@ pub(crate) fn update_underwater_state(
         if let Some(fog) = wanted.fog.filter(|_| wanted.mode == UnderwaterMode::Below) {
             let colour = fog.color.to_srgba();
             info!(
-                source = ?fog.source,
+                source = %fog.source,
                 colour_srgb = format_args!("({:.4}, {:.4}, {:.4})", colour.red, colour.green, colour.blue),
                 near = fog.near,
                 far = fog.far,
@@ -434,6 +447,7 @@ mod tests {
             day,
         );
         assert_eq!(river.source, UnderwaterFogSource::Record(0x0100_1232));
+        assert_eq!(river.source.to_string(), "record 01001232");
         assert_eq!(volcanic.source, UnderwaterFogSource::Record(0x0007_13C4));
         assert_eq!((river.near, river.far), (-1400.0, 2000.0));
         assert_eq!((volcanic.near, volcanic.far), (-40.0, 140.0));
