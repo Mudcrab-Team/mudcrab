@@ -347,7 +347,7 @@ impl GeometryCache {
                 .is_ok_and(|bytes| <[u8; 32]>::from(Sha256::digest(bytes)) == *expected);
             ensure!(
                 unchanged,
-                "obstruction {path} changed during grass bake; retry conversion"
+                "obstruction changed during grass bake ({path}); retry conversion"
             );
         }
         Ok(())
