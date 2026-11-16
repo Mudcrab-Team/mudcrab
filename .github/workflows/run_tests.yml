@@ -430,10 +430,17 @@ jobs:
   # They live outside scripts/ on purpose: the engine's config tests scan every
   # file under scripts/ for engine command-line options.
   #
-  # A rate-limited or skipped CodeRabbit run (neutral) is not a review, so the
-  # job waits and then fails. To recover, comment "@coderabbitai review" on
-  # the PR, wait for the CodeRabbit check to finish, and re-run this job.
+  # A rate-limited or skipped CodeRabbit run ends neutral. The ruleset counts
+  # a neutral CodeRabbit check as a pass, so --accept-neutral makes this job
+  # match it: a strict gate would turn tests_pass red on every rate-limited
+  # PR for a reason the author cannot fix. A neutral run is not a review;
+  # comment "@coderabbitai review" on the PR to get one. If CodeRabbit never
+  # reports or fails, the job fails: comment "@coderabbitai review", wait for
+  # the CodeRabbit check to finish, and re-run this job.
   # Greptile is logged and never blocks.
+  #
+  # -u: without it, Python buffers stdout on the runner and the poll log
+  # appears only when the job ends.
   reviewers_pass:
     if: github.event_name == 'pull_request' && !github.event.pull_request.draft
     runs-on: ubuntu-latest
@@ -451,9 +458,10 @@ jobs:
           REPO: ${{ github.repository }}
           SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 -B .github/scripts/reviewer_gate.py \
+          python3 -B -u .github/scripts/reviewer_gate.py \
             --repo "$REPO" \
             --sha "$SHA" \
+            --accept-neutral \
             --timeout-seconds 1500 \
             --interval-seconds 30
 

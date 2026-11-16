@@ -54,13 +54,20 @@ The `main_protection` ruleset requires at least one approving review, approval f
 - **Approval of the latest push by someone other than the pusher is not required.** A code owner who pushed to a PR can approve it.
 - **The rules have one bypass actor.** Organization administrators (`OrganizationAdmin`, always) can bypass the ruleset. The requirements above apply to everyone else.
 
-`main` accepts squash or rebase merges in the ruleset, and the repository setting allows only squash. There is no merge queue and auto-merge is off.
+`main` accepts squash or rebase merges in the ruleset, and the repository setting allows only squash. There is no merge queue and auto-merge is off. `tests_pass` includes a `reviewers_pass` job that waits for the CodeRabbit check run on the PR's latest commit (Greptile's result is logged but does not block). Only the CodeRabbit app's own check run counts, never a commit status. Like the ruleset, the job counts a neutral CodeRabbit run (for example "Review rate limited") as a pass.
 
 The PR author may merge after another human collaborator approves and all checks pass. Keep [CODEOWNERS](../../.github/CODEOWNERS) in sync when collaborators gain or lose write access. Its catch-all rule also covers changes to CODEOWNERS itself. Administrators can still edit repository settings, so changing or disabling these requirements is a separate policy change.
 
 - Use **Squash and merge**. Keep the PR title as the commit title.
 - Description: the PR's one-sentence summary, an empty line, then one trailer line per co-author or assistant of the PR's commits (`Co-authored-by:` or `Assisted-by:`, see [AI_POLICY.md](../AI_POLICY.md)). Drop the "Merge branch main" lines and the list of commit titles.
 - After a merge, the other open PRs are behind `main` but can still merge without being updated. Update a branch only when it conflicts or needs something that just landed.
+
+### After a push: reviewers and approvals
+
+- A push after approval dismisses the approval, so the PR waits for a fresh one.
+- CodeRabbit reviews the PR's head commit, so every push, including a `main` merge commit from "Update branch", starts a new CodeRabbit run.
+- If CodeRabbit is rate limited or skipped the commit, its check run ends neutral. `reviewers_pass` passes, but nobody reviewed that commit. Comment `@coderabbitai review` on the pull request to get a review.
+- **If `reviewers_pass` fails** because CodeRabbit never reported within 25 minutes or its run failed, comment `@coderabbitai review` on the pull request, wait for the CodeRabbit check to finish, then re-run the failed `reviewers_pass` job from the Actions tab.
 
 ## AI agents
 
