@@ -220,6 +220,10 @@ async fn main() -> Result<()> {
         println!("{}", usage());
         return Ok(());
     }
+    if shared::wants_version(args.iter().map(std::ffi::OsString::as_os_str)) {
+        println!("{}", shared::VERSION_LINE);
+        return Ok(());
+    }
     if args.first().and_then(|argument| argument.to_str()) == Some("derive-outfits") {
         let command_line = std::env::args().collect::<Vec<String>>();
         return derive_outfits(&args[1..], command_line);
@@ -1302,6 +1306,7 @@ fn usage() -> &'static str {
                  [--merged-terrain] [--terrain-default-texture white|skyrim-ini]
                  [--terrain-ini FILE] [--terrain-allow-downscale]
                  [--plugins-file FILE] [--skyrim-ccc-file FILE] [--skyrim-ini-file FILE]
+       converter -V | --version
        converter check <output directory> [--full]
        converter derive-outfits <target> --registry <packs.json> --clone-of <pack> [--replace] [--converter-head <sha>]
        converter repair-failed <Skyrim Data> <output directory> [--mo2-instance DIR]
