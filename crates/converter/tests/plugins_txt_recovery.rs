@@ -65,6 +65,14 @@ async fn unicode_case_player_plugin_name_publishes() {
     layout::generate(&data, layout::DEFAULT_SEED, layout::Formats::all()).unwrap();
     plugin(&data, "Good.esp", &["Skyrim.esm"], "fUnicodeNeighbor");
     plugin(&data, "CAFÉ.esp", &["Skyrim.esm"], "fJumpHeightMin");
+    let owner = data.join("CAFÉ.esp");
+    let mut bytes = fs::read(&owner).unwrap();
+    bytes.extend(record(
+        b"KYWD",
+        0x0100_0801,
+        sub(b"EDID", b"UnicodeOwner\0"),
+    ));
+    fs::write(&owner, bytes).unwrap();
     let list = dir.path().join("plugins.txt");
     fs::write(&list, b"*Good.esp\n*caf\xe9.esp\n").unwrap();
     let selected = read_plugins_txt(&list, &data).unwrap();
@@ -104,6 +112,14 @@ async fn unicode_case_player_plugin_name_publishes() {
         .unwrap();
     // GMST identity stays with the fixture's first owner; the winning source is slot 2.
     assert_eq!((form_id, priority), (0x0000_000B, 2));
+    let owner_priority: u32 = conn
+        .query_row(
+            "SELECT load_order FROM records WHERE form_id=?1 AND record_type='KYWD'",
+            [0x0200_0801_u32],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(owner_priority, 2);
     let value: f64 = conn
         .query_row(
             "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
@@ -576,6 +592,14 @@ async fn final_unicode_player_names_and_master_override_publish() {
         &["Skyrim.esm"],
         "fJumpHeightMin",
     );
+    let owner = config.data_dir.join("CAF\u{c9}.esp");
+    let mut owner_bytes = fs::read(&owner).unwrap();
+    owner_bytes.extend(record(
+        b"KYWD",
+        0x0100_0801,
+        sub(b"EDID", b"UnicodeOwner\0"),
+    ));
+    fs::write(&owner, owner_bytes).unwrap();
     let header = [sub(b"MAST", b"cAf\xe9.ESP\0"), sub(b"DATA", &[0; 8])].concat();
     let bytes = [
         record(b"TES4", 0, header),
@@ -588,6 +612,7 @@ async fn final_unicode_player_names_and_master_override_publish() {
             ]
             .concat(),
         ),
+        record(b"KYWD", 0x801, sub(b"EDID", b"UnicodeOwnerOverride\0")),
     ]
     .concat();
     fs::write(config.data_dir.join("Patch.esp"), bytes).unwrap();
@@ -617,4 +642,12 @@ async fn final_unicode_player_names_and_master_override_publish() {
         .map(Result::unwrap)
         .collect();
     assert!(ids.contains(&(0x0000_000B, 2)), "{ids:?}");
+    let owner_priority: u32 = conn
+        .query_row(
+            "SELECT load_order FROM records WHERE form_id=?1 AND record_type='KYWD'",
+            [0x0100_0801_u32],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(owner_priority, 2);
 }

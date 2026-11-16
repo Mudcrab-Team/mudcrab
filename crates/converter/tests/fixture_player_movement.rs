@@ -3,11 +3,7 @@
 //! movement links, and the `NPC_Default_MT` movement type. The queries here are
 //! the ones the engine runs at startup.
 
-use converter::esm::{
-    binary::parse_plugin_file,
-    exporter::{create_tables, export_to_db},
-    records::RawRecord,
-};
+use converter::esm::exporter::{create_tables, export_to_db};
 use dummy_content::{
     esm::{self, Plugin},
     layout,
@@ -39,12 +35,12 @@ fn exported_fixture() -> Connection {
     for tag in [*b"ACBS", *b"RNAM", *b"NAM6"] {
         assert!(player.fields.iter().any(|field| field.signature == tag));
     }
-    let records = parse_plugin_file(&path).unwrap();
     let connection = Connection::open_in_memory().unwrap();
     create_tables(&connection).unwrap();
-    let master: HashMap<u32, RawRecord> = records
-        .into_iter()
-        .map(|record| (record.form_id, record))
+    let master: HashMap<_, _> = decoded
+        .records
+        .iter()
+        .map(|(&id, record)| (id, record.to_raw_record()))
         .collect();
     export_to_db(&connection, &master).unwrap();
     connection
