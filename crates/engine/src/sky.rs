@@ -875,6 +875,19 @@ mod tests {
     /// frame.
     #[test]
     fn interior_fog_applies_in_the_frame_the_environment_changes() {
+        interior_fog_crossing_frames(false);
+    }
+
+    /// The same with the sky systems registered before the environment plugin, as an app that
+    /// adds `SkyPlugin` first would have it. Without the `after(EnvironmentSet)` edge the two
+    /// systems conflict on `InteriorFog` and the registration order alone decides which runs
+    /// first, so this case pins the edge and the case above does not.
+    #[test]
+    fn interior_fog_applies_in_the_crossing_frame_when_the_sky_is_registered_first() {
+        interior_fog_crossing_frames(true);
+    }
+
+    fn interior_fog_crossing_frames(sky_first: bool) {
         use crate::streaming::ActiveSpace;
         use crate::world::components::StreamingCamera;
         use crate::world::environment::{EnvironmentCatalog, interior::InteriorEnvironmentPlugin};
@@ -906,12 +919,19 @@ mod tests {
             .init_resource::<SkyPalette>()
             .init_resource::<CameraSpace>()
             .insert_resource(EnvironmentCatalog::from_connection(&connection))
-            .init_resource::<ActiveSpace>()
-            .add_plugins(InteriorEnvironmentPlugin)
-            .add_systems(
+            .init_resource::<ActiveSpace>();
+        if sky_first {
+            app.add_systems(
+                PostUpdate,
+                sky_systems().before(TransformSystems::Propagate),
+            )
+            .add_plugins(InteriorEnvironmentPlugin);
+        } else {
+            app.add_plugins(InteriorEnvironmentPlugin).add_systems(
                 PostUpdate,
                 sky_systems().before(TransformSystems::Propagate),
             );
+        }
         let camera = app
             .world_mut()
             .spawn((FogCamera, StreamingCamera, Transform::default()))

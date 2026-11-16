@@ -1714,6 +1714,104 @@ mod tests {
         assert_eq!(light.color, configured);
     }
 
+    /// Production order: the real `apply_render_settings` in `Update` (a settled frame returns
+    /// early and writes nothing), the interior systems in `PostUpdate`. The first update applies
+    /// the preferences to the sun and the ambient light, so a test starts from a settled exterior.
+    fn settings_app() -> (App, Entity) {
+        let mut app = app(rule_catalog());
+        app.insert_resource(crate::config::EngineConfig::default())
+            .insert_resource(crate::settings::RenderingSettings::default())
+            .insert_resource(crate::settings::SettingsFile::session_only())
+            .insert_resource(crate::color_pipeline::SceneGradeMode::SnapshotSrgb)
+            .insert_resource(crate::color_pipeline::SceneVisualPreset::CoolGray)
+            .insert_resource(crate::color_pipeline::SceneGradeSource::default())
+            .insert_resource(crate::tone_mapping::SceneToneMapSource::default())
+            .insert_resource(crate::sky::SkyPalette::default())
+            .add_systems(Update, crate::settings::apply_render_settings);
+        let sun = spawn_world_sun(&mut app);
+        app.world_mut()
+            .entity_mut(sun)
+            .insert(bevy::light::CascadeShadowConfig::default());
+        app.update();
+        app.update();
+        (app, sun)
+    }
+
+    /// Greptile "Lighting settings revert outside" and CodeRabbit "Reapply current preferences
+    /// after restoring exterior lighting", with the real settings system: Sun, colour, shadow and
+    /// ambient preferences edited while indoors are what the exterior shows after the exit.
+    #[test]
+    fn real_settings_edited_indoors_are_in_effect_after_the_exit() {
+        let (mut app, sun) = settings_app();
+        enter(&mut app, Some(ALVOR));
+        app.update();
+        assert_eq!(sun_light(&app, sun).color, Color::srgb_u8(65, 70, 80));
+        {
+            let mut settings = app
+                .world_mut()
+                .resource_mut::<crate::settings::RenderingSettings>();
+            settings.sun = false;
+            settings.sun_color = [0.9, 0.8, 0.7];
+            settings.ambient_color = [0.2, 0.3, 0.4];
+        }
+        app.update();
+        // Indoors the cell key light still wins.
+        assert_eq!(sun_light(&app, sun).color, Color::srgb_u8(65, 70, 80));
+        assert!(sun_light(&app, sun).illuminance > 0.0);
+        for _ in 0..3 {
+            app.update();
+        }
+        enter(&mut app, None);
+        for _ in 0..3 {
+            app.update();
+        }
+        let light = sun_light(&app, sun);
+        assert_eq!(light.illuminance, 0.0, "Sun is off in the preferences");
+        assert!(!light.shadow_maps_enabled);
+        assert_eq!(light.color, Color::srgb(0.9, 0.8, 0.7));
+        assert_eq!(
+            app.world().resource::<GlobalAmbientLight>().color,
+            Color::srgb(0.2, 0.3, 0.4)
+        );
+        // Turning Sun back on outside is applied at once.
+        app.world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .sun = true;
+        app.update();
+        assert!(sun_light(&app, sun).illuminance > 0.0);
+    }
+
+    /// The preferences change in the same frame as the exit: `apply_render_settings` (`Update`)
+    /// writes the exterior values before the interior systems (`PostUpdate`) see the exit, so the
+    /// restore must not replace them with the snapshot taken before that write.
+    #[test]
+    fn a_setting_edited_in_the_exit_frame_is_not_overwritten_by_the_restore() {
+        let (mut app, sun) = settings_app();
+        enter(&mut app, Some(ALVOR));
+        app.update();
+        {
+            let mut settings = app
+                .world_mut()
+                .resource_mut::<crate::settings::RenderingSettings>();
+            settings.sun = false;
+            settings.sun_color = [0.9, 0.8, 0.7];
+            settings.ambient_color = [0.2, 0.3, 0.4];
+        }
+        app.world_mut().resource_mut::<ActiveSpace>().interior = None;
+        app.update();
+        for _ in 0..3 {
+            app.update();
+        }
+        let light = sun_light(&app, sun);
+        assert_eq!(light.illuminance, 0.0, "Sun is off in the preferences");
+        assert!(!light.shadow_maps_enabled);
+        assert_eq!(light.color, Color::srgb(0.9, 0.8, 0.7));
+        assert_eq!(
+            app.world().resource::<GlobalAmbientLight>().color,
+            Color::srgb(0.2, 0.3, 0.4)
+        );
+    }
+
     #[test]
     fn mode_3_keeps_the_exterior_sun_path() {
         // The maze (0x80 + 0x100) and the exterior keep the sun colour, strength and shadows.
