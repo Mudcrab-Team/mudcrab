@@ -207,15 +207,27 @@ fn repeated_model_nodes_skip_locally_and_preserve_healthy_neighbor() {
         let bytes = std::fs::read(dir.path().join("meshes/blocker.glb")).unwrap();
         let (report, cache) = bake(&conn, dir.path(), None, "bounded-nodes.rkyv");
         assert_eq!(
-            (report.baked_cells, report.skipped_cells, report.skipped_obstruction_models),
+            (
+                report.baked_cells,
+                report.skipped_cells,
+                report.skipped_obstruction_models
+            ),
             (3, 0, 1),
             "the repeated node is skipped on the evaluated and static fallback paths: bad_skin={bad_skin}"
         );
-        assert!(report.obstruction_diagnostics.iter().any(|message|
-            message.contains("meshes/blocker.glb") && message.contains("repeated model node")));
+        assert!(
+            report
+                .obstruction_diagnostics
+                .iter()
+                .any(|message| message.contains("meshes/blocker.glb")
+                    && message.contains("repeated model node"))
+        );
         assert_eq!(blocked(&cache.cells[0]) + blocked(&cache.cells[1]), 0);
         assert!(blocked(&cache.cells[2]) > 0);
-        assert_eq!(std::fs::read(dir.path().join("meshes/blocker.glb")).unwrap(), bytes);
+        assert_eq!(
+            std::fs::read(dir.path().join("meshes/blocker.glb")).unwrap(),
+            bytes
+        );
     }
 }
 
@@ -229,13 +241,16 @@ fn grassless_terrain_skips_obstruction_model_reads() {
             .unwrap();
         match case {
             0 => {
-                conn.execute_batch("UPDATE grass_types SET density=-1; ").unwrap();
+                conn.execute_batch("UPDATE grass_types SET density=-1; ")
+                    .unwrap();
             }
             1 => {
-                conn.execute("DELETE FROM landscape_texture_grasses", []).unwrap();
+                conn.execute("DELETE FROM landscape_texture_grasses", [])
+                    .unwrap();
             }
             2 => {
-                conn.execute("UPDATE landscape_texture_grasses SET ltex_id=999", []).unwrap();
+                conn.execute("UPDATE landscape_texture_grasses SET ltex_id=999", [])
+                    .unwrap();
             }
             _ => unreachable!(),
         }
@@ -252,6 +267,86 @@ fn grassless_terrain_skips_obstruction_model_reads() {
             assert!(!report.warnings().is_empty());
         }
     }
+}
+
+/// Pre-recipe duplicate-node masks rebuild once, omit the malformed model and then reuse safely.
+#[test]
+fn unique_node_recipe_rebuilds_legacy_masks_before_warm_reuse() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = fixture(dir.path());
+    edit_mesh(dir.path(), |json, _| {
+        json["nodes"] = serde_json::json!([{"children":[1,1]}, {"mesh":0}]);
+    });
+    let (_, mut previous) = bake(&conn, dir.path(), None, "seed.rkyv");
+    let (types, ..) = read_types(&conn).unwrap();
+    let valid_types = types.iter().map(|rule| rule.form_id).collect();
+    let (links, ..) = links::read_links(&conn, &valid_types).unwrap();
+    let inputs = BTreeMap::from([(21, vec![1, 2]), (22, vec![3, 4]), (30, vec![5, 6])]);
+    let (references, _) = read_reference_bounds(&conn).unwrap();
+    let model_hash: [u8; 32] =
+        Sha256::digest(std::fs::read(dir.path().join("meshes/blocker.glb")).unwrap()).into();
+    let terrain_map =
+        super::super::cell_cache::validate_cell_cache(&dir.path().join("terrain.rkyv")).unwrap();
+    let terrain = rkyv::access::<shared::ArchivedCellCache, Error>(&terrain_map).unwrap();
+    for (index, cell) in previous.cells.iter_mut().enumerate() {
+        let land = rkyv::deserialize::<CachedLand, Error>(&terrain.cells[index]).unwrap();
+        // This is the previous raw-input recipe, before unique-node inspection was part of it.
+        // The single static reference crosses cells 10/11; cell 12 is in another worldspace.
+        let refs = if index < 2 {
+            vec![&references[0]]
+        } else {
+            vec![]
+        };
+        let models = if index < 2 { vec![model_hash] } else { vec![] };
+        cell.input_hash = input_hasher(
+            &land,
+            (cell.worldspace_id, cell.grid_x, cell.grid_y),
+            &refs,
+            &links,
+            &inputs,
+            None,
+            &models,
+        )
+        .unwrap()
+        .finalize()
+        .into();
+        cell.obstruction_failures.clear();
+        cell.expanded_sampling = 0;
+        for (quadrant, layer) in cell.quadrants.iter_mut().enumerate() {
+            layer.exclusion.fill(0);
+            if index == 0 && quadrant == 1 {
+                for offset in [7, 15, 23, 31, 39] {
+                    layer.exclusion[offset] = 0xf0;
+                }
+            }
+            if index == 1 && quadrant == 0 {
+                for offset in [0, 8, 16, 24, 32] {
+                    layer.exclusion[offset] = 0x0f;
+                }
+            }
+        }
+    }
+    assert_eq!(previous.cells.iter().map(blocked).sum::<u32>(), 40);
+    let old = dir.path().join("legacy-recipe.rkyv");
+    std::fs::write(&old, rkyv::to_bytes::<Error>(&previous).unwrap()).unwrap();
+    let (rebuilt, current) = bake(&conn, dir.path(), Some(&old), "current.rkyv");
+    assert_eq!((rebuilt.baked_cells, rebuilt.reused_cells), (3, 0));
+    assert_eq!(rebuilt.skipped_obstruction_models, 1);
+    assert_eq!(current.cells.len(), 3);
+    assert_eq!(current.cells.iter().map(blocked).sum::<u32>(), 0);
+    assert!(rebuilt.obstruction_diagnostics[0].contains("repeated model node"));
+    let (warm, after) = bake(
+        &conn,
+        dir.path(),
+        Some(&dir.path().join("current.rkyv")),
+        "warm-recipe.rkyv",
+    );
+    assert_eq!(
+        (warm.baked_cells, warm.reused_cells, warm.geometry_decodes),
+        (0, 3, 0)
+    );
+    assert_eq!(after, current);
+    assert_eq!(warm.notices(), rebuilt.notices());
 }
 
 /// REFR header visibility applies before obstruction inspection.
