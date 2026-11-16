@@ -2466,7 +2466,7 @@ mod tests {
         let output = dir.path().join("grass.rkyv");
         write_grass_cache(&conn, dir.path(), &terrain, None, &previous).unwrap();
         let old = read(&previous);
-        assert_eq!(old.version, 10);
+        assert_eq!(old.version, shared::grass::GRASS_CACHE_VERSION);
         assert!(
             old.cells[0].quadrants[0]
                 .exclusion
@@ -2480,7 +2480,7 @@ mod tests {
         assert_eq!((rebuilt.baked_cells, rebuilt.reused_cells), (1, 2));
         assert_eq!(rebuilt.skipped_obstruction_models, 0);
         let current = read(&output);
-        assert_eq!(current.version, 10);
+        assert_eq!(current.version, shared::grass::GRASS_CACHE_VERSION);
         assert_ne!(current.cells[0].input_hash, old.cells[0].input_hash);
         assert!(
             current.cells[0]
