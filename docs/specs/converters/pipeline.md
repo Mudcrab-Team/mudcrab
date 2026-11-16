@@ -22,7 +22,11 @@ Consumers check source identity, length and modification time after reading and
 before accepting their derived result. The in-house scanner retains already decoded
 usable records and reports a bounded input-change warning, separately from skipped
 record/field counts; it identifies whether they came from an isolated snapshot or a
-large direct view. Archive extraction also retains its final content-hash check and
+large direct view. For a changed direct view, the warning states that retained
+records may mix versions of the input and be inconsistent. Other consumers reject
+a changed source even when a complete anonymous snapshot was captured; the scanner
+instead preserves its usable captured or decoded records with the warning above.
+Archive extraction also retains its final content-hash check and
 rejects changed source archives before accepting checkpoints. Metadata checks are
 diagnostic, not atomic-snapshot proof: same-size rewrites hidden by timestamp
 granularity can evade them. Parsing bounds still apply.

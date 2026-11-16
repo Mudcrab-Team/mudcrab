@@ -84,7 +84,7 @@ pub(crate) fn scan_plugin(
             if map.is_snapshot() {
                 format!("{error:#}; retained the stable captured snapshot")
             } else {
-                format!("{error:#}; retained records already decoded from the large input")
+                format!("{error:#}; retained decoded records may mix versions of the large input and be inconsistent")
             }
         });
     }
@@ -375,6 +375,7 @@ mod tests {
                 .any(|line| line.contains("input changed during conversion"))
         );
         assert!(warnings.iter().any(|line| line.contains("MutableMod.esp")));
+        assert!(!warnings.iter().any(|line| line.contains("inconsistent")));
     }
 
     /// A same-size edit between records can leave a direct view with two source generations.
