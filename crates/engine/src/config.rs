@@ -86,6 +86,15 @@ pub struct EngineConfig {
     pub sun_shadow_distance_limit: Option<f32>,
     /// Optional sun bearing clockwise from north and elevation above the horizon, in degrees.
     pub sun_position: Option<(f32, f32)>,
+    /// Initial game hour; deterministic captures freeze at this hour. The default is the retail
+    /// `GameHour` global (8.0 in the pack data). A capture that needs another hour, such as noon
+    /// for the native Riverwood comparison, passes `--game-hour` explicitly.
+    pub game_hour: f64,
+    /// Game seconds per real second during ordinary play; zero freezes the clock. The default 20
+    /// is the retail `TimeScale` (GLOB record, form id 0x3A, editor id `TimeScale`): 20.0 in the pack.
+    pub timescale: f64,
+    /// Explicit `[Sky]` overrides in `sun::SUN_KEYS` order; absent keys retain winning GMST values.
+    pub sun_settings_overrides: [Option<f32>; 5],
     pub terrain_lod: TerrainLodDistances,
     pub max_cell_commits_per_frame: usize,
     pub max_commit_micros_per_frame: u64,
@@ -123,6 +132,8 @@ pub struct EngineConfig {
     pub headless: bool,
     /// Keep a renderable window hidden for automated screenshot capture.
     pub hidden_window: bool,
+    /// Open the window below other windows and leave focus where it was.
+    pub background_window: bool,
     /// Whole color pipeline; fixed for the run because stages never mix across profiles.
     pub visual_profile: VisualProfile,
     /// Select the cinematic A/B experiment without changing scene lighting.
@@ -141,6 +152,8 @@ pub struct EngineConfig {
     pub start_shot: Option<PathBuf>,
     /// Accept developer console commands on this process's stdin.
     pub stdin_console: bool,
+    /// Continue world simulation out of focus (Skyrim General.bAlwaysActive).
+    pub always_active: bool,
     /// Disable Bevy's GPU timing and pipeline-statistics query collection.
     pub no_render_diagnostics: bool,
     pub benchmark_only: bool,
@@ -175,6 +188,10 @@ pub struct EngineConfig {
     pub accept_min_fps: f64,
     pub accept_p95_ms: f64,
     pub accept_max_memory_growth_gib: f64,
+    /// `--accept-frame-pass-bar`: fail a benchmark run whose frame-budget window misses the pass
+    /// bar (at least 99.9% of frames within `--frame-budget-ms`, none over twice it). Off by
+    /// default: the bar was reported before it could fail a run.
+    pub accept_frame_pass_bar: bool,
     pub auto_fly_speed: f32,
     /// `--route <file>`: the camera follows a route file's waypoints at its speed (see
     /// [`crate::route`]). It owns the camera, like `--auto-fly-speed`.
@@ -232,6 +249,9 @@ impl Default for EngineConfig {
             unload_radius: 3,
             sun_shadow_distance_limit: None,
             sun_position: None,
+            game_hour: crate::sun::RETAIL_GAME_HOUR, // GLOB 0x38 `GameHour` = 8.0 in the pack
+            timescale: 20.0,
+            sun_settings_overrides: [None; 5],
             terrain_lod: TerrainLodDistances::default(),
             max_cell_commits_per_frame: 1,
             max_commit_micros_per_frame: 16_670,
@@ -261,6 +281,7 @@ impl Default for EngineConfig {
             max_upload_mib_per_frame: 16,
             headless: false,
             hidden_window: false,
+            background_window: false,
             visual_profile: VisualProfile::Mudcrab,
             color_grade: SceneGradeMode::SnapshotSrgb,
             visual_preset: SceneVisualPreset::CoolGray,
@@ -272,6 +293,7 @@ impl Default for EngineConfig {
             image_space_slot: None,
             start_shot: None,
             stdin_console: false,
+            always_active: false,
             no_render_diagnostics: false,
             benchmark_only: false,
             benchmark_frames: None,
@@ -293,6 +315,7 @@ impl Default for EngineConfig {
             accept_min_fps: 60.0,
             accept_p95_ms: 16.67,
             accept_max_memory_growth_gib: 0.5,
+            accept_frame_pass_bar: false,
             auto_fly_speed: 0.0,
             route: None,
             frame_budget_ms: crate::frame_budget::DEFAULT_FRAME_BUDGET_MS,
@@ -343,11 +366,13 @@ Assets and start position:
   --grid-x <cell>                       starting cell x (default: 0)
   --grid-y <cell>                       starting cell y (default: 0)
   --start-shot <file>                  start the live camera at one exterior shot pose
+  --always-active                     keep simulating when the primary window loses focus
   --stdin-console                     accept developer console commands on stdin
   --no-render-diagnostics             disable GPU timing and pipeline-statistics queries
   --allow-incomplete-assets             run despite a failed manifest or integration-report gate
   --headless                            run without opening a window
   --hidden-window                       render screenshots without showing a window
+  --background-window                   open the window behind other windows without taking focus
   --lights                              place a point light for each streamed LIGH reference
 
 Streaming:
@@ -393,6 +418,8 @@ Benchmark and profiling:
   --accept-min-fps <fps>                fail the run below this average frame rate (default: 60)
   --accept-p95-ms <ms>                  fail the run above this p95 frame time (default: 16.67)
   --accept-max-memory-growth-gib <gib>  fail the run above this memory growth (default: 0.5)
+  --accept-frame-pass-bar               fail the run when the frame-budget window misses the bar
+                                     (99.9% within budget, none over twice it; default: off)
   --acceptance-screenshot <file>        write a screenshot when the run ends
   --screenshot-camera-offset <x,y,z>    camera offset for the acceptance screenshot
   --matched-route <file>                execute exact route steps with transition and settled checkpoints
@@ -405,6 +432,8 @@ Benchmark and profiling:
   --image-space-weather <FormID>       select an authored WTHR image-space slot, not live weather
   --image-space-slot <slot>            sunrise|day|sunset|night; requires --image-space-weather
   --visual-preset <vivid|cool-gray>      select sky and grading look (default: cool-gray)
+  --game-hour <hour>                   initial hour, 0 <= hour < 24 (default 8; captures freeze)
+  --timescale <scale>                  game seconds per real second (default 20; 0 freezes)
   --sun-position <azimuth,elevation>     sun bearing clockwise from north and elevation above horizon, degrees
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
   --shots-settle-timeout <seconds>      maximum settling time per shot (default: 30, maximum: 600)
@@ -430,6 +459,7 @@ Diagnostics:
 
 Help:
   -h, --help                            print this message and exit
+  -V, --version                         print the Mudcrab version and exit
 
 Exit codes:
   0  success
@@ -448,6 +478,8 @@ pub enum ConfigAction {
     Run(Box<EngineConfig>),
     /// Print [`HELP_TEXT`] and exit successfully.
     Help,
+    /// Print the Mudcrab version and exit successfully.
+    Version,
 }
 
 /// A command line the engine cannot use.
@@ -762,6 +794,11 @@ impl EngineConfig {
         {
             return Ok(ConfigAction::Help);
         }
+        // Version is checked before the option walk for the same reason as
+        // help: `--version` must answer even when the rest is wrong.
+        if shared::wants_version(args.iter().map(String::as_str)) {
+            return Ok(ConfigAction::Version);
+        }
         let mut config = Self::default();
         let mut ini = SkyrimIni::default();
         for pair in args.windows(2) {
@@ -789,6 +826,8 @@ impl EngineConfig {
                 // option list the help-drift tests read complete.
                 "-h" => return Ok(ConfigAction::Help),
                 "--help" => return Ok(ConfigAction::Help),
+                "-V" => return Ok(ConfigAction::Version),
+                "--version" => return Ok(ConfigAction::Version),
                 // A bare `--` is the conventional end-of-options marker. The
                 // engine takes no positional arguments, so it has nothing to
                 // end, and main ignored it: keep ignoring it.
@@ -856,6 +895,7 @@ impl EngineConfig {
                 }
                 "--headless" => config.headless = true,
                 "--hidden-window" => config.hidden_window = true,
+                "--background-window" => config.background_window = true,
                 "--max-unloads-per-frame" => {
                     config.max_cell_unloads_per_frame = take_value(
                         "--max-unloads-per-frame",
@@ -1092,6 +1132,7 @@ impl EngineConfig {
                         args.next(),
                     )?;
                 }
+                "--accept-frame-pass-bar" => config.accept_frame_pass_bar = true,
                 "--auto-fly-speed" => {
                     config.auto_fly_speed = take_number(
                         "--auto-fly-speed",
@@ -1253,6 +1294,12 @@ impl EngineConfig {
                         )
                     })?;
                 }
+                "--game-hour" => {
+                    config.game_hour = take_clock_value("--game-hour", args.next())?;
+                }
+                "--timescale" => {
+                    config.timescale = take_clock_value("--timescale", args.next())?;
+                }
                 "--sun-position" => {
                     let raw = take_raw("--sun-position", SUN_POSITION_EXPECTED, args.next())?;
                     config.sun_position = Some(parse_sun_position(&raw).ok_or_else(|| {
@@ -1273,6 +1320,7 @@ impl EngineConfig {
                         args.next(),
                     )?);
                 }
+                "--always-active" => config.always_active = true,
                 "--stdin-console" => config.stdin_console = true,
                 "--no-render-diagnostics" => config.no_render_diagnostics = true,
                 "--shots-settle-timeout" => {
@@ -1597,6 +1645,29 @@ where
     accepted.ok_or_else(|| ConfigError::invalid_value(option, Some(raw), expected))
 }
 
+/// Parse the two clock controls with finite ranges while keeping each CLI match arm discoverable.
+fn take_clock_value(option: &'static str, value: Option<String>) -> Result<f64, ConfigError> {
+    let raw = take_raw(option, "a finite nonnegative number", value)?;
+    raw.parse::<f64>()
+        .ok()
+        .filter(|v| {
+            v.is_finite()
+                && *v >= 0.0
+                && if option == "--game-hour" {
+                    *v < 24.0
+                } else {
+                    *v <= 1_000_000.0
+                }
+        })
+        .ok_or_else(|| {
+            ConfigError::invalid_value(
+                option,
+                Some(raw),
+                "hour in [0,24), or timescale in [0,1000000]",
+            )
+        })
+}
+
 /// The option `argument` most likely meant, if it is within two edits of one.
 /// Ties go to the first option the help text lists.
 ///
@@ -1683,6 +1754,23 @@ mod tests {
     /// it instead of keeping a second list of option names in step by hand.
     const CONFIG_SOURCE: &str = include_str!("config.rs");
 
+    /// Options the perf harness passes to the programs it drives (git, cargo and
+    /// samply). Scoped to its directory so an engine launcher passing one still
+    /// fails the audit.
+    const PERF_HARNESS_TOOL_FLAGS: &[&str] = &[
+        "--detach",                  // git worktree add
+        "--force",                   // git worktree remove
+        "--show-toplevel",           // git rev-parse
+        "--verify",                  // git rev-parse
+        "--git-common-dir",          // git rev-parse
+        "--repo",                    // workspace.py
+        "--isolated",                // workspace.py cargo
+        "--needed-gib",              // workspace.py cargo
+        "--rate",                    // samply record
+        "--save-only",               // samply record
+        "--unstable-presymbolicate", // samply record
+    ];
+
     /// Flags owned by one release script: (file name, flag). Scoped like the
     /// observation tool's `--verify`, so any other script passing one of them
     /// to the engine still fails the audit.
@@ -1718,6 +1806,7 @@ mod tests {
         "--short",               // git rev-parse
         "--output", // world-inspect, profiling, startup runner, repeat-terrain-startup.py
         "--pairs-output", // correlate_drawables.py
+        "--cell",   // world-inspect
         "--radius", // world-inspect
         "--library-path", // ld-linux
         "--meshes", // audit-collision.py
@@ -1779,6 +1868,7 @@ mod tests {
         "--name",   // xdotool
         "--sync",   // xdotool
         "--psm",    // tesseract
+        "--cell",   // world-inspect
         "--radius", // world-inspect
         "--library-path", // ld-linux
         "--meshes", // audit-collision.py
@@ -1876,6 +1966,25 @@ mod tests {
         Some((option, rest))
     }
 
+    /// Clock options validate finite ranges rather than admitting nonfinite runtime state.
+    #[test]
+    fn sun_clock_options_validate_hour_and_timescale() {
+        // The default start hour is the retail `GameHour` record (GLOB 0x38); noon must be requested.
+        assert_eq!(run_config(&[]).game_hour, 8.0);
+        assert_eq!(run_config(&["--game-hour", "12"]).game_hour, 12.0);
+        let config = run_config(&["--game-hour", "9.25", "--timescale", "0"]);
+        assert_eq!((config.game_hour, config.timescale), (9.25, 0.0));
+        for (key, value) in [
+            ("--game-hour", "24"),
+            ("--game-hour", "-1"),
+            ("--game-hour", "NaN"),
+            ("--timescale", "inf"),
+            ("--timescale", "-1"),
+        ] {
+            assert!(EngineConfig::from_args([key.to_string(), value.to_string()]).is_err());
+        }
+    }
+
     #[test]
     fn defaults_to_one_cell_commit_within_a_sixty_fps_frame() {
         let config = EngineConfig::default();
@@ -1884,6 +1993,19 @@ mod tests {
         assert_eq!(config.max_cell_unloads_per_frame, 2);
         assert_eq!(config.max_model_spawns_per_frame, 32);
         assert_eq!(config.io_threads, 0);
+    }
+
+    /// The frame-budget pass bar is advisory unless the flag is given. Existing runs keep their
+    /// verdicts; an acceptance caller opts in.
+    #[test]
+    fn the_frame_pass_bar_gate_is_off_by_default_and_parsed_as_a_switch() {
+        assert!(!EngineConfig::default().accept_frame_pass_bar);
+        assert!(!run_config(&[]).accept_frame_pass_bar);
+        assert!(run_config(&["--accept-frame-pass-bar"]).accept_frame_pass_bar);
+        // A switch takes no value, so a following option is not swallowed.
+        let config = run_config(&["--accept-frame-pass-bar", "--benchmark-frames", "10"]);
+        assert!(config.accept_frame_pass_bar);
+        assert_eq!(config.benchmark_frames, Some(10));
     }
 
     /// Verify GPU inventory is opt-in and requires a profile output directory.
@@ -2218,6 +2340,26 @@ mod tests {
         assert!(line.ends_with(&format!("(default: {default})")), "{line}");
     }
 
+    /// INI focus policy is default-off, layered, and explicitly overridable by CLI.
+    #[test]
+    fn pause704_always_active_setting_uses_ini_and_cli_precedence() {
+        assert!(!EngineConfig::default().always_active);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("focus.ini");
+        for (raw, expected) in [("1", true), ("0", false), ("oops", false), ("2", false)] {
+            std::fs::write(&path, format!("[General]\nbAlwaysActive={raw}\n")).unwrap();
+            let args = vec!["--ini".to_owned(), path.to_str().unwrap().to_owned()];
+            assert_eq!(
+                EngineConfig::run_from_args(args.clone()).always_active,
+                expected
+            );
+            assert!(
+                EngineConfig::run_from_args(args.into_iter().chain(["--always-active".into()]))
+                    .always_active
+            );
+        }
+    }
+
     #[test]
     fn parses_live_start_camera_and_opt_in_stdin_console() {
         let config = run_config(&[
@@ -2412,6 +2554,20 @@ mod tests {
                 .to_string()
                 .contains("--color-grade")
         );
+    }
+
+    /// A background capture keeps its window visible; only its stacking and focus change.
+    #[test]
+    fn parses_background_window_capture_mode() {
+        assert!(!EngineConfig::default().background_window);
+        let config = run_config(&[
+            "--background-window",
+            "--acceptance-screenshot",
+            "capture.png",
+        ]);
+        assert!(config.background_window);
+        assert!(!config.hidden_window);
+        assert!(!config.headless);
     }
 
     /// Hidden capture selects rendering without enabling interactive mouse ownership.
@@ -3162,6 +3318,28 @@ mod tests {
     }
 
     #[test]
+    fn version_is_requested_by_either_spelling() {
+        for spelling in ["--version", "-V"] {
+            let action = EngineConfig::from_args([spelling.to_owned()])
+                .expect("the version flags are accepted options");
+            assert!(
+                matches!(action, ConfigAction::Version),
+                "{spelling} did not ask for the version"
+            );
+        }
+    }
+
+    #[test]
+    fn version_survives_a_wrong_command_line_and_help_still_wins() {
+        let action = EngineConfig::from_args(["--typo".to_owned(), "--version".to_owned()])
+            .expect("version answers before the unknown option is reported");
+        assert!(matches!(action, ConfigAction::Version));
+        let action = EngineConfig::from_args(["--version".to_owned(), "--help".to_owned()])
+            .expect("both flags are accepted");
+        assert!(matches!(action, ConfigAction::Help));
+    }
+
+    #[test]
     fn help_is_requested_by_either_spelling() {
         for spelling in ["--help", "-h"] {
             let action = EngineConfig::from_args([spelling.to_owned()])
@@ -3576,6 +3754,13 @@ mod tests {
         paths
     }
 
+    fn is_perf_harness(path: &std::path::Path) -> bool {
+        path.extension().is_some_and(|extension| extension == "py")
+            && path
+                .components()
+                .any(|part| part.as_os_str().to_str() == Some("perf"))
+    }
+
     fn checked_script_engine_flags(script: &str, path: &std::path::Path) -> usize {
         let options = parser_options();
         let mut checked = 0;
@@ -3588,8 +3773,15 @@ mod tests {
                 Some("lod-performance" | "lod-experiment")
             )
         });
+        // The perf harness has a command line of its own (`--window`, `--pairs`)
+        // beside the engine arguments it builds. Only complete option literals
+        // outside its parser declarations are engine arguments.
+        let harness_tool = is_perf_harness(path);
         let engine_lines: String;
-        let scanned = if converter_tool {
+        let scanned = if harness_tool {
+            engine_lines = emitted_python_options(script);
+            engine_lines.as_str()
+        } else if converter_tool {
             engine_lines = script
                 .lines()
                 .filter(|line| {
@@ -3634,6 +3826,7 @@ mod tests {
                             || (line.contains("\"git\"")
                                 && (line.contains("ls-files") || line.contains("\"diff\"")))
                     });
+            let harness_option = harness_tool && PERF_HARNESS_TOOL_FLAGS.contains(&flag);
             // This standalone example owns these arguments; do not admit them for engine.
             let inspector_option = path.ends_with("scripts/model_inspector/runtime.py")
                 && [
@@ -3670,6 +3863,7 @@ mod tests {
             if NON_ENGINE_FLAGS.contains(&flag)
                 || observation_option
                 || material_oracle_option
+                || harness_option
                 || release_option
                 || inspector_option
             {
@@ -3683,6 +3877,117 @@ mod tests {
             checked += 1;
         }
         checked
+    }
+
+    /// The option literals a Python harness can pass on to another program:
+    /// string literals that are exactly one `--option`, outside `add_argument(...)`
+    /// declarations (the harness's own parser), comments and prose strings.
+    fn emitted_python_options(script: &str) -> String {
+        let bytes = script.as_bytes();
+        let mut emitted = Vec::new();
+        let mut index = 0;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'#' => {
+                    while index < bytes.len() && bytes[index] != b'\n' {
+                        index += 1;
+                    }
+                }
+                quote @ (b'"' | b'\'') => {
+                    let triple = bytes[index..].starts_with(&[quote; 3]);
+                    let start = index + if triple { 3 } else { 1 };
+                    let mut end = start;
+                    while end < bytes.len() {
+                        if bytes[end] == b'\\' {
+                            end += 2;
+                        } else if (triple && bytes[end..].starts_with(&[quote; 3]))
+                            || (!triple && (bytes[end] == quote || bytes[end] == b'\n'))
+                        {
+                            break;
+                        } else {
+                            end += 1;
+                        }
+                    }
+                    let end = end.min(bytes.len());
+                    let literal = &script[start..end];
+                    let preceded_by_prefix = start >= 2 && !triple && {
+                        // An f-string or raw string is prose or a pattern, not an option.
+                        matches!(bytes[start - 2], b'f' | b'r' | b'F' | b'R')
+                    };
+                    if !triple
+                        && !preceded_by_prefix
+                        && literal.starts_with("--")
+                        && option_tokens(literal).first() == Some(&literal)
+                    {
+                        emitted.push(literal);
+                    }
+                    index = (end + if triple { 3 } else { 1 }).min(bytes.len());
+                    continue;
+                }
+                b'a' if script[index..].starts_with("add_argument(") => {
+                    // Skip the whole call; the parentheses inside its help text balance.
+                    let mut depth = 0usize;
+                    let mut quote = None;
+                    while index < bytes.len() {
+                        let byte = bytes[index];
+                        match quote {
+                            Some(_) if byte == b'\\' => index += 1,
+                            Some(open) if byte == open => quote = None,
+                            Some(_) => {}
+                            None if byte == b'"' || byte == b'\'' => quote = Some(byte),
+                            None if byte == b'(' => depth += 1,
+                            None if byte == b')' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            None => {}
+                        }
+                        index += 1;
+                    }
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        emitted.join(" ")
+    }
+
+    #[test]
+    fn the_perf_harness_audit_reads_emitted_engine_options_only() {
+        let harness = std::path::Path::new("perf/perf.py");
+        let script = r#"
+            # --not-an-option in a comment
+            p.add_argument("--window", choices=W, help="auto (use --other, else visible)")
+            raise Error("use --window visible")
+            args = ["--headless", "--assets", str(a)]
+        "#;
+        assert_eq!(emitted_python_options(script), "--headless --assets");
+        assert_eq!(checked_script_engine_flags(script, harness), 2);
+        // The same declaration is still an engine argument anywhere else.
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags(script, std::path::Path::new("tool/other.py"))
+            })
+            .is_err()
+        );
+        // Tool options scoped to the harness stay refused in an engine launcher.
+        let tool = r#"cmd = ["git", "worktree", "remove", "--force"]"#;
+        assert_eq!(checked_script_engine_flags(tool, harness), 0);
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags(tool, std::path::Path::new("tool/other.py"))
+            })
+            .is_err()
+        );
+        // An unknown flag the harness passes on is refused.
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags(r#"args = ["--no-such-engine-flag"]"#, harness)
+            })
+            .is_err()
+        );
     }
 
     #[test]
