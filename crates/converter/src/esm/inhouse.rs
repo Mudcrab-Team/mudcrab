@@ -2589,6 +2589,7 @@ mod runtime_move_tests {
             editor_id: Some("authored identity".into()),
         };
         let mut decoded = records::ReadResult {
+            skipped_inputs: std::collections::BTreeSet::from([1]),
             records: HashMap::from([(id, winner.clone())]),
             headers: vec![winner],
             overrides: HashMap::from([(
@@ -2618,6 +2619,10 @@ mod runtime_move_tests {
         let diagnostics_before = serde_json::to_vec(&decoded.diagnostics).unwrap();
         assert!(decoded.headers.capacity() > 0 && decoded.overrides.capacity() > 0);
         release_reader_metadata(&mut decoded);
+        assert_eq!(
+            decoded.skipped_inputs,
+            std::collections::BTreeSet::from([1])
+        );
         assert_eq!(decoded.headers.capacity(), 0);
         assert_eq!(decoded.overrides.capacity(), 0);
         assert!(decoded.headers.is_empty() && decoded.overrides.is_empty());
