@@ -191,9 +191,9 @@ attributed luminance/range law above. Authored vertex RGB remains numerically
 unchanged, with no extra sRGB conversion, ambient retuning or weather changes.
 Instance size remains 16 bytes. The configured prefix can change species admission
 and instance counts; retained colour samples also increase CPU pool accounting.
-Grass enables 4x MSAA on the world camera, including while interactive renderer
-preferences change. The saved MSAA preference still applies to reflections and
-runs without grass. Both fragment passes use `sample_index` to discard samples
+Grass uses the selected MSAA mode on the world camera, including Off and later
+interactive renderer preference changes. The saved preference also applies to
+reflections. Both fragment passes use `sample_index` to discard samples
 outside the same derivative-based alpha coverage count, and emit a static full
 sample mask. Constant-alpha mask interiors use the authored cutoff comparison,
 including equality, and smoothing applies at alpha edges. This retains the same

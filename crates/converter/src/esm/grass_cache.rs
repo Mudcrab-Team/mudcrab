@@ -92,7 +92,7 @@ impl GrassBakeReport {
         }
         if self.modelless_rules > 0 {
             notices.push(format!(
-                "grass cache ignored {} grass types without a model",
+                "grass cache retained {} non-emitting grass types without a model",
                 self.modelless_rules
             ));
         }
@@ -1169,7 +1169,7 @@ pub fn validate_grass_cache(path: &Path) -> Result<Mmap> {
     Ok(map)
 }
 
-/// Read complete valid grass rules, skipping unusable optional definitions.
+/// Read valid modeled rules and retain resolved model-less selection slots.
 /// Returns the rules, the count of modeled rules lost to incomplete or invalid data, the
 /// model-less types (nothing to draw, counted separately) and the lowest lost rule's FormID.
 fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize, usize, Option<u32>)> {
@@ -1230,6 +1230,39 @@ fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize, usize, Option
         }
         first
     };
+    // Resolved model-less records occupy authored selection slots. Optional DATA
+    // fields retain their decoded values, with zero defaults for absent values.
+    let mut statement = conn.prepare("SELECT id,density,min_slope,max_slope,units_from_water,water_comparison,position_range,height_range,color_range,wave_period,flags FROM grass_types WHERE model_path IS NULL OR model_path = '' ORDER BY id")?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let Ok(form_id) = row.get::<_, u32>(0) else {
+            continue;
+        };
+        if form_id == 0 {
+            continue;
+        }
+        let finite = |index| {
+            row.get::<_, f32>(index)
+                .ok()
+                .filter(|value| value.is_finite())
+                .unwrap_or(0.0)
+        };
+        types.push(GrassType {
+            form_id,
+            model_path: String::new(),
+            density: row.get(1).unwrap_or(0),
+            min_slope: row.get(2).unwrap_or(0),
+            max_slope: row.get(3).unwrap_or(0),
+            units_from_water: row.get(4).unwrap_or(0),
+            water_comparison: row.get::<_, u32>(5).unwrap_or(0).min(7),
+            position_range: finite(6),
+            height_range: finite(7),
+            color_range: finite(8),
+            wave_period: finite(9),
+            flags: row.get(10).unwrap_or(0),
+        });
+    }
+    types.sort_unstable_by_key(|rule| rule.form_id);
     Ok((types, skipped, modelless, first_invalid))
 }
 
@@ -2856,9 +2889,9 @@ mod tests {
         assert_eq!((report.skipped_rules, report.modelless_rules), (0, 1));
         assert!(report.warnings().is_empty(), "{:?}", report.warnings());
         assert!(
-            report
-                .notices()
-                .contains(&"grass cache ignored 1 grass types without a model".to_owned()),
+            report.notices().contains(
+                &"grass cache retained 1 non-emitting grass types without a model".to_owned()
+            ),
             "{:?}",
             report.notices()
         );
@@ -2881,7 +2914,7 @@ mod tests {
             report.warnings(),
             ["grass cache skipped 1 incomplete or invalid grass rules; first GRAS 00000019"]
         );
-        assert_eq!(read(&output).types.len(), 2);
+        assert_eq!(read(&output).types.len(), 3);
     }
 
     /// Count only eligible modeled obstructions that lack validated bounds.
