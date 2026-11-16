@@ -2109,7 +2109,7 @@ mod runtime_move_tests {
             ],
         )
         .unwrap();
-        let fields = vec![
+        let fields = [
             (
                 b"BTXT".to_vec(),
                 [0x0000_0900u32.to_le_bytes(), [0; 4]].concat(),
