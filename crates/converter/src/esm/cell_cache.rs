@@ -752,11 +752,11 @@ fn copy_texture_layers(layers: &[TerrainLayer]) -> Vec<TerrainLayer> {
         .collect()
 }
 
-/// Validate a private cache snapshot that remains safe if its source changes.
+/// Validate the converter-owned cell cache through its atomic, immutable file generation.
 pub fn validate_cell_cache(path: &Path) -> Result<Mmap> {
     let file = File::open(path)?;
-    // Snapshot external bytes before exposing a stable read-only mapping.
-    let mmap = crate::source_input::map_input(&file, path)?;
+    // SAFETY: the converter publishes this owned cache atomically rather than truncating it.
+    let mmap = unsafe { Mmap::map(&file) }?;
     let archived =
         rkyv::access::<shared::ArchivedCellCache, Error>(&mmap).wrap_err("invalid cell cache")?;
     color_eyre::eyre::ensure!(

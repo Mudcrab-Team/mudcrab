@@ -63,6 +63,7 @@ fn parse_plugin_metadata_inner(path: &Path) -> Result<PluginMetadata> {
             })
         })
         .collect();
+    reader.verify_source()?;
     Ok(PluginMetadata {
         masters,
         flags: header.flags,
@@ -418,6 +419,7 @@ fn parse_plugin_file_inner(path: &Path) -> Result<(Vec<RawRecord>, Vec<String>)>
     );
     let summaries = warnings.report(&path.file_name().unwrap_or_default().to_string_lossy());
 
+    reader.verify_source()?;
     Ok((records, summaries))
 }
 

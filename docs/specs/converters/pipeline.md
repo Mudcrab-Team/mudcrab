@@ -3,34 +3,44 @@
 This document outlines the conversion pipeline to ingest legacy Skyrim formats (`.bsa`, `.dds`, `.nif`, `.hkx`, `.esm`) and output modern asset standards suitable for modern web & native runtimes (Bevy Engine, glTF 2.0, KTX2, WebGPU).
 
 
-Converter input views use private snapshots rather than mapping externally writable
-plugin, archive, script, texture or cache files. Inputs up to 16 MiB are read into
-anonymous read-only pages; larger inputs are streamed into private temporary storage
-and only that copy is mapped. This bounds extra per-input RAM, with one additional
-input-sized temporary file and an additional copy/read pass for large inputs. The
-temporary location follows the process's configured temporary directory. Capacity
-or copy failures follow the owning item's existing recovery path.
+External plugin, script and texture inputs up to 16 MiB are read into anonymous
+read-only pages. Larger inputs are mapped directly, with source identity, length and
+modification-time checks before and after use. There is no large-input spill to system
+TEMP or `/tmp`. Each live anonymous snapshot adds at most 16 MiB of copying; this is
+not a bound on total process RAM, decoder allocations or file-backed resident pages.
+Input read/check failures follow the owning item's existing recovery path.
 
-Identity, length and modification time are checked across the snapshot copy. A
-changed input fails with its path. The in-house scanner also checks after scanning:
-it retains the usable snapshot and reports a bounded input-change warning, separately
-from skipped record/field counts. Archive extraction retains its final content-hash
-check and rejects changed source archives before accepting checkpoints. Metadata
-checks are diagnostic: same-size rewrites hidden by timestamp granularity can evade
-them, while snapshot backing remains isolated and parsing bounds still apply.
+Archive reuse first inspects and hashes a direct source mapping, including for small
+archives, while preserving full namespace and cache-inventory validation. A warm
+cache hit makes no snapshot copy. Only a cold small archive takes an anonymous copy
+before extraction; larger cold archives retain their direct view. Sealed ingestion
+packs and the cell cache are converter-owned immutable generations published
+atomically, so they are mapped directly rather than copied. Pack recipe/version
+inspection reads only the bounded header and index, not its payload.
 
-Keep source mods stable during conversion. On Unix, accessing a source-file mapping
-beyond an externally truncated EOF can raise `SIGBUS` before a post-use check runs;
-post-use checking alone is insufficient. On Windows, `SetEndOfFile` requires mapped
-views to be unmapped first, so ordinary truncation of a mapped source is refused.
-The converter snapshots protect both platforms without depending on that refusal.
-This contract covers converter mappings; the runtime engine's separate cache mappings
-retain their existing behavior.
+Consumers check source identity, length and modification time after reading and
+before accepting their derived result. The in-house scanner retains already decoded
+usable records and reports a bounded input-change warning, separately from skipped
+record/field counts; it identifies whether they came from an isolated snapshot or a
+large direct view. Archive extraction also retains its final content-hash check and
+rejects changed source archives before accepting checkpoints. Metadata checks are
+diagnostic, not atomic-snapshot proof: same-size rewrites hidden by timestamp
+granularity can evade them. Parsing bounds still apply.
+
+Keep source mods stable during conversion. On Windows, a live source-file mapping
+prevents ordinary truncation (`SetEndOfFile` requires mapped views to be unmapped),
+so large inputs retain that protection without a full-file temporary copy. On Unix,
+external truncation during a large mapped read or any archive reuse inspection can
+still raise `SIGBUS` before a post-use check runs. Small anonymous decode snapshots
+remain isolated, but this change does not make those Unix direct-mapping windows
+fault-safe. Positioned archive/directory and plugin reads are follow-up work: they
+would turn truncation into short-read errors without copying the entire source.
+Runtime engine cache mappings retain their existing behavior.
 
 The converter uses the in-house reader by default. `--record-reader legacy`
 selects the hand-written reader; `--record-reader inhouse` selects the default
 explicitly. Both routes use the same plugin ordering, runtime tables and terrain
-cache writer. The in-house route scans private snapshots and decodes authored
+cache writer. The in-house route scans checked input views and decodes authored
 schema entries before building canonical projection inputs; it does not run the
 legacy record decoder for supported records. Unknown record types remain opaque.
 Malformed fields and records are omitted with bounded per-plugin diagnostics;

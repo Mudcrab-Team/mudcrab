@@ -1,4 +1,4 @@
-//! Snapshot framing with recoverable record errors and bounded inflation.
+//! Checked input framing with recoverable record errors and bounded inflation.
 use super::PluginDiagnostics;
 use color_eyre::{Result, eyre::WrapErr};
 use flate2::{Decompress, FlushDecompress, Status};
@@ -56,11 +56,10 @@ pub(crate) fn scan_plugin(
     diagnostics.set_record(0, None, None, None, "framing");
     let input = (|| -> Result<_> {
         let file = File::open(path).wrap_err_with(|| format!("open {}", path.display()))?;
-        let stamp = crate::source_input::SourceStamp::capture(&file)?;
         let map = crate::source_input::map_input(&file, path)?;
-        Ok((file, stamp, map))
+        Ok((file, map))
     })();
-    let (file, stamp, map) = match input {
+    let (file, map) = match input {
         Ok(input) => input,
         Err(error) => {
             diagnostics.note("record", || {
@@ -74,11 +73,19 @@ pub(crate) fn scan_plugin(
         return Ok(());
     }
     scan_bytes_observed(&map, diagnostics, &mut receive, &mut observe);
-    if let Err(error) = stamp.verify(&file, path) {
+    if let Err(error) = map.verify(&file, path) {
         diagnostics.set_record(0, None, None, None, "input_stability");
-        diagnostics.event_context.action = Some("kept_snapshot");
+        diagnostics.event_context.action = Some(if map.is_snapshot() {
+            "kept_snapshot"
+        } else {
+            "kept_decoded_records"
+        });
         diagnostics.note("input", || {
-            format!("{error:#}; retained the stable captured snapshot")
+            if map.is_snapshot() {
+                format!("{error:#}; retained the stable captured snapshot")
+            } else {
+                format!("{error:#}; retained records already decoded from the large input")
+            }
         });
     }
     Ok(())

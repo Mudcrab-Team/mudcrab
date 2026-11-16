@@ -524,7 +524,6 @@ impl ArchiveExtractor {
     /// Inventories canonical paths without decompressing any payload.
     pub fn list_paths(archive_path: &Path) -> Result<Vec<PathBuf>> {
         let file = File::open(archive_path)?;
-        // Snapshot external bytes before exposing a stable read-only mapping.
         let bytes = crate::source_input::map_input(&file, archive_path)?;
         let seen = std::cell::RefCell::new(BTreeMap::new());
         let paths = std::cell::RefCell::new(Vec::new());
@@ -547,12 +546,13 @@ impl ArchiveExtractor {
         }
         let mut paths = paths.into_inner();
         paths.sort();
+        bytes.verify(&file, archive_path)?;
         Ok(paths)
     }
 
     /// Extracts only the selected inputs, reusing verified durable batches left
     /// by a previous run, including one interrupted before the archive completed.
-    /// The source inode must stay immutable while its bytes are memory-mapped.
+    /// Source-backed views require a stable input while mapped; small cold reads are isolated.
     /// A replaced or unreadable source path invalidates newly sealed checkpoints.
     /// Reused sealed-pack bytes are always hashed, so `_verify_integrity` (the
     /// `--no-verify-cache` setting) does not change this path.
@@ -791,7 +791,7 @@ struct ExtractionWriteContext<'a, 'session> {
     ingestion: Option<&'a FreshIngestion<'session>>,
 }
 
-/// Extract selected entries from private archive bytes and report synchronized progress.
+/// Extract selected entries from a checked view and report synchronized progress.
 fn extract_selected_with_sync_reporting(
     archive_path: &Path,
     output_root: &Path,
@@ -807,12 +807,11 @@ fn extract_selected_with_sync_reporting(
     } = writes;
     let file = File::open(archive_path)
         .wrap_err_with(|| format!("failed to open archive {}", archive_path.display()))?;
-    // Snapshot external bytes before exposing a stable read-only mapping.
     let bytes = crate::source_input::map_input(&file, archive_path)
-        .wrap_err_with(|| format!("failed to snapshot archive {}", archive_path.display()))?;
+        .wrap_err_with(|| format!("failed to read archive {}", archive_path.display()))?;
     let progress_lock = Mutex::new(());
 
-    match bytes.get(..4) {
+    let result: Result<Vec<ExtractedFile>> = match bytes.get(..4) {
         Some(b"BSA\0") => {
             let entries = bsa::iter_raw_entries(&bytes).wrap_err_with(|| {
                 format!("failed to parse BSA archive {}", archive_path.display())
@@ -944,7 +943,10 @@ fn extract_selected_with_sync_reporting(
                 .collect()
         }
         _ => bail!("unsupported archive magic in {}", archive_path.display()),
-    }
+    };
+    let result = result?;
+    bytes.verify(&file, archive_path)?;
+    Ok(result)
 }
 
 /// Keep authored Havok metadata beside its clips. RACE projects may live outside

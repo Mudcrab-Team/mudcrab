@@ -192,7 +192,7 @@ impl TextureConverter {
         )
     }
 
-    /// Convert a stable private DDS snapshot with explicit encoder settings.
+    /// Convert a checked DDS view and verify its source before publishing encoded output.
     pub fn convert_dds_to_ktx2_with_options(
         input: &Path,
         output: &Path,
@@ -203,12 +203,12 @@ impl TextureConverter {
     ) -> Result<Ktx2Metadata> {
         let file =
             File::open(input).wrap_err_with(|| format!("failed to open {}", input.display()))?;
-        // Snapshot external bytes before exposing a stable read-only mapping.
         let mmap = crate::source_input::map_input(&file, input)
-            .wrap_err_with(|| format!("failed to snapshot {}", input.display()))?;
+            .wrap_err_with(|| format!("failed to read {}", input.display()))?;
 
         let ktx2 =
             Self::convert_with_options(&mmap, encoding, etc1s_quality, uastc_level, zstd_level)?;
+        mmap.verify(&file, input)?;
         let metadata = inspect_ktx2(&ktx2, encoding)?;
         publish_ktx2_file(output, &ktx2)?;
         Ok(metadata)

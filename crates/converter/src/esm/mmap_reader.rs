@@ -1,19 +1,23 @@
-use std::{fs::File, path::Path};
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+};
 
+use crate::source_input::InputMap;
 use color_eyre::eyre::{Result, ensure};
-use memmap2::Mmap;
 
 /// The smallest thing that can be a plugin: one TES4 record header.
 const MIN_PLUGIN_LENGTH: u64 = 24;
 
-/// A checked plugin snapshot with a stable read-only byte view.
+/// A checked plugin view: anonymous for small inputs, source-backed for large inputs.
 pub struct EsmReader {
-    _file: File,
-    mmap: Mmap,
+    file: File,
+    mmap: InputMap,
+    path: PathBuf,
 }
 
 impl EsmReader {
-    /// Open and validate captured bytes without mapping the source inode.
+    /// Open and validate a size-bounded input view with source-generation checks.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
         let file = File::open(path)?;
@@ -23,7 +27,6 @@ impl EsmReader {
             "{} is too small to be a plugin: {length} bytes, below the {MIN_PLUGIN_LENGTH} byte TES4 header",
             path.display()
         );
-        // Snapshot external bytes before exposing a stable read-only mapping.
         let mmap = crate::source_input::map_input(&file, path)?;
         // Validate the captured bytes as well as the initial source metadata.
         ensure!(
@@ -37,12 +40,21 @@ impl EsmReader {
             "{} does not start with a TES4 header",
             path.display()
         );
-        Ok(Self { _file: file, mmap })
+        Ok(Self {
+            file,
+            mmap,
+            path: path.to_owned(),
+        })
     }
 
-    /// Borrow bytes whose backing storage cannot be changed by source-file edits.
+    /// Borrow the checked view; large direct mappings require source stability during use.
     pub fn as_slice(&self) -> &[u8] {
         &self.mmap[..]
+    }
+
+    /// Verify the source after header or record parsing finishes, before accepting its result.
+    pub fn verify_source(&self) -> Result<()> {
+        self.mmap.verify(&self.file, &self.path)
     }
 }
 

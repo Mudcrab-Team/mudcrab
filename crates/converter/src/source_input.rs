@@ -1,4 +1,4 @@
-//! Private snapshots keep external input edits away from every mapped byte.
+//! Small input snapshots and checked direct mappings avoid unbounded temporary copies.
 
 use color_eyre::{
     Result,
@@ -9,12 +9,52 @@ use same_file::Handle;
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
+    ops::Deref,
     path::Path,
     time::SystemTime,
 };
 
-/// Small inputs use anonymous pages; larger inputs spill to private temporary storage.
-const MEMORY_SNAPSHOT_LIMIT: u64 = 16 * 1024 * 1024;
+/// Anonymous copies are reserved for external inputs at or below this size.
+pub(crate) const MEMORY_SNAPSHOT_LIMIT: u64 = 16 * 1024 * 1024;
+
+/// An input view and the source generation checked after its consumer finishes.
+pub(crate) struct InputMap {
+    bytes: Mmap,
+    source: SourceStamp,
+    snapshot: bool,
+}
+
+impl InputMap {
+    /// Reject an observed source replacement or edit before publishing derived output.
+    pub(crate) fn verify(&self, file: &File, path: &Path) -> Result<()> {
+        self.source.verify(file, path)
+    }
+
+    /// Whether source writers are isolated from these anonymous bytes.
+    pub(crate) fn is_snapshot(&self) -> bool {
+        self.snapshot
+    }
+}
+
+impl Deref for InputMap {
+    type Target = [u8];
+
+    /// Expose only the selected read-only bytes to existing framing consumers.
+    fn deref(&self) -> &Self::Target {
+        &self.bytes
+    }
+}
+
+impl std::fmt::Debug for InputMap {
+    /// Describe view ownership and size without displaying source payload bytes.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InputMap")
+            .field("length", &self.bytes.len())
+            .field("snapshot", &self.snapshot)
+            .finish()
+    }
+}
 
 /// The opened source identity and metadata, independent of its current pathname.
 pub(crate) struct SourceStamp {
@@ -51,47 +91,63 @@ impl SourceStamp {
     }
 }
 
-/// Read an externally mutable input into storage that no source writer can modify.
-///
-/// Metadata checks diagnose observed changes; private storage supplies memory safety
-/// even when an edit escapes those checks. The copy is bounded to the initial size
-/// plus one byte so a growing file cannot keep the snapshot running indefinitely.
-pub(crate) fn map_input(file: &File, path: &Path) -> Result<Mmap> {
+/// Copy small external inputs into anonymous pages; map larger inputs directly.
+/// Callers verify the returned generation after use. Direct Unix mappings still
+/// require the source not to be truncated while read; positioned reads are follow-up work.
+pub(crate) fn map_input(file: &File, path: &Path) -> Result<InputMap> {
     let before =
         SourceStamp::capture(file).wrap_err_with(|| format!("inspect input {}", path.display()))?;
     ensure!(before.length != 0, "empty input: {}", path.display());
-    let mut source = file.try_clone()?;
-    source.seek(SeekFrom::Start(0))?;
     let changed = || format!("input changed during conversion: {}", path.display());
     if before.length <= MEMORY_SNAPSHOT_LIMIT {
+        let mut source = file.try_clone()?;
+        source.seek(SeekFrom::Start(0))?;
         let mut snapshot = MmapMut::map_anon(before.length as usize)?;
         source.read_exact(&mut snapshot).wrap_err_with(changed)?;
         let mut extra = [0];
         ensure!(source.read(&mut extra)? == 0, "{}", changed());
         before.verify(file, path)?;
-        return Ok(snapshot.make_read_only()?);
+        return Ok(InputMap {
+            bytes: snapshot.make_read_only()?,
+            source: before,
+            snapshot: true,
+        });
     }
+    direct_map(file, path, before)
+}
 
-    let mut snapshot = tempfile::tempfile()
-        .wrap_err_with(|| format!("create private snapshot for {}", path.display()))?;
-    let copied = std::io::copy(
-        &mut source.take(before.length.saturating_add(1)),
-        &mut snapshot,
-    )
-    .wrap_err_with(|| format!("copy input snapshot {}", path.display()))?;
-    ensure!(copied == before.length, "{}", changed());
+/// Inspect an archive for reuse without copying it, even when it is small.
+/// A cache miss may subsequently take the normal small anonymous snapshot.
+pub(crate) fn map_for_reuse(file: &File, path: &Path) -> Result<InputMap> {
+    let before =
+        SourceStamp::capture(file).wrap_err_with(|| format!("inspect input {}", path.display()))?;
+    ensure!(before.length != 0, "empty input: {}", path.display());
+    direct_map(file, path, before)
+}
+
+/// Keep the original file backing for bounded inspection and large input use.
+fn direct_map(file: &File, path: &Path, before: SourceStamp) -> Result<InputMap> {
+    // SAFETY: framing consumers bounds-check every access. On Windows the live
+    // mapping refuses truncation; on Unix the source must not shrink during use.
+    // Stamps diagnose observed changes but do not make Unix truncation fault-safe.
+    let bytes = unsafe { Mmap::map(file) }?;
     before.verify(file, path)?;
-    // SAFETY: only this function owns the private temporary file. It is fully
-    // written before mapping, and its sole writable handle is dropped below.
-    // No handle or pathname to this backing storage is exposed to input writers.
-    let map = unsafe { Mmap::map(&snapshot) }?;
-    drop(snapshot);
-    Ok(map)
+    ensure!(
+        bytes.len() as u64 == before.length,
+        "input changed during conversion: {}",
+        path.display()
+    );
+    Ok(InputMap {
+        bytes,
+        source: before,
+        snapshot: false,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use std::io::Write;
 
     /// Anonymous storage stays readable after a second handle truncates the source.
@@ -116,9 +172,10 @@ mod tests {
         );
     }
 
-    /// The spill branch uses private backing storage instead of a source-backed map.
+    /// A large Windows input keeps the OS truncation protection without a temporary copy.
     #[test]
-    fn large_snapshot_survives_source_truncation() {
+    #[cfg(windows)]
+    fn large_mapping_refuses_source_truncation() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("large.bin");
         let mut writer = File::create(&path).unwrap();
@@ -128,15 +185,35 @@ mod tests {
         drop(writer);
         let source = File::open(&path).unwrap();
         let snapshot = map_input(&source, &path).unwrap();
-        File::options()
-            .write(true)
-            .open(&path)
-            .unwrap()
-            .set_len(0)
-            .unwrap();
+        assert!(!snapshot.is_snapshot());
+        let truncated = File::options().write(true).open(&path).unwrap().set_len(0);
+        assert!(
+            truncated.is_err(),
+            "a large source-backed Windows view must refuse truncation"
+        );
         assert_eq!(snapshot.len(), 16 * 1024 * 1024 + 9);
         assert_eq!(&snapshot[snapshot.len() - 4..], b"tail");
         assert_eq!(snapshot[0], 0);
+        snapshot.verify(&source, &path).unwrap();
+    }
+
+    /// A large Unix mapping detects replacement without truncating a live mapped inode.
+    #[test]
+    #[cfg(unix)]
+    fn large_mapping_reports_source_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("large.bin");
+        let file = File::create(&path).unwrap();
+        file.set_len(MEMORY_SNAPSHOT_LIMIT + 1).unwrap();
+        drop(file);
+        let source = File::open(&path).unwrap();
+        let mapped = map_input(&source, &path).unwrap();
+        assert!(!mapped.is_snapshot());
+        std::fs::rename(&path, directory.path().join("old.bin")).unwrap();
+        let replacement = File::create(&path).unwrap();
+        replacement.set_len(MEMORY_SNAPSHOT_LIMIT + 1).unwrap();
+        assert!(mapped.verify(&source, &path).is_err());
+        assert_eq!(mapped.len() as u64, MEMORY_SNAPSHOT_LIMIT + 1);
     }
 
     /// Replacing a pathname is rejected even if its replacement has identical bytes.

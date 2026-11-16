@@ -138,17 +138,17 @@ pub struct FunctionIr {
 pub struct ScriptConverter;
 
 impl ScriptConverter {
-    /// Convert captured PEX bytes without mapping the externally writable source.
+    /// Convert a checked PEX view, verifying its source before publishing generated output.
     pub fn convert_pex_to_luau(input: &Path, output: &Path) -> Result<()> {
         let bytes =
             File::open(input).wrap_err_with(|| format!("failed to open {}", input.display()))?;
 
-        // Snapshot external bytes before exposing a stable read-only mapping.
         let mmap = crate::source_input::map_input(&bytes, input)
-            .wrap_err_with(|| format!("failed to snapshot {}", input.display()))?;
+            .wrap_err_with(|| format!("failed to read {}", input.display()))?;
 
         let pex = Self::parse(&mmap)?;
         Self::verify(&pex)?;
+        mmap.verify(&bytes, input)?;
 
         // Use thread-local reusable scratch string buffer
         THREAD_STRING_BUF.with(|buf_cell| -> Result<()> {
