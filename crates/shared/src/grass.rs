@@ -13,7 +13,9 @@ pub const GRASS_CELL_SIZE: f32 = 4096.0;
 #[rkyv(bytecheck())]
 pub struct GrassType {
     pub form_id: u32,
-    /// Empty for a non-emitting species that still takes a selection slot and random draws.
+    /// Empty for a resolved species that occupies an authored cap slot and emits no plants.
+    /// Runtime applies the species cap to the retained link order before skipping these rules.
+    /// Per-spot selection also consumes their reference random draws before skipping emission.
     pub model_path: String,
     pub density: u8,
     pub min_slope: u8,
