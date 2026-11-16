@@ -1378,6 +1378,59 @@ mod tests {
         anchor.distance(target)
     }
 
+    /// A jump while a held object is carried: the launch, the air state and the single landing
+    /// are the same as without one (#689 and the walking support rule, RF-CC-013, RF-CC-015).
+    #[test]
+    fn a_jump_while_carrying_launches_and_lands_once() {
+        let mut app = carry_app();
+        spawn_box_ahead(&mut app, 5.0, 100.0);
+        frames(&mut app, 2);
+        hold_activate(&mut app);
+        assert!(held(&app).is_some(), "the box is held before the jump");
+        let ground = app
+            .world_mut()
+            .query_filtered::<&Transform, With<PlayerBody>>()
+            .single(app.world())
+            .unwrap()
+            .translation
+            .y;
+        app.insert_resource(crate::physics::WalkIntent {
+            wish_dir: Vec3::ZERO,
+            target_speed: 0.0,
+            jump_pressed: true,
+        });
+        let (mut apex, mut launched, mut landings, mut air_ticks) = (0.0_f32, false, 0, 0);
+        for _ in 0..240 {
+            app.update();
+            let mut query = app
+                .world_mut()
+                .query_filtered::<(&Transform, &crate::physics::WalkState), With<PlayerBody>>();
+            let (body, state) = query.single(app.world()).unwrap();
+            apex = apex.max(body.translation.y - ground);
+            launched |= state.jump_active;
+            landings += usize::from(state.landed);
+            air_ticks += usize::from(state.airborne);
+        }
+        assert!(
+            launched && apex > 40.0,
+            "the jump did not launch: apex {apex}"
+        );
+        assert!(
+            air_ticks > 10,
+            "the jump was not an air state: {air_ticks} ticks"
+        );
+        assert_eq!(landings, 1, "exactly one landing for the jump");
+        let state = app
+            .world_mut()
+            .query::<&crate::physics::WalkState>()
+            .single(app.world())
+            .unwrap();
+        assert!(
+            !state.airborne && state.grounded,
+            "standing again: {state:?}"
+        );
+    }
+
     #[test]
     fn holding_activate_grabs_the_box_and_the_next_tap_drops_it_with_collision_on() {
         let mut app = carry_app();
