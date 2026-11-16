@@ -348,6 +348,17 @@ mod tests {
         );
     }
 
+    /// Removing a row between a CR and LF must retain the blank context separator.
+    #[test]
+    fn review_741_removal_preserves_blank_context_after_cr() {
+        let (output, skipped) = sanitize(PATHS[2], b"One\t0x11\rbad\n\nTwo\t0x12\n");
+        assert_eq!(skipped, vec![2]);
+        assert_eq!(
+            output, b"One\t0x11\r\n\nTwo\t0x12\n",
+            "removing a bad row must preserve the blank context after a CR"
+        );
+    }
+
     /// Stale optional files in resumed staging are not selected as runtime artifacts.
     #[test]
     fn absent_inputs_do_not_advertise_stale_staging_files() {

@@ -3677,7 +3677,10 @@ fn discover_inputs(
     mut failed: impl FnMut(&Path, color_eyre::Report) -> Result<()>,
 ) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    for entry in WalkDir::new(root).follow_links(false) {
+    let mut walker = WalkDir::new(root).follow_links(false).into_iter();
+    // The test denial hook needs the iterator to skip an inaccessible directory's descendants.
+    #[allow(clippy::while_let_on_iterator)]
+    while let Some(entry) = walker.next() {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
@@ -3692,12 +3695,61 @@ fn discover_inputs(
                 continue;
             }
         };
+        #[cfg(test)]
+        if discovery_failure_hook::is_blocked(entry.path()) {
+            walker.skip_current_dir();
+            failed(
+                entry.path(),
+                color_eyre::Report::from(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "synthetic directory traversal denial",
+                ))
+                .wrap_err(format!("failed to discover inputs in {}", root.display())),
+            )?;
+            continue;
+        }
         if entry.file_type().is_file() {
             files.push(entry.into_path());
         }
     }
     files.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
     Ok(files)
+}
+
+/// Inject a path-scoped traversal denial without depending on Windows ACLs or Unix privilege.
+#[cfg(test)]
+mod discovery_failure_hook {
+    use std::{
+        cell::RefCell,
+        path::{Path, PathBuf},
+    };
+
+    thread_local! {
+        static BLOCKED: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    pub(super) struct Guard;
+
+    impl Drop for Guard {
+        /// Restore discovery even if the regression panics.
+        fn drop(&mut self) {
+            BLOCKED.with(|blocked| *blocked.borrow_mut() = None);
+        }
+    }
+
+    /// Deny one directory on the current test's single-threaded Tokio runtime.
+    pub(super) fn block(path: &Path) -> Guard {
+        BLOCKED.with(|blocked| {
+            assert!(blocked.borrow().is_none());
+            *blocked.borrow_mut() = Some(path.to_owned());
+        });
+        Guard
+    }
+
+    /// Match only the selected directory; the iterator skips its descendants.
+    pub(super) fn is_blocked(path: &Path) -> bool {
+        BLOCKED.with(|blocked| blocked.borrow().as_deref() == Some(path))
+    }
 }
 
 /// Fails closed when unreadable source paths would make a run publish an incomplete pack over a
@@ -14508,6 +14560,118 @@ mod tests {
         assert_eq!(
             provenance[path]["provider"],
             "loose:interface/controls/pc/controlmap.txt"
+        );
+    }
+
+    /// Valid controls survive a corrupt compressed texture in the same enabled archive.
+    #[tokio::test]
+    async fn review_741_controls_survive_unrelated_archive_decompression_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        let path = "interface/controls/pc/controlmap.txt";
+        let controls = b"Forward\t0x11\t0xff\t0x1000\t1\t0\t1\n";
+        let gamepad = b"Button\t0x1000\n";
+        let mut archive = dummy_content::ba2::general(
+            &[
+                dummy_content::Entry::new("textures/broken.dds", b"synthetic texture payload"),
+                dummy_content::Entry::new(path, controls),
+                dummy_content::Entry::new("interface/controls/pc/gamepad.txt", gamepad),
+            ],
+            dummy_content::ba2::Compression::Zlib,
+        )
+        .unwrap();
+        // GNRL record zero: offset at 24+16 and compressed length at 24+24.
+        let offset = u64::from_le_bytes(archive[40..48].try_into().unwrap()) as usize;
+        let length = u32::from_le_bytes(archive[48..52].try_into().unwrap()) as usize;
+        archive[offset..offset + length].fill(0xff);
+        fs::write(data.join("controls.ba2"), archive).unwrap();
+        let mut config = cpu_lod_config(&data, &output);
+        config.enable_ba2 = true;
+        let report = run_without_progress(config).await;
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning
+                    .contains("failed to decompress BA2 payload: textures/broken.dds")),
+            "{:?}",
+            report.warnings
+        );
+        assert!(!report.complete);
+        assert!(
+            output.join(path).is_file(),
+            "readable controls must survive unrelated archive decompression failure"
+        );
+        assert_eq!(fs::read(output.join(path)).unwrap(), controls);
+        assert_eq!(
+            fs::read(output.join("interface/controls/pc/gamepad.txt")).unwrap(),
+            gamepad
+        );
+        let provenance: serde_json::Value = serde_json::from_slice(
+            &fs::read(output.join("interface/controls/pc/provenance.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(provenance[path]["provider"], "archive:controls.ba2");
+        assert_eq!(provenance[path]["source_sha256"], hash_bytes(controls));
+        assert!(!output.join("textures/broken.ktx2").exists());
+    }
+
+    /// Unknown loose winners mask archived controls while a readable neighboring subtree publishes.
+    #[tokio::test]
+    async fn review_741_undiscovered_loose_prefix_masks_archive_controls() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        let blocked = data.join("Interface/Controls/PC");
+        fs::create_dir_all(&blocked).unwrap();
+        fs::write(blocked.join("ControlMap.TXT"), b"unknown loose override").unwrap();
+        fs::create_dir_all(data.join("scripts")).unwrap();
+        fs::write(
+            data.join("scripts/neighbor.pex"),
+            dummy_content::pex::minimal("Neighbor").unwrap(),
+        )
+        .unwrap();
+        let entries = [
+            dummy_content::Entry::new(
+                "interface/controls/pc/controlmap.txt",
+                b"Forward\t0x11\t0xff\t0x1000\t1\t0\t1\n",
+            ),
+            dummy_content::Entry::new("interface/controls/pc/keyboard_english.txt", b"Key\t0x11\n"),
+            dummy_content::Entry::new("interface/controls/pc/gamepad.txt", b"Button\t0x1000\n"),
+        ];
+        fs::write(
+            data.join("controls.bsa"),
+            dummy_content::bsa::v105(&entries, dummy_content::bsa::Compression::None).unwrap(),
+        )
+        .unwrap();
+        let _deny = discovery_failure_hook::block(&blocked);
+        let report = run_without_progress(cpu_lod_config(&data, &output)).await;
+        assert!(!report.complete);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("interface/controls/pc")
+                    && warning.contains("failed to discover inputs")),
+            "{:?}",
+            report.warnings
+        );
+        assert!(output.join("scripts/neighbor.luau").is_file());
+        let manifest = ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+        assert!(!manifest.complete);
+        assert!(manifest.failures.contains_key("interface/controls/pc"));
+        assert!(
+            crate::controls::PATHS
+                .iter()
+                .all(|path| !output.join(path).exists()),
+            "undiscovered loose controls must mask archived control sources"
+        );
+        assert!(
+            !output
+                .join("interface/controls/pc/provenance.json")
+                .exists()
         );
     }
 
