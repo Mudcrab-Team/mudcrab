@@ -3398,4 +3398,192 @@ mod tests {
             side_reach().max_reach_cells() + LOD_UNLOAD_MARGIN_CELLS,
         ));
     }
+
+    /// Characterization of the near/far seam (#284, L04). Retail hides the LOD land of a cell
+    /// while that cell is attached (RF-LOD-008, one cell at a time, no morph, skirt or drop).
+    /// Mudcrab hides it per quadrant once the full-detail quadrant is surface-ready. These tests
+    /// pin what the engine does today in both arrival orders. They do not change behaviour.
+    struct SeamWorld {
+        world: World,
+        schedule: bevy::ecs::schedule::Schedule,
+    }
+
+    impl SeamWorld {
+        /// A world whose camera stands in cell (0, 0) with every tier in reach of the cells used.
+        fn new() -> Self {
+            let mut world = World::new();
+            world.insert_resource(EngineConfig {
+                terrain_lod: side_reach(),
+                ..EngineConfig::default()
+            });
+            world.insert_resource(RenderOrigin(IVec2::ZERO));
+            world.insert_resource(StreamingMetrics::default());
+            world.insert_resource(ProfilingState::default());
+            world.insert_resource(LodStreaming::default());
+            world.spawn((
+                StreamingCamera,
+                Transform::from_xyz(CELL_SIZE * 0.5, 0.0, -CELL_SIZE * 0.5),
+            ));
+            let mut schedule = bevy::ecs::schedule::Schedule::default();
+            schedule.add_systems(update_terrain_lod_visibility);
+            Self { world, schedule }
+        }
+
+        /// One full-detail quadrant, optionally already surface-ready.
+        fn full_quadrant(&mut self, grid: IVec2, quadrant: u8, ready: bool) -> Entity {
+            let mut entity = self.world.spawn((
+                super::super::TerrainPatch,
+                TerrainCoverage {
+                    grid,
+                    quadrant,
+                    tier: None,
+                },
+                Visibility::Inherited,
+            ));
+            if ready {
+                entity.insert(TerrainSurfaceReady);
+            }
+            entity.id()
+        }
+
+        /// One tier-4 LOD quadrant, hidden until the selector shows it.
+        fn lod_quadrant(&mut self, grid: IVec2, quadrant: u8) -> Entity {
+            self.world
+                .spawn((
+                    TerrainCoverage {
+                        grid,
+                        quadrant,
+                        tier: Some(LodTier::Tier4),
+                    },
+                    TerrainSurfaceReady,
+                    Visibility::Hidden,
+                ))
+                .id()
+        }
+
+        fn run(&mut self) {
+            self.schedule.run(&mut self.world);
+        }
+
+        fn visibility(&self, entity: Entity) -> Visibility {
+            *self.world.get::<Visibility>(entity).unwrap()
+        }
+    }
+
+    #[test]
+    fn seam_lod_arriving_after_full_detail_never_shows_over_it() {
+        let mut seam = SeamWorld::new();
+        for quadrant in 0..4 {
+            seam.full_quadrant(IVec2::ZERO, quadrant, true);
+        }
+        seam.run();
+        let lod: Vec<_> = (0..4)
+            .map(|quadrant| seam.lod_quadrant(IVec2::ZERO, quadrant))
+            .collect();
+        seam.run();
+        for entity in lod {
+            assert_eq!(
+                seam.visibility(entity),
+                Visibility::Hidden,
+                "LOD that arrives after the full-detail cell stays hidden"
+            );
+        }
+    }
+
+    #[test]
+    fn seam_full_detail_arriving_after_lod_leaves_no_hole_and_then_hides_it() {
+        let mut seam = SeamWorld::new();
+        let lod: Vec<_> = (0..4)
+            .map(|quadrant| seam.lod_quadrant(IVec2::ZERO, quadrant))
+            .collect();
+        seam.run();
+        for entity in &lod {
+            assert_eq!(seam.visibility(*entity), Visibility::Inherited);
+        }
+        // The full-detail quadrants exist but are not surface-ready: the LOD keeps drawing.
+        let full: Vec<_> = (0..4)
+            .map(|quadrant| seam.full_quadrant(IVec2::ZERO, quadrant, false))
+            .collect();
+        seam.run();
+        for entity in &lod {
+            assert_eq!(
+                seam.visibility(*entity),
+                Visibility::Inherited,
+                "no hole while the full-detail cell is still preparing"
+            );
+        }
+        for entity in full {
+            seam.world.entity_mut(entity).insert(TerrainSurfaceReady);
+        }
+        seam.run();
+        for entity in &lod {
+            assert_eq!(
+                seam.visibility(*entity),
+                Visibility::Hidden,
+                "LOD hides in the frame the full-detail quadrant is surface-ready"
+            );
+        }
+    }
+
+    #[test]
+    fn seam_edge_between_a_full_detail_cell_and_a_lod_cell_has_one_surface_each() {
+        let mut seam = SeamWorld::new();
+        let full_cell = IVec2::ZERO;
+        let lod_cell = IVec2::new(1, 0);
+        let mut full_lod = Vec::new();
+        let mut far_lod = Vec::new();
+        for quadrant in 0..4 {
+            seam.full_quadrant(full_cell, quadrant, true);
+            full_lod.push(seam.lod_quadrant(full_cell, quadrant));
+            far_lod.push(seam.lod_quadrant(lod_cell, quadrant));
+        }
+        seam.run();
+        for quadrant in 0..4 {
+            assert_eq!(seam.visibility(full_lod[quadrant]), Visibility::Hidden);
+            assert_eq!(seam.visibility(far_lod[quadrant]), Visibility::Inherited);
+        }
+    }
+
+    #[test]
+    fn seam_hides_lod_per_quadrant_where_retail_hides_it_per_cell() {
+        // Mudcrab today: one ready full-detail quadrant hides only its own LOD quadrant.
+        // Retail (RF-LOD-008) hides the LOD land of a whole cell, one cell at a time, while the
+        // cell is in state 6 or 7. This test records the quadrant rule so a later change shows.
+        let mut seam = SeamWorld::new();
+        seam.full_quadrant(IVec2::ZERO, 0, true);
+        let lod: Vec<_> = (0..4)
+            .map(|quadrant| seam.lod_quadrant(IVec2::ZERO, quadrant))
+            .collect();
+        seam.run();
+        assert_eq!(seam.visibility(lod[0]), Visibility::Hidden);
+        for entity in &lod[1..] {
+            assert_eq!(seam.visibility(*entity), Visibility::Inherited);
+        }
+    }
+
+    #[test]
+    fn seam_lod_returns_when_full_detail_loses_surface_readiness() {
+        let mut seam = SeamWorld::new();
+        let full: Vec<_> = (0..4)
+            .map(|quadrant| seam.full_quadrant(IVec2::ZERO, quadrant, true))
+            .collect();
+        let lod: Vec<_> = (0..4)
+            .map(|quadrant| seam.lod_quadrant(IVec2::ZERO, quadrant))
+            .collect();
+        seam.run();
+        for entity in &lod {
+            assert_eq!(seam.visibility(*entity), Visibility::Hidden);
+        }
+        for entity in full {
+            seam.world.entity_mut(entity).despawn();
+        }
+        seam.run();
+        for entity in &lod {
+            assert_eq!(
+                seam.visibility(*entity),
+                Visibility::Inherited,
+                "an unloaded cell falls back to its LOD land"
+            );
+        }
+    }
 }

@@ -271,6 +271,13 @@ Collision coverage (sphere, multi-sphere and cylinder shapes) moved the converte
 schema 24 and 26 outputs keep their verified scripts and archive ingestion and regenerate GLBs, textures
 and world data, so no cached GLB keeps the older collision extras.
 
+The render parser leaves Havok blocks (`bhk*` and `hkPackedNiTriStripsData`) unparsed, and this
+reader decodes their raw bytes. They appear in the inspection's `fallback_blocks`, but they never
+block the primitive `mudcrabGeometryIndex` tag ([object materials](../engine/object-materials.md)):
+no Havok type derives from `NiAVObject`, so collision cannot change the scene's geometry count. Any
+other unparsed block type still refuses the tag. Mesh contract
+`object-texture-swap-geometry-index-v2` (#723) records this change; it changes the `nif` proof only.
+
 ## 7. Skinning support boundary
 
 ### 7.1 Supported
