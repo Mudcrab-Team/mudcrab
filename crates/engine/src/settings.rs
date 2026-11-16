@@ -726,12 +726,12 @@ fn grade_source_is_launch_owned(overrides: &[String]) -> bool {
 pub struct SettingsFile {
     pub path: Option<PathBuf>,
     pub status: String,
-    /// The preferences the file held before explicit launch options replaced them in the running
-    /// settings. A save writes these values back for the fields those options own.
+    /// Preferences retained before launch overrides and automatic grass coverage are applied.
+    /// Menu radius edits update these values before coverage restores its live minimum.
     stored: RenderingSettings,
     /// The explicit launch options from the run that loaded `stored`.
     launch_overrides: Vec<String>,
-    /// Resolved launch radii under grass coverage, restored independently unless edited.
+    /// Last effective coverage radii, used to identify independent menu edits on either axis.
     grass_coverage: Option<(i32, i32)>,
     preserve_unavailable_record_mode: bool,
     unavailable_record_mode_replaced: bool,
@@ -1194,13 +1194,20 @@ pub(crate) fn apply_render_settings(
     if let Some(file) = file.as_deref_mut()
         && let Some(coverage) = file.grass_coverage.as_mut()
     {
-        // Follow automatic radius changes independently while preserving edited preferences.
-        if before_coverage.0 == coverage.0 {
-            coverage.0 = settings.stream_radius;
+        let launch_owns_radii = file
+            .launch_overrides
+            .iter()
+            .any(|flag| matches!(flag.as_str(), "--stream-radius" | "ini:stream-radius"));
+        if !launch_owns_radii {
+            // Retain menu intent before live coverage replaces a smaller preferred radius.
+            if before_coverage.0 != coverage.0 {
+                file.stored.stream_radius = before_coverage.0;
+            }
+            if before_coverage.1 != coverage.1 {
+                file.stored.unload_radius = before_coverage.1;
+            }
         }
-        if before_coverage.1 == coverage.1 {
-            coverage.1 = settings.unload_radius;
-        }
+        *coverage = (settings.stream_radius, settings.unload_radius);
     }
     if previous.as_ref().is_some_and(|previous| {
         previous.window_size != settings.window_size || previous.window_mode != settings.window_mode
@@ -1933,7 +1940,7 @@ mod tests {
         assert_grass_reset_saves_default_radii((10, 12), (10, 12));
     }
 
-    /// Menu radius edits persist independently while the unload ring keeps covering terrain.
+    /// Menu radius edits survive live coverage and persist independently across a restart.
     #[test]
     fn g3_grass_menu_radius_edits_persist() {
         for (label, direction, expected) in [
@@ -1945,13 +1952,20 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("settings.json");
             let mut config = launch(&["--grass", "--grass-radius", "7"].map(String::from));
-            let (mut settings, mut file) = prepare_settings_at(&mut config, Some(path.clone()));
+            let (settings, file) = prepare_settings_at(&mut config, Some(path.clone()));
+            let (mut app, _, _) = msaa_settings_app(config, settings, file);
+            app.update();
             let radius = SETTING_SPECS
                 .iter()
                 .find(|setting| setting.label == label)
                 .unwrap();
-            radius.adjust(&mut settings, direction);
-            file.save(&settings);
+            radius.adjust(
+                &mut app.world_mut().resource_mut::<RenderingSettings>(),
+                direction,
+            );
+            app.update();
+            save_app_settings(&mut app);
+            let file = app.world().resource::<SettingsFile>();
             assert!(file.status.starts_with("Settings saved"), "{}", file.status);
             let (reloaded, _) = prepare_settings_at(&mut launch(&[]), Some(path));
             assert_eq!(
