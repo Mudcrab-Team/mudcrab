@@ -436,6 +436,8 @@ pub struct RoomGraph {
     pub portals: Vec<Portal>,
     /// `room_links` as undirected edges between room indices.
     pub links: Vec<(usize, usize)>,
+    /// Sources of authored links whose targets could not be loaded in this cell.
+    pub unresolved_link_rooms: HashSet<usize>,
     /// Implicit edges between rooms whose boxes overlap or touch ([`overlap_links`]). Unlike a link,
     /// an overlap is walked thick - narrowed to the neighbour's screen rectangle - between two rooms
     /// that both have a portal of the cell; reaching a neighbour without one draws the whole cell.
@@ -581,6 +583,9 @@ impl RoomGraph {
             .map(|room| (room, full.clone()))
             .collect();
         while let Some((room, arriving)) = pending.pop() {
+            if self.unresolved_link_rooms.contains(&room) {
+                return None;
+            }
             // Open halls can expose rooms across uncovered box gaps. Keep their conservative
             // fallback until authored joins and room assignment are available.
             if self.authored.is_none() && room != outside && !has_portal[room] {
@@ -807,8 +812,12 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
         for link in rows {
             let (room, linked) = link?;
             // The target is stored as written, even when it is not a room of this cell.
-            if let (Some(&a), Some(&b)) = (room_index.get(&room), room_index.get(&linked)) {
-                graph.links.push((a, b));
+            if let Some(&a) = room_index.get(&room) {
+                if let Some(&b) = room_index.get(&linked) {
+                    graph.links.push((a, b));
+                } else {
+                    graph.unresolved_link_rooms.insert(a);
+                }
             }
         }
     }
@@ -817,6 +826,7 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
     }
     if graph.authored.is_some() {
         graph.links.clear();
+        graph.unresolved_link_rooms.clear();
     }
     let implicit: Vec<(usize, usize)> = if graph.authored.is_some() {
         Vec::new()
@@ -1734,10 +1744,45 @@ mod tests {
                 far_door,
             ],
             links: vec![],
+            unresolved_link_rooms: HashSet::new(),
             overlaps: vec![],
             membership: HashMap::new(),
             authored: None,
             supports_unbounded: false,
+        }
+    }
+
+    #[test]
+    fn a_reached_room_with_a_dropped_link_draws_the_whole_cell() {
+        let connection = database();
+        insert_room(&connection, 1, 7, [0.0; 3]);
+        insert_room(&connection, 2, 7, [0.0, 60.0, 0.0]);
+        insert_room(&connection, 3, 8, [0.0, 120.0, 0.0]);
+        connection
+            .execute(
+                "INSERT INTO room_portals VALUES (10,7,0,30,0,0,0,0,4,6,1,2)",
+                [],
+            )
+            .unwrap();
+        for target in [9999, 3] {
+            connection.execute("DELETE FROM room_links", []).unwrap();
+            connection
+                .execute("INSERT INTO room_links VALUES (2,?1)", [target])
+                .unwrap();
+            let graph = load_room_graph(&connection, 7).unwrap();
+            assert!(reached_rooms(&graph, Vec3::ZERO, clip_from_local()).is_none());
+            // An unresolved connection in an unreached room does not disable useful culling.
+            connection
+                .execute("UPDATE room_portals SET pos_x=1000", [])
+                .unwrap();
+            let graph = load_room_graph(&connection, 7).unwrap();
+            assert_eq!(
+                reached_rooms(&graph, Vec3::ZERO, clip_from_local()).unwrap(),
+                vec![true, false]
+            );
+            connection
+                .execute("UPDATE room_portals SET pos_x=0", [])
+                .unwrap();
         }
     }
 
@@ -1953,6 +1998,7 @@ mod tests {
         // Room 0 carries a portal of the cell (parked behind the camera); room 1 has none.
         park_portals(&mut rooms, &mut portals, &[0]);
         let graph = RoomGraph {
+            unresolved_link_rooms: HashSet::new(),
             overlaps: overlap_links(&rooms),
             portals,
             rooms,
@@ -2086,6 +2132,7 @@ mod tests {
             ],
             portals: vec![doorway(10, Vec3::new(0.0, 0.0, 10.0), 3.0, [0, 1])],
             links: vec![],
+            unresolved_link_rooms: HashSet::new(),
             overlaps: vec![],
             membership: HashMap::new(),
             authored: None,
@@ -2661,6 +2708,7 @@ mod tests {
             ],
             portals: vec![doorway(10, Vec3::new(0.0, 0.0, -10.0), 3.0, [0, 1])],
             links: vec![],
+            unresolved_link_rooms: HashSet::new(),
             overlaps: vec![],
             membership: (0..3)
                 .map(|room| {
@@ -2972,6 +3020,7 @@ mod tests {
         let mut graph = RoomGraph {
             portals,
             links: vec![],
+            unresolved_link_rooms: HashSet::new(),
             overlaps: vec![],
             membership: HashMap::new(),
             authored: None,
@@ -3097,6 +3146,7 @@ mod tests {
         RoomGraph {
             portals,
             links: vec![],
+            unresolved_link_rooms: HashSet::new(),
             overlaps: overlap_links(&rooms),
             membership: HashMap::new(),
             authored: None,
@@ -3133,6 +3183,7 @@ mod tests {
         // room is walked open (the whole screen passes), which would reach the room behind.
         park_portals(&mut rooms, &mut portals, &[0, 1]);
         let graph = RoomGraph {
+            unresolved_link_rooms: HashSet::new(),
             overlaps: overlap_links(&rooms),
             portals,
             rooms,
@@ -3152,6 +3203,7 @@ mod tests {
         let marked: Vec<usize> = (0..rooms.len()).collect();
         park_portals(&mut rooms, &mut portals, &marked);
         RoomGraph {
+            unresolved_link_rooms: HashSet::new(),
             overlaps: overlap_links(&rooms),
             portals,
             rooms,
@@ -3221,6 +3273,7 @@ mod tests {
             rooms: rooms.clone(),
             portals,
             links: vec![],
+            unresolved_link_rooms: HashSet::new(),
             overlaps: overlap_links(&rooms),
             membership: HashMap::new(),
             authored: None,
@@ -3267,6 +3320,7 @@ mod tests {
             rooms: rooms.clone(),
             portals: vec![doorway(20, Vec3::new(0.0, -3000.0, -4000.0), 150.0, [2, 3])],
             links: vec![],
+            unresolved_link_rooms: HashSet::new(),
             overlaps: overlap_links(&rooms),
             membership: HashMap::new(),
             authored: None,
@@ -3312,6 +3366,7 @@ mod tests {
         let graph = RoomGraph {
             // A portal already joins the hall and the corridor, so the pair keeps the doorway's
             // narrowing and gets no implicit edge (as `load_room_graph` builds it).
+            unresolved_link_rooms: HashSet::new(),
             overlaps: vec![(1, 2)],
             portals,
             rooms,
@@ -3338,6 +3393,7 @@ mod tests {
         let mut portals = Vec::new();
         park_portals(&mut rooms, &mut portals, &[0, 1, 2]);
         let graph = RoomGraph {
+            unresolved_link_rooms: HashSet::new(),
             overlaps: overlap_links(&rooms),
             portals,
             rooms,
