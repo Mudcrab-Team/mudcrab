@@ -307,7 +307,7 @@ fn fragment(vertex_input:Varyings,@builtin(sample_index) sample_index:u32) -> Fr
     let light = tuning_illumination(grass.ambient.rgb,input.light,shadow,view.exposure,grass.tuning_light,grass.tuning_surface,grass.tuning_specular);
     let visibility = grass.tuning_surface.z + (1.0-grass.tuning_surface.z)*mix(1.0,shadow,grass.tuning_surface.y);
     let sheen = tuning_sheen(input.normal,input.world_position.xyz)*visibility;
-    out.color = vec4(tuning_finish(base.rgb*light*grass.fade.z+sheen,input.root_fraction,grass.tuning_light,grass.tuning_color),1.0);
+    out.color = vec4(tuning_finish((base.rgb*light+sheen)*grass.fade.z,input.root_fraction,grass.tuning_light,grass.tuning_color),1.0);
     out.color = grass_fog(out.color,input.world_position.xyz,input.position.xy);
 #ifdef TONEMAP_IN_SHADER
     // Match standard materials for LDR targets. HDR is mapped after the main

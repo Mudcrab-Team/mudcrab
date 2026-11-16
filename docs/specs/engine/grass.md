@@ -257,6 +257,11 @@ crossings. Radius zero cannot provide this guarantee and is rejected when grass
 is enabled. Acceptance and multi-shot captures wait for desired grass
 generation/admission and actual GPU draw readiness, including newly admitted
 batches; grass preparation failures fail an automated screenshot run.
+Frustum-cull evidence and actual main-draw evidence apply to the selected active
+camera view. Camera, projection, render-specialization and primitive-transform
+changes require fresh evidence; restoring a camera after an inactive interval
+also requires its own result. Model handles are retained while grass batches
+use the model and are released when its last batch leaves.
 
 Saved renderer preferences may widen automatically selected terrain coverage,
 and retain its grass minimum. An explicit terrain radius still clamps grass.
@@ -388,7 +393,8 @@ the same G5 TOML format and hot reload. No file is created automatically.
 Select a flat TOML file with `--grass-tuning docs/examples/grass-tuning/retail.toml`
 (or `MUDCRAB_GRASS_TUNING`). Fileless startup and empty valid TOML use the same
 retail defaults. `--grass-tuning-info <path>` prints the accepted settings before
-app or GPU creation. Content-hash polling runs at most once per elapsed second;
+app or GPU creation. Content-hash polling runs at most once per real elapsed second,
+including while virtual game time is paused;
 valid edits atomically update uniforms without regenerating placement or shaders.
 Missing/unreadable/invalid edits retain the last good values. Unknown keys warn;
 finite values outside the ranges below clamp with warnings. Inputs over 64 KiB
@@ -474,8 +480,8 @@ floor of 0.3 (RF-GRASS-005).
 Authored vertex RGB, Color Range and terrain VCLR tint stay enabled. The appearance
 pipeline and packed tint metadata are active with or without a tuning file.
 `--grass-tuning <toml>` overrides `MUDCRAB_GRASS_TUNING`; edits hot reload at most
-once per elapsed second by content hash. Invalid or missing files keep the last
-good settings and warn. A valid empty file resets to defaults. Inputs are limited
+once per real elapsed second by content hash, including while paused. Invalid or
+missing files keep the last good settings and warn. A valid empty file resets to defaults. Inputs are limited
 to 64 KiB. `--grass-tuning-info <toml>` validates and reports settings before app
 or GPU creation. Captures freeze the accepted hash and effective settings with
 the actual frame; they do not reread the file in the callback.

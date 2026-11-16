@@ -221,7 +221,7 @@ impl GrassTuningState {
         })
     }
 
-    /// Poll at most once per second using elapsed app time; returns whether values were accepted.
+    /// Poll at most once per second using supplied elapsed time; returns whether values were accepted.
     /// Reading bytes instead of mtime detects atomic saves and same-size/timestamp edits.
     pub fn poll_at(&mut self, now: Duration) -> bool {
         if now < self.next_poll {
@@ -285,8 +285,8 @@ impl GrassTuningState {
     }
 }
 
-/// Run in the main world before grass material extraction; requires no GPU.
-pub fn reload_grass_tuning(time: Res<Time>, mut state: ResMut<GrassTuningState>) {
+/// Poll real elapsed time before grass material extraction so tuning reloads during pause.
+pub fn reload_grass_tuning(time: Res<Time<Real>>, mut state: ResMut<GrassTuningState>) {
     state.poll_at(time.elapsed());
 }
 
@@ -399,7 +399,7 @@ mod tests {
         }
     }
 
-    /// The real ECS reload system sees valid edits and retains good values/hash on invalid edits.
+    /// Real time advances with virtual time paused; edits apply and invalid edits retain good state.
     #[test]
     fn grass_tuning_hot_reload_cpu_system() {
         let dir = tempfile::tempdir().unwrap();
@@ -407,15 +407,16 @@ mod tests {
         std::fs::write(&path, "brightness=0.8").unwrap();
         let mut app = App::new();
         app.insert_resource(Time::<()>::default())
+            .insert_resource(Time::<Real>::default())
             .insert_resource(GrassTuningState::new(Some(path.clone())))
             .add_systems(Update, reload_grass_tuning);
         std::fs::write(&path, "brightness=0.3").unwrap();
         app.world_mut()
-            .resource_mut::<Time>()
+            .resource_mut::<Time<Real>>()
             .advance_by(Duration::from_secs(1));
         app.update();
         app.world_mut()
-            .resource_mut::<Time>()
+            .resource_mut::<Time<Real>>()
             .advance_by(Duration::from_secs(1));
         app.update();
         let state = app.world().resource::<GrassTuningState>();
@@ -423,11 +424,11 @@ mod tests {
         let hash = state.receipt()["sha256"].clone();
         std::fs::write(&path, "brightness='partial save'").unwrap();
         app.world_mut()
-            .resource_mut::<Time>()
+            .resource_mut::<Time<Real>>()
             .advance_by(Duration::from_secs(1));
         app.update();
         app.world_mut()
-            .resource_mut::<Time>()
+            .resource_mut::<Time<Real>>()
             .advance_by(Duration::from_secs(1));
         app.update();
         let state = app.world().resource::<GrassTuningState>();
@@ -436,11 +437,11 @@ mod tests {
         assert_eq!(state.receipt()["revision"], 1);
         std::fs::write(&path, "mode='e'").unwrap();
         app.world_mut()
-            .resource_mut::<Time>()
+            .resource_mut::<Time<Real>>()
             .advance_by(Duration::from_secs(1));
         app.update();
         app.world_mut()
-            .resource_mut::<Time>()
+            .resource_mut::<Time<Real>>()
             .advance_by(Duration::from_secs(1));
         app.update();
         assert_eq!(
