@@ -1248,8 +1248,9 @@ Columns and rules:
   wbStruct('References', [wbFormIDCk('Origin', [REFR, NULL]), wbFormIDCk('Destination',
   [REFR, NULL])]))`), so a portal gets **one row per pair**, numbered by `pair_index` from 0
   in stored order; the geometry columns repeat on every row. A portal whose `XPOD` is absent,
-  empty or shorter than one pair gets one row with `pair_index` 0 and both sides NULL. Bytes
-  after the last whole pair are ignored. Every `XPOD` in the official masters is one pair, so
+  empty or shorter than one pair gets one row with `pair_index` 0 and both sides NULL.
+  Missing, empty, truncated, or repeated `XPOD` fields mark the cell incomplete; conflicting
+  occurrences are not exported. Trailing bytes are omitted from rows without proving completeness. Every `XPOD` in the official masters is one pair, so
   vanilla output has `pair_index` 0 only. **Readers must not assume `ref_id` is unique**: join
   or group on `(ref_id, pair_index)`, or on `ref_id` and expect several rows. The key changed
   from `ref_id` alone, and `create_tables` migrates an older-shaped `room_portals` (no
@@ -1258,11 +1259,11 @@ Columns and rules:
   A NULL endpoint with its `unbounded_*` flag set names authored unbounded space. Without that
   flag it is unknown: a missing, malformed, unresolved or foreign-cell link does not establish
   outside connectivity. Adding these columns to an older database leaves both flags zero.
-  In the plugin remap `XPOD` is an array of FormIDs: every four bytes are remapped, and a
-  length that is not a multiple of four is dropped with a warning, like any other FormID array.
-  A broken nonzero link also drops the legacy reader's `XPOD` occurrence rather than clearing
-  it to an authored null. The typed reader restores the flags from original source framing;
-  its canonical cleared links cannot establish outside connectivity.
+  In the plugin remap `XPOD` is an array of FormIDs: every four bytes are remapped. An
+  invalid length or broken nonzero link leaves an empty legacy occurrence and a warning,
+  so malformed siblings cannot disappear and establish false uniqueness or authored nulls.
+  The typed reader restores flags only from a unique source field containing whole eight-byte
+  pairs; its canonical cleared links cannot establish outside connectivity.
 - **`room_links`**: one row per `XLRM` as stored on the room, with no mirror rows. A link joins
   rooms that may have no portal between them but must be seen together: if one is visible, so is
   the other. The target is stored as written, even if it is not a `room_bounds` row.
