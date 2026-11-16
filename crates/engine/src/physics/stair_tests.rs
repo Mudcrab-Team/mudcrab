@@ -315,6 +315,8 @@ struct ClimbFrame {
     delta: f32,
     /// The body at the latest tick.
     body: Vec3,
+    /// The spring input of the frame: the body blended between the last two ticks.
+    feet: Vec3,
     camera: Vec3,
     /// The spring weight W after this frame (RF-CAM-003).
     weight: f32,
@@ -438,6 +440,7 @@ fn traverse_flight(
             time: world.resource::<Time<Virtual>>().elapsed_secs_f64(),
             delta: world.resource::<Time>().delta_secs(),
             body,
+            feet: blended_feet(&app),
             camera,
             weight: world
                 .resource::<WalkCameraFollowState>()
@@ -812,6 +815,299 @@ fn measure_steep_ramp_speed_along_the_surface() {
                 mean(&vertical),
                 mean(&surface),
             );
+        }
+    }
+}
+
+/// One fixed tick on a real flight: the body and the controller state after the tick.
+#[derive(Clone, Copy, Debug)]
+struct WalkTick {
+    position: Vec3,
+    grounded: bool,
+    vertical_velocity: f32,
+}
+
+#[derive(Default, Resource)]
+struct WalkTickLog(Vec<WalkTick>);
+
+fn log_walk_tick(
+    mut log: ResMut<WalkTickLog>,
+    player: Query<(&Transform, &WalkState), With<PlayerBody>>,
+) {
+    if let Ok((body, state)) = player.single() {
+        log.0.push(WalkTick {
+            position: body.translation,
+            grounded: state.grounded,
+            vertical_velocity: state.vertical_velocity,
+        });
+    }
+}
+
+/// The converted collision of `WalkwayStairs15` (reference 0x342183, the stairs of Taylor's
+/// 2026-11-15 trace, `evidence/user-test-20261115/stairs-location.md`): a stepped mesh with 18 to
+/// 19 unit rises on 38 unit treads. The model runs along local X from -276 (foot) to +279 (top).
+/// A floor is added at the foot and at the top landing. The foot floor is at `foot_y`; the model's
+/// first tread is at 18. Returns the app and the top landing height.
+fn walkway_stairs_app(assets: &Path, foot_y: f32) -> (App, f32) {
+    let path = assets.join("meshes/architecture/farmhouse/walkway/walkwaystairs15.glb");
+    let bytes = std::fs::read(&path).unwrap();
+    let length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    let glb: serde_json::Value = serde_json::from_slice(&bytes[20..20 + length]).unwrap();
+    let collision: shared::collision::CollisionAsset =
+        serde_json::from_value(glb["scenes"][0]["extras"]["mudcrabCollision"].clone()).unwrap();
+    assert!(collision.authored && collision.skipped.is_empty());
+    let mut app = headless::fixture_app();
+    let mut top_levels: std::collections::BTreeMap<i32, f32> = Default::default();
+    for shape in &collision.shapes {
+        let shared::collision::CollisionShape::Mesh {
+            vertices,
+            triangles,
+        } = shape
+        else {
+            panic!("unexpected stairs shape")
+        };
+        let points: Vec<Vec3> = vertices.iter().copied().map(Vec3::from_array).collect();
+        for triangle in triangles {
+            let [a, b, c] = triangle.map(|index| points[index as usize]);
+            let normal = (b - a).cross(c - a);
+            if normal.y > 0.0 && (normal.normalize().y > 0.99) && a.y > 200.0 {
+                *top_levels.entry((a.y * 2.0).round() as i32).or_default() += normal.length();
+            }
+        }
+        app.world_mut().spawn((
+            RigidBody::Fixed,
+            Collider::trimesh(points, triangles.clone()).unwrap(),
+            world_collision_groups(),
+            Transform::IDENTITY,
+        ));
+    }
+    let top_y = top_levels
+        .iter()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .map(|(level, _)| *level as f32 / 2.0)
+        .expect("a top landing");
+    fixed_box(
+        &mut app,
+        Vec3::new(-276.0 - 600.0, foot_y - 10.0, 0.0),
+        Vec3::new(600.0, 10.0, 600.0),
+    );
+    fixed_box(
+        &mut app,
+        Vec3::new(279.0 + 600.0, top_y - 10.0, 0.0),
+        Vec3::new(600.0, 10.0, 600.0),
+    );
+    app.init_resource::<WalkTickLog>()
+        .add_systems(FixedUpdate, log_walk_tick.after(walk_view_end_tick));
+    (app, top_y)
+}
+
+/// Walks the real stairs up or down with the given frame times. Returns the rendered frames and
+/// the ticks that ran on the flight.
+fn walk_real_stairs(
+    assets: &Path,
+    foot_y: f32,
+    speed: f32,
+    deltas: &[f32],
+    descend: bool,
+    ground_snap: f32,
+) -> (Vec<ClimbFrame>, Vec<WalkTick>) {
+    let (mut app, top_y) = walkway_stairs_app(assets, foot_y);
+    let start = if descend {
+        Vec3::new(279.0 + 200.0, top_y + 60.0, 0.0)
+    } else {
+        Vec3::new(-276.0 - 200.0, foot_y + 60.0, 0.0)
+    };
+    settle(&mut app, start);
+    let (body, camera) = {
+        let mut bodies = app.world_mut().query_filtered::<Entity, With<PlayerBody>>();
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<Entity, With<StreamingCamera>>();
+        (
+            bodies.single(app.world()).unwrap(),
+            cameras.single(app.world()).unwrap(),
+        )
+    };
+    // The snap length is the only thing a what-if run changes (test only, not the engine).
+    app.world_mut()
+        .get_mut::<KinematicCharacterController>(body)
+        .unwrap()
+        .snap_to_ground = Some(CharacterLength::Absolute(ground_snap));
+    app.insert_resource(WalkIntent {
+        wish_dir: if descend { -Vec3::X } else { Vec3::X },
+        target_speed: speed,
+        jump_pressed: false,
+    });
+    app.world_mut().resource_mut::<WalkTickLog>().0.clear();
+    let mut frames = Vec::new();
+    for &delta in deltas {
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f32(delta),
+        ));
+        app.update();
+        let world = app.world();
+        let position = world.get::<Transform>(body).unwrap().translation;
+        frames.push(ClimbFrame {
+            time: world.resource::<Time<Virtual>>().elapsed_secs_f64(),
+            delta: world.resource::<Time>().delta_secs(),
+            body: position,
+            feet: blended_feet(&app),
+            camera: world.get::<Transform>(camera).unwrap().translation,
+            weight: world
+                .resource::<WalkCameraFollowState>()
+                .spring
+                .map_or(0.0, |spring| spring.weight),
+        });
+        if (descend && position.x < -276.0 - 100.0) || (!descend && position.x > 279.0 + 100.0) {
+            break;
+        }
+    }
+    let ticks = std::mem::take(&mut app.world_mut().resource_mut::<WalkTickLog>().0)
+        .into_iter()
+        .filter(|tick| (-276.0..279.0).contains(&tick.position.x))
+        .collect();
+    (frames, ticks)
+}
+
+/// Runs the controller up and down the real stairs of Taylor's trace at the walk, run and sprint
+/// speeds of the traced session (80.1, 370 and 1.5 x 370 units per second) and prints what the
+/// body does on each tread (grounded or falling), the fastest fall and the camera lag. Needs the
+/// local asset pack: `MUDCRAB_STAIR_ASSETS=<pack> cargo test ... --ignored --nocapture`.
+#[test]
+#[ignore = "measure: needs the local Skyrim asset pack; set MUDCRAB_STAIR_ASSETS"]
+fn measure_real_walkway_stairs15() {
+    let assets = std::env::var_os("MUDCRAB_STAIR_ASSETS").expect("set MUDCRAB_STAIR_ASSETS");
+    let assets = Path::new(&assets);
+    let tuning = MovementTuning::default();
+    let eye = tuning.eye_height;
+    println!(
+        "controller: autostep budget {} units, ground snap {} units, gravity {}, capsule radius {}, centre {} above the ground",
+        tuning.autostep_height,
+        tuning.ground_snap,
+        tuning.gravity,
+        tuning.capsule_radius,
+        tuning.capsule_standing_height * 0.5 + PLAYER_CONTROLLER_OFFSET
+    );
+    for foot_y in [0.0_f32, -16.0] {
+        for descend in [true, false] {
+            for (label, speed) in [("walk", 80.1_f32), ("run", 370.0), ("sprint", 555.0)] {
+                for (pacing, deltas) in [
+                    ("steady 60 Hz", frame_times(60.0, false, 4000)),
+                    ("trace pacing", trace_like_frame_times(1500)),
+                ] {
+                    let (frames, ticks) = walk_real_stairs(
+                        assets,
+                        foot_y,
+                        speed,
+                        &deltas,
+                        descend,
+                        tuning.ground_snap,
+                    );
+                    let airborne = ticks.iter().filter(|tick| !tick.grounded).count();
+                    let fall = ticks
+                        .iter()
+                        .map(|tick| tick.vertical_velocity)
+                        .fold(0.0_f32, f32::min);
+                    let rise = ticks
+                        .iter()
+                        .map(|tick| tick.vertical_velocity)
+                        .fold(0.0_f32, f32::max);
+                    let lags: Vec<f32> = frames
+                        .iter()
+                        .filter(|frame| (-276.0..279.0).contains(&frame.body.x))
+                        .map(|frame| frame.camera.y - frame.feet.y - eye)
+                        .collect();
+                    let lag_min = lags.iter().copied().fold(f32::MAX, f32::min);
+                    let lag_max = lags.iter().copied().fold(f32::MIN, f32::max);
+                    let middle: Vec<_> = frames
+                        .iter()
+                        .filter(|frame| (-216.0..219.0).contains(&frame.body.x))
+                        .collect();
+                    let times: Vec<f64> = middle.iter().map(|frame| frame.time).collect();
+                    let rms = |pick: &dyn Fn(&ClimbFrame) -> f32| {
+                        let values: Vec<f64> =
+                            middle.iter().map(|frame| f64::from(pick(frame))).collect();
+                        detrended_rms(&times, &values)
+                    };
+                    println!(
+                        "foot {foot_y:>5} {} {label} {speed} u/s, {pacing}: {} ticks on the flight, {airborne} airborne ({:.0}%), fastest fall {fall:.0}, fastest rise {rise:.0} u/s; camera lag {lag_min:.1}..{lag_max:.1}; height ripple view {:.2}, rigid {:.2}",
+                        if descend { "descent" } else { "climb  " },
+                        ticks.len(),
+                        100.0 * airborne as f64 / ticks.len().max(1) as f64,
+                        rms(&|frame| frame.camera.y - eye),
+                        rms(&|frame| frame.body.y),
+                    );
+                    if pacing == "steady 60 Hz" && label == "run" && foot_y == -16.0 {
+                        println!(
+                            "  per tick (x, y, grounded, vertical velocity), first 40 ticks of the flight:"
+                        );
+                        for tick in ticks.iter().take(40) {
+                            println!(
+                                "    {:7.1} {:7.2} {} {:7.1}",
+                                tick.position.x,
+                                tick.position.y,
+                                u8::from(tick.grounded),
+                                tick.vertical_velocity
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What-if for the descent of the real stairs: only the ground snap length changes (12 is the
+/// engine's tuning). It shows whether the snap, which is shorter than the 18 to 19 unit drop of a
+/// tread, is what lets the body fall. This is not retail evidence: retail casts 70 units down and
+/// pulls the player onto the surface with 4 x gravity (RF-CC-006), which a longer Rapier snap does
+/// not reproduce (it moves the body down at once).
+#[test]
+#[ignore = "measure: needs the local Skyrim asset pack; set MUDCRAB_STAIR_ASSETS"]
+fn measure_real_walkway_stairs15_descent_ground_snap_what_if() {
+    let assets = std::env::var_os("MUDCRAB_STAIR_ASSETS").expect("set MUDCRAB_STAIR_ASSETS");
+    let assets = Path::new(&assets);
+    let eye = MovementTuning::default().eye_height;
+    for (label, speed) in [("run", 370.0_f32), ("sprint", 555.0)] {
+        for snap in [0.0_f32, 12.0, 24.0, 70.0] {
+            for (pacing, deltas) in [
+                ("steady 60 Hz", frame_times(60.0, false, 4000)),
+                ("trace pacing", trace_like_frame_times(1500)),
+            ] {
+                let (frames, ticks) = walk_real_stairs(assets, -16.0, speed, &deltas, true, snap);
+                let airborne = ticks.iter().filter(|tick| !tick.grounded).count();
+                let fall = ticks
+                    .iter()
+                    .map(|tick| tick.vertical_velocity)
+                    .fold(0.0_f32, f32::min);
+                let drop = ticks
+                    .windows(2)
+                    .map(|pair| pair[1].position.y - pair[0].position.y)
+                    .fold(0.0_f32, f32::min);
+                let lags: Vec<f32> = frames
+                    .iter()
+                    .filter(|frame| (-276.0..279.0).contains(&frame.body.x))
+                    .map(|frame| frame.camera.y - frame.feet.y - eye)
+                    .collect();
+                let middle: Vec<_> = frames
+                    .iter()
+                    .filter(|frame| (-216.0..219.0).contains(&frame.body.x))
+                    .collect();
+                let times: Vec<f64> = middle.iter().map(|frame| frame.time).collect();
+                let rms = |pick: &dyn Fn(&ClimbFrame) -> f32| {
+                    let values: Vec<f64> =
+                        middle.iter().map(|frame| f64::from(pick(frame))).collect();
+                    detrended_rms(&times, &values)
+                };
+                println!(
+                    "descent {label} {speed} u/s, snap {snap:>4}, {pacing}: {} ticks, {airborne} airborne, fastest fall {fall:.0} u/s, largest drop in one tick {drop:.1}; camera lag {:.1}..{:.1}; height ripple view {:.2}, rigid {:.2}",
+                    ticks.len(),
+                    lags.iter().copied().fold(f32::MAX, f32::min),
+                    lags.iter().copied().fold(f32::MIN, f32::max),
+                    rms(&|frame| frame.camera.y - eye),
+                    rms(&|frame| frame.body.y),
+                );
+            }
         }
     }
 }
