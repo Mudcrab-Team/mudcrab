@@ -1,7 +1,8 @@
 # Skyrim room visibility and the default engine policy
 
-The engine uses the converted room graph automatically. There is no enable flag or configuration
-switch. Missing tables, unread graphs and incomplete traversal data leave extra geometry drawn.
+The engine uses the converted room graph automatically, without an enable flag. Room culling
+is on by default; the Graphics settings panel can disable it immediately and save that preference.
+Missing tables, unread graphs and incomplete traversal data leave extra geometry drawn.
 This policy uses Skyrim's authored room and portal records, but does not claim exact replication
 of Skyrim's traversal.
 

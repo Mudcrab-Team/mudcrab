@@ -1097,6 +1097,7 @@ fn drop_stale_graphs(
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn cull_room_views(
     mut state: ResMut<RoomCullingState>,
+    settings: Option<Res<crate::settings::RenderingSettings>>,
     roots: Query<&GlobalTransform, With<StreamedCellRoot>>,
     mut views: Query<
         (
@@ -1126,6 +1127,18 @@ pub fn cull_room_views(
             continue;
         }
         let listed = visible.get(TypeId::of::<Mesh3d>()).len();
+        if settings
+            .as_ref()
+            .is_some_and(|settings| !settings.room_culling)
+        {
+            if is_main {
+                main_view = Some(MainViewMeshes {
+                    listed,
+                    drawn: listed,
+                });
+            }
+            continue;
+        }
         let clip_from_world =
             projection.get_clip_from_view() * camera_transform.to_matrix().inverse();
         for cell in &cells {
@@ -2197,6 +2210,42 @@ mod tests {
             graph.mesh_is_drawn(100, &volumes, Some(&bounds_at(0.0)), None),
             "an explicit link passes the full starting volume"
         );
+    }
+
+    #[test]
+    fn room_culling_setting_changes_the_next_frame_and_keeps_capture_counts() {
+        let mut scene = scene();
+        for enabled in [true, false, true] {
+            let settings: crate::settings::RenderingSettings =
+                serde_json::from_value(serde_json::json!({"room_culling": enabled})).unwrap();
+            scene.app.insert_resource(settings);
+            *scene
+                .app
+                .world_mut()
+                .get_mut::<VisibleEntities>(scene.camera)
+                .unwrap()
+                .get_mut(TypeId::of::<Mesh3d>()) = vec![scene.near, scene.far, scene.loose];
+            run_cull(&mut scene.app);
+            let expected = if enabled {
+                vec![scene.near, scene.loose]
+            } else {
+                vec![scene.near, scene.far, scene.loose]
+            };
+            assert_eq!(
+                mesh_list(&scene.app, scene.camera),
+                expected,
+                "room_culling={enabled}"
+            );
+            let state = scene.app.world().resource::<RoomCullingState>();
+            assert_eq!(
+                state.main_view_meshes,
+                Some(MainViewMeshes {
+                    listed: 3,
+                    drawn: expected.len()
+                })
+            );
+            assert_eq!(state.culled_last_frame, 3 - expected.len());
+        }
     }
 
     #[test]
