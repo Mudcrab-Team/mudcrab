@@ -1174,6 +1174,9 @@ mod tests {
     fn input_app(paths: GamePathConfig) -> App {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, super::super::ConversionLogicPlugin))
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::ZERO,
+            ))
             .add_message::<FileDragAndDrop>()
             .insert_resource(paths)
             .init_resource::<OutputHasManifest>()
@@ -1333,6 +1336,61 @@ mod tests {
     #[test]
     fn corrupt_output_requires_confirmation_before_resume() {
         assert_damaged_output_needs_confirmation(2);
+    }
+
+    /// Recentring the button row must not turn a repeated Resume click into consent.
+    #[test]
+    fn damaged_output_confirmation_audit_ignores_an_immediate_second_click() {
+        let (_directory, mut app) = damaged_confirmation_app(2, MANIFEST_FILE);
+        let before = app.world().resource::<CurrentConversion>().0.clone();
+        assert!(press(&mut app, ControlButton::Resume).is_empty());
+        let effects = press(&mut app, ControlButton::ConfirmDamagedOutput);
+        assert!(
+            effects.is_empty(),
+            "a repeated Resume click must not confirm damaged output: {effects:?}"
+        );
+        assert!(app.world().resource::<PendingDamagedOutput>().0.is_some());
+        assert_eq!(app.world().resource::<CurrentConversion>().0, before);
+    }
+
+    /// A question stays outside the scrolling result and cannot be evicted by later notices.
+    #[test]
+    fn damaged_output_confirmation_audit_question_stays_above_a_retained_result() {
+        let (_directory, mut app) = damaged_confirmation_app(1, MANIFEST_FILE);
+        app.add_plugins((AssetPlugin::default(), bevy::scene::ScenePlugin))
+            .init_resource::<OutputReady>()
+            .add_systems(Update, (draw_labels, draw_controls).after(click_controls));
+        app.world_mut().spawn_scene(conversion_panel()).unwrap();
+        let lines: Vec<_> = (0..50)
+            .map(|i| format!("Completed result line {i}"))
+            .collect();
+        app.world_mut()
+            .resource_mut::<ConversionStatus>()
+            .finish_run(&lines);
+        assert!(press(&mut app, ControlButton::Start).is_empty());
+        for i in 0..12 {
+            app.world_mut()
+                .resource_mut::<ConversionStatus>()
+                .push_notice(&format!("Later notice {i}"));
+        }
+        app.update();
+        let world = app.world_mut();
+        let mut texts = world.query_filtered::<(&Text, &Node), Without<NoticeText>>();
+        assert!(
+            texts.iter(world).any(|(text, node)| {
+                node.display != Display::None
+                    && text.0.contains(MANIFEST_FILE)
+                    && text.0.contains("may reuse files here")
+            }),
+            "the damaged-output question must remain visible outside the scrolling notices"
+        );
+        let mut notices = world.query_filtered::<&Text, With<NoticeText>>();
+        let notices = &notices.single(world).unwrap().0;
+        assert!(notices.contains("Completed result line 0"));
+        assert!(notices.contains("Completed result line 49"));
+        assert!(notices.contains("Later notice 11"));
+        let mut pane = world.query_filtered::<&ScrollPosition, With<NoticePane>>();
+        assert_eq!(pane.single(world).unwrap().0.y, 0.0);
     }
 
     /// Consent starts only the action asked for, retaining Resume's exact staging folder.
