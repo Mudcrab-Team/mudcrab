@@ -3,6 +3,44 @@
 use super::tests::{add_skin, edit_mesh, fixture, read, write_mesh};
 use super::*;
 
+/// Publication retains a resolved modelless middle slot before first-N species selection.
+#[test]
+fn modelless_middle_species_keeps_authored_cap_slot() {
+    for model in [None, Some("")] {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = fixture(dir.path());
+        conn.execute_batch("DELETE FROM landscape_texture_grasses;
+            INSERT INTO landscape_texture_grasses(ltex_id,gras_id,ordinal) VALUES(30,21,0),(30,23,1),(30,22,2);").unwrap();
+        conn.execute("INSERT INTO grass_types(id,model_path,density,min_slope,max_slope,units_from_water,water_comparison,position_range,height_range,color_range,wave_period,flags,load_order) VALUES(23,?1,63,0,80,0,0,85,0.2,0.1,1.2,1,0)", [model]).unwrap();
+        let (report, cache) = bake(&conn, dir.path(), None, "slots.rkyv");
+        assert_eq!((report.skipped_rules, report.modelless_rules), (0, 1));
+        let ids = &cache.cells[0].quadrants[0].layers[0].grass_ids;
+        assert_eq!(
+            ids,
+            &[21, 23, 22],
+            "publication preserves the authored middle slot"
+        );
+        let emitted: Vec<_> = ids
+            .iter()
+            .take(2)
+            .filter(|id| {
+                !cache
+                    .types
+                    .iter()
+                    .find(|rule| rule.form_id == **id)
+                    .unwrap()
+                    .model_path
+                    .is_empty()
+            })
+            .copied()
+            .collect();
+        assert_eq!(emitted, [21], "B stays outside the two authored slots");
+        let placeholder = cache.types.iter().find(|rule| rule.form_id == 23).unwrap();
+        assert_eq!(placeholder.density, 63);
+        assert_eq!(placeholder.position_range, 85.0);
+    }
+}
+
 /// Bake the common fixture with an optional previous archive.
 fn bake(
     conn: &Connection,

@@ -504,6 +504,10 @@ def capture(config_path, engine, assets, output, grass_tuning_files=None):
         # Repeated CLI paths form a matrix sharing the config's scene/common arguments.
         require("--grass-tuning" not in command_options(config.get("common_args", [])),
                 "A grass tuning file matrix cannot also set common --grass-tuning")
+        # Every tuning stage renders grass, including campaigns whose baseline disables it.
+        config["common_args"] = [argument for argument in config.get("common_args", [])
+                                 if argument not in ("--grass", "--no-grass")]
+        config["common_args"].append("--grass")
         config["variants"] = [{"name": path.stem, "args": ["--grass-tuning", str(path.resolve(strict=True))]}
                               for path in grass_tuning_files]
     validate_variants(config)
