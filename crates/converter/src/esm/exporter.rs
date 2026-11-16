@@ -1228,7 +1228,8 @@ fn insert_emittance_sources(
 
 /// Projects xEdit's TES5 GRAS/DATA layout without inventing missing fields.
 /// The complete payload is 32 bytes; unknown padding stays in records.data.
-/// Missing or short DATA leaves its columns NULL while preserving the model and identity.
+/// Short DATA retains each complete scalar at its known offset; unavailable values are NULL.
+/// Missing/short DATA is still a reported omission, and the model and identity survive.
 /// See xEdit xedit-4.1.5f Core/wbDefinitionsTES5.pas:10199-10230.
 fn insert_grass(
     tx: &Transaction<'_>,
@@ -1237,23 +1238,19 @@ fn insert_grass(
     load_order: u32,
     omissions: &mut ProjectionOmissions,
 ) -> Result<()> {
-    let data = match view.find(b"DATA") {
-        Some(data) if data.len() >= 32 => data,
-        data => {
-            omissions.record(
-                OmissionCategory::GrassUnusableData,
-                form_id,
-                format!(
-                    "GRAS DATA is {}; expected at least 32 bytes; DATA columns remain NULL",
-                    data.map_or_else(
-                        || "missing".to_owned(),
-                        |data| format!("{} bytes", data.len())
-                    ),
-                ),
-            );
-            &[]
-        }
-    };
+    let data = view.find(b"DATA");
+    if !matches!(data, Some(data) if data.len() >= 32) {
+        let extent = data.map_or_else(
+            || "missing".to_owned(),
+            |data| format!("{} bytes", data.len()),
+        );
+        omissions.record(
+            OmissionCategory::GrassUnusableData,
+            form_id,
+            format!("GRAS DATA is {extent}; expected at least 32 bytes; unavailable scalar columns remain NULL"),
+        );
+    }
+    let data = data.unwrap_or_default();
     let float = |offset| {
         data.get(offset..offset + 4)
             .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())

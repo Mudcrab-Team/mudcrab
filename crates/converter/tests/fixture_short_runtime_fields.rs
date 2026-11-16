@@ -1,4 +1,4 @@
-//! Missing or short DATA loses only its runtime projection, with persisted diagnostics.
+//! Unusable DATA components are omitted with diagnostics; readable GRAS scalars survive.
 
 mod common;
 
@@ -130,10 +130,27 @@ async fn short_fields_publish_usable_neighbors_and_report_each_omission() {
             ],
             "{reader:?}: each missing/short field must reach the stored report"
         );
-        let malformed_grass: u32 = db.query_row("SELECT count(*) FROM grass_types WHERE id IN (32769,32770) AND density IS NULL AND min_slope IS NULL AND max_slope IS NULL AND units_from_water IS NULL AND water_comparison IS NULL AND position_range IS NULL AND height_range IS NULL AND color_range IS NULL AND wave_period IS NULL AND flags IS NULL AND model_path='meshes/generated.glb'", [], |row| row.get(0)).unwrap();
+        let missing_grass: u32 = db.query_row("SELECT count(*) FROM grass_types WHERE id=32769 AND density IS NULL AND min_slope IS NULL AND max_slope IS NULL AND units_from_water IS NULL AND water_comparison IS NULL AND position_range IS NULL AND height_range IS NULL AND color_range IS NULL AND wave_period IS NULL AND flags IS NULL AND model_path='meshes/generated.glb'", [], |row| row.get(0)).unwrap();
         assert_eq!(
-            malformed_grass, 2,
+            missing_grass, 1,
             "grass model/identity survive without made-up DATA"
+        );
+        let short_grass: (u32, u32, u32) = db
+            .query_row(
+                "SELECT density,min_slope,max_slope FROM grass_types WHERE id=32770",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            short_grass,
+            (67, 11, 73),
+            "{reader:?}: authored scalar prefix survives"
+        );
+        let unavailable_grass_tail: u32 = db.query_row("SELECT count(*) FROM grass_types WHERE id=32770 AND units_from_water IS NULL AND water_comparison IS NULL AND position_range IS NULL AND height_range IS NULL AND color_range IS NULL AND wave_period IS NULL AND flags IS NULL AND model_path='meshes/generated.glb'", [], |row| row.get(0)).unwrap();
+        assert_eq!(
+            unavailable_grass_tail, 1,
+            "{reader:?}: absent scalar spans remain NULL"
         );
         let valid_grass: (u32,u32,u32,f32,u32) = db.query_row("SELECT density,min_slope,max_slope,height_range,flags FROM grass_types WHERE id=32771", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).unwrap();
         assert_eq!(valid_grass, (67, 11, 73, 2.25, 5));

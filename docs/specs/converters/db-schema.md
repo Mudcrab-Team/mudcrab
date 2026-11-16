@@ -1043,8 +1043,12 @@ The layout follows [xEdit's TES5 GRAS and LTEX definitions at xedit-4.1.5f](http
 and [CommonLibSSE-NG's TESGrass definition](https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/main/include/RE/T/TESGrass.h).
 `DATA` is 32 bytes; its padding and unprojected fields stay in `records.data`.
 The converter preserves authored values without clamping to vanilla ranges. Missing or
-short `DATA` leaves all its columns NULL and records `grass_unusable_data` (section 19);
-the identity and model still publish. A non-finite float becomes NULL. Missing, empty or unsafe
+short `DATA` records `grass_unusable_data` (section 19); each complete scalar at its fixed
+offset is retained, while absent or incomplete scalar spans become NULL. For example,
+three bytes preserve density and both slope values without inventing the remaining fields.
+The in-house adapter recovers this unique, safely framed numeric prefix after typed-field
+rejection; it does not mark the malformed typed field as decoded. The identity and model
+still publish. A non-finite float becomes NULL. Missing, empty or unsafe
 model paths also become NULL; the original subrecords remain available for diagnostics.
 Path normalization does not verify that the referenced asset exists. Even vanilla
 records can name an absent mesh, so a non-NULL `model_path` is not an availability
@@ -1636,8 +1640,10 @@ actors in their skin when it is absent or invalid.
 
 Runtime projections omit unusable rows or fields without inventing authored data. Each
 omission is counted under a stable category, so the conversion report can account for it instead of
-a terminal message alone (#297). The categories come from `insert_light` and
-`insert_emittance_sources` in `crates/converter/src/esm/exporter.rs`; the code is
+a terminal message alone (#297). Light, grass and placed-record projections in
+`crates/converter/src/esm/exporter.rs`, lighting-template projection in `esm/environment.rs`,
+and emittance resolution contribute categories. Readable GRAS scalar prefixes remain
+available even when the complete DATA field is short. The category code is
 `crates/converter/src/esm/projection_omissions.rs`.
 
 ```sql
@@ -1658,7 +1664,7 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 |---|---|---|
 | `light_missing_data` | `LIGH` without `DATA`: no `lights` row | data loss |
 | `light_short_data` | `LIGH` whose `DATA` is shorter than the 20 bytes the row needs: no `lights` row | data loss |
-| `grass_unusable_data` | `GRAS` with missing or short `DATA`: DATA columns NULL, model and identity retained | data loss |
+| `grass_unusable_data` | `GRAS` with missing or short `DATA`: unavailable scalar columns NULL, readable scalar prefix/model/identity retained | data loss |
 | `reference_unusable_data` | Placed record with missing or short `DATA`: no placement or spatial row; canonical record retained | data loss |
 | `lighting_template_unusable_data` | `LGTM` with missing or unsupported-size `DATA`: DATA lighting columns NULL, other fields retained | data loss |
 | `emittance_target_absent` | `XEMI` target not in the load order, or deleted: no `emittance` row | fallback |
@@ -1667,8 +1673,9 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 | `emittance_weather_no_lighting` | `XEMI` target `REGN` whose weather has no Effect Lighting colours: no `emittance` row | fallback |
 | `emittance_target_wrong_type` | `XEMI` target that is neither a `LIGH` nor a `REGN`: no `emittance` row | fallback |
 
-**Severity.** A missing light or placement row, or unusable grass/template DATA, loses a
-supported runtime projection, so a
+**Severity.** A missing light or placement row, or an incomplete grass/template DATA field,
+loses all or part of a supported projection. Readable GRAS scalars remain authored values;
+only unavailable scalar spans become NULL. A
 `data_loss` category adds one line to the conversion's `warnings` and makes the output
 incomplete. A reference whose emittance target does not resolve keeps the model's own emission
 (section 16), the documented fallback, so a `fallback` category adds one line to `notices` and the

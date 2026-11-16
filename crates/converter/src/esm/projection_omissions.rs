@@ -31,7 +31,7 @@ pub enum OmissionCategory {
     LightMissingData,
     /// A `LIGH` whose `DATA` is too short for the row's required fields gets no `lights` row.
     LightShortData,
-    /// A GRAS with missing or short DATA keeps its identity/model but no DATA columns.
+    /// A GRAS with missing or short DATA keeps its readable scalars and identity/model.
     GrassUnusableData,
     /// A placed record without a readable DATA transform keeps only its canonical row.
     ReferenceUnusableData,
