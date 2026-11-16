@@ -130,7 +130,9 @@ pub(crate) fn restore_portal_endpoint_provenance<'a>(
         if clear.execute([id])? == 0 {
             continue;
         }
-        if let Some(source) = source.filter(|bytes| bytes.len().is_multiple_of(4)) {
+        if let Some(source) =
+            source.filter(|bytes| !bytes.is_empty() && bytes.len().is_multiple_of(8))
+        {
             for (index, pair) in source.as_chunks::<8>().0.iter().enumerate() {
                 set.execute(params![
                     id,
@@ -672,6 +674,10 @@ pub fn export_room_graph(
         }
         if !xpod.len().is_multiple_of(8) {
             report.portals_with_trailing_xpod_bytes += 1;
+            incomplete.insert(cell);
+        }
+        if pairs == 0 {
+            incomplete.insert(cell);
         }
         let side = |pair: usize, offset: usize| {
             u32_at(xpod, pair * 8 + offset)
