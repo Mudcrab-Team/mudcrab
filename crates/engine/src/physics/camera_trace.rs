@@ -66,6 +66,7 @@ pub(super) fn count_walk_camera_trace_tick(mut trace: ResMut<WalkCameraTrace>) {
 /// Writes one row after the camera follow system placed the view.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn write_walk_camera_trace_row(
+    mut commands: Commands,
     mut trace: ResMut<WalkCameraTrace>,
     time: Res<Time>,
     fixed: Res<Time<Fixed>>,
@@ -85,6 +86,11 @@ pub(super) fn write_walk_camera_trace_row(
         return;
     };
     let overstep = fixed.overstep_fraction();
+    // The streamer can rebase the floating origin after the camera update and before this row. The
+    // body and the camera are shifted at once, the view pose on its next sample, so move a copy of
+    // the pose into the recorded origin to keep the row in one space.
+    let mut pose = *pose;
+    pose.rebase(render_origin.as_ref().map(|origin| origin.0));
     let feet = if pose.valid {
         pose.shown(overstep)
     } else {
@@ -129,8 +135,18 @@ pub(super) fn write_walk_camera_trace_row(
         look.pitch,
     );
     trace.frame += 1;
-    if written.is_err() || trace.frame.is_multiple_of(FLUSH_EVERY_FRAMES) {
-        let _ = trace.out.flush();
+    let flushed = if written.is_err() || trace.frame.is_multiple_of(FLUSH_EVERY_FRAMES) {
+        trace.out.flush()
+    } else {
+        Ok(())
+    };
+    if let Err(error) = written.and(flushed) {
+        // Report the first failure and stop: a CSV with missing rows would mislead the analysis.
+        warn!(
+            "walk camera trace: cannot write the trace after {} frames: {error}; the trace stops here",
+            trace.frame
+        );
+        commands.remove_resource::<WalkCameraTrace>();
     }
 }
 

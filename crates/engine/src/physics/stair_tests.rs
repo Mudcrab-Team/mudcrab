@@ -819,11 +819,15 @@ fn measure_steep_ramp_speed_along_the_surface() {
     }
 }
 
-/// One fixed tick on a real flight: the body and the controller state after the tick.
+/// One fixed tick on a real flight: the body after the tick, the controller state after the tick,
+/// and whether Rapier found support at the end of this same move. `grounded` is the state flag: it
+/// is also false after a step-up lift and carries the support result of the tick before.
 #[derive(Clone, Copy, Debug)]
 struct WalkTick {
     position: Vec3,
     grounded: bool,
+    /// Rapier's grounded result of this tick's move, read after the body was written back.
+    supported: bool,
     vertical_velocity: f32,
 }
 
@@ -832,12 +836,20 @@ struct WalkTickLog(Vec<WalkTick>);
 
 fn log_walk_tick(
     mut log: ResMut<WalkTickLog>,
-    player: Query<(&Transform, &WalkState), With<PlayerBody>>,
+    player: Query<
+        (
+            &Transform,
+            &WalkState,
+            Option<&KinematicCharacterControllerOutput>,
+        ),
+        With<PlayerBody>,
+    >,
 ) {
-    if let Ok((body, state)) = player.single() {
+    if let Ok((body, state, output)) = player.single() {
         log.0.push(WalkTick {
             position: body.translation,
             grounded: state.grounded,
+            supported: output.is_some_and(|output| output.grounded),
             vertical_velocity: state.vertical_velocity,
         });
     }
@@ -857,6 +869,15 @@ fn walkway_stairs_app(assets: &Path, foot_y: f32) -> (App, f32) {
         serde_json::from_value(glb["scenes"][0]["extras"]["mudcrabCollision"].clone()).unwrap();
     assert!(collision.authored && collision.skipped.is_empty());
     let mut app = headless::fixture_app();
+    // The fixture's own ground (top at Y = 0), hill, step and wall would sit under or beside the
+    // stairs and mask the floors added below, so a lower foot floor would never be reached.
+    let mut arena_query = app
+        .world_mut()
+        .query_filtered::<Entity, With<FixtureArena>>();
+    let arena: Vec<Entity> = arena_query.iter(app.world()).collect();
+    for entity in arena {
+        app.world_mut().entity_mut(entity).despawn();
+    }
     let mut top_levels: std::collections::BTreeMap<i32, f32> = Default::default();
     for shape in &collision.shapes {
         let shared::collision::CollisionShape::Mesh {
@@ -996,7 +1017,7 @@ fn measure_real_walkway_stairs15() {
                 ] {
                     let (frames, ticks) =
                         walk_real_stairs(assets, foot_y, speed, &deltas, descend, 0.0);
-                    let airborne = ticks.iter().filter(|tick| !tick.grounded).count();
+                    let airborne = ticks.iter().filter(|tick| !tick.supported).count();
                     let fall = ticks
                         .iter()
                         .map(|tick| tick.vertical_velocity)
@@ -1023,7 +1044,7 @@ fn measure_real_walkway_stairs15() {
                         detrended_rms(&times, &values)
                     };
                     println!(
-                        "foot {foot_y:>5} {} {label} {speed} u/s, {pacing}: {} ticks on the flight, {airborne} airborne ({:.0}%), fastest fall {fall:.0}, fastest rise {rise:.0} u/s; camera lag {lag_min:.1}..{lag_max:.1}; height ripple view {:.2}, rigid {:.2}",
+                        "foot {foot_y:>5} {} {label} {speed} u/s, {pacing}: {} ticks on the flight, {airborne} unsupported ({:.0}%), fastest fall {fall:.0}, fastest rise {rise:.0} u/s; camera lag {lag_min:.1}..{lag_max:.1}; height ripple view {:.2}, rigid {:.2}",
                         if descend { "descent" } else { "climb  " },
                         ticks.len(),
                         100.0 * airborne as f64 / ticks.len().max(1) as f64,
@@ -1068,7 +1089,7 @@ fn measure_real_walkway_stairs15_descent_ground_snap_what_if() {
                 ("trace pacing", trace_like_frame_times(1500)),
             ] {
                 let (frames, ticks) = walk_real_stairs(assets, -16.0, speed, &deltas, true, snap);
-                let airborne = ticks.iter().filter(|tick| !tick.grounded).count();
+                let airborne = ticks.iter().filter(|tick| !tick.supported).count();
                 let fall = ticks
                     .iter()
                     .map(|tick| tick.vertical_velocity)
@@ -1093,7 +1114,7 @@ fn measure_real_walkway_stairs15_descent_ground_snap_what_if() {
                     detrended_rms(&times, &values)
                 };
                 println!(
-                    "descent {label} {speed} u/s, snap {snap:>4}, {pacing}: {} ticks, {airborne} airborne, fastest fall {fall:.0} u/s, largest drop in one tick {drop:.1}; camera lag {:.1}..{:.1}; height ripple view {:.2}, rigid {:.2}",
+                    "descent {label} {speed} u/s, snap {snap:>4}, {pacing}: {} ticks, {airborne} unsupported, fastest fall {fall:.0} u/s, largest drop in one tick {drop:.1}; camera lag {:.1}..{:.1}; height ripple view {:.2}, rigid {:.2}",
                     ticks.len(),
                     lags.iter().copied().fold(f32::MAX, f32::min),
                     lags.iter().copied().fold(f32::MIN, f32::max),
