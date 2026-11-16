@@ -5,7 +5,7 @@ use bevy::{
     ecs::system::{SystemId, SystemParam},
     input::mouse::MouseMotion,
     prelude::*,
-    window::{CursorGrabMode, CursorOptions},
+    window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
 use bevy_rapier3d::prelude::*;
 use color_eyre::{
@@ -547,7 +547,7 @@ pub(crate) struct PlayerControlsSystems;
 impl Plugin for PlayerControlsPlugin {
     fn build(&self, app: &mut App) {
         register_move_mode_effect(app.world_mut());
-        app.add_plugins(PhysicsCorePlugin)
+        app.add_plugins((PhysicsCorePlugin, crate::focus_pause::FocusPausePlugin))
             .init_resource::<MoveMode>()
             .init_resource::<WalkIntent>()
             .init_resource::<SprintLatch>()
@@ -569,7 +569,7 @@ impl Plugin for PlayerControlsPlugin {
                     sprint_latch_system,
                     look_input_system,
                     noclip_flight_system.run_if(crate::door_crossing::no_door_crossing),
-                    // Nothing walks during a door crossing: the landing has no collision yet.
+                    // No player wishes during a crossing; safe landing physics settles below.
                     walk_intent_system.run_if(crate::door_crossing::no_door_crossing),
                     toggle_mode_system.run_if(console_closed),
                     walk_camera_follow_system,
@@ -583,10 +583,13 @@ impl Plugin for PlayerControlsPlugin {
                 FixedUpdate,
                 // Input stays paused throughout a crossing. Placement and gravity settle behind
                 // black once destination assets are ready, before the crossing may fade in.
-                (release_walk_spawn_hold, walk_movement_system)
+                (
+                    neutralize_blocked_walk_input,
+                    release_walk_spawn_hold,
+                    walk_movement_system,
+                )
                     .chain()
                     .run_if(crate::door_crossing::walk_physics_allowed)
-                    .run_if(console_closed)
                     .before(PhysicsSet::SyncBackend),
             );
     }
@@ -1731,6 +1734,18 @@ type WalkBodyQuery<'w, 's> = Query<
     ),
 >;
 
+/// Input ownership never gates gravity or safe placement. Clear stale wishes before fixed ticks,
+/// which run before the Update input sampler, including on menu opening/closing frames.
+fn neutralize_blocked_walk_input(
+    console: Option<Res<ConsoleState>>,
+    menu: Option<Res<crate::settings_ui::SettingsMenuState>>,
+    mut reset: MotionReset,
+) {
+    if !console_closed(console, menu) {
+        reset.clear_input();
+    }
+}
+
 /// Fixed-step walk integration + controller feed (V10, V11, V18).
 pub fn walk_movement_system(
     mode: Res<MoveMode>,
@@ -1926,8 +1941,12 @@ struct WalkCameraFollowState {
 /// RF-CAM-007). It is evaluated once per rendered frame with the frame delta. This system runs in
 /// `Update`, so the spring is not tied to the fixed physics step. The spring itself is
 /// [`camera_follow::follow_spring_step`].
+///
+/// Pause also holds a door-staged camera pose until its queued body placement can commit. The
+/// spring state is kept unchanged while it holds.
 #[allow(clippy::too_many_arguments)]
 fn walk_camera_follow_system(
+    virtual_time: Res<Time<Virtual>>,
     mode: Res<MoveMode>,
     tuning: Res<MovementTuning>,
     look: Res<LookIntent>,
@@ -1958,6 +1977,13 @@ fn walk_camera_follow_system(
         .map(|(old, new)| render_origin_displacement(old, new));
     follow.previous_origin = current_origin;
 
+    if virtual_time.is_paused()
+        && crossing
+            .as_ref()
+            .is_some_and(|crossing| crossing.is_active())
+    {
+        return;
+    }
     if *mode != MoveMode::Walk {
         follow.spring = None;
         return;
@@ -2306,10 +2332,14 @@ type TeleportBodyQuery<'w, 's> = Query<
 
 /// Applies [`TeleportPlayer`]: places the body, zeroes its velocity and walk state, and holds WALK
 /// until bounded destination collision is available. In NOCLIP the body stays disabled and only
-/// the camera moves.
+/// the camera moves. Door placements queued before a pause are retained until world resume;
+/// explicit console teleports outside a crossing remain intentional paused-world edits.
 #[allow(clippy::too_many_arguments)]
 fn apply_teleport_player(
     mut teleports: MessageReader<TeleportPlayer>,
+    mut pending: Local<Option<TeleportPlayer>>,
+    time: Res<Time<Virtual>>,
+    crossing: Option<Res<crate::door_crossing::DoorCrossing>>,
     mut hold: ResMut<WalkSpawnHold>,
     mode: Res<MoveMode>,
     tuning: Res<MovementTuning>,
@@ -2319,7 +2349,14 @@ fn apply_teleport_player(
     mut camera: Query<&mut Transform, (With<StreamingCamera>, Without<PlayerBody>)>,
     mut commands: Commands,
 ) {
-    let Some(teleport) = teleports.read().last().copied() else {
+    let deferred = pending.is_some();
+    if let Some(teleport) = teleports.read().last().copied() {
+        *pending = Some(teleport);
+    }
+    if time.is_paused() && (deferred || crossing.is_some_and(|crossing| crossing.is_active())) {
+        return;
+    }
+    let Some(teleport) = pending.take() else {
         return;
     };
     *hold = WalkSpawnHold::default();
@@ -2583,7 +2620,7 @@ pub(crate) mod headless {
 #[cfg(test)]
 mod world_startup_tests {
     use super::*;
-    use bevy::{mesh::MeshPlugin, time::TimeUpdateStrategy};
+    use bevy::{ecs::system::RunSystemOnce, mesh::MeshPlugin, time::TimeUpdateStrategy};
 
     fn world_app() -> App {
         let mut app = App::new();
@@ -3004,8 +3041,9 @@ mod world_startup_tests {
         assert!(!app.world().resource::<WalkSpawnHold>().active);
     }
 
+    /// A live menu owns input but cannot suspend safe fixed-step placement.
     #[test]
-    fn startup_hold_and_walk_pause_with_console_and_door_crossing_guards() {
+    fn pause704_live_menu_releases_spawn_hold_but_unsafe_door_does_not() {
         let mut app = world_app();
         let elapsed = WALK_SPAWN_TIMEOUT_SECONDS - PHYSICS_TIMESTEP * 0.5;
         app.world_mut().resource_mut::<WalkSpawnHold>().elapsed = elapsed;
@@ -3013,22 +3051,306 @@ mod world_startup_tests {
             open: true,
             ..default()
         });
-        tick(&mut app, 1);
-        assert_mode(&mut app, MoveMode::Walk);
-        assert!(app.world().resource::<WalkSpawnHold>().active);
-        assert_eq!(app.world().resource::<WalkSpawnHold>().elapsed, elapsed);
-
-        app.insert_resource(crate::console::ConsoleState::default());
         app.insert_resource(crate::door_crossing::DoorCrossing::holding_for_test());
         tick(&mut app, 1);
-        assert_mode(&mut app, MoveMode::Walk);
-        assert!(app.world().resource::<WalkSpawnHold>().active);
         assert_eq!(app.world().resource::<WalkSpawnHold>().elapsed, elapsed);
-
         app.insert_resource(crate::door_crossing::DoorCrossing::default());
         tick(&mut app, 1);
         assert_mode(&mut app, MoveMode::Noclip);
         assert!(!app.world().resource::<WalkSpawnHold>().active);
+    }
+
+    /// Seed through the public walking system, which owns the integrator's resolved-input API.
+    fn seed_falling_motion(app: &mut App, entity: Entity, jumping: bool) {
+        app.world_mut()
+            .resource_mut::<Time<Fixed>>()
+            .advance_by(std::time::Duration::from_secs_f32(PHYSICS_TIMESTEP));
+        app.world_mut()
+            .entity_mut(entity)
+            .remove::<KinematicCharacterControllerOutput>();
+        if jumping {
+            app.world_mut()
+                .entity_mut(entity)
+                .insert(KinematicCharacterControllerOutput {
+                    grounded: true,
+                    desired_translation: Vec3::ZERO,
+                    effective_translation: Vec3::ZERO,
+                    collisions: Vec::new(),
+                    is_sliding_down_slope: false,
+                });
+            *app.world_mut().resource_mut::<WalkIntent>() = WalkIntent {
+                jump_pressed: true,
+                ..default()
+            };
+            app.world_mut()
+                .run_system_once(walk_movement_system)
+                .unwrap();
+            app.world_mut()
+                .entity_mut(entity)
+                .remove::<KinematicCharacterControllerOutput>();
+        }
+        *app.world_mut().resource_mut::<WalkIntent>() = WalkIntent {
+            wish_dir: if jumping { Vec3::X } else { Vec3::ZERO },
+            target_speed: if jumping { 200.0 } else { 0.0 },
+            ..default()
+        };
+        for _ in 0..if jumping { 120 } else { 6 } {
+            app.world_mut()
+                .run_system_once(walk_movement_system)
+                .unwrap();
+        }
+    }
+
+    /// Exercise the production schedule with stale input and an airborne body.
+    #[test]
+    fn pause704_live_menu_integrates_neutral_input_without_erasing_motion() {
+        let mut app = world_app();
+        app.world_mut().resource_mut::<WalkSpawnHold>().active = false;
+        let entity = body(&mut app);
+        app.world_mut()
+            .get_mut::<Transform>(entity)
+            .unwrap()
+            .translation
+            .y = 2000.0;
+        seed_falling_motion(&mut app, entity, true);
+        *app.world_mut().resource_mut::<WalkIntent>() = WalkIntent {
+            wish_dir: Vec3::Z,
+            target_speed: 300.0,
+            jump_pressed: true,
+        };
+        app.world_mut().resource_mut::<SprintLatch>().0 = true;
+        app.insert_resource(crate::console::ConsoleState {
+            open: true,
+            ..default()
+        });
+        app.insert_resource(CursorCapture::Released);
+        tick(&mut app, 2); // The first fixed tick registers the body with Rapier.
+        let state = app.world().get::<WalkState>(entity).unwrap();
+        let fallen_to = app.world().get::<Transform>(entity).unwrap().translation;
+        let falling_step = app
+            .world()
+            .get::<KinematicCharacterControllerOutput>(entity)
+            .unwrap()
+            .effective_translation
+            .y;
+        assert!(falling_step < 0.0, "menu must not suspend gravity");
+        assert!(state.horizontal_velocity.x > 0.0, "preserve inertia");
+        assert_eq!(state.horizontal_velocity.z, 0.0, "neutral wish");
+        assert!(!app.world().resource::<WalkIntent>().jump_pressed);
+        assert!(!app.world().resource::<SprintLatch>().0);
+        // Focus release must preserve the airborne state on a paused frame.
+        app.insert_resource(crate::console::ConsoleState::default());
+        app.insert_resource(CursorCapture::Captured);
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    focused: false,
+                    ..default()
+                },
+                bevy::window::PrimaryWindow,
+            ))
+            .id();
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        tick(&mut app, 1);
+        assert_eq!(
+            app.world().get::<Transform>(entity).unwrap().translation,
+            fallen_to
+        );
+        assert_eq!(
+            *app.world().resource::<CursorCapture>(),
+            CursorCapture::Released
+        );
+        assert!(!app.world().get::<Window>(window).unwrap().focused);
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = true;
+        tick(&mut app, 1); // Release focus while preserving the earlier manual pause.
+        app.world_mut().resource_mut::<Time<Virtual>>().unpause();
+        tick(&mut app, 1);
+        let resumed_step = app
+            .world()
+            .get::<KinematicCharacterControllerOutput>(entity)
+            .unwrap()
+            .effective_translation
+            .y;
+        assert!(
+            resumed_step <= falling_step,
+            "focus release must preserve falling speed"
+        );
+    }
+
+    /// Paused console edits still synchronize the view when no crossing owns its staged pose.
+    #[test]
+    fn pause704_camera_follows_paused_console_edits_outside_crossings() {
+        let mut app = world_app();
+        let entity = body(&mut app);
+        let position = Vec3::new(123.0, 456.0, 789.0);
+        app.world_mut()
+            .get_mut::<Transform>(entity)
+            .unwrap()
+            .translation = position;
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        app.world_mut()
+            .run_system_once(walk_camera_follow_system)
+            .unwrap();
+        let view = app
+            .world_mut()
+            .query_filtered::<&Transform, With<StreamingCamera>>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(
+            view.translation,
+            position + Vec3::Y * app.world().resource::<MovementTuning>().eye_height
+        );
+    }
+
+    /// Door commands are consumed a frame after space switching; pause can start in between.
+    #[test]
+    fn pause704_queued_door_teleport_survives_message_expiry_without_committing() {
+        let mut app = world_app();
+        app.insert_resource(crate::door_crossing::DoorCrossing::holding_for_test());
+        let entity = body(&mut app);
+        let before = app.world().get::<Transform>(entity).unwrap().translation;
+        let camera = app
+            .world_mut()
+            .query_filtered::<Entity, With<StreamingCamera>>()
+            .single(app.world())
+            .unwrap();
+        // switch_space stages the camera before the next Update consumes the body teleport.
+        let staged_view = Vec3::new(123.0, 626.0, 789.0);
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation = staged_view;
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        app.world_mut().write_message(TeleportPlayer {
+            position: Vec3::new(123.0, 456.0, 789.0),
+            sampled_ground_y: None,
+            yaw: 0.6,
+        });
+        tick(&mut app, 10);
+        assert_eq!(
+            app.world().get::<Transform>(entity).unwrap().translation,
+            before
+        );
+        assert_eq!(
+            app.world().get::<Transform>(camera).unwrap().translation,
+            staged_view,
+            "camera follow must not undo the door's staged view during pause"
+        );
+        app.world_mut().resource_mut::<Time<Virtual>>().unpause();
+        tick(&mut app, 1);
+        let expected = body_and_camera_for_feet(
+            app.world().resource::<MovementTuning>(),
+            Vec3::new(123.0, 456.0, 789.0),
+        )
+        .0;
+        assert_eq!(
+            app.world().get::<Transform>(entity).unwrap().translation,
+            expected
+        );
+    }
+
+    /// Secondary windows never own game focus; opting out releases input while physics runs.
+    #[test]
+    fn pause704_always_active_and_secondary_window_focus() {
+        let mut app = world_app();
+        let primary = app
+            .world_mut()
+            .spawn((Window::default(), PrimaryWindow, CursorOptions::default()))
+            .id();
+        let secondary = app
+            .world_mut()
+            .spawn((
+                Window {
+                    focused: false,
+                    ..default()
+                },
+                CursorOptions::default(),
+            ))
+            .id();
+        app.insert_resource(CursorCapture::Captured);
+        tick(&mut app, 1);
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        assert_eq!(
+            *app.world().resource::<CursorCapture>(),
+            CursorCapture::Captured
+        );
+        assert_eq!(
+            app.world()
+                .get::<CursorOptions>(secondary)
+                .unwrap()
+                .grab_mode,
+            CursorGrabMode::None
+        );
+        assert!(app.world().get::<CursorOptions>(secondary).unwrap().visible);
+        assert_eq!(
+            app.world().get::<CursorOptions>(primary).unwrap().grab_mode,
+            CursorGrabMode::Locked
+        );
+        app.insert_resource(crate::config::EngineConfig {
+            always_active: true,
+            ..default()
+        });
+        app.world_mut().get_mut::<Window>(primary).unwrap().focused = false;
+        let entity = body(&mut app);
+        app.world_mut().resource_mut::<WalkSpawnHold>().active = false;
+        app.world_mut()
+            .get_mut::<Transform>(entity)
+            .unwrap()
+            .translation
+            .y = 2000.0;
+        seed_falling_motion(&mut app, entity, false);
+        tick(&mut app, 1);
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        assert_eq!(
+            *app.world().resource::<CursorCapture>(),
+            CursorCapture::Released
+        );
+        assert!(app.world().get::<Transform>(entity).unwrap().translation.y < 2000.0);
+        app.world_mut()
+            .resource_mut::<crate::config::EngineConfig>()
+            .always_active = false;
+        tick(&mut app, 1);
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
+    }
+
+    /// The first background frame must be paused before the time system runs.
+    #[test]
+    fn pause704_primary_focus_pauses_before_fixed_ticks_and_discards_background_time() {
+        let mut app = world_app();
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    focused: false,
+                    ..default()
+                },
+                bevy::window::PrimaryWindow,
+            ))
+            .id();
+        let before = app.world().resource::<Time<Virtual>>().elapsed();
+        tick(&mut app, 1);
+        assert!(
+            app.world().resource::<Time<Virtual>>().is_paused(),
+            "focus loss must pause"
+        );
+        assert_eq!(app.world().resource::<Time<Virtual>>().elapsed(), before);
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs(90),
+        ));
+        tick(&mut app, 1);
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = true;
+        tick(&mut app, 1);
+        assert_eq!(
+            app.world().resource::<Time<Virtual>>().elapsed(),
+            before,
+            "no resume catch-up"
+        );
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f32(PHYSICS_TIMESTEP),
+        ));
+        tick(&mut app, 1);
+        assert!(app.world().resource::<Time<Virtual>>().elapsed() > before);
     }
 
     #[test]
@@ -3876,38 +4198,36 @@ fn tankard_spawn_input(
     }
 }
 
+/// Release cursor/input ownership without altering the physical walking state.
 #[allow(clippy::too_many_arguments)]
 fn cursor_lifecycle_system(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     keyboard: Res<ButtonInput<KeyCode>>,
-    windows: Query<&Window>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     mut capture: ResMut<CursorCapture>,
-    mut cursor_options: Query<&mut CursorOptions>,
-    mut intent: ResMut<WalkIntent>,
-    mut sprint: ResMut<SprintLatch>,
-    mut states: Query<&mut WalkState>,
-    mut controllers: Query<&mut KinematicCharacterController>,
+    mut cursor_options: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    mut motion: MotionReset,
     console: Option<Res<ConsoleState>>,
     menu: Option<Res<crate::settings_ui::SettingsMenuState>>,
 ) {
     // Focus loss or F3 releases; click recaptures (V6). The console and settings menu own capture
     // while open and on their closing frame; the cursor options below still follow that state.
-    let focused = windows.iter().all(|window| window.focused);
+    let focused = windows.single().map_or(true, |window| window.focused);
     let reporting_capture = console
         .as_ref()
         .is_some_and(|console| console.capture_suppressed);
     let console_owns_capture = console
         .is_some_and(|console| console.open || console.closing || console.capture_suppressed)
         || menu.is_some_and(|menu| menu.blocks_gameplay());
-    if reporting_capture {
+    if reporting_capture || !focused {
         *capture = CursorCapture::Released;
-        clear_motion_state(&mut intent, &mut sprint, &mut states, &mut controllers);
+        motion.clear_input();
     }
     if !console_owns_capture {
         if !focused || keyboard.just_pressed(KeyCode::F3) {
             if *capture == CursorCapture::Captured {
                 *capture = CursorCapture::Released;
-                clear_motion_state(&mut intent, &mut sprint, &mut states, &mut controllers);
+                motion.clear_input();
             }
         } else if mouse_buttons.just_pressed(MouseButton::Left)
             && *capture == CursorCapture::Released

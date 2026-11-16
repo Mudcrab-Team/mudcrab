@@ -19,6 +19,7 @@ pub mod doors;
 pub mod emittance;
 pub mod extensions;
 pub mod fingerprint;
+mod focus_pause;
 pub mod frame_budget;
 pub mod hdr_probe;
 pub mod indirect_metrics;

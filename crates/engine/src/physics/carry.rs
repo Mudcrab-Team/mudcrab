@@ -1504,6 +1504,42 @@ mod tests {
         assert!(lag(&mut app) < 3.0, "lag {}", lag(&mut app));
     }
 
+    /// A paused world never moves or retargets the held object (#704). The spring runs only in the
+    /// fixed step, which does not run while virtual time is paused, so a view change made during
+    /// the pause is not followed until the world resumes. The object stays held across the pause
+    /// (the cursor is still captured here), then rises with the view.
+    #[test]
+    fn a_paused_world_freezes_the_held_object_until_resume() {
+        let mut app = carry_app();
+        let entity = spawn_box_ahead(&mut app, 5.0, 100.0);
+        frames(&mut app, 2);
+        hold_activate(&mut app);
+        frames(&mut app, 60);
+        let held_before = held(&app).expect("held");
+        let level = centre_of(&app, entity);
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        app.world_mut().resource_mut::<LookIntent>().pitch = 0.4;
+        frames(&mut app, 90);
+        assert_eq!(
+            held(&app),
+            Some(held_before),
+            "the hold changed while paused"
+        );
+        assert_eq!(
+            centre_of(&app, entity),
+            level,
+            "the held object moved while the world was paused"
+        );
+        app.world_mut().resource_mut::<Time<Virtual>>().unpause();
+        frames(&mut app, 90);
+        assert!(held(&app).is_some());
+        assert!(
+            centre_of(&app, entity).y > level.y + 20.0,
+            "the held object did not follow the view after resume"
+        );
+        assert!(lag(&mut app) < 3.0, "lag {}", lag(&mut app));
+    }
+
     /// The hold must not shake once it has settled. The 0.5-unit limit on the grabbed point is the
     /// jitter limit from the audit's phase-1 acceptance numbers (see "Acceptance numbers" in
     /// `docs/specs/engine/object-carrying.md`; spud's own shake before its effective-mass fix was
@@ -1798,11 +1834,14 @@ mod tests {
         frames(&mut app, 2);
         hold_activate(&mut app);
         assert!(held(&app).is_some());
-        // An unfocused window releases the cursor, which ends the hold.
-        app.world_mut().spawn(bevy::window::Window {
-            focused: false,
-            ..default()
-        });
+        // An unfocused primary window releases the cursor, which ends the hold.
+        app.world_mut().spawn((
+            bevy::window::Window {
+                focused: false,
+                ..default()
+            },
+            bevy::window::PrimaryWindow,
+        ));
         frames(&mut app, 3);
         assert_eq!(
             *app.world().resource::<CursorCapture>(),
