@@ -14,7 +14,7 @@ Settings are grouped under headings (for example Point lights, Sun shadows, Wate
 - Sun lighting, illuminance and RGB color; ambient brightness and RGB color.
 - Sun shadows, shadow-map resolution, cascade count and distance multiplier. The underlying shadow range follows the full-detail unload grid.
 - Sky dome, sky-brightness multiplier, exterior distance fog and fog-density multiplier. Interior cells retain their existing sky/fog rules.
-- Water reflections and reflection multiplier; waves, flow normals, wave scale, speed and strength. The reflection multiplier layers over each water's converted Fresnel and reflectivity values.
+- Water reflections and reflection multiplier; waves, wave scale, speed and strength. (A saved "flow normals" field is still read from old settings files but has no control: the flow program now runs from the water record's FNAM flag.) The reflection multiplier layers over each water's converted Fresnel and reflectivity values.
 - CPU frustum culling, GPU indirect drawing, GPU occlusion culling and depth prepass. Enabling occlusion enables its depth-prepass and indirect-drawing dependencies; disabling either dependency disables occlusion.
 - MSAA, exposure, tone mapping, vertical FOV, VSync, window mode and windowed resolution.
 - Color grading: Off, Saturation, Full (legacy), Approved sRGB, Snapshot linear and Record sRGB, with live saturation, brightness, contrast, pivot, tint amount and tint RGB. Defaults preserve the approved Sleeping Giant sRGB appearance and Cool Gray sky/fog. Stage-dependent rows dim while inactive. Reflections stay ungraded. Console commands synchronize the menu. See the integration contract below for domains, persistence, launch precedence and capture isolation.

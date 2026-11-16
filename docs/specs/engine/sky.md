@@ -87,8 +87,9 @@ comparison; the output correction does not validate those assumptions.
   terrain/water, transform-bounds and renderer fixture cameras. Bevy applies `DistanceFog` to
   `StandardMaterial` meshes by itself and to the terrain and water shaders through
   `main_pass_post_lighting_processing`; the dome's shader does not ask for fog, so the dome stays
-  unfogged. The water reflection camera is left unfogged, because the water surface it renders into
-  is fogged once already.
+  unfogged. The water reflection camera is a `FogCamera` too: retail's screen-space reflection reads the
+  already-fogged frame (RF-WATER-009, RF-WATER-011), and the water surface is fogged once more
+  as part of the main view.
 - **Interiors.** An interior cell has no weather, so `CameraSpace::Interior` takes the fog off
   every `FogCamera`, as it hides the dome.
 - **Range.** The visibility distance is longer than the default camera far plane, so terrain is
