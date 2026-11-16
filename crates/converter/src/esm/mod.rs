@@ -183,8 +183,9 @@ impl EsmParser {
         .map(|conversion| conversion.records)
     }
 
-    /// Publish with one immutable schema batch and retain summaries for the pipeline report.
+    /// Test convenience for admitting a fresh order with one immutable schema batch.
     /// Localized names come from `strings_root`'s tables in `language`.
+    #[cfg(test)]
     pub(crate) fn convert_plugins_with_reader_and_schemas(
         plugin_paths: &[PathBuf],
         db_path: &Path,
@@ -205,7 +206,8 @@ impl EsmParser {
         )
     }
 
-    /// Select loose string inputs independently of the physical parent and collect reader summaries.
+    /// Test convenience for fresh admission with independently selected loose string inputs.
+    #[cfg(test)]
     pub(crate) fn convert_plugins_with_reader_and_schemas_with_string_sources(
         plugin_paths: &[PathBuf],
         db_path: &Path,

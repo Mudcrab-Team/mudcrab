@@ -399,7 +399,7 @@ fn write_record_archive_scope(output: &Path, complete: bool, signatures: &[[u8; 
             "runtime_views_materialized": false,
             "preserved_sql_tables": ["schema_info", "plugins", "records", "formid_map",
                 "inhouse_source_records", "inhouse_localized_fields", "inhouse_terrain_source_order",
-                "inhouse_terrain_layers", "inhouse_unresolved_terrain_textures", "record_overrides", "inhouse_plugin_masters", "inhouse_schema_addons", "record_diagnostics"],
+                "inhouse_terrain_layers", "inhouse_unresolved_terrain_textures", "record_overrides", "inhouse_plugin_inputs", "inhouse_plugin_masters", "inhouse_schema_addons", "record_diagnostics"],
         "deferred_runtime_tables": DEFERRED_RUNTIME_TABLES,
         "unchanged_auxiliary_tables": ["conversion_cache", "lod", "lod_chunks", "lod_build",
             "lod_chunks_spatial", "lod_chunks_spatial_node", "lod_chunks_spatial_parent", "lod_chunks_spatial_rowid"],

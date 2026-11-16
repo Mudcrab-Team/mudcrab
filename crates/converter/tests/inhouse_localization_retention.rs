@@ -1202,6 +1202,14 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
         // R6 creates add-on provenance even when empty; archive scope must classify it.
         assert!(preserved.contains("inhouse_schema_addons"));
         assert!(archive_tables["inhouse_schema_addons"].is_empty());
+        // Admission metadata is canonical provenance, even when runtime views are deferred.
+        assert!(preserved.contains("inhouse_plugin_inputs"));
+        assert!(!archive_tables["inhouse_plugin_inputs"].is_empty());
+        assert_eq!(
+            archive_tables["inhouse_plugin_inputs"].len(),
+            archive_tables["plugins"].len(),
+            "archive retains admission metadata for every plugin slot"
+        );
         assert_eq!(deferred_manifest, deferred.into_iter().collect());
         for table in archive_tables.keys() {
             assert!(
