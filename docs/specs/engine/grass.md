@@ -348,7 +348,8 @@ feature normal mapping does not establish vanilla NIF normal-slot usage.
 Select a flat TOML file with `--grass-tuning docs/examples/grass-tuning/retail.toml`
 (or `MUDCRAB_GRASS_TUNING`). Fileless startup and empty valid TOML use the same
 retail defaults. `--grass-tuning-info <path>` prints the accepted settings before
-app or GPU creation. Content-hash polling runs at most once per elapsed second;
+app or GPU creation. Content-hash polling runs at most once per real elapsed second,
+including while virtual game time is paused;
 valid edits atomically update uniforms without regenerating placement or shaders.
 Missing/unreadable/invalid edits retain the last good values. Unknown keys warn;
 finite values outside the ranges below clamp with warnings. Inputs over 64 KiB
@@ -434,8 +435,8 @@ floor of 0.3 (RF-GRASS-005).
 Authored vertex RGB, Color Range and terrain VCLR tint stay enabled. The appearance
 pipeline and packed tint metadata are active with or without a tuning file.
 `--grass-tuning <toml>` overrides `MUDCRAB_GRASS_TUNING`; edits hot reload at most
-once per elapsed second by content hash. Invalid or missing files keep the last
-good settings and warn. A valid empty file resets to defaults. Inputs are limited
+once per real elapsed second by content hash, including while paused. Invalid or
+missing files keep the last good settings and warn. A valid empty file resets to defaults. Inputs are limited
 to 64 KiB. `--grass-tuning-info <toml>` validates and reports settings before app
 or GPU creation. Captures freeze the accepted hash and effective settings with
 the actual frame; they do not reread the file in the callback.

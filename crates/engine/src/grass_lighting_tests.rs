@@ -421,7 +421,8 @@ fn grass_output_scale_includes_nonzero_sheen() {
         assert!(
             (scaled[channel] - full[channel] * 0.5).abs() < 1.0e-6,
             "channel {channel}: scaled {} versus half {}",
-            scaled[channel], full[channel]
+            scaled[channel],
+            full[channel]
         );
     }
 }
