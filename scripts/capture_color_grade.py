@@ -47,6 +47,9 @@ def main():
             "--shots-out", str(directory), "--hidden-window", "--lights",
             "--stream-radius", "2", "--color-grade", mode,
             "--visual-preset", VISUAL_PRESET,
+            # The native Riverwood reference was captured after `set gamehour to 12`
+            # (tools/skyrim-comparison/README.md), so these poses need noon, not the default hour.
+            "--game-hour", "12",
             "--shots-settle-timeout", "120",
         ]
         print(f"Capturing {mode}: {directory}", flush=True)
