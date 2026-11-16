@@ -467,6 +467,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "nif-root-transform-ignored",
     "skin-static-fallback",
     "object-texture-swap-geometry-index-v1",
+    "object-texture-swap-geometry-index-v2",
     "native-room-assignment-spheres",
     "leaf-ordered-and-static-skin-room-spheres",
 ];

@@ -101,3 +101,56 @@ visible in a campaign report instead of being read as a pass.
 `--headless` is ignored during a shots run, because the shots runner requires the render loop. `--shots`
 cannot be combined with a benchmark, `--acceptance-screenshot`, `--auto-fly-speed` or a fixture.
 `--run-label` names the run in the window title (`Mudcrab - shots: <label>`).
+
+## Game clock and sun direction
+
+`--game-hour <hour>` starts the game clock at a finite hour in `[0,24)` (default 8, the retail `GameHour` record: GLOB 0x38 in the pack data). A capture that needs another hour
+passes it explicitly, for example `--game-hour 12`.
+Ordinary play advances at `--timescale <scale>` game seconds per real second (default 20, the retail `TimeScale` record: GLOB 0x3A;
+0 freezes). Shots, acceptance screenshots, benchmarks (including `--benchmark-only` alone) and matched routes freeze at the launch
+hour regardless of timescale, so streaming duration cannot move shadows between captures.
+The clock advances with Bevy virtual time, which clamps each frame delta to its default maximum
+of 250 ms. A frame slower than 4 FPS therefore advances the clock slower than real time, and a
+pause of virtual time (the console, the settings menu) stops it. Retail behaviour is not
+established.
+
+The directional light follows the retail sun update (SkyrimSE.exe 1.7.104.0 `0x14041bd90`;
+registry RF-SUN-001 to RF-SUN-004). Every value comes from the pack. With `T = fSunAlphaTransTime`,
+the active worldspace's climate TNAM gives sunrise and sunset midpoints (including PNAM-requested
+parent climate inheritance; TNAM bytes are ten-minute units). The day window is
+`A = riseMid - T/2` to `B = setMid + T/2`.
+
+- Day (`A < h < B`): `u = (h - A) / (B - A)` and `x = (1 - 2u) * fSunXExtreme` (east to west).
+- Night: `u` runs 0..1 from `B` back to `A` and `x = (2u - 1) * fSunXExtreme` (west to east).
+- The light travels along `normalize(-(fSunDirXExtreme / fSunXExtreme) * x,
+  -(fSunDirXExtreme / fSunXExtreme) * fSunYExtreme, fSunZExtreme)` in Creation space. The engine
+  uses the opposite (toward-sun) vector and maps axes to `(x,z,-y)`.
+- `sun_alpha` is 0 outside `[A, B]`, ramps 0 to 1 over `riseMid +- T/2`, is 1 between the ramps and
+  ramps 1 to 0 over `setMid +- T/2` (RF-SUN-004). Nothing consumes it yet: the visible sun disc and
+  its glare (alpha times the weather byte at `+0x668` over 255) are not part of this change.
+
+For the Skyrim.esm values (`fSunXExtreme` 400, `fSunYExtreme` 40, `fSunZExtreme` -150,
+`fSunDirXExtreme` 200, `fSunAlphaTransTime` 0.5) and the `DefaultClimate` TNAM 33/60/96/123,
+`A` is 7.5 h and `B` is 18.5 h. The elevation is 36.7 degrees at `A` and `B` and 82.4 degrees at
+13:00, with a slight north tilt. The light keeps this geometry at night, so it never drops below
+36.7 degrees. The night look comes from the weather's night colours, not from this vector.
+
+The five GMSTs are the sun path itself (RF-SUN-003). The winning canonical GMST records supply
+them. Optional `[Sky]` keys of the same names in `--ini` files override them individually (an
+engine extension; retail reads only the GMSTs). A pack that lacks a GMST uses the retail exe
+default of that setting, so the same formula runs: `fSunXExtreme` 400, `fSunYExtreme` 25,
+`fSunZExtreme` -100, `fSunDirXExtreme` 400, `fSunAlphaTransTime` 2.0 (`rea-20261114/q4-sun.md`;
+confirmed against the exe settings dump: record addresses 0x14209e940, 0x14209e958, 0x14209e970,
+0x14209e988, 0x14209e9a0, with the value at record + 8). A world without a usable climate timing has
+no sunrise or sunset, so no sun path applies and its sun has no authored direction (identity
+rotation), both at startup and when travel enters such a world, so lighting does not depend on
+travel history. Retail worlds always carry climate timing, so this is not retail behaviour and
+affects only fixtures and benchmarks (a test-only path). A fade that makes the day window 24 hours
+or longer (for example `fSunAlphaTransTime` 14 with the 33/60/96/123 TNAM) is reported once with a
+warning that names the value and the climate; that world also gets no sun path, and no recovery
+value is invented.
+Invalid record/INI fields warn and are ignored.
+`--sun-position` remains a fixed explicit bearing/elevation override. Capture-frame receipts
+include the actual clock and engine-space toward-sun vector.
+
+This step changes direction only. No moon light, weather selection or night palette is introduced.
