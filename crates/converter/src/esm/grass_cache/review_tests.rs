@@ -231,7 +231,7 @@ fn repeated_model_nodes_skip_locally_and_preserve_healthy_neighbor() {
     }
 }
 
-/// Grassless terrain publishes an empty cache and rule warnings without reading unrelated models.
+/// Non-emitting terrain preserves rule warnings while skipping unrelated obstruction models.
 #[test]
 fn grassless_terrain_skips_obstruction_model_reads() {
     for case in 0..3 {
@@ -255,7 +255,25 @@ fn grassless_terrain_skips_obstruction_model_reads() {
             _ => unreachable!(),
         }
         let (report, cache) = bake(&conn, dir.path(), None, "grassless.rkyv");
-        assert!(cache.cells.is_empty());
+        // Empty model paths identify retained non-emitting selection slots.
+        assert!(
+            cache
+                .cells
+                .iter()
+                .flat_map(|cell| &cell.quadrants)
+                .flat_map(|quadrant| &quadrant.layers)
+                .flat_map(|layer| &layer.grass_ids)
+                .all(|id| cache
+                    .types
+                    .iter()
+                    .any(|rule| { rule.form_id == *id && rule.model_path.is_empty() })),
+            "any retained grass slots must be non-emitting: case={case}"
+        );
+        assert!(cache.cells.iter().all(|cell| {
+            cell.quadrants
+                .iter()
+                .all(|quadrant| quadrant.exclusion.iter().all(|&byte| byte == 0))
+        }));
         assert_eq!(report.geometry_decodes, 0);
         assert_eq!(
             report.skipped_obstruction_models, 0,
