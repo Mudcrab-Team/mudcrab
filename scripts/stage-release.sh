@@ -81,10 +81,22 @@ for bin in "${BINARIES[@]}"; do
   echo "  ✓ Staged $BIN_FILE"
 done
 
-# Include license in distribution payload
-if [[ -f "LICENSE" ]]; then
-  cp "LICENSE" "$DEST_DIR/"
-  echo "  ✓ Staged LICENSE"
-fi
+# Notices that must ship with every payload: the GPL text, the derived-file and
+# vendored-crate terms, and the trademark and no-asset statements. A release
+# without them is not compliant, so a missing notice stops the staging.
+NOTICE_FILES=(
+  "LICENSE"
+  "THIRD_PARTY.md"
+  "LEGAL.md"
+)
+
+for notice in "${NOTICE_FILES[@]}"; do
+  if [[ ! -f "$notice" ]]; then
+    echo "Error: Required notice file not found: $notice" >&2
+    exit 1
+  fi
+  cp "$notice" "$DEST_DIR/"
+  echo "  ✓ Staged $notice"
+done
 
 echo "==> Staging complete: $(ls -1 "$DEST_DIR" | wc -l) files staged in $DEST_DIR."

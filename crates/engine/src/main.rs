@@ -17,6 +17,10 @@ fn main() -> color_eyre::Result<()> {
             print!("{HELP_TEXT}");
             Ok(())
         }
+        Ok(ConfigAction::Version) => {
+            println!("{}", shared::VERSION_LINE);
+            Ok(())
+        }
         Err(error) => {
             eprintln!("error: {error}");
             std::process::exit(EXIT_USAGE);
