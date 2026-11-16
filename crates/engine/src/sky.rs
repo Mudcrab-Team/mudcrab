@@ -19,6 +19,7 @@ use crate::world::database::CellKey;
 use bevy::{
     asset::{RenderAssetUsages, embedded_asset},
     camera::visibility::NoFrustumCulling,
+    ecs::{schedule::ScheduleConfigs, system::ScheduleSystem},
     light::NotShadowCaster,
     mesh::{Indices, MeshVertexBufferLayoutRef, PrimitiveTopology},
     pbr::{
@@ -442,9 +443,7 @@ impl Plugin for SkyPlugin {
             .init_resource::<CameraSpace>()
             .add_systems(
                 PostUpdate,
-                (spawn_sky_domes, follow_sky_cameras, apply_sky, apply_fog)
-                    .chain()
-                    .before(TransformSystems::Propagate),
+                sky_systems().before(TransformSystems::Propagate),
             );
     }
 }
@@ -579,6 +578,19 @@ fn apply_sky(
             sky_material.sky = SkyUniform::new(&adjusted_palette);
         }
     }
+}
+
+/// The sky systems in order. `apply_fog` reads `InteriorFog`, which `EnvironmentSet` writes in
+/// the same schedule, so it runs after that set: a door or room crossing changes the fog in the
+/// same frame as the light.
+fn sky_systems() -> ScheduleConfigs<ScheduleSystem> {
+    (
+        spawn_sky_domes,
+        follow_sky_cameras,
+        apply_sky,
+        apply_fog.after(crate::world::environment::interior::EnvironmentSet),
+    )
+        .chain()
 }
 
 /// Gives every [`FogCamera`] the weather's distance fog outside. Inside an interior it gives the
@@ -853,11 +865,57 @@ mod tests {
             .init_resource::<Assets<SkyMaterial>>()
             .init_resource::<SkyPalette>()
             .init_resource::<CameraSpace>()
-            .add_systems(
-                Update,
-                (spawn_sky_domes, follow_sky_cameras, apply_sky, apply_fog).chain(),
-            );
+            .add_systems(Update, sky_systems());
         app
+    }
+
+    /// `apply_fog` reads the `InteriorFog` that `EnvironmentSet` writes in the same schedule:
+    /// crossing into a fogged interior fogs the camera in the same frame.
+    #[test]
+    fn interior_fog_applies_in_the_frame_the_environment_changes() {
+        use crate::streaming::ActiveSpace;
+        use crate::world::environment::{EnvironmentCatalog, interior::InteriorEnvironmentPlugin};
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO cell_environment(cell_id,data_flags) VALUES(77,1);
+                 INSERT INTO cell_lighting(cell_id,xcll_size,inherit_flags,fog_near_r,
+                    fog_near_g,fog_near_b,fog_near,fog_far,fog_max)
+                 VALUES(77,92,0,31,52,46,100.0,4000.0,1.0);",
+            )
+            .unwrap();
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<SkyMaterial>>()
+            .init_resource::<SkyPalette>()
+            .insert_resource(CameraSpace::Interior)
+            .insert_resource(EnvironmentCatalog::from_connection(&connection))
+            .insert_resource(ActiveSpace {
+                worldspace_id: None,
+                interior: Some(77),
+            })
+            .add_plugins(InteriorEnvironmentPlugin)
+            .add_systems(
+                PostUpdate,
+                sky_systems().before(TransformSystems::Propagate),
+            );
+        let camera = app
+            .world_mut()
+            .spawn((FogCamera, Transform::default()))
+            .id();
+        app.update();
+        let fog = app
+            .world()
+            .get::<DistanceFog>(camera)
+            .expect("fog in the first frame");
+        assert!(matches!(
+            fog.falloff,
+            FogFalloff::Linear {
+                start: 100.0,
+                end: 4000.0
+            }
+        ));
     }
 
     fn only_dome(app: &mut App) -> (Entity, SkyDome, Transform, Visibility) {

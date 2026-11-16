@@ -726,7 +726,8 @@ fn select_environment(
 ///
 /// Mode 3 changes nothing: the exterior sun path (#588) stays. On leaving modes 1 and 2 the
 /// saved exterior rotation, colour, illuminance, shadows and ambient return, and
-/// `crate::sun::update_sun` drives the sun again.
+/// `crate::sun::update_sun` drives the sun again. A write by another system while indoors
+/// (a settings change) replaces the saved value, so the restore returns the current setting.
 fn apply_interior_lighting(
     scene: Res<SceneEnvironment>,
     cameras: Query<&Transform, (With<StreamingCamera>, Without<WorldSun>)>,
@@ -735,7 +736,7 @@ fn apply_interior_lighting(
             Entity,
             &mut DirectionalLight,
             &mut Transform,
-            Option<&ExteriorSunState>,
+            Option<&mut ExteriorSunState>,
         ),
         With<WorldSun>,
     >,
@@ -753,7 +754,20 @@ fn apply_interior_lighting(
     for (entity, mut light, mut transform, saved) in &mut suns {
         match (wanted, saved) {
             (Some(render), saved) => {
-                if saved.is_none() {
+                // Another system wrote the sun since this one last ran (`is_changed` does not see
+                // this system's own writes): `crate::settings::apply_render_settings` writes the
+                // exterior colour, illuminance and shadows on every preference change, indoors
+                // too. Those are the new exterior values, so the restore must return them.
+                if let Some(mut saved) = saved {
+                    if light.is_changed() {
+                        saved.color = light.color;
+                        saved.illuminance = light.illuminance;
+                        saved.shadow_maps_enabled = light.shadow_maps_enabled;
+                    }
+                    if transform.is_changed() {
+                        saved.rotation = transform.rotation;
+                    }
+                } else {
                     commands.entity(entity).insert(ExteriorSunState {
                         rotation: transform.rotation,
                         color: light.color,
@@ -771,6 +785,7 @@ fn apply_interior_lighting(
                 );
             }
             (None, Some(saved)) => {
+                let saved = *saved;
                 set_sun(
                     &mut light,
                     &mut transform,
@@ -789,7 +804,12 @@ fn apply_interior_lighting(
     };
     match wanted {
         Some(render) => {
-            saved_ambient.get_or_insert(ambient.color);
+            // As for the sun: a write by another system is the new exterior ambient.
+            match saved_ambient.as_mut() {
+                Some(saved) if ambient.is_changed() => *saved = ambient.color,
+                Some(_) => {}
+                None => *saved_ambient = Some(ambient.color),
+            }
             let color = render.ambient_color();
             if ambient.color != color {
                 ambient.color = color;
@@ -1587,6 +1607,38 @@ mod tests {
             exterior_ambient
         );
         assert_eq!(app.world().resource::<InteriorFog>().0, None);
+    }
+
+    #[test]
+    fn a_lighting_setting_changed_indoors_is_in_effect_after_the_exit() {
+        let mut app = app(rule_catalog());
+        let sun = spawn_world_sun(&mut app);
+        enter(&mut app, Some(ALVOR));
+        app.update();
+        // What `apply_render_settings` does on a preference change: it writes the exterior
+        // sun and ambient, here with shadows turned off (the same value the interior applies).
+        let new_color = Color::srgb(0.9, 0.8, 0.7);
+        let new_ambient = Color::srgb(0.2, 0.3, 0.4);
+        {
+            let mut light = app.world_mut().get_mut::<DirectionalLight>(sun).unwrap();
+            light.color = new_color;
+            light.illuminance = 9000.0;
+            light.shadow_maps_enabled = false;
+        }
+        app.world_mut().resource_mut::<GlobalAmbientLight>().color = new_ambient;
+        app.update();
+        // Indoors the cell key light wins again.
+        assert_eq!(sun_light(&app, sun).color, Color::srgb_u8(65, 70, 80));
+        enter(&mut app, None);
+        app.update();
+        let light = sun_light(&app, sun);
+        assert_eq!(light.color, new_color);
+        assert_eq!(light.illuminance, 9000.0);
+        assert!(!light.shadow_maps_enabled);
+        assert_eq!(
+            app.world().resource::<GlobalAmbientLight>().color,
+            new_ambient
+        );
     }
 
     #[test]
