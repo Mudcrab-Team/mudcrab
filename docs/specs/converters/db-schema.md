@@ -1331,7 +1331,8 @@ Authored assignment metadata:
 - **`room_model_bounds`** stores source NIF spheres in runtime axes and Creation units, without
   metre scaling. Mesh conversion writes GLB root extras `mudcrabRoomSphere` version 1, and model
   integration rebuilds this table transactionally. It merges supported source child spheres in
-  native order, ignoring the placed root's source transform. Skinned/specialized or unsupported
+  native order, ignoring the placed root's source transform. Supported fixed, self-contained skins
+  also receive source bounds. External or unresolved rigs, physics-deformed skins, and unsupported
   trees have no row. Render AABBs are not substituted for missing native assignment bounds.
 - **`room_graph_cells`** marks cells whose authored geometry was fully exported. A skipped
   unsupported room shape or invalid/missing marker size makes the cell incomplete. Incomplete
@@ -1344,8 +1345,11 @@ one, or multiple touched physical portals as ordinary-space, portal-shared, or c
 ownership. Portal sharing uses the native sphere test, and each child mesh tests the resulting
 volume with its current affine AABB. Ambiguous overlapping masters retain all possible owners;
 native runtime handle/hash order is not reconstructed from FormIDs. `NONE`, unknown bounds,
-unsupported transforms, actors, doors, and activators remain drawn. Named-target neighboring-room
-priority and specialized/forced native assignment paths are not fully reproduced.
+unsupported transforms, actors, and doors remain drawn. Supported `ACTI` references, including
+static web activators, use authored assignment when source bounds are available and reclassify
+on supported root-transform changes. Activators remain exempt with legacy data or unsupported
+assignment bounds. Named-target neighboring-room priority and specialized/forced native assignment
+paths are not fully reproduced.
 
 Legacy `reference_rooms` rows remain for compatibility. Multibound-flagged references are omitted
 from both pivot and overlap membership; integration removes stale rows. Legacy runtime exemptions
