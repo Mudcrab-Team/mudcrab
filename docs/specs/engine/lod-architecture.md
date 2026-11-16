@@ -84,7 +84,7 @@ tier 4 draws. The edges are block-aligned steps, not circles, so where a tier
 ends depends on where the camera cell sits in its block. East of the camera,
 with the camera cell at the start of its aligned block (origin 0 or -96), tier 4
 covers cells 0 to 15 and tier 8 covers cells 16 to 31. West of the camera, tier 4
-stops at cell 8 and tier 8 at cell 32. No level-32 tier is compiled, so tier 16 draws wherever retail
+stops at cell -8 and tier 8 at cell -32. No level-32 tier is compiled, so tier 16 draws wherever retail
 would draw level 16 or 32, out to `fBlockMaximumDistance` x `fSplitDistanceMult`
 (375,000 units, 92 cells) as an engineering guard. Retail has no such cut for
 terrain. A coarser ready tier stands in until the wanted tier is ready.
