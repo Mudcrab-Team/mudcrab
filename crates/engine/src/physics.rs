@@ -19,6 +19,9 @@ use std::path::Path;
 pub mod carry;
 #[cfg(test)]
 mod stair_tests;
+mod walk_support;
+#[cfg(test)]
+mod walk_support_tests;
 
 use crate::{
     console::{AppConsoleExt, ConsoleCommand, ConsoleState, console_closed},
@@ -68,7 +71,6 @@ pub struct MovementTuning {
     pub slope_climb_degrees: f32,
     pub slope_slide_degrees: f32,
     pub autostep_height: f32,
-    pub ground_snap: f32,
     /// Selected MOVT's left/right/forward/back walk/run speeds, when packaged.
     pub record_speeds: Option<DirectionalMovementSpeeds>,
 }
@@ -95,7 +97,6 @@ impl Default for MovementTuning {
             slope_climb_degrees: 50.0,
             slope_slide_degrees: 55.0,
             autostep_height: 36.0,
-            ground_snap: 12.0,
             record_speeds: None,
         }
     }
@@ -1644,6 +1645,14 @@ pub struct WalkState {
     pub jump_apex: f32,
     pub jump_time: f32,
     pub jump_active: bool,
+    /// Retail's InAir state (RF-CC-013). False while walking, including while the unsupported cast
+    /// keeps hitting (a step down), so no fall state and no landing begin on a stair tread.
+    pub airborne: bool,
+    /// The height where the air state began (RF-CC-013, retail stores it for fall damage).
+    pub fall_start_height: f32,
+    /// True for the one tick in which support returned after the air state (retail flag 0x80,
+    /// RF-CC-015).
+    pub landed: bool,
 }
 
 /// Upward search budget when entering WALK inside geometry (V8).
@@ -1669,7 +1678,9 @@ pub fn player_controller_bundle(tuning: &MovementTuning) -> impl Bundle {
             // NOTE: upstream Rapier 0.35 manifold-transfer panic (see T4 gate
             // hill test); re-enable with push validation once upgraded.
             apply_impulse_to_dynamic_bodies: false,
-            snap_to_ground: Some(CharacterLength::Absolute(tuning.ground_snap)),
+            // Retail has no ground snap. A step down is the unsupported cast of `walk_support`
+            // (RF-CC-013, RF-CC-014), which keeps the player walking and pulls it onto the surface.
+            snap_to_ground: None,
             ..default()
         },
     )
@@ -1769,16 +1780,56 @@ pub fn walk_movement_system(
         controller.translation = None;
         return;
     }
-    let grounded = output.map(|o| o.grounded).unwrap_or(false);
-    integrate_walk(&mut state, &intent, &tuning, PHYSICS_TIMESTEP, grounded);
-    intent.jump_pressed = false;
-    let mut displacement =
-        (state.horizontal_velocity + Vec3::Y * state.vertical_velocity) * PHYSICS_TIMESTEP;
-    if state.grounded
+    // Rapier's grounded flag stands in for retail's kSupport.
+    let supported = output.map(|o| o.grounded).unwrap_or(false);
+    let rapier = context.single().ok();
+    // RF-CC-013: the cast runs only without support, with no jump pending, and not in the air.
+    let glide = !supported
+        && !state.airborne
         && !state.jump_active
-        && let Ok(context) = context.single()
+        && !intent.jump_pressed
+        && rapier.as_ref().is_some_and(|context| {
+            walk_support::unsupported_cast_hits(context, entity, &body, capsule, &controller)
+        });
+    let previous_vertical = state.vertical_velocity;
+    integrate_walk(
+        &mut state,
+        &intent,
+        &tuning,
+        PHYSICS_TIMESTEP,
+        supported || glide,
+    );
+    intent.jump_pressed = false;
+    state.landed = false;
+    if supported {
+        // RF-CC-015: the first supported step ends the air state and sets the landing flag.
+        state.landed = std::mem::take(&mut state.airborne);
+    } else if glide {
+        // RF-CC-013, RF-CC-014: a hit keeps the walking state; 4 x gravity accelerates the body
+        // onto the surface. No fall state, no fall start height, no landing.
+        state.vertical_velocity =
+            walk_support::glide_vertical_velocity(previous_vertical, PHYSICS_TIMESTEP);
+    } else if !state.airborne {
+        // RF-CC-013: a miss, or a jump, starts the air state.
+        state.airborne = true;
+        state.fall_start_height = body.translation.y;
+    }
+    // RF-CC-016, RF-CC-017: on a supported slope the wish lies in the support plane.
+    let mut wish = state.horizontal_velocity;
+    if supported
+        && !state.jump_active
+        && let Some(context) = rapier.as_ref()
+        && let Some(normal) =
+            walk_support::support_normal(context, entity, &body, &controller, &tuning)
+    {
+        wish = walk_support::slope_velocity(wish, normal);
+    }
+    let mut displacement = (wish + Vec3::Y * state.vertical_velocity) * PHYSICS_TIMESTEP;
+    if supported
+        && !state.jump_active
+        && let Some(context) = rapier.as_ref()
         && let Some(rise) = walk_step_rise(
-            &context,
+            context,
             entity,
             &body,
             capsule,
@@ -2278,10 +2329,7 @@ mod walk_tests {
             (controller.max_slope_climb_angle - tuning.slope_climb_degrees.to_radians()).abs()
                 < 1.0e-6
         );
-        assert_eq!(
-            controller.snap_to_ground,
-            Some(CharacterLength::Absolute(tuning.ground_snap))
-        );
+        assert_eq!(controller.snap_to_ground, None, "retail has no ground snap");
     }
 }
 
