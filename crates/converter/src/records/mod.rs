@@ -20,11 +20,12 @@ pub(crate) mod review_recovery_tests;
 
 use crate::esm::{load_order::LoadOrder, records::RawRecord};
 use color_eyre::Result;
+use scanner::scan_plugin;
 use schema_format::Schema;
 use serde::{Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::PathBuf,
     sync::OnceLock,
 };
@@ -520,6 +521,8 @@ pub struct RecordSource {
 /// Winners, nontrivial override chains and bounded scan/decode diagnostics.
 #[derive(Debug, Default)]
 pub struct ReadResult {
+    /// Admitted sources unavailable for later proof; slots and decoded records remain allocated.
+    pub skipped_inputs: BTreeSet<usize>,
     pub records: HashMap<u32, DecodedRecord>,
     pub headers: Vec<DecodedRecord>,
     pub diagnostics: BTreeMap<String, PluginDiagnostics>,
@@ -637,7 +640,7 @@ fn read_plugins_with_prepared(
                 .borrow_mut()
                 .push(history::header_entry(header, order, index));
         };
-        scanner::scan_plugin(path, &mut diagnostics, observe, |scanned, diagnostics| {
+        let usable = scan_plugin(path, &mut diagnostics, observe, |scanned, diagnostics| {
             let offset = scanned.source_record_offset;
             let context = decoder::Context {
                 order,
@@ -904,6 +907,9 @@ fn read_plugins_with_prepared(
                 }
             }
         })?;
+        if !usable {
+            result.skipped_inputs.insert(index);
+        }
         result.history.extend(history.into_inner());
         result.diagnostics.insert(name.clone(), diagnostics);
     }

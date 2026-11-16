@@ -516,6 +516,37 @@ pub async fn run_merged_terrain_stage(
     progress_tx: &Sender<ProgressEvent>,
     report: &mut PipelineReport,
 ) -> Result<()> {
+    if records.is_none() {
+        bail!(
+            "--merged-terrain was requested, but no plugin produced a world database for the \
+             merged terrain to be built from"
+        );
+    }
+    let order = LoadOrder::read(plugins)
+        .wrap_err("failed to read the load order for the merged terrain")?;
+    run_merged_terrain_stage_with_order(
+        staging,
+        records,
+        source_offsets,
+        &order,
+        options,
+        progress_tx,
+        report,
+    )
+    .await
+}
+
+/// Build from the same admitted master metadata that produced the database and cell cache.
+/// Missing input files after admission do not change any retained record's slot context.
+pub(crate) async fn run_merged_terrain_stage_with_order(
+    staging: &Path,
+    records: Option<HashMap<u32, RawRecord>>,
+    source_offsets: HashMap<u32, u64>,
+    order: &LoadOrder,
+    options: &TerrainOptions,
+    progress_tx: &Sender<ProgressEvent>,
+    report: &mut PipelineReport,
+) -> Result<()> {
     let Some(records) = records else {
         bail!(
             "--merged-terrain was requested, but no plugin produced a world database for the \
@@ -532,9 +563,7 @@ pub async fn run_merged_terrain_stage(
             "Building merged terrain",
         ))
         .await;
-    let order = LoadOrder::read(plugins)
-        .wrap_err("failed to read the load order for the merged terrain")?;
-    let masters = load_order_masters(&order);
+    let masters = load_order_masters(order);
     let staging = staging.to_path_buf();
     let options = options.clone();
     let terrain = spawn_blocking(move || {

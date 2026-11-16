@@ -86,6 +86,7 @@ fn assert_missing_admitted_plugin_publishes(reader: crate::config::RecordReader)
         "an unavailable admitted plugin must not abort publication: {result:?}"
     );
     let conversion = result.unwrap();
+    assert_eq!(conversion.skipped_inputs, BTreeSet::from([1]));
     assert!(conversion.records.contains_key(&0x0000_0811));
     assert!(conversion.records.contains_key(&0x0200_0933));
     assert!(!conversion.records.contains_key(&0x0100_0822));
@@ -120,6 +121,12 @@ fn assert_missing_admitted_plugin_publishes(reader: crate::config::RecordReader)
         .unwrap();
     assert!(owner.eq_ignore_ascii_case("HealthyC.esp"));
     assert_eq!(local, 0x933);
+    if reader == crate::config::RecordReader::Inhouse {
+        // Fidelity inspects retained SQL, so a missing source cannot abort the audit.
+        let schema =
+            crate::records::schema_format::Schema::parse(crate::records::SCHEMA_BYTES).unwrap();
+        crate::records::fidelity::audit_storage(&conn, &schema).unwrap();
+    }
 }
 
 #[test]

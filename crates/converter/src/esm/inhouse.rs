@@ -7,8 +7,8 @@ use crate::{
         RecordConversion,
         cell_cache::validate_inhouse_land,
         exporter::{
-            create_tables, export_inhouse_record_archive_to_db, export_inhouse_to_db,
-            validate_inhouse_record,
+            create_tables, export_inhouse_record_archive_with_plugins_to_db,
+            export_inhouse_with_plugins_to_db, validate_inhouse_record,
         },
         load_order::LoadOrder,
         records::RawRecord,
@@ -768,11 +768,12 @@ pub(crate) fn convert_plugins(
 
 /// Publish usable records with bounded recovery warnings and compatibility notices.
 /// One authoritative text-source policy applies to candidate admission and publication.
-pub(crate) fn convert_plugins_with_string_sources_report(
+pub(crate) fn convert_plugins_with_admitted_order_report(
     plugin_paths: &[PathBuf],
     db_path: &Path,
     string_sources: StringSources<'_>,
     schemas: Option<&records::addons::RuntimeSchemas>,
+    order: LoadOrder,
 ) -> Result<RecordConversion> {
     convert_plugins_with_text_sources_report_impl(
         plugin_paths,
@@ -780,7 +781,7 @@ pub(crate) fn convert_plugins_with_string_sources_report(
         string_sources,
         None,
         RecordBundleMode::Full,
-        schemas,
+        (schemas, Some(order)),
         #[cfg(test)]
         None,
     )
@@ -856,7 +857,7 @@ fn convert_plugins_with_text_sources_impl(
         string_sources,
         dump,
         mode,
-        schemas,
+        (schemas, None),
         #[cfg(test)]
         test_schema,
     )
@@ -870,9 +871,10 @@ fn convert_plugins_with_text_sources_report_impl(
     string_sources: StringSources<'_>,
     dump: Option<(&Path, &[[u8; 4]])>,
     mode: RecordBundleMode,
-    schemas: Option<&records::addons::RuntimeSchemas>,
+    runtime: (Option<&records::addons::RuntimeSchemas>, Option<LoadOrder>),
     #[cfg(test)] test_schema: Option<&records::schema_format::Schema>,
 ) -> Result<RecordConversion> {
+    let (schemas, admitted_order) = runtime;
     let builtin;
     let schemas = match schemas {
         Some(schemas) => schemas,
@@ -885,7 +887,10 @@ fn convert_plugins_with_text_sources_report_impl(
     let total_started = Instant::now();
     let mut phases = BTreeMap::<String, f64>::new();
     let order_stage = records::profile::ProfileStage::start("read_load_order");
-    let order = LoadOrder::read(plugin_paths)?;
+    let order = match admitted_order {
+        Some(order) => order,
+        None => LoadOrder::read(plugin_paths)?,
+    };
     #[cfg(test)]
     super::after_plugin_admission_for_test();
     order_stage.finish(plugin_paths.len());
@@ -1172,17 +1177,27 @@ fn convert_plugins_with_text_sources_report_impl(
     } else {
         "canonical_record_database_export"
     });
+    let mut checksum_warnings = Vec::new();
+    let checksums = super::prepare_plugin_checksums(
+        plugin_paths,
+        &mut decoded.skipped_inputs,
+        &mut checksum_warnings,
+    );
+    let plugin_rows = super::PluginRows {
+        paths: plugin_paths,
+        checksums: &checksums,
+    };
     if mode == RecordBundleMode::Full {
-        export_inhouse_to_db(
+        export_inhouse_with_plugins_to_db(
             &conn,
             &master,
             &order,
-            plugin_paths,
+            plugin_rows,
             &unresolved_fields,
             &terrain_offsets,
         )?;
     } else {
-        export_inhouse_record_archive_to_db(&conn, &master, &order, plugin_paths)?;
+        export_inhouse_record_archive_with_plugins_to_db(&conn, &master, &order, plugin_rows)?;
     }
     runtime_stage.finish(master.len());
     phases.insert(
@@ -1302,9 +1317,11 @@ fn convert_plugins_with_text_sources_report_impl(
         .flat_map(|(name, diagnostics)| diagnostics.notice_summary_lines(name))
         .collect::<Vec<_>>();
     let release_stage = records::profile::ProfileStage::start("decoded_release");
+    let skipped_inputs = std::mem::take(&mut decoded.skipped_inputs);
     drop(decoded);
     release_stage.finish(master.len());
     report_warnings.extend(warnings.report());
+    report_warnings.extend(checksum_warnings);
     report_notices.extend(warnings.report_notices());
     phases.insert(
         "reader_target_validation_and_diagnostics".into(),
@@ -1312,6 +1329,8 @@ fn convert_plugins_with_text_sources_report_impl(
     );
     phases.insert("total_reader".into(), total_started.elapsed().as_secs_f64());
     Ok(RecordConversion {
+        load_order: order,
+        skipped_inputs,
         phases,
         records: master,
         warnings: report_warnings,

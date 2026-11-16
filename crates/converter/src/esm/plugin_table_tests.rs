@@ -8,6 +8,55 @@ use std::{fs, path::Path};
 
 type PluginRow = (i64, String, i64, Vec<u8>, String);
 
+/// A reappearing path must not authenticate a source whose record input was skipped.
+#[test]
+fn skipped_plugin_checksum_keeps_its_row_without_reopening_a_reappeared_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = [
+        directory.path().join("Healthy.esm"),
+        directory.path().join("Skipped.esp"),
+    ];
+    fs::write(&paths[0], b"healthy source").unwrap();
+    fs::write(&paths[1], b"replacement generation").unwrap();
+    let mut skipped = std::collections::BTreeSet::from([1]);
+    let mut warnings = Vec::new();
+    let checksums = super::prepare_plugin_checksums(&paths, &mut skipped, &mut warnings);
+    assert_eq!(checksums[0], Sha256::digest(b"healthy source").to_vec());
+    assert!(checksums[1].is_empty());
+    assert!(
+        warnings.is_empty(),
+        "reader recovery already emitted the one warning"
+    );
+    let conn = Connection::open_in_memory().unwrap();
+    super::exporter::create_tables(&conn).unwrap();
+    super::insert_plugins(
+        &conn,
+        super::PluginRows {
+            paths: &paths,
+            checksums: &checksums,
+        },
+    )
+    .unwrap();
+    let row: (i64, i64, String) = conn.query_row(
+        "SELECT id,priority,typeof(checksum) FROM plugins WHERE name='Skipped.esp' AND length(checksum)=0",
+        [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+    assert_eq!(row, (1, 1, "blob".into()));
+}
+
+/// A checksum-only loss retains decoded data and becomes known without repeated warnings.
+#[test]
+fn missing_plugin_checksum_warns_once_and_retains_the_assigned_slot() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = [directory.path().join("Gone.esp")];
+    let mut skipped = std::collections::BTreeSet::new();
+    let mut warnings = Vec::new();
+    assert!(super::prepare_plugin_checksums(&paths, &mut skipped, &mut warnings)[0].is_empty());
+    assert_eq!(skipped, std::collections::BTreeSet::from([0]));
+    assert_eq!(warnings.len(), 1);
+    assert!(super::prepare_plugin_checksums(&paths, &mut skipped, &mut warnings)[0].is_empty());
+    assert_eq!(warnings.len(), 1);
+}
+
 /// Frame native subrecord bytes, using XXXX for payloads larger than u16.
 fn native_subrecord(signature: &[u8; 4], payload: &[u8]) -> Vec<u8> {
     let mut bytes = Vec::new();

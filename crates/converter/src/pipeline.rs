@@ -745,6 +745,9 @@ impl AssetPipeline {
                 &mut report.selection_warnings,
             )?,
         };
+        // Preserve admission flags, master lists and slot positions across archive extraction
+        // and parsing. A later header reopen must not compact or reject this admitted order.
+        let admitted_order = crate::esm::load_order::LoadOrder::read(&plugins)?;
         report.load_order = plugins
             .iter()
             .map(|path| {
@@ -782,10 +785,7 @@ impl AssetPipeline {
             )
             .await;
         }
-        let plugin_hashes = plugins
-            .iter()
-            .map(|plugin| hash_file(plugin))
-            .collect::<Result<Vec<_>>>()?;
+        let mut plugin_hashes = admitted_plugin_hashes(&plugins);
         let archives: Vec<_> = files
             .iter()
             .filter(|path| extension(path, &["bsa", "ba2"]))
@@ -1053,8 +1053,11 @@ impl AssetPipeline {
                 language: &config.language,
             };
             let identity_started = Instant::now();
-            let cache_identity =
-                database_cache::identity(config, &plugins, string_sources, cancellation)?;
+            let cache_identity = if plugin_hashes.iter().any(String::is_empty) {
+                None
+            } else {
+                database_cache::identity(config, &plugins, string_sources, cancellation)?
+            };
             report.database_cache_key =
                 cache_identity.as_ref().map(|identity| identity.key.clone());
             report.phase_elapsed_ms.insert(
@@ -1148,14 +1151,15 @@ impl AssetPipeline {
                 // SQLite writes in place. Every fresh build unlinks old names, and a restored
                 // bundle uses private copies, so neither can mutate the previous pack or cache.
                 database_cache::clear_outputs(staging)?;
-                let conversion =
-                    EsmParser::convert_plugins_with_reader_and_schemas_with_string_sources(
-                        &plugins,
-                        &db_path,
-                        config.record_reader,
-                        string_sources,
-                        Some(config.schemas()?.as_ref()),
-                    )?;
+                let conversion = EsmParser::convert_plugins_with_admitted_order_and_string_sources(
+                    &plugins,
+                    &db_path,
+                    config.record_reader,
+                    string_sources,
+                    Some(config.schemas()?.as_ref()),
+                    admitted_order.clone(),
+                )?;
+                clear_unavailable_plugin_hashes(&mut plugin_hashes, &conversion.skipped_inputs);
                 database_cache::write_conversion_notes(
                     staging,
                     &database_cache::ConversionNotes {
@@ -1213,8 +1217,13 @@ impl AssetPipeline {
                 interrupt(cancellation)?;
                 if let Some(identity) = &cache_identity {
                     let recheck_started = Instant::now();
-                    let current =
-                        database_cache::identity(config, &plugins, string_sources, cancellation)?;
+                    let current = if conversion.skipped_inputs.is_empty() {
+                        database_cache::identity(config, &plugins, string_sources, cancellation)?
+                    } else {
+                        // The reader already reported these inputs. Do not reopen or warn again.
+                        report.database_cache_key = None;
+                        None
+                    };
                     report.phase_elapsed_ms.insert(
                         "database_cache_input_recheck".into(),
                         recheck_started.elapsed().as_millis(),
@@ -1648,11 +1657,11 @@ impl AssetPipeline {
         // once the world database and every converted texture are in staging. Off by default
         // until the engine half that reads these outputs lands.
         if config.merged_terrain {
-            crate::terrain_pipeline::run_merged_terrain_stage(
+            crate::terrain_pipeline::run_merged_terrain_stage_with_order(
                 staging,
                 merged_terrain_records.take(),
                 std::mem::take(&mut merged_terrain_offsets),
-                &plugins,
+                &admitted_order,
                 &crate::terrain_pipeline::TerrainOptions::from_config(config),
                 progress_tx,
                 &mut report,
@@ -4974,7 +4983,10 @@ async fn compile_lod_chunks_inline(
     let prior_package = reuse_root.join("conversion-manifest.json").exists()
         || reuse_root.join("lod-manifest.json").exists()
         || reuse_root.join("skyrim_world.db").exists();
-    let reuse = if config.invalidate_cache || !prior_package {
+    let reuse = if config.invalidate_cache
+        || !prior_package
+        || plugin_hashes.iter().any(String::is_empty)
+    {
         None
     } else {
         match LodReuse::open(reuse_root) {
@@ -5421,14 +5433,12 @@ async fn compile_lod_chunks_inline(
         report.notices.push(message);
     }
     chunk_hashes.sort();
-    let current_plugin_hashes = plugins
-        .iter()
-        .map(|plugin| hash_file(plugin))
-        .collect::<Result<Vec<_>>>()?;
-    color_eyre::eyre::ensure!(
-        current_plugin_hashes == plugin_hashes,
-        "plugin inputs changed during conversion; refusing to publish an LOD build from a mixed input generation"
-    );
+    let current_plugin_hashes = recheck_lod_plugin_hashes(plugins, plugin_hashes, report)?;
+    if current_plugin_hashes.iter().any(String::is_empty) {
+        // A build can still publish usable neighboring terrain, but unavailable source
+        // proof must not advertise reusable chunk inputs to the next conversion.
+        chunk_inputs.clear();
+    }
     let lod_configuration = hash_bytes(&serde_json::to_vec(&serde_json::json!({
         "assets": configuration_hash(config)?,
         "atlas_encoder": match config.lod_texture_encoder {
@@ -5437,7 +5447,7 @@ async fn compile_lod_chunks_inline(
         },
     }))?);
     let identity = build_identity(
-        plugin_hashes,
+        &current_plugin_hashes,
         &chunk_hashes,
         &lod_configuration,
         &world_settings,
@@ -5571,6 +5581,54 @@ fn resolve_lod_settings(
         Err(error) => Err(error)
             .wrap_err_with(|| format!("failed to inspect LOD settings {}", path.display())),
     }
+}
+
+/// Empty entries preserve unavailable admitted slots without claiming a source-byte proof.
+fn admitted_plugin_hashes(plugins: &[PathBuf]) -> Vec<String> {
+    plugins
+        .iter()
+        .map(|path| hash_file(path).unwrap_or_default())
+        .collect()
+}
+
+/// Once parsing rejects an admitted input, later proof stages must not reopen it.
+pub(crate) fn clear_unavailable_plugin_hashes(hashes: &mut [String], skipped: &BTreeSet<usize>) {
+    for &index in skipped {
+        if let Some(hash) = hashes.get_mut(index) {
+            hash.clear();
+        }
+    }
+}
+
+/// Retain healthy-input mutation checks, but unavailable sources only remove optional proof.
+fn recheck_lod_plugin_hashes(
+    plugins: &[PathBuf],
+    expected: &[String],
+    report: &mut PipelineReport,
+) -> Result<Vec<String>> {
+    ensure!(
+        plugins.len() == expected.len(),
+        "plugin proof/order length mismatch"
+    );
+    plugins.iter().zip(expected).map(|(path, expected)| {
+        if expected.is_empty() {
+            return Ok(String::new());
+        }
+        match hash_file(path) {
+            Ok(actual) => {
+                ensure!(actual == *expected,
+                    "plugin inputs changed during conversion; refusing to publish an LOD build from a mixed input generation");
+                Ok(actual)
+            }
+            Err(error) => {
+                report.warnings.push(format!(
+                    "warning: {}: source unavailable after decoding; retained data has no reusable plugin checksum: {error:#}",
+                    path.file_name().unwrap_or_default().to_string_lossy(),
+                ));
+                Ok(String::new())
+            }
+        }
+    }).collect()
 }
 
 /// One build identity across ordered plugin bytes, compiled chunk payloads,
@@ -6516,6 +6574,46 @@ mod stop_hook {
 
 #[cfg(test)]
 mod tests {
+    /// Missing source proofs preserve their indices and never become a hash of an empty file.
+    #[test]
+    fn unavailable_plugin_proofs_preserve_slots_without_duplicate_warnings() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = ["A.esm", "Missing.esp", "C.esp"].map(|name| directory.path().join(name));
+        for (path, bytes) in paths.iter().zip([b"a".as_slice(), b"b", b"c"]) {
+            fs::write(path, bytes).unwrap();
+        }
+        let mut expected = admitted_plugin_hashes(&paths);
+        fs::rename(&paths[1], directory.path().join("missing.retained")).unwrap();
+        clear_unavailable_plugin_hashes(&mut expected, &BTreeSet::from([1]));
+        let mut report = PipelineReport::default();
+        let rechecked = recheck_lod_plugin_hashes(&paths, &expected, &mut report).unwrap();
+        assert_eq!(rechecked.len(), 3);
+        assert_eq!(rechecked, expected);
+        assert!(!rechecked[0].is_empty() && rechecked[1].is_empty() && !rechecked[2].is_empty());
+        assert!(report.warnings.is_empty());
+        assert_eq!(admitted_plugin_hashes(&paths), rechecked);
+    }
+
+    /// A disappearance during later stages removes proof, while a readable mutation still fails.
+    #[test]
+    fn late_unavailable_plugin_proof_warns_and_keeps_neighbor_hashes() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = ["A.esm", "Missing.esp", "C.esp"].map(|name| directory.path().join(name));
+        for path in &paths {
+            fs::write(path, b"original").unwrap();
+        }
+        let expected = admitted_plugin_hashes(&paths);
+        fs::rename(&paths[1], directory.path().join("missing.retained")).unwrap();
+        let mut report = PipelineReport::default();
+        let rechecked = recheck_lod_plugin_hashes(&paths, &expected, &mut report).unwrap();
+        assert_eq!((&rechecked[0], &rechecked[2]), (&expected[0], &expected[2]));
+        assert!(rechecked[1].is_empty());
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.warnings[0].contains("Missing.esp"));
+        fs::write(&paths[0], b"changed").unwrap();
+        assert!(recheck_lod_plugin_hashes(&paths, &expected, &mut report).is_err());
+    }
+
     #[test]
     fn legacy_report_without_lod_fields_deserializes() {
         let mut legacy = serde_json::to_value(super::PipelineReport::default()).unwrap();
@@ -14192,6 +14290,147 @@ mod tests {
             .extension()
             .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default()
+    }
+
+    /// Publication, cache proof, LOD and merged terrain share the captured admitted order.
+    #[tokio::test(flavor = "current_thread")]
+    async fn missing_admitted_plugin_publishes_manifest_lod_and_merged_terrain() {
+        fn small_plugin(id: u32, master: &str) -> Vec<u8> {
+            fn frame(signature: &[u8; 4], id: u32, fields: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+                let mut payload = Vec::new();
+                for (tag, value) in fields {
+                    payload.extend_from_slice(*tag);
+                    payload.extend_from_slice(&(value.len() as u16).to_le_bytes());
+                    payload.extend(value);
+                }
+                let mut bytes = signature.to_vec();
+                bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                bytes.extend_from_slice(&0u32.to_le_bytes());
+                bytes.extend_from_slice(&id.to_le_bytes());
+                bytes.extend_from_slice(&0u32.to_le_bytes());
+                bytes.extend_from_slice(&44u16.to_le_bytes());
+                bytes.extend_from_slice(&0u16.to_le_bytes());
+                bytes.extend(payload);
+                bytes
+            }
+            let mut header = 1.7f32.to_le_bytes().to_vec();
+            header.extend(1u32.to_le_bytes());
+            header.extend(0x1000u32.to_le_bytes());
+            let mut master = master.as_bytes().to_vec();
+            master.push(0);
+            let mut bytes = frame(
+                b"TES4",
+                0,
+                &[(b"HEDR", header), (b"MAST", master), (b"DATA", vec![0; 8])],
+            );
+            bytes.extend(frame(
+                b"KYWD",
+                id,
+                &[(b"EDID", b"HealthyNeighbor\0".to_vec())],
+            ));
+            bytes
+        }
+        struct ClearHook;
+        impl Drop for ClearHook {
+            fn drop(&mut self) {
+                crate::esm::AFTER_PLUGIN_ADMISSION.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        for reader in [
+            crate::config::RecordReader::Legacy,
+            crate::config::RecordReader::Inhouse,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let data = directory.path().join("Data");
+            let output = directory.path().join("modern");
+            fs::create_dir_all(&data).unwrap();
+            fs::write(
+                data.join("Skyrim.esm"),
+                dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+                    author: "UnavailableInputPublication",
+                    worldspace: "UnavailableInputWorld",
+                    cells: &[dummy_content::esm::Cell {
+                        grid_x: 0,
+                        grid_y: 0,
+                    }],
+                    model_path: "unused/model.nif",
+                    diffuse: "unused/diffuse.dds",
+                    normal_texture: "unused/normal.dds",
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            let missing = data.join("MutableMod.esp");
+            fs::write(&missing, small_plugin(0x0100_0822, "Skyrim.esm")).unwrap();
+            fs::write(
+                data.join("HealthyC.esp"),
+                small_plugin(0x0100_0833, "MutableMod.esp"),
+            )
+            .unwrap();
+            let selected = directory.path().join("plugins.txt");
+            fs::write(&selected, b"*MutableMod.esp\n*HealthyC.esp\n").unwrap();
+            let retained = directory.path().join("removed-plugin.retained");
+            let clear = ClearHook;
+            crate::esm::AFTER_PLUGIN_ADMISSION.with(|slot| {
+                assert!(slot.borrow().is_none());
+                *slot.borrow_mut() = Some(Box::new(move || fs::rename(missing, retained).unwrap()));
+            });
+            let mut config = cpu_lod_config(&data, &output);
+            config.record_reader = reader;
+            config.plugins_file = Some(selected);
+            config.merged_terrain = true;
+            config.terrain_default_texture = crate::config::TerrainDefaultTexture::White;
+            config.lod_origins.insert(
+                "UnavailableInputWorld".into(),
+                LodOrigin {
+                    grid_x: 0,
+                    grid_y: 0,
+                },
+            );
+            let report = run_without_progress(config).await;
+            drop(clear);
+            assert!(
+                !data.join("MutableMod.esp").exists(),
+                "admission hook did not run"
+            );
+            assert!(!report.complete);
+            assert_eq!(
+                report
+                    .warnings
+                    .iter()
+                    .filter(|warning| warning.to_ascii_lowercase().contains("mutablemod.esp"))
+                    .count(),
+                1,
+                "{:?}",
+                report.warnings
+            );
+            assert_eq!(
+                report.load_order,
+                ["Skyrim.esm", "MutableMod.esp", "HealthyC.esp"]
+            );
+            assert!(!report.database_cache_hit && report.database_cache_key.is_none());
+            assert!(report.lod_chunks > 0);
+            assert!(report.terrain.is_some());
+            let manifest = published_manifest(&output);
+            assert!(!manifest.complete && manifest.record_data_complete == Some(false));
+            let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+            let rows: Vec<(i64, i64)> = conn
+                .prepare("SELECT id,length(checksum) FROM plugins ORDER BY id")
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert_eq!(rows, [(0, 32), (1, 0), (2, 32)]);
+            let later: u32 = conn
+                .query_row(
+                    "SELECT count(*) FROM records WHERE form_id=?1",
+                    [0x0200_0833u32],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(later, 1);
+        }
     }
 
     /// Truncated mod inputs warn during publication while valid records on both sides survive.

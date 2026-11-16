@@ -47,12 +47,14 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
 }
 
 /// Read source inputs only; ownership and slot assignment remain with LoadOrder.
+/// False means later proof stages must not reopen this unavailable or changed source;
+/// already decoded records can still be retained. Local record errors alone return true.
 pub(crate) fn scan_plugin(
     path: &Path,
     diagnostics: &mut PluginDiagnostics,
     mut observe: impl FnMut(ObservedHeader),
     mut receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
-) -> Result<()> {
+) -> Result<bool> {
     diagnostics.set_record(0, None, None, None, "framing");
     let input = (|| -> Result<_> {
         let file = File::open(path).wrap_err_with(|| format!("open {}", path.display()))?;
@@ -65,12 +67,12 @@ pub(crate) fn scan_plugin(
             diagnostics.note("record", || {
                 format!("unusable input {}: {error:#}", path.display())
             });
-            return Ok(());
+            return Ok(false);
         }
     };
     if map.len() < 24 || &map[..4] != b"TES4" {
         diagnostics.note("record", || "input has no complete TES4 header".into());
-        return Ok(());
+        return Ok(false);
     }
     scan_bytes_observed(&map, diagnostics, &mut receive, &mut observe);
     if let Err(error) = map.verify(&file, path) {
@@ -87,8 +89,9 @@ pub(crate) fn scan_plugin(
                 format!("{error:#}; retained decoded records may mix versions of the large input and be inconsistent")
             }
         });
+        return Ok(false);
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Traverse groups iteratively, retaining siblings when an inner boundary is corrupt.

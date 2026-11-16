@@ -183,10 +183,18 @@ fn identity_with_program(
     let mut localization = Vec::new();
     for (index, plugin) in plugins.iter().enumerate() {
         cancelled(cancellation)?;
+        // Source files may disappear after their load-order slots were admitted. This is
+        // optional cache proof, not another opportunity to reject usable neighboring data.
+        let input = (|| -> Result<(u64, String)> {
+            Ok((fs::metadata(plugin)?.len(), hash_file(plugin)?))
+        })();
+        let Ok((size, sha256)) = input else {
+            return Ok(None);
+        };
         plugin_inputs.push(serde_json::json!({
             "name": plugin.file_name().unwrap_or_default().to_string_lossy(),
-            "size": fs::metadata(plugin)?.len(),
-            "sha256": hash_file(plugin)?,
+            "size": size,
+            "sha256": sha256,
         }));
         for bank in ["strings", "dlstrings", "ilstrings"] {
             // The same resolver as both readers: the loose winner, else the archive VFS.
@@ -977,6 +985,39 @@ mod tests {
         .unwrap();
         assert_eq!(available.key, proven.key);
         assert_eq!(available.inputs["compiled_program_sha256"], digest.as_str());
+    }
+
+    /// A disappeared admitted input invalidates optional proof without failing publication.
+    #[test]
+    fn unavailable_plugin_makes_database_identity_uncacheable_not_fatal() {
+        let fixture = fixture();
+        let vfs = fixture.staging.join("vfs");
+        let sources = test_sources(&fixture.config, &vfs);
+        let retained = fixture.directory.path().join("source.retained");
+        fs::rename(&fixture.plugins[0], retained).unwrap();
+        let cancellation = Cancellation::new();
+        assert!(
+            identity(&fixture.config, &fixture.plugins, sources, &cancellation)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !inputs_unchanged(
+                &fixture.identity,
+                &fixture.config,
+                &fixture.plugins,
+                sources,
+                &cancellation,
+            )
+            .unwrap()
+        );
+        cancellation.cancel();
+        assert!(
+            identity(&fixture.config, &fixture.plugins, sources, &cancellation)
+                .unwrap_err()
+                .downcast_ref::<Interrupted>()
+                .is_some()
+        );
     }
 
     /// Loose-first Data sources for the run's configured language, as an ordinary run builds them.

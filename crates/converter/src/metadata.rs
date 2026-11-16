@@ -565,6 +565,8 @@ async fn rebuild_into(
         source_lineage,
     } = metadata;
     let (plugins, plugin_hashes) = matched;
+    // Retain slot/master metadata before copying assets and extracting archive inputs.
+    let admitted_order = crate::esm::load_order::LoadOrder::read(plugins)?;
     progress_event(
         progress,
         ProgressStage::Validating,
@@ -751,14 +753,23 @@ async fn rebuild_into(
             );
         }
     }
-    let conversion = EsmParser::convert_plugins_with_reader_and_schemas(
+    let conversion = EsmParser::convert_plugins_with_admitted_order_and_string_sources(
         plugins,
         &database,
         config.record_reader,
-        &vfs,
-        &config.language,
+        crate::esm::inhouse::StringSources {
+            roots: crate::esm::inhouse::StringRoots::PluginLooseFirst(&vfs),
+            language: &config.language,
+        },
         Some(config.schemas()?.as_ref()),
+        admitted_order,
     )?;
+    let admitted_order = conversion.load_order;
+    let mut plugin_hashes = plugin_hashes.to_vec();
+    crate::pipeline::clear_unavailable_plugin_hashes(
+        &mut plugin_hashes,
+        &conversion.skipped_inputs,
+    );
     // This fresh read owns record completeness independently of the retained assets.
     manifest.record_data_complete = Some(conversion.warnings.is_empty());
     report.warnings.extend(conversion.warnings);
@@ -846,7 +857,7 @@ async fn rebuild_into(
         staging,
         source,
         plugins,
-        plugin_hashes,
+        &plugin_hashes,
         progress,
         &mut report,
         Some(ownership),
@@ -856,11 +867,11 @@ async fn rebuild_into(
     // Merged terrain (#215) is rebuilt from the records like the database and the LOD chunks
     // are, so a rebuild with the option on produces it instead of ignoring the option.
     if config.merged_terrain {
-        crate::terrain_pipeline::run_merged_terrain_stage(
+        crate::terrain_pipeline::run_merged_terrain_stage_with_order(
             staging,
             merged_records,
             source_offsets,
-            plugins,
+            &admitted_order,
             &crate::terrain_pipeline::TerrainOptions::from_config(config),
             progress,
             &mut report,

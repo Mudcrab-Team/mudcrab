@@ -8,7 +8,7 @@ use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs::File,
     io::Read,
     path::{Path, PathBuf},
@@ -62,7 +62,7 @@ pub struct EsmParser;
 #[cfg(test)]
 thread_local! {
     /// A deterministic source change after slots are admitted, before records are opened.
-    static AFTER_PLUGIN_ADMISSION: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    pub(crate) static AFTER_PLUGIN_ADMISSION: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -76,6 +76,9 @@ fn after_plugin_admission_for_test() {
 /// Winning records with bounded data-loss warnings and faithful-outcome notices.
 #[derive(Debug)]
 pub(crate) struct RecordConversion {
+    /// Preserve admission identities even when a later source read fails.
+    pub(crate) load_order: load_order::LoadOrder,
+    pub(crate) skipped_inputs: BTreeSet<usize>,
     pub(crate) records: HashMap<u32, RawRecord>,
     pub(crate) warnings: Vec<String>,
     pub(crate) notices: Vec<String>,
@@ -83,16 +86,55 @@ pub(crate) struct RecordConversion {
     pub(crate) phases: std::collections::BTreeMap<String, f64>,
 }
 
-/// Populate the common plugin metadata contract without allocating each complete input.
-fn insert_plugins(conn: &Connection, plugin_paths: &[PathBuf]) -> Result<()> {
+/// Prepared plugin rows never reopen a source that reader recovery already skipped.
+#[derive(Clone, Copy)]
+pub(super) struct PluginRows<'a> {
+    paths: &'a [PathBuf],
+    checksums: &'a [Vec<u8>],
+}
+
+/// Missing checksum proof is local to its admitted slot, not a publication failure.
+fn prepare_plugin_checksums(
+    paths: &[PathBuf],
+    skipped: &mut BTreeSet<usize>,
+    warnings: &mut Vec<String>,
+) -> Vec<Vec<u8>> {
+    paths.iter().enumerate().map(|(index, path)| {
+        if skipped.contains(&index) {
+            return Vec::new();
+        }
+        let read = || -> Result<[u8; 32]> {
+            let mut file = File::open(path)?;
+            let stamp = crate::source_input::SourceStamp::capture(&file)?;
+            let checksum = plugin_checksum(&mut file)?;
+            stamp.verify(&file, path)?;
+            Ok(checksum)
+        };
+        match read() {
+            Ok(checksum) => checksum.to_vec(),
+            Err(error) => {
+                skipped.insert(index);
+                let message = format!("warning: {}: plugin checksum unavailable; retained admitted slot and decoded records: {error:#}", path.display());
+                eprintln!("{message}");
+                warnings.push(message);
+                Vec::new()
+            }
+        }
+    }).collect()
+}
+
+/// Empty BLOB means unavailable source proof; id/name/priority retain admission order.
+fn insert_plugins(conn: &Connection, plugins: PluginRows<'_>) -> rusqlite::Result<()> {
+    if plugins.paths.len() != plugins.checksums.len() {
+        return Err(rusqlite::Error::InvalidParameterCount(
+            plugins.checksums.len(),
+            plugins.paths.len(),
+        ));
+    }
     let mut statement = conn.prepare_cached(
         "INSERT OR REPLACE INTO plugins (id, name, priority, checksum) VALUES (?1, ?2, ?3, ?4)",
     )?;
-    for (priority, path) in plugin_paths.iter().enumerate() {
-        let mut file = File::open(path)
-            .wrap_err_with(|| format!("failed to open {} for plugin checksum", path.display()))?;
-        let checksum = plugin_checksum(&mut file)
-            .wrap_err_with(|| format!("failed to hash plugin {}", path.display()))?;
+    for (priority, (path, checksum)) in plugins.paths.iter().zip(plugins.checksums).enumerate() {
         statement.execute(params![
             priority as i64,
             path.file_name().unwrap_or_default().to_string_lossy(),
@@ -171,16 +213,40 @@ impl EsmParser {
         string_sources: inhouse::StringSources<'_>,
         schemas: Option<&crate::records::addons::RuntimeSchemas>,
     ) -> Result<RecordConversion> {
+        let order = load_order::LoadOrder::read(plugin_paths)?;
+        Self::convert_plugins_with_admitted_order_and_string_sources(
+            plugin_paths,
+            db_path,
+            reader,
+            string_sources,
+            schemas,
+            order,
+        )
+    }
+
+    /// Reuse the admitted identities after archive/asset work rather than reopening headers.
+    pub(crate) fn convert_plugins_with_admitted_order_and_string_sources(
+        plugin_paths: &[PathBuf],
+        db_path: &Path,
+        reader: crate::config::RecordReader,
+        string_sources: inhouse::StringSources<'_>,
+        schemas: Option<&crate::records::addons::RuntimeSchemas>,
+        order: load_order::LoadOrder,
+    ) -> Result<RecordConversion> {
         match reader {
-            crate::config::RecordReader::Legacy => {
-                Self::convert_legacy_plugins_report(plugin_paths, db_path, string_sources)
-            }
+            crate::config::RecordReader::Legacy => Self::convert_legacy_plugins_with_order_report(
+                plugin_paths,
+                db_path,
+                string_sources,
+                order,
+            ),
             crate::config::RecordReader::Inhouse => {
-                inhouse::convert_plugins_with_string_sources_report(
+                inhouse::convert_plugins_with_admitted_order_report(
                     plugin_paths,
                     db_path,
                     string_sources,
                     schemas,
+                    order,
                 )
             }
         }
@@ -224,6 +290,15 @@ impl EsmParser {
         string_sources: inhouse::StringSources<'_>,
     ) -> Result<RecordConversion> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
+        Self::convert_legacy_plugins_with_order_report(plugin_paths, db_path, string_sources, order)
+    }
+
+    fn convert_legacy_plugins_with_order_report(
+        plugin_paths: &[PathBuf],
+        db_path: &Path,
+        string_sources: inhouse::StringSources<'_>,
+        order: load_order::LoadOrder,
+    ) -> Result<RecordConversion> {
         #[cfg(test)]
         after_plugin_admission_for_test();
         let mut master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
@@ -236,7 +311,21 @@ impl EsmParser {
             );
         let conn = Connection::open(db_path)?;
         create_tables(&conn)?;
-        exporter::export_plugins_to_db(&conn, &master.records, &order, plugin_paths, &unresolved)?;
+        let checksums = prepare_plugin_checksums(
+            plugin_paths,
+            &mut master.skipped_inputs,
+            &mut master.warnings,
+        );
+        exporter::export_plugins_to_db(
+            &conn,
+            &master.records,
+            &order,
+            PluginRows {
+                paths: plugin_paths,
+                checksums: &checksums,
+            },
+            &unresolved,
+        )?;
 
         for diagnostic in localization_warnings.iter().chain(&localization_notices) {
             eprintln!("{diagnostic}");
@@ -261,6 +350,7 @@ impl EsmParser {
     ) -> Result<RecordConversion> {
         let mut merged = HashMap::new();
         let mut summaries = Vec::new();
+        let mut skipped_inputs = BTreeSet::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
         // the first definition's key/owner while taking the last setting value.
         // Keep keys through deletions so a later restoration has the same ID.
@@ -280,6 +370,7 @@ impl EsmParser {
                     );
                     eprintln!("{message}");
                     summaries.push(message);
+                    skipped_inputs.insert(priority);
                     continue;
                 }
             };
@@ -375,6 +466,8 @@ impl EsmParser {
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
         Ok(RecordConversion {
+            load_order: order.clone(),
+            skipped_inputs,
             records: merged,
             warnings: summaries,
             notices,

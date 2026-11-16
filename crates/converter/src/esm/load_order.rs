@@ -487,6 +487,7 @@ pub struct StableId {
 }
 
 /// Validated plugin order with forward mappings and constant-time ownership lookup.
+#[derive(Clone, Debug)]
 pub struct LoadOrder {
     pub names: Vec<String>,
     pub metadata: Vec<PluginMetadata>,
