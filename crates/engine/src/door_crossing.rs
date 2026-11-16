@@ -682,7 +682,19 @@ fn set_alpha(overlay: &mut Query<&mut BackgroundColor, With<FadeOverlay>>, alpha
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Where the player's feet are, for the return point of a crossing. In WALK it comes from the body:
+/// the shown camera carries the follow spring's lag (RF-CAM-001), so it can sit off the body by
+/// more than a stair rise. In NOCLIP the camera is authoritative. The camera sits an eye height
+/// above the body, and the body a capsule half-extent above the feet.
+fn crossing_feet(walking: bool, body: Option<Vec3>, camera: Vec3, tuning: &MovementTuning) -> Vec3 {
+    let (body_offset, _) = body_and_camera_for_feet(tuning, Vec3::ZERO);
+    match (walking, body) {
+        (true, Some(body)) => body - body_offset,
+        _ => camera - Vec3::Y * tuning.eye_height - body_offset,
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn drive_door_crossing(
     keyboard: Res<ButtonInput<KeyCode>>,
     capture: Res<CursorCapture>,
@@ -695,7 +707,11 @@ fn drive_door_crossing(
     streaming: Res<StreamingWorld>,
     camera: Query<&Transform, With<StreamingCamera>>,
     doors: Query<(&LoadDoor, &GlobalTransform, Option<&ExpectedModelBounds>)>,
-    (physics, player): (ReadRapierContext, Query<Entity, With<PlayerBody>>),
+    (physics, player, mode): (
+        ReadRapierContext,
+        Query<(Entity, &Transform), With<PlayerBody>>,
+        Res<crate::physics::MoveMode>,
+    ),
     mut crossing: ResMut<DoorCrossing>,
     mut overlay: Query<&mut BackgroundColor, With<FadeOverlay>>,
     (mut budget, landing_assets, pending_under, walk_landing): (
@@ -738,7 +754,7 @@ fn drive_door_crossing(
         // Without a physics world (a run with no colliders) nothing can block.
         if let Ok(physics) = physics.single() {
             let filter = match player.single() {
-                Ok(player) => QueryFilter::default().exclude_rigid_body(player),
+                Ok((player, _)) => QueryFilter::default().exclude_rigid_body(player),
                 Err(_) => QueryFilter::default(),
             };
             let nearest = physics
@@ -749,10 +765,12 @@ fn drive_door_crossing(
             }
         }
         let (yaw, _, _) = view.rotation.to_euler(EulerRot::YXZ);
-        // The camera sits an eye height above the body, and the body a capsule half-extent above
-        // the feet.
-        let (body_offset, _) = body_and_camera_for_feet(&tuning, Vec3::ZERO);
-        let feet = view.translation - Vec3::Y * tuning.eye_height - body_offset;
+        let feet = crossing_feet(
+            *mode == crate::physics::MoveMode::Walk,
+            player.single().ok().map(|(_, body)| body.translation),
+            view.translation,
+            &tuning,
+        );
         let restore = Restore {
             space: *space,
             camera_space: *camera_space,
@@ -1451,6 +1469,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_return_point_comes_from_the_body_in_walk_and_from_the_camera_in_noclip() {
+        let tuning = MovementTuning::default();
+        let feet = Vec3::new(120.0, 40.0, -300.0);
+        let (body, camera) = body_and_camera_for_feet(&tuning, feet);
+        // The shown camera lags the eye by a stair rise and sits a little to the side.
+        let lagged = camera + Vec3::new(2.0, -18.0, 1.0);
+        let walking = crossing_feet(true, Some(body), lagged, &tuning);
+        assert!(
+            walking.abs_diff_eq(feet, 1.0e-3),
+            "WALK return point {walking:?} is not the body's feet {feet:?}"
+        );
+        let flying = crossing_feet(false, Some(body), camera, &tuning);
+        assert!(
+            flying.abs_diff_eq(feet, 1.0e-3),
+            "NOCLIP uses the camera: {flying:?}"
+        );
+        // WALK without a body falls back to the camera.
+        assert!(crossing_feet(true, None, camera, &tuning).abs_diff_eq(feet, 1.0e-3));
     }
 
     #[test]
