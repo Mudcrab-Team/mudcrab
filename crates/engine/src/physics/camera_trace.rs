@@ -8,7 +8,8 @@
 //! the floating origin is written too.
 
 use super::{
-    LookIntent, MoveMode, MovementTuning, PlayerBody, WalkCameraFollowState, WalkViewPose,
+    LookIntent, MoveMode, MovementTuning, PlayerBody, WalkCameraFollowState, WalkState,
+    WalkViewPose,
 };
 use crate::{config::EngineConfig, world::components::StreamingCamera};
 use bevy::prelude::*;
@@ -18,7 +19,7 @@ use std::{
 };
 
 const HEADER: &str = "frame,elapsed_s,frame_dt_s,ticks,overstep,mode,origin_x,origin_y,\
-body_x,body_y,body_z,feet_x,feet_y,feet_z,camera_x,camera_y,camera_z,lag_y,weight,spring_speed,pitch";
+body_x,body_y,body_z,feet_x,feet_y,feet_z,camera_x,camera_y,camera_z,lag_y,weight,spring_speed,pitch,grounded,vertical_velocity";
 
 /// Flush the file after this many rows, so a run that is killed keeps most of its rows.
 const FLUSH_EVERY_FRAMES: u64 = 60;
@@ -75,6 +76,7 @@ pub(super) fn write_walk_camera_trace_row(
     follow: Res<WalkCameraFollowState>,
     render_origin: Option<Res<crate::streaming::RenderOrigin>>,
     player: Query<&Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
+    walk: Query<&WalkState, With<PlayerBody>>,
     camera: Query<&Transform, With<StreamingCamera>>,
 ) {
     let trace = &mut *trace;
@@ -100,11 +102,16 @@ pub(super) fn write_walk_camera_trace_row(
         MoveMode::Walk => "walk",
         MoveMode::Noclip => "noclip",
     };
+    // `grounded` and the vertical velocity are the controller's state after the latest tick. A
+    // body that keeps `grounded = 0` with a growing downward velocity is falling, not stepping.
+    let (grounded, vertical_velocity) = walk.single().map_or((0, 0.0), |state| {
+        (u8::from(state.grounded), state.vertical_velocity)
+    });
     let (b, f, c) = (body.translation, feet, view.translation);
     let written = writeln!(
         trace.out,
         "{},{:.6},{:.6},{ticks},{overstep:.4},{mode},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
-         {:.3},{:.3},{:.3},{lag_y:.4},{weight:.4},{speed:.2},{:.5}",
+         {:.3},{:.3},{:.3},{lag_y:.4},{weight:.4},{speed:.2},{:.5},{grounded},{vertical_velocity:.2}",
         trace.frame,
         time.elapsed_secs_f64(),
         time.delta_secs(),

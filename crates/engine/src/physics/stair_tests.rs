@@ -316,8 +316,6 @@ struct ClimbFrame {
     /// The body at the latest tick.
     body: Vec3,
     camera: Vec3,
-    /// Fixed-clock time of the latest tick.
-    tick_time: f64,
     /// The spring weight W after this frame (RF-CAM-003).
     weight: f32,
 }
@@ -341,11 +339,66 @@ fn frame_times(hz: f32, uneven: bool, count: usize) -> Vec<f32> {
         .collect()
 }
 
-/// Climb the flight at `speed` with the given frame times. The player stands in WALK first until
-/// the spring weight is full (RF-CAM-003: W ramps at 1.5 per second).
-fn climb(speed: f32, deltas: &[f32]) -> Vec<ClimbFrame> {
+/// Frame times like Taylor's WALK session of the combined build (trace
+/// `evidence/user-test-20261115/s619-stairs-trace.csv`, 813 WALK frames): quantiles 0, 10, 50, 90
+/// and 100 percent at 17.9, 20.4, 33.9, 74.6 and 121 ms, so 1 to 8 physics ticks per frame. The
+/// fixed sequence draws from that distribution.
+fn trace_like_frame_times(count: usize) -> Vec<f32> {
+    const QUANTILES: [(f32, f32); 5] = [
+        (0.0, 0.0179),
+        (0.1, 0.0204),
+        (0.5, 0.0339),
+        (0.9, 0.0746),
+        (1.0, 0.121),
+    ];
+    let mut seed = 0x9e37_79b9_u32;
+    (0..count)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let unit = seed as f32 / u32::MAX as f32;
+            let upper = QUANTILES
+                .iter()
+                .position(|(q, _)| *q >= unit)
+                .unwrap()
+                .max(1);
+            let ((q0, t0), (q1, t1)) = (QUANTILES[upper - 1], QUANTILES[upper]);
+            t0 + (t1 - t0) * (unit - q0) / (q1 - q0)
+        })
+        .collect()
+}
+
+/// Every fixed tick of a run: fixed-clock time and body position.
+#[derive(Default, Resource)]
+struct TickLog(Vec<(f64, Vec3)>);
+
+fn log_tick(
+    mut log: ResMut<TickLog>,
+    fixed: Res<Time<Fixed>>,
+    player: Query<&Transform, With<PlayerBody>>,
+) {
+    if let Ok(body) = player.single() {
+        log.0.push((fixed.elapsed_secs_f64(), body.translation));
+    }
+}
+
+/// Climb the flight from the bottom or, with `descend`, walk down it from the top landing, with
+/// the given frame times. The player stands in WALK first until the spring weight is full
+/// (RF-CAM-003: W ramps at 1.5 per second). Returns each rendered frame and each fixed tick.
+fn traverse_flight(
+    speed: f32,
+    deltas: &[f32],
+    descend: bool,
+) -> (Vec<ClimbFrame>, Vec<(f64, Vec3)>) {
     let mut app = stair_flight_app();
-    let start = settle(&mut app, Vec3::new(-100.0, 200.0, 850.0));
+    app.init_resource::<TickLog>()
+        .add_systems(FixedUpdate, log_tick.after(walk_view_end_tick));
+    let start = if descend {
+        settle(&mut app, Vec3::new(1000.0, 500.0, 850.0))
+    } else {
+        settle(&mut app, Vec3::new(-100.0, 200.0, 850.0))
+    };
     let weight = app
         .world()
         .resource::<WalkCameraFollowState>()
@@ -367,10 +420,11 @@ fn climb(speed: f32, deltas: &[f32]) -> Vec<ClimbFrame> {
         )
     };
     app.insert_resource(WalkIntent {
-        wish_dir: Vec3::X,
+        wish_dir: if descend { -Vec3::X } else { Vec3::X },
         target_speed: speed,
         jump_pressed: false,
     });
+    app.world_mut().resource_mut::<TickLog>().0.clear();
     let mut frames = Vec::new();
     for &delta in deltas {
         app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
@@ -385,22 +439,27 @@ fn climb(speed: f32, deltas: &[f32]) -> Vec<ClimbFrame> {
             delta: world.resource::<Time>().delta_secs(),
             body,
             camera,
-            tick_time: world.resource::<Time<Fixed>>().elapsed_secs_f64(),
             weight: world
                 .resource::<WalkCameraFollowState>()
                 .spring
                 .map_or(0.0, |spring| spring.weight),
         });
-        if body.x > 32.0 * STAIR_TREAD {
+        if (descend && body.x < -STAIR_TREAD) || (!descend && body.x > 32.0 * STAIR_TREAD) {
             break;
         }
     }
+    let end = frames.last().unwrap().body.y;
     assert!(
-        frames.last().unwrap().body.y > start.y + 30.0 * STAIR_RISE,
-        "the climb did not reach the top: {start:?} -> {:?}",
+        if descend {
+            end < start.y - 30.0 * STAIR_RISE
+        } else {
+            end > start.y + 30.0 * STAIR_RISE
+        },
+        "the flight was not traversed (descend={descend}): {start:?} -> {:?}",
         frames.last().unwrap().body
     );
-    frames
+    let ticks = std::mem::take(&mut app.world_mut().resource_mut::<TickLog>().0);
+    (frames, ticks)
 }
 
 /// RMS of `values` about their least-squares line over `times`.
@@ -485,13 +544,11 @@ fn replay_spring(frames: &[ClimbFrame], feet: impl Fn(&ClimbFrame) -> Vec3) -> V
 /// along the tick path too (a helper ramp, REA m1 section 7), otherwise each lift is one whole step
 /// (retail has no smoothing other than the spring, RF-CAM-005). Both see the path one physics tick
 /// late, as the fixed-tick controller shows it. Frames before the second tick are dropped.
-fn retail_reference(frames: &[ClimbFrame], continuous_lift: bool) -> Vec<ClimbFrame> {
-    let mut ticks: Vec<(f64, Vec3)> = Vec::new();
-    for frame in frames {
-        if ticks.last().is_none_or(|(time, _)| *time < frame.tick_time) {
-            ticks.push((frame.tick_time, frame.body));
-        }
-    }
+fn retail_reference(
+    frames: &[ClimbFrame],
+    ticks: &[(f64, Vec3)],
+    continuous_lift: bool,
+) -> Vec<ClimbFrame> {
     let tick = f64::from(PHYSICS_TIMESTEP);
     let usable: Vec<ClimbFrame> = frames
         .iter()
@@ -534,8 +591,9 @@ fn constant_speed_reference(frames: &[ClimbFrame]) -> Vec<ClimbFrame> {
 
 /// Headless stair-climb jitter metric for the WALK camera (#511, #619), with no window.
 ///
-/// The production controller climbs a 12/24 flight at the run speed with 60 Hz physics, at a
-/// steady and at an uneven 120 Hz frame rate. Each rendered frame records the camera. The metric is
+/// The production controller climbs and descends a 12/24 flight at the run speed with 60 Hz
+/// physics, at a steady and an uneven 120 Hz frame rate and at the frame times of Taylor's trace
+/// (about 27 Hz, 1 to 8 ticks per frame, [`trace_like_frame_times`]). Each rendered frame records the camera. The metric is
 /// the RMS of the camera height and of its forward position about a straight line in time, over
 /// the middle of the flight, in game units.
 ///
@@ -555,68 +613,244 @@ fn stair_climb_camera_ripple_stays_within_the_retail_spring_model() {
     const F32_ROUNDING: f64 = 1.0e-4;
     let tuning = MovementTuning::default();
     let eye = Vec3::Y * tuning.eye_height;
-    for (label, uneven) in [("steady 120 Hz", false), ("uneven 120 Hz", true)] {
-        let frames = climb(tuning.run_speed, &frame_times(120.0, uneven, 2400));
-        let view = ripple(&frames, |frame| frame.camera - eye);
-        let whole_step = ripple(&retail_reference(&frames, false), |frame| frame.camera);
-        let continuous = ripple(&retail_reference(&frames, true), |frame| frame.camera);
-        let tick_fed = ripple(&replay_spring(&frames, |frame| frame.body), |frame| {
-            frame.camera
-        });
-        let constant_speed = ripple(&constant_speed_reference(&frames), |frame| frame.camera);
-        let rigid = ripple(&frames, |frame| frame.body);
-        println!(
-            "{label}: view {view:?}; retail model whole-step {whole_step:?}, continuous \
-             {continuous:?}; constant-speed controller {constant_speed:?}; spring fed with the \
-             latest tick (#511 alone) {tick_fed:?}; rigid camera {rigid:?}"
-        );
-        let bound = Ripple {
-            height: whole_step.height.max(continuous.height) * (1.0 + F32_ROUNDING),
-            forward: whole_step.forward.max(continuous.forward) * (1.0 + F32_ROUNDING),
-        };
-        assert!(
-            view.height <= bound.height,
-            "{label}: camera height ripple {:.4} is above the retail spring model {:.4}",
-            view.height,
-            bound.height
-        );
-        assert!(
-            view.forward <= bound.forward,
-            "{label}: camera forward ripple {:.4} is above the retail spring model {:.4}",
-            view.forward,
-            bound.forward
-        );
-        assert!(
-            view.height < rigid.height,
-            "{label}: the spring did not reduce the stair ripple of a rigid camera"
-        );
+    // The third value says whether the spring must beat a rigid camera. At the trace pacing it
+    // need not: the momentum term `c * T * V_prev` scales with `T / T_prev` (RF-CAM-001), so the
+    // registry spring itself leaves a ripple as large as a rigid camera's at those frame times,
+    // even for a per-frame controller at a constant speed.
+    let pacings = [
+        ("steady 120 Hz", frame_times(120.0, false, 2400), true),
+        ("uneven 120 Hz", frame_times(120.0, true, 2400), true),
+        ("Taylor's trace pacing", trace_like_frame_times(600), false),
+    ];
+    for descend in [false, true] {
+        for (pacing, deltas, beats_rigid) in &pacings {
+            let label = format!("{} {pacing}", if descend { "descent" } else { "climb" });
+            let (frames, ticks) = traverse_flight(tuning.run_speed, deltas, descend);
+            let view = ripple(&frames, |frame| frame.camera - eye);
+            let whole_step = ripple(&retail_reference(&frames, &ticks, false), |frame| {
+                frame.camera
+            });
+            let continuous = ripple(&retail_reference(&frames, &ticks, true), |frame| {
+                frame.camera
+            });
+            let tick_fed = ripple(&replay_spring(&frames, |frame| frame.body), |frame| {
+                frame.camera
+            });
+            let constant_speed = ripple(&constant_speed_reference(&frames), |frame| frame.camera);
+            let rigid = ripple(&frames, |frame| frame.body);
+            println!(
+                "{label}: view {view:?}; retail model whole-step {whole_step:?}, continuous \
+                 {continuous:?}; constant-speed controller {constant_speed:?}; spring fed with \
+                 the latest tick (#511 alone) {tick_fed:?}; rigid camera {rigid:?}"
+            );
+            let bound = Ripple {
+                height: whole_step.height.max(continuous.height) * (1.0 + F32_ROUNDING),
+                forward: whole_step.forward.max(continuous.forward) * (1.0 + F32_ROUNDING),
+            };
+            assert!(
+                view.height <= bound.height,
+                "{label}: camera height ripple {:.4} is above the retail spring model {:.4}",
+                view.height,
+                bound.height
+            );
+            assert!(
+                view.forward <= bound.forward,
+                "{label}: camera forward ripple {:.4} is above the retail spring model {:.4}",
+                view.forward,
+                bound.forward
+            );
+            assert!(
+                !beats_rigid || view.height < rigid.height,
+                "{label}: the spring did not reduce the stair ripple of a rigid camera"
+            );
+        }
     }
 }
 
-/// Reports the spring weight during a stair climb at the walk, run and sprint speeds. RF-CAM-003
-/// fades the spring out while the smoothed point moves faster than 500 units per second, so a
-/// sprint up a stair flight can turn the spring off. Prints only; the weight is retail behaviour.
+/// Prints what the controller does at each tick of a descent of the 12/24 flight at the run speed:
+/// the body height, the grounded flag and the vertical velocity. It answers whether the body steps
+/// down while it stays grounded, or falls and lands on every tread (Taylor's "falling down the
+/// stairs", #590). Retail keeps the player on the ground across a down-step by casting 70 units
+/// down and pulling it onto the surface (RF-CC-006, `fUnsupportCastLength`); Mudcrab's
+/// `ground_snap` is 12 units, a tuning value (REA m1 section 5).
 #[test]
-#[ignore = "measure: prints the spring weight per climb speed; run with --ignored --nocapture"]
-fn measure_stair_climb_spring_weight_per_speed() {
+#[ignore = "measure: prints the per-tick descent profile; run with --ignored --nocapture"]
+fn measure_stair_descent_per_tick_profile() {
     let tuning = MovementTuning::default();
-    for (label, speed) in [
-        ("walk", tuning.walk_speed),
-        ("run", tuning.run_speed),
-        ("sprint", tuning.run_speed * tuning.sprint_multiplier),
-    ] {
-        let frames = climb(speed, &frame_times(120.0, true, 2400));
-        let eye = Vec3::Y * tuning.eye_height;
-        let middle: Vec<_> = frames
-            .iter()
-            .filter(|frame| (4.0 * STAIR_TREAD..28.0 * STAIR_TREAD).contains(&frame.body.x))
-            .collect();
-        let weight = middle.iter().map(|frame| frame.weight).fold(1.0, f32::min);
-        println!(
-            "{label} {speed} u/s: lowest weight {weight:.3}, view {:?}, rigid {:?}",
-            ripple(&frames, |frame| frame.camera - eye),
-            ripple(&frames, |frame| frame.body)
-        );
+    let mut app = stair_flight_app();
+    settle(&mut app, Vec3::new(1000.0, 500.0, 850.0));
+    app.insert_resource(WalkIntent {
+        wish_dir: -Vec3::X,
+        target_speed: tuning.run_speed,
+        jump_pressed: false,
+    });
+    app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+        std::time::Duration::from_secs_f32(PHYSICS_TIMESTEP),
+    ));
+    println!("tick,x,y,dy,grounded,vertical_velocity");
+    let mut previous_y = None;
+    let (mut airborne_ticks, mut grounded_ticks, mut deepest_fall) = (0, 0, 0.0_f32);
+    for tick in 0..400 {
+        app.update();
+        let (pose, _) = headless::player_pose(&mut app);
+        let state = *app
+            .world_mut()
+            .query::<&WalkState>()
+            .single(app.world())
+            .unwrap();
+        let dy = previous_y.map_or(0.0, |y| pose.y - y);
+        previous_y = Some(pose.y);
+        if (0.0..=32.0 * STAIR_TREAD).contains(&pose.x) && pose.y < 32.0 * STAIR_RISE + 100.0 {
+            if state.grounded {
+                grounded_ticks += 1;
+            } else {
+                airborne_ticks += 1;
+                deepest_fall = deepest_fall.min(state.vertical_velocity);
+            }
+            println!(
+                "{tick},{:.1},{:.2},{dy:.2},{},{:.1}",
+                pose.x,
+                pose.y,
+                u8::from(state.grounded),
+                state.vertical_velocity
+            );
+        }
+        if pose.x < -STAIR_TREAD {
+            break;
+        }
+    }
+    println!(
+        "on the flight: {grounded_ticks} grounded ticks, {airborne_ticks} airborne ticks, fastest fall {deepest_fall:.0} u/s"
+    );
+}
+
+/// Walks up and down a steep ramp (the trace of Taylor's stair descent has a slope of about 45
+/// degrees, 5.4 to 8 units of drop per tick for 2.3 to 6.2 units forward) at the walk, run and
+/// sprint speeds, and prints the horizontal speed, the speed along the surface and the grounded
+/// ticks. The controller holds the horizontal speed, so the speed along the surface grows with the
+/// slope. Whether the retail character proxy holds the horizontal or the surface speed is not in
+/// the registry (REA queue Q-CC-1); this only reports Mudcrab's behaviour (#590).
+#[test]
+#[ignore = "measure: prints speeds on a steep ramp; run with --ignored --nocapture"]
+fn measure_steep_ramp_speed_along_the_surface() {
+    let tuning = MovementTuning::default();
+    let slope = 45.0_f32.to_radians();
+    for descend in [false, true] {
+        for (label, speed) in [
+            ("walk", tuning.walk_speed),
+            ("run", tuning.run_speed),
+            ("sprint", tuning.run_speed * tuning.sprint_multiplier),
+        ] {
+            let mut app = headless::fixture_app();
+            // A 2000-unit long, 20-unit thick ramp that rises toward +X, and a flat landing at each end.
+            let (length, half_thickness) = (2000.0_f32, 10.0_f32);
+            let up = Vec3::new(-slope.sin(), slope.cos(), 0.0);
+            let centre =
+                Vec3::new(slope.cos(), slope.sin(), 0.0) * (length * 0.5) - up * half_thickness;
+            app.world_mut().spawn((
+                RigidBody::Fixed,
+                Collider::cuboid(length * 0.5, half_thickness, 700.0),
+                world_collision_groups(),
+                Transform {
+                    translation: centre,
+                    rotation: Quat::from_rotation_z(slope),
+                    ..default()
+                },
+            ));
+            let top = Vec3::new(length * slope.cos(), length * slope.sin(), 0.0);
+            fixed_box(
+                &mut app,
+                top + Vec3::new(300.0, -half_thickness, 0.0),
+                Vec3::new(300.0, half_thickness, 700.0),
+            );
+            fixed_box(
+                &mut app,
+                Vec3::new(-300.0, -half_thickness, 0.0),
+                Vec3::new(300.0, half_thickness, 700.0),
+            );
+            let start = if descend {
+                Vec3::new(top.x + 100.0, top.y + 80.0, 0.0)
+            } else {
+                Vec3::new(-100.0, 80.0, 0.0)
+            };
+            settle(&mut app, start);
+            app.insert_resource(WalkIntent {
+                wish_dir: if descend { -Vec3::X } else { Vec3::X },
+                target_speed: speed,
+                jump_pressed: false,
+            });
+            let (mut grounded, mut airborne) = (0, 0);
+            let (mut horizontal, mut surface, mut vertical) = (Vec::new(), Vec::new(), Vec::new());
+            let mut previous = headless::player_pose(&mut app).0;
+            for _ in 0..240 {
+                app.update();
+                let (pose, _) = headless::player_pose(&mut app);
+                let state = *app
+                    .world_mut()
+                    .query::<&WalkState>()
+                    .single(app.world())
+                    .unwrap();
+                let on_ramp = (300.0..top.x - 300.0).contains(&pose.x);
+                if on_ramp {
+                    if state.grounded {
+                        grounded += 1;
+                    } else {
+                        airborne += 1;
+                    }
+                    let step = (pose - previous) / PHYSICS_TIMESTEP;
+                    horizontal.push(step.x.abs());
+                    vertical.push(step.y.abs());
+                    surface.push((step.x * step.x + step.y * step.y).sqrt());
+                }
+                previous = pose;
+            }
+            let mean = |values: &[f32]| values.iter().sum::<f32>() / values.len().max(1) as f32;
+            println!(
+                "{} {label}: wish {speed:.0} u/s, on the ramp: horizontal {:.0}, vertical {:.0}, along the surface {:.0} u/s; {grounded} grounded and {airborne} airborne ticks",
+                if descend { "descent" } else { "climb" },
+                mean(&horizontal),
+                mean(&vertical),
+                mean(&surface),
+            );
+        }
+    }
+}
+
+/// Reports the spring weight during a stair climb and a descent at the walk, run and sprint
+/// speeds. RF-CAM-003 fades the spring out while the smoothed point moves faster than 500 units
+/// per second in 3D, so a fast flight can turn the spring off. Prints only; the weight is retail
+/// behaviour.
+#[test]
+#[ignore = "measure: prints the spring weight per speed and direction; run with --ignored --nocapture"]
+fn measure_stair_spring_weight_per_speed() {
+    let tuning = MovementTuning::default();
+    let eye = Vec3::Y * tuning.eye_height;
+    for descend in [false, true] {
+        for (label, speed) in [
+            ("walk", tuning.walk_speed),
+            ("run", tuning.run_speed),
+            ("sprint", tuning.run_speed * tuning.sprint_multiplier),
+        ] {
+            for (pacing, deltas) in [
+                ("uneven 120 Hz", frame_times(120.0, true, 2400)),
+                ("trace pacing", trace_like_frame_times(600)),
+            ] {
+                let (frames, _) = traverse_flight(speed, &deltas, descend);
+                let middle: Vec<_> = frames
+                    .iter()
+                    .filter(|frame| (4.0 * STAIR_TREAD..28.0 * STAIR_TREAD).contains(&frame.body.x))
+                    .collect();
+                let weight = middle.iter().map(|frame| frame.weight).fold(1.0, f32::min);
+                let faded = middle.iter().filter(|frame| frame.weight < 1.0).count();
+                println!(
+                    "{} {label} {speed} u/s, {pacing}: lowest weight {weight:.3} ({faded} of {} frames below 1), view {:?}, rigid {:?}",
+                    if descend { "descent" } else { "climb" },
+                    middle.len(),
+                    ripple(&frames, |frame| frame.camera - eye),
+                    ripple(&frames, |frame| frame.body)
+                );
+            }
+        }
     }
 }
 
