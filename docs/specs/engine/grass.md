@@ -29,6 +29,12 @@ the engine is running.
 
 Both merged terrain and its quadrant fallback supply the selected, welded
 height field to grass; cache heights never replace the surface actually drawn.
+After selection, runtime roots are grounded on the rendered fixed
+`[a,b,c]`/`[b,d,c]` triangles at their decoded packed XY coordinates. This final
+Z adaptation preserves fractional committed heights and uses the committed
+field's height range for packing. Selection, random draws, colours and normals
+retain the reference rules. CPU source-selection diagnostics use the original
+LAND sampler; their spud parity evidence does not establish runtime-grounded Z parity.
 
 Selection follows [spud](https://github.com/chasmlol/spud) (MIT, revision
 `e5f2de4`); its notice is retained in `third-party/spud/LICENSE` and beside the
@@ -76,12 +82,13 @@ byte rotation/scale and signed-byte normals, so this is not bit-identical to
 spud's half-precision orientation matrix.
 Authored normal bytes retain their original ratios and least-component ties;
 the shader normalizes them. Missing-normal geometry uses the quantized fallback.
-Batch Z bounds cover the actual selected binary16 roots, including obstruction
+Source-selection batch Z bounds cover the actual selected binary16 roots, including obstruction
 rejections, so packing does not clip high-elevation or extrapolated roots. The
 reference integer edge split can sample just beyond a square's vertex range.
 Workers temporarily stage each retained instance with the binary16 world-root
 bits in its unpublished Z lane until selection finishes, then quantize all forms
-with one cell range; diagnostic callbacks receive that same finalized packing. A surface outside the
+with one cell range; diagnostic callbacks receive that same finalized source packing.
+Runtime grounding then repacks Z against the committed mesh as described above. A surface outside the
 finite binary16 range is skipped with a warning.
 Staging spare capacity is released before batch publication; the pool charges
 the final instance vector's retained capacity.

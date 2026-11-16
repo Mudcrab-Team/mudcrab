@@ -243,15 +243,16 @@ pub fn generate_observed(
     )
 }
 
-/// Keep committed terrain lifetime checks while sampling its selected height and colour fields.
+/// Select against committed inputs, then ground packed roots on the rendered terrain triangles.
 pub(super) fn generate_on_terrain(
     cache: &GrassCache,
     cell_id: u32,
     config: &EngineConfig,
     terrain: &GrassTerrain,
 ) -> GeneratedGrass {
+    let start = Instant::now();
     let white = [1.0; 1089];
-    generate_field::<false>(
+    let mut result = generate_field::<false>(
         cache,
         cell_id,
         config,
@@ -260,7 +261,27 @@ pub(super) fn generate_on_terrain(
         terrain.0.water_height,
         Some(terrain.luminance().unwrap_or(&white)),
         &mut |_| {},
-    )
+    );
+    if !result.batches.is_empty() {
+        let heights = terrain.heights();
+        let minimum = heights.iter().copied().fold(f32::INFINITY, f32::min);
+        let maximum = heights.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let span = (maximum - minimum).max(1.0);
+        for batch in &mut result.batches {
+            // New batches own their vectors. Ground at decoded XY so packing on a slope
+            // uses the same root coordinates as the renderer, including welded edges.
+            for instance in Arc::make_mut(&mut batch.instances) {
+                let [x, y] = [instance.position[0], instance.position[1]]
+                    .map(|value| f32::from(value) * GRASS_CELL_SIZE / 65535.0);
+                let height = sampling::committed_height(x, y, heights);
+                instance.position[2] = quantize(height - minimum, span);
+            }
+            batch.height_min = minimum;
+            batch.height_span = span;
+        }
+    }
+    result.generation_micros = start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+    result
 }
 
 /// A rejected or absent cell leaves the world usable without grass batches.

@@ -50,8 +50,8 @@ pub(super) fn sample(
     };
     let index = |[c, r]: [usize; 2]| (row + r) * 33 + col + c;
     // Authored LAND uses the reference's eight-unit height reconstruction.
-    // A synthetic/legacy surface without VNML uses its actual committed geometry
-    // for both height and the geometric-normal fallback, including welded edges.
+    // Synthetic/legacy selection without VNML uses its input heights and a geometric
+    // normal fallback. Runtime roots subsequently follow the committed render topology.
     let authored = normal_at(index(corners[0])).is_some();
     let heights = corners.map(|corner| {
         let height = height_at(index(corner));
@@ -103,6 +103,24 @@ pub(super) fn sample(
         normal,
         nearest,
     })
+}
+
+/// Sample the fixed [a,b,c]/[b,d,c] split emitted by terrain_mesh::quadrant_triangles.
+/// Callers provide a validated 33x33 committed surface and decoded packed cell coordinates.
+pub(super) fn committed_height(x: f32, y: f32, heights: &[f32]) -> f32 {
+    let col = ((x / 128.0) as usize).min(31);
+    let row = ((y / 128.0) as usize).min(31);
+    let fx = x / 128.0 - col as f32;
+    let fy = y / 128.0 - row as f32;
+    let a = heights[row * 33 + col];
+    let b = heights[row * 33 + col + 1];
+    let c = heights[(row + 1) * 33 + col];
+    if fx + fy <= 1.0 {
+        a + (b - a) * fx + (c - a) * fy
+    } else {
+        let d = heights[(row + 1) * 33 + col + 1];
+        d + (c - d) * (1.0 - fx) + (b - d) * (1.0 - fy)
+    }
 }
 
 /// Compare the normalized authored normal with the reference's 512-sample cosine table.

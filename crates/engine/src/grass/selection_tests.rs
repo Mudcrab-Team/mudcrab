@@ -1,6 +1,96 @@
 use super::*;
 use shared::grass::{GRASS_CACHE_VERSION, GrassCell, GrassLayer, GrassQuadrant, GrassType};
 
+/// Reference selection and rendered grounding intentionally retain their distinct diagonals.
+#[test]
+fn reference_selection_and_committed_grounding_keep_distinct_contracts() {
+    let mut heights = vec![0.0; 1089];
+    heights[34] = 128.0;
+    assert_eq!(
+        sampling::sample(96.0, 80.0, &|i| heights[i], &|_| Some([0.0, 0.0, 1.0]))
+            .unwrap()
+            .height,
+        80.0
+    );
+    assert_eq!(sampling::committed_height(96.0, 80.0, &heights), 48.0);
+    heights.fill(16_408.25);
+    assert_eq!(
+        sampling::committed_height(4096.0, 4096.0, &heights),
+        16_408.25
+    );
+}
+
+/// Runtime grounding preserves fractional welded heights beyond binary16 Z precision.
+#[test]
+fn committed_fractional_height_survives_runtime_grounding() {
+    let source = cell(vec![layer(vec![7], 1.0, true)]);
+    let cache = mapped(vec![rule(7, 128.0)], source);
+    let config = EngineConfig::default();
+    let reference = generate(&cache, 42, &config);
+    let surface = GrassTerrain::new(vec![16_408.25; 1089], None);
+    let runtime = generate_on_terrain(&cache, 42, &config, &surface);
+    assert_eq!(
+        reference.batches[0].instances.len(),
+        runtime.batches[0].instances.len()
+    );
+    for instance in runtime.batches[0].instances.iter() {
+        let batch = &runtime.batches[0];
+        assert_eq!(
+            batch.height_min + f32::from(instance.position[2]) * batch.height_span / 65535.0,
+            16_408.25
+        );
+    }
+}
+
+/// Runtime roots follow the committed fixed-diagonal mesh at their decoded packed XY.
+#[test]
+fn committed_nonplanar_grounding_matches_rendered_triangles() {
+    let mut source = cell(vec![layer(vec![7], 1.0, true)]);
+    source.heights = (0..1089)
+        .map(|i| {
+            if (i % 33) % 2 == 1 && (i / 33) % 2 == 1 {
+                128.0
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let surface = GrassTerrain::new(source.heights.clone(), None);
+    let cache = mapped(vec![rule(7, 128.0)], source);
+    let generated = generate_on_terrain(&cache, 42, &EngineConfig::default(), &surface);
+    assert!(!generated.batches.is_empty());
+    for batch in &generated.batches {
+        for instance in batch.instances.iter() {
+            let x = f32::from(instance.position[0]) * 4096.0 / 65535.0;
+            let y = f32::from(instance.position[1]) * 4096.0 / 65535.0;
+            let col = (x / 128.0).floor().min(31.0) as usize;
+            let row = (y / 128.0).floor().min(31.0) as usize;
+            let fx = x / 128.0 - col as f32;
+            let fy = y / 128.0 - row as f32;
+            let heights = surface.heights();
+            let [a, b, c, d] = [
+                row * 33 + col,
+                row * 33 + col + 1,
+                (row + 1) * 33 + col,
+                (row + 1) * 33 + col + 1,
+            ]
+            .map(|i| heights[i]);
+            // quadrant_triangles emits [a,b,c] and [b,d,c] on every square.
+            let expected = if fx + fy <= 1.0 {
+                a * (1.0 - fx - fy) + b * fx + c * fy
+            } else {
+                b * (1.0 - fy) + c * (1.0 - fx) + d * (fx + fy - 1.0)
+            };
+            let actual =
+                batch.height_min + f32::from(instance.position[2]) * batch.height_span / 65535.0;
+            assert!(
+                (actual - expected).abs() < 0.005,
+                "root ({x},{y}): {actual} versus rendered {expected}"
+            );
+        }
+    }
+}
+
 /// Compact staging retains every finite half value, including signed zero and subnormals.
 #[test]
 fn half_height_staging_preserves_literal_and_finite_values() {
