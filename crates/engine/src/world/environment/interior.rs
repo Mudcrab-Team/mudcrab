@@ -1932,7 +1932,10 @@ mod tests {
         enter(&mut app, Some(66));
         app.update();
         let fog = app.world().resource::<InteriorFog>().0.unwrap();
-        assert_eq!((fog.near_color, fog.near, fog.far), ([31, 52, 46], 100.0, 4000.0));
+        assert_eq!(
+            (fog.near_color, fog.near, fog.far),
+            ([31, 52, 46], 100.0, 4000.0)
+        );
         assert_eq!(fog.max, 1.0);
         let bevy_fog = fog.distance_fog();
         assert!((bevy_linear_factor(&bevy_fog, 4000.0) - 1.0).abs() < 1.0e-6);
