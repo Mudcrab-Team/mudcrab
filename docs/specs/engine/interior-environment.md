@@ -58,8 +58,8 @@ RF-LIGHT-GPU-001 to RF-LIGHT-GPU-010, RF-IMGS-001 and RF-WATER-011, and the veri
    distance are not applied.
 8. **Exit**: leaving modes 1 and 2 restores the saved rotation, colour, illuminance, shadows and
    ambient, and the clock sun takes over the next frame. A write by another system while indoors
-   (`apply_render_settings` on a preference change) replaces the saved value, so the exit
-   returns the current setting.
+   (`apply_render_settings` on a preference change), including one in the exit frame itself,
+   replaces the saved value, so the exit returns the current setting.
 9. **Order**: `crate::sky`'s `apply_fog` runs after `EnvironmentSet`, so a door or room crossing
    changes the fog in the same frame as the light.
 

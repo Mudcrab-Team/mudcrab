@@ -733,8 +733,9 @@ fn select_environment(
 ///
 /// Mode 3 changes nothing: the exterior sun path (#588) stays. On leaving modes 1 and 2 the
 /// saved exterior rotation, colour, illuminance, shadows and ambient return, and
-/// `crate::sun::update_sun` drives the sun again. A write by another system while indoors
-/// (a settings change) replaces the saved value, so the restore returns the current setting.
+/// `crate::sun::update_sun` drives the sun again. A write by another system while indoors, or in
+/// the exit frame (a settings change), replaces the saved value, so the restore returns the
+/// current setting.
 fn apply_interior_lighting(
     scene: Res<SceneEnvironment>,
     cameras: Query<&Transform, (With<StreamingCamera>, Without<WorldSun>)>,
@@ -793,7 +794,17 @@ fn apply_interior_lighting(
                     render.key_rotation(),
                 );
             }
-            (None, Some(saved)) => {
+            (None, Some(mut saved)) => {
+                // The exit frame. A preference applied in `Update` just before this frame wrote
+                // the exterior values after the last snapshot, and they are the ones to keep.
+                if light.is_changed() {
+                    saved.color = light.color;
+                    saved.illuminance = light.illuminance;
+                    saved.shadow_maps_enabled = light.shadow_maps_enabled;
+                }
+                if transform.is_changed() {
+                    saved.rotation = transform.rotation;
+                }
                 let saved = *saved;
                 set_sun(
                     &mut light,
@@ -825,7 +836,9 @@ fn apply_interior_lighting(
             }
         }
         None => {
+            // A write since the last run is the new exterior ambient, as for the sun above.
             if let Some(color) = saved_ambient.take()
+                && !ambient.is_changed()
                 && ambient.color != color
             {
                 ambient.color = color;
@@ -1937,6 +1950,61 @@ mod tests {
             .translation = Vec3::ZERO;
         app.update();
         assert_eq!(sun_light(&app, sun).color, Color::srgb_u8(44, 47, 48));
+    }
+
+    /// Retail takes the sky mode from the cell the player is in (RF-LIGHT-CPU-010), and an
+    /// interior's coordinates are local to that cell. A camera in the exterior at a point that
+    /// lies inside an interior's room box, or beside the Barrow's exterior door (grid -1,-11),
+    /// is still in an exterior cell: only a door crossing (`ActiveSpace`) selects the interior.
+    #[test]
+    fn the_camera_position_never_selects_an_interior_but_a_crossing_does() {
+        const BARROW_DOOR_CREATION: Vec3 = Vec3::new(-2966.176, -43_330.668, 6141.133);
+        let mut app = app(rule_catalog());
+        let sun = spawn_world_sun(&mut app);
+        let exterior_rotation = app.world().get::<Transform>(sun).unwrap().rotation;
+        let camera = app
+            .world_mut()
+            .spawn((StreamingCamera, Transform::default()))
+            .id();
+        for creation in [
+            // Inside room 90193 of BleakFallsBarrow01, as an exterior position.
+            Vec3::new(7936.0, -5015.0, -1900.0),
+            // Beside the exterior load door into BleakFallsBarrow01.
+            BARROW_DOOR_CREATION,
+            Vec3::ZERO,
+        ] {
+            app.world_mut()
+                .get_mut::<Transform>(camera)
+                .unwrap()
+                .translation = creation_to_bevy(creation);
+            for _ in 0..3 {
+                app.update();
+            }
+            let scene = app.world().resource::<SceneEnvironment>();
+            assert_eq!(scene.interior, None, "camera at {creation:?}");
+            assert_eq!(
+                scene.sky_mode,
+                SkyMode::WeatherSun,
+                "camera at {creation:?}"
+            );
+            assert!(scene.cell_render.is_none() && scene.rooms.is_empty());
+            assert_eq!(app.world().resource::<InteriorFog>().0, None);
+            let light = sun_light(&app, sun);
+            assert_eq!(light.illuminance, crate::lights::SUN_ILLUMINANCE);
+            assert!(light.shadow_maps_enabled);
+            assert_eq!(
+                app.world().get::<Transform>(sun).unwrap().rotation,
+                exterior_rotation
+            );
+        }
+        // The door crossing writes ActiveSpace; the same camera then gets the interior.
+        enter(&mut app, Some(BLEAK_FALLS));
+        assert_eq!(selected(&app).cell_id, BLEAK_FALLS);
+        assert_eq!(
+            app.world().resource::<SceneEnvironment>().sky_mode,
+            SkyMode::CellLightingWithSky
+        );
+        assert!(app.world().resource::<InteriorFog>().0.is_some());
     }
 }
 

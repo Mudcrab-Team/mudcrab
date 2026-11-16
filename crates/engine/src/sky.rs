@@ -992,25 +992,47 @@ mod tests {
         app
     }
 
+    /// `apply_fog` reads `InteriorFog`, which `apply_interior_lighting` writes, so the two
+    /// conflict. Only an ordering edge keeps the fog from lagging a frame behind the light, and a
+    /// behavioural test cannot tell the edge from a lucky executor order. This test builds the
+    /// schedule and fails if any pair of systems is unordered while both touch `InteriorFog`.
+    /// (System names are hidden without Bevy's `debug` feature, so the resource identifies them.)
+    #[test]
+    fn systems_that_touch_interior_fog_are_ordered() {
+        use crate::world::environment::interior::{InteriorEnvironmentPlugin, InteriorFog};
+        let mut app = App::new();
+        app.add_plugins(InteriorEnvironmentPlugin).add_systems(
+            PostUpdate,
+            sky_systems().before(TransformSystems::Propagate),
+        );
+        let fog = app.world().component_id::<InteriorFog>().unwrap();
+        // `initialize` creates resources of its own, so the schedules leave the world first.
+        let mut schedules = app
+            .world_mut()
+            .remove_resource::<bevy::ecs::schedule::Schedules>()
+            .unwrap();
+        let schedule = schedules.get_mut(PostUpdate).unwrap();
+        schedule.initialize(app.world_mut()).unwrap();
+        let unordered = schedule
+            .graph()
+            .conflicting_systems()
+            .0
+            .iter()
+            .filter(|(_, _, resources)| resources.contains(&fog))
+            .count();
+        assert_eq!(unordered, 0, "systems that touch InteriorFog are unordered");
+    }
+
     /// `apply_fog` reads the `InteriorFog` that `EnvironmentSet` writes in the same schedule:
     /// with both plugins' systems, one door crossing (exterior to a fogged interior) and one room
     /// crossing (into a room template with other fog colours) each fog the camera in the same
     /// frame.
     #[test]
     fn interior_fog_applies_in_the_frame_the_environment_changes() {
-        interior_fog_crossing_frames(false);
+        interior_fog_crossing_frames();
     }
 
-    /// The same with the sky systems registered before the environment plugin, as an app that
-    /// adds `SkyPlugin` first would have it. Without the `after(EnvironmentSet)` edge the two
-    /// systems conflict on `InteriorFog` and the registration order alone decides which runs
-    /// first, so this case pins the edge and the case above does not.
-    #[test]
-    fn interior_fog_applies_in_the_crossing_frame_when_the_sky_is_registered_first() {
-        interior_fog_crossing_frames(true);
-    }
-
-    fn interior_fog_crossing_frames(sky_first: bool) {
+    fn interior_fog_crossing_frames() {
         use crate::streaming::ActiveSpace;
         use crate::world::components::StreamingCamera;
         use crate::world::environment::{EnvironmentCatalog, interior::InteriorEnvironmentPlugin};
@@ -1044,18 +1066,10 @@ mod tests {
             .init_resource::<crate::underwater::UnderwaterState>()
             .insert_resource(EnvironmentCatalog::from_connection(&connection))
             .init_resource::<ActiveSpace>();
-        if sky_first {
-            app.add_systems(
-                PostUpdate,
-                sky_systems().before(TransformSystems::Propagate),
-            )
-            .add_plugins(InteriorEnvironmentPlugin);
-        } else {
-            app.add_plugins(InteriorEnvironmentPlugin).add_systems(
-                PostUpdate,
-                sky_systems().before(TransformSystems::Propagate),
-            );
-        }
+        app.add_plugins(InteriorEnvironmentPlugin).add_systems(
+            PostUpdate,
+            sky_systems().before(TransformSystems::Propagate),
+        );
         let camera = app
             .world_mut()
             .spawn((FogCamera, StreamingCamera, Transform::default()))
