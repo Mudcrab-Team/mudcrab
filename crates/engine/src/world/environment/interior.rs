@@ -1860,6 +1860,37 @@ mod tests {
         );
     }
 
+    /// The table prepares but its rows cannot be read (a wrong-shape value): the catalog knows
+    /// nothing about any cell, exactly as for an older pack, so the built-in lights stay.
+    #[test]
+    fn a_cell_lighting_table_whose_rows_cannot_be_read_keeps_the_built_in_lights() {
+        let connection = Connection::open_in_memory().unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO cell_environment(cell_id,data_flags) VALUES(78792,129);
+                 INSERT INTO cell_lighting(cell_id,xcll_size,ambient_r) VALUES(78792,92,'not a number');",
+            )
+            .unwrap();
+        let catalog = EnvironmentCatalog::from_connection(&connection);
+        assert!(!catalog.has_cell_lighting_table());
+        let mut app = app(catalog);
+        let sun = spawn_world_sun(&mut app);
+        enter(&mut app, Some(ALVOR));
+        app.update();
+        let light = sun_light(&app, sun);
+        assert_eq!(light.color, crate::sky::WeatherLighting::default().sunlight);
+        assert_eq!(light.illuminance, crate::lights::SUN_ILLUMINANCE);
+        assert!(light.shadow_maps_enabled);
+        assert_eq!(app.world().resource::<InteriorFog>().0, None);
+        assert!(
+            app.world()
+                .resource::<SceneEnvironment>()
+                .cell_render
+                .is_none()
+        );
+    }
+
     /// The other case: the pack has the tables and the cell has no XCLL and no LTMP, so it has no
     /// `cell_lighting` row. Every retail getter returns 0 for it (RF-LIGHT-CPU-014), so the cell
     /// is lit with colour 0 and the built-in lights do not show through.

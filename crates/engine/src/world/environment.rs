@@ -315,10 +315,10 @@ impl EnvironmentCatalog {
             "SELECT cell_id, lighting_template_id, {}, inherit_flags, xcll_size FROM cell_lighting",
             lighting_columns()
         );
-        // A pack converted before the environment tables cannot be read here. That is different
-        // from a cell without a row, which the converter writes only for cells with an XCLL or LTMP.
-        let cell_lighting_available = connection.prepare(&cell_lighting_sql).is_ok();
-        let cells = read(connection, &cell_lighting_sql, "cell_lighting", |row| {
+        // A pack converted before the environment tables, or one whose rows cannot be read, tells
+        // the engine nothing about any cell. That is different from a cell without a row, which
+        // the converter writes only for cells with an XCLL or LTMP.
+        let cells_read = try_read_rows(connection, &cell_lighting_sql, |row| {
             Ok((
                 row.get(0)?,
                 CellLighting {
@@ -329,6 +329,16 @@ impl EnvironmentCatalog {
                 },
             ))
         });
+        let cell_lighting_available = cells_read.is_ok();
+        let cells: HashMap<u32, CellLighting> = cells_read
+            .unwrap_or_else(|error| {
+                info!(
+                    "environment: no usable `cell_lighting` table ({error}); authored fields unavailable"
+                );
+                Vec::new()
+            })
+            .into_iter()
+            .collect();
         let cell_flags = read(
             connection,
             "SELECT cell_id, data_flags FROM cell_environment",
@@ -863,20 +873,42 @@ fn read_rows<T>(
     table: &str,
     map: impl FnMut(&Row<'_>) -> rusqlite::Result<T>,
 ) -> Vec<T> {
-    let rows = connection.prepare(sql).and_then(|mut statement| {
+    try_read_rows(connection, sql, map).unwrap_or_else(|error| {
+        info!("environment: no usable `{table}` table ({error}); authored fields unavailable");
+        Vec::new()
+    })
+}
+
+fn try_read_rows<T>(
+    connection: &Connection,
+    sql: &str,
+    map: impl FnMut(&Row<'_>) -> rusqlite::Result<T>,
+) -> rusqlite::Result<Vec<T>> {
+    connection.prepare(sql).and_then(|mut statement| {
         statement
             .query_map([], map)?
             .collect::<rusqlite::Result<Vec<_>>>()
-    });
-    rows.unwrap_or_else(|error| {
-        info!("environment: no usable `{table}` table ({error}); authored fields unavailable");
-        Vec::new()
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An older pack's `cell_lighting` has fewer columns, or no table exists: the catalog reports
+    /// the table as unavailable, which is not the same as a table without a row for a cell.
+    #[test]
+    fn cell_lighting_availability_follows_what_can_be_read() {
+        let connection = Connection::open_in_memory().unwrap();
+        assert!(!EnvironmentCatalog::from_connection(&connection).has_cell_lighting_table());
+        connection
+            .execute_batch("CREATE TABLE cell_lighting(cell_id INTEGER PRIMARY KEY);")
+            .unwrap();
+        assert!(!EnvironmentCatalog::from_connection(&connection).has_cell_lighting_table());
+        let connection = Connection::open_in_memory().unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        assert!(EnvironmentCatalog::from_connection(&connection).has_cell_lighting_table());
+    }
 
     /// A child uses the parent climate only when PNAM requests it; cycles are safely absent.
     #[test]
