@@ -49,11 +49,13 @@ RF-LIGHT-GPU-001 to RF-LIGHT-GPU-010, RF-IMGS-001 and RF-WATER-011, and the veri
 6. **Ambient**: `GlobalAmbientLight.color` is the mean of the six DALC colours, with the same
    averaging as `WeatherLighting::mean_ambient`. Brightness stays `AMBIENT_ILLUMINANCE`. XCLL
    ambient is not a Lighting-shader input (RF-LIGHT-GPU-002) and is reported only.
-7. **Fog**: Bevy linear fog from the resolved near and far, the near colour, and fog max as the
-   colour alpha. Retail scene fog is `min(saturate((d - near)/(far - near))^power, max)` with a
-   near-to-far colour lerp (RF-WATER-011). Bevy has no power term and one colour, so power and
-   the far colour are reported only. `far <= near` draws no fog. The near/far clamps and the
-   clip distance are not applied.
+7. **Fog**: Bevy linear fog from the resolved near and far and the near colour. Fog max is a cap:
+   Bevy multiplies its ramp by the colour alpha, so the engine sets alpha = max and ends the ramp
+   at `near + max * (far - near)`, which gives `min(ramp, max)`. Max 0 draws no fog.
+   Retail scene fog is `min(saturate((d - near)/(far - near))^power, max)` with a near-to-far
+   colour lerp (RF-WATER-011). Bevy has no power term and one colour, so power and the far
+   colour are reported only. `far <= near` draws no fog. The near/far clamps and the clip
+   distance are not applied.
 8. **Exit**: leaving modes 1 and 2 restores the saved rotation, colour, illuminance, shadows and
    ambient, and the clock sun takes over the next frame. A write by another system while indoors
    (`apply_render_settings` on a preference change) replaces the saved value, so the exit

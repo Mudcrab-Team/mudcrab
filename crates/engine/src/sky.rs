@@ -870,31 +870,43 @@ mod tests {
     }
 
     /// `apply_fog` reads the `InteriorFog` that `EnvironmentSet` writes in the same schedule:
-    /// crossing into a fogged interior fogs the camera in the same frame.
+    /// with both plugins' systems, one door crossing (exterior to a fogged interior) and one room
+    /// crossing (into a room template with other fog colours) each fog the camera in the same
+    /// frame.
     #[test]
     fn interior_fog_applies_in_the_frame_the_environment_changes() {
         use crate::streaming::ActiveSpace;
+        use crate::world::components::StreamingCamera;
         use crate::world::environment::{EnvironmentCatalog, interior::InteriorEnvironmentPlugin};
         let connection = rusqlite::Connection::open_in_memory().unwrap();
         converter::esm::exporter::create_tables(&connection).unwrap();
         connection
             .execute_batch(
-                "INSERT INTO cell_environment(cell_id,data_flags) VALUES(77,1);
+                "CREATE TABLE IF NOT EXISTS room_bounds (
+                     ref_id INTEGER PRIMARY KEY, cell_id INTEGER NOT NULL,
+                     pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,
+                     rot_x REAL NOT NULL, rot_y REAL NOT NULL, rot_z REAL NOT NULL,
+                     half_x REAL NOT NULL, half_y REAL NOT NULL, half_z REAL NOT NULL,
+                     lighting_template_id INTEGER, image_space_id INTEGER,
+                     flags INTEGER NOT NULL DEFAULT 0);
+                 INSERT INTO cell_environment(cell_id,data_flags) VALUES(77,1);
                  INSERT INTO cell_lighting(cell_id,xcll_size,inherit_flags,fog_near_r,
                     fog_near_g,fog_near_b,fog_near,fog_far,fog_max)
-                 VALUES(77,92,0,31,52,46,100.0,4000.0,1.0);",
+                 VALUES(77,92,0,31,52,46,100.0,4000.0,1.0);
+                 INSERT INTO lighting_templates(id,fog_near_r,fog_near_g,fog_near_b)
+                 VALUES(88,7,8,9);
+                 INSERT INTO room_bounds(ref_id,cell_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,
+                    half_x,half_y,half_z,lighting_template_id)
+                 VALUES(99,77,1000,0,0,0,0,0,100,100,100,88);",
             )
             .unwrap();
         let mut app = App::new();
         app.init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<SkyMaterial>>()
             .init_resource::<SkyPalette>()
-            .insert_resource(CameraSpace::Interior)
+            .init_resource::<CameraSpace>()
             .insert_resource(EnvironmentCatalog::from_connection(&connection))
-            .insert_resource(ActiveSpace {
-                worldspace_id: None,
-                interior: Some(77),
-            })
+            .init_resource::<ActiveSpace>()
             .add_plugins(InteriorEnvironmentPlugin)
             .add_systems(
                 PostUpdate,
@@ -902,20 +914,38 @@ mod tests {
             );
         let camera = app
             .world_mut()
-            .spawn((FogCamera, Transform::default()))
+            .spawn((FogCamera, StreamingCamera, Transform::default()))
             .id();
         app.update();
-        let fog = app
+        let linear = |app: &App| match app
             .world()
             .get::<DistanceFog>(camera)
-            .expect("fog in the first frame");
-        assert!(matches!(
-            fog.falloff,
-            FogFalloff::Linear {
-                start: 100.0,
-                end: 4000.0
-            }
-        ));
+            .map(|f| (f.color, &f.falloff))
+        {
+            Some((color, FogFalloff::Linear { start, end })) => Some((color, *start, *end)),
+            _ => None,
+        };
+        assert_eq!(linear(&app), None, "the exterior has weather fog");
+        // Door crossing, as `door_crossing::switch_space` writes it.
+        app.world_mut().resource_mut::<ActiveSpace>().interior = Some(77);
+        *app.world_mut().resource_mut::<CameraSpace>() = CameraSpace::Interior;
+        app.update();
+        assert_eq!(
+            linear(&app),
+            Some((Color::srgb_u8(31, 52, 46), 100.0, 4000.0)),
+            "cell fog in the crossing frame"
+        );
+        // Room crossing: the camera enters room 99 (Creation x 1000, engine x 1000).
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation = Vec3::new(1000.0, 0.0, 0.0);
+        app.update();
+        assert_eq!(
+            linear(&app),
+            Some((Color::srgb_u8(7, 8, 9), 100.0, 4000.0)),
+            "room fog colour in the crossing frame"
+        );
     }
 
     fn only_dome(app: &mut App) -> (Entity, SkyDome, Transform, Visibility) {

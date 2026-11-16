@@ -418,8 +418,11 @@ impl EnvironmentCatalog {
 
 /// The cell fog the engine applies in sky modes 1 and 2. Retail scene fog (RF-WATER-011) is
 /// `f = min(saturate((d - near) / (far - near))^power, max)` and `colour = lerp(near colour, far
-/// colour, f)`. Bevy's linear fog gives the same factor for `power = 1`, with `max` as the colour
-/// alpha. Bevy has no power term and one colour, so `power` and `far_color` are reported only.
+/// colour, f)`, so `max` caps the factor. Bevy's linear fog (`fog.wgsl` `linear_fog`) is
+/// `alpha * saturate((d - start) / (end - start))`: alpha multiplies the ramp. With `alpha = max`
+/// and `end = near + max * (far - near)` it is `min(saturate((d - near) / (far - near)), max)`,
+/// the retail factor for `power = 1`. Bevy has no power term and one colour, so `power` and
+/// `far_color` are reported only.
 /// The near/far clamps are not traced. Clip distance is reported in [`InteriorLighting`] only.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub(crate) struct CellFog {
@@ -433,29 +436,33 @@ pub(crate) struct CellFog {
 
 impl CellFog {
     /// A missing field is 0, as the retail getter returns (RF-LIGHT-CPU-014). Fog with
-    /// `far <= near` has no linear ramp, so the engine draws no fog for it.
+    /// `far <= near` has no linear ramp, and fog with `max <= 0` has a factor of 0 everywhere,
+    /// so the engine draws no fog for either.
     fn from_lighting(lighting: &Lighting) -> Option<Self> {
         let near = lighting.fog_near.unwrap_or(0.0);
         let far = lighting.fog_far.unwrap_or(0.0);
-        (far > near).then(|| Self {
+        let max = lighting.fog_max.unwrap_or(0.0);
+        (far > near && max > 0.0).then(|| Self {
             near_color: lighting.fog_near_color.unwrap_or([0; 3]),
             far_color: lighting.fog_far_color.unwrap_or([0; 3]),
             near,
             far,
             power: lighting.fog_power.unwrap_or(0.0),
-            max: lighting.fog_max.unwrap_or(0.0),
+            max,
         })
     }
 
     pub(crate) fn distance_fog(&self) -> DistanceFog {
         let [r, g, b] = self.near_color;
+        // The saturated ramp never exceeds 1, so a cap above 1 is no cap.
+        let cap = self.max.clamp(0.0, 1.0);
         DistanceFog {
-            color: Color::srgb_u8(r, g, b).with_alpha(self.max.clamp(0.0, 1.0)),
+            color: Color::srgb_u8(r, g, b).with_alpha(cap),
             // Indoors there is no sun glow in the fog.
             directional_light_color: Color::NONE,
             falloff: FogFalloff::Linear {
                 start: self.near,
-                end: self.far,
+                end: self.near + cap * (self.far - self.near),
             },
             ..default()
         }
@@ -757,7 +764,9 @@ fn apply_interior_lighting(
                 // Another system wrote the sun since this one last ran (`is_changed` does not see
                 // this system's own writes): `crate::settings::apply_render_settings` writes the
                 // exterior colour, illuminance and shadows on every preference change, indoors
-                // too. Those are the new exterior values, so the restore must return them.
+                // too. Those are the new exterior values, so the restore must return them. A
+                // change takes all three fields: that writer always writes all three, and a
+                // written value equal to the interior one (shadows off) must still count.
                 if let Some(mut saved) = saved {
                     if light.is_changed() {
                         saved.color = light.color;
@@ -1639,6 +1648,70 @@ mod tests {
             app.world().resource::<GlobalAmbientLight>().color,
             new_ambient
         );
+    }
+
+    /// Bevy 0.19 `fog.wgsl` `linear_fog`: `alpha * (1 - saturate((end - d) / (end - start)))`.
+    fn bevy_linear_factor(fog: &DistanceFog, distance: f32) -> f32 {
+        let FogFalloff::Linear { start, end } = fog.falloff else {
+            panic!("expected linear fog");
+        };
+        fog.color.alpha() * (1.0 - ((end - distance) / (end - start)).clamp(0.0, 1.0))
+    }
+
+    #[test]
+    fn fog_max_caps_the_factor_and_does_not_scale_it() {
+        let fog = |max: f32| {
+            CellFog::from_lighting(&Lighting {
+                fog_near: Some(0.0),
+                fog_far: Some(100.0),
+                fog_power: Some(1.0),
+                fog_max: Some(max),
+                ..default()
+            })
+        };
+        // RF-WATER-011 with power 1: f = min(saturate(d / 100), max).
+        for max in [0.5, 1.0, 2.0] {
+            let bevy = fog(max).unwrap().distance_fog();
+            for distance in [0.0, 25.0, 50.0, 75.0, 100.0, 150.0] {
+                let retail = (distance / 100.0_f32).clamp(0.0, 1.0).min(max);
+                let actual = bevy_linear_factor(&bevy, distance);
+                assert!(
+                    (actual - retail).abs() < 1.0e-6,
+                    "max {max}, distance {distance}: retail {retail}, Bevy {actual}"
+                );
+            }
+        }
+        // Max 0.5: the factor is 0.5 at distance 50, not 0.25.
+        let half = fog(0.5).unwrap().distance_fog();
+        assert!((bevy_linear_factor(&half, 50.0) - 0.5).abs() < 1.0e-6);
+        // Max 0: no fog, and no zero-length ramp.
+        assert_eq!(fog(0.0), None);
+    }
+
+    #[test]
+    fn sun_disabled_indoors_stays_disabled_after_the_exit() {
+        // `apply_render_settings` with Sun off writes illuminance 0 and shadows off
+        // (`settings.rs`: `illuminance = if settings.sun { .. } else { 0.0 }`,
+        // `shadow_maps_enabled = settings.sun && settings.shadows`).
+        let mut app = app(rule_catalog());
+        let sun = spawn_world_sun(&mut app);
+        enter(&mut app, Some(ALVOR));
+        app.update();
+        // It also writes the configured sun colour, as it does on every apply.
+        let configured = Color::srgb(0.75, 0.71, 0.67);
+        {
+            let mut light = app.world_mut().get_mut::<DirectionalLight>(sun).unwrap();
+            light.color = configured;
+            light.illuminance = 0.0;
+            light.shadow_maps_enabled = false;
+        }
+        app.update();
+        enter(&mut app, None);
+        app.update();
+        let light = sun_light(&app, sun);
+        assert_eq!(light.illuminance, 0.0);
+        assert!(!light.shadow_maps_enabled);
+        assert_eq!(light.color, configured);
     }
 
     #[test]
