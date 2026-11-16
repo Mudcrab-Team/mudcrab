@@ -415,6 +415,10 @@ fn generate_field(
 }
 
 #[cfg(test)]
+#[path = "committed_perf_probe.rs"]
+mod committed_perf_probe;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use shared::grass::{GRASS_CACHE_VERSION, GrassCell, GrassLayer, GrassQuadrant, GrassType};
