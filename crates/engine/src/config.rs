@@ -458,6 +458,7 @@ Diagnostics:
 
 Help:
   -h, --help                            print this message and exit
+  -V, --version                         print the Mudcrab version and exit
 
 Exit codes:
   0  success
@@ -476,6 +477,8 @@ pub enum ConfigAction {
     Run(Box<EngineConfig>),
     /// Print [`HELP_TEXT`] and exit successfully.
     Help,
+    /// Print the Mudcrab version and exit successfully.
+    Version,
 }
 
 /// A command line the engine cannot use.
@@ -790,6 +793,11 @@ impl EngineConfig {
         {
             return Ok(ConfigAction::Help);
         }
+        // Version is checked before the option walk for the same reason as
+        // help: `--version` must answer even when the rest is wrong.
+        if shared::wants_version(args.iter().map(String::as_str)) {
+            return Ok(ConfigAction::Version);
+        }
         let mut config = Self::default();
         let mut ini = SkyrimIni::default();
         for pair in args.windows(2) {
@@ -817,6 +825,8 @@ impl EngineConfig {
                 // option list the help-drift tests read complete.
                 "-h" => return Ok(ConfigAction::Help),
                 "--help" => return Ok(ConfigAction::Help),
+                "-V" => return Ok(ConfigAction::Version),
+                "--version" => return Ok(ConfigAction::Version),
                 // A bare `--` is the conventional end-of-options marker. The
                 // engine takes no positional arguments, so it has nothing to
                 // end, and main ignored it: keep ignoring it.
@@ -1801,6 +1811,7 @@ mod tests {
         "--short",               // git rev-parse
         "--output", // world-inspect, profiling, startup runner, repeat-terrain-startup.py
         "--pairs-output", // correlate_drawables.py
+        "--cell",   // world-inspect
         "--radius", // world-inspect
         "--library-path", // ld-linux
         "--meshes", // audit-collision.py
@@ -1862,6 +1873,7 @@ mod tests {
         "--name",   // xdotool
         "--sync",   // xdotool
         "--psm",    // tesseract
+        "--cell",   // world-inspect
         "--radius", // world-inspect
         "--library-path", // ld-linux
         "--meshes", // audit-collision.py
@@ -3307,6 +3319,28 @@ mod tests {
         ] {
             assert!(!config.interactive_world_physics());
         }
+    }
+
+    #[test]
+    fn version_is_requested_by_either_spelling() {
+        for spelling in ["--version", "-V"] {
+            let action = EngineConfig::from_args([spelling.to_owned()])
+                .expect("the version flags are accepted options");
+            assert!(
+                matches!(action, ConfigAction::Version),
+                "{spelling} did not ask for the version"
+            );
+        }
+    }
+
+    #[test]
+    fn version_survives_a_wrong_command_line_and_help_still_wins() {
+        let action = EngineConfig::from_args(["--typo".to_owned(), "--version".to_owned()])
+            .expect("version answers before the unknown option is reported");
+        assert!(matches!(action, ConfigAction::Version));
+        let action = EngineConfig::from_args(["--version".to_owned(), "--help".to_owned()])
+            .expect("both flags are accepted");
+        assert!(matches!(action, ConfigAction::Help));
     }
 
     #[test]
