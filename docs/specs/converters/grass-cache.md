@@ -307,8 +307,10 @@ identities remain independently versioned.
 Resolved model-less species retain their authored cap slots and decodable sampling
 fields, using zero for absent or non-finite scalar values. Per-spot selection consumes
 the reference random draws for those slots before skipping emission. Thus
-`[A, model-less, B]` at cap two emits A only, matching the lower-layer cap contract;
-the G7 reference stream also preserves subsequent species' positions.
+`[A, model-less, B]` with two admitted slots emits A only. G7's configured limit is
+checked after adding a nomination: setting 1 admits two slots, while default 2
+admits all three. Each admitted model-less slot counts toward that limit; the G7
+reference stream also preserves subsequent species' positions.
 
 Runtime activates a reference's texture swaps as a group once its replacement
 textures are ready. If a replacement texture on another shape fails to load, the
