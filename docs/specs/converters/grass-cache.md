@@ -44,7 +44,9 @@ and preserves authored GNAM species order. Only the grass artifact is invalidate
 Version seven excludes bases whose winning record header has Is Marker set,
 using the existing `statics.flags` projection. Older grass masks rebuild; the
 database schema, archive layout and other asset/cache identities are unchanged.
-Incomplete grass rules and missing model paths are skipped; unresolved/deleted
+Incomplete modeled grass rules are skipped; resolved model-less rules retain
+non-emitting authored selection slots and decodable sampling fields (absent fields
+use zero defaults). These slots count toward the runtime species cap; unresolved/deleted
 species links are silently filtered. Raw database records remain available for diagnostics.
 Incomplete or invalid rules that have a model, and invalid terrain cells, produce
 bounded report warnings and mark the published run incomplete. Healthy neighboring
@@ -208,7 +210,7 @@ asset pack is available; repair never substitutes the capped runtime terrain cac
 
 Permanent obstruction masks include only STAT, MSTT, ACTI, FURN, CONT and DOOR
 bases. Pick-up clutter, vegetation and unknown base types do not obstruct grass.
-The producer version advances from 8 to 9 for this placement policy; older masks
+Historically, producer 9 introduced this placement policy; older masks
 are rebuilt. Corrupt GLB containers remain limited to their projected bounds.
 Each selected scene node is inspected once, including on static skin fallback.
 Repeated roots or child edges omit that optional model with a diagnostic. The
@@ -256,3 +258,15 @@ The baked mask already omits that hidden shape, so grass can occupy geometry tha
 stays visible in this failure case. Applying NullTextureSet hides independently of
 replacement-texture failures is a runtime follow-up; the current bake retains the
 bounded successful-swap contract above.
+
+### Non-emitting authored slots (current producer)
+
+`shared::grass::GRASS_CACHE_VERSION` identifies the current producer (12).
+Resolved model-less species remain in GNAM order, including between two modeled
+species. The runtime selects the first N slots before skipping non-emitting
+rules, so `[A, model-less, B]` with cap two draws A only. Empty-model rules keep
+their decodable sampling fields and use zero for absent or non-finite scalars.
+The modeled-rule completeness diagnostics and obstruction-scan eligibility stay
+unchanged. Earlier grass archives rebuild to restore omitted slots; producer 11
+is also retired because that number was used by G7's distinct LAND layout.
+Mesh, texture and terrain cache identities remain unchanged.
