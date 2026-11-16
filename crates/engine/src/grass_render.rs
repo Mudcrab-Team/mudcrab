@@ -83,7 +83,9 @@ impl Plugin for GrassRenderPlugin {
             )
             .add_systems(
                 PostUpdate,
-                update_grass_uniforms.after(bevy::transform::TransformSystems::Propagate),
+                update_grass_uniforms
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .after(bevy::camera::CameraUpdateSystems),
             );
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -1677,6 +1679,75 @@ mod tests {
             .spawn((primitive(), GlobalTransform::IDENTITY))
             .id();
         (app, camera, entity)
+    }
+
+    /// Projection refreshes reach the production grass snapshot in the same frame.
+    #[test]
+    fn bot_projection_refresh_precedes_grass_proof_snapshot() {
+        /// Publish an asymmetric computed projection in Bevy's camera phase.
+        fn refresh_projection(mut cameras: Query<&mut Camera>) {
+            for mut camera in &mut cameras {
+                camera.computed.clip_from_view = Mat4::from_scale(Vec3::new(2.0, 3.0, 1.0));
+            }
+        }
+        for camera_phase_first in [true, false] {
+            let mut app = App::new();
+            app.add_plugins((
+                bevy::app::TaskPoolPlugin::default(),
+                bevy::asset::AssetPlugin::default(),
+            ))
+            .insert_resource(crate::config::EngineConfig::default())
+            .init_asset::<Shader>()
+            .init_asset::<Gltf>()
+            .init_asset::<GltfNode>()
+            .init_asset::<GltfMesh>()
+            .init_asset::<GltfMaterial>()
+            .insert_resource(GrassFade {
+                enabled: false,
+                start: 1000.0,
+                end: 2000.0,
+            });
+            if camera_phase_first {
+                app.add_systems(
+                    PostUpdate,
+                    refresh_projection
+                        .in_set(bevy::camera::CameraUpdateSystems)
+                        .after(bevy::transform::TransformSystems::Propagate),
+                );
+            }
+            app.add_plugins(GrassRenderPlugin);
+            if !camera_phase_first {
+                app.add_systems(
+                    PostUpdate,
+                    refresh_projection
+                        .in_set(bevy::camera::CameraUpdateSystems)
+                        .after(bevy::transform::TransformSystems::Propagate),
+                );
+            }
+            app.edit_schedule(PostUpdate, |schedule| {
+                schedule.set_executor_kind(bevy::ecs::schedule::ExecutorKind::SingleThreaded);
+            });
+            app.world_mut().spawn((
+                StreamingCamera,
+                Camera::default(),
+                GlobalTransform::IDENTITY,
+            ));
+            let entity = app
+                .world_mut()
+                .spawn((primitive(), GlobalTransform::IDENTITY))
+                .id();
+            app.update();
+            assert_eq!(
+                app.world()
+                    .get::<GrassPrimitive>(entity)
+                    .unwrap()
+                    .proof_view
+                    .unwrap()
+                    .clip_from_view,
+                Mat4::from_scale(Vec3::new(2.0, 3.0, 1.0)),
+                "grass evidence snapshots the refreshed projection (camera phase first={camera_phase_first})"
+            );
+        }
     }
 
     /// Exercise a current-view edit after a primitive has issued an earlier main draw.
