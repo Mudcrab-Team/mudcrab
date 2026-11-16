@@ -2186,6 +2186,20 @@ fn room_graph_review_fixture(
     link: Option<u32>,
     endpoints: Option<Vec<u8>>,
 ) -> PathBuf {
+    room_graph_review_fixture_with_fields(
+        data,
+        link.map(|id| id.to_le_bytes().to_vec()),
+        endpoints,
+        Vec::new(),
+    )
+}
+
+fn room_graph_review_fixture_with_fields(
+    data: &Path,
+    link: Option<Vec<u8>>,
+    endpoints: Option<Vec<u8>>,
+    references: Vec<Vec<u8>>,
+) -> PathBuf {
     fs::create_dir_all(data).unwrap();
     let marker = |id: u32, base: u32, kind: u32, position: f32, extra: Vec<u8>| {
         let mut shape = vec![0; 32];
@@ -2210,7 +2224,7 @@ fn room_graph_review_fixture(
     };
     let mut extra = sub(b"XRMR", &[u8::from(link.is_some()), 0, 1, 0]);
     if let Some(link) = link {
-        extra.extend(sub(b"XLRM", &link.to_le_bytes()));
+        extra.extend(sub(b"XLRM", &link));
     }
     let mut markers = vec![
         marker(0x800, 0x1F, 1, 0.0, extra),
@@ -2219,6 +2233,7 @@ fn room_graph_review_fixture(
     if let Some(endpoints) = endpoints {
         markers.push(marker(0x802, 0x20, 3, 100.0, endpoints));
     }
+    markers.extend(references);
     plugin(
         data,
         "Skyrim.esm",
@@ -2356,5 +2371,91 @@ fn trailing_portal_endpoints_keep_both_readers_conservative() {
             !complete,
             "typed={typed}: an unmatched endpoint cannot prove complete connectivity"
         );
+    }
+}
+
+#[test]
+fn malformed_authored_assignments_stay_unknown_in_both_readers() {
+    for typed in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let mut references = Vec::new();
+        let mut expected = Vec::new();
+        for (index, assignment) in [
+            None,
+            Some(vec![0; 3]),
+            Some(vec![0; 4]),
+            Some(0x800u32.to_le_bytes().to_vec()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for (flag_index, flags) in [0, 0x8000_0000].into_iter().enumerate() {
+                let id = 0x820 + (index * 2 + flag_index) as u32;
+                let mut fields = [
+                    sub(b"NAME", &0x999u32.to_le_bytes()),
+                    sub(b"DATA", &[0; 24]),
+                ]
+                .concat();
+                if let Some(bytes) = &assignment {
+                    fields.extend(sub(b"XMBR", bytes));
+                }
+                references.push(record(b"REFR", id, flags, fields));
+                let rule = match index {
+                    0 if flags != 0 => "none",
+                    0 => "auto",
+                    3 => "target",
+                    _ => "unknown",
+                };
+                expected.push((id, rule.to_owned()));
+            }
+        }
+        room_graph_review_fixture_with_fields(&data, None, None, references);
+        let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let rules = conn
+            .prepare(
+                "SELECT reference_id,assignment FROM room_reference_rules ORDER BY reference_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            rules, expected,
+            "typed={typed}: malformed XMBR is authored but unusable"
+        );
+    }
+}
+
+#[test]
+fn malformed_authored_room_links_keep_both_readers_incomplete() {
+    for typed in [false, true] {
+        for link in [
+            None,
+            Some(vec![0; 3]),
+            Some(0x801u32.to_le_bytes().to_vec()),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let data = directory.path().join("Data");
+            room_graph_review_fixture_with_fields(&data, link.clone(), None, Vec::new());
+            let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+            let conn = rusqlite::Connection::open(db).unwrap();
+            let complete: bool = conn
+                .query_row(
+                    "SELECT complete FROM room_graph_cells WHERE cell_id=0x900",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                complete,
+                link.as_ref().is_none_or(|bytes| bytes.len() == 4),
+                "typed={typed}, link={link:?}"
+            );
+        }
     }
 }
