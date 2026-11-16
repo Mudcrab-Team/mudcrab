@@ -254,6 +254,10 @@ fn generate_field(
         let Some(species) = cache.species(id) else {
             continue;
         };
+        // The authored cap already includes this non-emitting selection slot.
+        if species.model_path.is_empty() {
+            continue;
+        }
         let seed = hash(cell_id, id, 12);
         for slot in 0..slots {
             let [x, y] = candidate(seed, slot);
@@ -472,6 +476,39 @@ mod tests {
             texture_form_id: id,
             grass_ids,
             weights: vec![weight; GRASS_BLEND_SIDE * GRASS_BLEND_SIDE],
+        }
+    }
+
+    /// A modelless middle species occupies its authored slot while only A emits at cap two.
+    #[test]
+    fn modelless_middle_species_keeps_authored_cap_slot() {
+        let mut placeholder = species(2);
+        placeholder.model_path.clear();
+        let cache = mapped(
+            vec![species(1), placeholder, species(3)],
+            fixture(vec![layer(9, vec![1, 2, 3], 1.0)]),
+        );
+        for cap in [2, 3] {
+            let generated = generate(
+                &cache,
+                42,
+                &EngineConfig {
+                    grass_max_types_per_texture: cap,
+                    ..Default::default()
+                },
+            );
+            let ids: Vec<_> = generated
+                .batches
+                .iter()
+                .map(|batch| batch.grass_id)
+                .collect();
+            assert_eq!(ids, if cap == 2 { vec![1] } else { vec![1, 3] });
+            assert!(
+                generated
+                    .batches
+                    .iter()
+                    .all(|batch| !batch.instances.is_empty())
+            );
         }
     }
 
