@@ -4937,6 +4937,41 @@ mod tests {
     }
 
     #[test]
+    fn nested_leaf_nodes_export_their_transform_and_child_geometry() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("nested-leaf.nif");
+        fs::write(&input, static_nif()).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let index = nif.blocks.len() as u32;
+        let mut leaf = nif.blocks[0].as_node().unwrap().clone();
+        leaf.av.translation.0.0.x = 3.0;
+        match &mut nif.blocks[0] {
+            NifBlock::BSFadeNode(root) => root.children = vec![index],
+            _ => unreachable!(),
+        }
+        nif.blocks.push(NifBlock::BSLeafAnimNode(leaf));
+        for model in [
+            nif_to_static_model(&nif).unwrap(),
+            nif_to_model_with_skin_fallback(&nif, None, None).unwrap().0,
+        ] {
+            assert_eq!(model.static_meshes.len(), 1);
+            let root = model
+                .static_nodes
+                .iter()
+                .find(|node| node.block_index == 0)
+                .unwrap();
+            assert_eq!(root.children, vec![index]);
+            let leaf = model
+                .static_nodes
+                .iter()
+                .find(|node| node.block_index == index)
+                .unwrap();
+            assert_eq!(leaf.translation.x, 3.0);
+            assert_eq!(leaf.children, vec![1]);
+        }
+    }
+
+    #[test]
     fn leaf_roots_export_assignment_bounds_and_keep_child_geometry() {
         let directory = tempfile::tempdir().unwrap();
         let input = directory.path().join("leaf.nif");
