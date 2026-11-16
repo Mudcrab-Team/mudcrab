@@ -319,6 +319,17 @@ fn shader_retail_light_fixture(
     output_scale: f32,
     tuning: [bevy::prelude::Vec4; 4],
 ) -> Vec<f32> {
+    shader_light_fixture(instance_normal, shadow, output_scale, tuning, [0.0; 3])
+}
+
+/// Evaluate production fragment composition with a controlled, nonzero sheen contribution.
+fn shader_light_fixture(
+    instance_normal: [f32; 3],
+    shadow: f32,
+    output_scale: f32,
+    tuning: [bevy::prelude::Vec4; 4],
+    sheen: [f32; 3],
+) -> Vec<f32> {
     let shader = include_str!("shaders/grass.wgsl");
     let vertex = shader
         .split_once("out.light =")
@@ -352,7 +363,10 @@ fn shader_retail_light_fixture(
         .replace("input.light", "vertex_light(vertex_normal)")
         .replace("base.rgb", "vec3<f32>(0.25,0.5,0.75)")
         .replace("out.color =", "return")
-        .replace("tuning_sheen(normal,input.world_position.xyz)", "vec3(0.0)")
+        .replace(
+            "tuning_sheen(normal,input.world_position.xyz)",
+            &format!("vec3<f32>({:?},{:?},{:?})", sheen[0], sheen[1], sheen[2]),
+        )
         .replace("input.root_fraction", "0.4")
         .replace("grass.fade.z", &format!("{output_scale:?}"));
     let helpers = ["tuning_diffuse", "tuning_illumination", "tuning_finish"]
@@ -389,6 +403,26 @@ fn shader_retail_light_fixture(
         &source,
         &[vec![0.0, 1.0, 0.0], instance_normal.to_vec(), vec![shadow]],
     )
+}
+
+/// Output scaling applies to both diffuse and the optional nonzero specular contribution.
+#[test]
+fn grass_output_scale_includes_nonzero_sheen() {
+    let tuning = crate::grass_tuning::GrassTuning {
+        specular_strength: 0.5,
+        ..Default::default()
+    };
+    let uniforms = tuning.as_uniforms();
+    let full = shader_light_fixture([0.0, 0.0, 1.0], 0.6, 1.0, uniforms, [0.2, 0.4, 0.8]);
+    let scaled = shader_light_fixture([0.0, 0.0, 1.0], 0.6, 0.5, uniforms, [0.2, 0.4, 0.8]);
+    for channel in 0..3 {
+        assert!(
+            (scaled[channel] - full[channel] * 0.5).abs() < 1.0e-6,
+            "channel {channel}: scaled {} versus half {}",
+            scaled[channel],
+            full[channel]
+        );
+    }
 }
 
 /// The retail grass pixel formula, written out independently of the shader (RF-SHADER-003):

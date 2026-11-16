@@ -148,6 +148,11 @@ A 64 MiB cache accounts for retained triangle allocation capacity and evicts
 least-recently-used models; one oversized model can be decoded transiently but
 is not retained. Model fingerprints remain available after geometry eviction.
 
+When terrain contains no texture linked to a valid grass rule, the producer skips
+obstruction-reference collection and model inspection. Rule warnings and empty
+grass-cache publication still apply. The terrain/link gate is conservative: a
+linked texture is sufficient to retain the ordinary obstruction path.
+
 This is a sampled offline mask, not collision-exact placement: a feature narrower
 than a tile may be missed by its center, and a blocked sample excludes the whole
 32-unit tile. Bounds only select candidate references; masks use triangles rather
@@ -204,8 +209,16 @@ Permanent obstruction masks include only STAT, MSTT, ACTI, FURN, CONT and DOOR
 bases. Pick-up clutter, vegetation and unknown base types do not obstruct grass.
 The producer version advances from 8 to 9 for this placement policy; older masks
 are rebuilt. Corrupt GLB containers remain limited to their projected bounds.
-Model changes between fingerprinting and decoding abort publication with retry
-advice, rather than publishing a mask under a stale content key. Full conversion
+Each selected scene node is inspected once, including on static skin fallback.
+Repeated roots or child edges omit that optional model with a diagnostic. The
+cell-input hash includes the unique-node inspection recipe, so earlier masks
+rebuild once before warm reuse. Raw model digests and archive versions retain
+their existing contracts.
+
+Before publication, the producer rereads all initially readable fingerprinted
+models, including geometry cache hits and models used only by reused cells.
+Replacement or removal during baking requests a retry; initially unavailable
+models remain optional omissions. Full conversion
 checks cancellation between references, cells and quadrants.
 
 The grass archive is recorded as `derived/grass-cache` in manifest entries, with
