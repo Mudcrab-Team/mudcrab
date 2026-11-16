@@ -1796,7 +1796,11 @@ pub fn walk_movement_system(
         });
     let jump_from_walking = walking_unsupported && jump_pending;
     let previous_vertical = state.vertical_velocity;
-    let was_jumping = state.jump_active;
+    // RF-CC-015: landing is the first supported step after the air state. It is decided from the
+    // state before this tick's integration, so a jump launched on the same tick keeps it: the
+    // integration clears the old jump and starts the new one.
+    let landing =
+        supported && state.airborne && !(state.jump_active && state.vertical_velocity > 0.0);
     integrate_walk(
         &mut state,
         &intent,
@@ -1809,14 +1813,18 @@ pub fn walk_movement_system(
     // The tick that launches a jump starts the air state at the launch height (RF-CC-013), before
     // this tick's displacement. Rapier can keep reporting support for a few ticks after take-off,
     // so support does not count while the jump is rising (RF-CC-015: landing needs support).
-    let launched = !was_jumping && state.jump_active;
+    // `integrate_walk` sets the jump time to 0 on an accepted launch and adds the step to it on every
+    // later air tick, so this also finds a relaunch on the tick the previous jump lands.
+    let launched = state.jump_active && state.jump_time == 0.0;
     let rising = state.jump_active && state.vertical_velocity > 0.0;
     if launched {
         state.airborne = true;
         state.fall_start_height = body.translation.y;
+        state.landed = landing;
     } else if supported && !rising {
         // RF-CC-015: the first supported step ends the air state and sets the landing flag.
-        state.landed = std::mem::take(&mut state.airborne);
+        state.airborne = false;
+        state.landed = landing;
     } else if supported {
         // Still rising right after take-off: the air state continues.
     } else if glide {

@@ -393,6 +393,108 @@ fn the_jump_launch_tick_starts_the_air_state_at_the_launch_height() {
     }
 }
 
+fn walk_state(app: &mut App) -> WalkState {
+    *app.world_mut()
+        .query::<&WalkState>()
+        .single(app.world())
+        .unwrap()
+}
+
+/// A tick that accepted a jump launch: `integrate_walk` sets the jump time to 0 only then.
+fn launched(tick: &Tick) -> bool {
+    tick.state.jump_active && tick.state.jump_time == 0.0
+}
+
+/// Jumps held down between platforms of different height: every accepted launch, including the one
+/// on the tick where the previous jump lands, records its own launch height (RF-CC-013).
+#[test]
+fn consecutive_jumps_between_platforms_record_each_launch_height() {
+    let mut app = app_with_ticks();
+    // A platform with its top 40 units up, from x = 100.
+    fixed_box(
+        &mut app,
+        Vec3::new(700.0, 20.0, Z),
+        Vec3::new(600.0, 20.0, 600.0),
+        Quat::IDENTITY,
+    );
+    settle(&mut app, Vec3::new(0.0, 60.0, Z));
+    let start_height = headless::player_pose(&mut app).0.y;
+    app.insert_resource(WalkIntent {
+        wish_dir: Vec3::X,
+        target_speed: 200.0,
+        jump_pressed: true,
+    });
+    for _ in 0..400 {
+        app.world_mut().resource_mut::<WalkIntent>().jump_pressed = true;
+        app.update();
+    }
+    let ticks = std::mem::take(&mut app.world_mut().resource_mut::<Ticks>().0);
+    let mut launches = Vec::new();
+    for (index, tick) in ticks.iter().enumerate() {
+        if launched(tick) {
+            let launch_height = index
+                .checked_sub(1)
+                .map_or(start_height, |before| ticks[before].position.y);
+            assert!(
+                (tick.state.fall_start_height - launch_height).abs() < 0.5,
+                "launch {} at height {launch_height}: fall start height is {}",
+                launches.len() + 1,
+                tick.state.fall_start_height
+            );
+            launches.push(launch_height);
+        }
+    }
+    assert!(launches.len() >= 3, "{} launches", launches.len());
+    assert!(
+        launches.iter().any(|height| *height > 80.0)
+            && launches.iter().any(|height| *height < 60.0),
+        "the launches did not cover both heights: {launches:?}"
+    );
+}
+
+/// A jump pressed on the tick where support returns after a ledge fall: the landing is reported
+/// and the new jump starts its own air state (RF-CC-015).
+#[test]
+fn a_jump_pressed_on_the_landing_tick_after_a_ledge_fall_reports_the_landing() {
+    let height = UNSUPPORTED_CAST_LENGTH + 40.0;
+    let mut app = app_with_ticks();
+    fixed_box(
+        &mut app,
+        Vec3::new(-600.0, height * 0.5, Z),
+        Vec3::new(600.0, height * 0.5, 600.0),
+        Quat::IDENTITY,
+    );
+    settle(&mut app, Vec3::new(-200.0, height + 60.0, Z));
+    app.insert_resource(WalkIntent {
+        wish_dir: Vec3::X,
+        target_speed: 300.0,
+        jump_pressed: false,
+    });
+    let mut relaunch = None;
+    for _ in 0..400 {
+        // Press only while falling, so the press is waiting on the landing tick.
+        let falling = walk_state(&mut app).airborne;
+        app.world_mut().resource_mut::<WalkIntent>().jump_pressed = falling;
+        app.update();
+        let tick = *app.world().resource::<Ticks>().0.last().unwrap();
+        if falling && launched(&tick) {
+            relaunch = Some(tick);
+            break;
+        }
+    }
+    let tick = relaunch.expect("the press on the landing tick launched a jump");
+    assert!(
+        tick.state.landed,
+        "the landing was not reported: {:?}",
+        tick.state
+    );
+    assert!(
+        tick.state.airborne,
+        "the new jump is the air state: {:?}",
+        tick.state
+    );
+}
+
 /// A jump pressed while the player walks down a stair tread, between two contacts, must launch. In
 /// retail a pending jump only skips the unsupported cast (RF-CC-013); the state is still walking,
 /// so the jump is allowed. The press is made on a tick where Rapier reports no support and the
