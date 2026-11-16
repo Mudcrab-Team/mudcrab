@@ -833,6 +833,8 @@ impl AssetPipeline {
         fs::create_dir_all(&vfs_dir)?;
 
         let mut control_sources = BTreeMap::new();
+        // Optional controls are additive: existing v4 packs keep their exact coverage and identity.
+        let control_scratch = tempfile::tempdir_in(staging.parent().unwrap_or(staging))?;
 
         // Bytes already extracted, so each archive reports progress against the whole run instead
         // of restarting at zero.
@@ -990,11 +992,12 @@ impl AssetPipeline {
                     } else {
                         report.converted += outcome.files.len() as u64;
                     }
-                    crate::controls::record_archive(
+                    crate::controls::extract_archive(
                         &mut control_sources,
+                        archive,
                         &archive_key,
-                        &outcome.files,
-                        &vfs_dir,
+                        &control_scratch.path().join(index.to_string()),
+                        &mut report,
                     );
                     ingestion_journal.record(&archive_key, &outcome.cache_entry)?;
                     manifest.archives.insert(archive_key, outcome.cache_entry);
@@ -14207,7 +14210,7 @@ mod tests {
         assert!(time_artifact_validation(output, &[], &semantics, 2).is_err());
     }
 
-    /// Build two synthetic providers, preserve two contexts/four bindings, and recover one bad line.
+    /// Reuse pre-existing v4 packs while publishing additive controls, provider winners and valid rows.
     #[tokio::test]
     async fn control_files_publish_winners_and_recover_malformed_lines() {
         let temp = tempfile::tempdir().unwrap();
@@ -14231,6 +14234,7 @@ mod tests {
                         b"SYNTH_A\t0x1000\r\n",
                     ),
                     dummy_content::Entry::new("interface/controls/pc/notes.txt", b"not runtime"),
+                    dummy_content::Entry::new("strings/review_english.strings", b"cached input"),
                 ],
             ),
         ] {
@@ -14241,7 +14245,57 @@ mod tests {
             .unwrap();
         }
         let config = cpu_lod_config(&data, &output);
+        // Seed exactly the pre-feature v4 coverage: controls are absent from its inventory.
+        let cache = config.ingestion_cache_dir().join(".ingestion-cache");
+        let mut options = ExtractOptions::converter(1, 1, None);
+        options.selection = IngestionSelection::RuntimeEnglishV1;
+        for name in ["a.bsa", "z.bsa"] {
+            let seeded = ArchiveExtractor::extract_batched(
+                &data.join(name),
+                &temp.path().join("legacy-vfs"),
+                &temp.path().join("unused-cache"),
+                &cache,
+                None,
+                true,
+                &options,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(seeded.cache_entry.recipe, "runtime-english-v4");
+            assert!(
+                seeded
+                    .files
+                    .iter()
+                    .all(|file| crate::controls::input_key(&file.path).is_none())
+            );
+        }
+        let pack_inventory = || -> BTreeMap<PathBuf, String> {
+            WalkDir::new(cache.join("batches"))
+                .into_iter()
+                .map(Result::unwrap)
+                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "pack"))
+                .map(|entry| {
+                    (
+                        entry.path().strip_prefix(&cache).unwrap().to_owned(),
+                        hash_bytes(&fs::read(entry.path()).unwrap()),
+                    )
+                })
+                .collect()
+        };
+        let original_packs = pack_inventory();
+        assert!(!original_packs.is_empty());
         let report = run_without_progress(config.clone()).await;
+        assert!(report.cache_hits > 0, "pre-existing v4 pack must be reused");
+        assert_eq!(
+            report.converted, 0,
+            "controls must not force archive reingestion"
+        );
+        assert_eq!(
+            pack_inventory(),
+            original_packs,
+            "no second pack generation"
+        );
         assert!(
             output.join(path).is_file(),
             "controlmap must reach published pack"
@@ -14281,6 +14335,7 @@ mod tests {
         let warm = run_without_progress(config.clone()).await;
         assert_eq!(fs::read(output.join(path)).unwrap(), sanitized);
         assert!(warm.cache_hits > 0);
+        assert_eq!(pack_inventory(), original_packs);
         let loose = data.join("Interface/Controls/PC/ControlMap.TXT");
         fs::create_dir_all(loose.parent().unwrap()).unwrap();
         let replacement = b"Mod Event\t0x12\t0xff\t0x2000\t1\t0\t1\r\n";

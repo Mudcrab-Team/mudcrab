@@ -1,6 +1,10 @@
 //! Optional, byte-preserving PC control files with effective-provider provenance.
 
-use crate::{archive::ExtractedFile, cache::hash_bytes, pipeline::PipelineReport};
+use crate::{
+    archive::{ArchiveExtractor, ExtractedFile},
+    cache::hash_bytes,
+    pipeline::PipelineReport,
+};
 use color_eyre::{Result, eyre::eyre};
 use serde::Serialize;
 use std::{
@@ -50,6 +54,24 @@ pub(crate) fn record_archive(
                 },
             );
         }
+    }
+}
+
+/// Read only the optional control payloads, independently of versioned archive packs.
+/// Isolated scratch roots preserve earlier winners if a later archive fails partway.
+pub(crate) fn extract_archive(
+    sources: &mut BTreeMap<String, Source>,
+    archive: &Path,
+    provider: &str,
+    scratch: &Path,
+    report: &mut PipelineReport,
+) {
+    let paths = PATHS.iter().map(PathBuf::from).collect();
+    match ArchiveExtractor::extract_paths(archive, scratch, &paths) {
+        Ok(files) => record_archive(sources, provider, &files, scratch),
+        Err(error) => report.warnings.push(format!(
+            "{provider}: control input extraction failed: {error:#}"
+        )),
     }
 }
 
@@ -103,10 +125,11 @@ pub(crate) fn publish(
             continue;
         }
         let (output, skipped_lines) = sanitize(&key, &bytes);
-        for line in &skipped_lines {
-            report
-                .warnings
-                .push(format!("{key}:{line}: malformed control line skipped"));
+        if let Some(first) = skipped_lines.first() {
+            report.warnings.push(format!(
+                "{key}:{first}: skipped {} malformed control lines; first at line {first}",
+                skipped_lines.len()
+            ));
         }
         replace(&staging.join(&key), &output)?;
         report.artifacts.push(PathBuf::from(&key));
@@ -147,7 +170,7 @@ fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
 fn sanitize(key: &str, bytes: &[u8]) -> (Vec<u8>, Vec<usize>) {
     let mut output = Vec::with_capacity(bytes.len());
     let mut skipped = Vec::new();
-    for (index, line) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
+    for (index, line) in physical_lines(bytes).enumerate() {
         let content = if index == 0 {
             line.strip_prefix(b"\xef\xbb\xbf").unwrap_or(line)
         } else {
@@ -165,6 +188,27 @@ fn sanitize(key: &str, bytes: &[u8]) -> (Vec<u8>, Vec<usize>) {
         }
     }
     (output, skipped)
+}
+
+/// Retain LF, CRLF and CR endings without counting the CRLF pair as two lines.
+fn physical_lines(mut bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    std::iter::from_fn(move || {
+        if bytes.is_empty() {
+            return None;
+        }
+        let end = bytes
+            .iter()
+            .position(|byte| matches!(*byte, b'\r' | b'\n'))
+            .map(|index| {
+                index
+                    + 1
+                    + usize::from(bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n'))
+            })
+            .unwrap_or(bytes.len());
+        let (line, rest) = bytes.split_at(end);
+        bytes = rest;
+        Some(line)
+    })
 }
 
 /// Trim ASCII alignment bytes without interpreting legacy Windows-1252 key names.
@@ -252,6 +296,55 @@ mod tests {
         assert_eq!(
             sanitize(PATHS[2], b"Bad\t0xnot\r\nGood\t0x1000\r\n"),
             (b"Good\t0x1000\r\n".to_vec(), vec![1])
+        );
+    }
+
+    /// A large malformed input emits one summary while retaining valid neighbors and full provenance.
+    #[test]
+    fn many_malformed_lines_produce_one_warning_per_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("input.txt");
+        let first = b"First\t0x11\t0xff\t0x1000\t1\t0\t1\r\n";
+        let last = b"Last\t0x12\t0xff\t0x1000\t1\t0\t1\r\n";
+        let mut bytes = first.to_vec();
+        bytes.extend(b"bad row\r\n".repeat(100_000));
+        bytes.extend_from_slice(last);
+        fs::write(&input, bytes).unwrap();
+        let mut sources = BTreeMap::new();
+        record_loose(&mut sources, Path::new(PATHS[0]), &input);
+        let mut report = PipelineReport::default();
+        publish(temp.path(), sources, &mut report).unwrap();
+        assert_eq!(
+            report.warnings,
+            vec![format!(
+                "{}:2: skipped 100000 malformed control lines; first at line 2",
+                PATHS[0]
+            )]
+        );
+        assert_eq!(
+            fs::read(temp.path().join(PATHS[0])).unwrap(),
+            [first.as_slice(), last.as_slice()].concat()
+        );
+        let provenance: serde_json::Value = serde_json::from_slice(
+            &fs::read(temp.path().join("interface/controls/pc/provenance.json")).unwrap(),
+        )
+        .unwrap();
+        let skipped = provenance[PATHS[0]]["skipped_lines"].as_array().unwrap();
+        assert_eq!(skipped.len(), 100_000);
+        assert_eq!(skipped.first().unwrap().as_u64(), Some(2));
+        assert_eq!(skipped.last().unwrap().as_u64(), Some(100_001));
+    }
+
+    /// CR-only mod files keep their rows, and mixed endings retain original line numbers.
+    #[test]
+    fn physical_line_endings_preserve_neighbors_and_diagnostics() {
+        let bytes = b"One\t0x11\rbad\rTwo\t0x12\r\nThree\t0x13\nFour\t0x14";
+        assert_eq!(
+            sanitize(PATHS[2], bytes),
+            (
+                b"One\t0x11\rTwo\t0x12\r\nThree\t0x13\nFour\t0x14".to_vec(),
+                vec![2]
+            )
         );
     }
 

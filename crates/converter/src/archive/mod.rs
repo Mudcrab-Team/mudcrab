@@ -462,12 +462,12 @@ pub struct ArchiveExtractor;
 pub type ArchiveSelection = IngestionSelection;
 
 impl IngestionSelection {
-    /// Versioned input coverage, independent of mesh/texture conversion recipes.
+    /// Versioned archive coverage; additive controls do not change these cache identities.
     pub fn recipe(self) -> &'static str {
         match self {
             Self::All => "all-v1",
-            Self::ConverterInputsV1 => "converter-inputs-v5",
-            Self::RuntimeEnglishV1 => "runtime-english-v5",
+            Self::ConverterInputsV1 => "converter-inputs-v4",
+            Self::RuntimeEnglishV1 => "runtime-english-v4",
         }
     }
 
@@ -479,8 +479,8 @@ impl IngestionSelection {
     fn accepts_recipe(self, recipe: &str) -> bool {
         let proven = match recipe {
             "" | "all-v1" => Self::All,
-            "converter-inputs-v5" => Self::ConverterInputsV1,
-            "runtime-english-v5" => Self::RuntimeEnglishV1,
+            "converter-inputs-v4" => Self::ConverterInputsV1,
+            "runtime-english-v4" => Self::RuntimeEnglishV1,
             _ => return false,
         };
         proven.can_satisfy(self)
@@ -960,12 +960,9 @@ pub(crate) fn is_animation_input(path: &Path) -> bool {
     lower.starts_with("meshes/") && lower.ends_with(".hkx")
 }
 
-/// Select converter inputs without broadening unrelated text-file ingestion.
+/// Select cached converter inputs; the three optional control paths are extracted separately.
 fn selection_includes(selection: IngestionSelection, path: &Path) -> bool {
     if selection == IngestionSelection::All {
-        return true;
-    }
-    if crate::controls::input_key(path).is_some() {
         return true;
     }
     if is_animation_input(path) {
@@ -2218,19 +2215,24 @@ mod tests {
     }
 
     #[test]
-    /// Filtered inventories must include controls and reject recipes that omitted them.
-    fn control_files_require_current_filtered_recipe() {
-        for selection in [
-            IngestionSelection::ConverterInputsV1,
-            IngestionSelection::RuntimeEnglishV1,
+    /// Additive controls leave the established v4 archive coverage and cache keys intact.
+    fn control_files_preserve_filtered_archive_recipes() {
+        for (selection, recipe) in [
+            (IngestionSelection::ConverterInputsV1, "converter-inputs-v4"),
+            (IngestionSelection::RuntimeEnglishV1, "runtime-english-v4"),
         ] {
             for name in ["controlmap.txt", "keyboard_english.txt", "gamepad.txt"] {
                 let path = format!("Interface/Controls/PC/{name}");
-                assert!(selection.includes(Path::new(&path)), "{path}");
+                assert!(!selection.includes(Path::new(&path)), "{path}");
+                assert!(
+                    crate::controls::input_key(Path::new(&path)).is_some(),
+                    "{path}"
+                );
             }
             assert!(!selection.includes(Path::new("interface/controls/pc/notes.txt")));
-            assert!(!selection.accepts_recipe("converter-inputs-v4"));
-            assert!(!selection.accepts_recipe("runtime-english-v4"));
+            assert_eq!(selection.recipe(), recipe);
+            assert!(selection.accepts_recipe(recipe));
+            assert!(selection.accepts_recipe("all-v1"));
         }
     }
 

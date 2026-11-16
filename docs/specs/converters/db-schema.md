@@ -22,10 +22,13 @@ world database. Their presence adds no database tables or required capability;
 older packs without these paths remain readable. This preserves the original
 text contract for future input/menu consumers without a SQL-specific parser.
 
-Both filtered ingestion selections include exactly these three text paths.
-Their recipes are `converter-inputs-v5` and `runtime-english-v5`; earlier
-filtered recipes cannot prove coverage. An all-files inventory still proves
-coverage. Mesh, texture, database and script schema/cache versions stay the same.
+These three paths are additive inputs, extracted separately from each enabled
+archive on every conversion. Only archive headers and the selected control
+payloads are read by this extra pass; unrelated payloads are not decompressed
+or repacked. Existing `converter-inputs-v4` and `runtime-english-v4` inventories
+retain their original coverage and remain reusable, without a second archive
+pack generation. Mesh, texture, database and script schema/cache versions stay
+the same.
 Archives overlay in the existing plugin load order, last provider wins, then
 loose Data files (or the effective MO2 loose winner) override archives. Paths
 match case-insensitively and publish in lowercase.
@@ -42,9 +45,10 @@ retained; this pass does not resolve or semantically validate them.
 Original bytes, comments (`//`), blank context separators and line endings are
 preserved, including legacy Windows-1252 names and an optional leading UTF-8
 BOM. A malformed physical line is removed entirely, including its newline, so
-it cannot introduce a new context. Each omission warns with the logical path
-and original 1-based line number in the conversion report, making the report
+it cannot introduce a new context. One warning per affected file summarizes
+the skipped-line count and first original 1-based line number, making the report
 and manifest incomplete while valid neighboring lines and files still publish.
+LF, CRLF and CR-only files retain their original endings.
 An unreadable winning file warns and is omitted. Output I/O failures remain
 errors. An empty or absent optional file is permitted.
 

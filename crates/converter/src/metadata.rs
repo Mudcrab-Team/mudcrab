@@ -706,26 +706,23 @@ async fn rebuild_into(
         ArchiveExtractor::extract_lod_settings(archive, &vfs)?;
     }
     // Reingest only the optional controls; verified meshes/textures/scripts remain retained.
-    let control_paths = crate::controls::PATHS.iter().map(PathBuf::from).collect();
     let control_scratch = tempfile::tempdir_in(staging.parent().unwrap_or(staging))?;
     let mut control_sources = BTreeMap::new();
     for (index, archive) in archives.iter().enumerate() {
         let root = control_scratch.path().join(index.to_string());
-        match ArchiveExtractor::extract_paths(archive, &root, &control_paths) {
-            Ok(inputs) => {
-                let provider = archive
-                    .strip_prefix(&config.data_dir)
-                    .unwrap_or(archive)
-                    .to_string_lossy()
-                    .replace('\\', "/")
-                    .to_ascii_lowercase();
-                crate::controls::record_archive(&mut control_sources, &provider, &inputs, &root);
-            }
-            Err(error) => report.warnings.push(format!(
-                "{}: control input extraction failed: {error:#}",
-                archive.file_name().unwrap_or_default().to_string_lossy()
-            )),
-        }
+        let provider = archive
+            .strip_prefix(&config.data_dir)
+            .unwrap_or(archive)
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        crate::controls::extract_archive(
+            &mut control_sources,
+            archive,
+            &provider,
+            &root,
+            &mut report,
+        );
     }
     for file in &files {
         if let Ok(relative) = file.strip_prefix(&config.data_dir) {

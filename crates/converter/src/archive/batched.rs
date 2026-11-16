@@ -826,7 +826,7 @@ fn pack_directory(cache: &Path, source_hash: &str, recipe: &str) -> Result<PathB
     ensure!(
         matches!(
             recipe,
-            "all-v1" | "converter-inputs-v5" | "runtime-english-v5"
+            "all-v1" | "converter-inputs-v4" | "runtime-english-v4"
         ),
         "unknown ingestion recipe"
     );
