@@ -153,10 +153,18 @@ pub(crate) fn water_flow_divisor(weight_x: f32, weight_y: f32) -> f32 {
 
 /// The flow clock in game seconds after `seconds` of real time: the retail clock is the game hour
 /// times 3600 and wraps at midnight (RF-WATER-038); the engine starts it at hour 12 and runs it at
-/// the retail time scale of 20.
+/// the retail time scale of 20. `speed` is the player's wave-speed multiplier, 1 at its default and
+/// 0 for a frozen phase.
 #[cfg(test)]
-pub(crate) fn water_flow_clock(seconds: f32) -> f32 {
-    (43200.0 + seconds * 20.0) % 86400.0
+pub(crate) fn water_flow_clock(seconds: f32, speed: f32) -> f32 {
+    (43200.0 + seconds * speed * 20.0) % 86400.0
+}
+
+/// The flow program's normal xy after the player's wave settings: the retail value times the
+/// strength multiplier (0 with waves off, 1 at the default).
+#[cfg(test)]
+pub(crate) fn water_flow_strength(retail_xy: [f32; 2], strength: f32) -> [f32; 2] {
+    retail_xy.map(|component| component * strength)
 }
 
 /// The two sun terms of the retail water pixel shader, before the sun colour (RF-WATER-010):
@@ -2997,9 +3005,16 @@ mod tests {
         assert!((water_flow_divisor(1.0, 1.0) - 1.0).abs() < 1.0e-6);
         assert!((water_flow_divisor(0.5, 0.5) - 0.5).abs() < 1.0e-6);
         // RF-WATER-038: hour 12 at the start, 20 game seconds per real second, wrapping at midnight.
-        assert_eq!(water_flow_clock(0.0), 43200.0);
-        assert_eq!(water_flow_clock(10.0), 43400.0);
-        assert_eq!(water_flow_clock(2160.0), 0.0);
+        assert_eq!(water_flow_clock(0.0, 1.0), 43200.0);
+        assert_eq!(water_flow_clock(10.0, 1.0), 43400.0);
+        assert_eq!(water_flow_clock(2160.0, 1.0), 0.0);
+        // The player's wave settings apply to the flow path and are neutral at their defaults:
+        // speed 0 freezes the phase, waves off (strength 0) leaves no ripple tilt, strength scales it.
+        assert_eq!(water_flow_clock(10.0, 0.0), 43200.0);
+        assert_eq!(water_flow_clock(10.0, 2.0), 43600.0);
+        assert_eq!(water_flow_strength([0.2, -0.1], 1.0), [0.2, -0.1]);
+        assert_eq!(water_flow_strength([0.2, -0.1], 0.0), [0.0, 0.0]);
+        assert_eq!(water_flow_strength([0.2, -0.1], 2.0), [0.4, -0.2]);
         // The shader holds the corrected taps (RF-WATER-044): A at (0, h), B at (h, h), C at the
         // pixel, D at (h, 0); rates 10.64, 9.92, 8, 8.48 with offsets 0.27, 0, 0, 0.62.
         let source = include_str!("shaders/water.wgsl");
@@ -3017,15 +3032,36 @@ mod tests {
             "let w = 1.0 - abs(2.0 * fract(FLOW_MAP_TEXELS * cell_uv) - 1.0);",
             "w.y * (w.x * n_c + (1.0 - w.x) * n_d) + (1.0 - w.y) * (w.x * n_a + (1.0 - w.x) * n_b)",
             "normal_skyrim = normalize(mix(flow_tiled_normal(position, time), flow, dist_t));",
-            "let ripple = cell_uv + vec2<f32>(water.flow.x, -water.flow.y);",
+            "let ripple = (cell_uv + vec2<f32>(water.flow.x, -water.flow.y)) * wave_scale;",
+            "let clock = (FLOW_CLOCK_START + seconds * wave_speed * FLOW_CLOCK_SPEED) % FLOW_CLOCK_DAY;",
+            "return renormalised * max(normals_depth, FLOW_DEPTH_FLOOR) * wave_strength;",
+            "let wave_strength = water.wave_scale_speed_strength.z;",
         ] {
             assert!(source.contains(needle), "missing {needle}");
         }
         // The flow map is point-sampled: filtering a direction and a phase speed smears the ripples
         // into flat patches.
         assert!(!source.contains("textureSampleLevel(water_flow_map"));
-        // The program runs only with a flow map and a flow normal texture bound.
+        // A material that runs the flow program takes the player's wave settings through the same
+        // uniform as every water: waves off gives strength 0, speed 0 gives a frozen clock, and the
+        // flow program stays on.
         let handle = || Some(Handle::<Image>::default());
+        let flowing = WaterExtension::with_reflection(Handle::default(), handle())
+            .with_flow(IVec2::new(-3, 12), handle());
+        let defaults = crate::settings::RenderingSettings::default();
+        let neutral = wanted_water_settings(&flowing, 0.0, Some(&defaults));
+        assert_eq!(neutral.wave_scale_speed_strength.xyz(), Vec3::ONE);
+        assert_eq!(neutral.flow.z, 1.0);
+        let still = crate::settings::RenderingSettings {
+            water_waves: false,
+            wave_speed: 0.0,
+            ..defaults
+        };
+        let wanted = wanted_water_settings(&flowing, 0.0, Some(&still));
+        assert_eq!(wanted.wave_scale_speed_strength.y, 0.0);
+        assert_eq!(wanted.wave_scale_speed_strength.z, 0.0);
+        assert_eq!(wanted.flow.z, 1.0);
+        // The program runs only with a flow map and a flow normal texture bound.
         let both = WaterExtension::with_reflection(Handle::default(), handle())
             .with_flow(IVec2::new(-3, 12), handle());
         assert_eq!(both.settings.flow, Vec4::new(-3.0, 12.0, 1.0, 0.0));

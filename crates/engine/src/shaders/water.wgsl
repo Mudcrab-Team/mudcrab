@@ -300,9 +300,16 @@ fn flow_normal_xy(cell_uv: vec2<f32>, seconds: f32, normals_depth: f32) -> vec2<
     let flow_b = flow_texel(cell_uv + vec2<f32>(h, h));
     let flow_c = flow_texel(cell_uv);
     let flow_d = flow_texel(cell_uv + vec2<f32>(h, 0.0));
+    // The player's wave settings apply to the flow path as to the noise path, and are neutral at
+    // their defaults (the retail flow program itself reads no amplitude, RF-WATER-023): the scale
+    // multiplies the ripple frequency, the speed multiplies the clock's advance (0 freezes the
+    // phase), and the strength, which is 0 with waves off, scales the normal below.
+    let wave_scale = water.wave_scale_speed_strength.x;
+    let wave_speed = water.wave_scale_speed_strength.y;
+    let wave_strength = water.wave_scale_speed_strength.z;
     // The ripple coordinate is continuous across cells: the cell's mesh coordinate plus (cellX, -cellY).
-    let ripple = cell_uv + vec2<f32>(water.flow.x, -water.flow.y);
-    let clock = (FLOW_CLOCK_START + seconds * FLOW_CLOCK_SPEED) % FLOW_CLOCK_DAY;
+    let ripple = (cell_uv + vec2<f32>(water.flow.x, -water.flow.y)) * wave_scale;
+    let clock = (FLOW_CLOCK_START + seconds * wave_speed * FLOW_CLOCK_SPEED) % FLOW_CLOCK_DAY;
     let n_a = flow_tap(flow_a, ripple, clock, FLOW_RATES.x, FLOW_OFFSETS.x);
     let n_b = flow_tap(flow_b, ripple, clock, FLOW_RATES.y, FLOW_OFFSETS.y);
     let n_c = flow_tap(flow_c, ripple, clock, FLOW_RATES.z, FLOW_OFFSETS.z);
@@ -310,7 +317,7 @@ fn flow_normal_xy(cell_uv: vec2<f32>, seconds: f32, normals_depth: f32) -> vec2<
     let blended = w.y * (w.x * n_c + (1.0 - w.x) * n_d) + (1.0 - w.y) * (w.x * n_a + (1.0 - w.x) * n_b);
     let renormalised = (blended - 0.5)
         / (sqrt((1.0 - w.x) * (1.0 - w.x) + w.x * w.x) * sqrt((1.0 - w.y) * (1.0 - w.y) + w.y * w.y));
-    return renormalised * max(normals_depth, FLOW_DEPTH_FLOOR);
+    return renormalised * max(normals_depth, FLOW_DEPTH_FLOOR) * wave_strength;
 }
 
 // The flow program's one tiled layer (RF-WATER-047): the first noise map at worldXY / DNAM 0xAC
@@ -322,7 +329,8 @@ fn flow_tiled_normal(position: vec2<f32>, seconds: f32) -> vec3<f32> {
     let size = water.wave_scale_speed_strength.x;
     let clock = seconds * water.wave_scale_speed_strength.y;
     let uv = position * size / water.noise_uv_scale.x + noise_scroll(water.noise_wind_direction.x, water.noise_wind_speed.x, clock);
-    return normalize(noise_texel(water_noise_0, uv) * 2.0 - 1.0);
+    // The strength scales the tilt away from flat, as the noise path scales its amplitudes.
+    return normalize(mix(vec3<f32>(0.0, 0.0, 1.0), normalize(noise_texel(water_noise_0, uv) * 2.0 - 1.0), water.wave_scale_speed_strength.z));
 }
 
 // The surface normal in Skyrim's frame (x east, y north, z up), from the three noise layers:
