@@ -213,10 +213,12 @@ mod tests {
             ),
             (40_000.0, 80_000.0, 300_000.0, 2.0)
         );
-        // 40000 * 2 / 4096 = 19.5 cells; 80000 * 2 / 4096 = 39.1; 300000 * 2 / 4096 = 146.5.
+        // Query radius: tier 4 = ceil(2 * 8 * 2048 * sqrt(2) / 4096) + 8 = 12 + 8; tier 8 =
+        // ceil(2 * 16 * 2048 * sqrt(2) / 4096) + 16 = 23 + 16; tier 16 = the outer reach,
+        // 300000 * 2 / 4096 = 146.5 cells.
         assert_eq!(
             LodTier::ALL.map(|tier| lod.reach_cells(tier)),
-            [19, 39, 146]
+            [20, 39, 146]
         );
     }
 

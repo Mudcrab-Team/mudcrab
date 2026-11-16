@@ -6,7 +6,7 @@ use crate::{
     world::components::CELL_SIZE,
     world::imagespace::{ImageSpaceSelection, ImageSpaceSlot},
 };
-use bevy::prelude::{Msaa, Resource};
+use bevy::prelude::{IVec2, Msaa, Resource};
 use shared::lod::LodTier;
 use std::{fmt, path::PathBuf};
 
@@ -19,25 +19,31 @@ pub(crate) const MAX_IO_THREADS: usize = 64;
 /// What `--io-threads` takes, with [`MAX_IO_THREADS`] spelled out; a test holds the two equal.
 const IO_THREADS_EXPECTED: &str = "a thread count from 0 to 64";
 
-/// How far each terrain LOD tier draws, in Skyrim's `[TerrainManager]` terms:
-/// a tier reaches its block distance times `fSplitDistanceMult`, in Creation
-/// units from the camera. `--ini` reads these from a `SkyrimPrefs.ini`.
+/// Skyrim's `[TerrainManager]` LOD distances, in Creation units.
+///
+/// Retail uses two rules (RF-LOD-003, RF-LOD-004). Terrain (`.btr`) hands a block over to its four
+/// children when the block's box distance is under `fSplitDistanceMult` x level x 2,048 x sqrt(2)
+/// ([`Self::terrain_split_distance`]). Objects (`.bto`) use `fBlockLevel0Distance` and
+/// `fBlockLevel1Distance`, scaled by the worldspace NAMA value, and drop beyond
+/// `fBlockMaximumDistance`. The object rule has no consumer yet: no object LOD is drawn. Terrain
+/// reads only `fSplitDistanceMult`, plus `fBlockMaximumDistance` as the outer guard below.
+/// `--ini` reads these from a `SkyrimPrefs.ini`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerrainLodDistances {
-    /// `fBlockLevel0Distance`: level-4 tier.
+    /// `fBlockLevel0Distance`: object LOD, level 8 hands over to level 4 (not used by terrain).
     pub block_level0_distance: f32,
-    /// `fBlockLevel1Distance`: level-8 tier.
+    /// `fBlockLevel1Distance`: object LOD, level 16 hands over to level 8 (not used by terrain).
     pub block_level1_distance: f32,
-    /// `fBlockMaximumDistance`: level-16 tier.
+    /// `fBlockMaximumDistance`: object LOD drops beyond it (RF-LOD-004). Terrain has no such cut
+    /// in retail. Mudcrab keeps it, times `fSplitDistanceMult`, as the outer reach of tier 16
+    /// until a level-32 terrain tier exists (engineering guard, see [`Self::terrain_tier`]).
     pub block_maximum_distance: f32,
-    /// `fSplitDistanceMult`: terrain multiplier on the three block distances.
+    /// `fSplitDistanceMult`: the terrain split multiplier (RF-LOD-003).
     pub split_distance_mult: f32,
 }
 
 impl Default for TerrainLodDistances {
-    /// Skyrim Special Edition's `SkyrimPrefs.ini` defaults, so an install without
-    /// an INI draws as far as the game does: about 12, 25 and 91 cells for
-    /// tiers 4, 8 and 16.
+    /// Skyrim Special Edition's `SkyrimPrefs.ini` defaults (High preset, RF-LOD-002).
     fn default() -> Self {
         Self {
             block_level0_distance: 35_000.0,
@@ -48,17 +54,92 @@ impl Default for TerrainLodDistances {
     }
 }
 
+/// The block levels the terrain rule tests, coarse to fine, with the tier that draws when a block
+/// of that level is not split. Level 32 is absent: no level-32 tier is compiled.
+const TERRAIN_LEVELS: [(i32, LodTier); 2] = [(16, LodTier::Tier16), (8, LodTier::Tier8)];
+
 impl TerrainLodDistances {
-    /// The Chebyshev cell distance from the camera's cell out to which `tier` draws.
-    pub fn reach_cells(&self, tier: LodTier) -> i32 {
-        let block = match tier {
-            LodTier::Tier4 => self.block_level0_distance,
-            LodTier::Tier8 => self.block_level1_distance,
-            LodTier::Tier16 => self.block_maximum_distance,
+    /// RF-LOD-003: a terrain block of `level` cells is replaced by its four children while the
+    /// distance to its box is under `fSplitDistanceMult` x level x 2,048 x sqrt(2) units. That
+    /// is the multiplier times the block's own half-diagonal: a block of `level` cells has a side
+    /// of `level` x 4,096 units, so its half-diagonal is `level` x 2,048 x sqrt(2).
+    pub fn terrain_split_distance(&self, level: i32) -> f32 {
+        (f64::from(self.split_distance_mult)
+            * f64::from(level)
+            * f64::from(CELL_SIZE / 2.0)
+            * std::f64::consts::SQRT_2) as f32
+    }
+
+    /// RF-LOD-001: the planar distance (Z ignored) from the centre of the camera's cell to the
+    /// box of the aligned `level`-cell block that holds `cell`; zero inside the box. Blocks start
+    /// at the worldspace LOD origin (RF-LOD-001, block coordinate formula).
+    ///
+    /// Engineering guard: retail measures from the camera position. Mudcrab refreshes the LOD
+    /// selection when the camera crosses a cell, so it uses the cell centre. The position error is
+    /// at most half a cell (2,048 units), at most 5.9% of the smallest split distance (34,756).
+    pub fn terrain_block_distance(camera: IVec2, cell: IVec2, origin: IVec2, level: i32) -> f32 {
+        let cell_size = f64::from(CELL_SIZE);
+        let level = f64::from(level.max(1));
+        // f64 holds every i32 exactly, so extreme cells cannot overflow.
+        let axis = |camera: i32, cell: i32, origin: i32| {
+            let origin = f64::from(origin);
+            let start = origin + ((f64::from(cell) - origin) / level).floor() * level;
+            let point = (f64::from(camera) + 0.5) * cell_size;
+            let low = start * cell_size;
+            let high = (start + level) * cell_size;
+            (low - point).max(point - high).max(0.0)
         };
-        // `as` saturates, so an enormous configured distance means "everything".
-        (f64::from(block) * f64::from(self.split_distance_mult) / f64::from(CELL_SIZE)).floor()
-            as i32
+        let dx = axis(camera.x, cell.x, origin.x);
+        let dy = axis(camera.y, cell.y, origin.y);
+        dx.hypot(dy) as f32
+    }
+
+    /// The tier retail's terrain rule draws for `cell`, or `None` beyond the outer reach.
+    ///
+    /// Retail walks the block tree from level 32 down (RF-LOD-003, RF-LOD-011): a block draws its
+    /// own mesh unless its box distance is under its split distance, then its four children are
+    /// tested. A block of level 16 that is not split draws tier 16. A block of level 8 that is
+    /// not split draws tier 8. Otherwise tier 4 draws.
+    ///
+    /// Engineering guard: Mudcrab compiles no level-32 tier, so the level-32 step is skipped and
+    /// tier 16 draws wherever retail would draw level 16 or 32. The outer reach is
+    /// `fBlockMaximumDistance` x `fSplitDistanceMult` from the cell's own box (the previous
+    /// reach of tier 16), because retail's far plane (353,840, RF-FOG-003) is not applied yet.
+    pub fn terrain_tier(&self, camera: IVec2, cell: IVec2, origin: IVec2) -> Option<LodTier> {
+        let outer = f64::from(self.block_maximum_distance) * f64::from(self.split_distance_mult);
+        if f64::from(Self::terrain_block_distance(camera, cell, origin, 1)) >= outer {
+            return None;
+        }
+        for (level, tier) in TERRAIN_LEVELS {
+            if Self::terrain_block_distance(camera, cell, origin, level)
+                >= self.terrain_split_distance(level)
+            {
+                return Some(tier);
+            }
+        }
+        Some(LodTier::Tier4)
+    }
+
+    /// The Chebyshev cell radius around the camera's cell within which `tier` chunks can be
+    /// drawn, used to query, keep and drop chunks. Tier 4 draws in blocks of level 8 that are
+    /// split, so it reaches the level-8 split distance plus the 8 cells of the block. Tier 8
+    /// reaches the level-16 split distance plus 16 cells. Tier 16 reaches the outer reach of
+    /// [`Self::terrain_tier`].
+    pub fn reach_cells(&self, tier: LodTier) -> i32 {
+        let cells = |units: f64| (units / f64::from(CELL_SIZE)).ceil() as i32;
+        match tier {
+            LodTier::Tier4 => cells(f64::from(self.terrain_split_distance(8))).saturating_add(8),
+            LodTier::Tier8 => cells(f64::from(self.terrain_split_distance(16))).saturating_add(16),
+            // A cell `n` cells away has its box `n - 0.5` cells from the camera cell's centre, so
+            // it is inside the outer reach while `n < outer / cell + 0.5`.
+            LodTier::Tier16 => {
+                ((f64::from(self.block_maximum_distance) * f64::from(self.split_distance_mult)
+                    / f64::from(CELL_SIZE)
+                    + 0.5)
+                    .ceil()
+                    - 1.0) as i32
+            }
+        }
     }
 
     /// The farthest reach of any tier.
@@ -4340,5 +4421,110 @@ mod tests {
     /// True when a script spells out a finite number.
     fn is_number_literal(value: &str) -> bool {
         value.parse::<f64>().is_ok_and(f64::is_finite)
+    }
+
+    /// RF-LOD-003 and the verified REA report: the split distances of the three retail presets
+    /// that differ in `fSplitDistanceMult` (Low 0.5, Medium 1.1, High 1.5). The report rounds
+    /// each value to whole units (its 69,512 is 69,511.4 and its 101,949 is 101,950.1 exactly), so the check allows two units.
+    #[test]
+    fn terrain_split_distance_follows_the_retail_half_diagonal_rule() {
+        let with_mult = |mult: f32| TerrainLodDistances {
+            split_distance_mult: mult,
+            ..TerrainLodDistances::default()
+        };
+        let close = |actual: [f32; 3], expected: [f32; 3]| {
+            for (actual, expected) in actual.into_iter().zip(expected) {
+                assert!((actual - expected).abs() <= 2.0, "{actual} vs {expected}");
+            }
+        };
+        let levels = |distances: TerrainLodDistances| {
+            [8, 16, 32].map(|level| distances.terrain_split_distance(level))
+        };
+        close(levels(with_mult(1.5)), [34_756.0, 69_512.0, 139_023.0]);
+        close(levels(with_mult(0.5)), [11_585.0, 23_170.0, 46_341.0]);
+        close(levels(with_mult(1.1)), [25_487.0, 50_975.0, 101_949.0]);
+    }
+
+    #[test]
+    fn terrain_block_distance_is_planar_to_the_aligned_block_box() {
+        let cell = f64::from(CELL_SIZE);
+        // Inside the block: zero. The camera is the centre of cell (0, 0).
+        assert_eq!(
+            TerrainLodDistances::terrain_block_distance(
+                IVec2::ZERO,
+                IVec2::new(3, 2),
+                IVec2::ZERO,
+                8
+            ),
+            0.0
+        );
+        // The block [8, 16) starts at x = 8 cells; the camera is at x = 0.5 cells.
+        let east = TerrainLodDistances::terrain_block_distance(
+            IVec2::ZERO,
+            IVec2::new(12, 0),
+            IVec2::ZERO,
+            8,
+        );
+        assert_eq!(f64::from(east), 7.5 * cell);
+        // A block off both axes: the distance is the hypotenuse to the nearest corner.
+        let corner = TerrainLodDistances::terrain_block_distance(
+            IVec2::ZERO,
+            IVec2::new(9, 9),
+            IVec2::ZERO,
+            8,
+        );
+        assert!((f64::from(corner) - (7.5 * cell).hypot(7.5 * cell)).abs() < 1.0);
+        // West and south of the origin: floor alignment keeps cell -1 in block [-8, 0).
+        let west = TerrainLodDistances::terrain_block_distance(
+            IVec2::new(7, 0),
+            IVec2::new(-1, 0),
+            IVec2::ZERO,
+            8,
+        );
+        assert_eq!(f64::from(west), 7.5 * cell);
+        // Blocks start at the worldspace LOD origin, not at zero.
+        let shifted = TerrainLodDistances::terrain_block_distance(
+            IVec2::new(0, 0),
+            IVec2::new(12, 0),
+            IVec2::new(-3, 0),
+            8,
+        );
+        // Origin -3: blocks start at -3, 5, 13. Cell 12 is in [5, 13).
+        assert_eq!(f64::from(shifted), 4.5 * cell);
+    }
+
+    /// The tier follows the nested split rule, and a camera inside a block always sees tier 4 for
+    /// the cells of its level-8 block.
+    #[test]
+    fn terrain_tier_walks_the_retail_block_tree() {
+        let high = TerrainLodDistances::default();
+        let tier = |x: i32| high.terrain_tier(IVec2::ZERO, IVec2::new(x, 0), IVec2::ZERO);
+        // Block [0, 8) holds the camera.
+        assert_eq!(tier(7), Some(LodTier::Tier4));
+        // Block [8, 16) is 30,720 units away: under 34,756, split.
+        assert_eq!(tier(12), Some(LodTier::Tier4));
+        // Block [16, 24) is 63,488 away: level 8 is not split. Block [16, 32) is under 69,512.
+        assert_eq!(tier(20), Some(LodTier::Tier8));
+        // Block [32, 48) is 129,024 away: level 16 is not split.
+        assert_eq!(tier(40), Some(LodTier::Tier16));
+        // Outer reach: 250,000 x 1.5 = 375,000 units from the cell's own box.
+        assert_eq!(tier(92), Some(LodTier::Tier16));
+        assert_eq!(tier(93), None);
+    }
+
+    /// Tiers 4 and 8 no longer reach 1.5 times too far: the old rule gave cells 12 and 25 for the
+    /// block distances times `fSplitDistanceMult`; retail splits at the block half-diagonal.
+    #[test]
+    fn terrain_tier_boundaries_sit_at_the_split_distances() {
+        let high = TerrainLodDistances::default();
+        // Camera cell 0; the level-8 block [8, 16) is split while 7.5 cells (30,720) < 34,756 and
+        // the block [16, 24) is not (15.5 cells = 63,488 > 34,756). So tier 4 stops at cell 15.
+        let tier = |x: i32| high.terrain_tier(IVec2::ZERO, IVec2::new(x, 0), IVec2::ZERO);
+        assert_eq!(tier(15), Some(LodTier::Tier4));
+        assert_eq!(tier(16), Some(LodTier::Tier8));
+        // Tier 8 stops where block [32, 48) (31.5 cells = 129,024) is past 69,512 but the level-16
+        // block [16, 32) (15.5 cells = 63,488) is inside it: cell 31 is tier 8, cell 32 is tier 16.
+        assert_eq!(tier(31), Some(LodTier::Tier8));
+        assert_eq!(tier(32), Some(LodTier::Tier16));
     }
 }
