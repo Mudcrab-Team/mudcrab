@@ -45,6 +45,11 @@ pub struct FlatWaterBody {
 }
 
 impl FlatWaterBody {
+    /// The surface this body draws: its height and water type.
+    pub fn surface(&self) -> FlatWater {
+        self.surface
+    }
+
     /// Only the existing complete exterior LAND height field defines a footprint today.
     /// Interior pools, water without LAND and authored nonrectangular water meshes need geometry
     /// that the current cache does not carry; do not invent coverage for them.
@@ -155,6 +160,26 @@ mod tests {
             water_height: height,
             water_type_form_id: Some(cell_id + 100),
         }
+    }
+
+    #[test]
+    fn an_interior_cell_gets_no_water_from_its_xclw_height() {
+        // RF-WATER-041: retail never uses XCLW for an interior cell; only placed water counts. The
+        // engine's flat water comes from an exterior LAND height field, so an interior cell, even
+        // with a water height in its cell record, has no flat water body.
+        let wet = terrain(0x1234, Some(500.0));
+        assert!(FlatWaterBody::from_terrain(CellKey::Interior(0x1234), &wet).is_none());
+        assert!(
+            FlatWaterBody::from_terrain(
+                CellKey::Exterior {
+                    worldspace_id: 60,
+                    grid_x: 0,
+                    grid_y: 0
+                },
+                &wet
+            )
+            .is_some()
+        );
     }
 
     fn body(terrain: &TerrainSnapshot, grid_x: i32, grid_y: i32) -> FlatWaterBody {
