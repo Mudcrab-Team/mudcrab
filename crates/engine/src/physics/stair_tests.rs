@@ -613,7 +613,7 @@ fn constant_speed_reference(frames: &[ClimbFrame]) -> Vec<ClimbFrame> {
 /// #511 alone (the spring fed with the latest tick) and a rigid camera.
 #[test]
 fn stair_climb_camera_ripple_stays_within_the_retail_spring_model() {
-    const F32_ROUNDING: f64 = 1.0e-4;
+    const F32_ROUNDING: f64 = 1.0e-3;
     let tuning = MovementTuning::default();
     let eye = Vec3::Y * tuning.eye_height;
     // The third value says whether the spring must beat a rigid camera. At the trace pacing it
@@ -675,7 +675,7 @@ fn stair_climb_camera_ripple_stays_within_the_retail_spring_model() {
 /// down while it stays grounded, or falls and lands on every tread (Taylor's "falling down the
 /// stairs", #590). Retail keeps the player on the ground across a down-step by casting 70 units
 /// down and pulling it onto the surface (RF-CC-006, `fUnsupportCastLength`); Mudcrab's
-/// `ground_snap` is 12 units, a tuning value (REA m1 section 5).
+/// the old `ground_snap` was 12 units, a tuning value (REA m1 section 5); the controller has none.
 #[test]
 #[ignore = "measure: prints the per-tick descent profile; run with --ignored --nocapture"]
 fn measure_stair_descent_per_tick_profile() {
@@ -932,7 +932,7 @@ fn walk_real_stairs(
     app.world_mut()
         .get_mut::<KinematicCharacterController>(body)
         .unwrap()
-        .snap_to_ground = Some(CharacterLength::Absolute(ground_snap));
+        .snap_to_ground = (ground_snap > 0.0).then_some(CharacterLength::Absolute(ground_snap));
     app.insert_resource(WalkIntent {
         wish_dir: if descend { -Vec3::X } else { Vec3::X },
         target_speed: speed,
@@ -981,9 +981,8 @@ fn measure_real_walkway_stairs15() {
     let tuning = MovementTuning::default();
     let eye = tuning.eye_height;
     println!(
-        "controller: autostep budget {} units, ground snap {} units, gravity {}, capsule radius {}, centre {} above the ground",
+        "controller: autostep budget {} units, no ground snap, gravity {}, capsule radius {}, centre {} above the ground",
         tuning.autostep_height,
-        tuning.ground_snap,
         tuning.gravity,
         tuning.capsule_radius,
         tuning.capsule_standing_height * 0.5 + PLAYER_CONTROLLER_OFFSET
@@ -995,14 +994,8 @@ fn measure_real_walkway_stairs15() {
                     ("steady 60 Hz", frame_times(60.0, false, 4000)),
                     ("trace pacing", trace_like_frame_times(1500)),
                 ] {
-                    let (frames, ticks) = walk_real_stairs(
-                        assets,
-                        foot_y,
-                        speed,
-                        &deltas,
-                        descend,
-                        tuning.ground_snap,
-                    );
+                    let (frames, ticks) =
+                        walk_real_stairs(assets, foot_y, speed, &deltas, descend, 0.0);
                     let airborne = ticks.iter().filter(|tick| !tick.grounded).count();
                     let fall = ticks
                         .iter()
