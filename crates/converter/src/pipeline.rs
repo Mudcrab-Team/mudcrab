@@ -14502,6 +14502,14 @@ mod tests {
             let data = directory.path().join("Data");
             let output = directory.path().join("modern");
             fs::create_dir_all(&data).unwrap();
+            // LAND names these real source images; a missing diffuse would intentionally
+            // skip LOD before this test reaches the post-parse publication paths.
+            dummy_content::layout::generate(
+                &data,
+                dummy_content::layout::DEFAULT_SEED,
+                dummy_content::layout::Formats::parse("dds,nif").unwrap(),
+            )
+            .unwrap();
             fs::write(
                 data.join("Skyrim.esm"),
                 dummy_content::esm::plugin(&dummy_content::esm::Plugin {
@@ -14511,9 +14519,9 @@ mod tests {
                         grid_x: 0,
                         grid_y: 0,
                     }],
-                    model_path: "unused/model.nif",
-                    diffuse: "unused/diffuse.dds",
-                    normal_texture: "unused/normal.dds",
+                    model_path: dummy_content::layout::GENERATED_MODEL_PATH,
+                    diffuse: dummy_content::layout::GENERATED_DIFFUSE_PATH,
+                    normal_texture: dummy_content::layout::GENERATED_NORMAL_PATH,
                 })
                 .unwrap(),
             )
@@ -14563,8 +14571,27 @@ mod tests {
                 ["Skyrim.esm", "MutableMod.esp", "HealthyC.esp"]
             );
             assert!(!report.database_cache_hit && report.database_cache_key.is_none());
+            assert!(report.lod_warnings.is_empty(), "{:?}", report.lod_warnings);
             assert!(report.lod_chunks > 0);
-            assert!(report.terrain.is_some());
+            let terrain = report.terrain.as_ref().expect("merged terrain was built");
+            assert_eq!(terrain.cells_written, 1);
+            assert!(
+                terrain.skipped_cells.is_empty(),
+                "{:?}",
+                terrain.skipped_cells
+            );
+            assert!(
+                terrain.skipped_textures.is_empty(),
+                "{:?}",
+                terrain.skipped_textures
+            );
+            assert!(!terrain.chunk_files.is_empty());
+            for path in &terrain.chunk_files {
+                assert!(
+                    output.join(path).is_file(),
+                    "missing terrain payload {path}"
+                );
+            }
             let manifest = published_manifest(&output);
             assert!(!manifest.complete && manifest.record_data_complete == Some(false));
             let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
