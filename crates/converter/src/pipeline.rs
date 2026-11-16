@@ -14538,13 +14538,9 @@ mod tests {
             config.plugins_file = Some(selected);
             config.merged_terrain = true;
             config.terrain_default_texture = crate::config::TerrainDefaultTexture::White;
-            config.lod_origins.insert(
-                "UnavailableInputWorld".into(),
-                LodOrigin {
-                    grid_x: 0,
-                    grid_y: 0,
-                },
-            );
+            config
+                .lod_origins
+                .insert("UnavailableInputWorld".into(), [0, 0]);
             let report = run_without_progress(config).await;
             drop(clear);
             assert!(
