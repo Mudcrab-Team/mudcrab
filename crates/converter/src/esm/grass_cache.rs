@@ -329,6 +329,15 @@ impl GeometryCache {
             }
         }
     }
+
+    /// Confirm the inspected model sources remain consistent before archive publication.
+    fn validate_sources(&self) -> Result<()> {
+        ensure!(
+            !self.source_changed,
+            "obstruction changed during grass bake; retry conversion"
+        );
+        Ok(())
+    }
 }
 
 /// Resolve the current runtime's last-entry-per-index MODS visibility from projected rows.
@@ -1060,10 +1069,7 @@ pub fn write_grass_cache_with_cancel(
         report.baked_cells += 1;
     }
     check_cancel()?;
-    ensure!(
-        !geometry.source_changed,
-        "obstruction changed during grass bake; retry conversion"
-    );
+    geometry.validate_sources()?;
     cells.sort_unstable_by_key(|cell| cell.cell_id);
     let bytes = rkyv::to_bytes::<Error>(&GrassCache {
         version: GRASS_CACHE_VERSION,
