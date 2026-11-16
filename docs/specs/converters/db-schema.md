@@ -1278,15 +1278,17 @@ Columns and rules:
   `portals_with_missing_side` (`room_portals` rows with a NULL side, so a portal with several
   pairs can add several), `portals_with_extra_pairs` (markers whose `XPOD` holds more than one
   pair), `portals_with_trailing_xpod_bytes` (markers whose `XPOD` length is not a multiple of 8),
-  `non_box_rooms_skipped`, `portals_without_size_skipped`, `invalid_markers_skipped` (rooms and portals with a non-finite size or transform), `objects_in_no_room` and
+  `non_box_rooms_skipped`, `portals_without_size_skipped`, `invalid_markers_skipped` (rooms and portals with a missing, truncated, or non-finite transform, or a non-finite size), `objects_in_no_room` and
   `objects_in_several_rooms` (both by pivot), and `overlap_rows`.
   `visibility_version = 2` additionally marks graphs whose outside endpoints have verified
   source provenance. The typed reader publishes this marker and the flags in the source-data
   transaction. Until that transaction commits, the runtime uses legacy fallback behavior.
 
 The tables are derived data: a full load-order export clears and rebuilds them from the winning
-records on every conversion, like the grass tables, and the subset export used by movement
-annotation leaves them alone. `create_tables` adds them to an older reused database.
+records on every conversion, like the grass tables. Subsets without placed references, including
+movement annotation, leave the graph alone. A subset that replaces a placed reference clears its
+membership and marks its previous and new cells incomplete until a full export rebuilds the graph.
+`create_tables` adds these tables to an older reused database.
 
 **These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`.** The engine reads
 them automatically and probes for them first, as it does for `lights` and the

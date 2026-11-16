@@ -834,6 +834,18 @@ fn export_records(
             }
             _ if super::is_placed_record_type(&record.record_type) => {
                 let cell_id = record.cell_form_id.unwrap_or(0);
+                if order.is_none() {
+                    // A subset cannot rebuild the cell graph. Empty membership alone would mean
+                    // unbounded space in a versioned graph, so invalidate both affected cells.
+                    tx.prepare_cached(
+                        "INSERT INTO room_graph_cells(cell_id,complete) SELECT cell_id,0 FROM [references] WHERE id=?1 AND cell_id IS NOT NULL ON CONFLICT(cell_id) DO UPDATE SET complete=0",
+                    )?.execute([form_id])?;
+                    tx.prepare_cached(
+                        "INSERT INTO room_graph_cells(cell_id,complete) VALUES (?1,0) ON CONFLICT(cell_id) DO UPDATE SET complete=0",
+                    )?.execute([cell_id])?;
+                    tx.prepare_cached("DELETE FROM reference_rooms WHERE reference_id=?1")?
+                        .execute([form_id])?;
+                }
                 insert_reference_with_canonical_data(
                     &tx,
                     form_id,
@@ -3834,6 +3846,93 @@ mod tests {
             .query_row("SELECT count(*) FROM room_bounds", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn room_and_portal_markers_require_a_complete_transform() {
+        for is_room in [true, false] {
+            for truncated in [false, true] {
+                let mut invalid = if is_room {
+                    room(0x1002, 0x100, [50.0; 3], [0.0; 3], [10.0; 3], vec![])
+                } else {
+                    portal(0x1002, 0x100, Some((0x1001, 0x1001)))
+                };
+                invalid.subrecords.retain(|(tag, _)| tag != b"DATA");
+                if truncated {
+                    invalid.subrecords.push((b"DATA".to_vec(), vec![0; 20]));
+                }
+                let (conn, report) = export_rooms(vec![
+                    interior_cell(0x100),
+                    room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+                    invalid,
+                ]);
+                assert_eq!(report.invalid_markers_skipped, 1);
+                assert_eq!(report.rooms, 1);
+                assert_eq!(report.portals, 0);
+                let complete: bool = conn
+                    .query_row(
+                        "SELECT complete FROM room_graph_cells WHERE cell_id=0x100",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert!(!complete);
+            }
+        }
+    }
+
+    #[test]
+    fn subset_reference_updates_invalidate_room_membership_and_affected_cells() {
+        for destination in [0x100, 0x200] {
+            let (conn, _) = export_rooms(vec![
+                interior_cell(0x100),
+                interior_cell(0x200),
+                interior_cell(0x300),
+                room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+                room(
+                    0x1002,
+                    0x100,
+                    [100.0, 0.0, 0.0],
+                    [0.0; 3],
+                    [10.0; 3],
+                    vec![],
+                ),
+                room(
+                    0x1003,
+                    0x200,
+                    [100.0, 0.0, 0.0],
+                    [0.0; 3],
+                    [10.0; 3],
+                    vec![],
+                ),
+                room(0x1004, 0x300, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+                reference(0x2001, 0x100, 0x500, [0.0; 3], [0.0; 3]),
+                reference(0x2002, 0x100, 0x500, [0.0; 3], [0.0; 3]),
+            ]);
+            assert_eq!(rooms_of(&conn, 0x2001), vec![(0x1001, 1)]);
+            let moved = reference(0x2001, destination, 0x500, [100.0, 0.0, 0.0], [0.0; 3]);
+            export_to_db(&conn, &HashMap::from([(moved.form_id, moved)])).unwrap();
+            assert!(rooms_of(&conn, 0x2001).is_empty());
+            assert_eq!(rooms_of(&conn, 0x2002), vec![(0x1001, 1)]);
+            for cell in [0x100, destination] {
+                let complete: bool = conn
+                    .query_row(
+                        "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
+                        [cell],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert!(!complete);
+            }
+            let unrelated: bool = conn
+                .query_row(
+                    "SELECT complete FROM room_graph_cells WHERE cell_id=0x300",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(unrelated);
+        }
     }
 
     #[test]

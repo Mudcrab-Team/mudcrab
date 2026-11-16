@@ -469,10 +469,10 @@ fn u32_at(data: &[u8], offset: usize) -> Option<u32> {
         .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")))
 }
 
-fn transform_of(view: &SubrecordView<'_>) -> ([f32; 3], [f32; 3]) {
-    let data = view.get_f32_slice(b"DATA").unwrap_or_default();
-    let at = |index: usize| data.get(index).copied().unwrap_or(0.0);
-    ([at(0), at(1), at(2)], [at(3), at(4), at(5)])
+fn transform_of(view: &SubrecordView<'_>) -> Option<([f32; 3], [f32; 3])> {
+    let data = view.get_f32_slice(b"DATA")?;
+    let data = data.get(..6)?;
+    Some(([data[0], data[1], data[2]], [data[3], data[4], data[5]]))
 }
 
 fn is_placed(record_type: &[u8; 4]) -> bool {
@@ -527,7 +527,11 @@ pub fn export_room_graph(
             report.non_box_rooms_skipped += 1;
             continue;
         }
-        let (position, rotation) = transform_of(&view);
+        let Some((position, rotation)) = transform_of(&view) else {
+            incomplete.insert(cell);
+            report.invalid_markers_skipped += 1;
+            continue;
+        };
         let half = [
             f32_at(xprm, 0).unwrap_or(0.0),
             f32_at(xprm, 4).unwrap_or(0.0),
@@ -596,7 +600,11 @@ pub fn export_room_graph(
             report.portals_without_size_skipped += 1;
             continue;
         };
-        let (position, rotation) = transform_of(&view);
+        let Some((position, rotation)) = transform_of(&view) else {
+            incomplete.insert(cell);
+            report.invalid_markers_skipped += 1;
+            continue;
+        };
         let half_x = f32_at(xprm, 0).unwrap_or(0.0);
         let half_z = f32_at(xprm, 8).unwrap_or(0.0);
         if ![half_x, half_z]
@@ -667,7 +675,14 @@ pub fn export_room_graph(
             else {
                 continue;
             };
-            let (position, _) = transform_of(&SubrecordView::new(&record.subrecords));
+            let data = SubrecordView::new(&record.subrecords)
+                .get_f32_slice(b"DATA")
+                .unwrap_or_default();
+            let position = [
+                *data.first().unwrap_or(&0.0),
+                *data.get(1).unwrap_or(&0.0),
+                *data.get(2).unwrap_or(&0.0),
+            ];
             let pivot = position.map(f64::from);
             let mut inside = 0u32;
             for room in rooms.iter().filter(|room| room.shape.contains(pivot)) {
