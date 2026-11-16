@@ -859,6 +859,10 @@ impl RoomCullingState {
     }
 }
 
+/// Updates graph-read state before live capture readiness is observed.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct RoomGraphReadiness;
+
 /// Registers automatic interior room culling. Missing room tables leave every mesh drawn.
 pub struct RoomCullingPlugin {
     pub database_path: PathBuf,
@@ -882,7 +886,8 @@ impl Plugin for RoomCullingPlugin {
                 request_room_graphs,
                 drop_stale_graphs,
             )
-                .chain(),
+                .chain()
+                .in_set(RoomGraphReadiness),
         )
         .add_systems(
             PostUpdate,
