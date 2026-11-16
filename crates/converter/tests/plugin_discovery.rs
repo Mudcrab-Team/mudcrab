@@ -30,7 +30,7 @@ fn record(tag: &[u8; 4], id: u32, flags: u32, payload: Vec<u8>) -> Vec<u8> {
     .concat()
 }
 
-/// Write a plugin header and an optional newly defined game setting.
+/// Write a plugin header and an optional setting absent from the base fixture.
 fn plugin(root: &Path, name: &str, masters: &[&str], flags: u32, value: Option<f32>) -> PathBuf {
     let mut header = Vec::new();
     for master in masters {
@@ -40,7 +40,7 @@ fn plugin(root: &Path, name: &str, masters: &[&str], flags: u32, value: Option<f
     let mut bytes = record(b"TES4", 0, flags, header);
     if let Some(value) = value {
         let payload = [
-            sub(b"EDID", b"fJumpHeightMin\0"),
+            sub(b"EDID", b"fMoveCharWalkBase\0"),
             sub(b"DATA", &value.to_le_bytes()),
         ]
         .concat();
@@ -118,7 +118,7 @@ async fn fallback_orders_dependencies_and_ignores_nested_plugins_but_keeps_asset
     );
     assert_eq!(
         conn.query_row(
-            "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+            "SELECT value FROM movement_game_settings WHERE editor_id='fMoveCharWalkBase'",
             [],
             |row| row.get::<_, f64>(0)
         )
@@ -257,7 +257,7 @@ async fn fallback_keeps_espfe_in_regular_order_without_changing_light_slots() {
     let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
     assert_eq!(
         conn.query_row(
-            "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+            "SELECT value FROM movement_game_settings WHERE editor_id='fMoveCharWalkBase'",
             [],
             |row| row.get::<_, f64>(0)
         )
@@ -287,12 +287,12 @@ fn published_plugins(output: &Path) -> Vec<String> {
         .collect()
 }
 
-/// The published winning `fJumpHeightMin`, which each synthetic plugin may define.
-fn published_jump_height(output: &Path) -> f64 {
+/// The published winning `fMoveCharWalkBase`, which each synthetic plugin may define.
+fn published_walk_base(output: &Path) -> f64 {
     Connection::open(output.join("skyrim_world.db"))
         .unwrap()
         .query_row(
-            "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+            "SELECT value FROM movement_game_settings WHERE editor_id='fMoveCharWalkBase'",
             [],
             |row| row.get(0),
         )
@@ -344,7 +344,7 @@ async fn fallback_skips_missing_masters_and_unusable_headers_and_publishes_neigh
     for skipped in ["Orphan.esp", "Orphan Patch.esp", "Broken.esp"] {
         assert!(!names.contains(&skipped.to_owned()), "{names:?}");
     }
-    assert_eq!(published_jump_height(&output), 150.0);
+    assert_eq!(published_walk_base(&output), 150.0);
 }
 
 /// When recovery leaves no usable plugin, automatic discovery still fails with the cause.
@@ -396,7 +396,7 @@ async fn explicit_plugin_order_is_preserved_and_inversions_are_skipped_not_repai
     let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
     assert_eq!(
         conn.query_row(
-            "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+            "SELECT value FROM movement_game_settings WHERE editor_id='fMoveCharWalkBase'",
             [],
             |row| row.get::<_, f64>(0)
         )
@@ -419,7 +419,7 @@ async fn explicit_plugin_order_is_preserved_and_inversions_are_skipped_not_repai
         report.notices
     );
     assert!(!published_plugins(&output).contains(&"Patch.esp".to_owned()));
-    assert_eq!(published_jump_height(&output), 100.0);
+    assert_eq!(published_walk_base(&output), 100.0);
 }
 
 /// Reproduce #108 with a valid list whose ordinary override must beat a later master.
@@ -444,7 +444,7 @@ async fn explicit_regular_override_beats_a_master_listed_after_it() {
     let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
     let setting: (f64, String) = conn.query_row(
         "SELECT g.value, p.name FROM movement_game_settings g JOIN plugins p ON p.priority=g.load_order
-         WHERE g.editor_id='fJumpHeightMin'",
+         WHERE g.editor_id='fMoveCharWalkBase'",
         [], |row| Ok((row.get(0)?, row.get(1)?)),
     ).unwrap();
     assert_eq!(setting, (222.0, "A.esp".to_string()));
@@ -664,18 +664,14 @@ async fn explicit_plugin_list_loads_master_files_before_regular_plugins() {
             .query_row(
                 "SELECT g.value, p.name, f.plugin_name FROM movement_game_settings g
              JOIN plugins p ON p.priority=g.load_order
-             JOIN formid_map f ON f.form_id=g.id WHERE g.editor_id='fJumpHeightMin'",
+             JOIN formid_map f ON f.form_id=g.id WHERE g.editor_id='fMoveCharWalkBase'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
         assert_eq!(
             setting,
-            (
-                f64::from(height),
-                winner.to_string(),
-                "skyrim.esm".to_string()
-            )
+            (f64::from(height), winner.to_string(), "b.esm".to_string())
         );
         for (id, owner, local, editor, source) in [
             (0x01000811u32, "b.esm", 0x811, "MasterOverride", "A.esp"),
@@ -784,7 +780,7 @@ async fn explicit_master_keeps_its_transitive_regular_prerequisites() {
     );
     let setting: (f64, String) = conn.query_row(
         "SELECT g.value, p.name FROM movement_game_settings g JOIN plugins p ON p.priority=g.load_order
-         WHERE g.editor_id='fJumpHeightMin'",
+         WHERE g.editor_id='fMoveCharWalkBase'",
         [], |row| Ok((row.get(0)?, row.get(1)?)),
     ).unwrap();
     assert_eq!(setting, (50.0, "Last.esp".to_string()));

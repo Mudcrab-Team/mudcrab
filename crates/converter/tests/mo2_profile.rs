@@ -1272,7 +1272,7 @@ async fn final_unicode_profile_master_override_publishes() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
-    // GMST retains the first owner's identity despite overrides from both later plugins.
+    // GMST retains Skyrim's identity despite the three later plugins.
     assert!(winning.contains(&(0x0000_000B, 3)), "{winning:?}");
     let owner_priority: u32 = conn
         .query_row(

@@ -33,7 +33,15 @@ fn exported_fixture() -> Connection {
     }
     let player = &decoded.records[&7];
     for tag in [*b"ACBS", *b"RNAM", *b"NAM6"] {
-        assert!(player.fields.iter().any(|field| field.signature == tag));
+        assert!(
+            player.fields.iter().any(|field| field.signature == tag),
+            "missing {tag:?}; decoded fields: {:?}",
+            player
+                .fields
+                .iter()
+                .map(|field| field.signature)
+                .collect::<Vec<_>>()
+        );
     }
     let connection = Connection::open_in_memory().unwrap();
     create_tables(&connection).unwrap();
@@ -110,14 +118,15 @@ fn fixture_has_complete_canonical_jump_inputs() {
     assert_eq!(u32::from_le_bytes(acbs[..4].try_into().unwrap()) & 1, 0);
     assert_eq!(
         f32::from_le_bytes(field(&player, *b"NAM6").try_into().unwrap()),
-        1.0
+        1.1
     );
+    assert_eq!(u16::from_le_bytes(acbs[14..16].try_into().unwrap()), 100);
     let race_id: u32 = connection
         .query_row("SELECT race_id FROM npcs WHERE id=7", [], |row| row.get(0))
         .unwrap();
     let data = field(&read(race_id), *b"DATA");
     assert!(data.len() >= 24);
-    assert_eq!(f32::from_le_bytes(data[16..20].try_into().unwrap()), 1.0);
+    assert_eq!(f32::from_le_bytes(data[16..20].try_into().unwrap()), 1.03);
     assert_eq!(f32::from_le_bytes(data[20..24].try_into().unwrap()), 1.0);
     let setting: f32 = connection
         .query_row(
