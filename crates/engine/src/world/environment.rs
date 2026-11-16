@@ -644,20 +644,6 @@ fn weather_column_names(connection: &Connection) -> Vec<String> {
     rows.filter_map(Result::ok).collect()
 }
 
-/// A weather colour from three `u8` columns, or `None` unless all three are present.
-fn rgb_u8(row: &Row<'_>, first: usize) -> rusqlite::Result<Option<[u8; 3]>> {
-    Ok(
-        match (
-            row.get::<_, Option<u8>>(first)?,
-            row.get::<_, Option<u8>>(first + 1)?,
-            row.get::<_, Option<u8>>(first + 2)?,
-        ) {
-            (Some(r), Some(g), Some(b)) => Some([r, g, b]),
-            _ => None,
-        },
-    )
-}
-
 fn read_weathers(connection: &Connection) -> HashMap<u32, Weather> {
     // The `DATA` columns and the links are additive: a database converted before them reads
     // NULL and every consumer keeps its fallback, as with the other optional environment tables.
@@ -715,7 +701,7 @@ fn read_weathers(connection: &Connection) -> HashMap<u32, Weather> {
                         lightning_end: row.get(21)?,
                         lightning_frequency: row.get(22)?,
                         classification_flags: row.get(23)?,
-                        lightning_color: rgb_u8(row, 24)?,
+                        lightning_color: rgb(row, 24)?,
                         visual_effect_begin: row.get(27)?,
                         visual_effect_end: row.get(28)?,
                         wind_direction: row.get(29)?,
