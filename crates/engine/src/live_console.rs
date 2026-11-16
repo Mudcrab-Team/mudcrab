@@ -80,9 +80,16 @@ impl Plugin for StdinConsolePlugin {
                     });
                     Ok(format!("live screenshot requested: {}", path.display()))
                 }),
-            })
-            .add_systems(Update, dispatch_stdin);
+            });
+        register_stdin_dispatch(app);
     }
+}
+
+fn register_stdin_dispatch(app: &mut App) {
+    app.add_systems(
+        Update,
+        dispatch_stdin.after(crate::room_culling::RoomGraphReadiness),
+    );
 }
 
 fn build_live_capture_receipt(
@@ -547,6 +554,56 @@ mod tests {
             let error = build_live_capture_receipt(&request_state, &frame, [1920, 1080])
                 .expect_err("a new failure must reject this frame's receipt");
             assert!(error.contains("not settled"), "{failure}: {error}");
+        }
+    }
+
+    #[test]
+    fn queued_capture_commands_see_new_room_graph_requests_in_either_registration_order() {
+        use crate::{
+            room_culling::RoomCullingPlugin,
+            world::components::{CellRef, StreamedCellRoot},
+        };
+        bevy::tasks::AsyncComputeTaskPool::get_or_init(Default::default);
+        for console_first in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut app = App::new();
+            *app.world_mut() = ready_scene_world();
+            app.init_resource::<bevy::ecs::schedule::Schedules>();
+            let (sender, receiver) = mpsc::sync_channel(32);
+            app.insert_resource(IncomingCommands(Mutex::new(receiver)))
+                .init_resource::<ConsoleState>();
+            let accepted = std::sync::Arc::new(Mutex::new(Vec::new()));
+            let observed = accepted.clone();
+            app.add_console_command(ConsoleCommand {
+                name: "ProbeShot",
+                short: None,
+                usage: "ProbeShot",
+                help: "test live capture readiness at stdin dispatch",
+                handler: Box::new(move |world, _| {
+                    observed
+                        .lock()
+                        .unwrap()
+                        .push(prepare_scene_shot(world).is_ok());
+                    Ok("probed capture readiness".into())
+                }),
+            });
+            if console_first {
+                register_stdin_dispatch(&mut app);
+            }
+            app.add_plugins(RoomCullingPlugin {
+                database_path: directory.path().join("missing.db"),
+            });
+            if !console_first {
+                register_stdin_dispatch(&mut app);
+            }
+            app.world_mut().spawn((StreamedCellRoot, CellRef(7)));
+            sender.send("ProbeShot".into()).unwrap();
+            app.world_mut().run_schedule(Update);
+            assert_eq!(
+                *accepted.lock().unwrap(),
+                [false],
+                "console_first={console_first}: a new room read must hold the queued command"
+            );
         }
     }
 
