@@ -89,6 +89,9 @@ impl Options {
                 _ => positional.push(argument),
             }
         }
+        // `--radius` is checked as supplied, before the default applies, so an explicit
+        // `--radius 0` is also refused in cell mode.
+        let radius_supplied = radius.is_some();
         let radius = radius.unwrap_or(0);
         color_eyre::eyre::ensure!(
             (0..=16).contains(&radius),
@@ -100,7 +103,7 @@ impl Options {
                 "--cell selects one cell and takes no worldspace, grid-x or grid-y"
             );
             color_eyre::eyre::ensure!(
-                radius == 0,
+                !radius_supplied,
                 "--radius applies to an exterior grid and cannot be used with --cell"
             );
             Target::Cell { cell }
@@ -416,7 +419,7 @@ fn inspect_world(options: &Options) -> Result<InspectionReport> {
 
     let references = rows
         .iter()
-        .map(|row| reference_report(row, &inspected))
+        .map(|row| reference_report(row, &inspected, interior_cell.is_some()))
         .collect::<Vec<_>>();
     let assets_report = inspected.into_values().collect::<Vec<_>>();
     let summary = InspectionSummary {
@@ -489,26 +492,42 @@ struct CellRow {
     full_name: Option<String>,
 }
 
-/// The cell with this FormID, or an error that names it.
+/// Whether `table` has `column`. `cells.full_name` is optional in the supported database
+/// schemas, so a reader checks for it, as the engine's other readers do for optional columns.
+fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name=?2",
+        params![table, column],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// The cell with this FormID, or an error that names it. A database without the optional
+/// `full_name` column answers with no full name.
 fn find_cell(connection: &Connection, cell: u32) -> Result<CellRow> {
+    let full_name = if has_column(connection, "cells", "full_name")? {
+        "full_name"
+    } else {
+        "NULL"
+    };
+    let sql = format!(
+        "SELECT id, worldspace_id, grid_x, grid_y, interior_name, {full_name}
+         FROM cells WHERE id=?1"
+    );
     connection
-        .query_row(
-            "SELECT id, worldspace_id, grid_x, grid_y, interior_name, full_name
-             FROM cells WHERE id=?1",
-            params![cell],
-            |row| {
-                Ok(CellRow {
-                    id: row.get(0)?,
-                    worldspace: row.get(1)?,
-                    grid: [
-                        row.get::<_, Option<i32>>(2)?.unwrap_or(0),
-                        row.get::<_, Option<i32>>(3)?.unwrap_or(0),
-                    ],
-                    interior_name: row.get(4)?,
-                    full_name: row.get(5)?,
-                })
-            },
-        )
+        .query_row(&sql, params![cell], |row| {
+            Ok(CellRow {
+                id: row.get(0)?,
+                worldspace: row.get(1)?,
+                grid: [
+                    row.get::<_, Option<i32>>(2)?.unwrap_or(0),
+                    row.get::<_, Option<i32>>(3)?.unwrap_or(0),
+                ],
+                interior_name: row.get(4)?,
+                full_name: row.get(5)?,
+            })
+        })
         .optional()?
         .ok_or_else(|| color_eyre::eyre::eyre!("cell was not found: id={cell:08X}"))
 }
@@ -719,12 +738,24 @@ fn reference_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReferenceRow> {
     })
 }
 
-fn reference_report(row: &ReferenceRow, assets: &BTreeMap<String, AssetReport>) -> ReferenceReport {
+/// One reference as the runtime places it. An exterior reference is placed relative to its grid
+/// cell. An interior cell has no grid, so the runtime places its references at their full
+/// creation position (`CellKey::Interior` in `streaming.rs`); `interior` selects that frame.
+fn reference_report(
+    row: &ReferenceRow,
+    assets: &BTreeMap<String, AssetReport>,
+    interior: bool,
+) -> ReferenceReport {
     use bevy::prelude::{Mat4, Quat, Vec3};
     let position = Vec3::from_array(row.position);
     let world_position = WorldPosition::from_creation_units(position);
+    let placed = if interior {
+        position
+    } else {
+        world_position.relative_to(world_position.grid)
+    };
     let translation = Vec3::from_array(shared::coordinates::creation_to_runtime_vector(
-        world_position.relative_to(world_position.grid).to_array(),
+        placed.to_array(),
     ));
     let rotation = shared::coordinates::creation_euler_to_runtime_quaternion(row.rotation);
     let transform = Mat4::from_scale_rotation_translation(
@@ -1220,8 +1251,13 @@ mod interior_tests {
     fn cell_parsing_rejects_a_grid_and_radius() {
         let grid = Options::parse(args(&["pack", "0x3C", "0", "0", "--cell", "0x133C6"]));
         assert!(grid.is_err(), "--cell and a grid must not be combined");
-        let radius = Options::parse(args(&["pack", "--cell", "0x133C6", "--radius", "1"]));
-        assert!(radius.is_err(), "--radius applies to an exterior grid only");
+        for value in ["1", "0"] {
+            let radius = Options::parse(args(&["pack", "--cell", "0x133C6", "--radius", value]));
+            assert!(
+                radius.is_err(),
+                "--radius {value} applies to an exterior grid only"
+            );
+        }
     }
 
     #[test]
@@ -1298,5 +1334,92 @@ mod interior_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_cells_table_without_full_name_still_answers_a_lookup() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE cells(id INTEGER PRIMARY KEY, worldspace_id INTEGER, grid_x INTEGER,
+                    grid_y INTEGER, interior_name TEXT, flags INTEGER NOT NULL, data BLOB);
+                 INSERT INTO cells VALUES(0x133C6, NULL, NULL, NULL, 'RiverwoodSleepingGiantInn',
+                    0, NULL);",
+            )
+            .unwrap();
+        assert!(!has_column(&connection, "cells", "full_name").unwrap());
+        let found = find_cell(&connection, 0x133C6).unwrap();
+        assert_eq!(found.full_name, None);
+        assert_eq!(
+            found.interior_name.as_deref(),
+            Some("RiverwoodSleepingGiantInn")
+        );
+        assert!(
+            find_cell(&interior_database(), 0x133C6)
+                .unwrap()
+                .full_name
+                .is_some(),
+            "a table with the column still reports it"
+        );
+    }
+
+    /// An interior has no grid: the runtime places its references at their full creation
+    /// position, so a reference outside grid zero keeps its own coordinates.
+    #[test]
+    fn an_interior_reference_keeps_its_full_position() {
+        let connection = interior_database();
+        connection
+            .execute_batch(
+                "INSERT INTO statics VALUES(0x2C, 'Crate', 'Clutter\\Crate.nif',
+                    -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1);
+                 INSERT INTO \"references\" VALUES(0x3, 0x133C6, 0x2C, -10.0, -20.0, 30.0,
+                    0.0, 0.0, 0.0, 1.0);",
+            )
+            .unwrap();
+        let stored: [f32; 3] = connection
+            .query_row(
+                "SELECT pos_x, pos_y, pos_z FROM \"references\" WHERE id=3",
+                [],
+                |row| Ok([row.get(0)?, row.get(1)?, row.get(2)?]),
+            )
+            .unwrap();
+        assert_eq!(stored, [-10.0, -20.0, 30.0]);
+        let row = load_references_in_cell(&connection, 0x133C6, Some(0x3))
+            .unwrap()
+            .remove(0);
+        let assets = BTreeMap::new();
+
+        let interior = reference_report(&row, &assets, true);
+        assert_eq!(interior.position_creation, stored);
+        let expected = shared::coordinates::creation_to_runtime_vector(stored);
+        assert_eq!(interior.translation_runtime, expected);
+        let bounds = interior.transformed_bounds.expect("bounds are valid");
+        for (axis, placed) in expected.iter().enumerate() {
+            let centre = (bounds.min[axis] + bounds.max[axis]) / 2.0;
+            assert!(
+                (centre - placed).abs() < 1e-4,
+                "axis {axis}: bounds centre {centre} is not at the placed position {placed}"
+            );
+        }
+
+        // A reference past the first grid cell keeps its absolute x as well.
+        connection
+            .execute(
+                "INSERT INTO \"references\" VALUES(0x4, 0x133C6, 0x2C, 5000.0, 20.0, 30.0,
+                    0.0, 0.0, 0.0, 1.0)",
+                [],
+            )
+            .unwrap();
+        let far = load_references_in_cell(&connection, 0x133C6, Some(0x4))
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            reference_report(&far, &assets, true).translation_runtime,
+            shared::coordinates::creation_to_runtime_vector([5000.0, 20.0, 30.0])
+        );
+
+        // The exterior frame rebases by the reference's own grid, which is the wrong frame here.
+        let rebased = reference_report(&row, &assets, false);
+        assert_ne!(rebased.translation_runtime, expected);
     }
 }
