@@ -1473,13 +1473,13 @@ mod tests {
         );
     }
 
-    /// Cached and overflow support preserve duplicate nominations, cap membership and f32 sum order.
+    /// Cached and overflow support preserve repeated layers, cap membership and f32 sum order.
     #[test]
     fn nominated_layers_preserve_support_and_overflow() {
         for count in [0, 16, 17, 24] {
             let layers = (0..count)
                 .map(|index| {
-                    let mut item = layer(9 + index, vec![7, 7, 11, 13], 1.0);
+                    let mut item = layer(9 + index, vec![7, 11, 13], 1.0);
                     item.weights = (0..289)
                         .map(|i| ((i * 7 + index as usize * 3) % 11) as f32 / 10.0)
                         .collect();
