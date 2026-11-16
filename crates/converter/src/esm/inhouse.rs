@@ -1249,7 +1249,7 @@ fn convert_plugins_with_text_sources_report_impl(
                 .records
                 .values()
                 .filter(|record| record.record_type == *b"REFR")
-                .map(|record| (record.form_id, record.source_subrecord(b"XPOD"))),
+                .map(|record| (record.form_id, record.unique_source_subrecord(b"XPOD"))),
         )?;
         tx.execute(
             "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES ('visibility_version',2)",

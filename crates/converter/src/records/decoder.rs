@@ -436,18 +436,21 @@ struct FramedSubrecords<'a> {
     complete: bool,
 }
 
-pub(crate) fn source_subrecord<'a>(payload: &'a [u8], signature: &[u8; 4]) -> Option<&'a [u8]> {
+/// Provenance cannot select an occurrence when several source fields share a signature.
+pub(crate) fn unique_source_subrecord<'a>(
+    payload: &'a [u8],
+    signature: &[u8; 4],
+) -> Option<&'a [u8]> {
     let framed = subrecords(payload, &mut PluginDiagnostics::default(), 0);
-    framed
-        .complete
-        .then(|| {
-            framed
-                .fields
-                .into_iter()
-                .find(|(tag, _)| tag == signature)
-                .map(|(_, bytes)| bytes)
-        })
-        .flatten()
+    if !framed.complete {
+        return None;
+    }
+    let mut matching = framed
+        .fields
+        .into_iter()
+        .filter(|(tag, _)| tag == signature);
+    let (_, bytes) = matching.next()?;
+    matching.next().is_none().then_some(bytes)
 }
 
 /// Frame subrecords with XXXX lengths; an unrecoverable boundary drops only this remainder.
