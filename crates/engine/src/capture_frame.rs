@@ -60,6 +60,16 @@ pub(crate) struct CaptureFrame {
     /// Tuning values sampled in the same extraction as the photographed frame.
     pub grass_tuning: Option<serde_json::Value>,
     pub grass_snow_gate: bool,
+    /// Actual game clock and toward-sun direction sampled with the captured frame.
+    pub sun: Option<CaptureSun>,
+}
+
+/// Direction is engine +Y-up; absent only in worlds without the sun/clock resources.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct CaptureSun {
+    pub hour: f64,
+    pub timescale: f64,
+    pub toward_sun_runtime: [f32; 3],
 }
 
 /// Immutable grading evidence sampled with the rendered camera, before readback.
@@ -276,6 +286,8 @@ fn extract_capture_frames(
         Option<Res<SceneGradeOverrides>>,
         Option<Res<crate::visual_profile::VisualProfile>>,
         Option<Res<crate::grass_tuning::GrassTuningState>>,
+        Option<Res<crate::sun::GameClock>>,
+        Query<&Transform, With<crate::sun::SunLight>>,
     )>,
 ) {
     let (
@@ -302,6 +314,8 @@ fn extract_capture_frames(
         grade_overrides,
         visual_profile,
         grass_tuning,
+        clock,
+        sun,
     ) = &*scene_inputs;
     extracted.render_frame += 1;
     extracted.captures.clear();
@@ -335,6 +349,14 @@ fn extract_capture_frames(
             grass_renderer.as_deref(),
         );
         let record = CaptureFrame {
+            sun: clock
+                .as_deref()
+                .zip(sun.single().ok())
+                .map(|(clock, sun)| CaptureSun {
+                    hour: clock.hour,
+                    timescale: clock.timescale,
+                    toward_sun_runtime: sun.back().to_array(),
+                }),
             main_frame: frame.0,
             render_frame: extracted.render_frame,
             camera_creation: pose,
@@ -718,6 +740,7 @@ mod tests {
         let mut grading = ColorGrading::default();
         grading.global.post_saturation = resolved.bevy_saturation;
         let record = CaptureFrame {
+            sun: None,
             main_frame: 3,
             render_frame: 2,
             camera_creation: [1.0; 3],

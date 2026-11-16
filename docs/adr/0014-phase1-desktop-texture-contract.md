@@ -1,6 +1,6 @@
-# ADR-0014: Proposed Phase 1 desktop texture contract
+# ADR-0014: Phase 1 desktop texture contract
 
-- **Status:** Proposed for repository adoption; Route B scope approved by a maintainer
+- **Status:** Accepted on 2026-11-15; Route B scope approved by a maintainer on 2026-11-06
 - **Date:** 2026-10-31
 
 ## Context
@@ -20,9 +20,8 @@ on 2026-11-06.
 Route B selects the **desktop texture contract** below as Phase 1's texture scope
 and defers the **portable texture profile**, including demonstrated mobile ASTC
 and web ETC2 loading, to the multiplatform work. The portable profile is required
-before mobile/browser delivery. This proposal changes no runtime behavior and
-does not establish Phase 1 completion. Scope approval is separate from this ADR's
-repository adoption and merge, which remain pending.
+before mobile/browser delivery. This decision changes no runtime behavior and
+does not establish Phase 1 completion.
 
 ### Current desktop texture contract
 
@@ -62,7 +61,7 @@ Source review at `64108a1c38b0a854d4f82d7031ea50b57c336a5a`:
 Existing fixture code checks native mip bytes, UASTC round trips through BC7,
 and [Bevy BC3 loading with/without Zstd](../../crates/engine/tests/native_ktx2_loads_in_bevy.rs).
 These loader tests do not create a GPU device or render. No tests, conversion,
-engine or browser were run for this documentation proposal. Source inspection
+engine or browser were run when this ADR was written. Source inspection
 does not demonstrate ASTC/ETC2 target loading or a portable pack.
 
 [#222](https://github.com/Mudcrab-Team/mudcrab/pull/222) is merged: its mip-layout
@@ -72,11 +71,11 @@ need separate evidence. #222 does not select a portable profile.
 
 ## Consequences and tracking
 
-Parent decision: open #274, linked from #162. Route B scope was approved by a
-maintainer on 2026-11-06. Implementation and target validation are tracked in the
-open follow-up [#548](https://github.com/Mudcrab-Team/mudcrab/issues/548), which is
-not a v0.1.0 blocker. Keep #274 open until this ADR is accepted and merged.
-The follow-up must retain:
+Parent decision: #274 (closed), linked from #162. Route B scope was approved by a
+maintainer on 2026-11-06, and this ADR was accepted on 2026-11-15. Implementation
+and target validation are tracked in the open follow-up
+[#548](https://github.com/Mudcrab-Team/mudcrab/issues/548), which is not a v0.1.0
+blocker. The follow-up must retain:
 
 - An output profile independent of encoder selection across DDS, CPU fallback,
   generated LOD atlases and merged-terrain arrays; explicit topology and

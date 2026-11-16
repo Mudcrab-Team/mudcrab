@@ -25,6 +25,8 @@ class CaptureConfigurationTests(unittest.TestCase):
                 commands.append(command)
                 self.assertIn("--no-grass", command)
                 self.assertEqual(command[command.index("--visual-preset") + 1], "cool-gray")
+                # The native Riverwood reference is a noon capture; the engine default is 8.
+                self.assertEqual(command[command.index("--game-hour") + 1], "12")
                 directory = Path(command[command.index("--shots-out") + 1])
                 mode = command[command.index("--color-grade") + 1]
                 receipt = {"capture": 0, "kind": "settled", "timed_out": False,
