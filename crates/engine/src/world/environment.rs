@@ -169,6 +169,20 @@ pub struct EnvironmentCatalog {
     parent_worlds: HashMap<u32, u32>,
     /// The pack's winning sun GMSTs in `sun::SUN_KEYS` order; `None` where the pack has none.
     sun_settings: [Option<f32>; 5],
+    /// `room_bounds` rows with a lighting template, by cell, in `ref_id` order.
+    room_bounds: HashMap<u32, Vec<RoomBound>>,
+}
+
+/// A room marker's box and its `LNAM` lighting template (`room_bounds`, db-schema.md). Position
+/// and rotation are the reference's Creation-axis values (rotation in radians); `half` is the
+/// half extent along the box's own Creation axes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RoomBound {
+    pub ref_id: u32,
+    pub position: [f32; 3],
+    pub rotation: [f32; 3],
+    pub half: [f32; 3],
+    pub lighting_template: u32,
 }
 
 /// A directional ambient block's 22 columns after `prefix`.
@@ -397,7 +411,31 @@ impl EnvironmentCatalog {
             image_spaces.len(),
             climate_weathers.len()
         );
+        let mut room_bounds: HashMap<u32, Vec<RoomBound>> = HashMap::new();
+        for (cell, room) in read_rows(
+            connection,
+            "SELECT cell_id, ref_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, half_x, half_y, \
+             half_z, lighting_template_id FROM room_bounds \
+             WHERE lighting_template_id IS NOT NULL ORDER BY ref_id",
+            "room_bounds",
+            |row| {
+                let f = |index: usize| row.get::<_, f64>(index).map(|value| value as f32);
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    RoomBound {
+                        ref_id: row.get(1)?,
+                        position: [f(2)?, f(3)?, f(4)?],
+                        rotation: [f(5)?, f(6)?, f(7)?],
+                        half: [f(8)?, f(9)?, f(10)?],
+                        lighting_template: row.get(11)?,
+                    },
+                ))
+            },
+        ) {
+            room_bounds.entry(cell).or_default().push(room);
+        }
         Self {
+            room_bounds,
             cells,
             cell_flags,
             cell_image_spaces,
@@ -410,6 +448,11 @@ impl EnvironmentCatalog {
             parent_worlds,
             sun_settings,
         }
+    }
+
+    /// The cell's room markers that carry a lighting template, in `ref_id` order.
+    pub fn room_bounds(&self, cell_id: u32) -> &[RoomBound] {
+        self.room_bounds.get(&cell_id).map_or(&[], Vec::as_slice)
     }
 
     /// CELL DATA flags, including independent Show Sky and Use Sky Lighting bits.

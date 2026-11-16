@@ -581,16 +581,16 @@ fn apply_sky(
     }
 }
 
-/// Gives every [`FogCamera`] the weather's distance fog, and takes it away inside an interior,
-/// where there is no weather and nothing far enough away to hide. The fog's colour and its
-/// density only change when the palette does, so the component is written then and left alone
-/// otherwise.
+/// Gives every [`FogCamera`] the weather's distance fog outside. Inside an interior it gives the
+/// cell fog of sky modes 1 and 2 (`InteriorFog`), or no fog when there is none. The component is
+/// written only when the wanted fog differs from the camera's.
 fn apply_fog(
     mut commands: Commands,
     palette: Res<SkyPalette>,
     space: Res<CameraSpace>,
     cameras: Query<(Entity, Option<&DistanceFog>), With<FogCamera>>,
     settings: Option<Res<crate::settings::RenderingSettings>>,
+    interior_fog: Option<Res<crate::world::environment::interior::InteriorFog>>,
 ) {
     let wanted = match (
         *space,
@@ -606,6 +606,11 @@ fn apply_fog(
             let visibility = fog_visibility(palette.fog_density_scale, user_multiplier);
             Some(fog_with_visibility(&scaled, visibility))
         }
+        // Sky modes 1 and 2 fog an interior with the cell's own fog (RF-LIGHT-CPU-013).
+        (CameraSpace::Interior, true) => interior_fog
+            .as_deref()
+            .and_then(|fog| fog.0)
+            .map(|fog| fog.distance_fog()),
         _ => None,
     };
     for (camera, current) in &cameras {
@@ -643,6 +648,16 @@ fn same_fog(current: &DistanceFog, wanted: &DistanceFog) -> bool {
                 inscattering: wanted_inscattering,
             },
         ) => current_extinction == wanted_extinction && current_inscattering == wanted_inscattering,
+        (
+            FogFalloff::Linear {
+                start: current_start,
+                end: current_end,
+            },
+            FogFalloff::Linear {
+                start: wanted_start,
+                end: wanted_end,
+            },
+        ) => current_start == wanted_start && current_end == wanted_end,
         _ => false,
     }
 }
