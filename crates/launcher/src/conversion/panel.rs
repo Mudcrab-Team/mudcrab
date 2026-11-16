@@ -1147,6 +1147,75 @@ mod tests {
         ]
     }
 
+    /// Damaged metadata needs a separate user decision before any publishing action starts.
+    fn assert_damaged_output_needs_confirmation(action: usize) {
+        for damaged_file in [MANIFEST_FILE, "integration-report.json"] {
+            let directory = tempfile::tempdir().unwrap();
+            let data = directory.path().join("Data");
+            let output = directory.path().join("output");
+            let staging = directory.path().join("staging");
+            for path in [&data, &output, &staging] {
+                std::fs::create_dir_all(path).unwrap();
+            }
+            std::fs::write(data.join("Skyrim.esm"), []).unwrap();
+            let manifest: converter::cache::ConversionManifest =
+                serde_json::from_value(serde_json::json!({
+                    "schema_version": converter::cache::CONVERTER_SCHEMA_VERSION,
+                    "complete": false,
+                    "entries": {}
+                }))
+                .unwrap();
+            std::fs::write(
+                output.join(MANIFEST_FILE),
+                serde_json::to_vec(&manifest).unwrap(),
+            )
+            .unwrap();
+            let damaged_path = output.join(damaged_file);
+            std::fs::write(&damaged_path, b"{\"unfinished\":").unwrap();
+            assert!(matches!(
+                super::super::output_state(&output),
+                super::super::OutputState::Corrupt { .. }
+            ));
+            let (before, control) = publishing_presses(&staging)
+                .into_iter()
+                .nth(action)
+                .unwrap();
+            let mut app = input_app(GamePathConfig {
+                skyrim_data_path: Some(data),
+                converted_assets_path: output,
+            });
+            app.world_mut().resource_mut::<CurrentConversion>().0 = before.clone();
+            let effects = press(&mut app, control);
+            assert!(
+                effects.is_empty(),
+                "damaged output needs confirmation before {control:?}: {effects:?}"
+            );
+            assert_eq!(app.world().resource::<CurrentConversion>().0, before);
+            assert_eq!(std::fs::read(&damaged_path).unwrap(), b"{\"unfinished\":");
+            let notice = notices(&app);
+            assert!(notice.contains(damaged_file), "{notice}");
+            assert!(notice.to_ascii_lowercase().contains("confirm"), "{notice}");
+        }
+    }
+
+    /// Start must ask before reusing a damaged manifest or integration report.
+    #[test]
+    fn corrupt_output_requires_confirmation_before_start() {
+        assert_damaged_output_needs_confirmation(0);
+    }
+
+    /// Starting over a stopped run must ask before replacing damaged output.
+    #[test]
+    fn corrupt_output_requires_confirmation_before_start_over() {
+        assert_damaged_output_needs_confirmation(1);
+    }
+
+    /// Resume must ask before its staging run can reuse or replace damaged output.
+    #[test]
+    fn corrupt_output_requires_confirmation_before_resume() {
+        assert_damaged_output_needs_confirmation(2);
+    }
+
     /// The Output folder is looked at again on the press: one that was empty when it was chosen
     /// and has filled up since is refused, by Start, Start over and Resume alike.
     #[test]
