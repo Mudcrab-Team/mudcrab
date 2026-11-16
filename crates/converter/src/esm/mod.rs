@@ -27,6 +27,7 @@ mod legacy_text;
 pub mod load_order;
 pub mod lodsettings;
 pub mod mmap_reader;
+mod object_materials;
 pub mod plugins_txt;
 pub mod projection_omissions;
 pub mod records;
@@ -502,21 +503,26 @@ impl GameSettingIdentities {
 
 /// Required placed base links cannot use the optional field's null/drop policy.
 fn is_required_form_id_subrecord(record_type: &[u8; 4], tag: &[u8]) -> bool {
-    tag == b"NAME"
-        && matches!(
-            record_type,
-            b"REFR"
-                | b"ACHR"
-                | b"ACRE"
-                | b"PGRE"
-                | b"PMIS"
-                | b"PHZD"
-                | b"PARW"
-                | b"PBAR"
-                | b"PBEA"
-                | b"PCON"
-                | b"PFLA"
-        )
+    tag == b"NAME" && is_placed_record_type(record_type)
+}
+
+/// Native records with a placed base and transform. Keep publication, required-link
+/// validation and room membership on the same set; schema coverage is checked in tests.
+pub(crate) fn is_placed_record_type(record_type: &[u8; 4]) -> bool {
+    matches!(
+        record_type,
+        b"REFR"
+            | b"ACHR"
+            | b"ACRE"
+            | b"PGRE"
+            | b"PMIS"
+            | b"PHZD"
+            | b"PARW"
+            | b"PBAR"
+            | b"PBEA"
+            | b"PCON"
+            | b"PFLA"
+    )
 }
 
 /// Explicit offsets for optional scalar, structure and array FormID fields.
@@ -538,20 +544,7 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         return None;
     }
     let tag: &[u8; 4] = tag.try_into().ok()?;
-    let placed = matches!(
-        record_type,
-        b"REFR"
-            | b"ACHR"
-            | b"ACRE"
-            | b"PGRE"
-            | b"PMIS"
-            | b"PHZD"
-            | b"PARW"
-            | b"PBAR"
-            | b"PBEA"
-            | b"PCON"
-            | b"PFLA"
-    );
+    let placed = is_placed_record_type(record_type);
     const SINGLE: &[(usize, &[usize])] = &[(4, &[0])];
     Some(match tag {
         // Faction membership: FormID, signed rank byte, then three unused bytes.
@@ -719,6 +712,26 @@ fn remap_record_form_ids(
     record.worldspace_form_id = record.worldspace_form_id.map(&remap_link).transpose()?;
     let mut malformed_subrecords = Vec::new();
     for (index, (tag, data)) in record.subrecords.iter_mut().enumerate() {
+        if record.record_type == *b"STAT" && tag.as_slice() == b"MODS" {
+            let Some(offsets) = object_materials::form_offsets(data) else {
+                warnings
+                    .skipped_optional(plugin_name, format!("STAT {source_id:08X}: malformed MODS"));
+                malformed_subrecords.push(index);
+                continue;
+            };
+            for offset in offsets {
+                let value = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+                let resolved = remap_link(value).unwrap_or_else(|error| {
+                    warnings.skipped_optional(
+                        plugin_name,
+                        format!("STAT {source_id:08X} MODS reference {value:08X}: {error}"),
+                    );
+                    0
+                });
+                data[offset..offset + 4].copy_from_slice(&resolved.to_le_bytes());
+            }
+            continue;
+        }
         if record.record_type == *b"GRAS" && tag.as_slice() == b"MODS" {
             color_eyre::eyre::ensure!(data.len() >= 4, "truncated GRAS alternate textures");
             let count = u32::from_le_bytes(data[..4].try_into().unwrap());

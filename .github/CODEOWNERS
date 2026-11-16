@@ -2,3 +2,8 @@
 # Keep this list in sync with the repository's human collaborators with write access.
 # CodeRabbit is required separately through the main_protection ruleset.
 * @realfakenerd @MonoPT @BimingtonBill @HazielMagallanes @TaylorTurnerIT @eclepso @Eclipsemelody
+
+# The schema lineage decides which older packs may keep their converted assets. A change needs
+# approval from a maintainer who has checked that no asset byte depends on the edited fields.
+/crates/converter/src/records/schema-lineage.json @realfakenerd @MonoPT @BimingtonBill @HazielMagallanes @TaylorTurnerIT @eclepso @Eclipsemelody
+/crates/converter/src/records/schema_lineage.rs @realfakenerd @MonoPT @BimingtonBill @HazielMagallanes @TaylorTurnerIT @eclepso @Eclipsemelody

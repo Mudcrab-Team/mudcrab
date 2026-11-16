@@ -51,6 +51,8 @@ impl Fixture {
         config.record_reader = reader;
         config.cpu_jobs = 2;
         config.no_lod = true;
+        // Preserve the white terrain policy of these historical asset-reuse proofs.
+        config.terrain_default_texture = crate::config::TerrainDefaultTexture::White;
         config
     }
 
@@ -728,6 +730,18 @@ async fn historical_legacy_reader_identity_with_current_nif_proof_survives_repea
         let mut second_config = legacy;
         second_config.output_dir = second_output.clone();
         publish_metadata(second_config.clone(), &first_output).await;
+        // The historical manifest records no script proof, so the rebuild converts the scripts
+        // again and records the current one beside the original fresh NIF proof.
+        let mut expected_proofs = original.asset_configuration_hashes.clone();
+        expected_proofs.insert(
+            "pex".into(),
+            crate::cache::asset_configuration_hash_for_schema(
+                &second_config,
+                CONVERTER_SCHEMA_VERSION,
+                "pex",
+            )
+            .unwrap(),
+        );
         for output in [&first_output, &second_output] {
             let retained = manifest(output);
             assert_eq!(
@@ -739,8 +753,8 @@ async fn historical_legacy_reader_identity_with_current_nif_proof_survives_repea
                 Some(original.configuration_hash.as_str())
             );
             assert_eq!(
-                retained.asset_configuration_hashes, original.asset_configuration_hashes,
-                "metadata retention must preserve only the original fresh NIF proof"
+                retained.asset_configuration_hashes, expected_proofs,
+                "metadata retention must preserve the original fresh NIF proof and add the rebuilt script proof"
             );
             let provenance = json_artifact(output, "metadata-rebuild.json");
             assert_eq!(provenance["retained_asset_record_reader"], original_reader);

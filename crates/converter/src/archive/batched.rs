@@ -278,7 +278,9 @@ pub(super) fn extract_with_session(
     check_stop(stop)?;
     let hash_started = std::time::Instant::now();
     let file = File::open(archive_path)?;
-    // The archive is immutable input for this scoped extraction.
+    // SAFETY: read-only mapping of archive input that this process only reads, for this scoped
+    // extraction. An outside truncation or in-place rewrite would fault reads of the map; that
+    // risk is accepted here (#633).
     let bytes = unsafe { Mmap::map(&file) }?;
     // Hash the exact inode decoded below; a path can be replaced between opens.
     let source_hash = hash_bytes(&bytes);
@@ -823,7 +825,7 @@ fn pack_directory(cache: &Path, source_hash: &str, recipe: &str) -> Result<PathB
     ensure!(
         matches!(
             recipe,
-            "all-v1" | "converter-inputs-v2" | "runtime-english-v2"
+            "all-v1" | "converter-inputs-v4" | "runtime-english-v4"
         ),
         "unknown ingestion recipe"
     );
@@ -1069,6 +1071,9 @@ fn read_pack(
         (16..=(MAX_FILE_BYTES + MAX_INDEX_BYTES + 16) as u64).contains(&file_len),
         "archive pack size exceeds limit"
     );
+    // SAFETY: read-only mapping of a pack file this process does not write while it is mapped.
+    // An outside truncation or in-place rewrite would fault reads of the map; that
+    // risk is accepted here (#633).
     let bytes = unsafe { Mmap::map(&file) }?;
     ensure!(
         bytes.len() <= MAX_FILE_BYTES + MAX_INDEX_BYTES + 16,
@@ -1149,6 +1154,10 @@ pub(crate) fn prune_stale_reader_packs(
         for recipe in [
             ArchiveSelection::RuntimeEnglishV1.recipe(),
             ArchiveSelection::ConverterInputsV1.recipe(),
+            "runtime-english-v3",
+            "converter-inputs-v3",
+            "runtime-english-v2",
+            "converter-inputs-v2",
             "runtime-english-v1",
             "converter-inputs-v1",
             ArchiveSelection::All.recipe(),
@@ -1191,6 +1200,9 @@ fn pack_reader_version(path: &Path, source_hash: &str, recipe: &str) -> Option<u
     if !(16..=(MAX_FILE_BYTES + MAX_INDEX_BYTES + 16) as u64).contains(&file_len) {
         return None;
     }
+    // SAFETY: read-only mapping of a pack file this process does not write while it is mapped.
+    // An outside truncation or in-place rewrite would fault reads of the map; that
+    // risk is accepted here (#633).
     let bytes = unsafe { Mmap::map(&file) }.ok()?;
     if bytes.len() < 16
         || bytes.len() > MAX_FILE_BYTES + MAX_INDEX_BYTES + 16
@@ -1701,6 +1713,42 @@ mod tests {
         assert!(future_bsa.is_file());
         assert!(current_ba2.is_file());
         assert!(malformed.is_file());
+    }
+
+    #[test]
+    fn pruning_preserves_v2_reader_policy_after_coverage_advances() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = "ab".repeat(32);
+        let pairs = [
+            "runtime-english-v2",
+            "converter-inputs-v2",
+            "runtime-english-v3",
+            "converter-inputs-v3",
+        ]
+        .map(|recipe| {
+            (
+                legacy_recipe_pack(directory.path(), &source, recipe, 0, b"stale reader"),
+                legacy_recipe_pack(
+                    directory.path(),
+                    &source,
+                    recipe,
+                    BSA_READER_VERSION,
+                    b"current reader",
+                ),
+            )
+        });
+        prune_stale_reader_packs(
+            directory.path(),
+            &BTreeMap::from([(source, BSA_READER_VERSION)]),
+        )
+        .unwrap();
+        for (stale, current) in pairs {
+            assert!(!stale.exists(), "pre-reader-version v2 packs still retire");
+            assert!(
+                current.is_file(),
+                "v4 coverage does not authorize deleting current-reader packs"
+            );
+        }
     }
 
     #[test]
@@ -2797,6 +2845,8 @@ mod tests {
         fs::create_dir_all(&base).unwrap();
         let directory = tempfile::tempdir_in(&base).unwrap();
         let source_file = File::open(&source).unwrap();
+        // SAFETY: read-only mapping of a benchmark source that this test does not write while it
+        // is mapped.
         let source_bytes = unsafe { Mmap::map(&source_file) }.unwrap();
         let raw = bsa::iter_raw_entries(&source_bytes).unwrap();
         let sample: Vec<_> = raw

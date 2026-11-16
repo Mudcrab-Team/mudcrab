@@ -23,8 +23,12 @@ use bevy::{
         batching::gpu_preprocessing::{
             GpuPreprocessingMode, GpuPreprocessingSupport, IndirectParametersBuffers,
         },
+        camera::ExtractedCamera,
+        extract_component::ExtractComponentPlugin,
         occlusion_culling::OcclusionCulling,
         render_resource::{AsBindGroup, ShaderType},
+        renderer::RenderAdapterInfo,
+        view::NoIndirectDrawing,
     },
     shader::ShaderRef,
 };
@@ -132,6 +136,7 @@ impl Plugin for VercidiumRendererPlugin {
             MaterialPlugin::<TerrainMaterial>::default(),
             MaterialPlugin::<WaterMaterial>::default(),
             crate::prepass_vertex_alpha::PrepassVertexAlphaPlugin,
+            ExtractComponentPlugin::<crate::world::components::StreamingCamera>::default(),
         ))
         .init_resource::<RendererMetrics>()
         .add_systems(Startup, setup_water_reflection)
@@ -194,6 +199,8 @@ fn give_shadow_views_their_light_layers(
 
 #[derive(Resource, Debug, Clone, Default, Serialize)]
 pub struct RendererMetrics {
+    pub metal_backend: bool,
+    pub direct_drawing_views: u64,
     pub gpu_preprocessing_active: bool,
     pub gpu_culling_active: bool,
     pub indirect_drawing_active: bool,
@@ -208,13 +215,15 @@ pub struct RendererMetrics {
 
 impl RendererMetrics {
     pub fn final_path_active(&self) -> bool {
-        self.gpu_preprocessing_active
-            && self.gpu_culling_active
-            && self.indirect_drawing_active
-            && self.occlusion_culling_views > 0
-            && self.hzb_views > 0
-            && self.indirect_phase_buffers > 0
-            && self.indirect_batch_sets > 0
+        let direct_metal = self.metal_backend && self.direct_drawing_views > 0;
+        (direct_metal
+            || (self.gpu_preprocessing_active
+                && self.gpu_culling_active
+                && self.indirect_drawing_active
+                && self.occlusion_culling_views > 0
+                && self.hzb_views > 0
+                && self.indirect_phase_buffers > 0
+                && self.indirect_batch_sets > 0))
             && self.proof_frames > 0
             && self.renderer_validation_failures == 0
     }
@@ -229,21 +238,34 @@ struct RendererProofState {
     hzb_views: AtomicU64,
     indirect_phases: AtomicU64,
     indirect_batch_sets: AtomicU64,
+    direct_views: AtomicU64,
+    metal_backend: AtomicBool,
     frames: AtomicU64,
 }
 
 #[derive(Resource, Clone, Default)]
 struct RendererProofBridge(Arc<RendererProofState>);
 
+type DirectWorldViewFilter = (
+    With<ExtractedCamera>,
+    With<crate::world::components::StreamingCamera>,
+    With<NoIndirectDrawing>,
+);
+
 fn sample_renderer_path(
     bridge: Res<RendererProofBridge>,
     support: Option<Res<GpuPreprocessingSupport>>,
     indirect: Option<Res<IndirectParametersBuffers>>,
+    adapter: Option<Res<RenderAdapterInfo>>,
     views: Query<Option<&ViewDepthPyramid>, With<OcclusionCulling>>,
+    direct_views: Query<(), DirectWorldViewFilter>,
 ) {
-    let Some(support) = support else { return };
-    let preprocessing = support.is_available();
-    let culling = support.max_supported_mode == GpuPreprocessingMode::Culling;
+    let preprocessing = support
+        .as_deref()
+        .is_some_and(GpuPreprocessingSupport::is_available);
+    let culling = support
+        .as_deref()
+        .is_some_and(|value| value.max_supported_mode == GpuPreprocessingMode::Culling);
     let (phase_count, batch_sets, indirect_active) =
         indirect.as_deref().map_or((0, 0, false), |buffers| {
             let phases = buffers.len() as u64;
@@ -260,6 +282,8 @@ fn sample_renderer_path(
         });
     let occlusion_views = views.iter().count() as u64;
     let hzb_views = views.iter().filter(|pyramid| pyramid.is_some()).count() as u64;
+    let direct_views = direct_views.iter().count() as u64;
+    let metal_backend = adapter.is_some_and(|value| value.backend == wgpu::Backend::Metal);
     bridge
         .0
         .gpu_preprocessing
@@ -282,6 +306,14 @@ fn sample_renderer_path(
         .0
         .indirect_batch_sets
         .fetch_max(batch_sets, Ordering::Relaxed);
+    bridge
+        .0
+        .direct_views
+        .fetch_max(direct_views, Ordering::Relaxed);
+    bridge
+        .0
+        .metal_backend
+        .fetch_or(metal_backend, Ordering::Relaxed);
     bridge.0.frames.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -294,6 +326,8 @@ fn sync_renderer_metrics(bridge: Res<RendererProofBridge>, mut metrics: ResMut<R
     metrics.indirect_phase_buffers = bridge.0.indirect_phases.load(Ordering::Relaxed);
     metrics.indirect_batch_sets = bridge.0.indirect_batch_sets.load(Ordering::Relaxed);
     metrics.proof_frames = bridge.0.frames.load(Ordering::Relaxed);
+    metrics.direct_drawing_views = bridge.0.direct_views.load(Ordering::Relaxed);
+    metrics.metal_backend = bridge.0.metal_backend.load(Ordering::Relaxed);
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
@@ -497,13 +531,15 @@ impl TerrainExtension {
         .map(Handle::id)
     }
 
-    /// Retains slots and weights for zero IDs and unresolved diffuse images without binding
-    /// either a diffuse or a normal image for those layers.
+    /// Binds the pack's configured default for a zero base ID. Zero overlays retain
+    /// their slots and weights without images. Nonzero IDs with a missing diffuse retain
+    /// their slots and weights without requesting either a diffuse or an orphan normal.
     pub fn from_quadrant(
         terrain: &TerrainSnapshot,
         quadrant: u8,
         catalog: &AssetCatalog,
         asset_server: &AssetServer,
+        colour_srgb: bool,
     ) -> Result<(Self, TerrainImages), String> {
         let mut textures: [Option<Handle<Image>>; 6] = std::array::from_fn(|_| None);
         let mut normals: [Option<Handle<Image>>; 6] = std::array::from_fn(|_| None);
@@ -511,8 +547,12 @@ impl TerrainExtension {
         let mut handles = Vec::with_capacity(layers.len());
         let mut normal_handles = Vec::new();
         for ((target, normal), layer) in textures.iter_mut().zip(normals.iter_mut()).zip(&layers) {
-            if layer.texture_form_id == 0 {
-                // A preserved unresolved layer keeps its slot and weights with no image bound.
+            if layer.texture_form_id == 0 && !layer.is_base {
+                // A preserved unresolved overlay keeps its slot and weights with no image bound.
+                continue;
+            }
+            if layer.texture_form_id == 0 && catalog.landscape_diffuse(0).is_none() {
+                // An explicit white default (or an old pack) needs no image or normal.
                 continue;
             }
             let Some(path) = catalog.landscape_diffuse(layer.texture_form_id) else {
@@ -533,8 +573,9 @@ impl TerrainExtension {
             }
             let handle = asset_server
                 .load_builder()
-                .with_settings(|settings: &mut ImageLoaderSettings| {
+                .with_settings(move |settings: &mut ImageLoaderSettings| {
                     settings.sampler = ImageSampler::Descriptor(terrain_layer_sampler());
+                    settings.is_srgb = colour_srgb;
                 })
                 .load(path.to_owned());
             *target = Some(handle.clone());
@@ -1981,6 +2022,88 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reflection_alone_cannot_prove_direct_world_drawing() {
+        use crate::world::components::StreamingCamera;
+        use bevy::render::camera::CameraRenderGraph;
+        let extracted = || {
+            let camera = Camera::default();
+            ExtractedCamera {
+                target: None,
+                physical_viewport_size: None,
+                physical_target_size: None,
+                viewport: None,
+                schedule: CameraRenderGraph::new(bevy::core_pipeline::schedule::Core3d).0,
+                order: 0,
+                output_mode: camera.output_mode,
+                msaa_writeback: camera.msaa_writeback,
+                clear_color: camera.clear_color,
+                sorted_camera_index_for_target: 0,
+                exposure: 1.0,
+                hdr: false,
+                compositing_space: None,
+            }
+        };
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(RendererProofBridge::default())
+            .add_systems(Update, sample_renderer_path);
+        let world = app.world_mut().spawn((extracted(), StreamingCamera)).id();
+        app.world_mut().spawn((extracted(), NoIndirectDrawing));
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<RendererProofBridge>()
+                .0
+                .direct_views
+                .load(Ordering::Relaxed),
+            0
+        );
+        app.world_mut().entity_mut(world).insert(NoIndirectDrawing);
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<RendererProofBridge>()
+                .0
+                .direct_views
+                .load(Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn direct_path_requires_metal_and_a_proven_direct_view() {
+        let direct = RendererMetrics {
+            metal_backend: true,
+            direct_drawing_views: 2,
+            proof_frames: 1,
+            ..default()
+        };
+        assert!(direct.final_path_active());
+        assert!(
+            !RendererMetrics {
+                direct_drawing_views: 0,
+                ..direct.clone()
+            }
+            .final_path_active()
+        );
+        assert!(
+            !RendererMetrics {
+                metal_backend: false,
+                ..direct.clone()
+            }
+            .final_path_active()
+        );
+        assert!(
+            !RendererMetrics {
+                proof_frames: 0,
+                ..direct.clone()
+            }
+            .final_path_active()
+        );
+        assert!(!RendererMetrics::default().final_path_active());
+    }
+
     /// The shader tiles every layer by the shared LAND repeats per cell, so the layer textures
     /// must be sampled with a repeating address mode. Bevy's default clamps to the edge, which
     /// stretched the textures in the frames: everything past the first tile read the edge texels.
@@ -2044,8 +2167,214 @@ mod tests {
         );
     }
 
-    /// Zero and unresolved nonzero overlays keep material slots and weights without requesting
-    /// a diffuse image or an orphan normal map.
+    /// Configured defaults affect only null bases, including absent bases in all quadrants.
+    #[test]
+    fn terrain_configured_default_land_is_scoped_to_null_bases() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("default.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);
+            CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);
+            CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);
+            INSERT INTO texture_sets VALUES(1,'textures/poison.dds','textures/poison_n.dds');
+            INSERT INTO landscape_textures VALUES(0,1),(10,1);").unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>();
+        let asset_server = app.world().resource::<AssetServer>();
+        let mut terrain = terrain_fixture_with_overlays(91, &[vec![(3, 0.625)]]);
+        for layer in &mut terrain.layers {
+            layer.texture_form_id = 0;
+        }
+        let old = AssetCatalog::open(&path).unwrap();
+        assert!(
+            old.landscape_diffuse(0).is_none(),
+            "legacy packs without default metadata keep a white null base"
+        );
+        let (material, images) =
+            TerrainExtension::from_quadrant(&terrain, 0, &old, asset_server, true).unwrap();
+        assert!(images.color.is_empty() && images.normal.is_empty());
+        assert!(material.layer_0.is_none());
+        connection.execute_batch("CREATE TABLE terrain_default_texture(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);
+            INSERT INTO terrain_default_texture VALUES(0,NULL,NULL);").unwrap();
+        for (diffuse, normal) in [
+            (None, None),
+            (
+                Some("terrain/custom.ktx2"),
+                Some("terrain/custom-normal.ktx2"),
+            ),
+            (Some("terrain/custom.ktx2"), None),
+            (Some("../escape.ktx2"), Some("terrain/orphan.ktx2")),
+        ] {
+            connection
+                .execute(
+                    "UPDATE terrain_default_texture SET diffuse_path=?1,normal_path=?2",
+                    rusqlite::params![diffuse, normal],
+                )
+                .unwrap();
+            let catalog = AssetCatalog::open(&path).unwrap();
+            let expected = diffuse.filter(|path| !path.starts_with(".."));
+            let (material, images) =
+                TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true).unwrap();
+            assert_eq!(images.color.len(), usize::from(expected.is_some()));
+            assert_eq!(
+                images.normal.len(),
+                usize::from(expected.is_some() && normal.is_some())
+            );
+            if let Some(path) = expected {
+                assert_eq!(
+                    material.layer_0.as_ref().unwrap().path().unwrap().path(),
+                    std::path::Path::new(path)
+                );
+            }
+            assert!(
+                material.layer_1.is_none(),
+                "zero overlay never receives the default"
+            );
+            assert_eq!(material.settings.weights[0][3], 0.625);
+            let mut unpainted = terrain.clone();
+            unpainted.layers.clear();
+            for quadrant in 0..4 {
+                let (empty, _) = TerrainExtension::from_quadrant(
+                    &unpainted,
+                    quadrant,
+                    &catalog,
+                    asset_server,
+                    true,
+                )
+                .unwrap();
+                assert_eq!(empty.layer_0, material.layer_0);
+            }
+            let mut painted = terrain.clone();
+            painted
+                .layers
+                .iter_mut()
+                .find(|layer| layer.is_base)
+                .unwrap()
+                .texture_form_id = 10;
+            let (painted, _) =
+                TerrainExtension::from_quadrant(&painted, 0, &catalog, asset_server, true).unwrap();
+            assert_eq!(
+                painted.layer_0.unwrap().path().unwrap().path(),
+                std::path::Path::new("textures/poison.ktx2")
+            );
+        }
+    }
+
+    fn bc1_ktx2() -> Vec<u8> {
+        use ddsfile::{AlphaMode, D3D10ResourceDimension, Dds, DxgiFormat, NewDxgiParams};
+
+        let mut dds = Dds::new_dxgi(NewDxgiParams {
+            height: 8,
+            width: 8,
+            depth: None,
+            format: DxgiFormat::BC1_UNorm,
+            mipmap_levels: Some(1),
+            array_layers: None,
+            caps2: None,
+            is_cubemap: false,
+            resource_dimension: D3D10ResourceDimension::Texture2D,
+            alpha_mode: AlphaMode::Straight,
+        })
+        .unwrap();
+        for (index, byte) in dds.data.iter_mut().enumerate() {
+            *byte = (index * 7 + 3) as u8;
+        }
+        let mut bytes = Vec::new();
+        dds.write(&mut bytes).unwrap();
+        converter::texture::TextureConverter::convert_uncompressed(
+            &bytes,
+            converter::texture::TextureEncoding::ColorSrgb,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn terrain_diffuse_loads_in_the_profile_colour_space() {
+        use bevy::asset::{AssetPlugin, LoadState};
+        use bevy::image::{CompressedImageFormats, ImageLoader, ImagePlugin};
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("textures")).unwrap();
+        std::fs::write(directory.path().join("textures/diffuse.ktx2"), bc1_ktx2()).unwrap();
+        let database = directory.path().join("catalogue.db");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT);
+                 CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);
+                 CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);
+                 INSERT INTO texture_sets VALUES(1,'textures/diffuse.ktx2');
+                 INSERT INTO landscape_textures VALUES(1,1);",
+            )
+            .unwrap();
+        drop(connection);
+        let catalog = AssetCatalog::open(&database).unwrap();
+        for (colour_srgb, expected) in [
+            (
+                true,
+                bevy::render::render_resource::TextureFormat::Bc1RgbaUnormSrgb,
+            ),
+            (
+                false,
+                bevy::render::render_resource::TextureFormat::Bc1RgbaUnorm,
+            ),
+        ] {
+            let mut app = App::new();
+            app.add_plugins((
+                MinimalPlugins,
+                AssetPlugin {
+                    file_path: directory.path().to_string_lossy().into_owned(),
+                    ..default()
+                },
+                ImagePlugin::default(),
+            ))
+            .init_asset::<Image>()
+            .register_asset_loader(ImageLoader::new(CompressedImageFormats::all()));
+            app.finish();
+            app.cleanup();
+            let server = app.world().resource::<AssetServer>().clone();
+            let terrain = terrain_fixture_with_overlays(7, &[]);
+            let (_extension, images) =
+                TerrainExtension::from_quadrant(&terrain, 0, &catalog, &server, colour_srgb)
+                    .unwrap();
+            assert_eq!(images.color.len(), 1);
+            let handle = images.color[0].clone();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                app.update();
+                let server = app.world().resource::<AssetServer>();
+                if let LoadState::Failed(error) = server.load_state(handle.id()) {
+                    panic!("diffuse load failed: {error}");
+                }
+                if app
+                    .world()
+                    .resource::<Assets<Image>>()
+                    .get(&handle)
+                    .is_some()
+                {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "diffuse load timed out"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let image = app
+                .world()
+                .resource::<Assets<Image>>()
+                .get(&handle)
+                .unwrap();
+            assert_eq!(
+                image.texture_descriptor.format, expected,
+                "colour_srgb={colour_srgb}"
+            );
+        }
+    }
+
+    /// A null base binds Dirt02 while zero overlays keep slots and weights without requests.
+    /// A missing nonzero diffuse retains its slot and weights without requesting an orphan normal.
     #[test]
     fn terrain_zero_texture_overlay_material_preserves_slots_without_image_requests() {
         let directory = tempfile::tempdir().unwrap();
@@ -2056,16 +2385,19 @@ mod tests {
                 "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);
                  CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);
                  CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);
+                 CREATE TABLE terrain_default_texture(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);
+                 INSERT INTO terrain_default_texture VALUES(0,'textures/landscape/dirt02.ktx2','textures/landscape/dirt02_n.ktx2');
                  INSERT INTO texture_sets VALUES(1,'textures/zero-must-not-load.dds',NULL);
-                 INSERT INTO texture_sets VALUES(2,NULL,'textures/orphan-normal-must-not-load.dds');
-                 INSERT INTO landscape_textures VALUES(0,1),(2116,2);",
+                 INSERT INTO texture_sets VALUES(2,'textures/painted.dds',NULL);
+                 INSERT INTO texture_sets VALUES(3,NULL,'textures/orphan-normal-must-not-load.dds');
+                 INSERT INTO landscape_textures VALUES(0,1),(2116,3),(2117,2);",
             )
             .unwrap();
         drop(connection);
         let catalog = AssetCatalog::open(&path).unwrap();
         assert!(
             catalog.landscape_diffuse(0).is_some(),
-            "poison null lookup is observable"
+            "the default exists independently of the poison database row"
         );
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
@@ -2080,21 +2412,35 @@ mod tests {
             }
         }
         let (extension, images) =
-            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server)
+            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true)
                 .expect("zero overlays keep material slots and do not request a texture");
-        assert!(images.color.is_empty() && images.normal.is_empty());
-        assert!(
-            extension.layer_0.is_none()
-                && extension.layer_1.is_none()
-                && extension.layer_2.is_none()
+        assert_eq!(images.color.len(), 1);
+        assert_eq!(images.normal.len(), 1);
+        let diffuse = extension
+            .layer_0
+            .as_ref()
+            .expect("null base must bind diffuse");
+        let normal = extension
+            .normal_0
+            .as_ref()
+            .expect("null base must bind normal");
+        assert_eq!(
+            diffuse.path().unwrap().path(),
+            std::path::Path::new("textures/landscape/dirt02.ktx2")
         );
+        assert_eq!(
+            normal.path().unwrap().path(),
+            std::path::Path::new("textures/landscape/dirt02_n.ktx2")
+        );
+        assert_eq!(extension.sampler_source.as_ref(), Some(diffuse));
+        assert!(extension.layer_1.is_none() && extension.layer_2.is_none());
         assert!(
             extension.layer_3.is_none()
                 && extension.layer_4.is_none()
                 && extension.layer_5.is_none()
         );
         assert_eq!(extension.settings.tiling_and_layer_count.z, 3.0);
-        assert_eq!(extension.settings.normal_layers_0, Vec4::ZERO);
+        assert_eq!(extension.settings.normal_layers_0, Vec4::X);
         assert_eq!(extension.settings.normal_layers_1, Vec4::ZERO);
         let sample = |overlay: usize, vertex: usize| {
             extension.settings.weights[overlay * OVERLAY_WEIGHT_WORDS + vertex / 4][vertex % 4]
@@ -2107,16 +2453,53 @@ mod tests {
         terrain.layers[2].texture_form_id = 0x844;
         assert!(catalog.landscape_normal(0x844).is_some());
         let (fallback, images) =
-            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server)
+            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true)
                 .expect("a missing diffuse retains the layer without requesting either image");
-        assert!(images.color.is_empty() && images.normal.is_empty());
+        assert_eq!(images.color.len(), 1);
+        assert_eq!(images.normal.len(), 1);
+        assert_eq!(fallback.layer_0, extension.layer_0);
+        assert_eq!(fallback.normal_0, extension.normal_0);
         assert!(fallback.layer_2.is_none() && fallback.normal_2.is_none());
+        assert_eq!(fallback.settings.weights, extension.settings.weights);
+        assert_eq!(fallback.settings.tiling_and_layer_count.z, 3.0);
+        assert_eq!(fallback.settings.normal_layers_0, Vec4::X);
+        assert_eq!(fallback.settings.normal_layers_1, Vec4::ZERO);
+
+        // A white configured default preserves #500's no-image fallback for every layer.
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "UPDATE terrain_default_texture SET diffuse_path=NULL,normal_path=NULL",
+                [],
+            )
+            .unwrap();
+        let white = AssetCatalog::open(&path).unwrap();
+        let (fallback, images) =
+            TerrainExtension::from_quadrant(&terrain, 0, &white, asset_server, true).unwrap();
+        assert!(images.color.is_empty() && images.normal.is_empty());
+        assert!(fallback.image_ids().next().is_none());
         assert_eq!(fallback.settings.weights, extension.settings.weights);
         assert_eq!(fallback.settings.tiling_and_layer_count.z, 3.0);
         assert_eq!(fallback.settings.normal_layers_0, Vec4::ZERO);
         assert_eq!(fallback.settings.normal_layers_1, Vec4::ZERO);
         terrain.layers[2].texture_form_id = 0;
-        assert!(TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server).is_ok());
+        assert!(TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true).is_ok());
+        terrain.layers[2].texture_form_id = 0x845;
+        let (painted, images) =
+            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true).unwrap();
+        assert_eq!(images.color.len(), 2);
+        assert_eq!(
+            painted.layer_2.as_ref().unwrap().path().unwrap().path(),
+            std::path::Path::new("textures/painted.ktx2")
+        );
+        assert_eq!(painted.settings.weights, extension.settings.weights);
+        terrain.layers.clear();
+        let (unpainted, images) =
+            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true).unwrap();
+        assert_eq!(images.color.len(), 1);
+        assert_eq!(images.normal.len(), 1);
+        assert_eq!(unpainted.layer_0, extension.layer_0);
+        assert_eq!(unpainted.normal_0, extension.normal_0);
     }
 
     /// The weight field is the quadrant's own `17x17` grids, one per overlay, in the order

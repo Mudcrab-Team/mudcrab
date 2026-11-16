@@ -1690,6 +1690,111 @@ fn load_order_export_writes_the_room_graph_with_remapped_marker_ids() {
     );
 }
 
+/// Every placed type in `is_placed_record_type` joins interior rooms: the six projectile,
+/// hazard and flora types (`PHZD`, `PARW`, `PBAR`, `PBEA`, `PCON`, `PFLA`) each get a
+/// membership row, and one outside the room box gets none.
+#[test]
+fn placed_projectile_and_hazard_references_join_interior_rooms() {
+    use rusqlite::Connection;
+    let dir = tempfile::tempdir().unwrap();
+    let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
+    let filler = plugin(dir.path(), "Filler.esm", &["Base.esm"], 1, Vec::new());
+    let floats =
+        |values: [f32; 6]| -> Vec<u8> { values.iter().flat_map(|v| v.to_le_bytes()).collect() };
+    let xprm = |half: [f32; 3], shape: u32| -> Vec<u8> {
+        let mut bytes: Vec<u8> = half.iter().flat_map(|v| v.to_le_bytes()).collect();
+        bytes.extend([0u8; 12]);
+        bytes.extend(0.2f32.to_le_bytes());
+        bytes.extend(shape.to_le_bytes());
+        bytes
+    };
+    let word = |value: u32| value.to_le_bytes().to_vec();
+    let placed = |tag: &[u8; 4], id: u32, position: [f32; 3]| {
+        record(
+            tag,
+            id,
+            0,
+            [
+                // 0x1F and 0x20 are the room and portal markers, which are excluded from
+                // membership; 0x99 is an ordinary base.
+                sub(b"NAME", &word(0x99)),
+                sub(
+                    b"DATA",
+                    &floats([position[0], position[1], position[2], 0.0, 0.0, 0.0]),
+                ),
+            ]
+            .concat(),
+        )
+    };
+    let cell = 0x0100_0900;
+    let patch = plugin(
+        dir.path(),
+        "Patch.esm",
+        &["Base.esm"],
+        1,
+        [
+            // No XCLC and no worldspace: an interior cell.
+            record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])),
+            group(
+                6,
+                cell,
+                group(
+                    9,
+                    cell,
+                    [
+                        record(
+                            b"REFR",
+                            0x0100_0801,
+                            0,
+                            [
+                                sub(b"NAME", &word(0x1F)),
+                                sub(b"DATA", &floats([0.0; 6])),
+                                sub(b"XPRM", &xprm([100.0; 3], 1)),
+                            ]
+                            .concat(),
+                        ),
+                        placed(b"PHZD", 0x0100_0810, [10.0, 20.0, 30.0]),
+                        placed(b"PARW", 0x0100_0811, [10.0, 20.0, 30.0]),
+                        placed(b"PBAR", 0x0100_0812, [10.0, 20.0, 30.0]),
+                        placed(b"PBEA", 0x0100_0813, [10.0, 20.0, 30.0]),
+                        placed(b"PCON", 0x0100_0814, [10.0, 20.0, 30.0]),
+                        placed(b"PFLA", 0x0100_0815, [10.0, 20.0, 30.0]),
+                        // Outside the box: no membership row.
+                        placed(b"PHZD", 0x0100_0820, [5000.0, 0.0, 0.0]),
+                    ]
+                    .concat(),
+                ),
+            ),
+        ]
+        .concat(),
+    );
+    let db = dir.path().join("world.db");
+    EsmParser::convert_plugins(&[base, filler, patch], &db).unwrap();
+    let conn = Connection::open(&db).unwrap();
+    let ids = |sql: &str| -> Vec<(u32, u32)> {
+        conn.prepare(sql)
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(
+        ids(
+            "SELECT reference_id, room_ref FROM reference_rooms WHERE contained=1 \
+              ORDER BY reference_id"
+        ),
+        vec![
+            (0x0200_0810, 0x0200_0801),
+            (0x0200_0811, 0x0200_0801),
+            (0x0200_0812, 0x0200_0801),
+            (0x0200_0813, 0x0200_0801),
+            (0x0200_0814, 0x0200_0801),
+            (0x0200_0815, 0x0200_0801),
+        ]
+    );
+}
+
 /// `XPOD` is an array of (origin, destination) pairs (xEdit 4.1.5f defs): a mod's portal with
 /// two pairs has all four FormIDs remapped from a non-first plugin.
 #[test]

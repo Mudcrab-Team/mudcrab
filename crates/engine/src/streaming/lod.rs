@@ -6,6 +6,7 @@ use crate::{
     config::{EngineConfig, TerrainLodDistances},
     profiling::ProfilingState,
     swap_bridge::SwapWaiting,
+    visual_profile::VisualProfile,
     world::{
         components::{CELL_SIZE, StreamingCamera},
         database::{LodChunkMetadata, LodChunkQuery, WorldDatabase},
@@ -698,6 +699,10 @@ pub(super) fn track_lod_readiness(
     children: Query<&Children>,
     names: Query<&Name>,
     mesh_handles: Query<&Mesh3d>,
+    materials: Query<&MeshMaterial3d<StandardMaterial>>,
+    material_assets: Res<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    profile: Res<VisualProfile>,
     mut pending_chunks: Query<(Entity, &LodChunkRoot, &mut PendingLodChunk)>,
     mut streaming: ResMut<LodStreaming>,
     mut metrics: ResMut<StreamingMetrics>,
@@ -785,6 +790,21 @@ pub(super) fn track_lod_readiness(
                 continue;
             }
         };
+        if !profile.decodes_colour_srgb()
+            && adopt_raw_lod_colour_textures(
+                entity,
+                &children,
+                &materials,
+                &material_assets,
+                &mut images,
+            ) > 0
+        {
+            warn!(
+                "LOD chunk {} reached readiness with an sRGB albedo; it was retagged here and \
+                 uploads a second time",
+                pending.metadata.payload_path
+            );
+        }
         for (patch, coverage) in &patches {
             commands
                 .entity(*patch)
@@ -1446,6 +1466,37 @@ fn fail_chunk(
     commands.entity(entity).try_despawn();
 }
 
+/// Retags any albedo of a spawned chunk that is still sRGB, returning how many it changed.
+///
+/// A chunk GLB carries its albedo as a bufferView image, which the raw-texel glTF handler tags
+/// UNORM while the GLB loads, so this normally finds nothing to do. It stays as the guard that
+/// keeps distant terrain matching near terrain under `skyrim` if a chunk's image ever misses
+/// that handler. A retag made here comes after the image was added and extracted, so it costs a
+/// second upload; the caller reports it.
+fn adopt_raw_lod_colour_textures(
+    root: Entity,
+    children: &Query<&Children>,
+    materials: &Query<&MeshMaterial3d<StandardMaterial>>,
+    material_assets: &Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+) -> usize {
+    let mut retagged = 0;
+    let mut stack = vec![root];
+    while let Some(entity) = stack.pop() {
+        if let Ok(material_handle) = materials.get(entity)
+            && let Some(material) = material_assets.get(&material_handle.0)
+            && let Some(base_color) = material.base_color_texture.as_ref()
+            && crate::raw_texel::retag_to_raw_texels(images, base_color)
+        {
+            retagged += 1;
+        }
+        if let Ok(direct) = children.get(entity) {
+            stack.extend(direct.iter());
+        }
+    }
+    retagged
+}
+
 fn validate_lod_scene(
     root: Entity,
     metadata: &LodChunkMetadata,
@@ -1867,6 +1918,72 @@ fn update_counts(
 mod tests {
     use super::*;
     use crate::world::database::LodChunkBounds;
+
+    #[test]
+    fn a_spawned_lod_chunks_srgb_albedo_is_retagged_once_and_counted() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        #[derive(Resource)]
+        struct Root(Entity);
+
+        fn adopt(
+            root: Res<Root>,
+            children: Query<&Children>,
+            materials: Query<&MeshMaterial3d<StandardMaterial>>,
+            material_assets: Res<Assets<StandardMaterial>>,
+            mut images: ResMut<Assets<Image>>,
+        ) -> usize {
+            adopt_raw_lod_colour_textures(
+                root.0,
+                &children,
+                &materials,
+                &material_assets,
+                &mut images,
+            )
+        }
+
+        let mut app = App::new();
+        app.init_resource::<Assets<Image>>()
+            .init_resource::<Assets<StandardMaterial>>();
+        let albedo = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(Image::new(
+                bevy::render::render_resource::Extent3d {
+                    width: 4,
+                    height: 4,
+                    depth_or_array_layers: 1,
+                },
+                bevy::render::render_resource::TextureDimension::D2,
+                vec![0u8; 8],
+                bevy::render::render_resource::TextureFormat::Bc1RgbaUnormSrgb,
+                bevy::asset::RenderAssetUsages::default(),
+            ));
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial {
+                base_color_texture: Some(albedo.clone()),
+                ..default()
+            });
+        let root = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .spawn((MeshMaterial3d(material), ChildOf(root)));
+        app.insert_resource(Root(root));
+        assert_eq!(app.world_mut().run_system_once(adopt).unwrap(), 1);
+        // An albedo that is already raw is left alone, so it raises no further change.
+        assert_eq!(app.world_mut().run_system_once(adopt).unwrap(), 0);
+
+        assert_eq!(
+            app.world()
+                .resource::<Assets<Image>>()
+                .get(&albedo)
+                .unwrap()
+                .texture_descriptor
+                .format,
+            bevy::render::render_resource::TextureFormat::Bc1RgbaUnorm
+        );
+    }
     use bevy::ecs::system::RunSystemOnce;
 
     /// A reach equal to each tier's chunk side (4/8/16 cells), the smallest
@@ -3280,5 +3397,193 @@ mod tests {
             (22, 0),
             side_reach().max_reach_cells() + LOD_UNLOAD_MARGIN_CELLS,
         ));
+    }
+
+    /// Characterization of the near/far seam (#284, L04). Retail hides the LOD land of a cell
+    /// while that cell is attached (RF-LOD-008, one cell at a time, no morph, skirt or drop).
+    /// Mudcrab hides it per quadrant once the full-detail quadrant is surface-ready. These tests
+    /// pin what the engine does today in both arrival orders. They do not change behaviour.
+    struct SeamWorld {
+        world: World,
+        schedule: bevy::ecs::schedule::Schedule,
+    }
+
+    impl SeamWorld {
+        /// A world whose camera stands in cell (0, 0) with every tier in reach of the cells used.
+        fn new() -> Self {
+            let mut world = World::new();
+            world.insert_resource(EngineConfig {
+                terrain_lod: side_reach(),
+                ..EngineConfig::default()
+            });
+            world.insert_resource(RenderOrigin(IVec2::ZERO));
+            world.insert_resource(StreamingMetrics::default());
+            world.insert_resource(ProfilingState::default());
+            world.insert_resource(LodStreaming::default());
+            world.spawn((
+                StreamingCamera,
+                Transform::from_xyz(CELL_SIZE * 0.5, 0.0, -CELL_SIZE * 0.5),
+            ));
+            let mut schedule = bevy::ecs::schedule::Schedule::default();
+            schedule.add_systems(update_terrain_lod_visibility);
+            Self { world, schedule }
+        }
+
+        /// One full-detail quadrant, optionally already surface-ready.
+        fn full_quadrant(&mut self, grid: IVec2, quadrant: u8, ready: bool) -> Entity {
+            let mut entity = self.world.spawn((
+                super::super::TerrainPatch,
+                TerrainCoverage {
+                    grid,
+                    quadrant,
+                    tier: None,
+                },
+                Visibility::Inherited,
+            ));
+            if ready {
+                entity.insert(TerrainSurfaceReady);
+            }
+            entity.id()
+        }
+
+        /// One tier-4 LOD quadrant, hidden until the selector shows it.
+        fn lod_quadrant(&mut self, grid: IVec2, quadrant: u8) -> Entity {
+            self.world
+                .spawn((
+                    TerrainCoverage {
+                        grid,
+                        quadrant,
+                        tier: Some(LodTier::Tier4),
+                    },
+                    TerrainSurfaceReady,
+                    Visibility::Hidden,
+                ))
+                .id()
+        }
+
+        fn run(&mut self) {
+            self.schedule.run(&mut self.world);
+        }
+
+        fn visibility(&self, entity: Entity) -> Visibility {
+            *self.world.get::<Visibility>(entity).unwrap()
+        }
+    }
+
+    #[test]
+    fn seam_lod_arriving_after_full_detail_never_shows_over_it() {
+        let mut seam = SeamWorld::new();
+        for quadrant in 0..4 {
+            seam.full_quadrant(IVec2::ZERO, quadrant, true);
+        }
+        seam.run();
+        let lod: Vec<_> = (0..4)
+            .map(|quadrant| seam.lod_quadrant(IVec2::ZERO, quadrant))
+            .collect();
+        seam.run();
+        for entity in lod {
+            assert_eq!(
+                seam.visibility(entity),
+                Visibility::Hidden,
+                "LOD that arrives after the full-detail cell stays hidden"
+            );
+        }
+    }
+
+    #[test]
+    fn seam_full_detail_arriving_after_lod_leaves_no_hole_and_then_hides_it() {
+        let mut seam = SeamWorld::new();
+        let lod: Vec<_> = (0..4)
+            .map(|quadrant| seam.lod_quadrant(IVec2::ZERO, quadrant))
+            .collect();
+        seam.run();
+        for entity in &lod {
+            assert_eq!(seam.visibility(*entity), Visibility::Inherited);
+        }
+        // The full-detail quadrants exist but are not surface-ready: the LOD keeps drawing.
+        let full: Vec<_> = (0..4)
+            .map(|quadrant| seam.full_quadrant(IVec2::ZERO, quadrant, false))
+            .collect();
+        seam.run();
+        for entity in &lod {
+            assert_eq!(
+                seam.visibility(*entity),
+                Visibility::Inherited,
+                "no hole while the full-detail cell is still preparing"
+            );
+        }
+        for entity in full {
+            seam.world.entity_mut(entity).insert(TerrainSurfaceReady);
+        }
+        seam.run();
+        for entity in &lod {
+            assert_eq!(
+                seam.visibility(*entity),
+                Visibility::Hidden,
+                "LOD hides in the frame the full-detail quadrant is surface-ready"
+            );
+        }
+    }
+
+    #[test]
+    fn seam_edge_between_a_full_detail_cell_and_a_lod_cell_has_one_surface_each() {
+        let mut seam = SeamWorld::new();
+        let full_cell = IVec2::ZERO;
+        let lod_cell = IVec2::new(1, 0);
+        let mut full_lod = Vec::new();
+        let mut far_lod = Vec::new();
+        for quadrant in 0..4 {
+            seam.full_quadrant(full_cell, quadrant, true);
+            full_lod.push(seam.lod_quadrant(full_cell, quadrant));
+            far_lod.push(seam.lod_quadrant(lod_cell, quadrant));
+        }
+        seam.run();
+        for quadrant in 0..4 {
+            assert_eq!(seam.visibility(full_lod[quadrant]), Visibility::Hidden);
+            assert_eq!(seam.visibility(far_lod[quadrant]), Visibility::Inherited);
+        }
+    }
+
+    #[test]
+    fn seam_hides_lod_per_quadrant_where_retail_hides_it_per_cell() {
+        // Mudcrab today: one ready full-detail quadrant hides only its own LOD quadrant.
+        // Retail (RF-LOD-008) hides the LOD land of a whole cell, one cell at a time, while the
+        // cell is in state 6 or 7. This test records the quadrant rule so a later change shows.
+        let mut seam = SeamWorld::new();
+        seam.full_quadrant(IVec2::ZERO, 0, true);
+        let lod: Vec<_> = (0..4)
+            .map(|quadrant| seam.lod_quadrant(IVec2::ZERO, quadrant))
+            .collect();
+        seam.run();
+        assert_eq!(seam.visibility(lod[0]), Visibility::Hidden);
+        for entity in &lod[1..] {
+            assert_eq!(seam.visibility(*entity), Visibility::Inherited);
+        }
+    }
+
+    #[test]
+    fn seam_lod_returns_when_full_detail_loses_surface_readiness() {
+        let mut seam = SeamWorld::new();
+        let full: Vec<_> = (0..4)
+            .map(|quadrant| seam.full_quadrant(IVec2::ZERO, quadrant, true))
+            .collect();
+        let lod: Vec<_> = (0..4)
+            .map(|quadrant| seam.lod_quadrant(IVec2::ZERO, quadrant))
+            .collect();
+        seam.run();
+        for entity in &lod {
+            assert_eq!(seam.visibility(*entity), Visibility::Hidden);
+        }
+        for entity in full {
+            seam.world.entity_mut(entity).despawn();
+        }
+        seam.run();
+        for entity in &lod {
+            assert_eq!(
+                seam.visibility(*entity),
+                Visibility::Inherited,
+                "an unloaded cell falls back to its LOD land"
+            );
+        }
     }
 }

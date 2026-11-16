@@ -26,12 +26,14 @@ use std::{
 };
 
 /// Decoder/adapter behavior version for output changes outside the authored schema.
-pub const ADAPTER_VERSION: u32 = 12;
+pub const ADAPTER_VERSION: u32 = 14;
 
 /// Legacy metadata projection contract: preserve WRLD payloads and record-aware VMAD links.
 /// Version 4 resolves localized string fields to the in-house reader's text (`legacy_text`).
+/// Version 5 changes database placement coverage.
+/// Version 6 projects STAT MODS alternate-texture entries (3D Index, TXST link) and remaps their TXST links.
 /// This identity does not change the independent converted-asset producer/settings proofs.
-pub const LEGACY_PROJECTION_VERSION: u32 = 4;
+pub const LEGACY_PROJECTION_VERSION: u32 = 6;
 
 /// Where localized plugins' string tables are found, and in which language.
 #[derive(Clone, Copy)]
@@ -88,12 +90,14 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "exterior_spatial",
     "land",
     "statics",
+    "base_texture_swaps",
     "lights",
     "npcs",
     "actor_models",
     "actor_model_parts",
     "movement_types",
     "race_movement_links",
+    "race_animation_sources",
     "movement_game_settings",
     "waters",
     "texture_sets",

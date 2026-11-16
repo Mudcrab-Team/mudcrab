@@ -2,6 +2,7 @@ use crate::{
     color_pipeline::{SceneGradeSource, SkyrimCinematicPostPlugin},
     config::{EngineConfig, MAX_IO_THREADS},
     console::{ConsolePlugin, console_closed},
+    extensions::{open_features, read_data_extensions},
     metrics::AcceptanceMetricsPlugin,
     physics::{MovementTuning, PhysicsFixturePlugin, WorldPlayerPlugin},
     profiling::{ProfilingPlugin, ProfilingState},
@@ -39,12 +40,13 @@ use bevy::{
     math::DVec3,
     prelude::*,
     render::diagnostic::RenderDiagnosticsPlugin,
+    render::error_handler::{ErrorType, RenderError, RenderErrorHandler, RenderErrorPolicy},
     render::occlusion_culling::OcclusionCulling,
     render::render_asset::RenderAssetBytesPerFrame,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
     render::view::screenshot::{Screenshot, save_to_disk},
     tasks::{IoTaskPool, TaskPoolBuilder},
-    window::{MonitorSelection, PresentMode, WindowPlugin, WindowPosition},
+    window::{MonitorSelection, PresentMode, WindowLevel, WindowPlugin, WindowPosition},
     winit::WinitSettings,
 };
 use color_eyre::Result;
@@ -67,7 +69,13 @@ struct InitialWorldCameraPose {
     resolution: bevy::window::WindowResolution,
 }
 
-fn prepare_start_camera(config: &mut EngineConfig) -> Result<Option<InitialWorldCameraPose>> {
+fn prepare_start_camera(
+    config: &mut EngineConfig,
+    preferences: Option<&mut (
+        crate::settings::RenderingSettings,
+        crate::settings::SettingsFile,
+    )>,
+) -> Result<Option<InitialWorldCameraPose>> {
     let Some(path) = &config.start_shot else {
         return Ok(None);
     };
@@ -100,10 +108,17 @@ fn prepare_start_camera(config: &mut EngineConfig) -> Result<Option<InitialWorld
     if let Some(worldspace) = worldspace {
         config.worldspace_id = worldspace;
     }
+    if let Some((settings, settings_file)) = preferences {
+        settings_file.apply_start_shot(
+            settings,
+            crate::shots::vertical_fov_degrees(file.shots[0].hfov, file.aspect()),
+            (file.width, file.height),
+        );
+    }
     Ok(Some(InitialWorldCameraPose {
         shot: file.shots[0].clone(),
         aspect: file.aspect(),
-        resolution: file.window_resolution(),
+        resolution: file.interactive_window_resolution(),
     }))
 }
 
@@ -119,12 +134,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .then(|| crate::settings::prepare_settings(&mut config));
     // A saved profile can disagree with an explicit launch option the parser already accepted.
     config.check_visual_profile()?;
-    info!(
-        profile = config.visual_profile.name(),
-        "visual profile active; changing it requires a restart"
-    );
     config.image_space_selection()?;
-    let start_camera = prepare_start_camera(&mut config)?;
+    let start_camera = prepare_start_camera(&mut config, preferences.as_mut())?;
     let shots = prepare_shots(&mut config)?;
     let shots_active = shots.is_some();
     let route = prepare_route(&mut config)?;
@@ -172,12 +183,18 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     let mut route_ground = None;
     let runtime_data = if config.streaming_fixture {
         let database_path = config.assets_dir.join("skyrim_world.db");
+        let (extensions, notices, database_features) =
+            open_features(read_data_extensions(&config.assets_dir)?);
         Some((
-            WorldDatabase::open(&database_path)?,
-            AssetCatalog::open(&database_path)?,
-            CellCache::open(&config.assets_dir.join("cell_cache.rkyv"))?,
-            InitialCameraGroundHeight(0.0),
-            None,
+            (
+                WorldDatabase::open_with(&database_path, database_features)?,
+                AssetCatalog::open(&database_path)?,
+                CellCache::open(&config.assets_dir.join("cell_cache.rkyv"))?,
+                InitialCameraGroundHeight(0.0),
+                None,
+            ),
+            extensions,
+            notices,
         ))
     } else if config.benchmark_only
         || config.material_fixture
@@ -190,6 +207,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     } else {
         validate_runtime_assets(&config)?;
         let database_path = config.assets_dir.join("skyrim_world.db");
+        let (extensions, notices, database_features) =
+            open_features(read_data_extensions(&config.assets_dir)?);
         let cache = CellCache::open(&config.assets_dir.join("cell_cache.rkyv"))?;
         let ground_height = initial_camera_ground_height(&config, &database_path, &cache)?;
         let spawn_ground_height = if interactive_world_physics {
@@ -211,15 +230,19 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             )?);
         }
         Some((
-            WorldDatabase::open(&database_path)?,
-            AssetCatalog::open(&database_path)?,
-            cache,
-            InitialCameraGroundHeight(ground_height),
-            spawn_ground_height,
+            (
+                WorldDatabase::open_with(&database_path, database_features)?,
+                AssetCatalog::open(&database_path)?,
+                cache,
+                InitialCameraGroundHeight(ground_height),
+                spawn_ground_height,
+            ),
+            extensions,
+            notices,
         ))
     };
     // Authored lighting, weather, climate and image space, when the database has them (#269).
-    // Read only; nothing renders from it yet.
+    // Read only; the sun consumes climate timing and GMST settings from this catalog.
     let environment = runtime_data.as_ref().map(|_| {
         crate::world::environment::EnvironmentCatalog::open(
             &config.assets_dir.join("skyrim_world.db"),
@@ -267,6 +290,14 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         && !config.streaming_fixture)
         .then(|| MovementTuning::from_world_database(&config.assets_dir.join("skyrim_world.db")))
         .transpose()?;
+    let carry_tuning =
+        (interactive_world_physics && runtime_data.is_some() && !config.streaming_fixture)
+            .then(|| {
+                crate::physics::carry::CarryTuning::from_world_database(
+                    &config.assets_dir.join("skyrim_world.db"),
+                )
+            })
+            .transpose()?;
     let benchmark_active = config.benchmark_frames.is_some()
         || config.benchmark_duration_secs.is_some()
         || config.streaming_benchmark_route_speed.is_some();
@@ -274,6 +305,16 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     let window = (!config.headless || shots_active || config.hidden_window).then(|| Window {
         title: config.window_title(),
         visible: !config.hidden_window,
+        // A background window sits under every ordinary window and opens without key focus, so a
+        // capture run never covers or interrupts whatever is on screen. On macOS
+        // `background_window` also keeps the window on every Space and gives focus back to the
+        // app that had it (`crate::background_window`).
+        focused: !config.background_window,
+        window_level: if config.background_window {
+            WindowLevel::AlwaysOnBottom
+        } else {
+            WindowLevel::Normal
+        },
         // Start the window at the reference size; shots use an independent exact-size image target.
         resolution: match &shots {
             Some(run) => run.file.window_resolution(),
@@ -296,6 +337,18 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     });
     let origin = RenderOrigin(IVec2::new(config.start_grid.0, config.start_grid.1));
     let mut app = App::new();
+    // Capability state must exist before any renderer plugin builds.
+    let runtime_data = runtime_data.map(|(runtime_data, extensions, notices)| {
+        app.insert_resource(extensions).insert_resource(notices);
+        runtime_data
+    });
+    // Read before the event loop starts: winit activates the app while it launches, and a background
+    // run gives focus back to whatever app was in front until then.
+    app.insert_resource(if config.background_window {
+        crate::background_window::BackgroundFocus::capture()
+    } else {
+        crate::background_window::BackgroundFocus::default()
+    });
     if let Some((settings, file)) = preferences {
         app.insert_resource(settings).insert_resource(file);
     }
@@ -308,10 +361,13 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     if let Some(tuning) = movement_tuning {
         app.insert_resource(tuning);
     }
+    if let Some(tuning) = carry_tuning {
+        app.insert_resource(tuning);
+    }
     if let Some(asset_lock) = asset_lock {
         app.insert_resource(AssetDirectoryReadLock { _guard: asset_lock });
     }
-    if benchmark_active || shots_active || config.hidden_window {
+    if benchmark_active || shots_active || config.hidden_window || config.background_window {
         // Acceptance runs are commonly left unfocused while the campaign driver
         // advances through its scenarios. Bevy's game default throttles an
         // unfocused window to 60 Hz, which makes a 16.67 ms P95 gate measure the
@@ -323,6 +379,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     // The run fingerprint is measurement data: an ordinary play session neither builds one nor
     // pays for the startup system that reads it.
     let records_measurements = crate::fingerprint::records_measurements(&config);
+    app.insert_resource(crate::sun::GameClock::from_config(&config));
+    let visual_profile = config.visual_profile;
     app.insert_resource(config.visual_profile)
         .insert_resource(config.color_grade)
         .insert_resource(config.visual_preset)
@@ -350,6 +408,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
                     ..default()
                 }),
         )
+        .add_plugins(crate::raw_texel::RawTexelPlugin {
+            profile: visual_profile,
+        })
         .add_plugins((
             FrameTimeDiagnosticsPlugin::default(),
             LogDiagnosticsPlugin {
@@ -373,6 +434,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             crate::nif_material::EffectPaletteMaterialPlugin,
             crate::nif_material::NifMaterialPlugin,
             crate::emittance::EmittancePlugin,
+            crate::object_materials::ObjectMaterialPlugin,
+        ))
+        .add_plugins((
             crate::actor_skin_tone::ActorSkinTonePlugin,
             crate::actor_body_weight::ActorBodyWeightPlugin,
         ))
@@ -386,7 +450,10 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .add_plugins(crate::actor_animation::ActorAnimationPlugin)
         .add_plugins(crate::actor_drive::ActorDrivePlugin)
         .add_plugins(crate::actor_head::ActorHeadPlugin)
+        .add_plugins(crate::actor_outfit::ActorOutfitPlugin)
         .add_systems(PostUpdate, keep_windows_hidden)
+        .add_systems(Update, crate::sun::update_sun)
+        .add_systems(Update, crate::background_window::hold_focus_with_the_user)
         .add_plugins(crate::terrain_merge::TerrainMergePlugin::new(
             terrain_merge.as_ref(),
         ));
@@ -396,6 +463,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     }
     if interactive_world_physics {
         app.add_plugins(crate::settings_ui::SettingsPlugin);
+    } else {
+        app.add_plugins(crate::settings::RenderSettingsPlugin);
     }
     add_camera_and_capture_systems(&mut app);
     if let Some(terrain_merge) = terrain_merge {
@@ -404,6 +473,15 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     if records_measurements {
         app.add_plugins(crate::fingerprint::RunFingerprintPlugin);
     }
+    info!(
+        profile = visual_profile.name(),
+        colour_textures = if visual_profile.decodes_colour_srgb() {
+            "sRGB"
+        } else {
+            "raw UNORM"
+        },
+        "visual profile active; changing it requires a restart"
+    );
     if app
         .world()
         .resource::<EngineConfig>()
@@ -488,6 +566,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     if app.world().resource::<EngineConfig>().stdin_console && !shots_active {
         app.add_plugins(crate::capture_frame::CaptureFramePlugin);
     }
+    crate::render_teardown::install(&mut app);
     if let Some(run) = shots {
         info!(
             shots = run.file.shots.len(),
@@ -500,20 +579,80 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             ShotsPlugin { run },
         ));
     }
+    // `RenderPlugin` only `init_resource`s its default handler, so this one wins wherever it is
+    // inserted.
+    app.insert_resource(RenderErrorHandler(handle_render_error));
     let exit = app.run();
     drop(app);
     drop(streaming_fixture_dir);
     finished(&exit)
 }
 
+/// Process exit code for a run that ended because the GPU device was lost.
+///
+/// Distinct from 1 (any other failed run) and 2 (an unusable command line), so a benchmark or
+/// acceptance script can record a lost device apart from other failures. It does not clear the
+/// engine: a GPU fault or a command buffer the driver times out also loses the device.
+pub const EXIT_DEVICE_LOST: u8 = 3;
+
+/// The run ended because the GPU device was lost.
+///
+/// Returned from [`run`] so `main` can turn it into [`EXIT_DEVICE_LOST`] instead of the generic
+/// failure code.
+#[derive(Debug)]
+pub struct DeviceLost;
+
+impl std::fmt::Display for DeviceLost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the GPU device was lost, the engine is exiting (exit code {EXIT_DEVICE_LOST}); the log \
+             above has the driver's reason. Retry the run; if it keeps happening, the engine may \
+             be the cause"
+        )
+    }
+}
+
+impl std::error::Error for DeviceLost {}
+
+/// The exit a render error asks for: device loss gets its own code, everything else the generic
+/// failure Bevy's default handler used.
+fn exit_for_render_error(error: &RenderError) -> AppExit {
+    match error.ty {
+        ErrorType::DeviceLost => AppExit::from_code(EXIT_DEVICE_LOST),
+        _ => AppExit::error(),
+    }
+}
+
+/// Same policy as Bevy's default handler (quit and stop rendering, since carrying on after a
+/// render error risks rapid flashing), but with an exit code that names device loss.
+fn handle_render_error(
+    error: &RenderError,
+    main_world: &mut World,
+    _render_world: &mut World,
+) -> RenderErrorPolicy {
+    if matches!(error.ty, ErrorType::DeviceLost) {
+        error!(
+            description = %error.description,
+            "the GPU device was lost; quitting"
+        );
+    } else {
+        error!("Quitting the application due to {:?} RenderError", error.ty);
+    }
+    main_world.write_message(exit_for_render_error(error));
+    RenderErrorPolicy::StopRendering
+}
+
 /// What the process reports after an [`App`] has run.
 ///
 /// A shots run that could not write an image, and an acceptance run whose gates did not pass, end
 /// with [`AppExit::Error`]; dropping that would report success to whatever ran the process - the
-/// acceptance script reads the exit code - so the error is handed back to `main` instead.
+/// acceptance script reads the exit code - so the error is handed back to `main` instead. A lost
+/// device comes back as [`DeviceLost`], which `main` maps to [`EXIT_DEVICE_LOST`].
 fn finished(exit: &AppExit) -> Result<()> {
     match exit {
         AppExit::Success => Ok(()),
+        AppExit::Error(code) if code.get() == EXIT_DEVICE_LOST => Err(DeviceLost.into()),
         AppExit::Error(code) => Err(color_eyre::eyre::eyre!(
             "the run failed (exit code {code:?})"
         )),
@@ -1152,6 +1291,7 @@ fn setup_material_fixture(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    profile: Res<crate::visual_profile::VisualProfile>,
 ) {
     commands.init_resource::<CanonicalMaterialFixtureState>();
     let checker = images.add(fixture_image(
@@ -1161,7 +1301,7 @@ fn setup_material_fixture(
                 [78, 166, 88, alpha]
             })
             .collect(),
-        true,
+        profile.decodes_colour_srgb(),
     ));
     let normal = images.add(fixture_image(
         (0..16).flat_map(|_| [128, 128, 255, 255]).collect(),
@@ -1258,6 +1398,7 @@ fn validate_material_fixture(
     query: Query<(&CanonicalMaterialKind, &MeshMaterial3d<StandardMaterial>)>,
     materials: Res<Assets<StandardMaterial>>,
     images: Res<Assets<Image>>,
+    profile: Res<crate::visual_profile::VisualProfile>,
     mut state: ResMut<CanonicalMaterialFixtureState>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
@@ -1298,7 +1439,7 @@ fn validate_material_fixture(
                     }
                     _ => Ok(()),
                 }?;
-                validate_standard_material(material, &images)
+                validate_standard_material(material, &images, profile.decodes_colour_srgb())
             });
         match result {
             Ok(count) => validated_images += count,
@@ -2247,11 +2388,18 @@ pub(crate) fn sun_shadow_cascades(config: &EngineConfig) -> CascadeShadowConfig 
     .into()
 }
 
-/// Rotation for a sun at the configured Creation bearing and elevation. Directional lights emit
-/// along local -Z, so that vector points from the sun toward the ground, opposite its position.
-fn sun_rotation(config: &EngineConfig) -> Quat {
+/// Rotate toward the evaluated sun unless an explicit Creation bearing/elevation overrides it.
+/// Directional lights emit along local -Z, opposite the toward-sun direction. Without an evaluated
+/// sun (a world with no climate timing, so no sunrise or sunset) the sun has no authored direction
+/// and keeps the identity rotation; no direction is invented. Retail worlds always carry climate
+/// timing, so this is not retail behaviour: it affects only fixtures and benchmarks (a test-only
+/// path).
+fn sun_rotation(config: &EngineConfig, direction: Option<Vec3>) -> Quat {
     let Some((azimuth_degrees, elevation_degrees)) = config.sun_position else {
-        return Quat::from_euler(EulerRot::XYZ, -0.8, -0.5, 0.0);
+        return match direction {
+            Some(direction) => Quat::from_rotation_arc(Vec3::Z, direction),
+            None => crate::sun::NO_SUN_ROTATION,
+        };
     };
     let azimuth = azimuth_degrees.to_radians();
     let elevation = elevation_degrees.to_radians();
@@ -2282,6 +2430,7 @@ fn camera_offset(config: &EngineConfig) -> Vec3 {
     }
 }
 
+/// Spawn the world camera and its clock/climate driven directional sun.
 fn setup_world(
     mut commands: Commands,
     shot_output: Option<Res<ShotOutputImage>>,
@@ -2289,6 +2438,7 @@ fn setup_world(
     ground_height: Option<Res<InitialCameraGroundHeight>>,
     tuning: Option<Res<MovementTuning>>,
     start_camera: Option<Res<InitialWorldCameraPose>>,
+    environment: Option<Res<crate::world::environment::EnvironmentCatalog>>,
 ) {
     let ground_height = ground_height.as_deref().map_or(0.0, |height| height.0);
     let target = Vec3::new(CELL_SIZE_HALF, ground_height, -CELL_SIZE_HALF);
@@ -2362,7 +2512,16 @@ fn setup_world(
         },
         sun_shadow_cascades(&config),
         RenderLayers::from_layers(LIGHT_LAYERS),
-        Transform::from_rotation(sun_rotation(&config)),
+        Transform::from_rotation(sun_rotation(
+            &config,
+            crate::sun::world_sun_direction(
+                &config,
+                config.game_hour,
+                environment.as_deref(),
+                config.worldspace_id,
+            ),
+        )),
+        crate::sun::SunLight,
     ));
     commands.insert_resource(GlobalAmbientLight {
         color: weather_lighting.mean_ambient(),
@@ -3175,7 +3334,7 @@ mod tests {
             let original_worldspace = config.worldspace_id;
             let original_grid = config.start_grid;
 
-            let Err(error) = prepare_start_camera(&mut config) else {
+            let Err(error) = prepare_start_camera(&mut config, None) else {
                 panic!("{mode} must be rejected before loading the camera pose");
             };
 
@@ -3198,7 +3357,7 @@ mod tests {
             ..default()
         };
 
-        assert!(prepare_start_camera(&mut config).unwrap().is_none());
+        assert!(prepare_start_camera(&mut config, None).unwrap().is_none());
         assert_eq!(
             config.route.as_deref(),
             Some(std::path::Path::new("route.json"))
@@ -3357,6 +3516,39 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("at most 64 threads"), "{error}");
+    }
+
+    /// Uses the real startup system, so the texture it adds is the one the validator will see.
+    #[test]
+    fn the_material_fixture_builds_its_colour_checker_in_the_profile_space() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        for (profile, expected) in [
+            (
+                crate::visual_profile::VisualProfile::Mudcrab,
+                bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            ),
+            (
+                crate::visual_profile::VisualProfile::Skyrim,
+                bevy::render::render_resource::TextureFormat::Rgba8Unorm,
+            ),
+        ] {
+            let mut app = App::new();
+            app.init_resource::<Assets<Image>>()
+                .init_resource::<Assets<Mesh>>()
+                .init_resource::<Assets<StandardMaterial>>()
+                .insert_resource(profile);
+            app.world_mut()
+                .run_system_once(setup_material_fixture)
+                .unwrap();
+            let images = app.world().resource::<Assets<Image>>();
+            assert!(
+                images
+                    .iter()
+                    .any(|(_, image)| image.texture_descriptor.format == expected),
+                "no {expected:?} image under {profile:?}"
+            );
+        }
     }
 
     /// Uses real loaders with a generated external normal image, without game assets or a GPU.
@@ -3611,6 +3803,73 @@ mod tests {
         assert!(message.contains("exit code"), "{message}");
     }
 
+    fn render_error(ty: ErrorType) -> RenderError {
+        RenderError {
+            ty,
+            description: String::new(),
+            source: None,
+        }
+    }
+
+    #[test]
+    fn device_loss_exits_with_its_own_code() {
+        assert_eq!(
+            exit_for_render_error(&render_error(ErrorType::DeviceLost)),
+            AppExit::from_code(EXIT_DEVICE_LOST)
+        );
+    }
+
+    #[test]
+    fn other_render_errors_keep_the_generic_failure_code() {
+        for ty in [
+            ErrorType::OutOfMemory,
+            ErrorType::Validation,
+            ErrorType::Internal,
+        ] {
+            assert_eq!(exit_for_render_error(&render_error(ty)), AppExit::error());
+        }
+    }
+
+    /// Calls the handler the way Bevy's render state machine does and returns its policy and the
+    /// exits it wrote to the main world.
+    fn handle(ty: ErrorType) -> (RenderErrorPolicy, Vec<AppExit>) {
+        let mut main_world = World::new();
+        main_world.init_resource::<Messages<AppExit>>();
+        let mut render_world = World::new();
+        let policy = handle_render_error(&render_error(ty), &mut main_world, &mut render_world);
+        let exits = main_world
+            .resource_mut::<Messages<AppExit>>()
+            .drain()
+            .collect();
+        (policy, exits)
+    }
+
+    #[test]
+    fn the_handler_quits_with_the_device_loss_code_and_stops_rendering() {
+        let (policy, exits) = handle(ErrorType::DeviceLost);
+        assert!(matches!(policy, RenderErrorPolicy::StopRendering));
+        assert_eq!(exits, vec![AppExit::from_code(EXIT_DEVICE_LOST)]);
+    }
+
+    /// Bevy's default handler quits with the generic failure and stops rendering for every error;
+    /// any other error must still do exactly that.
+    #[test]
+    fn the_handler_keeps_bevys_default_for_other_render_errors() {
+        let (policy, exits) = handle(ErrorType::Validation);
+        assert!(matches!(policy, RenderErrorPolicy::StopRendering));
+        assert_eq!(exits, vec![AppExit::error()]);
+    }
+
+    #[test]
+    fn a_lost_device_run_is_reported_as_device_loss() {
+        let error = finished(&AppExit::from_code(EXIT_DEVICE_LOST))
+            .expect_err("a lost device must not report success");
+        assert!(error.downcast_ref::<DeviceLost>().is_some());
+        assert!(error.to_string().contains("GPU device was lost"), "{error}");
+        let other = finished(&AppExit::error()).expect_err("a failed run is an error");
+        assert!(other.downcast_ref::<DeviceLost>().is_none());
+    }
+
     /// The streaming fixture's own systems over its own fixture database, with no window, GPU or
     /// game data: the camera crosses exteriors, the fixture loads its interior by id, and the
     /// camera finishes on a fully streamed exterior ring around the grid it started on.
@@ -3647,6 +3906,7 @@ mod tests {
         .insert_resource(WaterReflectionTexture(Handle::<Image>::default()))
         .init_resource::<ProfilingState>()
         .init_resource::<StreamingFixtureState>()
+        .init_resource::<crate::visual_profile::VisualProfile>()
         .add_plugins(StreamingPlugin)
         .add_systems(
             PreUpdate,
@@ -4199,6 +4459,7 @@ mod tests {
         assert!(cascades.bounds.windows(2).all(|pair| pair[0] < pair[1]));
     }
 
+    /// Explicit CLI bearings retain their calibrated Creation-to-engine ray mapping.
     #[test]
     fn sun_position_maps_clockwise_bearing_and_elevation_to_light_rays() {
         for (azimuth, elevation, expected) in [
@@ -4212,7 +4473,7 @@ mod tests {
                 sun_position: Some((azimuth, elevation)),
                 ..EngineConfig::default()
             };
-            let rays = sun_rotation(&config) * Vec3::NEG_Z;
+            let rays = sun_rotation(&config, Some(Vec3::Y)) * Vec3::NEG_Z;
             assert!(
                 rays.distance(expected) < 1.0e-5,
                 "{azimuth},{elevation}: {rays:?}"
@@ -4220,12 +4481,20 @@ mod tests {
         }
     }
 
+    /// Without the CLI override, use the clock/climate evaluator rather than fixed Euler angles.
     #[test]
-    fn absent_sun_position_preserves_the_existing_light_rotation() {
-        assert_eq!(
-            sun_rotation(&EngineConfig::default()),
-            Quat::from_euler(EulerRot::XYZ, -0.8, -0.5, 0.0)
+    fn absent_sun_position_uses_the_evaluated_direction() {
+        let direction = Vec3::new(0.3, 0.8, -0.1).normalize();
+        assert!(
+            (sun_rotation(&EngineConfig::default(), Some(direction)) * Vec3::Z).distance(direction)
+                < 1e-6
         );
+    }
+
+    /// A world with no climate timing has no authored sun direction: identity, nothing invented.
+    #[test]
+    fn no_evaluated_sun_has_no_authored_direction() {
+        assert_eq!(sun_rotation(&EngineConfig::default(), None), Quat::IDENTITY);
     }
 
     /// The range is the camera's own distance to the far corner of the drawn grid, not the corner's
@@ -4339,6 +4608,7 @@ mod tests {
     fn v1_world_and_visual_fixture_cameras_have_explicit_hdr_output() {
         let mut app = App::new();
         app.insert_resource(EngineConfig::default())
+            .init_resource::<crate::visual_profile::VisualProfile>()
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<Image>>()
             .init_resource::<Assets<StandardMaterial>>()
@@ -4422,7 +4692,7 @@ mod tests {
             start_shot: Some(file),
             ..default()
         };
-        let pose = prepare_start_camera(&mut config).unwrap().unwrap();
+        let pose = prepare_start_camera(&mut config, None).unwrap().unwrap();
         assert_eq!(config.start_grid, (5, -11));
         assert_eq!(config.worldspace_id, 60);
         assert!(config.interactive_world_physics());
@@ -4451,6 +4721,168 @@ mod tests {
             crate::shots::vertical_fov_degrees(80.0, 1920.0 / 1080.0).to_radians()
         );
         assert!(app.world().get_resource::<ShotsRun>().is_none());
+    }
+
+    fn interactive_framing_app(settings_path: &Path, shot_path: Option<PathBuf>) -> App {
+        let args = shot_path.map_or_else(Vec::new, |path| {
+            vec!["--start-shot".to_owned(), path.to_str().unwrap().to_owned()]
+        });
+        let crate::config::ConfigAction::Run(config) = EngineConfig::from_args(args).unwrap()
+        else {
+            panic!("expected an interactive run")
+        };
+        let mut config = *config;
+        let mut preferences =
+            crate::settings::prepare_settings_at(&mut config, Some(settings_path.to_owned()));
+        let pose = prepare_start_camera(&mut config, Some(&mut preferences)).unwrap();
+        let mut app = App::new();
+        app.insert_resource(config)
+            .insert_resource(preferences.0)
+            .insert_resource(preferences.1)
+            .add_systems(Startup, setup_world)
+            .add_systems(Update, crate::settings::apply_render_settings);
+        let window = Window {
+            resolution: pose
+                .as_ref()
+                .map_or_else(|| (1600, 900).into(), |pose| pose.resolution.clone()),
+            ..default()
+        };
+        app.world_mut().spawn((window, bevy::window::PrimaryWindow));
+        if let Some(pose) = pose {
+            app.insert_resource(pose);
+        }
+        app
+    }
+
+    fn assert_interactive_framing(app: &mut App, fov: f32, size: (u32, u32)) {
+        let mut query = app
+            .world_mut()
+            .query_filtered::<&Projection, With<StreamingCamera>>();
+        let Projection::Perspective(projection) = query.single(app.world()).unwrap() else {
+            panic!("perspective camera")
+        };
+        assert!((projection.fov - fov.to_radians()).abs() < 1e-6);
+        let mut query = app
+            .world_mut()
+            .query_filtered::<&Window, With<bevy::window::PrimaryWindow>>();
+        let window = query.single(app.world()).unwrap();
+        // The window size is logical points, not physical pixels.
+        assert_eq!(
+            (window.width(), window.height()),
+            (size.0 as f32, size.1 as f32)
+        );
+        assert_eq!(window.mode, bevy::window::WindowMode::Windowed);
+    }
+
+    fn reset_interactive_settings(app: &mut App) {
+        app.world_mut()
+            .resource_scope(|world, mut file: Mut<crate::settings::SettingsFile>| {
+                file.restore_defaults(
+                    &mut world.resource_mut::<crate::settings::RenderingSettings>(),
+                );
+            });
+        app.update();
+    }
+
+    #[test]
+    fn start_shot_framing_survives_settings_updates_without_saving_launch_values() {
+        use crate::settings::{RenderingSettings, SettingsFile, WINDOW_SIZES};
+        let directory = tempfile::tempdir().unwrap();
+        let shot_path = directory.path().join("pose.json");
+        std::fs::write(&shot_path, r#"{"width":1379,"height":911,"shots":[{"name":"custom","position":[21750,-44530,140],"yaw":90,"pitch":-3,"hfov":18}]}"#).unwrap();
+        let settings_path = directory.path().join("settings.json");
+        // Include a preset equal to the reset default: reset must still clear custom dimensions.
+        for window_size in [1, 3] {
+            let saved = RenderingSettings {
+                fov_degrees: 99.0,
+                window_size,
+                window_mode: 1,
+                ..default()
+            };
+            let bytes = serde_json::to_vec(&saved).unwrap();
+            std::fs::write(&settings_path, &bytes).unwrap();
+            let mut app = interactive_framing_app(&settings_path, Some(shot_path.clone()));
+            let fov = crate::shots::vertical_fov_degrees(18.0, 1379.0 / 911.0);
+            app.update();
+            assert_interactive_framing(&mut app, fov, (1379, 911));
+            app.world_mut().resource_mut::<RenderingSettings>().hud = false;
+            app.update();
+            app.update();
+            assert_interactive_framing(&mut app, fov, (1379, 911));
+            assert_eq!(std::fs::read(&settings_path).unwrap(), bytes);
+            let active = app.world().resource::<RenderingSettings>().clone();
+            app.world_mut().resource_mut::<SettingsFile>().save(&active);
+            let persisted: RenderingSettings =
+                serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+            assert_eq!(persisted.fov_degrees, saved.fov_degrees);
+            assert_eq!(persisted.window_size, saved.window_size);
+            assert_eq!(persisted.window_mode, saved.window_mode);
+            assert_eq!(persisted.window_size_override, None);
+            assert!(!persisted.hud);
+            persisted.validate().unwrap();
+            reset_interactive_settings(&mut app);
+            let defaults = RenderingSettings::default();
+            assert_interactive_framing(
+                &mut app,
+                defaults.fov_degrees,
+                WINDOW_SIZES[defaults.window_size],
+            );
+        }
+    }
+
+    #[test]
+    fn start_shot_window_and_fov_controls_remain_editable() {
+        use crate::settings::{RenderingSettings, WINDOW_SIZES};
+        let directory = tempfile::tempdir().unwrap();
+        let shot_path = directory.path().join("pose.json");
+        std::fs::write(&shot_path, r#"{"width":1333,"height":777,"shots":[{"name":"custom","position":[0,0,140],"yaw":0,"pitch":0,"hfov":80}]}"#).unwrap();
+        let mut app =
+            interactive_framing_app(&directory.path().join("missing.json"), Some(shot_path));
+        app.update();
+        {
+            let mut settings = app.world_mut().resource_mut::<RenderingSettings>();
+            settings.window_size = 2;
+            settings.fov_degrees = 75.0;
+        }
+        app.update();
+        assert_interactive_framing(&mut app, 75.0, WINDOW_SIZES[2]);
+        app.world_mut().resource_mut::<RenderingSettings>().hud = false;
+        app.update();
+        assert_interactive_framing(&mut app, 75.0, WINDOW_SIZES[2]);
+    }
+
+    #[test]
+    fn ordinary_launch_and_reset_apply_preference_framing() {
+        use crate::settings::{RenderingSettings, WINDOW_SIZES};
+        let directory = tempfile::tempdir().unwrap();
+        for saved in [
+            None,
+            Some(RenderingSettings {
+                fov_degrees: 90.0,
+                window_size: 3,
+                ..default()
+            }),
+        ] {
+            let settings_path = directory.path().join("settings.json");
+            if let Some(settings) = &saved {
+                std::fs::write(&settings_path, serde_json::to_vec(settings).unwrap()).unwrap();
+            }
+            let expected = saved.unwrap_or_default();
+            let mut app = interactive_framing_app(&settings_path, None);
+            app.update();
+            assert_interactive_framing(
+                &mut app,
+                expected.fov_degrees,
+                WINDOW_SIZES[expected.window_size],
+            );
+            reset_interactive_settings(&mut app);
+            let defaults = RenderingSettings::default();
+            assert_interactive_framing(
+                &mut app,
+                defaults.fov_degrees,
+                WINDOW_SIZES[defaults.window_size],
+            );
+        }
     }
 
     #[test]

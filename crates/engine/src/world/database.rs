@@ -37,6 +37,10 @@ pub struct ReferenceRow {
     /// New-game enable-state snapshot, including parent chains. All rows remain available;
     /// this bootstrap value does not represent subsequent script/quest/save state.
     pub initially_enabled: bool,
+    /// The winning `ACHR` header's `Starts Dead` flag (`0x200`). Only actor references read it;
+    /// other record types assign that bit another meaning. The engine has no death pose or
+    /// ragdoll, so a corpse keeps its bind pose instead of playing a standing idle.
+    pub starts_dead: bool,
     pub cell_id: u32,
     pub base_form_id: u32,
     /// Authoritative base record type; `statics` also contains movable clutter.
@@ -201,6 +205,26 @@ impl std::fmt::Display for LodQueryFailure {
     }
 }
 
+/// Which door-link contract the worker may read. Core packs discover the optional table;
+/// legacy extension packs require a valid declaration and may explicitly disable the reader.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DoorLinksAccess {
+    /// Upstream core output; older core packs may have no door table.
+    #[default]
+    Core,
+    /// A validated legacy extension declaration requires a complete door table.
+    LegacyExtension,
+    /// A stale or unsupported legacy declaration must not be read as core data.
+    Disabled,
+}
+
+/// Dataset capabilities used by the world database worker (`crate::extensions`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorldDatabaseFeatures {
+    /// Ownership and validation policy for the promoted `door_links` table.
+    pub door_links: DoorLinksAccess,
+}
+
 #[derive(Resource)]
 pub struct WorldDatabase {
     requests: Sender<DatabaseRequest>,
@@ -232,8 +256,10 @@ fn unpack_color(value: u32) -> [u8; 3] {
 
 #[derive(Resource, Default)]
 pub struct AssetCatalog {
+    object_texture_swaps: crate::object_materials::ObjectTextureCatalog,
     landscape_diffuse: std::collections::HashMap<u32, String>,
     landscape_normal: std::collections::HashMap<u32, String>,
+    default_land: (Option<String>, Option<String>),
     water_flow: std::collections::HashMap<u32, String>,
     water_colors: std::collections::HashMap<u32, WaterColors>,
 }
@@ -309,7 +335,50 @@ impl AssetCatalog {
                     .map(|rows| rows.filter_map(std::result::Result::ok).collect())
             })
             .unwrap_or_default();
+        let has_default_land: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='terrain_default_texture')",
+            [],
+            |row| row.get(0),
+        )?;
+        let default_land = if has_default_land {
+            match connection.query_row(
+                "SELECT diffuse_path,normal_path FROM terrain_default_texture WHERE id=0",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            ) {
+                Ok((diffuse, normal)) => {
+                    let valid = |path: String| {
+                        if !is_safe_relative_asset_path(&path)
+                            || path.contains([':', '\\'])
+                            || path.split('/').any(|part| matches!(part, "" | "." | ".."))
+                            || path != path.to_ascii_lowercase()
+                            || !path.ends_with(".ktx2")
+                        {
+                            bevy::log::warn!("Invalid default land path; using white: {path}");
+                            return None;
+                        }
+                        Some(path)
+                    };
+                    let diffuse = diffuse.and_then(valid);
+                    let normal = diffuse.as_ref().and(normal).and_then(valid);
+                    (diffuse, normal)
+                }
+                Err(error) => {
+                    bevy::log::warn!("Invalid default land metadata; using white: {error}");
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
         Ok(Self {
+            default_land,
+            object_texture_swaps: crate::object_materials::ObjectTextureCatalog::read(&connection)?,
             landscape_diffuse,
             landscape_normal,
             water_flow,
@@ -317,12 +386,26 @@ impl AssetCatalog {
         })
     }
 
+    /// The converted LTEX diffuse, or the pack's configured default for the zero base ID.
     pub fn landscape_diffuse(&self, form_id: u32) -> Option<&str> {
+        if form_id == shared::terrain_mesh::DEFAULT_LAND_TEXTURE_FORM_ID {
+            return self.default_land.0.as_deref();
+        }
         self.landscape_diffuse.get(&form_id).map(String::as_str)
     }
 
-    /// The converted normal map of landscape texture `form_id`, if its texture set has one.
+    pub(crate) fn object_texture_swaps(
+        &self,
+        base: u32,
+    ) -> Option<crate::object_materials::ReferenceTextureSwaps> {
+        self.object_texture_swaps.get(base)
+    }
+
+    /// The converted LTEX normal, or the pack's configured default for the zero base ID.
     pub fn landscape_normal(&self, form_id: u32) -> Option<&str> {
+        if form_id == shared::terrain_mesh::DEFAULT_LAND_TEXTURE_FORM_ID {
+            return self.default_land.1.as_deref();
+        }
         self.landscape_normal.get(&form_id).map(String::as_str)
     }
 
@@ -340,7 +423,7 @@ impl AssetCatalog {
 /// The database is input the engine did not write, so a path that could leave `textures/` - a
 /// `..` or `.` segment, an absolute or drive-prefixed path, an empty segment, or a `:` (a Windows
 /// drive or stream, or an asset source such as `embedded://`) - is refused rather than loaded.
-fn converted_texture_path(path: String) -> Option<String> {
+pub(crate) fn converted_texture_path(path: String) -> Option<String> {
     // Converted assets are published with lowercase canonical paths, so the
     // lookup must lowercase too (matching world-inspect's resolver).
     let normalized = path.replace('\\', "/").to_ascii_lowercase();
@@ -392,8 +475,23 @@ impl WorldDatabase {
         )
     }
 
+    /// Opens available core doors, including legacy packages with no door table.
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with(path, WorldDatabaseFeatures::default())
+    }
+
+    /// Opens the ordinary database with a validated door capability policy.
+    pub fn open_with(path: &Path, features: WorldDatabaseFeatures) -> Result<Self> {
         validate(path)?;
+        if features.door_links == DoorLinksAccess::LegacyExtension {
+            require_table(path, "door_links", crate::extensions::Feature::DoorLinks)?;
+            let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            color_eyre::eyre::ensure!(
+                has_door_links(&connection)?,
+                "extension {} is listed but its door_links table lacks columns",
+                shared::extensions::DOOR_LINKS
+            );
+        }
         let path = path.to_owned();
         let (request_tx, request_rx) = bounded(128);
         // Responses must not block shutdown if the main world stops polling.
@@ -404,7 +502,7 @@ impl WorldDatabase {
         let worker = thread::Builder::new()
             .name("mudcrab-world-db".into())
             .spawn(move || {
-                worker(path, request_rx, response_tx, lod_response_tx);
+                worker(path, features, request_rx, response_tx, lod_response_tx);
                 stopped.store(true, Ordering::Release);
             })
             .wrap_err("failed to start world database worker")?;
@@ -483,6 +581,23 @@ impl Drop for WorldDatabase {
     }
 }
 
+fn require_table(path: &Path, table: &str, feature: crate::extensions::Feature) -> Result<()> {
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .wrap_err_with(|| format!("failed to open {}", path.display()))?;
+    let found: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1 COLLATE NOCASE",
+        [table],
+        |row| row.get(0),
+    )?;
+    color_eyre::eyre::ensure!(
+        found > 0,
+        "extension {} is listed but {} has no `{table}` table",
+        feature.extension(),
+        path.display()
+    );
+    Ok(())
+}
+
 fn validate(path: &Path) -> Result<()> {
     shared::world_assets::validate_world_database(path).map(|_| ())
 }
@@ -491,6 +606,7 @@ pub(crate) use shared::world_assets::validate_lod_build_contract;
 
 fn worker(
     path: std::path::PathBuf,
+    features: WorldDatabaseFeatures,
     requests: Receiver<DatabaseRequest>,
     responses: Sender<DatabaseResponse>,
     lod_responses: Sender<LodChunkResponse>,
@@ -505,7 +621,7 @@ fn worker(
     )
     .map_err(color_eyre::eyre::Report::from)
     .and_then(|connection| {
-        let query = ReferenceQuery::for_connection(&connection)?;
+        let query = ReferenceQuery::for_connection(&connection, features)?;
         Ok((connection, query))
     })
     .map_err(|error| format!("world database {} is unusable: {error:#}", path.display()));
@@ -845,6 +961,8 @@ const ABSENT_RADIUS_OVERRIDE_COLUMN: &str = "NULL";
 // reserved suffix so combining the optional door/emittance projections with enable state cannot
 // reinterpret either feature.
 const REFERENCE_ENABLE_START: usize = 37;
+/// `ACHR` record header flag: the actor is placed as a corpse.
+const ACTOR_STARTS_DEAD: u32 = 0x200;
 
 /// The `lights` row of the reference's base record: one `LIGH` record can be placed many times,
 /// each reference lighting the space at its own radius.
@@ -899,7 +1017,7 @@ const DOOR_LINK_COLUMN_NAMES: [&str; 10] = [
 /// It is optional: a database converted before doors were exported still loads, and no reference
 /// in it is a load door. A table of another shape is treated the same way (and logged) rather than
 /// failing every cell's query, like [`has_radius_override`] checks its column.
-fn has_door_links(connection: &Connection) -> Result<bool> {
+pub(crate) fn has_door_links(connection: &Connection) -> Result<bool> {
     let mut statement =
         connection.prepare_cached("SELECT name FROM pragma_table_info('door_links')")?;
     let columns: BTreeSet<String> = statement
@@ -958,7 +1076,7 @@ struct ReferenceQuery {
 }
 
 impl ReferenceQuery {
-    fn for_connection(connection: &Connection) -> Result<Self> {
+    fn for_connection(connection: &Connection, features: WorldDatabaseFeatures) -> Result<Self> {
         let has_records = has_records(connection)?;
         let record_column = if has_records { "b.record_type" } else { "NULL" };
         let has_lights = has_lights(connection)?;
@@ -972,7 +1090,8 @@ impl ReferenceQuery {
         } else {
             ABSENT_RADIUS_OVERRIDE_COLUMN
         };
-        let has_door_links = has_door_links(connection)?;
+        let has_door_links =
+            features.door_links != DoorLinksAccess::Disabled && has_door_links(connection)?;
         let door_columns = if has_door_links {
             DOOR_COLUMNS
         } else {
@@ -1182,10 +1301,12 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
         None => None,
     };
     let base_flags: Option<u32> = row.get(STATIC_FLAGS_INDEX)?;
+    let enable_inputs = map_enable_inputs(row, REFERENCE_ENABLE_START)?;
     Ok((
         ReferenceRow {
             form_id: row.get(0)?,
             initially_enabled: true,
+            starts_dead: enable_inputs.header_flags & ACTOR_STARTS_DEAD != 0,
             cell_id: row.get(1)?,
             base_form_id: row.get(2)?,
             base_record_type,
@@ -1202,7 +1323,7 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
             door,
             emittance,
         },
-        map_enable_inputs(row, REFERENCE_ENABLE_START)?,
+        enable_inputs,
     ))
 }
 
@@ -1232,7 +1353,7 @@ mod tests {
     fn load_cell(connection: &Connection, generation: u64, key: CellKey) -> Result<CellPayload> {
         super::load_cell(
             connection,
-            &mut ReferenceQuery::for_connection(connection)?,
+            &mut ReferenceQuery::for_connection(connection, WorldDatabaseFeatures::default())?,
             generation,
             key,
         )
@@ -1269,6 +1390,44 @@ mod tests {
     }
 
     #[test]
+    fn disabled_legacy_doors_preserve_query_layout_without_reading_core_doors() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        add_door_links(&connection);
+        let core =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
+        assert!(core.joins.contains("door_links"));
+        let mut denied = ReferenceQuery::for_connection(
+            &connection,
+            WorldDatabaseFeatures {
+                door_links: DoorLinksAccess::Disabled,
+            },
+        )
+        .unwrap();
+        assert!(!denied.joins.contains("door_links"));
+        assert!(denied.columns.contains(ABSENT_DOOR_COLUMNS));
+        let sql = format!(
+            "SELECT {} FROM \"references\" r{} WHERE r.id=30",
+            denied.columns, denied.joins
+        );
+        connection
+            .query_row(&sql, [], |row| {
+                for index in 25..34 {
+                    assert_eq!(row.get::<_, Option<i64>>(index)?, None);
+                }
+                Ok(())
+            })
+            .unwrap();
+        let payload = super::load_cell(&connection, &mut denied, 1, CellKey::Interior(99)).unwrap();
+        assert!(
+            payload
+                .references
+                .iter()
+                .all(|reference| reference.door.is_none())
+        );
+    }
+
+    #[test]
     fn enable_metadata_does_not_decode_reserved_door_slots() {
         let connection = Connection::open_in_memory().unwrap();
         fixture(&connection);
@@ -1278,7 +1437,8 @@ mod tests {
                 "UPDATE \"references\" SET header_flags=2048,enable_parent_id=20,enable_parent_flags=1 WHERE id=30;",
             )
             .unwrap();
-        let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+        let mut query =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
         let sql = format!(
             "SELECT {} FROM \"references\" r{} WHERE r.id=30",
             query.columns, query.joins
@@ -1339,6 +1499,32 @@ mod tests {
     }
 
     #[test]
+    fn starts_dead_comes_from_the_reference_header_and_defaults_off() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        let mut legacy =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
+        let payload = super::load_cell(&connection, &mut legacy, 1, CellKey::Interior(10)).unwrap();
+        assert!(!payload.references.is_empty());
+        assert!(payload.references.iter().all(|row| !row.starts_dead));
+        enable_columns(&connection);
+        // 0x200 Starts Dead with Persistent (0x400); 0x800 alone is Initially Disabled.
+        connection
+            .execute_batch(
+                "UPDATE \"references\" SET header_flags=1536 WHERE id=30;
+                 UPDATE \"references\" SET header_flags=2048 WHERE id<>30;",
+            )
+            .unwrap();
+        let mut query =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
+        let payload = super::load_cell(&connection, &mut query, 1, CellKey::Interior(10)).unwrap();
+        for row in &payload.references {
+            assert_eq!(row.starts_dead, row.form_id == 30, "{:08X}", row.form_id);
+        }
+        assert!(payload.references.iter().any(|row| row.form_id == 30));
+    }
+
+    #[test]
     fn initial_enable_state_uses_parents_outside_the_loaded_cell_without_models() {
         let connection = Connection::open_in_memory().unwrap();
         fixture(&connection);
@@ -1350,7 +1536,8 @@ mod tests {
              UPDATE \"references\" SET header_flags=2048,enable_parent_id=200,enable_parent_flags=952044802 WHERE id=30;
              UPDATE \"references\" SET enable_parent_id=30,enable_parent_flags=1 WHERE id=31;"
         ).unwrap();
-        let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+        let mut query =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
         for _ in 0..2 {
             let interior =
                 super::load_cell(&connection, &mut query, 1, CellKey::Interior(99)).unwrap();
@@ -1405,7 +1592,9 @@ mod tests {
             connection.execute_batch(
                 "UPDATE \"references\" SET enable_parent_id=30,enable_parent_flags=1 WHERE id=31;"
             ).unwrap();
-            let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+            let mut query =
+                ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default())
+                    .unwrap();
             for _ in 0..2 {
                 let payload = super::load_cell(
                     &connection,
@@ -2279,7 +2468,13 @@ mod tests {
         }
         request_tx.send(DatabaseRequest::Shutdown).unwrap();
 
-        worker(path, request_rx, response_tx, lod_response_tx);
+        worker(
+            path,
+            WorldDatabaseFeatures::default(),
+            request_rx,
+            response_tx,
+            lod_response_tx,
+        );
 
         let responses: Vec<DatabaseResponse> = response_rx.try_iter().collect();
         assert_eq!(responses.len(), 2, "every request is answered");
@@ -2311,7 +2506,13 @@ mod tests {
             .unwrap();
         request_tx.send(DatabaseRequest::Shutdown).unwrap();
 
-        worker(path, request_rx, cell_response_tx, lod_response_tx);
+        worker(
+            path,
+            WorldDatabaseFeatures::default(),
+            request_rx,
+            cell_response_tx,
+            lod_response_tx,
+        );
 
         let response = lod_response_rx.try_recv().unwrap();
         assert_eq!(response.generation, 7);

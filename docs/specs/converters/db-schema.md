@@ -334,7 +334,9 @@ text uses Windows-1252. Both record readers publish the same UTF-8 text:
   as `lstring` in every occurrence for that record type, using the same table lookup
   (`crates/converter/src/esm/legacy_text.rs`). That covers `FULL` on every record type, and
   `DESC`, `RNAM` and others where the subrecord is unambiguous. This changed the legacy
-  projection, so its reader identity is `projection_version` 4 and includes language/encoding.
+  projection; version 4 introduced language/encoding. Version 5 also publishes every schema-declared
+  projectile/hazard placement and its base model (#498). Version 6 adds the STAT MODS alternate-texture
+  table (`base_texture_swaps`). The in-house adapter is version 14.
   Version-3 retained proofs are accepted only for their historical English setting; all older
   metadata rebuilds use the configured language. Retained assets keep their independent proof.
 
@@ -555,7 +557,8 @@ unchanged.
 
 ### 5. Placed World References (`references`)
 
-Stores 3D positions, rotations, scales, and cell parentage for all placed world objects (`REFR`, `ACHR`, `ACRE`, `PGRE`, `PMIS`).
+Stores 3D positions, rotations, scales, and cell parentage for placed world objects (`REFR`,
+`ACHR`, `ACRE`, `PGRE`, `PMIS`, `PHZD`, `PARW`, `PBAR`, `PBEA`, `PCON`, `PFLA`).
 
 ```sql
 CREATE TABLE IF NOT EXISTS "references" (
@@ -625,12 +628,13 @@ CREATE TABLE IF NOT EXISTS statics (
 
 Rows come from every placeable base type with a world model: `STAT`, `MSTT`, `FURN`, `TREE`,
 `FLOR`, `CONT`, `DOOR`, `ACTI`, `TACT`, `WEAP`, `MISC`, `BOOK`, `AMMO`, `ALCH`, `INGR`, `SLGM`,
-`KEYM`, `SCRL`, `ARMO`, `APPA`, `ADDN`, `ARTO`, and `LIGH` when it has a model. `TACT`
+`KEYM`, `SCRL`, `ARMO`, `APPA`, `ADDN`, `ARTO`, `PROJ`, `HAZD`, and `LIGH` when it has a model. `TACT`
 (talking activators), `APPA` (apparatus), `ADDN` (addon nodes) and `ARTO` (art objects) were
 added for #269; before that their references had no row and did not render. The engine still
-skips models under `effects/`, `sky/` or `markers/` and files named `*marker*`
+skips models under `effects/`, `sky/` or `markers/`
 (`converted_model_path` in `crates/engine/src/streaming.rs`), which covers many `ADDN` and `ARTO`
-models; that is render policy, not data the table lacks. They are additive
+models; that is render policy, not data the table lacks. Marker filenames alone are not excluded:
+the base record's `Is Marker` flag controls editor-marker admission. They are additive
 rows, so no `shared::WORLD_DATABASE_SCHEMA_VERSION` bump: an older database keeps loading and
 simply lacks them until reconverted. Mesh conversion discovers NIF inputs independently of this
 table, so their models were already converted. Both record readers produce the same rows.
@@ -640,7 +644,7 @@ table, so their models were already converted. Both record readers produce the s
 What a placed reference is linked to, what activates it, who owns it, how it is locked and
 whether it is a map marker (#269 gap 3). Patrols, idle markers, traps, levers, pressure plates,
 stealing and locked doors need these; before they were only in `references.data`. Written for
-every exported placed reference (`REFR`, `ACHR`, `ACRE`, `PGRE`, `PMIS`). Layouts follow xEdit
+every exported placed reference (the eleven source types listed above). Layouts follow xEdit
 4.1.5f (`Core/wbDefinitionsTES5.pas`, `REFR`).
 
 ```sql
@@ -680,8 +684,8 @@ CREATE TABLE IF NOT EXISTS reference_details (           -- one row per referenc
 
 Rules:
 
-- These detail rows are projected from winning source references of types `REFR`, `ACHR`, `ACRE`,
-  `PGRE` and `PMIS`. Target types are field-specific and are not the same set as source types:
+- These detail rows are projected from every winning placed source type listed in §5.
+  Target types are field-specific and are not the same set as source types:
   `XLKR.keyword_id` accepts `KYWD`, `PLYR`, `ACHR`, `REFR`, `PGRE`, `PHZD`, `PMIS`, `PARW`,
   `PBAR`, `PBEA`, `PCON` and `PFLA`; `XLKR.linked_ref_id` and `XAPR.parent_ref_id` accept
   `PLYR`, `ACHR`, `REFR`, `PGRE`, `PHZD`, `PMIS`, `PARW`, `PBAR`, `PBEA`, `PCON` and `PFLA`.
@@ -1498,10 +1502,40 @@ armor -> every `ARMO/MODL` armature in authored order -> each `ARMA`:
 5. The slot is the armature's biped bit: bit 2 = body, bit 3 = hands, bit 7 = feet (slot number
    minus 30). The resolver reads `ARMA/BOD2` when present and falls back to `ARMA/BODT`, which is
    the field retail Skyrim's `ARMA` records actually carry (the same `u32` slot word at offset 0;
-   `ARMO` is the record with `BOD2`). An armature with neither recognized bit is rejected loudly
+   `ARMO` is the record with `BOD2`). Outside the creature whole-skin exception below, an armature with neither recognized bit is rejected loudly
    with an `unrecognized_slot` diagnostic; a slot is never inferred from the filename.
 6. Paths are deduplicated case-insensitively, and a slot already filled keeps the higher-priority
    armature.
+
+**Creature whole skins.** A non-FaceGen race with an authored project outside the shared
+character project family may store its whole skin in biped slot 30 (`BODT`/`BOD2` bit 0).
+When no ordinary body resolved, exactly one compatible head-slot model becomes the body.
+An ordinary body wins regardless of armature order; multiple distinct candidates remain
+unresolved with `ambiguous_creature_body`. Missing race flags or project metadata do not
+establish this exception. This preserves humanoid and child body selection.
+
+**Authored idle identity.** Every export creates the typed projection below with the other
+runtime tables. Full runtime exports replace its rows in the record transaction; archive-only
+record bundles keep the same empty table, like the other deferred runtime views. Metadata
+rebuilds therefore invalidate retained idle bindings when their race project or skeleton
+changes. The runtime accepts a catalog binding only when this table has a matching row. Older
+databases need no migration to render actors; they have no authenticated generic idle library
+until normal conversion produces one.
+
+```sql
+CREATE TABLE IF NOT EXISTS race_animation_sources (
+    race_id INTEGER NOT NULL,
+    sex TEXT NOT NULL,
+    skeleton_nif TEXT,
+    project_hkx TEXT,
+    PRIMARY KEY (race_id, sex)
+);
+```
+
+The converter follows project/character HKX metadata and publishes pose clips plus
+`meshes/actor-idles/catalog.json`. Runtime lookup requires race, sex, full body path, project,
+and race skeleton identity to agree. See [animal idle investigation](../../research/animal-idle-471.md)
+for discovery, supported playback, provenance, and validation limits.
 
 **Head.** The `RACE/DATA` `facegen_head` flag (bit 1 of the flags word at offset 32) selects the
 FaceGen geometry `meshes/actors/character/facegendata/facegeom/<plugin>/<formid>.nif`, lowercased,
@@ -1530,7 +1564,8 @@ export path has no asset index, so PR-6 validates the path before loading.
 resolution and skin overrides add nine codes: `missing_traits_template`, `deleted_traits_template`,
 `wrong_type_traits_template`, `traits_template_cycle`, `leveled_traits_template`,
 `zero_npc_skin_override`, `missing_npc_skin_override`, `deleted_npc_skin_override`, and
-`wrong_type_npc_skin_override`. A base that reaches head resolution but has no head path also
+`wrong_type_npc_skin_override`. A creature base with more than one slot-30 whole-skin candidate
+and no normal body records `ambiguous_creature_body`. A base that reaches head resolution but has no head path also
 records `no_facegen_and_no_default`; early returns for unresolved Traits, missing race links, or
 missing race records do not. The reasons are not mutually exclusive, and a report that counts
 them counts a base once per reason.
@@ -1553,6 +1588,33 @@ tables empty. `NPC_` bases are never written into `statics`.
 **These tables are optional and do not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`** (still 9):
 they only add tables, and consumers must check that they exist before reading them. No mandatory
 join is added to `REFERENCE_JOIN`; a database without them still opens and renders statics.
+### 18a. Worn Outfit Catalog (`actor-outfits.json`)
+
+A sidecar file beside the world database, not a table. It holds what each resolved `NPC_` base
+wears by default: `NPC_/DOFT` -> `OTFT/INAM` -> `ARMO/MODL` -> `ARMA`, with each armature matched to
+the base's race and sex by the same rule skin armor uses (exact or additional race first, then
+`DefaultRace`; `MOD3` for female with a `MOD2` fallback) and named as a converted `meshes/**.glb`
+scene. The type is `shared::actor_outfits::ActorOutfitCatalog`; `version` is 1.
+
+Each row is `npc_id`, `outfit_id` and `parts`. A part is `armo_id`, `armature_id`, `biped_mask`
+(`ARMA/BOD2` slots: body bit 2, hands bit 3, feet bit 7), `armature_race_id` and `scene`. A race
+armature wins its slots over a `DefaultRace` armature of the same `ARMO`. A part whose scene is not
+in the pack is skipped. `skipped` counts every item that did not become a part, by reason:
+`leveled_list`, `not_armor`, `item_missing`, `armor_without_armature`, `no_compatible_armature`,
+`armature_without_slots`, `armature_without_model`, `invalid_model_path`,
+`converted_model_missing`.
+
+Scope: the default outfit only. Leveled lists, inventory armor (`CNTO`) and the sleeping outfit
+(`SOFT`) are not resolved. An actor with a Use Inventory template and no own `DOFT` takes the
+template's outfit. The own `DOFT` wins when both exist (9 retail bases differ; not checked against
+the game).
+
+Producer: `converter derive-outfits <clone> --registry <packs.json> --clone-of <pack>` reads the
+records the pack already holds and writes `actor-outfits.json` and `actor-outfits-receipt.json`
+into an APFS clone of a registered pack. It reads no game data, needs no conversion, and refuses a
+registered pack as target. The engine reads the file if present, validates it whole, and spawns
+actors in their skin when it is absent or invalid.
+
 ### 19. Projection Omissions (`projection_omission_stats`, `projection_omission_samples`)
 
 The light and emittance projections write no row for a record whose data cannot supply one. Each
@@ -1602,3 +1664,44 @@ omissions. A database without the tables reports none.
 **These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`**: they only
 add tables, `create_tables` adds them to an older reused database, and the engine does not read
 them.
+
+### 20. Per-Base Texture Assignments (`base_texture_swaps`)
+
+Optional STAT MODS (alternate texture) projection; world schema version is unchanged.
+
+```sql
+CREATE TABLE base_texture_swaps (
+    base_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    shape_name TEXT NOT NULL,
+    shape_index INTEGER NOT NULL,
+    texture_set_id INTEGER NOT NULL,
+    disposition TEXT NOT NULL,
+    PRIMARY KEY (base_id, position)
+);
+```
+
+IDs use the reader's resolved load-order numbering. Every MODS entry gets a row, in authored
+order (`position`); no entry is dropped or gated. `shape_index` is the signed 3D Index: retail
+keys entries by it, skips -1 and lets a later entry with the same index win (RF-TEX-001), and the
+index counts geometry leaves in a pre-order depth-first walk of the model (RF-TEX-002).
+`shape_name` is the 3D Name (with its `:N` suffix) as record data; the retail apply path does not
+read it. `disposition` is `texture_set` (a live TXST; the runtime reads its slots from
+`texture_sets`), `null_texture_set` (the target is FormID 0x28, the engine's NullTextureSet, which
+hides the shape; RF-TEX-005) or `missing_texture_set` (deleted, wrong type or absent). Owner updates clear the base's
+rows before inserting replacements; complete exports replace the table transactionally and
+archive-only exports leave it empty. Subset exporters must supply referenced TXST records
+alongside the bases whose appearance they update. All eight existing `texture_sets`
+columns retain their consumers. See [per-record object appearance](../engine/object-materials.md)
+for selection, instance isolation, retail coverage, diagnostics and the unimplemented MATO limits.
+
+## Optional terrain default metadata
+
+`terrain_default_texture` is generated after texture conversion for every pack. Its singleton
+row has `id = 0`, nullable `diffuse_path` and `normal_path` (canonical relative KTX2 paths),
+and nullable `source_diffuse` (the canonical DDS path used by the LOD bake). A null diffuse
+means white and has no normal or source. The engine probes for the table so old databases
+keep their white default. Invalid diffuse metadata warns and falls back to white without a
+normal. Invalid normal metadata warns and disables only the normal, keeping a valid diffuse.
+This additive metadata does not change LAND geometry, the cell-cache format, or texture
+producer versions.
