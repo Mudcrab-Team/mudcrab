@@ -2395,6 +2395,115 @@ mod tests {
         .unwrap()
     }
 
+    /// Newly tagged Havok models invalidate affected producer-ten masks through model identity.
+    #[test]
+    fn havok_geometry_tags_rebuild_only_affected_warm_grass_masks() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = fixture(dir.path());
+        let nif = dummy_content::nif::static_shape_with_bodies_and_material_flags(
+            &dummy_content::nif::StaticShape {
+                name: "GrassBlocker",
+                positions: &[
+                    [-64.0, -64.0, 0.0],
+                    [64.0, -64.0, 0.0],
+                    [64.0, 64.0, 0.0],
+                    [-64.0, 64.0, 0.0],
+                ],
+                normals: &[[0.0, 0.0, 1.0]; 4],
+                uvs: &[[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+                indices: &[[0, 1, 2], [0, 2, 3]],
+                diffuse: "textures/generated_color.dds",
+                normal_texture: "textures/generated_normal.dds",
+            },
+            &[dummy_content::nif::fixed_box_body("Collision")],
+            1 << 31,
+            1,
+        )
+        .unwrap();
+        let input = dir.path().join("blocker.nif");
+        let model = dir.path().join("meshes/blocker.glb");
+        std::fs::write(&input, nif).unwrap();
+        let diagnostics = crate::mesh::MeshConverter::inspect_nif(&input).unwrap();
+        assert_eq!(
+            diagnostics
+                .fallback_blocks
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["bhkBoxShape", "bhkCollisionObject", "bhkRigidBody"]
+        );
+        crate::mesh::MeshConverter::convert_nif_to_glb(&input, &model).unwrap();
+        let tagged = std::fs::read(&model).unwrap();
+        let glb = gltf::binary::Glb::from_slice(&tagged).unwrap();
+        let document: serde_json::Value = serde_json::from_slice(&glb.json).unwrap();
+        assert_eq!(
+            document["meshes"][0]["primitives"][0]["extras"]["mudcrabGeometryIndex"],
+            0
+        );
+        assert_eq!(
+            document["scenes"][0]["extras"]["mudcrabCollision"]["bodies"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
+        conn.execute_batch(
+            "UPDATE statics SET bounds_min_x=-64,bounds_min_y=-64,bounds_min_z=0,
+                bounds_max_x=64,bounds_max_y=64,bounds_max_z=0 WHERE id=40;
+             UPDATE \"references\" SET pos_x=128,pos_y=128,scale=1 WHERE id=50;
+             INSERT INTO base_texture_swaps(base_id,position,shape_name,shape_index,texture_set_id,disposition)
+             VALUES(40,0,'GrassBlocker',0,40,'null_texture_set');",
+        )
+        .unwrap();
+        // The previous mesh contract left Havok models untagged while preserving their geometry.
+        edit_mesh(dir.path(), |json, _| {
+            json["meshes"][0]["primitives"][0]["extras"]
+                .as_object_mut()
+                .unwrap()
+                .remove("mudcrabGeometryIndex");
+        });
+        let terrain = dir.path().join("terrain.rkyv");
+        let previous = dir.path().join("previous.rkyv");
+        let output = dir.path().join("grass.rkyv");
+        write_grass_cache(&conn, dir.path(), &terrain, None, &previous).unwrap();
+        let old = read(&previous);
+        assert_eq!(old.version, 10);
+        assert!(
+            old.cells[0].quadrants[0]
+                .exclusion
+                .iter()
+                .any(|&byte| byte != 0),
+            "the previous untagged shape contributes obstruction samples"
+        );
+        std::fs::write(&model, &tagged).unwrap();
+        let rebuilt =
+            write_grass_cache(&conn, dir.path(), &terrain, Some(&previous), &output).unwrap();
+        assert_eq!((rebuilt.baked_cells, rebuilt.reused_cells), (1, 2));
+        assert_eq!(rebuilt.skipped_obstruction_models, 0);
+        let current = read(&output);
+        assert_eq!(current.version, 10);
+        assert_ne!(current.cells[0].input_hash, old.cells[0].input_hash);
+        assert!(
+            current.cells[0]
+                .quadrants
+                .iter()
+                .all(|quadrant| { quadrant.exclusion.iter().all(|&byte| byte == 0) }),
+            "the tagged NullTextureSet shape leaves its grass samples clear"
+        );
+        assert_eq!(&current.cells[1..], &old.cells[1..]);
+        let warm = dir.path().join("warm.rkyv");
+        let reused = write_grass_cache(&conn, dir.path(), &terrain, Some(&output), &warm).unwrap();
+        assert_eq!(
+            (
+                reused.baked_cells,
+                reused.reused_cells,
+                reused.geometry_decodes
+            ),
+            (0, 3, 0)
+        );
+        assert_eq!(read(&warm), current);
+        assert_eq!(std::fs::read(model).unwrap(), tagged);
+    }
+
     /// Neighbor masks preserve worldspace identity, terrain cell selection and all linked species.
     #[test]
     fn cross_cell_masks_keep_worldspaces_separate_and_many_species() {

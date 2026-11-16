@@ -467,6 +467,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "nif-root-transform-ignored",
     "skin-static-fallback",
     "object-texture-swap-geometry-index-v1",
+    "object-texture-swap-geometry-index-v2",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical

@@ -1510,7 +1510,7 @@ mod tests {
     fn launch(args: &[String]) -> EngineConfig {
         match EngineConfig::from_args(args.iter().cloned()).unwrap() {
             ConfigAction::Run(config) => *config,
-            ConfigAction::Help => panic!("expected a run"),
+            ConfigAction::Help | ConfigAction::Version => panic!("expected a run"),
         }
     }
 

@@ -51,6 +51,8 @@ impl Fixture {
         config.record_reader = reader;
         config.cpu_jobs = 2;
         config.no_lod = true;
+        // Preserve the white terrain policy of these historical asset-reuse proofs.
+        config.terrain_default_texture = crate::config::TerrainDefaultTexture::White;
         config
     }
 

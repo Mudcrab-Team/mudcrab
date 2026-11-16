@@ -390,6 +390,9 @@ async fn generated_data_directory_converts_end_to_end() {
         "textures/generated_cube.ktx2",
         "textures/generated_volume.ktx2",
         "textures/landscape/dirt02.ktx2",
+        "textures/landscape/dirt02_n.ktx2",
+        "terrain/default-diffuse.ktx2",
+        "terrain/default-normal.ktx2",
         "meshes/generated.glb",
         "skyrim_world.db",
         "cell_cache.rkyv",
@@ -467,10 +470,10 @@ async fn generated_data_directory_converts_end_to_end() {
             .unwrap();
         drain.await.unwrap();
         assert!(report.complete, "schema {schema}");
-        // The current combined producer rebuilds all six textures and the model:
+        // The current combined producer rebuilds all seven textures and the model:
         // old schema/hash identities cannot prove both output contracts.
         // The two scripts retain their historical source/configuration proof.
-        assert_eq!(report.converted, 7, "schema {schema}");
+        assert_eq!(report.converted, 8, "schema {schema}");
         assert!(report.cache_hits >= 2, "schema {schema}: {report:?}");
         let mmap = converter::esm::cell_cache::validate_cell_cache(&cache_path).unwrap();
         let cache = rkyv::access::<shared::ArchivedCellCache, rkyv::rancor::Error>(&mmap).unwrap();
