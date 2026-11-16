@@ -10,7 +10,6 @@ fn modelless_middle_species_keeps_authored_cap_slot() {
         let dir = tempfile::tempdir().unwrap();
         let conn = fixture(dir.path());
         conn.execute_batch("DELETE FROM landscape_texture_grasses;
-            ALTER TABLE landscape_texture_grasses ADD COLUMN ordinal INTEGER NOT NULL DEFAULT -1;
             INSERT INTO landscape_texture_grasses(ltex_id,gras_id,ordinal) VALUES(30,21,0),(30,23,1),(30,22,2);").unwrap();
         conn.execute("INSERT INTO grass_types(id,model_path,density,min_slope,max_slope,units_from_water,water_comparison,position_range,height_range,color_range,wave_period,flags,load_order) VALUES(23,?1,63,0,80,0,0,85,0.2,0.1,1.2,1,0)", [model]).unwrap();
         let (report, cache) = bake(&conn, dir.path(), None, "slots.rkyv");
