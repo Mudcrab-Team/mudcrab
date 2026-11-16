@@ -297,8 +297,8 @@ fn obstruction_mesh(data: &Path) {
     fs::write(data.join(OBSTRUCTION_MODEL), mesh).unwrap();
 }
 
-/// Check bounded deterministic generation and each cell's median worker latency.
-fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: Duration) {
+/// Check bounded deterministic generation and report each cell's median budget result.
+fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: Duration) -> bool {
     let config = EngineConfig {
         grass: true,
         grass_min_spacing: spacing,
@@ -307,6 +307,7 @@ fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: 
     };
     let mut durations = Vec::new();
     let mut total_instances = 0usize;
+    let mut timing_passed = true;
     for &id in ids {
         let baseline = LIVE.load(std::sync::atomic::Ordering::SeqCst);
         PEAK.store(baseline, std::sync::atomic::Ordering::SeqCst);
@@ -397,9 +398,10 @@ fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: 
             }
         }
         samples.sort_unstable();
-        assert!(
-            samples[1] < ceiling,
-            "cell {id:08X}, spacing {spacing}: median {:?} exceeded {ceiling:?}",
+        let within_budget = samples[1] < ceiling;
+        timing_passed &= within_budget;
+        eprintln!(
+            "grass cell generation: spacing={spacing}, cell={id:08X}, median={:?}, budget={ceiling:?}, within_budget={within_budget}",
             samples[1]
         );
         durations.push(samples[1]);
@@ -411,6 +413,7 @@ fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: 
         durations[durations.len() / 2],
         durations.last().unwrap()
     );
+    timing_passed
 }
 
 #[tokio::test]
@@ -524,9 +527,13 @@ async fn performance_grass_generation() {
     // These are worker-latency regression ceilings, with headroom for shared CI
     // runners. The printed measurements, not these ceilings, describe a machine's
     // observed performance; generation never runs in the frame's cell commit.
-    measured(&cache, &cells, 64.0, 4096, Duration::from_millis(6));
-    measured(&cache, &cells, 32.0, 16384, Duration::from_millis(25));
-    measured(&cache, &cells, 20.0, 41944, Duration::from_millis(60));
+    let mut timing_passed = measured(&cache, &cells, 64.0, 4096, Duration::from_millis(6));
+    timing_passed &= measured(&cache, &cells, 32.0, 16384, Duration::from_millis(25));
+    timing_passed &= measured(&cache, &cells, 20.0, 41944, Duration::from_millis(60));
+    assert!(
+        timing_passed,
+        "grass generation timing budget exceeded; see per-cell medians above"
+    );
     if std::env::var_os("MUDCRAB_GRASS_FIXTURE_OUTPUT").is_some() {
         eprintln!(
             "retained synthetic grass runtime pack: {}",
