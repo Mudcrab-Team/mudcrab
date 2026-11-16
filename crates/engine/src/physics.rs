@@ -17,6 +17,7 @@ use shared::collision::CollisionBody;
 use std::path::Path;
 
 mod camera_follow;
+mod camera_trace;
 pub mod carry;
 #[cfg(test)]
 mod feel_measure;
@@ -601,6 +602,20 @@ impl Plugin for PlayerControlsPlugin {
                     walk_view_begin_tick.before(walk_movement_system),
                     walk_view_end_tick.after(PhysicsSet::Writeback),
                 ),
+            )
+            // `--walk-camera-trace`: off unless the option names a file.
+            .add_systems(Startup, camera_trace::start_walk_camera_trace)
+            .add_systems(
+                FixedUpdate,
+                camera_trace::count_walk_camera_trace_tick
+                    .after(walk_view_end_tick)
+                    .run_if(resource_exists::<camera_trace::WalkCameraTrace>),
+            )
+            .add_systems(
+                Update,
+                camera_trace::write_walk_camera_trace_row
+                    .after(walk_camera_follow_system)
+                    .run_if(resource_exists::<camera_trace::WalkCameraTrace>),
             );
     }
 }

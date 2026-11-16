@@ -3,6 +3,8 @@
 //! Before view interpolation the camera followed the body only on frames where a tick had run.
 //! At 120, 144 and 240 Hz that repeated the camera position on 50%, 59% and 75% of frames (see the
 //! controller-feel measurements, `feel_measure.rs`). These tests pin the replacement behaviour.
+//! The blended position is the input of the first-person follow spring (#511), so the camera is
+//! that position plus the spring lag.
 
 use super::{headless, *};
 
@@ -11,8 +13,17 @@ const START: Vec3 = Vec3::new(-100.0, 200.0, 900.0);
 
 #[derive(Clone, Copy, Debug)]
 struct Sample {
+    /// The camera.
     eye: Vec3,
+    /// The spring input at eye height: the body blended between the last two ticks.
+    input: Vec3,
     body: Vec3,
+}
+
+fn spring_input_eye(app: &App) -> Vec3 {
+    let fraction = app.world().resource::<Time<Fixed>>().overstep_fraction();
+    let eye_height = app.world().resource::<MovementTuning>().eye_height;
+    app.world().resource::<WalkViewPose>().shown(fraction) + Vec3::Y * eye_height
 }
 
 fn eye_position(app: &mut App) -> Vec3 {
@@ -55,6 +66,7 @@ fn record(app: &mut App, frames: usize) -> Vec<Sample> {
             app.update();
             Sample {
                 eye: eye_position(app),
+                input: spring_input_eye(app),
                 body: headless::player_pose(app).0,
             }
         })
@@ -115,21 +127,22 @@ fn view_at_tick_rate_and_below_keeps_even_steps() {
 
 #[test]
 fn view_lags_the_latest_tick_by_at_most_one_tick() {
-    // The authoritative body is the latest tick. The shown eye lies between the previous and the
-    // latest tick, so it trails by 0 to one tick of travel and never leads.
+    // The authoritative body is the latest tick. The spring input lies between the previous and
+    // the latest tick, so it trails by 0 to one tick of travel and never leads. The camera adds
+    // the spring lag to it (RF-CAM-001), which this test does not measure.
     for hz in [90.0_f64, 144.0, 240.0] {
         let mut app = running_app(hz);
         let tick_distance = SPEED * PHYSICS_TIMESTEP;
         let eye_height = app.world().resource::<MovementTuning>().eye_height;
         for sample in record(&mut app, hz as usize) {
-            let lag = sample.eye.z - sample.body.z;
+            let lag = sample.input.z - sample.body.z;
             assert!(
                 lag >= -1.0e-3 && lag <= tick_distance + 0.05,
                 "{hz} Hz: view trails the body by {lag}, one tick is {tick_distance}"
             );
             // The body bobs by up to a fraction of a unit per tick on flat ground (issue #590).
-            assert!((sample.eye.y - sample.body.y - eye_height).abs() < 0.5);
-            assert!((sample.eye.x - sample.body.x).abs() < 0.05);
+            assert!((sample.input.y - sample.body.y - eye_height).abs() < 0.5);
+            assert!((sample.input.x - sample.body.x).abs() < 0.05);
         }
     }
 }
