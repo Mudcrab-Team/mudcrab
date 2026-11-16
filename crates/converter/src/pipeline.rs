@@ -14243,10 +14243,13 @@ mod tests {
                 .any(|line| line.contains("TruncatedMod.bsa"))
         );
         assert!(
-            report
-                .warnings
-                .iter()
-                .any(|line| line.contains("Skyrim.esm") && line.contains("skipped"))
+            report.warnings.iter().any(|line| {
+                line.contains("skyrim.esm")
+                    && line.contains("skipped 1 records")
+                    && line.contains("STAT 00001002")
+            }),
+            "{:?}",
+            report.warnings
         );
         let manifest = published_manifest(&output);
         assert!(!manifest.complete);
