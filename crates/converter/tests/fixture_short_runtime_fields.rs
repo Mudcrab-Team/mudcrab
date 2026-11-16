@@ -130,6 +130,33 @@ async fn short_fields_publish_usable_neighbors_and_report_each_omission() {
             ],
             "{reader:?}: each missing/short field must reach the stored report"
         );
+        let short_reference_reason: String = db
+            .query_row(
+                "SELECT reason FROM projection_omission_samples WHERE category='reference_unusable_data' AND form_id=32786",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let extent = match reader {
+            RecordReader::Legacy => "20 bytes in the runtime projection",
+            RecordReader::Inhouse => "unavailable in the runtime projection",
+        };
+        assert!(
+            short_reference_reason.contains(extent),
+            "{reader:?}: {short_reference_reason}"
+        );
+        if reader == RecordReader::Inhouse {
+            // The typed decoder dropped this rejected field before runtime adaptation;
+            // its original twenty-byte DATA remains in source provenance, not the view.
+            let payload: Vec<u8> = db
+                .query_row(
+                    "SELECT payload FROM inhouse_source_records WHERE form_id=32786",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(payload.windows(6).any(|header| header == b"DATA\x14\x00"));
+        }
         let missing_grass: u32 = db.query_row("SELECT count(*) FROM grass_types WHERE id=32769 AND density IS NULL AND min_slope IS NULL AND max_slope IS NULL AND units_from_water IS NULL AND water_comparison IS NULL AND position_range IS NULL AND height_range IS NULL AND color_range IS NULL AND wave_period IS NULL AND flags IS NULL AND model_path='meshes/generated.glb'", [], |row| row.get(0)).unwrap();
         assert_eq!(
             missing_grass, 1,

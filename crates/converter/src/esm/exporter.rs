@@ -840,9 +840,9 @@ fn export_records(
                         OmissionCategory::ReferenceUnusableData,
                         form_id,
                         format!(
-                            "{} DATA is {}; expected at least 24 bytes; no placement or spatial row",
+                            "{} DATA is {} in the runtime projection; expected at least 24 bytes; no placement or spatial row",
                             type_str,
-                            view.find(b"DATA").map_or_else(|| "missing".to_owned(), |data| format!("{} bytes", data.len())),
+                            view.find(b"DATA").map_or_else(|| "unavailable".to_owned(), |data| format!("{} bytes", data.len())),
                         ),
                     );
                     continue;
@@ -1482,7 +1482,8 @@ fn insert_light(
 
 /// Write a reference and its exterior spatial projection when DATA holds all six floats.
 /// An unusable transform removes any stale placement and warns; canonical records remain owned
-/// by the caller. Full exports also persist this omission in their integration report.
+/// by the caller. This low-level subset helper has no report sink: its warning is terminal-only.
+/// Full exports separately persist placement omissions in their integration report.
 pub fn insert_reference(
     tx: &Transaction<'_>,
     form_id: u32,
@@ -1536,18 +1537,19 @@ fn insert_reference_with_canonical_data(
     canonical_subrecords: &[(Vec<u8>, Vec<u8>)],
 ) -> Result<bool> {
     let view = SubrecordView::new(projected_subrecords);
-    let Some(transform) = view.find(b"DATA").and_then(|data| data.get(..24)) else {
+    let Some(transform) = view.find(b"DATA").and_then(|data| data.first_chunk::<24>()) else {
         // A subset update must also clear a formerly usable placement. The complete export
         // already replaced its snapshot; either route keeps records.data for inspection.
         clear_reference_placement(tx, form_id)?;
         return Ok(false);
     };
     let component = |offset| {
-        f32::from_le_bytes(
-            transform[offset..offset + 4]
-                .try_into()
-                .expect("four-byte transform component"),
-        )
+        f32::from_le_bytes([
+            transform[offset],
+            transform[offset + 1],
+            transform[offset + 2],
+            transform[offset + 3],
+        ])
     };
     let pos = [component(0), component(4), component(8)];
     let rot = [component(12), component(16), component(20)];

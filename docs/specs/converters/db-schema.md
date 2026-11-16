@@ -1682,6 +1682,12 @@ incomplete. A reference whose emittance target does not resolve keeps the model'
 output stays complete. A severity the reader does not know is read as `data_loss`, so a category
 added by a newer converter cannot pass as success.
 
+Placement omission reasons describe the `DATA` available to the runtime projection.
+An in-house typed-field rejection can make it unavailable there even though the original
+short field remains in `inhouse_source_records.payload`. The low-level `insert_reference`
+subset helper has no report sink: it warns on the terminal but does not update these
+omission tables or an integration report. Full load-order exports persist the omission.
+
 A full load-order export clears and rewrites both tables inside its transaction, so a re-export
 replaces the counts instead of adding to them, and a repaired load order leaves the tables empty.
 The movement-annotation subset export leaves them alone, and a diagnostic archive leaves them
