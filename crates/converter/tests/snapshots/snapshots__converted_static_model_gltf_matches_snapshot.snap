@@ -76,6 +76,17 @@ expression: document
   "extensionsUsed": [
     "KHR_materials_specular"
   ],
+  "extras": {
+    "mudcrabRoomSphere": {
+      "center": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "radius": 1.4142135381698608,
+      "version": 1
+    }
+  },
   "images": [
     {
       "uri": "../textures/generated_color.opensky-srgb.opensky-wrap0.ktx2"
