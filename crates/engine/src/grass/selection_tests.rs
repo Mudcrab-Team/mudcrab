@@ -670,6 +670,7 @@ fn performance_coloured_terrain_generation() {
     let mut surface = vec![120.0; 1089];
     surface.extend((0..1089).map(|i| (i % 33) as f32 / 32.0));
     let terrain = GrassTerrain::new(surface, None);
+    let mut timing_passed = true;
     for (spacing, slots, millis) in [(64.0, 4096, 6), (32.0, 16384, 25), (20.0, 36864, 60)] {
         let config = EngineConfig {
             grass_min_spacing: spacing,
@@ -705,16 +706,16 @@ fn performance_coloured_terrain_generation() {
         }
         times.sort_unstable();
         let ceiling = Duration::from_millis(millis);
-        assert!(
-            times[1] < ceiling,
-            "spacing={spacing}: {:?} exceeds {ceiling:?}",
-            times[1]
-        );
+        timing_passed &= times[1] < ceiling;
         eprintln!(
             "coloured grass: spacing={spacing} instances={count} median={:?} budget={ceiling:?}",
             times[1]
         );
     }
+    assert!(
+        timing_passed,
+        "coloured grass generation timing budget exceeded; see spacing medians above"
+    );
 }
 
 /// A modelless first nomination keeps its cap slot and every conditional reference draw.
