@@ -13206,7 +13206,10 @@ mod tests {
         patch.extend(grass_policy_record(
             b"LTEX",
             4,
-            &[(b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec())],
+            &[
+                (b"TNAM", 2u32.to_le_bytes().to_vec()),
+                (b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec()),
+            ],
         ));
         fs::write(data.join("Grass.esp"), patch).unwrap();
         let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
