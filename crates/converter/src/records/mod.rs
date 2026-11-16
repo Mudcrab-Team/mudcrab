@@ -184,6 +184,9 @@ pub struct DecodedRecord {
 
 impl DecodedRecord {
     pub(crate) fn unique_source_subrecord(&self, signature: &[u8; 4]) -> Option<&[u8]> {
+        if self.rejected_fields.contains(signature) {
+            return None;
+        }
         decoder::unique_source_subrecord(&self.raw_payload, signature)
     }
 
