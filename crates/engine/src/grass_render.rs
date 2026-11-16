@@ -44,14 +44,14 @@ use bevy::{
 use std::{
     collections::{HashMap, HashSet},
     sync::{
-        Arc, Weak,
-        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, Weak,
+        atomic::{AtomicU64, Ordering},
     },
 };
 
 pub struct GrassRenderPlugin;
 
-/// Capture readiness requires an issued main draw for every admitted primitive.
+/// Capture readiness requires current-view draw proof for visible admitted primitives.
 #[derive(Resource, Default, Debug)]
 pub struct GrassRenderMetrics {
     pub ready: bool,
@@ -83,7 +83,9 @@ impl Plugin for GrassRenderPlugin {
             )
             .add_systems(
                 PostUpdate,
-                update_grass_uniforms.after(bevy::transform::TransformSystems::Propagate),
+                update_grass_uniforms
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .after(bevy::camera::CameraUpdateSystems),
             );
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -201,7 +203,63 @@ struct GrassPrimitive {
     uniform: GrassUniform,
     model: Mat4,
     slot_count: u32,
-    drawn: Arc<AtomicBool>,
+    /// Shared proof of an issued main draw for this camera and pipeline.
+    drawn: GrassViewEvidence,
+    /// Frustum culling satisfies only the current camera view.
+    culled: GrassViewEvidence,
+    /// Main-world camera settings governing shared render evidence.
+    proof_view: Option<GrassProofView>,
+    /// Last queued main specialization for the current view.
+    proof_pipeline: Arc<Mutex<Option<GrassKey>>>,
+}
+
+/// Shared evidence records the view generation captured by each render-world copy.
+#[derive(Clone)]
+struct GrassViewEvidence {
+    satisfied: Arc<AtomicU64>,
+    generation: u64,
+}
+
+impl Default for GrassViewEvidence {
+    /// Start with a fresh view awaiting evidence.
+    fn default() -> Self {
+        Self {
+            satisfied: Arc::new(AtomicU64::new(0)),
+            generation: 1,
+        }
+    }
+}
+
+impl GrassViewEvidence {
+    /// Read satisfaction for the view captured by this copy.
+    fn load(&self, ordering: Ordering) -> bool {
+        self.satisfied.load(ordering) == self.generation
+    }
+
+    /// Record satisfaction for the view captured by this copy.
+    fn store(&self, value: bool, ordering: Ordering) {
+        self.satisfied
+            .store(if value { self.generation } else { 0 }, ordering);
+    }
+
+    /// Advance the current view while older extracted copies retain their generation.
+    fn next_view(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            *self = Self::default();
+        }
+    }
+}
+
+/// Camera and pipeline settings identifying the view awaiting draw evidence.
+#[derive(Clone, Copy, PartialEq)]
+struct GrassProofView {
+    camera: Entity,
+    world_from_view: Mat4,
+    clip_from_view: Mat4,
+    samples: u32,
+    tonemapping: Option<Tonemapping>,
+    hdr: bool,
 }
 
 impl SyncComponent for GrassPrimitive {
@@ -233,12 +291,24 @@ struct GrassUniform {
     normal_params: Vec4,
 }
 
-/// Advance bounded model-template loading for requested grass species.
+/// Load requested grass species and release handles after their last batch leaves.
 fn load_grass_models(
     batches: Query<&GrassBatch>,
     server: Res<AssetServer>,
     mut models: ResMut<GrassModels>,
+    mut metrics: ResMut<GrassRenderMetrics>,
 ) {
+    let needed: HashSet<_> = batches
+        .iter()
+        .map(|batch| batch.model_path.as_str())
+        .collect();
+    models.0.retain(|path, model| {
+        let keep = needed.contains(path.as_str());
+        if !keep && model.failed {
+            metrics.failures = metrics.failures.saturating_sub(1);
+        }
+        keep
+    });
     for batch in &batches {
         models
             .0
@@ -495,7 +565,10 @@ fn attach_grass_primitives(
                 normal_texture: template.normal_texture.clone(),
                 model: template.model,
                 slot_count: batch.slot_count,
-                drawn: Arc::new(AtomicBool::new(false)),
+                drawn: GrassViewEvidence::default(),
+                culled: GrassViewEvidence::default(),
+                proof_view: None,
+                proof_pipeline: Arc::new(Mutex::new(None)),
                 uniform: GrassUniform {
                     world_from_cell: Mat4::IDENTITY,
                     model: template.model,
@@ -544,28 +617,65 @@ fn attach_grass_primitives(
     }
 }
 
-#[allow(clippy::too_many_arguments)] // Independent ECS queries/resources are scheduled by Bevy.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)] // Independent per-view ECS inputs.
 /// Update propagated grass uniforms and readiness after deferred batch/primitive admission.
 fn update_grass_uniforms(
     mut commands: Commands,
-    cameras: Query<(Entity, &GlobalTransform, Option<&GrassView>), With<StreamingCamera>>,
+    cameras: Query<
+        (
+            Entity,
+            &GlobalTransform,
+            Option<&Camera>,
+            Option<&Msaa>,
+            Option<&Tonemapping>,
+            Has<bevy::camera::Hdr>,
+            Option<&GrassView>,
+        ),
+        With<StreamingCamera>,
+    >,
+    retired_views: Query<Entity, (With<GrassView>, Without<StreamingCamera>)>,
     mut primitives: Query<(&GlobalTransform, &mut GrassPrimitive)>,
     fade: Res<GrassFade>,
     ambient: Option<Res<GlobalAmbientLight>>,
     batches: Query<Option<&GrassAttached>, With<GrassBatch>>,
     mut metrics: ResMut<GrassRenderMetrics>,
 ) {
-    for (camera, _, marker) in &cameras {
-        if marker.is_none() {
+    for camera in &retired_views {
+        commands.entity(camera).remove::<GrassView>();
+    }
+    for (camera, _, component, _, _, _, marker) in &cameras {
+        let active = component.is_none_or(|camera| camera.is_active);
+        if active && marker.is_none() {
             commands.entity(camera).insert(GrassView);
+        } else if !active && marker.is_some() {
+            commands.entity(camera).remove::<GrassView>();
         }
     }
-    let eye = cameras
+    let view = cameras
         .single()
         .ok()
-        .map(|(_, transform, _)| transform.translation());
+        .filter(|(_, _, camera, _, _, _, _)| camera.is_none_or(|camera| camera.is_active))
+        .map(
+            |(entity, transform, camera, msaa, tonemapping, hdr, _)| GrassProofView {
+                camera: entity,
+                world_from_view: transform.to_matrix(),
+                clip_from_view: camera.map_or(Mat4::IDENTITY, Camera::clip_from_view),
+                samples: msaa.map_or(1, |msaa| msaa.samples()),
+                tonemapping: tonemapping.copied(),
+                hdr,
+            },
+        );
+    let eye = view.map(|view| view.world_from_view.w_axis.truncate());
     let mut all_drawn = true;
     for (transform, mut primitive) in &mut primitives {
+        if primitive.proof_view != view
+            || primitive.uniform.world_from_cell != transform.to_matrix()
+        {
+            // Old render-world copies retain evidence only for their original view.
+            primitive.drawn.next_view();
+            primitive.culled.next_view();
+        }
+        primitive.proof_view = view;
         primitive.uniform.world_from_cell = transform.to_matrix();
         primitive.uniform.model = primitive.model;
         primitive.uniform.fade = Vec4::new(
@@ -578,7 +688,8 @@ fn update_grass_uniforms(
             primitive.uniform.ambient =
                 Vec4::from_array(ambient.color.to_linear().to_f32_array()) * ambient.brightness;
         }
-        all_drawn &= primitive.drawn.load(Ordering::Acquire)
+        all_drawn &= primitive.culled.load(Ordering::Acquire)
+            || primitive.drawn.load(Ordering::Acquire)
             || eye.is_some_and(|eye| visible_instance_count(&primitive, eye) == 0);
     }
     metrics.ready = eye.is_some()
@@ -892,9 +1003,8 @@ fn prepare_grass(
         if let Some(mut gpu) = gpu
             && Arc::ptr_eq(&gpu.instances, &data.instances)
         {
-            let mut uniform = data.uniform.clone();
-            uniform.sun_direction = sun_direction;
-            uniform.sun_color = sun_color;
+            let uniform =
+                updated_grass_uniform(&data.uniform, gpu.uniform.get(), sun_direction, sun_color);
             gpu.uniform.set(uniform);
             gpu.uniform.write_buffer(&device, &queue);
             continue;
@@ -964,6 +1074,43 @@ fn prepare_grass(
     }
 }
 
+/// Refresh frame values while retaining texture-format decoding flags.
+fn updated_grass_uniform(
+    current: &GrassUniform,
+    previous: &GrassUniform,
+    sun_direction: Vec4,
+    sun_color: Vec4,
+) -> GrassUniform {
+    let mut uniform = current.clone();
+    uniform.normal_params.z = previous.normal_params.z;
+    uniform.normal_params.w = previous.normal_params.w;
+    uniform.sun_direction = sun_direction;
+    uniform.sun_color = sun_color;
+    uniform
+}
+
+/// Record visibility for the current grass view before queueing a draw.
+fn grass_visible_in_view(data: &GrassPrimitive, clip_from_world: Mat4) -> bool {
+    let visible = grass_in_frustum(data, clip_from_world);
+    data.culled.store(!visible, Ordering::Release);
+    visible
+}
+
+/// Select the camera whose render result can supply primitive evidence.
+fn grass_matches_evidence_camera(data: &GrassPrimitive, camera: MainEntity) -> bool {
+    data.proof_view
+        .is_some_and(|view| view.camera == camera.id())
+}
+
+/// Refresh main-draw evidence when its specialization or availability changes.
+fn record_grass_pipeline(data: &GrassPrimitive, key: GrassKey, ready: bool) {
+    let mut previous = data.proof_pipeline.lock().unwrap();
+    if !ready || previous.is_some_and(|previous| previous != key) {
+        data.drawn.store(false, Ordering::Release);
+    }
+    *previous = Some(key);
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)] // Independent per-view ECS inputs.
 /// Queue eligible grass primitives into the main and depth render phases.
 fn queue_grass(
@@ -996,19 +1143,23 @@ fn queue_grass(
     clear_queued_grass(&mut queued, &mut main_phases, &mut pre_phases);
     for (view, msaa, camera, tonemapping) in &views {
         for (entity, main_entity, data) in &primitives {
-            if !grass_in_frustum(
+            if !grass_matches_evidence_camera(data, view.retained_view_entity.main_entity) {
+                continue;
+            }
+            if !grass_visible_in_view(
                 data,
                 view.clip_from_world.unwrap_or_else(|| {
                     view.clip_from_view * view.world_from_view.to_matrix().inverse()
                 }),
             ) {
-                data.drawn.store(true, Ordering::Release);
                 continue;
             }
             let Some(mesh) = meshes.get(&data.mesh) else {
+                data.drawn.store(false, Ordering::Release);
                 continue;
             };
             let Some(slabs) = allocator.mesh_slabs(&data.mesh.id()) else {
+                data.drawn.store(false, Ordering::Release);
                 continue;
             };
             queued
@@ -1026,14 +1177,21 @@ fn queue_grass(
                 );
                 if !prepass {
                     let Some(scene_key) = view_keys.get(&view.retained_view_entity).copied() else {
-                        // Never bind a terrain view to the depth-only layout.
+                        // The terrain view uses the scene pipeline's matching layout.
+                        data.drawn.store(false, Ordering::Release);
                         continue;
                     };
                     key.scene = Some(scene_key);
                 }
                 let Ok(id) = pipelines.specialize(&cache, &pipeline, key, &mesh.layout) else {
+                    if !prepass {
+                        data.drawn.store(false, Ordering::Release);
+                    }
                     continue;
                 };
+                if !prepass {
+                    record_grass_pipeline(data, key, cache.get_render_pipeline(id).is_some());
+                }
                 let batch = OpaqueNoLightmap3dBatchSetKey {
                     pipeline: id,
                     draw_function: if prepass {
@@ -1179,6 +1337,9 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
         let Some((data, gpu)) = item else {
             return RenderCommandResult::Skip;
         };
+        if !grass_matches_evidence_camera(data, view.retained_view_entity.main_entity) {
+            return RenderCommandResult::Skip;
+        }
         let Some(mesh) = meshes.into_inner().get(&data.mesh) else {
             return RenderCommandResult::Skip;
         };
@@ -1242,6 +1403,387 @@ mod tests {
     use bevy::{asset::RenderAssetUsages, gltf::GltfPrimitive};
 
     include!("grass_render_alpha_tests.rs");
+
+    /// Keep signed and unsigned BC5 decode flags through successive live updates.
+    #[test]
+    fn bot_bc5_flags_survive_successive_uniform_updates() {
+        for flags in [Vec2::new(1.0, 0.0), Vec2::new(1.0, 1.0), Vec2::ZERO] {
+            let mut uploaded = primitive().uniform;
+            uploaded.normal_params = Vec4::new(1.0, -1.0, flags.x, flags.y);
+            let mut current = primitive().uniform;
+            current.normal_params.x = 1.0;
+            current.normal_params.y = -1.0;
+            for brightness in [3.0, 7.0] {
+                current.ambient = Vec4::splat(brightness);
+                uploaded = updated_grass_uniform(&current, &uploaded, Vec4::Z, Vec4::splat(5.0));
+                assert_eq!(uploaded.normal_params.zw(), flags);
+                assert_eq!(uploaded.normal_params.xy(), Vec2::new(1.0, -1.0));
+                assert_eq!(uploaded.ambient, Vec4::splat(brightness));
+                assert_eq!(uploaded.sun_direction, Vec4::Z);
+                assert_eq!(uploaded.sun_color, Vec4::splat(5.0));
+            }
+        }
+    }
+
+    /// Retain shared live model handles and release a model after its last batch leaves.
+    #[test]
+    fn bot_model_handles_follow_current_batches() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Gltf>()
+            .init_resource::<GrassModels>()
+            .init_resource::<GrassRenderMetrics>()
+            .add_systems(Update, load_grass_models);
+        let handle = app.world_mut().resource_mut::<Assets<Gltf>>().add(Gltf {
+            scenes: Vec::new(),
+            named_scenes: Default::default(),
+            meshes: Vec::new(),
+            named_meshes: Default::default(),
+            materials: Vec::new(),
+            named_materials: Default::default(),
+            nodes: Vec::new(),
+            named_nodes: Default::default(),
+            skins: Vec::new(),
+            named_skins: Default::default(),
+            default_scene: None,
+            animations: Vec::new(),
+            named_animations: Default::default(),
+            source: None,
+        });
+        let model = GrassModel {
+            handle,
+            templates: Some(Vec::new()),
+            build: TemplateBuild::default(),
+            failed: false,
+        };
+        app.world_mut()
+            .resource_mut::<GrassModels>()
+            .0
+            .insert("meshes/grass.glb".into(), model);
+        let first = app.world_mut().spawn(batch()).id();
+        let second = app.world_mut().spawn(batch()).id();
+        app.update();
+        assert_eq!(app.world().resource::<GrassModels>().0.len(), 1);
+        app.world_mut().despawn(first);
+        app.update();
+        assert_eq!(app.world().resource::<GrassModels>().0.len(), 1);
+        app.world_mut()
+            .resource_mut::<GrassModels>()
+            .0
+            .get_mut("meshes/grass.glb")
+            .unwrap()
+            .failed = true;
+        app.world_mut()
+            .resource_mut::<GrassRenderMetrics>()
+            .failures = 1;
+        app.world_mut().despawn(second);
+        app.update();
+        assert!(app.world().resource::<GrassModels>().0.is_empty());
+        assert_eq!(app.world().resource::<GrassRenderMetrics>().failures, 0);
+        app.world_mut().spawn(batch());
+        app.update();
+        assert!(!app.world().resource::<GrassModels>().0["meshes/grass.glb"].failed);
+    }
+
+    /// Require a fresh main draw after specialization changes or a pipeline recompiles.
+    #[test]
+    fn bot_queued_pipeline_changes_refresh_draw_evidence() {
+        let data = primitive();
+        let key = GrassKey::new(1, TextureFormat::Rgba8UnormSrgb, false, false, None);
+        record_grass_pipeline(&data, key, true);
+        data.drawn.store(true, Ordering::Release);
+        record_grass_pipeline(&data, key, true);
+        assert!(data.drawn.load(Ordering::Acquire));
+        let next = GrassKey { samples: 4, ..key };
+        record_grass_pipeline(&data, next, true);
+        assert!(!data.drawn.load(Ordering::Acquire));
+        data.drawn.store(true, Ordering::Release);
+        record_grass_pipeline(&data, next, false);
+        assert!(!data.drawn.load(Ordering::Acquire));
+    }
+
+    /// A culled primitive satisfies only its present view and obtains draw proof from a draw.
+    #[test]
+    fn bot_culled_primitive_keeps_draw_proof_scoped_to_current_camera() {
+        let mut app = App::new();
+        app.insert_resource(GrassFade {
+            enabled: false,
+            start: 1000.0,
+            end: 2000.0,
+        })
+        .init_resource::<GrassRenderMetrics>()
+        .add_systems(Update, update_grass_uniforms);
+        let camera = app
+            .world_mut()
+            .spawn((StreamingCamera, GlobalTransform::IDENTITY))
+            .id();
+        app.world_mut().spawn((batch(), GrassAttached));
+        let mut data = primitive();
+        data.blade_reach = 1.0;
+        let entity = app
+            .world_mut()
+            .spawn((
+                data,
+                GlobalTransform::from_translation(Vec3::new(-10000.0, 0.0, 0.0)),
+            ))
+            .id();
+        app.update();
+        let old_render_copy = app.world().get::<GrassPrimitive>(entity).unwrap().clone();
+        let proof = old_render_copy.drawn.clone();
+        let clip = Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 0.1, 5000.0);
+        assert!(!grass_visible_in_view(&old_render_copy, clip));
+        assert!(
+            !proof.load(Ordering::Acquire),
+            "culling leaves real draw proof unset"
+        );
+        app.update();
+        assert!(app.world().resource::<GrassRenderMetrics>().ready);
+        app.world_mut()
+            .entity_mut(camera)
+            .insert(GlobalTransform::from(Transform::from_rotation(
+                Quat::from_rotation_y(1.0),
+            )));
+        app.update();
+        assert!(
+            !app.world().resource::<GrassRenderMetrics>().ready,
+            "a camera turn requires fresh view evidence"
+        );
+        old_render_copy.drawn.store(true, Ordering::Release);
+        app.update();
+        assert!(
+            !app.world().resource::<GrassRenderMetrics>().ready,
+            "old extracted draws satisfy their original view"
+        );
+        app.world()
+            .get::<GrassPrimitive>(entity)
+            .unwrap()
+            .drawn
+            .store(true, Ordering::Release);
+        app.update();
+        assert!(app.world().resource::<GrassRenderMetrics>().ready);
+    }
+
+    /// Require new draw evidence after a previously drawn camera turns.
+    #[test]
+    fn bot_camera_turn_requires_fresh_draw_proof() {
+        assert_view_edit_requires_fresh_draw(|world, camera| {
+            world
+                .entity_mut(camera)
+                .insert(GlobalTransform::from(Transform::from_rotation(
+                    Quat::from_rotation_y(1.0),
+                )));
+        });
+    }
+
+    /// Require new draw evidence when the camera changes render specialization.
+    #[test]
+    fn bot_pipeline_settings_require_fresh_draw_proof() {
+        assert_view_edit_requires_fresh_draw(|world, camera| {
+            world.entity_mut(camera).insert(Msaa::Sample4);
+        });
+    }
+
+    /// A replacement streaming camera owns the sole marker used to queue grass.
+    #[test]
+    fn bot_view_transition_retires_former_camera_marker() {
+        let (mut app, camera, _) = view_transition_app();
+        app.update();
+        assert!(app.world().get::<GrassView>(camera).is_some());
+        app.world_mut()
+            .entity_mut(camera)
+            .remove::<StreamingCamera>();
+        let replacement = app
+            .world_mut()
+            .spawn((StreamingCamera, GlobalTransform::IDENTITY))
+            .id();
+        app.update();
+        assert!(app.world().get::<GrassView>(replacement).is_some());
+        assert!(
+            app.world().get::<GrassView>(camera).is_none(),
+            "the former camera leaves the grass render views"
+        );
+    }
+
+    /// A render result captured while no camera was selected stays in that generation.
+    #[test]
+    fn bot_view_transition_camera_recovery_requires_new_evidence() {
+        let (mut app, camera, entity) = view_transition_app();
+        app.update();
+        app.world_mut()
+            .entity_mut(camera)
+            .remove::<StreamingCamera>();
+        app.update();
+        assert!(!app.world().resource::<GrassRenderMetrics>().ready);
+        let absent_view = app.world().get::<GrassPrimitive>(entity).unwrap().clone();
+        app.world_mut().entity_mut(camera).insert(StreamingCamera);
+        app.update();
+        absent_view.drawn.store(true, Ordering::Release);
+        app.update();
+        assert!(
+            !app.world().resource::<GrassRenderMetrics>().ready,
+            "camera recovery awaits a draw captured for the restored camera"
+        );
+    }
+
+    /// A disabled camera remains pending until an active view supplies a fresh draw.
+    #[test]
+    fn bot_view_transition_disabled_camera_waits_for_active_draw() {
+        let (mut app, camera, entity) = view_transition_app();
+        app.world_mut().entity_mut(camera).insert(Camera::default());
+        app.update();
+        app.world()
+            .get::<GrassPrimitive>(entity)
+            .unwrap()
+            .drawn
+            .store(true, Ordering::Release);
+        app.update();
+        assert!(app.world().resource::<GrassRenderMetrics>().ready);
+        app.world_mut().get_mut::<Camera>(camera).unwrap().is_active = false;
+        app.update();
+        assert!(
+            !app.world().resource::<GrassRenderMetrics>().ready,
+            "a disabled camera waits for an active view"
+        );
+    }
+
+    /// Former camera views cannot cull or draw on behalf of the selected camera.
+    #[test]
+    fn bot_view_transition_accepts_only_selected_camera() {
+        let (mut app, camera, entity) = view_transition_app();
+        let former_camera = app.world_mut().spawn_empty().id();
+        app.update();
+        let mut data = app.world().get::<GrassPrimitive>(entity).unwrap().clone();
+        assert!(grass_matches_evidence_camera(&data, camera.into()));
+        assert!(!grass_matches_evidence_camera(&data, former_camera.into()));
+        data.proof_view = None;
+        assert!(!grass_matches_evidence_camera(&data, camera.into()));
+    }
+
+    /// Build an admitted primitive and independently replaceable streaming camera.
+    fn view_transition_app() -> (App, Entity, Entity) {
+        let mut app = App::new();
+        app.insert_resource(GrassFade {
+            enabled: false,
+            start: 1000.0,
+            end: 2000.0,
+        })
+        .init_resource::<GrassRenderMetrics>()
+        .add_systems(Update, update_grass_uniforms);
+        let camera = app
+            .world_mut()
+            .spawn((StreamingCamera, GlobalTransform::IDENTITY))
+            .id();
+        app.world_mut().spawn((batch(), GrassAttached));
+        let entity = app
+            .world_mut()
+            .spawn((primitive(), GlobalTransform::IDENTITY))
+            .id();
+        (app, camera, entity)
+    }
+
+    /// Projection refreshes reach the production grass snapshot in the same frame.
+    #[test]
+    fn bot_projection_refresh_precedes_grass_proof_snapshot() {
+        /// Publish an asymmetric computed projection in Bevy's camera phase.
+        fn refresh_projection(mut cameras: Query<&mut Camera>) {
+            for mut camera in &mut cameras {
+                camera.computed.clip_from_view = Mat4::from_scale(Vec3::new(2.0, 3.0, 1.0));
+            }
+        }
+        for camera_phase_first in [true, false] {
+            let mut app = App::new();
+            app.add_plugins((
+                bevy::app::TaskPoolPlugin::default(),
+                bevy::asset::AssetPlugin::default(),
+            ))
+            .insert_resource(crate::config::EngineConfig::default())
+            .init_asset::<Shader>()
+            .init_asset::<Gltf>()
+            .init_asset::<GltfNode>()
+            .init_asset::<GltfMesh>()
+            .init_asset::<GltfMaterial>()
+            .insert_resource(GrassFade {
+                enabled: false,
+                start: 1000.0,
+                end: 2000.0,
+            });
+            if camera_phase_first {
+                app.add_systems(
+                    PostUpdate,
+                    refresh_projection
+                        .in_set(bevy::camera::CameraUpdateSystems)
+                        .after(bevy::transform::TransformSystems::Propagate),
+                );
+            }
+            app.add_plugins(GrassRenderPlugin);
+            if !camera_phase_first {
+                app.add_systems(
+                    PostUpdate,
+                    refresh_projection
+                        .in_set(bevy::camera::CameraUpdateSystems)
+                        .after(bevy::transform::TransformSystems::Propagate),
+                );
+            }
+            app.edit_schedule(PostUpdate, |schedule| {
+                schedule.set_executor_kind(bevy::ecs::schedule::ExecutorKind::SingleThreaded);
+            });
+            app.world_mut().spawn((
+                StreamingCamera,
+                Camera::default(),
+                GlobalTransform::IDENTITY,
+            ));
+            let entity = app
+                .world_mut()
+                .spawn((primitive(), GlobalTransform::IDENTITY))
+                .id();
+            app.update();
+            assert_eq!(
+                app.world()
+                    .get::<GrassPrimitive>(entity)
+                    .unwrap()
+                    .proof_view
+                    .unwrap()
+                    .clip_from_view,
+                Mat4::from_scale(Vec3::new(2.0, 3.0, 1.0)),
+                "grass evidence snapshots the refreshed projection (camera phase first={camera_phase_first})"
+            );
+        }
+    }
+
+    /// Exercise a current-view edit after a primitive has issued an earlier main draw.
+    fn assert_view_edit_requires_fresh_draw(edit: impl FnOnce(&mut World, Entity)) {
+        let mut app = App::new();
+        app.insert_resource(GrassFade {
+            enabled: false,
+            start: 1000.0,
+            end: 2000.0,
+        })
+        .init_resource::<GrassRenderMetrics>()
+        .add_systems(Update, update_grass_uniforms);
+        let camera = app
+            .world_mut()
+            .spawn((StreamingCamera, GlobalTransform::IDENTITY, Msaa::Off))
+            .id();
+        app.world_mut().spawn((batch(), GrassAttached));
+        let entity = app
+            .world_mut()
+            .spawn((primitive(), GlobalTransform::IDENTITY))
+            .id();
+        app.update();
+        app.world()
+            .get::<GrassPrimitive>(entity)
+            .unwrap()
+            .drawn
+            .store(true, Ordering::Release);
+        app.update();
+        assert!(app.world().resource::<GrassRenderMetrics>().ready);
+        edit(app.world_mut(), camera);
+        app.update();
+        assert!(
+            !app.world().resource::<GrassRenderMetrics>().ready,
+            "current view waits for its own main draw"
+        );
+    }
 
     #[test]
     fn frustum_uses_whole_cell_blade_reach_and_propagated_transform() {
@@ -2129,7 +2671,10 @@ mod tests {
             normal_texture: Handle::default(),
             model: Mat4::IDENTITY,
             slot_count: 4,
-            drawn: Arc::new(AtomicBool::new(false)),
+            drawn: GrassViewEvidence::default(),
+            culled: GrassViewEvidence::default(),
+            proof_view: None,
+            proof_pipeline: Arc::new(Mutex::new(None)),
             uniform: GrassUniform {
                 world_from_cell: Mat4::IDENTITY,
                 model: Mat4::IDENTITY,
@@ -2181,12 +2726,17 @@ mod tests {
             GlobalTransform::from_translation(beyond_end),
         ));
         app.world_mut().spawn((batch(), GrassAttached));
-        let proof = data.drawn.clone();
         let primitive = app
             .world_mut()
             .spawn((data, GlobalTransform::IDENTITY))
             .id();
         app.update();
+        let proof = app
+            .world()
+            .get::<GrassPrimitive>(primitive)
+            .unwrap()
+            .drawn
+            .clone();
         assert!(app.world().resource::<GrassRenderMetrics>().ready);
         assert_eq!(
             app.world()
@@ -2414,10 +2964,17 @@ mod tests {
         app.world_mut()
             .spawn((StreamingCamera, GlobalTransform::IDENTITY));
         let batch = app.world_mut().spawn(batch()).id();
-        let data = primitive();
-        let proof = data.drawn.clone();
-        app.world_mut().spawn((data, GlobalTransform::IDENTITY));
+        let entity = app
+            .world_mut()
+            .spawn((primitive(), GlobalTransform::IDENTITY))
+            .id();
         app.update();
+        let proof = app
+            .world()
+            .get::<GrassPrimitive>(entity)
+            .unwrap()
+            .drawn
+            .clone();
         assert!(!app.world().resource::<GrassRenderMetrics>().ready);
         app.world_mut().entity_mut(batch).insert(GrassAttached);
         app.update();

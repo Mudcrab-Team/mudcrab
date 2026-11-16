@@ -279,6 +279,8 @@ impl GeometryCache {
             let bytes = self.model_bytes(path).inspect_err(|_| {
                 if self.hashes.contains_key(path) {
                     self.source_changed = true;
+                } else {
+                    self.unavailable_models.insert(path.to_owned());
                 }
             })?;
             let digest: [u8; 32] = Sha256::digest(&bytes).into();
@@ -328,6 +330,27 @@ impl GeometryCache {
                 None
             }
         }
+    }
+
+    /// Confirm the inspected model sources remain consistent before archive publication.
+    fn validate_sources(&self) -> Result<()> {
+        ensure!(
+            !self.source_changed,
+            "obstruction changed during grass bake; retry conversion"
+        );
+        for (path, expected) in &self.hashes {
+            if self.unavailable_models.contains(path) {
+                continue;
+            }
+            let unchanged = self
+                .model_bytes(path)
+                .is_ok_and(|bytes| <[u8; 32]>::from(Sha256::digest(bytes)) == *expected);
+            ensure!(
+                unchanged,
+                "obstruction changed during grass bake ({path}); retry conversion"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -680,8 +703,13 @@ fn scene_triangles(glb: &gltf::Gltf, evaluate_skin: bool) -> Result<Vec<Triangle
         triangles: &mut Vec<Triangle>,
         depth: usize,
         globals: Option<&[Option<DMat4>]>,
+        visited: &mut [bool],
     ) -> Result<()> {
         ensure!(depth < 128, "model hierarchy exceeds inspection depth");
+        ensure!(
+            !std::mem::replace(&mut visited[node.index()], true),
+            "repeated model node in selected scene"
+        );
         let matrix = node
             .transform()
             .matrix()
@@ -762,7 +790,15 @@ fn scene_triangles(glb: &gltf::Gltf, evaluate_skin: bool) -> Result<Vec<Triangle
             }
         }
         for child in node.children() {
-            visit(child, transform, blob, triangles, depth + 1, globals)?;
+            visit(
+                child,
+                transform,
+                blob,
+                triangles,
+                depth + 1,
+                globals,
+                visited,
+            )?;
         }
         Ok(())
     }
@@ -776,6 +812,7 @@ fn scene_triangles(glb: &gltf::Gltf, evaluate_skin: bool) -> Result<Vec<Triangle
     } else {
         None
     };
+    let mut visited = vec![false; glb.nodes().len()];
     for node in scene.nodes() {
         visit(
             node,
@@ -784,6 +821,7 @@ fn scene_triangles(glb: &gltf::Gltf, evaluate_skin: bool) -> Result<Vec<Triangle
             &mut triangles,
             0,
             globals.as_deref(),
+            &mut visited,
         )?;
     }
     Ok(triangles)
@@ -837,7 +875,20 @@ pub fn write_grass_cache_with_cancel(
             Ok((row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?)))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    let (mut references, unbounded_references) = read_reference_bounds(conn)?;
+    // Any linked terrain texture is a conservative reason to inspect obstruction sources.
+    let has_grass_terrain = terrain.cells.iter().any(|land| {
+        coordinates.contains_key(&land.cell_id.to_native())
+            && land.layers.iter().any(|layer| {
+                links
+                    .get(&layer.texture_form_id.to_native())
+                    .is_some_and(|grasses| !grasses.is_empty())
+            })
+    });
+    let (mut references, unbounded_references) = if has_grass_terrain {
+        read_reference_bounds(conn)?
+    } else {
+        (Vec::new(), 0)
+    };
     let mut refs_by_cell = HashMap::<u32, Vec<&ReferenceBounds>>::new();
     let mut skinned_by_world = HashMap::<u32, Vec<&ReferenceBounds>>::new();
     let mut spatial = BTreeMap::<(u32, i32, i32), Vec<u32>>::new();
@@ -974,7 +1025,7 @@ pub fn write_grass_cache_with_cancel(
         for reference in &refs {
             model_inputs.push(geometry.fingerprint(&reference.model_path));
         }
-        let hash = input_hash(
+        let mut hash = input_hasher(
             &land,
             (worldspace_id, grid_x, grid_y),
             &refs,
@@ -983,6 +1034,9 @@ pub fn write_grass_cache_with_cancel(
             land_inputs.get(&id),
             &model_inputs,
         )?;
+        // The inspection recipe retires older masks that expanded duplicate scene nodes.
+        hash.update(b"selected-scene unique-node inspection v1\0");
+        let hash = hash.finalize().into();
         if let Some(previous) = old.and_then(|cache| {
             cache
                 .cells
@@ -1060,10 +1114,6 @@ pub fn write_grass_cache_with_cancel(
         report.baked_cells += 1;
     }
     check_cancel()?;
-    ensure!(
-        !geometry.source_changed,
-        "obstruction changed during grass bake; retry conversion"
-    );
     cells.sort_unstable_by_key(|cell| cell.cell_id);
     let bytes = rkyv::to_bytes::<Error>(&GrassCache {
         version: GRASS_CACHE_VERSION,
@@ -1072,6 +1122,7 @@ pub fn write_grass_cache_with_cancel(
     })?;
     let archived = rkyv::access::<ArchivedGrassCache, Error>(&bytes)?;
     validate_archived_cache(archived).map_err(|message| color_eyre::eyre::eyre!(message))?;
+    geometry.validate_sources()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -1568,8 +1619,8 @@ fn terrain_height(heights: &[f32], x: f32, y: f32) -> f32 {
     }
 }
 
-/// Hash cell terrain, linked rules and conservative candidate identities, states and contents.
-fn input_hash(
+/// Start a hash of terrain, linked rules and conservative candidate identities and contents.
+fn input_hasher(
     land: &CachedLand,
     coordinate: (u32, i32, i32),
     refs: &[&ReferenceBounds],
@@ -1577,7 +1628,7 @@ fn input_hash(
     inputs: &BTreeMap<u32, Vec<u8>>,
     raw_land: Option<&Vec<Vec<u8>>>,
     models: &[[u8; 32]],
-) -> Result<[u8; 32]> {
+) -> Result<Sha256> {
     let mut hash = Sha256::new();
     hash.update(b"MudCrab grass cell inputs\0");
     hash.update(GRASS_CACHE_VERSION.to_le_bytes());
@@ -1629,7 +1680,7 @@ fn input_hash(
             hash.update(value.to_le_bytes());
         }
     }
-    Ok(hash.finalize().into())
+    Ok(hash)
 }
 
 /// Hash a length-prefixed byte sequence to preserve input boundaries.
@@ -2395,7 +2446,7 @@ mod tests {
         .unwrap()
     }
 
-    /// Newly tagged Havok models invalidate affected producer-ten masks through model identity.
+    /// Newly tagged Havok models invalidate affected warm masks through model identity.
     #[test]
     fn havok_geometry_tags_rebuild_only_affected_warm_grass_masks() {
         let dir = tempfile::tempdir().unwrap();
@@ -2466,7 +2517,7 @@ mod tests {
         let output = dir.path().join("grass.rkyv");
         write_grass_cache(&conn, dir.path(), &terrain, None, &previous).unwrap();
         let old = read(&previous);
-        assert_eq!(old.version, 10);
+        assert_eq!(old.version, shared::grass::GRASS_CACHE_VERSION);
         assert!(
             old.cells[0].quadrants[0]
                 .exclusion
@@ -2480,7 +2531,7 @@ mod tests {
         assert_eq!((rebuilt.baked_cells, rebuilt.reused_cells), (1, 2));
         assert_eq!(rebuilt.skipped_obstruction_models, 0);
         let current = read(&output);
-        assert_eq!(current.version, 10);
+        assert_eq!(current.version, shared::grass::GRASS_CACHE_VERSION);
         assert_ne!(current.cells[0].input_hash, old.cells[0].input_hash);
         assert!(
             current.cells[0]
