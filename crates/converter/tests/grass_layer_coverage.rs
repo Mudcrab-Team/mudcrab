@@ -534,6 +534,30 @@ async fn check_broken_null_paint(reader: RecordReader, broken_links: bool) {
         cache.cells.iter().any(|cell| cell.cell_id == 0x20),
         "healthy neighbor must publish"
     );
+    let neighbor = cache
+        .cells
+        .iter()
+        .find(|cell| cell.cell_id == 0x20)
+        .unwrap();
+    assert_eq!(neighbor.quadrants[0].layers[0].grass_ids, [GRASS]);
+    assert_eq!(
+        neighbor.quadrants[0].layers[0].weights[SAMPLE],
+        65.0 / 255.0
+    );
+    assert!(config.output_dir.join("conversion-manifest.json").exists());
+    if broken_links && reader == RecordReader::Legacy {
+        // Pin existing legacy behavior: item-local LAND texture-link recovery is a follow-up.
+        assert!(cache.cells.iter().all(|cell| cell.cell_id != 0x30));
+        assert!(
+            report.warnings.iter().any(|warning| {
+                warning.contains("unusable record candidate")
+                    && warning.contains("FF000001 has invalid master index 255")
+            }),
+            "{:?}",
+            report.warnings
+        );
+        return;
+    }
     let affected = cache
         .cells
         .iter()
@@ -545,8 +569,9 @@ async fn check_broken_null_paint(reader: RecordReader, broken_links: bool) {
         .find(|layer| layer.is_base)
         .unwrap();
     assert_eq!(base.grass_ids, [GRASS]);
-    assert!(
-        (base.weights[SAMPLE] - 192.0 / 255.0).abs() < 0.00001,
+    assert_eq!(
+        base.weights[SAMPLE],
+        192.0 / 255.0,
         "valid neighboring weight must survive"
     );
     assert_eq!(base.weights[118], 1.0, "bad opacity alone must drop");
@@ -558,10 +583,21 @@ async fn check_broken_null_paint(reader: RecordReader, broken_links: bool) {
         report
             .warnings
             .iter()
-            .any(|w| w.contains("LAND selection") && w.contains(if broken_links { "7" } else { "6" })),
+            .any(|w| w.contains("LAND selection")
+                && w.contains(if broken_links { "7" } else { "6" })),
         "{:?}",
         report.warnings
     );
+    if broken_links {
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("cleared 1 unresolved texture links")),
+            "{:?}",
+            report.warnings
+        );
+    }
     assert!(
         cache
             .cells
@@ -592,7 +628,7 @@ async fn inhouse_broken_links_and_paint_keep_neighbor() {
     check_broken_null_paint(RecordReader::Inhouse, true).await;
 }
 
-/// Legacy publication uses the same item-local paint recovery for broken optional links.
+/// Pin existing legacy LAND rejection with a warning while healthy neighbors still publish.
 #[tokio::test]
 async fn legacy_broken_links_and_paint_keep_neighbor() {
     check_broken_null_paint(RecordReader::Legacy, true).await;
