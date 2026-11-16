@@ -80,8 +80,11 @@ distance from the camera to the block's box is under `fSplitDistanceMult` x
 16 / 32 with the default 1.5. The blocks are the aligned `level`-cell blocks
 that start at the worldspace LOD origin. A level-16 block that is not split
 draws tier 16, a level-8 block that is not split draws tier 8, and otherwise
-tier 4 draws. So tier 4 covers cells 0 to 15 and tier 8 covers cells 16 to 31 on
-the camera axis. No level-32 tier is compiled, so tier 16 draws wherever retail
+tier 4 draws. The edges are block-aligned steps, not circles, so where a tier
+ends depends on where the camera cell sits in its block. East of the camera,
+with the camera cell at the start of its aligned block (origin 0 or -96), tier 4
+covers cells 0 to 15 and tier 8 covers cells 16 to 31. West of the camera, tier 4
+stops at cell 8 and tier 8 at cell 32. No level-32 tier is compiled, so tier 16 draws wherever retail
 would draw level 16 or 32, out to `fBlockMaximumDistance` x `fSplitDistanceMult`
 (375,000 units, 92 cells) as an engineering guard. Retail has no such cut for
 terrain. A coarser ready tier stands in until the wanted tier is ready.
@@ -109,7 +112,10 @@ replaced it, so `--ini` values no longer reproduce those runs.
 The camera far plane follows the largest configured reach.
 
 Not yet honoured: level-32 terrain (no compiled tier), `fTreeLoadDistance`
-(Phase 3), `uLargeRefLODGridSize` (large references are omitted), and the
+(Phase 3), `uLargeRefLODGridSize` (large references are omitted; so is retail's
+flag 0x8000, RF-LOD-006, which forces level 4 in blocks touching that square: no
+difference at the default High preset, but at Low, `fSplitDistanceMult` 0.5,
+retail would force level 4 out to about 18,000 units and Mudcrab does not), and the
 Skyrim quality presets themselves. The engine does not search for the user's
 `My Games` INI files; a launcher or script passes them explicitly.
 

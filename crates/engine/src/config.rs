@@ -105,7 +105,14 @@ impl TerrainLodDistances {
     /// Retail walks the block tree from level 32 down (RF-LOD-003, RF-LOD-011): a block draws its
     /// own mesh unless its box distance is under its split distance, then its four children are
     /// tested. A block of level 16 that is not split draws tier 16. A block of level 8 that is
-    /// not split draws tier 8. Otherwise tier 4 draws.
+    /// not split draws tier 8. Otherwise tier 4 draws. The edges are block-aligned steps, not
+    /// circles, so where a tier ends depends on where the camera cell sits in its block.
+    ///
+    /// Not implemented: retail flag 0x8000 (RF-LOD-006), which forces level 4 in every block that
+    /// touches the `uLargeRefLODGridSize` square. At the default High preset it changes nothing,
+    /// because such a block is always under the smallest split distance (34,756). At Low
+    /// (`fSplitDistanceMult` 0.5, split distance 11,585) retail would force level 4 out to about
+    /// 18,000 units and this function does not. Only a Low-preset `--ini` shows the difference.
     ///
     /// Engineering guard: Mudcrab compiles no level-32 tier, so the level-32 step is skipped and
     /// tier 16 draws wherever retail would draw level 16 or 32. The outer reach is
@@ -4524,7 +4531,7 @@ mod tests {
     fn terrain_tier_boundaries_sit_at_the_split_distances() {
         let high = TerrainLodDistances::default();
         // Camera cell 0; the level-8 block [8, 16) is split while 7.5 cells (30,720) < 34,756 and
-        // the block [16, 24) is not (15.5 cells = 63,488 > 34,756). So tier 4 stops at cell 15.
+        // the block [16, 24) is not (15.5 cells = 63,488 > 34,756). So, east of the camera and with the camera cell at the start of its block, tier 4 stops at cell 15.
         let tier = |x: i32| high.terrain_tier(IVec2::ZERO, IVec2::new(x, 0), IVec2::ZERO);
         assert_eq!(tier(15), Some(LodTier::Tier4));
         assert_eq!(tier(16), Some(LodTier::Tier8));
