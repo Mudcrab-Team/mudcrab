@@ -46,6 +46,9 @@ pub const ROOM_TABLES_SQL: &str = r#"
              room_ref INTEGER NOT NULL, linked_ref INTEGER NOT NULL,
              PRIMARY KEY (room_ref, linked_ref)
          );
+         CREATE TABLE IF NOT EXISTS room_graph_cells (
+             cell_id INTEGER PRIMARY KEY, complete INTEGER NOT NULL
+         );
          CREATE TABLE IF NOT EXISTS reference_rooms (
              reference_id INTEGER NOT NULL, room_ref INTEGER NOT NULL,
              contained INTEGER NOT NULL,
@@ -101,7 +104,7 @@ pub(crate) fn restore_portal_endpoint_provenance<'a>(
         if clear.execute([id])? == 0 {
             continue;
         }
-        if let Some(source) = source {
+        if let Some(source) = source.filter(|bytes| bytes.len().is_multiple_of(4)) {
             for (index, pair) in source.as_chunks::<8>().0.iter().enumerate() {
                 set.execute(params![
                     id,
@@ -305,6 +308,7 @@ pub fn clear(conn: &Connection) -> Result<()> {
         "room_bounds",
         "room_portals",
         "room_links",
+        "room_graph_cells",
         "reference_rooms",
         "room_graph_stats",
     ] {
@@ -487,6 +491,7 @@ pub fn export_room_graph(
 ) -> Result<RoomGraphReport> {
     clear(tx)?;
     let mut report = RoomGraphReport::default();
+    let mut incomplete = HashSet::new();
     let mut ordered: Vec<(&u32, &RawRecord)> = master
         .iter()
         .filter(|(_, record)| {
@@ -513,10 +518,12 @@ pub fn export_room_graph(
         let cell = record.cell_form_id.unwrap_or(0);
         let view = SubrecordView::new(&record.subrecords);
         let Some(xprm) = view.find(b"XPRM").filter(|data| data.len() >= 32) else {
+            incomplete.insert(cell);
             report.non_box_rooms_skipped += 1;
             continue;
         };
         if u32_at(xprm, 28) != Some(SHAPE_BOX) {
+            incomplete.insert(cell);
             report.non_box_rooms_skipped += 1;
             continue;
         }
@@ -532,6 +539,7 @@ pub fn export_room_graph(
             .chain(&rotation)
             .all(|v| v.is_finite())
         {
+            incomplete.insert(cell);
             report.invalid_markers_skipped += 1;
             continue;
         }
@@ -584,6 +592,7 @@ pub fn export_room_graph(
         let cell = record.cell_form_id.unwrap_or(0);
         let view = SubrecordView::new(&record.subrecords);
         let Some(xprm) = view.find(b"XPRM").filter(|data| data.len() >= 12) else {
+            incomplete.insert(cell);
             report.portals_without_size_skipped += 1;
             continue;
         };
@@ -596,6 +605,7 @@ pub fn export_room_graph(
             .chain(&rotation)
             .all(|v| v.is_finite())
         {
+            incomplete.insert(cell);
             report.invalid_markers_skipped += 1;
             continue;
         }
@@ -670,6 +680,12 @@ pub fn export_room_graph(
                 _ => report.objects_in_several_rooms += 1,
             }
         }
+    }
+    for &cell in rooms_by_cell.keys() {
+        tx.execute(
+            "INSERT INTO room_graph_cells VALUES (?1,?2)",
+            params![cell, !incomplete.contains(&cell)],
+        )?;
     }
     report.write(tx)?;
     tx.execute(

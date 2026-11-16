@@ -1919,6 +1919,13 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
             sub(b"XPRM", &shape),
         ]
         .concat();
+        if id == 0x803 {
+            payload.extend(sub(b"XPOD", &[0; 9]));
+            payload.extend(sub(
+                b"XPOD",
+                &[0u32.to_le_bytes(), 0x0900_0800u32.to_le_bytes()].concat(),
+            ));
+        }
         if let Some(endpoint) = endpoint {
             payload.extend(sub(
                 b"XPOD",
@@ -1944,6 +1951,7 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
                         marker(0x800, 0x1F, 1, None),
                         marker(0x801, 0x20, 3, Some(0)),
                         marker(0x802, 0x20, 3, Some(0x0900_0800)),
+                        marker(0x803, 0x20, 3, None),
                     ]
                     .concat(),
                 ),
@@ -1956,7 +1964,7 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
     let output = dir.path().join("bundle");
     converter::esm::inhouse::export_record_bundle_typed(&data, &order, &output, &[]).unwrap();
     let conn = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
-    for (id, outside) in [(0x801, true), (0x802, false)] {
+    for (id, outside) in [(0x801, true), (0x802, false), (0x803, false)] {
         let actual: (Option<u32>, bool) = conn
             .query_row(
                 "SELECT room_b,unbounded_b FROM room_portals WHERE ref_id=?1",

@@ -1291,7 +1291,10 @@ annotation leaves them alone. `create_tables` adds them to an older reused datab
 **These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`.** The engine reads
 them automatically and probes for them first, as it does for `lights` and the
 additive `waters` columns, so a database without them behaves as before.
-Unbounded traversal also requires both endpoint columns and `visibility_version = 2`.
+Unbounded traversal also requires both endpoint columns, `visibility_version = 2`, and a complete
+`room_graph_cells` marker for the cell. A skipped unsupported room or invalid room/portal marker
+makes that cell incomplete, so the runtime draws the whole cell. Other complete cells retain
+unbounded traversal. Data without the completeness marker uses the legacy fallback.
 Older conversions retain their conservative outside-camera behavior until a full room export.
 In a versioned graph, the engine reads the cell's `references.id` values to distinguish known
 unbounded references from references belonging to other cells or unknown runtime objects.

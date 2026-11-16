@@ -96,6 +96,7 @@ const MAIN_CORE_TABLES: &[&str] = &[
     "references",
     "region_weathers",
     "room_bounds",
+    "room_graph_cells",
     "room_graph_stats",
     "room_links",
     "room_portals",

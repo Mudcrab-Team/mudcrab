@@ -1057,6 +1057,7 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "room_portals",
             "room_links",
             "reference_rooms",
+            "room_graph_cells",
             "room_graph_stats",
             "projection_omission_stats",
             "projection_omission_samples",

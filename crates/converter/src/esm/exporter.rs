@@ -3119,6 +3119,7 @@ mod tests {
             "room_bounds",
             "room_portals",
             "room_links",
+            "room_graph_cells",
             "reference_rooms",
             "room_graph_stats",
             "projection_omission_stats",
@@ -3792,6 +3793,14 @@ mod tests {
         assert_eq!(ids, vec![0x1002]);
         assert_eq!(report.rooms, 1);
         assert_eq!(report.non_box_rooms_skipped, 1);
+        let complete: bool = conn
+            .query_row(
+                "SELECT complete FROM room_graph_cells WHERE cell_id=0x100",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!complete);
         assert_eq!(report.portals, 0);
         assert_eq!(rooms_of(&conn, 0x2001), vec![]);
     }
