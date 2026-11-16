@@ -802,10 +802,11 @@ fn export_records(
                     &crate::esm::environment::Links { master },
                     record,
                     &view,
+                    &mut omissions,
                 )?;
             }
             "GRAS" => {
-                insert_grass(&tx, form_id, &view, record.load_order)?;
+                insert_grass(&tx, form_id, &view, record.load_order, &mut omissions)?;
             }
             "WRLD" => {
                 let view = SubrecordView::new(&record.subrecords);
@@ -833,6 +834,7 @@ fn export_records(
                     record.flags,
                     &record.subrecords,
                     &canonical_record.subrecords,
+                    &mut omissions,
                 )?;
                 crate::esm::reference_links::insert(
                     &tx,
@@ -1216,13 +1218,42 @@ fn insert_emittance_sources(
 /// Projects xEdit's TES5 GRAS/DATA layout without inventing missing fields.
 /// The complete payload is 32 bytes; unknown padding stays in records.data.
 /// See the primary definitions linked in the database schema specification.
+const GRASS_DATA_SIZE: usize = 32;
+/// The `DELETED` record header flag.
+const RECORD_FLAG_DELETED: u32 = 0x20;
+
 fn insert_grass(
     tx: &Transaction<'_>,
     form_id: u32,
     view: &SubrecordView<'_>,
     load_order: u32,
+    omissions: &mut ProjectionOmissions,
 ) -> Result<()> {
-    let data = view.find(b"DATA").unwrap_or_default();
+    // A missing or short `DATA` leaves its columns NULL; count it so the NULLs are not mistaken
+    // for authored values.
+    let data = match view.find(b"DATA") {
+        None => {
+            omissions.record(
+                OmissionCategory::GrassMissingData,
+                form_id,
+                "GRAS has no DATA; its DATA columns are NULL",
+            );
+            &[][..]
+        }
+        Some(data) => {
+            if data.len() < GRASS_DATA_SIZE {
+                omissions.record(
+                    OmissionCategory::GrassShortData,
+                    form_id,
+                    format!(
+                        "GRAS DATA is {} bytes, expected {GRASS_DATA_SIZE}; columns past the end are NULL",
+                        data.len()
+                    ),
+                );
+            }
+            data
+        }
+    };
     let float = |offset| {
         data.get(offset..offset + 4)
             .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
@@ -1460,8 +1491,18 @@ pub fn insert_reference(
     cell: Option<CellMetadata>,
     header_flags: u32,
     subs: &[(Vec<u8>, Vec<u8>)],
+    omissions: &mut ProjectionOmissions,
 ) -> Result<()> {
-    insert_reference_with_canonical_data(tx, form_id, cell_id, cell, header_flags, subs, subs)
+    insert_reference_with_canonical_data(
+        tx,
+        form_id,
+        cell_id,
+        cell,
+        header_flags,
+        subs,
+        subs,
+        omissions,
+    )
 }
 
 /// Extract runtime reference columns from projected fields and preserve the canonical data mirror.
@@ -1473,19 +1514,31 @@ fn insert_reference_with_canonical_data(
     header_flags: u32,
     projected_subrecords: &[(Vec<u8>, Vec<u8>)],
     canonical_subrecords: &[(Vec<u8>, Vec<u8>)],
+    omissions: &mut ProjectionOmissions,
 ) -> Result<()> {
     let view = SubrecordView::new(projected_subrecords);
+    // The placement is six floats. A reference without them has no position the runtime could
+    // use, and the columns are NOT NULL: leave the row out rather than place it at the origin.
     let transform = view.get_f32_slice(b"DATA").unwrap_or_default();
-    let pos = [
-        *transform.first().unwrap_or(&0.0),
-        *transform.get(1).unwrap_or(&0.0),
-        *transform.get(2).unwrap_or(&0.0),
-    ];
-    let rot = [
-        *transform.get(3).unwrap_or(&0.0),
-        *transform.get(4).unwrap_or(&0.0),
-        *transform.get(5).unwrap_or(&0.0),
-    ];
+    let Some(&[px, py, pz, rx, ry, rz]) = transform.first_chunk::<6>() else {
+        // A deleted record legitimately carries no payload.
+        if header_flags & RECORD_FLAG_DELETED == 0 {
+            omissions.record(
+                OmissionCategory::PlacementUnusableData,
+                form_id,
+                match view.find(b"DATA") {
+                    None => "placed reference has no DATA; no references row".to_owned(),
+                    Some(bytes) => format!(
+                        "placed reference DATA is {} bytes, expected at least 24; no references row",
+                        bytes.len()
+                    ),
+                },
+            );
+        }
+        return Ok(());
+    };
+    let pos = [px, py, pz];
+    let rot = [rx, ry, rz];
     let scale = view
         .find(b"XSCL")
         .filter(|data| data.len() >= 4)
@@ -2050,6 +2103,7 @@ mod tests {
             Some((None, None, Some(0x3C))),
             0,
             &[(b"DATA".to_vec(), data)],
+            &mut ProjectionOmissions::default(),
         )
         .unwrap();
         let (x, y, local_x, local_y): (f32, f32, f32, f32) = tx
@@ -2421,6 +2475,115 @@ mod tests {
         assert_eq!(radius(0x1000), Some(f64::from(544.3856f32)));
         assert_eq!(radius(0x2000), None, "a reference without XRDS stays NULL");
         assert_eq!(radius(0x3000), None, "a two-byte XRDS holds no radius");
+    }
+
+    /// A GRAS, REFR or LGTM whose `DATA` is missing or short is reported once under its own
+    /// category, and a record with the right sizes reports nothing (#637).
+    #[test]
+    fn reports_missing_and_short_grass_placement_and_lighting_data() {
+        let order = LoadOrder::from_metadata(
+            vec!["Fields.esp".into()],
+            vec![crate::esm::binary::PluginMetadata {
+                masters: Vec::new(),
+                flags: 0,
+            }],
+        )
+        .unwrap();
+        let grass = |id, data: Option<Vec<u8>>| {
+            let mut subrecords = vec![(b"EDID".to_vec(), cstr("Grass"))];
+            subrecords.extend(data.map(|data| (b"DATA".to_vec(), data)));
+            record(id, b"GRAS", None, None, subrecords)
+        };
+        let lighting = |id, data: Option<Vec<u8>>| {
+            record(
+                id,
+                b"LGTM",
+                None,
+                None,
+                data.map(|data| (b"DATA".to_vec(), data))
+                    .into_iter()
+                    .collect(),
+            )
+        };
+        let mut short_reference = reference(0x1002, 0x100, 0x900, [1.0; 3], [2.0; 3]);
+        short_reference.subrecords[1].1.truncate(20);
+        let mut no_data_reference = reference(0x1003, 0x100, 0x900, [1.0; 3], [2.0; 3]);
+        no_data_reference.subrecords.truncate(1);
+        let mut deleted_reference = no_data_reference.clone();
+        deleted_reference.form_id = 0x1004;
+        deleted_reference.flags = 0x20;
+        let records = [
+            grass(0x10, Some(vec![7; 32])),
+            grass(0x11, Some(vec![7; 12])),
+            grass(0x12, None),
+            lighting(0x20, Some(vec![9; 64])),
+            lighting(0x21, Some(vec![9; 10])),
+            lighting(0x22, None),
+            reference(0x1001, 0x100, 0x900, [1.0, 2.0, 3.0], [0.1, 0.2, 0.3]),
+            short_reference,
+            no_data_reference,
+            deleted_reference,
+        ];
+        let master: HashMap<u32, RawRecord> = records
+            .into_iter()
+            .map(|record| (record.form_id, record))
+            .collect();
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+
+        export_to_db_with_load_order(&conn, &master, &order).unwrap();
+
+        assert_eq!(
+            omission_ids(&conn),
+            vec![
+                ("grass_missing_data".to_owned(), 1, vec![0x12]),
+                ("grass_short_data".to_owned(), 1, vec![0x11]),
+                (
+                    "lighting_template_unusable_data".to_owned(),
+                    2,
+                    vec![0x21, 0x22]
+                ),
+                (
+                    "placement_unusable_data".to_owned(),
+                    2,
+                    vec![0x1002, 0x1003]
+                ),
+            ]
+        );
+        let density = |id: u32| -> Option<i64> {
+            conn.query_row("SELECT density FROM grass_types WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            (density(0x10), density(0x11), density(0x12)),
+            (Some(7), Some(7), None)
+        );
+        let ambient = |id: u32| -> Option<i64> {
+            conn.query_row(
+                "SELECT ambient_r FROM lighting_templates WHERE id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            (ambient(0x20), ambient(0x21), ambient(0x22)),
+            (Some(9), None, None)
+        );
+        let references: Vec<u32> = conn
+            .prepare("SELECT id FROM \"references\" ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_>>()
+            .unwrap();
+        assert_eq!(
+            references,
+            vec![0x1001],
+            "only the complete placement is kept"
+        );
     }
 
     fn omission_ids(conn: &Connection) -> Vec<(String, u64, Vec<u32>)> {

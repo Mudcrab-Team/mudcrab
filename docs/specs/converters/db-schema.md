@@ -1651,6 +1651,10 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 |---|---|---|
 | `light_missing_data` | `LIGH` without `DATA`: no `lights` row | data loss |
 | `light_short_data` | `LIGH` whose `DATA` is shorter than the 20 bytes the row needs: no `lights` row | data loss |
+| `grass_missing_data` | `GRAS` without `DATA`: the row is written with NULL in every `DATA` column | data loss |
+| `grass_short_data` | `GRAS` whose `DATA` is shorter than its 32 bytes: the row is written with NULL past the end of the data | data loss |
+| `placement_unusable_data` | Placed reference without `DATA`, or with fewer than the 24 bytes its position and rotation need: no `references` row (a deleted record is skipped silently) | data loss |
+| `lighting_template_unusable_data` | `LGTM` without `DATA`, or whose `DATA` size matches no known layout: the row is written with NULL lighting columns | data loss |
 | `emittance_target_absent` | `XEMI` target not in the load order, or deleted: no `emittance` row | fallback |
 | `emittance_light_unusable_data` | `XEMI` target `LIGH` without a usable `DATA`: no `emittance` row | fallback |
 | `emittance_region_no_weather` | `XEMI` target `REGN` whose `RDWT` names no weather: no `emittance` row | fallback |
