@@ -56,7 +56,7 @@ impl Options {
         let mut args = args.into_iter();
         let assets = PathBuf::from(args.next().ok_or_else(|| {
             color_eyre::eyre::eyre!(
-                "usage: world-inspect <assets> <worldspace> <grid-x> <grid-y> [--radius N] [--reference FORM_ID] [--output report.json]"
+                "usage: world-inspect <assets> <worldspace> <grid-x> <grid-y> [--radius N] [--reference FORM_ID] [--output report.json]\n       world-inspect -V | --version"
             )
         })?);
         let worldspace = parse_number(args.next(), "worldspace")?;
