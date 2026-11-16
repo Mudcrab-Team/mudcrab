@@ -978,8 +978,8 @@ pub struct WaterExtension {
     #[texture(108)]
     noise_normal_2: Option<Handle<Image>>,
     /// The cell's 64 by 64 flow map (RF-WATER-036): per texel the flow direction (rg), the scale (b)
-    /// and the phase speed (a). Read with the sampler of `flow_normal`.
-    #[texture(110)]
+    /// and the phase speed (a). Read by texel with `textureLoad`, so it is not filtered.
+    #[texture(110, filterable = false)]
     flow_map: Option<Handle<Image>>,
     /// The weather's Water Multiplier as 0..1 values, applied to the colours set after it.
     multiplier: [f32; 3],
@@ -3008,6 +3008,7 @@ mod tests {
             "let flow_b = flow_texel(cell_uv + vec2<f32>(h, h));",
             "let flow_c = flow_texel(cell_uv);",
             "let flow_d = flow_texel(cell_uv + vec2<f32>(h, 0.0));",
+            "return textureLoad(water_flow_map, texel, 0);",
             "const FLOW_RATES: vec4<f32> = vec4<f32>(10.64, 9.92, 8.0, 8.48);",
             "const FLOW_OFFSETS: vec4<f32> = vec4<f32>(0.27, 0.0, 0.0, 0.62);",
             "const FLOW_SCALE_BASE: f32 = 1.01;",
@@ -3020,6 +3021,9 @@ mod tests {
         ] {
             assert!(source.contains(needle), "missing {needle}");
         }
+        // The flow map is point-sampled: filtering a direction and a phase speed smears the ripples
+        // into flat patches.
+        assert!(!source.contains("textureSampleLevel(water_flow_map"));
         // The program runs only with a flow map and a flow normal texture bound.
         let handle = || Some(Handle::<Image>::default());
         let both = WaterExtension::with_reflection(Handle::default(), handle())

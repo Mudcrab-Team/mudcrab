@@ -81,7 +81,7 @@ struct WaterSettings {
 @group(#{MATERIAL_BIND_GROUP}) @binding(107) var water_noise_1: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(108) var water_noise_2: texture_2d<f32>;
 // The cell's 64 by 64 flow map (RF-WATER-036): rg = the flow direction as (cos, sin) * 0.5 + 0.5,
-// b = the scale term, a = the phase speed. Read with the flow normal's sampler. `water.flow.z`
+// b = the scale term, a = the phase speed. Read by texel (`flow_texel`). `water.flow.z`
 // says whether the flow program runs.
 @group(#{MATERIAL_BIND_GROUP}) @binding(110) var water_flow_map: texture_2d<f32>;
 
@@ -262,10 +262,16 @@ fn noise_scroll(theta: f32, speed: f32, seconds: f32) -> vec2<f32> {
     return fract(vec2<f32>(sin(theta), cos(theta)) * speed * seconds);
 }
 
-// The flow map read at `uv`, clamped to the texture's edge texels.
+// The flow map texel under `uv`, point-sampled and clamped to the texture's edge texels. The map
+// holds a direction, a scale and a phase speed per texel, which warp the ripple coordinates by
+// large factors (64 times the scale, 346 tiles of phase), so a value interpolated between two texels
+// is not a flow at all: filtering the map smears the ripples into flat patches and sheared streaks
+// (controlled renders at the same pose). The four taps and their bilinear weights do the
+// interpolation on the resulting normals instead (RF-WATER-044), which only makes sense with point
+// taps; the report's "bilinear" is read as those weights (#698).
 fn flow_texel(uv: vec2<f32>) -> vec4<f32> {
-    let edge = 0.5 / FLOW_MAP_TEXELS;
-    return textureSampleLevel(water_flow_map, water_flow_normal_sampler, clamp(uv, vec2<f32>(edge), vec2<f32>(1.0 - edge)), 0.0);
+    let texel = vec2<i32>(floor(clamp(uv, vec2<f32>(0.0), vec2<f32>(0.999999)) * FLOW_MAP_TEXELS));
+    return textureLoad(water_flow_map, texel, 0);
 }
 
 // One tap of the flow program (RF-WATER-044): the flow texel `flow` turns and scales the ripple
