@@ -404,6 +404,7 @@ pub struct SettleCounts {
     pub validation_failures: u64,
     /// Enabled grass is still generating/admitting batches or waiting for their main draws.
     /// Missing grass metrics also count as pending while grass is enabled.
+    /// Accepted capture receipts record this field as the boolean false.
     pub grass_pending: bool,
     /// Current grass pool rejections and renderer/model failures. These are not compared with
     /// the shot's historical failure baseline: an already-failed grass view cannot settle.
