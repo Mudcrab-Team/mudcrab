@@ -13,7 +13,8 @@ pub const GRASS_CELL_SIZE: f32 = 4096.0;
 #[rkyv(bytecheck())]
 pub struct GrassType {
     pub form_id: u32,
-    /// Empty for a resolved species that occupies an authored selection slot and emits no plants.
+    /// Empty for a resolved species that occupies an authored cap slot and emits no plants.
+    /// Runtime applies the species cap to the retained link order before skipping these rules.
     pub model_path: String,
     pub density: u8,
     pub min_slope: u8,
