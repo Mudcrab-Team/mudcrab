@@ -910,7 +910,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn individual_inheritance_bits_select_independent_scene_fields() {
         let mut catalog = fixture();
         catalog
@@ -1141,20 +1140,6 @@ mod tests {
         EnvironmentCatalog::from_connection(&connection)
     }
 
-    fn spawn_sun(app: &mut App, exterior: Quat) -> Entity {
-        app.world_mut()
-            .spawn((
-                DirectionalLight::default(),
-                WorldSun,
-                Transform::from_rotation(exterior),
-            ))
-            .id()
-    }
-
-    fn light_direction(app: &App, sun: Entity) -> Vec3 {
-        app.world().get::<Transform>(sun).unwrap().rotation * Vec3::NEG_Z
-    }
-
     fn assert_close(actual: &[f32], expected: &[f32]) {
         assert_eq!(actual.len(), expected.len());
         for (actual, expected) in actual.iter().zip(expected) {
@@ -1343,7 +1328,6 @@ mod tests {
     const ALVOR: u32 = 78792;
     const BLEAK_FALLS: u32 = 225758;
     const MAZE: u32 = 0xF2CAB;
-    const ROOM_TEMPLATE: u32 = 201356;
 
     /// Rows copied from the registered pack v010-candidate-2e93bfa3 (read-only sqlite3,
     /// 2026-11-15). Alvor's house: flags 0x81, inherit 0x9F, LTMP 0xA1196 (659862), XCIM

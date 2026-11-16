@@ -1688,10 +1688,11 @@ mod tests {
                     scene.interior.as_ref().unwrap().lighting.directional,
                     Some([40, 50, 60])
                 );
-                // RF-LIGHT-CPU-004: rotation XY 90, Z 30. Creation d = (cos90 cos30, sin90 cos30,
-                // -sin30) = (0, 0.8660254, -0.5). Engine (x, z, -y) = (0, -0.5, -0.8660254).
+                // RF-LIGHT-CPU-012: rotation XY 90, Z 30. Creation travel = (cos90 cos30,
+                // -sin90 cos30, sin30) = (0, -0.8660254, 0.5). Engine (x, z, -y) =
+                // (0, 0.5, 0.8660254).
                 let rays = app.world().get::<Transform>(sun).unwrap().rotation * Vec3::NEG_Z;
-                assert!(rays.distance(Vec3::new(0.0, -0.5, -0.866_025_4)) < 1.0e-5);
+                assert!(rays.distance(Vec3::new(0.0, 0.5, 0.866_025_4)) < 1.0e-5);
                 if fail_destination {
                     app.world_mut()
                         .resource_mut::<StreamingWorld>()
