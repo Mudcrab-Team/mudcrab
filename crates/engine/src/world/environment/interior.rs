@@ -614,26 +614,29 @@ impl SceneEnvironment {
         // A database without the flags still knows the cell is an interior: retail reads bit
         // 0x1 and nothing else, which gives mode 1.
         let sky_mode = SkyMode::from_cell_flags(Some(cell_flags.unwrap_or(CELL_INTERIOR)));
-        let (cell_render, rooms) = if sky_mode.uses_cell_lighting() {
-            let render = InteriorRender::new(
-                &interior.lighting,
-                interior_sunlight_scale(catalog, image_space),
-            );
-            let rooms = catalog
-                .room_bounds(cell_id)
-                .iter()
-                .filter_map(|bound| {
-                    let template = catalog.lighting_template(bound.lighting_template)?;
-                    Some(RoomLighting::new(
-                        bound,
-                        render.with_room_template(template),
-                    ))
-                })
-                .collect();
-            (Some(render), rooms)
-        } else {
-            (None, Vec::new())
-        };
+        // An older pack has no authored lighting at all: the built-in lights stay, as before the
+        // interior rule. An authored cell without XCLL is different and is lit with zeros.
+        let (cell_render, rooms) =
+            if sky_mode.uses_cell_lighting() && catalog.has_cell_lighting_table() {
+                let render = InteriorRender::new(
+                    &interior.lighting,
+                    interior_sunlight_scale(catalog, image_space),
+                );
+                let rooms = catalog
+                    .room_bounds(cell_id)
+                    .iter()
+                    .filter_map(|bound| {
+                        let template = catalog.lighting_template(bound.lighting_template)?;
+                        Some(RoomLighting::new(
+                            bound,
+                            render.with_room_template(template),
+                        ))
+                    })
+                    .collect();
+                (Some(render), rooms)
+            } else {
+                (None, Vec::new())
+            };
         Self {
             interior: Some(interior),
             cell_flags,
@@ -1822,6 +1825,63 @@ mod tests {
         assert_eq!(
             app.world().resource::<GlobalAmbientLight>().color,
             Color::srgb(0.2, 0.3, 0.4)
+        );
+    }
+
+    /// Greptile "Older packs lose interior lighting". A pack converted before the environment
+    /// tables has no `cell_lighting`, `cell_environment` or `room_bounds`. The catalog then knows
+    /// nothing about the cell, which is not the same as an authored cell without XCLL, so the
+    /// built-in sun, ambient and fog stay as they were before this PR.
+    #[test]
+    fn an_older_pack_without_the_environment_tables_keeps_the_built_in_lights() {
+        let connection = Connection::open_in_memory().unwrap();
+        let mut app = app(EnvironmentCatalog::from_connection(&connection));
+        let sun = spawn_world_sun(&mut app);
+        let ambient = app.world().resource::<GlobalAmbientLight>().color;
+        let rotation = app.world().get::<Transform>(sun).unwrap().rotation;
+        enter(&mut app, Some(ALVOR));
+        app.update();
+        let light = sun_light(&app, sun);
+        assert_eq!(light.color, crate::sky::WeatherLighting::default().sunlight);
+        assert_eq!(light.illuminance, crate::lights::SUN_ILLUMINANCE);
+        assert!(light.shadow_maps_enabled);
+        assert_eq!(
+            app.world().get::<Transform>(sun).unwrap().rotation,
+            rotation
+        );
+        assert!(app.world().get::<ExteriorSunState>(sun).is_none());
+        assert_eq!(app.world().resource::<GlobalAmbientLight>().color, ambient);
+        assert_eq!(app.world().resource::<InteriorFog>().0, None);
+        assert!(
+            app.world()
+                .resource::<SceneEnvironment>()
+                .cell_render
+                .is_none()
+        );
+    }
+
+    /// The other case: the pack has the tables and the cell has no XCLL and no LTMP, so it has no
+    /// `cell_lighting` row. Every retail getter returns 0 for it (RF-LIGHT-CPU-014), so the cell
+    /// is lit with colour 0 and the built-in lights do not show through.
+    #[test]
+    fn an_authored_interior_without_xcll_is_lit_with_zeros() {
+        let connection = Connection::open_in_memory().unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch("INSERT INTO cell_environment(cell_id,data_flags) VALUES(55,1);")
+            .unwrap();
+        let mut app = app(EnvironmentCatalog::from_connection(&connection));
+        let sun = spawn_world_sun(&mut app);
+        enter(&mut app, Some(55));
+        app.update();
+        let light = sun_light(&app, sun);
+        assert_eq!(light.color, Color::srgb_u8(0, 0, 0));
+        assert!(!light.shadow_maps_enabled);
+        assert!(
+            app.world()
+                .resource::<SceneEnvironment>()
+                .cell_render
+                .is_some()
         );
     }
 

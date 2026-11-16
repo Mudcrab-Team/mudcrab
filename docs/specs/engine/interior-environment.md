@@ -22,7 +22,9 @@ RF-LIGHT-GPU-001 to RF-LIGHT-GPU-010, RF-IMGS-001 and RF-WATER-011, and the veri
    DALC, `0x2` directional, `0x4` fog colours, `0x8` fog near, `0x10` fog far, `0x20` rotation,
    `0x40` directional fade, `0x80` clip, `0x100` fog power, `0x200` fog max, `0x400` light fade.
    The template DALC is its separate subrecord, not DATA. A cell without XCLL reads no bit, and
-   every field applies as 0, as every retail getter returns 0. `xcll_size` is used only as "the
+   every field applies as 0, as every retail getter returns 0. A database without the
+   `cell_lighting` table (an older pack) has no authored lighting at all, so nothing below applies
+   and the built-in lights stay; this differs from an authored cell without XCLL. `xcll_size` is used only as "the
    cell has XCLL"; all 786 shipped interiors have 92 bytes.
 4. **Room templates** (RF-LIGHT-CPU-013). When the camera is inside a room marker box
    (`room_bounds`, first match in `ref_id` order) whose LNAM template exists, that template

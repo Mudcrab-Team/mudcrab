@@ -192,6 +192,9 @@ pub struct ClimateWeather {
 
 #[derive(Resource, Debug, Default)]
 pub struct EnvironmentCatalog {
+    /// Whether the `cell_lighting` table could be read. When it could not, the catalog knows
+    /// nothing about any cell, which is not the same as an authored cell without XCLL.
+    cell_lighting_available: bool,
     cells: HashMap<u32, CellLighting>,
     cell_flags: HashMap<u32, Option<u32>>,
     /// `cell_environment.image_space_id` (XCIM) by cell. A cell is absent when the table or the
@@ -308,25 +311,24 @@ impl EnvironmentCatalog {
 
     /// Load optional authored tables and sun game settings without requiring a complete pack.
     pub fn from_connection(connection: &Connection) -> Self {
-        let cells = read(
-            connection,
-            &format!(
-                "SELECT cell_id, lighting_template_id, {}, inherit_flags, xcll_size FROM cell_lighting",
-                lighting_columns()
-            ),
-            "cell_lighting",
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    CellLighting {
-                        xcll_size: row.get(3 + LIGHTING_WIDTH)?,
-                        lighting_template: row.get(1)?,
-                        lighting: lighting(row, 2)?,
-                        inherit_flags: row.get(2 + LIGHTING_WIDTH)?,
-                    },
-                ))
-            },
+        let cell_lighting_sql = format!(
+            "SELECT cell_id, lighting_template_id, {}, inherit_flags, xcll_size FROM cell_lighting",
+            lighting_columns()
         );
+        // A pack converted before the environment tables cannot be read here. That is different
+        // from a cell without a row, which the converter writes only for cells with an XCLL or LTMP.
+        let cell_lighting_available = connection.prepare(&cell_lighting_sql).is_ok();
+        let cells = read(connection, &cell_lighting_sql, "cell_lighting", |row| {
+            Ok((
+                row.get(0)?,
+                CellLighting {
+                    xcll_size: row.get(3 + LIGHTING_WIDTH)?,
+                    lighting_template: row.get(1)?,
+                    lighting: lighting(row, 2)?,
+                    inherit_flags: row.get(2 + LIGHTING_WIDTH)?,
+                },
+            ))
+        });
         let cell_flags = read(
             connection,
             "SELECT cell_id, data_flags FROM cell_environment",
@@ -473,6 +475,7 @@ impl EnvironmentCatalog {
         }
         Self {
             room_bounds,
+            cell_lighting_available,
             cells,
             cell_flags,
             cell_image_spaces,
@@ -501,6 +504,12 @@ impl EnvironmentCatalog {
     /// has no value for the cell (old database or no row). `Some(None)` means the cell has no XCIM.
     pub fn cell_image_space(&self, cell_id: u32) -> Option<Option<u32>> {
         self.cell_image_spaces.get(&cell_id).copied()
+    }
+
+    /// Whether the database has the `cell_lighting` table at all. Without it no interior has
+    /// authored lighting to apply (an older pack), and the built-in lights stay.
+    pub fn has_cell_lighting_table(&self) -> bool {
+        self.cell_lighting_available
     }
 
     /// The cell's authored lighting, or `None` when it has none or the database predates it.
