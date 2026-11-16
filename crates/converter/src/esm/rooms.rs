@@ -149,6 +149,30 @@ pub(crate) fn restore_portal_endpoint_provenance<'a>(
     Ok(())
 }
 
+/// Canonical typed fields omit rejected data. Keep that uncertainty in derived room metadata
+/// without adding synthetic fields to the canonical archive.
+pub(crate) fn restore_rejected_room_fields<'a>(
+    conn: &Connection,
+    sources: impl IntoIterator<Item = (u32, &'a [[u8; 4]])>,
+) -> Result<()> {
+    let mut assignment = conn.prepare_cached(
+        "UPDATE room_reference_rules SET assignment='unknown', target_ref=NULL WHERE reference_id=?1",
+    )?;
+    let mut incomplete = conn.prepare_cached(
+        "UPDATE room_graph_cells SET complete=0 WHERE cell_id IN \
+         (SELECT cell_id FROM room_bounds WHERE ref_id=?1)",
+    )?;
+    for (id, rejected) in sources {
+        if rejected.contains(b"XMBR") {
+            assignment.execute([id])?;
+        }
+        if rejected.contains(b"XLRM") {
+            incomplete.execute([id])?;
+        }
+    }
+    Ok(())
+}
+
 /// Migrates a `room_portals` table of the older shape (`ref_id` alone as the key, no
 /// `pair_index`) to the current one in place: every existing row is copied with `pair_index` 0.
 /// `CREATE TABLE IF NOT EXISTS` cannot change an existing table's key, and dropping the table

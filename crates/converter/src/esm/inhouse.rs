@@ -1251,6 +1251,14 @@ fn convert_plugins_with_text_sources_report_impl(
                 .filter(|record| record.record_type == *b"REFR")
                 .map(|record| (record.form_id, record.unique_source_subrecord(b"XPOD"))),
         )?;
+        super::rooms::restore_rejected_room_fields(
+            &tx,
+            decoded
+                .records
+                .values()
+                .filter(|record| record.record_type == *b"REFR")
+                .map(|record| (record.form_id, record.rejected_fields.as_slice())),
+        )?;
         tx.execute(
             "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES ('visibility_version',2)",
             [],
