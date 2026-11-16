@@ -25,7 +25,7 @@ The panel lists room culling as unavailable until #188 supplies an implementatio
 
 ## Streaming
 
-The UI exposes the full-detail and unload radii; all four supported terrain LOD distance settings; cell commit count/time budgets; cell unload, model spawn, and render-asset upload budgets; and IO-thread count. LOD distance changes refresh queries at the current camera position. The unload radius must cover the full-detail radius.
+The UI exposes the full-detail and unload radii; the four supported LOD distance settings (two terrain: the split multiplier and the outer reach; two object LOD distances that do not affect terrain until object LOD lands); cell commit count/time budgets; cell unload, model spawn, and render-asset upload budgets; and IO-thread count. LOD distance changes refresh queries at the current camera position. The unload radius must cover the full-detail radius.
 
 Grass, grass radius, IO threads and the visual profile ([visual-profiles.md](visual-profiles.md)) are fixed at startup. Changing them requires Save and a restart; other settings apply during the session, with diagnostic fallbacks taking effect on subsequent loads. Numerical UI limits bound interactive edits. A zero budget is unlimited only where the label says so.
 

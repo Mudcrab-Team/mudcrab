@@ -13184,6 +13184,31 @@ mod tests {
         })
         .unwrap();
         fs::write(data.join("Skyrim.esm"), plugin).unwrap();
+        // Link the generated terrain to valid grass so optional obstruction masks are relevant.
+        let mut patch = grass_policy_record(
+            b"TES4",
+            0,
+            &[(b"MAST", b"Skyrim.esm\0".to_vec()), (b"DATA", vec![0; 8])],
+        );
+        let mut grass_data = vec![40, 0, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        for value in [0.0f32, 0.0, 0.0, 1.0] {
+            grass_data.extend(value.to_le_bytes());
+        }
+        grass_data.extend([0; 4]);
+        patch.extend(grass_policy_record(
+            b"GRAS",
+            0x0100_0801,
+            &[
+                (b"MODL", b"grass/optional.nif\0".to_vec()),
+                (b"DATA", grass_data),
+            ],
+        ));
+        patch.extend(grass_policy_record(
+            b"LTEX",
+            4,
+            &[(b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec())],
+        ));
+        fs::write(data.join("Grass.esp"), patch).unwrap();
         let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
         assert!(report.integration.as_ref().unwrap().passed);
         assert!(report.complete, "{:?}", report.warnings);
@@ -13198,7 +13223,13 @@ mod tests {
                 .unwrap()
                 .complete
         );
-        crate::esm::grass_cache::validate_grass_cache(&output.join("grass_cache.rkyv")).unwrap();
+        let cache = crate::esm::grass_cache::validate_grass_cache(&output.join("grass_cache.rkyv"))
+            .unwrap();
+        let archived =
+            rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&cache).unwrap();
+        assert_eq!(archived.types.len(), 1);
+        assert_eq!(archived.types[0].form_id.to_native(), 0x0100_0801);
+        assert_eq!(archived.cells.len(), 1);
     }
 
     #[tokio::test]

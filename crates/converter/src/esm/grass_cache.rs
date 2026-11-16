@@ -877,6 +877,11 @@ pub fn write_grass_cache_with_cancel(
     let (types, skipped_rules, modelless_rules, first_invalid_rule) = read_types(conn)?;
     let valid_types: std::collections::BTreeSet<_> =
         types.iter().map(|rule| rule.form_id).collect();
+    let modeled_types: std::collections::BTreeSet<_> = types
+        .iter()
+        .filter(|rule| !rule.model_path.is_empty())
+        .map(|rule| rule.form_id)
+        .collect();
     let (links, mut skipped_texture_lists, mut first_invalid_texture) =
         links::read_links(conn, &valid_types)?;
     let mut texture_bindings = BTreeMap::new();
@@ -906,13 +911,13 @@ pub fn write_grass_cache_with_cancel(
             Ok((row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?)))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    // Any linked terrain texture is a conservative reason to inspect obstruction sources.
+    // Linked modeled rules require obstruction inputs; non-emitting slots keep their links.
     let has_grass_terrain = terrain.cells.iter().any(|land| {
         coordinates.contains_key(&land.cell_id.to_native())
             && land.layers.iter().any(|layer| {
                 links
                     .get(&layer.texture_form_id.to_native())
-                    .is_some_and(|grasses| !grasses.is_empty())
+                    .is_some_and(|grasses| grasses.iter().any(|id| modeled_types.contains(id)))
             })
     });
     let (mut references, unbounded_references) = if has_grass_terrain {
