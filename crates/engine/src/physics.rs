@@ -1783,48 +1783,85 @@ pub fn walk_movement_system(
     // Rapier's grounded flag stands in for retail's kSupport.
     let supported = output.map(|o| o.grounded).unwrap_or(false);
     let rapier = context.single().ok();
-    // RF-CC-013: the cast runs only without support, with no jump pending, and not in the air.
-    let glide = !supported
-        && !state.airborne
-        && !state.jump_active
-        && !intent.jump_pressed
+    // Walking state without support: a pending jump skips the unsupported cast, both the hit and
+    // the miss (RF-CC-013), so the state stays walking and the jump launches from it. Without a
+    // pending jump, the cast decides (RF-CC-013): a hit keeps walking and glides (RF-CC-014), a
+    // miss starts the air state.
+    let jump_pending = intent.jump_pressed;
+    let walking_unsupported = !supported && !state.airborne && !state.jump_active;
+    let glide = walking_unsupported
+        && !jump_pending
         && rapier.as_ref().is_some_and(|context| {
             walk_support::unsupported_cast_hits(context, entity, &body, capsule, &controller)
         });
+    let jump_from_walking = walking_unsupported && jump_pending;
     let previous_vertical = state.vertical_velocity;
+    let was_jumping = state.jump_active;
     integrate_walk(
         &mut state,
         &intent,
         &tuning,
         PHYSICS_TIMESTEP,
-        supported || glide,
+        supported || glide || jump_from_walking,
     );
     intent.jump_pressed = false;
     state.landed = false;
-    if supported {
+    // The tick that launches a jump starts the air state at the launch height (RF-CC-013), before
+    // this tick's displacement. Rapier can keep reporting support for a few ticks after take-off,
+    // so support does not count while the jump is rising (RF-CC-015: landing needs support).
+    let launched = !was_jumping && state.jump_active;
+    let rising = state.jump_active && state.vertical_velocity > 0.0;
+    if launched {
+        state.airborne = true;
+        state.fall_start_height = body.translation.y;
+    } else if supported && !rising {
         // RF-CC-015: the first supported step ends the air state and sets the landing flag.
         state.landed = std::mem::take(&mut state.airborne);
+    } else if supported {
+        // Still rising right after take-off: the air state continues.
     } else if glide {
         // RF-CC-013, RF-CC-014: a hit keeps the walking state; 4 x gravity accelerates the body
         // onto the surface. No fall state, no fall start height, no landing.
         state.vertical_velocity =
             walk_support::glide_vertical_velocity(previous_vertical, PHYSICS_TIMESTEP);
     } else if !state.airborne {
-        // RF-CC-013: a miss, or a jump, starts the air state.
+        // RF-CC-013: a miss, or a jump launched from a cast hit, starts the air state.
         state.airborne = true;
         state.fall_start_height = body.translation.y;
     }
-    // RF-CC-016, RF-CC-017: on a supported slope the wish lies in the support plane.
+    // RF-CC-016, RF-CC-017: on a supported slope the wish lies in the support plane. A cast hit
+    // runs the same walking step (RF-CC-014), so the surface below gives the normal there too.
     let mut wish = state.horizontal_velocity;
-    if supported
+    if (supported || glide)
         && !state.jump_active
         && let Some(context) = rapier.as_ref()
         && let Some(normal) =
             walk_support::support_normal(context, entity, &body, &controller, &tuning)
     {
-        wish = walk_support::slope_velocity(wish, normal);
+        wish = walk_support::slope_velocity(wish, normal, controller.max_slope_climb_angle.cos());
     }
     let mut displacement = (wish + Vec3::Y * state.vertical_velocity) * PHYSICS_TIMESTEP;
+    if glide && let Some(context) = rapier.as_ref() {
+        // RF-CC-014: the pull of a cast hit moves the body straight down. Rapier runs the
+        // controller before syncing transforms, so the query pose is overridden as for a step up.
+        let dropped = walk_support::drop_straight_down(
+            context,
+            entity,
+            &body,
+            capsule,
+            &controller,
+            -displacement.y,
+        );
+        if dropped > 0.0 {
+            body.translation.y -= dropped;
+            controller.custom_shape = Some((
+                capsule.clone(),
+                body.rotation.inverse() * (Vec3::NEG_Y * dropped),
+                Quat::IDENTITY,
+            ));
+        }
+        displacement.y = 0.0;
+    }
     if supported
         && !state.jump_active
         && let Some(context) = rapier.as_ref()

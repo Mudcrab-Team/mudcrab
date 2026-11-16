@@ -84,12 +84,19 @@ fn walk(app: &mut App, direction: Vec3, speed: f32, done: impl Fn(Vec3) -> bool)
         target_speed: speed,
         jump_pressed: false,
     });
+    let mut finished = false;
     for _ in 0..1500 {
         app.update();
         if done(headless::player_pose(app).0) {
+            finished = true;
             break;
         }
     }
+    assert!(
+        finished,
+        "the walk never reached its end in 1500 ticks, the player is stuck at {:?}",
+        headless::player_pose(app).0
+    );
     std::mem::take(&mut app.world_mut().resource_mut::<Ticks>().0)
 }
 
@@ -309,6 +316,142 @@ fn a_jump_still_leaves_the_ground_and_lands_once() {
     );
 }
 
+/// The tick that launches a jump is the start of the air state: `airborne` is set at once and the
+/// fall start height is the launch height (RF-CC-013 stores it when the air state begins). The
+/// ascent must not end the air state or set the landing flag while Rapier still reports support
+/// right after take-off, and the jump lands exactly once, with the launch height unchanged.
+#[test]
+fn the_jump_launch_tick_starts_the_air_state_at_the_launch_height() {
+    for stair_top in [false, true] {
+        let place = if stair_top {
+            "stair top"
+        } else {
+            "flat ground"
+        };
+        let mut app = app_with_ticks();
+        let start = if stair_top {
+            let top = flight(&mut app);
+            Vec3::new(TREADS as f32 * RUN + 200.0, top + 60.0, Z)
+        } else {
+            Vec3::new(0.0, 60.0, Z)
+        };
+        settle(&mut app, start);
+        let launch_height = headless::player_pose(&mut app).0.y;
+        app.insert_resource(WalkIntent {
+            wish_dir: Vec3::ZERO,
+            target_speed: 0.0,
+            jump_pressed: true,
+        });
+        app.update();
+        let first = app.world().resource::<Ticks>().0[0];
+        assert!(
+            first.state.jump_active && first.state.vertical_velocity > 0.0,
+            "{place}: the press did not launch: {:?}",
+            first.state
+        );
+        assert!(
+            first.state.airborne,
+            "{place}: the air state did not start on the launch tick: {:?}",
+            first.state
+        );
+        assert!(
+            (first.state.fall_start_height - launch_height).abs() < 0.5,
+            "{place}: fall start height {} is not the launch height {launch_height}",
+            first.state.fall_start_height
+        );
+        assert!(
+            !first.state.landed,
+            "{place}: the launch tick set the landing flag"
+        );
+        for _ in 0..240 {
+            app.update();
+        }
+        let ticks = std::mem::take(&mut app.world_mut().resource_mut::<Ticks>().0);
+        for tick in &ticks {
+            if tick.state.airborne {
+                assert!(
+                    (tick.state.fall_start_height - launch_height).abs() < 0.5,
+                    "{place}: the fall start height changed during the jump: {:?}",
+                    tick.state
+                );
+            }
+            assert!(
+                !(tick.state.landed
+                    && tick.state.jump_active
+                    && tick.state.vertical_velocity > 0.0),
+                "{place}: a landing was flagged while rising: {:?}",
+                tick.state
+            );
+        }
+        assert_eq!(
+            ticks.iter().filter(|tick| tick.state.landed).count(),
+            1,
+            "{place}: exactly one landing per jump"
+        );
+        let last = ticks.last().unwrap();
+        assert!(!last.state.airborne, "{place}: standing again");
+    }
+}
+
+/// A jump pressed while the player walks down a stair tread, between two contacts, must launch. In
+/// retail a pending jump only skips the unsupported cast (RF-CC-013); the state is still walking,
+/// so the jump is allowed. The press is made on a tick where Rapier reports no support and the
+/// previous tick was part of a cast-hit descent, the case where a press used to be dropped.
+#[test]
+fn a_jump_pressed_mid_glide_down_the_stairs_still_launches() {
+    let launch = MovementTuning::default().jump_launch;
+    for (name, speed) in SPEEDS {
+        let mut app = app_with_ticks();
+        let top = flight(&mut app);
+        settle(
+            &mut app,
+            Vec3::new(TREADS as f32 * RUN + 200.0, top + 60.0, Z),
+        );
+        app.insert_resource(WalkIntent {
+            wish_dir: -Vec3::X,
+            target_speed: speed,
+            jump_pressed: false,
+        });
+        let mut pressed = None;
+        for _ in 0..600 {
+            let (gliding, x) = {
+                let world = app.world_mut();
+                let mut query = world.query_filtered::<(
+                    &Transform,
+                    &WalkState,
+                    Option<&KinematicCharacterControllerOutput>,
+                ), With<PlayerBody>>();
+                let (body, state, output) = query.single(world).unwrap();
+                let unsupported = output.is_some_and(|output| !output.grounded);
+                (
+                    unsupported
+                        && !state.airborne
+                        && !state.jump_active
+                        && state.vertical_velocity < -1.0,
+                    body.translation.x,
+                )
+            };
+            if gliding && (RUN..TREADS as f32 * RUN - RUN).contains(&x) {
+                app.world_mut().resource_mut::<WalkIntent>().jump_pressed = true;
+                app.update();
+                let state = *app
+                    .world_mut()
+                    .query::<&WalkState>()
+                    .single(app.world())
+                    .unwrap();
+                pressed = Some(state);
+                break;
+            }
+            app.update();
+        }
+        let state = pressed.unwrap_or_else(|| panic!("{name}: no unsupported glide tick found"));
+        assert!(
+            state.jump_active && state.vertical_velocity >= launch - 1.0,
+            "{name}: a jump pressed mid-glide did not launch: {state:?}"
+        );
+    }
+}
+
 /// The same descent and climb on the converted collision of `WalkwayStairs15`, read-only from the
 /// local pack: `MUDCRAB_STAIR_ASSETS=<pack> cargo test -p engine --lib --ignored real_walkway`.
 #[test]
@@ -383,6 +526,18 @@ fn real_walkway_stairs15_descent_and_climb_stay_walking() {
                 if descend { "descent" } else { "climb" }
             );
             let end = ticks.last().unwrap().position;
+            // The same limits as the `done` test of the walk above: the player must have crossed
+            // the whole flight, not only reached a height.
+            assert!(
+                if descend {
+                    end.x < -376.0
+                } else {
+                    end.x > 379.0
+                },
+                "{} {name}: the player stopped at x = {} before the end of the flight",
+                if descend { "descent" } else { "climb" },
+                end.x
+            );
             assert!(
                 if descend { end.y < 60.0 } else { end.y > 290.0 },
                 "{name}: stalled at {end:?}"

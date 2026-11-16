@@ -29,20 +29,19 @@
 //! Havok proxy's support tolerance and keep distance (RF-CC-001), and the normal threshold at
 //! `0x141829400` (RF-CC-017).
 
-use super::{MovementTuning, PLAYER_CONTROLLER_OFFSET};
+use super::{MovementTuning, PLAYER_CONTROLLER_OFFSET, carry::UNITS_PER_METRE};
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 
-/// RF-UNIT-001: one Havok metre in game units.
-pub const HAVOK_METRE_UNITS: f32 = 69.991_25;
 /// RF-CC-013: `fUnsupportCastLength:HAVOK`, 1.0 m (record `0x1420d2598`, value `0x1420d25a0`).
 pub const UNSUPPORTED_CAST_LENGTH_METRES: f32 = 1.0;
 /// RF-CC-013: the cast length in game units, 69.99.
-pub const UNSUPPORTED_CAST_LENGTH: f32 = UNSUPPORTED_CAST_LENGTH_METRES * HAVOK_METRE_UNITS;
+pub const UNSUPPORTED_CAST_LENGTH: f32 = UNSUPPORTED_CAST_LENGTH_METRES * UNITS_PER_METRE;
 /// RF-CC-013, RF-CC-014: `fUnsupportedGravMult:HAVOK`, 4.0 (`0x1420d2588`).
 pub const UNSUPPORTED_GRAVITY_MULTIPLIER: f32 = 4.0;
-/// RF-CC-002: world gravity 9.81 m/s^2 in game units per second squared, 686.6.
-pub const RETAIL_GRAVITY: f32 = 9.81 * HAVOK_METRE_UNITS;
+/// RF-CC-002: world gravity 9.81 m/s^2 in game units per second squared, 686.6. The metre is
+/// `carry::UNITS_PER_METRE` (RF-UNIT-001, 69.99125).
+pub const RETAIL_GRAVITY: f32 = 9.81 * UNITS_PER_METRE;
 /// RF-CC-017: the vertical part of the wish is flattened only above this (`0x141b5bdc4`).
 const UPWARD_VELOCITY_EPSILON: f32 = 0.001;
 
@@ -83,6 +82,39 @@ pub(super) fn unsupported_cast_hits(
         .is_some()
 }
 
+/// RF-CC-014: how far the capsule can drop straight down, at most `distance`, before it is
+/// `PLAYER_CONTROLLER_OFFSET` above a surface. The 4 x gravity pull of a cast hit moves the body
+/// along the vertical only: a downward move sent through the collision slide would also push the
+/// body sideways along any slightly tilted face it touches, which a player standing still must
+/// not do (a door arrival places the body next to walls).
+pub(super) fn drop_straight_down(
+    context: &RapierContext,
+    entity: Entity,
+    body: &Transform,
+    capsule: &Collider,
+    controller: &KinematicCharacterController,
+    distance: f32,
+) -> f32 {
+    if distance <= 0.0 {
+        return 0.0;
+    }
+    context
+        .cast_shape(
+            body.translation,
+            body.rotation,
+            Vec3::NEG_Y,
+            &*capsule.raw,
+            ShapeCastOptions {
+                target_distance: PLAYER_CONTROLLER_OFFSET,
+                stop_at_penetration: false,
+                max_time_of_impact: distance,
+                compute_impact_geometry_on_penetration: true,
+            },
+            controller_filter(controller, entity),
+        )
+        .map_or(distance, |(_, hit)| hit.time_of_impact.clamp(0.0, distance))
+}
+
 /// RF-CC-014: the vertical velocity after one step of an unsupported cast hit. The 4 x gravity is
 /// an acceleration that adds to the velocity of the previous step, which is 0 on the first step.
 pub(super) fn glide_vertical_velocity(previous: f32, dt: f32) -> f32 {
@@ -120,8 +152,17 @@ pub(super) fn support_normal(
 /// is removed until the vertical part is 0, which makes the translation horizontal and longer than
 /// W. The collision step slides it along the plane, which leaves W along the surface. Going down,
 /// the rotated velocity points down the plane and is used as is.
-pub(super) fn slope_velocity(wish: Vec3, support_normal: Vec3) -> Vec3 {
-    if wish.length_squared() <= f32::EPSILON || support_normal.y >= 1.0 - 1.0e-6 {
+///
+/// `climb_limit_cos` is the cosine of the controller's walk-up slope limit. A surface steeper than
+/// that is not support the player walks on (a rock edge, a cliff lip), and the projection would
+/// multiply the wish by about 1 / normal.y, so the plain wish is used. The retail normal threshold
+/// (`0x141829400`, RF-CC-017) is unread and the retail walk-up limit is unresolved (RF-CC-007), so
+/// Mudcrab's own limit, `MovementTuning::slope_climb_degrees`, stands in for both.
+pub(super) fn slope_velocity(wish: Vec3, support_normal: Vec3, climb_limit_cos: f32) -> Vec3 {
+    if wish.length_squared() <= f32::EPSILON
+        || support_normal.y >= 1.0 - 1.0e-6
+        || support_normal.y < climb_limit_cos
+    {
         return wish;
     }
     let mut velocity = Quat::from_rotation_arc(Vec3::Y, support_normal) * wish;
@@ -134,6 +175,9 @@ pub(super) fn slope_velocity(wish: Vec3, support_normal: Vec3) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The walk-up limit of `MovementTuning::default()`, 50 degrees.
+    const CLIMB_LIMIT_COS: f32 = 0.642_787_6;
 
     fn normal_of(slope_degrees: f32, uphill: Vec3) -> Vec3 {
         // A plane that rises toward `uphill`.
@@ -177,7 +221,7 @@ mod tests {
     #[test]
     fn flat_ground_keeps_the_wish() {
         let wish = Vec3::new(300.0, 0.0, 0.0);
-        assert_eq!(slope_velocity(wish, Vec3::Y), wish);
+        assert_eq!(slope_velocity(wish, Vec3::Y, CLIMB_LIMIT_COS), wish);
     }
 
     #[test]
@@ -188,7 +232,7 @@ mod tests {
                 // The plane rises toward +X.
                 let normal = normal_of(degrees, Vec3::X);
                 let wish = Vec3::new(wish_x, 0.0, 0.0);
-                let velocity = slope_velocity(wish, normal);
+                let velocity = slope_velocity(wish, normal, CLIMB_LIMIT_COS);
                 let slid = along_the_plane(velocity, normal);
                 assert!(
                     (slid.length() - 300.0).abs() < 0.5,
@@ -207,10 +251,10 @@ mod tests {
     #[test]
     fn going_up_the_translation_is_horizontal_and_going_down_it_follows_the_plane() {
         let normal = normal_of(26.6, Vec3::X);
-        let up = slope_velocity(Vec3::new(300.0, 0.0, 0.0), normal);
+        let up = slope_velocity(Vec3::new(300.0, 0.0, 0.0), normal, CLIMB_LIMIT_COS);
         assert!(up.y.abs() < 1.0e-3, "vertical part is 0 going up: {up:?}");
         assert!(up.x > 300.0, "longer than W before the slide: {up:?}");
-        let down = slope_velocity(Vec3::new(-300.0, 0.0, 0.0), normal);
+        let down = slope_velocity(Vec3::new(-300.0, 0.0, 0.0), normal, CLIMB_LIMIT_COS);
         assert!(down.y < 0.0, "points down the plane: {down:?}");
         assert!(
             down.dot(normal).abs() < 1.0e-2,
@@ -219,10 +263,36 @@ mod tests {
     }
 
     #[test]
+    fn a_surface_steeper_than_the_climb_limit_leaves_the_wish_alone() {
+        // A 300 units per second wish toward the high side of a steep face. Projected, it would be
+        // multiplied by about 1 / normal.y (30,000 at 0.01).
+        let wish = Vec3::new(300.0, 0.0, 0.0);
+        for normal_y in [0.01_f32, 0.5] {
+            let normal = Vec3::new(-(1.0 - normal_y * normal_y).sqrt(), normal_y, 0.0);
+            assert_eq!(
+                slope_velocity(wish, normal, CLIMB_LIMIT_COS),
+                wish,
+                "normal.y {normal_y}"
+            );
+        }
+        // Just inside the limit the amplification is bounded by 1 / cos(limit), about 1.56.
+        let normal = normal_of(49.0, Vec3::X);
+        let velocity = slope_velocity(wish, normal, CLIMB_LIMIT_COS);
+        assert!(
+            velocity.length() <= 300.0 / CLIMB_LIMIT_COS + 0.5,
+            "{velocity:?}"
+        );
+        assert!(
+            velocity.x > 300.0,
+            "the projection still applies inside the limit"
+        );
+    }
+
+    #[test]
     fn a_sideways_wish_on_a_slope_keeps_its_length_in_the_plane() {
         let normal = normal_of(30.0, Vec3::X);
         let wish = Vec3::new(0.0, 0.0, 300.0);
-        let velocity = slope_velocity(wish, normal);
+        let velocity = slope_velocity(wish, normal, CLIMB_LIMIT_COS);
         assert!(
             (velocity - wish).length() < 1.0e-2,
             "a contour wish is unchanged"
