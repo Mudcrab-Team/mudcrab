@@ -177,8 +177,9 @@ pub struct ActorModelCatalog {
     pub parts: Vec<ActorModelPartRow>,
     /// Diagnostics, sorted by `(npc_id, reason)`.
     pub diagnostics: Vec<ActorModelDiagnostic>,
-    /// Read failures keyed by RACE FormID, once per race regardless of NPC count.
-    /// Full database exports persist these through the RACE omission projection.
+    /// Catalog-local read failures keyed by RACE FormID, once per race regardless of NPC count.
+    /// Full exports persist omissions from their independent `race_authoring_rows` scan,
+    /// rather than consuming this map; callers may inspect it alongside the catalog.
     pub race_authoring_errors: BTreeMap<u32, String>,
 }
 
