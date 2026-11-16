@@ -12,9 +12,9 @@ desktop policy has three routes, not selectable desktop and portable profiles:
 Compatible BC1/BC2/BC3/BC7 and DXGI RGBA8 payloads copy byte-for-byte; BC4/BC5/BC6H and
 DXGI R8 do so only in linear slots. Native preservation adds no re-encoding loss, and the runtime
 samples that GPU format directly. UASTC fallback is not a whole-pack portable profile.
-[ADR-0014](../../adr/0014-phase1-desktop-texture-contract.md) proposes the Phase 1 desktop
-scope; deferral approval and portable-profile work remain open in
-[#274](https://github.com/Mudcrab-Team/mudcrab/issues/274).
+[ADR-0014](../../adr/0014-phase1-desktop-texture-contract.md) accepts the Phase 1 desktop
+scope and defers the portable profile. That work is tracked in
+[#548](https://github.com/Mudcrab-Team/mudcrab/issues/548).
 
 ## Semantic encoding contract
 
@@ -59,8 +59,8 @@ transcoded the former UASTC output to on desktop, so GPU memory does not change.
 preserved BC sources, this output belongs to the desktop profile: GPUs without BC support (Adreno
 on Android) cannot sample it, and a portable profile would have to encode these textures and the
 preserved BC sources to a portable representation. No converter option selects that profile yet;
-the proposed scope and pending decision are recorded in [ADR-0014](../../adr/0014-phase1-desktop-texture-contract.md)
-and [#274](https://github.com/Mudcrab-Team/mudcrab/issues/274).
+the accepted scope and the deferral are recorded in [ADR-0014](../../adr/0014-phase1-desktop-texture-contract.md)
+and [#548](https://github.com/Mudcrab-Team/mudcrab/issues/548).
 
 Each mip is padded to whole 4x4 blocks by replicating edge pixels, so 1x1 and odd-sized mips keep
 the block counts the container expects; rows that already fill whole blocks are compressed where

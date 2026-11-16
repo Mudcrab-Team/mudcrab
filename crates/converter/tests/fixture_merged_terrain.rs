@@ -218,7 +218,7 @@ async fn a_metadata_rebuild_rebuilds_the_terrain_payloads() {
 }
 
 #[tokio::test]
-async fn without_the_option_no_terrain_output_is_written() {
+async fn without_the_option_only_default_images_are_written() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");
     let output = directory.path().join("assets");
@@ -231,8 +231,13 @@ async fn without_the_option_no_terrain_output_is_written() {
         "{:?}",
         report.terrain_warnings
     );
-    assert!(!output.join("terrain").exists());
-    assert!(!output.join("terrain/").exists());
+    assert!(!output.join(LAND_TEXTURE_TABLE_PATH).exists());
+    let mut files = fs::read_dir(output.join("terrain"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    files.sort();
+    assert_eq!(files, vec!["default-diffuse.ktx2", "default-normal.ktx2"]);
 
     // The same input with the option on does write it, so the pair discriminates.
     let with_option = directory.path().join("with-option");
