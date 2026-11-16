@@ -894,6 +894,7 @@ mod tests {
             terrain.bytes() - GrassTerrain::new(vec![120.0; 1089], Some(20.0)).bytes(),
             4356
         );
+        let mut timing_passed = true;
         for (spacing, slots, milliseconds) in
             [(64.0, 4096, 6), (32.0, 16384, 25), (20.0, 41944, 60)]
         {
@@ -937,17 +938,17 @@ mod tests {
             }
             samples.sort_unstable();
             let ceiling = Duration::from_millis(milliseconds);
-            assert!(
-                samples[1] < ceiling,
-                "spacing={spacing}: {:?} exceeds {ceiling:?}",
-                samples[1]
-            );
+            timing_passed &= samples[1] < ceiling;
             eprintln!(
                 "coloured grass: spacing={spacing}, instances={count}, median={:?}, budget={ceiling:?}, retained_surface_bytes={}",
                 samples[1],
                 terrain.bytes()
             );
         }
+        assert!(
+            timing_passed,
+            "coloured grass generation timing budget exceeded; see spacing medians above"
+        );
     }
 
     #[test]
