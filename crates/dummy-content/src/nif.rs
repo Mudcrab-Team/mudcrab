@@ -214,6 +214,44 @@ pub fn static_shape_with_bodies(
     build_static_shape(shape, &[], bodies, None, None)
 }
 
+/// A fixed (`hkMotionType` 7, MO_SYS_FIXED) box body on `node_name`, as a static prop carries:
+/// layer 1 (`SKYL_STATIC`), no inertia and no velocity. Values are raw Havok units.
+pub fn fixed_box_body(node_name: &str) -> BoxBody<'_> {
+    BoxBody {
+        node_name,
+        half_extents: [1.0, 1.0, 1.0],
+        transform: None,
+        collision_layer: 1,
+        collision_flags: 0,
+        collision_response: 1,
+        inner_collision_flags: 0,
+        inner_collision_response: 1,
+        shape: BodyShape::Box,
+        motion_system: 7,
+        deactivator_type: 1,
+        quality_type: 1,
+        mass: 0.0,
+        inertia: [0.0; 9],
+        center_of_mass: [0.0; 3],
+        linear_damping: 0.1,
+        angular_damping: 0.05,
+        friction: 0.5,
+        restitution: 0.4,
+        max_linear_velocity: 104.4,
+        max_angular_velocity: 31.57,
+    }
+}
+
+/// Like [`static_shape_with_bodies`], with explicitly authored lighting-shader flag words.
+pub fn static_shape_with_bodies_and_material_flags(
+    shape: &StaticShape<'_>,
+    bodies: &[BoxBody<'_>],
+    flags_1: u32,
+    flags_2: u32,
+) -> Result<Vec<u8>> {
+    build_static_shape(shape, &[], bodies, None, Some((flags_1, flags_2)))
+}
+
 /// Like [`static_shape_with_bodies`], with `root` as the root node's local transform.
 pub fn static_shape_with_root_transform(
     shape: &StaticShape<'_>,
