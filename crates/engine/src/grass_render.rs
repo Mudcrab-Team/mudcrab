@@ -631,37 +631,43 @@ fn update_grass_uniforms(
         ),
         With<StreamingCamera>,
     >,
+    retired_views: Query<Entity, (With<GrassView>, Without<StreamingCamera>)>,
     mut primitives: Query<(&GlobalTransform, &mut GrassPrimitive)>,
     fade: Res<GrassFade>,
     ambient: Option<Res<GlobalAmbientLight>>,
     batches: Query<Option<&GrassAttached>, With<GrassBatch>>,
     mut metrics: ResMut<GrassRenderMetrics>,
 ) {
-    for (camera, _, _, _, _, _, marker) in &cameras {
-        if marker.is_none() {
+    for camera in &retired_views {
+        commands.entity(camera).remove::<GrassView>();
+    }
+    for (camera, _, component, _, _, _, marker) in &cameras {
+        let active = component.is_none_or(|camera| camera.is_active);
+        if active && marker.is_none() {
             commands.entity(camera).insert(GrassView);
+        } else if !active && marker.is_some() {
+            commands.entity(camera).remove::<GrassView>();
         }
     }
-    let view =
-        cameras
-            .single()
-            .ok()
-            .map(
-                |(entity, transform, camera, msaa, tonemapping, hdr, _)| GrassProofView {
-                    camera: entity,
-                    world_from_view: transform.to_matrix(),
-                    clip_from_view: camera.map_or(Mat4::IDENTITY, Camera::clip_from_view),
-                    samples: msaa.map_or(1, |msaa| msaa.samples()),
-                    tonemapping: tonemapping.copied(),
-                    hdr,
-                },
-            );
+    let view = cameras
+        .single()
+        .ok()
+        .filter(|(_, _, camera, _, _, _, _)| camera.is_none_or(|camera| camera.is_active))
+        .map(
+            |(entity, transform, camera, msaa, tonemapping, hdr, _)| GrassProofView {
+                camera: entity,
+                world_from_view: transform.to_matrix(),
+                clip_from_view: camera.map_or(Mat4::IDENTITY, Camera::clip_from_view),
+                samples: msaa.map_or(1, |msaa| msaa.samples()),
+                tonemapping: tonemapping.copied(),
+                hdr,
+            },
+        );
     let eye = view.map(|view| view.world_from_view.w_axis.truncate());
     let mut all_drawn = true;
     for (transform, mut primitive) in &mut primitives {
-        if primitive.proof_view.is_some()
-            && (primitive.proof_view != view
-                || primitive.uniform.world_from_cell != transform.to_matrix())
+        if primitive.proof_view != view
+            || primitive.uniform.world_from_cell != transform.to_matrix()
         {
             // Old render-world copies retain evidence only for their original view.
             primitive.drawn.next_view();
@@ -1088,6 +1094,12 @@ fn grass_visible_in_view(data: &GrassPrimitive, clip_from_world: Mat4) -> bool {
     visible
 }
 
+/// Select the camera whose render result can supply primitive evidence.
+fn grass_matches_evidence_camera(data: &GrassPrimitive, camera: MainEntity) -> bool {
+    data.proof_view
+        .is_some_and(|view| view.camera == camera.id())
+}
+
 /// Refresh main-draw evidence when its specialization or availability changes.
 fn record_grass_pipeline(data: &GrassPrimitive, key: GrassKey, ready: bool) {
     let mut previous = data.proof_pipeline.lock().unwrap();
@@ -1129,6 +1141,9 @@ fn queue_grass(
     clear_queued_grass(&mut queued, &mut main_phases, &mut pre_phases);
     for (view, msaa, camera, tonemapping) in &views {
         for (entity, main_entity, data) in &primitives {
+            if !grass_matches_evidence_camera(data, view.retained_view_entity.main_entity) {
+                continue;
+            }
             if !grass_visible_in_view(
                 data,
                 view.clip_from_world.unwrap_or_else(|| {
@@ -1320,6 +1335,9 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
         let Some((data, gpu)) = item else {
             return RenderCommandResult::Skip;
         };
+        if !grass_matches_evidence_camera(data, view.retained_view_entity.main_entity) {
+            return RenderCommandResult::Skip;
+        }
         let Some(mesh) = meshes.into_inner().get(&data.mesh) else {
             return RenderCommandResult::Skip;
         };
@@ -1500,7 +1518,6 @@ mod tests {
         app.world_mut().spawn((batch(), GrassAttached));
         let mut data = primitive();
         data.blade_reach = 1.0;
-        let proof = data.drawn.clone();
         let entity = app
             .world_mut()
             .spawn((
@@ -1510,6 +1527,7 @@ mod tests {
             .id();
         app.update();
         let old_render_copy = app.world().get::<GrassPrimitive>(entity).unwrap().clone();
+        let proof = old_render_copy.drawn.clone();
         let clip = Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 0.1, 5000.0);
         assert!(!grass_visible_in_view(&old_render_copy, clip));
         assert!(
@@ -1561,6 +1579,104 @@ mod tests {
         assert_view_edit_requires_fresh_draw(|world, camera| {
             world.entity_mut(camera).insert(Msaa::Sample4);
         });
+    }
+
+    /// A replacement streaming camera owns the sole marker used to queue grass.
+    #[test]
+    fn bot_view_transition_retires_former_camera_marker() {
+        let (mut app, camera, _) = view_transition_app();
+        app.update();
+        assert!(app.world().get::<GrassView>(camera).is_some());
+        app.world_mut()
+            .entity_mut(camera)
+            .remove::<StreamingCamera>();
+        let replacement = app
+            .world_mut()
+            .spawn((StreamingCamera, GlobalTransform::IDENTITY))
+            .id();
+        app.update();
+        assert!(app.world().get::<GrassView>(replacement).is_some());
+        assert!(
+            app.world().get::<GrassView>(camera).is_none(),
+            "the former camera leaves the grass render views"
+        );
+    }
+
+    /// A render result captured while no camera was selected stays in that generation.
+    #[test]
+    fn bot_view_transition_camera_recovery_requires_new_evidence() {
+        let (mut app, camera, entity) = view_transition_app();
+        app.update();
+        app.world_mut()
+            .entity_mut(camera)
+            .remove::<StreamingCamera>();
+        app.update();
+        assert!(!app.world().resource::<GrassRenderMetrics>().ready);
+        let absent_view = app.world().get::<GrassPrimitive>(entity).unwrap().clone();
+        app.world_mut().entity_mut(camera).insert(StreamingCamera);
+        app.update();
+        absent_view.drawn.store(true, Ordering::Release);
+        app.update();
+        assert!(
+            !app.world().resource::<GrassRenderMetrics>().ready,
+            "camera recovery awaits a draw captured for the restored camera"
+        );
+    }
+
+    /// A disabled camera remains pending until an active view supplies a fresh draw.
+    #[test]
+    fn bot_view_transition_disabled_camera_waits_for_active_draw() {
+        let (mut app, camera, entity) = view_transition_app();
+        app.world_mut().entity_mut(camera).insert(Camera::default());
+        app.update();
+        app.world()
+            .get::<GrassPrimitive>(entity)
+            .unwrap()
+            .drawn
+            .store(true, Ordering::Release);
+        app.update();
+        assert!(app.world().resource::<GrassRenderMetrics>().ready);
+        app.world_mut().get_mut::<Camera>(camera).unwrap().is_active = false;
+        app.update();
+        assert!(
+            !app.world().resource::<GrassRenderMetrics>().ready,
+            "a disabled camera waits for an active view"
+        );
+    }
+
+    /// Former camera views cannot cull or draw on behalf of the selected camera.
+    #[test]
+    fn bot_view_transition_accepts_only_selected_camera() {
+        let (mut app, camera, entity) = view_transition_app();
+        let former_camera = app.world_mut().spawn_empty().id();
+        app.update();
+        let mut data = app.world().get::<GrassPrimitive>(entity).unwrap().clone();
+        assert!(grass_matches_evidence_camera(&data, camera.into()));
+        assert!(!grass_matches_evidence_camera(&data, former_camera.into()));
+        data.proof_view = None;
+        assert!(!grass_matches_evidence_camera(&data, camera.into()));
+    }
+
+    /// Build an admitted primitive and independently replaceable streaming camera.
+    fn view_transition_app() -> (App, Entity, Entity) {
+        let mut app = App::new();
+        app.insert_resource(GrassFade {
+            enabled: false,
+            start: 1000.0,
+            end: 2000.0,
+        })
+        .init_resource::<GrassRenderMetrics>()
+        .add_systems(Update, update_grass_uniforms);
+        let camera = app
+            .world_mut()
+            .spawn((StreamingCamera, GlobalTransform::IDENTITY))
+            .id();
+        app.world_mut().spawn((batch(), GrassAttached));
+        let entity = app
+            .world_mut()
+            .spawn((primitive(), GlobalTransform::IDENTITY))
+            .id();
+        (app, camera, entity)
     }
 
     /// Exercise a current-view edit after a primitive has issued an earlier main draw.
@@ -2539,12 +2655,17 @@ mod tests {
             GlobalTransform::from_translation(beyond_end),
         ));
         app.world_mut().spawn((batch(), GrassAttached));
-        let proof = data.drawn.clone();
         let primitive = app
             .world_mut()
             .spawn((data, GlobalTransform::IDENTITY))
             .id();
         app.update();
+        let proof = app
+            .world()
+            .get::<GrassPrimitive>(primitive)
+            .unwrap()
+            .drawn
+            .clone();
         assert!(app.world().resource::<GrassRenderMetrics>().ready);
         assert_eq!(
             app.world()
@@ -2772,10 +2893,17 @@ mod tests {
         app.world_mut()
             .spawn((StreamingCamera, GlobalTransform::IDENTITY));
         let batch = app.world_mut().spawn(batch()).id();
-        let data = primitive();
-        let proof = data.drawn.clone();
-        app.world_mut().spawn((data, GlobalTransform::IDENTITY));
+        let entity = app
+            .world_mut()
+            .spawn((primitive(), GlobalTransform::IDENTITY))
+            .id();
         app.update();
+        let proof = app
+            .world()
+            .get::<GrassPrimitive>(entity)
+            .unwrap()
+            .drawn
+            .clone();
         assert!(!app.world().resource::<GrassRenderMetrics>().ready);
         app.world_mut().entity_mut(batch).insert(GrassAttached);
         app.update();

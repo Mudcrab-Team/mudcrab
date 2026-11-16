@@ -241,6 +241,11 @@ crossings. Radius zero cannot provide this guarantee and is rejected when grass
 is enabled. Acceptance and multi-shot captures wait for desired grass
 generation/admission and actual GPU draw readiness, including newly admitted
 batches; grass preparation failures fail an automated screenshot run.
+Frustum-cull evidence and actual main-draw evidence apply to the selected active
+camera view. Camera, projection, render-specialization and primitive-transform
+changes require fresh evidence; restoring a camera after an inactive interval
+also requires its own result. Model handles are retained while grass batches
+use the model and are released when its last batch leaves.
 
 Saved renderer preferences may widen automatically selected terrain coverage,
 and retain its grass minimum. An explicit terrain radius still clamps grass.
