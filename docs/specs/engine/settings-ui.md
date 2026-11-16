@@ -130,3 +130,24 @@ At commit `52266688`, 1,054 engine-library CPU tests passed with 1 ignored,
 strict engine/shared Clippy passed for all targets and features with `-D warnings`,
 and workspace formatting passed. Native UI, GPU behavior, visual parity, gameplay
 and performance were not exercised. CI on the published head remains a merge gate.
+
+## Window focus and world simulation
+
+The primary game window pauses virtual world time when it loses focus, including normal
+minimisation that loses focus. `[General] bAlwaysActive=1` in a file supplied by `--ini`, or
+`--always-active`, opts out; the default is `0`. Other windows do not own this pause reason.
+Visible `--stdin-console` sessions driven from a terminal should pass `--always-active`
+to keep physics, door transitions and time-driven animation running while unfocused.
+The `collision-measure` feature with `MUDCRAB_COLLISION_MEASURE` set also keeps simulation
+active for its automated measurement route. Each focus-pause acquisition logs an info line
+pointing to `--always-active`.
+Focus loss releases input without resetting airborne velocity or jump state, with either policy.
+Regaining focus discards background elapsed time before resuming simulation. Closing Settings
+or the console while still unfocused releases only that menu's pause. Automated/hidden capture
+modes keep their existing focus-independent simulation policy. Occlusion alone does not pause;
+platform-specific minimisation without focus loss is not covered by this policy.
+
+Menu input ownership is separate from physics: on admitted fixed ticks WALK integrates neutral
+input, retaining inertia and gravity, and safe spawn/door placement continues. Unsafe door holds
+remain guarded. During a world pause, async loading and rendering continue, but door landing,
+rollback, space/teleport commits and automatic held-object target assignments wait for resume.

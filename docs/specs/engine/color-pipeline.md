@@ -199,7 +199,9 @@ For a visible tuning session, `--start-shot <file>` seeds the world camera from 
 validated file containing one exterior pose. It sets the streaming cell, worldspace,
 rotation and horizontal FOV without selecting the automated shots runner. Add
 `--stdin-console` to control that process through its stdin using the same console
-commands as the backtick UI. This bridge is opt-in and has no network listener.
+commands as the backtick UI. Add `--always-active` when driving a visible session from
+a terminal so world simulation continues while the game window is unfocused. This bridge
+is opt-in and has no network listener.
 `SceneState` reports grading and streaming/upload readiness. `SceneShot <png-path>`
 captures the visible window only after readiness checks pass and writes a JSON
 state receipt alongside the image. It refuses existing output paths. The receipt

@@ -11,6 +11,7 @@
 //!
 //! | Section | Key | Engine setting |
 //! |---|---|---|
+//! | `[General]` | `bAlwaysActive` | `0` (default) pauses on focus loss; `1` keeps simulation active |
 //! | `[Sky]` | `fSunXExtreme`, `fSunYExtreme`, `fSunZExtreme`, `fSunDirXExtreme`, `fSunAlphaTransTime` | explicit sun-path overrides over the pack's GMST (retail exe default for a missing GMST) |
 //! | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2` |
 //! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units |
@@ -75,6 +76,13 @@ impl SkyrimIni {
     /// Applies every honoured key to `config`. A malformed value is reported and
     /// leaves the setting as it was.
     pub fn apply(&self, config: &mut EngineConfig) {
+        if let Some(raw) = self.get("General", "bAlwaysActive") {
+            match raw {
+                "0" => config.always_active = false,
+                "1" => config.always_active = true,
+                _ => eprintln!("warning: ignoring bAlwaysActive={raw:?}; expected 0 or 1"),
+            }
+        }
         if let Some(raw) = self.get("General", "uGridsToLoad") {
             match raw.parse::<i32>() {
                 // Skyrim centres the grid on the player's cell, so only odd sizes are a grid.
