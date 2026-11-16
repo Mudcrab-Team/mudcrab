@@ -18,6 +18,10 @@ const CELL_SIZE: f32 = 4096.0;
 
 fn main() -> Result<()> {
     color_eyre::install()?;
+    if shared::wants_version(env::args_os().skip(1)) {
+        println!("{}", shared::VERSION_LINE);
+        return Ok(());
+    }
     let options = Options::parse(env::args_os().skip(1))?;
     let _asset_lock = shared::asset_lock::AssetLock::acquire_shared(&options.assets)
         .wrap_err_with(|| format!("cannot inspect assets at {}", options.assets.display()))?;
@@ -52,7 +56,7 @@ impl Options {
         let mut args = args.into_iter();
         let assets = PathBuf::from(args.next().ok_or_else(|| {
             color_eyre::eyre::eyre!(
-                "usage: world-inspect <assets> <worldspace> <grid-x> <grid-y> [--radius N] [--reference FORM_ID] [--output report.json]"
+                "usage: world-inspect <assets> <worldspace> <grid-x> <grid-y> [--radius N] [--reference FORM_ID] [--output report.json]\n       world-inspect -V | --version"
             )
         })?);
         let worldspace = parse_number(args.next(), "worldspace")?;
