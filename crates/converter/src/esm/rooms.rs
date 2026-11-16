@@ -100,6 +100,10 @@ pub(crate) fn restore_portal_endpoint_provenance<'a>(
     let mut set = conn.prepare_cached(
         "UPDATE room_portals SET unbounded_a=(room_a IS NULL AND ?3), unbounded_b=(room_b IS NULL AND ?4) WHERE ref_id=?1 AND pair_index=?2",
     )?;
+    let mut incomplete = conn.prepare_cached(
+        "UPDATE room_graph_cells SET complete=0 WHERE cell_id IN \
+         (SELECT cell_id FROM room_portals WHERE ref_id=?1)",
+    )?;
     for (id, source) in sources {
         if clear.execute([id])? == 0 {
             continue;
@@ -113,6 +117,9 @@ pub(crate) fn restore_portal_endpoint_provenance<'a>(
                     u32_at(pair, 4) == Some(0)
                 ])?;
             }
+        } else {
+            // Canonical adaptation can retain only one of conflicting source occurrences.
+            incomplete.execute([id])?;
         }
     }
     Ok(())
@@ -619,7 +626,15 @@ pub fn export_room_graph(
         }
         // `XPOD` is an array of (origin, destination) pairs of 8 bytes (xEdit 4.1.5f defs).
         // One row per pair; a portal with no complete pair gets one row with NULL sides.
-        let xpod = view.find(b"XPOD").unwrap_or(&[]);
+        let mut endpoints = record.subrecords.iter().filter(|(tag, _)| tag == b"XPOD");
+        let xpod = endpoints
+            .next()
+            .map_or(&[][..], |(_, data)| data.as_slice());
+        if endpoints.next().is_some() {
+            incomplete.insert(cell);
+            report.invalid_markers_skipped += 1;
+            continue;
+        }
         let pairs = xpod.len() / 8;
         if pairs > 1 {
             report.portals_with_extra_pairs += 1;

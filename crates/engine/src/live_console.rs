@@ -161,6 +161,9 @@ fn scene_state(world: &World, baseline: crate::shots::Failures) -> serde_json::V
         .get_resource::<crate::visual_profile::VisualProfile>()
         .map(|profile| profile.name());
     let streaming = world.get_resource::<StreamingMetrics>();
+    let room_graphs = world.get_resource::<crate::room_culling::RoomCullingState>();
+    let pending_room_graphs = room_graphs.map_or(0, |state| state.pending_reads());
+    let failed_room_graphs = room_graphs.map_or(0, |state| state.failed_reads());
     let pending_terrain = world
         .get_resource::<TerrainMeshUploadReadiness>()
         .map_or(0, |uploads| uploads.outstanding());
@@ -199,6 +202,8 @@ fn scene_state(world: &World, baseline: crate::shots::Failures) -> serde_json::V
         && pending_terrain == 0
         && pending_specializations == Some(0)
         && pending_transfers == Some(0)
+        && pending_room_graphs == 0
+        && failed_room_graphs == 0
         && pending_batches == 0.0;
     let source = world
         .get_resource::<SceneGradeSource>()
@@ -226,6 +231,8 @@ fn scene_state(world: &World, baseline: crate::shots::Failures) -> serde_json::V
         "pending_specializations": pending_specializations,
         "pending_render_transfers": pending_transfers,
         "pending_batches": pending_batches,
+        "pending_room_graphs": pending_room_graphs,
+        "failed_room_graphs": failed_room_graphs,
         "renderer_ready": renderer_ready,
         "loading_cells": streaming.map(|s| s.loading_cells),
         "pending_assets": streaming.map(|s| s.pending_asset_instances),
@@ -425,6 +432,45 @@ mod tests {
         assert_eq!(cumulative_state["asset_load_failures"], 2);
         assert_eq!(cumulative_state["failed_lod_queries"], 4);
         assert_eq!(cumulative_state["failed_lod_chunks"], 5);
+    }
+
+    #[test]
+    fn scene_shot_waits_for_room_graphs_and_rejects_failed_reads() {
+        use crate::{
+            room_culling::{RoomCullingPlugin, RoomCullingState},
+            world::components::{CellRef, StreamedCellRoot},
+        };
+        bevy::tasks::AsyncComputeTaskPool::get_or_init(Default::default);
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::new();
+        *app.world_mut() = ready_scene_world();
+        app.init_resource::<bevy::ecs::schedule::Schedules>();
+        app.add_plugins(RoomCullingPlugin {
+            database_path: directory.path().join("missing.db"),
+        });
+        assert!(prepare_scene_shot(app.world()).is_ok());
+        let root = app.world_mut().spawn((StreamedCellRoot, CellRef(7))).id();
+        app.world_mut().run_schedule(Update);
+        let state = scene_state(app.world(), crate::shots::Failures::default());
+        assert_eq!(state["ready"], false);
+        assert_eq!(state["pending_room_graphs"], 1);
+        assert!(prepare_scene_shot(app.world()).is_err());
+        for _ in 0..500 {
+            app.world_mut().run_schedule(Update);
+            if app.world().resource::<RoomCullingState>().failed_reads() == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(app.world().resource::<RoomCullingState>().failed_reads(), 1);
+        let state = scene_state(app.world(), crate::shots::Failures::default());
+        assert_eq!(state["ready"], false);
+        assert_eq!(state["pending_room_graphs"], 0);
+        assert_eq!(state["failed_room_graphs"], 1);
+        assert!(prepare_scene_shot(app.world()).is_err());
+        assert!(app.world_mut().despawn(root));
+        app.world_mut().run_schedule(Update);
+        assert!(prepare_scene_shot(app.world()).is_ok());
     }
 
     #[test]

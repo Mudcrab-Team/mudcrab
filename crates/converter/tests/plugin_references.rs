@@ -2097,3 +2097,110 @@ fn load_order_export_ignores_markers_in_exterior_cells() {
         );
     }
 }
+
+fn room_graph_review_fixture(
+    data: &Path,
+    link: Option<u32>,
+    endpoints: Option<Vec<u8>>,
+) -> PathBuf {
+    fs::create_dir_all(data).unwrap();
+    let marker = |id: u32, base: u32, kind: u32, position: f32, extra: Vec<u8>| {
+        let mut shape = vec![0; 32];
+        for offset in [0, 4, 8] {
+            shape[offset..offset + 4].copy_from_slice(&100f32.to_le_bytes());
+        }
+        shape[28..32].copy_from_slice(&kind.to_le_bytes());
+        let mut transform = vec![0; 24];
+        transform[..4].copy_from_slice(&position.to_le_bytes());
+        record(
+            b"REFR",
+            id,
+            0,
+            [
+                sub(b"NAME", &base.to_le_bytes()),
+                sub(b"DATA", &transform),
+                sub(b"XPRM", &shape),
+                extra,
+            ]
+            .concat(),
+        )
+    };
+    let mut extra = sub(b"XRMR", &[u8::from(link.is_some()), 0, 1, 0]);
+    if let Some(link) = link {
+        extra.extend(sub(b"XLRM", &link.to_le_bytes()));
+    }
+    let mut markers = vec![
+        marker(0x800, 0x1F, 1, 0.0, extra),
+        marker(0x801, 0x1F, 1, 500.0, Vec::new()),
+    ];
+    if let Some(endpoints) = endpoints {
+        markers.push(marker(0x802, 0x20, 3, 100.0, endpoints));
+    }
+    plugin(
+        data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            group(6, 0x900, group(9, 0x900, markers.concat())),
+        ]
+        .concat(),
+    )
+}
+
+fn export_room_review_fixture(data: &Path, output: &Path, typed: bool) -> PathBuf {
+    if typed {
+        let order = output.parent().unwrap().join("plugins.txt");
+        fs::write(&order, "*Skyrim.esm\n").unwrap();
+        converter::esm::inhouse::export_record_bundle_typed(data, &order, output, &[]).unwrap();
+        output.join("skyrim_world.db")
+    } else {
+        let db = output.with_extension("db");
+        EsmParser::convert_plugins(&[data.join("Skyrim.esm")], &db).unwrap();
+        db
+    }
+}
+
+#[test]
+fn conflicting_portal_occurrences_keep_both_readers_conservative() {
+    for typed in [false, true] {
+        for duplicate in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let data = directory.path().join("Data");
+            let mut endpoints = sub(
+                b"XPOD",
+                &[0x800u32.to_le_bytes(), 0u32.to_le_bytes()].concat(),
+            );
+            if duplicate {
+                endpoints.extend(sub(
+                    b"XPOD",
+                    &[0x800u32.to_le_bytes(), 0x801u32.to_le_bytes()].concat(),
+                ));
+            }
+            room_graph_review_fixture(&data, None, Some(endpoints));
+            let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+            let conn = rusqlite::Connection::open(db).unwrap();
+            let complete: bool = conn
+                .query_row(
+                    "SELECT complete FROM room_graph_cells WHERE cell_id=0x900",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(complete, !duplicate, "typed={typed}, duplicate={duplicate}");
+            let outside: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM room_portals WHERE unbounded_a OR unbounded_b",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(outside, i64::from(!duplicate));
+            let rooms: i64 = conn
+                .query_row("SELECT COUNT(*) FROM room_bounds", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(rooms, 2);
+        }
+    }
+}
