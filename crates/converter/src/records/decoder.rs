@@ -1320,6 +1320,8 @@ fn selected_localized_bank(
             let previous = diagnostics.push_field(&field.name);
             let action = diagnostics.event_context.action.replace("defaulted");
             let form_id = diagnostics.event_context.form_id.unwrap_or(0);
+            // The legacy localization bucket increments skipped_fields even though this value
+            // is retained with the default bank; the "defaulted" event records that distinction.
             diagnostics.note("localization", || {
                 format!(
                     "{} {:08X} {}: localized bank selection failed ({error}); using signature default bank",
