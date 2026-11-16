@@ -578,3 +578,7 @@ fn generate_field<const OBSERVE: bool>(
 #[cfg(test)]
 #[path = "selection_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "committed_perf_probe.rs"]
+mod committed_perf_probe;
