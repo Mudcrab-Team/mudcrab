@@ -254,6 +254,10 @@ fn generate_field(
         let Some(species) = cache.species(id) else {
             continue;
         };
+        // The authored cap already includes this non-emitting selection slot.
+        if species.model_path.is_empty() {
+            continue;
+        }
         let seed = hash(cell_id, id, 12);
         for slot in 0..slots {
             let [x, y] = candidate(seed, slot);
