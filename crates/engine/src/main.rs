@@ -3,11 +3,16 @@ use engine::config::{ConfigAction, EngineConfig, HELP_TEXT};
 /// Exit code for a command line the engine cannot use.
 const EXIT_USAGE: i32 = 2;
 
+/// Dispatch help, version, grass-tuning information and runtime commands.
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
     match EngineConfig::from_env() {
         Ok(ConfigAction::Run(config)) => {
             if config.grass_tuning_info {
+                if let Err(error) = config.validate_grass() {
+                    eprintln!("error: {error}");
+                    std::process::exit(EXIT_USAGE);
+                }
                 let state =
                     engine::grass_tuning::GrassTuningState::for_info(config.grass_tuning.clone());
                 let mut receipt = state.receipt();
