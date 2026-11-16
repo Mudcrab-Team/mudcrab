@@ -6,7 +6,7 @@
 //! Its appearance was approved in Riverwood; its mapping is not verified retail parity.
 
 use crate::console::{AppConsoleExt, ConsoleCommand};
-use crate::sky::SkyPalette;
+use crate::sky::{ForcedWeather, SkyPalette};
 use crate::tone_mapping::{SceneToneMapMode, SceneToneMapSource};
 use crate::world::imagespace::{LoadedImageSpace, load_image_space};
 use bevy::{
@@ -260,6 +260,9 @@ pub struct SceneGradeSource {
     approved: ApprovedLook,
     approved_path: String,
     pub record: Option<LoadedImageSpace>,
+    /// The weather `--weather` or the `Weather` command forces. Its day palette replaces the
+    /// preset's sky and fog; `None` (the default) leaves the preset alone.
+    pub weather: Option<ForcedWeather>,
 }
 
 impl Default for SceneGradeSource {
@@ -268,6 +271,7 @@ impl Default for SceneGradeSource {
             approved: ApprovedLook::builtin().clone(),
             approved_path: "builtin:presets/approved-snapshot.json".into(),
             record: None,
+            weather: None,
         }
     }
 }
@@ -306,6 +310,9 @@ impl SceneGradeSource {
     }
 
     pub fn sky_palette(&self, preset: SceneVisualPreset) -> SkyPalette {
+        if let Some(weather) = &self.weather {
+            return weather.palette;
+        }
         match preset {
             SceneVisualPreset::CoolGray => self.approved.sky_palette(),
             SceneVisualPreset::Vivid => SkyPalette::SKYRIM_CLEAR_DAY,
@@ -520,6 +527,59 @@ fn scene_preset_command() -> ConsoleCommand {
                 world.resource::<SceneVisualPreset>().name(),
                 world.resource::<SceneGradeMode>().name()
             ))
+        }),
+    }
+}
+
+/// `Weather`: force one weather's day sky and fog colours, a test aid like `--weather`.
+fn weather_command() -> ConsoleCommand {
+    const USAGE: &str = "usage: Weather [<editor id|form id>|off]";
+    ConsoleCommand {
+        name: "Weather",
+        short: None,
+        usage: "Weather [<editor id|form id>|off]",
+        help: "inspect, force or clear a weather's day sky and fog colours (test aid)",
+        handler: Box::new(|world, args| {
+            let forced = match args {
+                [] => None,
+                [value]
+                    if ["off", "none", "clear"]
+                        .iter()
+                        .any(|word| value.eq_ignore_ascii_case(word)) =>
+                {
+                    Some(None)
+                }
+                [value] => {
+                    let catalog = world
+                        .get_resource::<crate::world::environment::EnvironmentCatalog>()
+                        .ok_or("no world database is loaded")?;
+                    Some(Some(ForcedWeather::find(catalog, value)?))
+                }
+                _ => return Err(USAGE.into()),
+            };
+            if let Some(forced) = forced {
+                let preset = world
+                    .get_resource::<SceneVisualPreset>()
+                    .copied()
+                    .unwrap_or_default();
+                let palette = {
+                    let mut source = world.get_resource_or_insert_with(SceneGradeSource::default);
+                    source.weather = forced;
+                    source.sky_palette(preset)
+                };
+                if let Some(mut current) = world.get_resource_mut::<SkyPalette>() {
+                    *current = palette;
+                }
+            }
+            Ok(
+                match world
+                    .get_resource::<SceneGradeSource>()
+                    .and_then(|source| source.weather.as_ref())
+                {
+                    Some(weather) => format!("weather forced: {}", weather.label()),
+                    None => "weather: none forced (the preset's sky)".to_owned(),
+                },
+            )
         }),
     }
 }
@@ -856,6 +916,7 @@ impl Plugin for SkyrimCinematicPostPlugin {
             .init_resource::<SceneToneMapSource>()
             .add_console_command(scene_grade_command())
             .add_console_command(scene_preset_command())
+            .add_console_command(weather_command())
             .add_console_command(scene_tone_map_command())
             .add_systems(PostUpdate, apply_scene_grade_mode)
             .add_plugins(FullscreenMaterialPlugin::<SkyrimCinematicPost>::default());
@@ -1188,6 +1249,68 @@ mod tests {
             world.get::<SkyrimCinematicPost>(camera).unwrap().brightness,
             1.75
         );
+    }
+
+    /// `Weather` forces a weather's day palette over the preset's, reports it, and `off` returns
+    /// the preset's palette. Without the command the palette is the preset's.
+    #[test]
+    fn weather_command_forces_and_clears_the_sky_palette() {
+        use crate::world::environment::{EnvironmentCatalog, TimeOfDay, Weather};
+        let mut weather = Weather {
+            editor_id: Some("TestCloudy".to_owned()),
+            ..Default::default()
+        };
+        for (name, rgb) in [
+            ("sky_upper", [28, 82, 121]),
+            ("sky_lower", [54, 121, 154]),
+            ("horizon", [151, 193, 225]),
+            ("fog_near", [18, 108, 131]),
+            ("fog_far", [168, 199, 227]),
+        ] {
+            weather
+                .colors
+                .insert((name.to_owned(), TimeOfDay::Day), rgb);
+        }
+        let preset = SceneVisualPreset::CoolGray;
+        let mut app = App::new();
+        app.insert_resource(preset)
+            .insert_resource(SceneGradeSource::default())
+            .insert_resource(SkyPalette::default())
+            .insert_resource(EnvironmentCatalog::with_weathers([(0x12F89, weather)]))
+            .init_resource::<crate::console::ConsoleState>()
+            .add_console_command(weather_command());
+        let preset_palette = SceneGradeSource::default().sky_palette(preset);
+        let run = |app: &mut App, line: &str| crate::console::execute_line(app.world_mut(), line);
+
+        assert_eq!(
+            run(&mut app, "Weather"),
+            "weather: none forced (the preset's sky)"
+        );
+        assert_eq!(
+            run(&mut app, "Weather testcloudy"),
+            "weather forced: TestCloudy (00012F89)"
+        );
+        let forced = *app.world().resource::<SkyPalette>();
+        assert_eq!(forced.horizon, Color::srgb_u8(151, 193, 225));
+        assert_ne!(forced, preset_palette);
+        assert_eq!(
+            app.world()
+                .resource::<SceneGradeSource>()
+                .sky_palette(preset),
+            forced,
+            "the settings system rebuilds the palette from the source, so it keeps the weather"
+        );
+        assert!(run(&mut app, "Weather Nothing").starts_with("error: "));
+        assert_eq!(
+            *app.world().resource::<SkyPalette>(),
+            forced,
+            "a bad name changes nothing"
+        );
+        assert_eq!(
+            run(&mut app, "Weather off"),
+            "weather: none forced (the preset's sky)"
+        );
+        assert_eq!(*app.world().resource::<SkyPalette>(), preset_palette);
     }
 
     #[test]
