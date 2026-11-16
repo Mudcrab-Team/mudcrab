@@ -117,23 +117,25 @@ const TEXTURES: [(&str, u64); 7] = [
     ("landscape/rocks01", 8),
 ];
 
+const ROCK: nif::StaticShape<'static> = nif::StaticShape {
+    name: "Rock",
+    positions: &[[0., 0., 0.], [100., 0., 0.], [0., 100., 0.]],
+    normals: &[[0., 0., 1.]; 3],
+    uvs: &[[0., 0.], [1., 0.], [0., 1.]],
+    indices: &[[0, 1, 2]],
+    diffuse: "textures/original.dds",
+    normal_texture: "textures/original_n.dds",
+};
+
+/// Lighting-shader flag words of an ordinary surface: depth test, cast shadows, depth write.
+/// A shape without depth test or write gets a native depth material, which swaps do not reach.
+const ORDINARY_FLAGS: (u32, u32) = ((1 << 31) | (1 << 9), 1);
+
 fn fixture(directory: &Path) {
     fs::create_dir_all(directory.join("meshes")).unwrap();
     fs::create_dir_all(directory.join("textures/landscape")).unwrap();
-    let bytes = nif::static_shape_with_material_flags(
-        &nif::StaticShape {
-            name: "Rock",
-            positions: &[[0., 0., 0.], [100., 0., 0.], [0., 100., 0.]],
-            normals: &[[0., 0., 1.]; 3],
-            uvs: &[[0., 0.], [1., 0.], [0., 1.]],
-            indices: &[[0, 1, 2]],
-            diffuse: "textures/original.dds",
-            normal_texture: "textures/original_n.dds",
-        },
-        (1 << 31) | (1 << 9),
-        1,
-    ) // Depth test, cast shadows, depth write: an ordinary surface.
-    .unwrap();
+    let (flags_1, flags_2) = ORDINARY_FLAGS;
+    let bytes = nif::static_shape_with_material_flags(&ROCK, flags_1, flags_2).unwrap();
     let source = directory.join("shared.nif");
     fs::write(&source, bytes).unwrap();
     MeshConverter::convert_nif_to_glb(&source, &directory.join("meshes/shared.glb")).unwrap();
@@ -167,9 +169,15 @@ fn fixture(directory: &Path) {
             TextureConverter::convert_uncompressed(&bytes, TextureEncoding::DataLinear).unwrap();
         fs::write(directory.join(format!("textures/{name}.ktx2")), bytes).unwrap();
     }
-    // Normal publication supplies byte-identical colour/wrap aliases. Honor the actual URIs
-    // emitted above rather than leaving the headless scene with an unresolved dependency.
-    for uri in MeshConverter::glb_texture_uris(&directory.join("meshes/shared.glb")).unwrap() {
+    alias_texture_dependencies(directory, &directory.join("meshes/shared.glb"));
+    multi_geometry_glb(directory);
+}
+
+/// Normal publication supplies byte-identical colour/wrap aliases. Honor the actual URIs a
+/// converted fixture GLB emits rather than leaving the headless scene with an unresolved
+/// dependency.
+fn alias_texture_dependencies(directory: &Path, glb: &Path) {
+    for uri in MeshConverter::glb_texture_uris(glb).unwrap() {
         assert!(
             uri.starts_with("../textures/original"),
             "unexpected fixture dependency {uri}"
@@ -185,7 +193,6 @@ fn fixture(directory: &Path) {
             fs::write(target, canonical).unwrap();
         }
     }
-    multi_geometry_glb(directory);
 }
 
 /// `meshes/multi.glb`: four primitives that stand for source geometry 0 to 3. Geometry 2 stands
@@ -457,6 +464,67 @@ fn retail_stat_examples_replace_the_whole_texture_set_per_instance() {
     assert_eq!(
         fs::read(directory.path().join("meshes/shared.glb")).unwrap(),
         original_glb
+    );
+}
+
+/// #723: the converter tags a model whose NIF carries Havok collision, so its MODS entry applies
+/// to the shape at that 3D Index like any other model's.
+#[test]
+fn a_model_with_havok_collision_receives_its_swap() {
+    let directory = tempfile::tempdir().unwrap();
+    fixture(directory.path());
+    let source = directory.path().join("collidable.nif");
+    // The same ordinary surface as `shared.glb`, plus a Havok box body on its own node.
+    let (flags_1, flags_2) = ORDINARY_FLAGS;
+    let bytes = nif::static_shape_with_bodies_and_material_flags(
+        &ROCK,
+        &[nif::fixed_box_body("RockCollision")],
+        flags_1,
+        flags_2,
+    );
+    fs::write(&source, bytes.unwrap()).unwrap();
+    let glb = directory.path().join("meshes/collidable.glb");
+    MeshConverter::convert_nif_to_glb(&source, &glb).unwrap();
+    let written = gltf::Gltf::from_slice(&fs::read(&glb).unwrap()).unwrap();
+    let primitive = written
+        .meshes()
+        .next()
+        .unwrap()
+        .primitives()
+        .next()
+        .unwrap();
+    assert_eq!(
+        ObjectGeometryIndex::from_primitive(&primitive),
+        Some(ObjectGeometryIndex(0)),
+        "the converter tags the collidable model's lighting primitive"
+    );
+    alias_texture_dependencies(directory.path(), &glb);
+    let (conn, _) = database();
+    let catalog = ObjectTextureCatalog::read(&conn).unwrap();
+    let mut app = object_app(directory.path());
+    let scene = load_scene(&mut app, "collidable.glb");
+    let swapped = spawn(&mut app, &scene, catalog.get(1));
+    let control = spawn(&mut app, &scene, None);
+    settle(&mut app, &[swapped]);
+    assert_eq!(
+        app.world().get::<ObjectTextureSwapState>(swapped),
+        Some(&ObjectTextureSwapState::Applied {
+            textured: 1,
+            hidden: 0
+        })
+    );
+    assert_eq!(
+        surfaces_of(&app, swapped)[0].0,
+        Some(0),
+        "3D Index 0 is tagged"
+    );
+    let (_, swapped_material) = surface(&app, swapped);
+    let (_, control_material) = surface(&app, control);
+    assert_ne!(swapped_material, control_material);
+    assert_ne!(
+        image_data(&app, &swapped_material),
+        image_data(&app, &control_material),
+        "the TXST diffuse replaces the model's own"
     );
 }
 
