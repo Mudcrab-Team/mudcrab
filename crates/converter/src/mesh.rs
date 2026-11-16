@@ -4860,6 +4860,25 @@ mod tests {
     }
 
     #[test]
+    fn assignment_sphere_limits_repeated_child_expansion() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("shared-children.nif");
+        fs::write(&input, static_scene_chain_nif(12)).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let NifBlock::BSTriShape(shape) = &mut nif.blocks[1] else {
+            unreachable!()
+        };
+        shape.bounding_sphere.radius = 2.0;
+        assert!(room_bounds::source_sphere(&nif).is_some());
+        for block in &mut nif.blocks {
+            if let NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) = block {
+                node.children.extend_from_within(..);
+            }
+        }
+        assert!(room_bounds::source_sphere(&nif).is_none());
+    }
+
+    #[test]
     fn assignment_sphere_declines_disconnected_exported_geometry() {
         let directory = tempfile::tempdir().unwrap();
         let input = directory.path().join("disconnected.nif");

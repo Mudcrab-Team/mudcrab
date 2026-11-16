@@ -12,10 +12,12 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
         parent: Affine3A,
         scale: f32,
         path: &mut Vec<u32>,
+        remaining: &mut usize,
     ) -> Option<ModelSphere> {
         if path.contains(&index) || path.len() >= 256 {
             return None;
         }
+        *remaining = remaining.checked_sub(1)?;
         path.push(index);
         let block = nif.blocks.get(index as usize)?;
         let (av, sphere, children) = match block {
@@ -61,7 +63,7 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
             }
         };
         for &child in children.iter().filter(|&&child| child != u32::MAX) {
-            result = result.merge(visit(nif, child, world, scale, path)?);
+            result = result.merge(visit(nif, child, world, scale, path, remaining)?);
         }
         path.pop();
         result.valid().then_some(result)
@@ -96,7 +98,17 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
     }) {
         return None;
     }
-    let mut sphere = visit(nif, 0, Affine3A::IDENTITY, 1.0, &mut Vec::new())?;
+    // Shared children can expand exponentially without a cycle. Trees need at most one visit
+    // per block; decline bounds when repeated paths exceed that work budget.
+    let mut remaining = nif.blocks.len();
+    let mut sphere = visit(
+        nif,
+        0,
+        Affine3A::IDENTITY,
+        1.0,
+        &mut Vec::new(),
+        &mut remaining,
+    )?;
     sphere.center = shared::coordinates::creation_to_runtime_vector(sphere.center);
     (sphere.radius > 0.0).then_some(sphere)
 }
