@@ -377,6 +377,77 @@ mod tests {
         assert!(warnings.iter().any(|line| line.contains("MutableMod.esp")));
     }
 
+    /// A same-size edit between records can leave a direct view with two source generations.
+    #[test]
+    fn scanner_direct_view_warns_that_rewritten_records_may_be_inconsistent() {
+        use std::io::{Seek, SeekFrom};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("MutableLargeMod.esp");
+        let mut bytes = frame(b"TES4", 0, 0, &[]);
+        bytes.extend(frame(b"STAT", 0x301, 0, b"EDID\x04\x00old\0"));
+        let second_payload = bytes.len() as u64 + 24;
+        bytes.extend(frame(b"STAT", 0x302, 0, b"EDID\x04\x00old\0"));
+        bytes.extend(frame(
+            b"STAT",
+            0x303,
+            0,
+            &vec![0; crate::source_input::MEMORY_SNAPSHOT_LIMIT as usize],
+        ));
+        assert!(bytes.len() as u64 > crate::source_input::MEMORY_SNAPSHOT_LIMIT);
+        std::fs::write(&path, bytes).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let mut diagnostics = PluginDiagnostics::default();
+        let mut records = Vec::new();
+        scan_plugin(
+            &path,
+            &mut diagnostics,
+            |_| {},
+            |record, _| {
+                if record.source_form_id == 0x301 {
+                    let mut writer = File::options().write(true).open(&path).unwrap();
+                    writer.seek(SeekFrom::Start(second_payload)).unwrap();
+                    writer.write_all(b"EDID\x04\x00new\0").unwrap();
+                    writer.flush().unwrap();
+                    // Force an observable stamp change independently of filesystem clock precision.
+                    writer
+                        .set_times(
+                            std::fs::FileTimes::new()
+                                .set_modified(modified + std::time::Duration::from_secs(2)),
+                        )
+                        .unwrap();
+                }
+                if matches!(record.source_form_id, 0x301 | 0x302) {
+                    records.push((record.source_form_id, record.payload));
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            records,
+            [
+                (0x301, b"EDID\x04\x00old\0".to_vec()),
+                (0x302, b"EDID\x04\x00new\0".to_vec())
+            ]
+        );
+        assert_eq!(diagnostics.input_changes, 1);
+        assert_eq!(diagnostics.skipped_records, 0);
+        assert_eq!(diagnostics.skipped_fields, 0);
+        assert_eq!(
+            diagnostics.event_context.action,
+            Some("kept_decoded_records")
+        );
+        let warnings = diagnostics.warning_summary_lines("MutableLargeMod.esp");
+        assert!(
+            warnings
+                .iter()
+                .any(|line| line.contains("MutableLargeMod.esp")
+                    && line.contains("may mix versions")
+                    && line.contains("inconsistent")),
+            "changed direct views must warn that retained records may mix versions and be inconsistent: {warnings:?}"
+        );
+    }
+
     /// Atomic replacement leaves the old mapped inode untouched, so this red test is safe on Unix.
     #[test]
     #[cfg(unix)]
