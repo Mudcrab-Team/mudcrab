@@ -30,6 +30,7 @@ def png(width=32, height=18):
 
 
 def camera_and_receipt():
+    """Build captured-frame evidence with the producer's boolean grass readiness."""
     camera = {"width": 32, "height": 18, "shots": [{
         "name": "riverwood", "position": [21750.0, -44530.0, 140.0],
         "yaw": 90.0, "pitch": -3.0, "hfov": 72.73435310118231,
@@ -48,6 +49,7 @@ def camera_and_receipt():
                            "rotation_runtime_xyzw": rotation, "vertical_fov_radians": math.pi / 4,
                            "render_origin": [5, -11], "pending_specializations": 0,
                            "work": {**dict.fromkeys(TUNING.MINIMUM_WORK_COUNTERS, 0),
+                                    "grass_pending": False, "grass_failures": 0,
                                     "renderer_ready": True, "quiet_frames": 0}, "grading": grade},
     }
     return camera, receipt
@@ -93,6 +95,29 @@ class CaptureEvidenceTests(unittest.TestCase):
 
     def validate(self, receipt):
         return TUNING.validate_capture(receipt, self.receipt, self.camera, self.image)
+
+    def test_grass_pending_false_is_accepted(self):
+        """A settled producer receipt carries boolean false, including with disabled grass."""
+        try:
+            result = self.validate(self.receipt)
+        except ValueError as error:
+            self.fail(f"Settled boolean grass_pending=False must be accepted: {error}")
+        self.assertTrue(result["passed"])
+
+    def test_grass_pending_true_and_non_boolean_values_are_rejected(self):
+        """Pending, numeric zero and other non-boolean values cannot prove grass readiness."""
+        for value in (True, 0, 1, 0.0, None, "false", [], {}):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "grass_pending"):
+                changed = copy.deepcopy(self.receipt)
+                changed["captured_frame"]["work"]["grass_pending"] = value
+                self.validate(changed)
+
+    def test_missing_grass_pending_is_rejected(self):
+        """A receipt needs explicit boolean grass readiness evidence."""
+        changed = copy.deepcopy(self.receipt)
+        del changed["captured_frame"]["work"]["grass_pending"]
+        with self.assertRaisesRegex(ValueError, "grass_pending"):
+            self.validate(changed)
 
     def test_settled_receipt_passes_and_pose_or_fov_drift_fails(self):
         self.assertTrue(self.validate(self.receipt)["passed"])
@@ -235,6 +260,24 @@ fixture=json.loads(Path(arguments[arguments.index('--fixture')+1]).read_text())
         (output / "references/skyrim.png").write_bytes(png(64, 36))
         with self.assertRaisesRegex(ValueError, "Frozen skyrim changed"):
             TUNING.validate_existing(output)
+
+    def test_no_grass_campaign_accepts_boolean_false(self):
+        """The no-grass command path accepts the same serialized boolean readiness field."""
+        config_path, engine, assets, source = self.make_campaign()
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["common_args"].append("--no-grass")
+        TUNING.write_json(config_path, config)
+        output = self.root / "no-grass-campaign"
+        with patch.object(TUNING, "source_snapshot", return_value=source):
+            try:
+                manifest = TUNING.capture(config_path, engine, assets, output)
+            except ValueError as error:
+                self.fail(f"--no-grass must accept boolean grass_pending=False: {error}")
+        self.assertTrue(manifest["passed"])
+        for run in manifest["runs"]:
+            self.assertIn("--no-grass", run["command"])
+            receipt = json.loads((output / run["receipt_file"]).read_text(encoding="utf-8"))
+            self.assertIs(receipt["captured_frame"]["work"]["grass_pending"], False)
 
     def test_existing_output_is_refused(self):
         config, engine, assets, source = self.make_campaign()
