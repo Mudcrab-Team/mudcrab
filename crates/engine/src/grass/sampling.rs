@@ -13,8 +13,9 @@ pub(super) fn half_round(value: f32) -> f32 {
     if !value.is_finite() || magnitude >= 65_520.0 {
         return value.signum() * f32::INFINITY;
     }
-    let exponent = ((magnitude.to_bits() >> 23) & 255) as i32 - 127;
-    let step = 2.0f32.powi((exponent - 10).max(-24));
+    // Binary16 steps are exact powers of two, with 2^-24 as the subnormal floor.
+    let exponent = (magnitude.to_bits() >> 23).saturating_sub(10).max(103);
+    let step = f32::from_bits(exponent << 23);
     (value / step).round_ties_even() * step
 }
 
@@ -106,12 +107,22 @@ pub(super) fn sample(
 }
 
 /// Compare the normalized authored normal with the reference's 512-sample cosine table.
+#[cfg(test)]
 pub(super) fn slope_allowed(normal_z: f32, min: u8, max: u8) -> bool {
     let cosine = |angle: u8| {
         let index = ((f32::from(angle) * 1.422_222_1) as usize) & 511;
         (std::f64::consts::TAU * index as f64 / 512.0).cos() as f32
     };
     cosine(max) <= normal_z && normal_z <= cosine(min)
+}
+
+/// Evaluate the reference's 512-sample cosine bounds once per species nomination.
+pub(super) fn slope_bounds(min: u8, max: u8) -> [f32; 2] {
+    let cosine = |angle: u8| {
+        let index = ((f32::from(angle) * 1.422_222_1) as usize) & 511;
+        (std::f64::consts::TAU * index as f64 / 512.0).cos() as f32
+    };
+    [cosine(max), cosine(min)]
 }
 
 #[cfg(test)]
@@ -140,5 +151,104 @@ mod tests {
         assert_eq!(sampled.nearest, 34);
         assert_eq!(sampled.normal, [0.0, 0.6, 0.8]);
         assert!(sample(-0.1, 0.0, &heights, &|_| None).is_none());
+    }
+
+    /// Preserve the original rounding law at every binary16 value and rounding midpoint.
+    #[test]
+    fn half_round_preserves_original_boundaries() {
+        let original = |value: f32| {
+            let magnitude = value.abs();
+            if !value.is_finite() || magnitude >= 65_520.0 {
+                return value.signum() * f32::INFINITY;
+            }
+            let exponent = ((magnitude.to_bits() >> 23) & 255) as i32 - 127;
+            let step = 2.0f32.powi((exponent - 10).max(-24));
+            (value / step).round_ties_even() * step
+        };
+        let check = |bits| {
+            let value = f32::from_bits(bits);
+            let expected = original(value);
+            let actual = half_round(value);
+            if expected.is_nan() {
+                assert!(actual.is_nan(), "input={bits:08x}");
+            } else {
+                assert_eq!(actual.to_bits(), expected.to_bits(), "input={bits:08x}");
+            }
+        };
+        let half_value = |bits: u16| {
+            let exponent = i32::from(bits >> 10);
+            let fraction = u32::from(bits & 1023);
+            if exponent == 0 {
+                (f64::from(fraction) * 2.0f64.powi(-24)) as f32
+            } else {
+                (f64::from(1024 + fraction) * 2.0f64.powi(exponent - 25)) as f32
+            }
+        };
+        for bits in 0..0x7c00 {
+            let lower = half_value(bits);
+            let upper = if bits == 0x7bff {
+                65_536.0
+            } else {
+                half_value(bits + 1)
+            };
+            for boundary in [lower, (lower + upper) * 0.5] {
+                let center = boundary.to_bits();
+                for neighboring in center.saturating_sub(8)..=center + 8 {
+                    check(neighboring);
+                    check(neighboring | 0x8000_0000);
+                }
+            }
+        }
+        // Exercise the full f32 exponent domain, including tiny subnormals and NaNs.
+        for exponent in 0..256u32 {
+            for mantissa in [0, 1, 0x003f_ffff, 0x007f_fffe, 0x007f_ffff] {
+                let bits = exponent << 23 | mantissa;
+                check(bits);
+                check(bits | 0x8000_0000);
+            }
+        }
+        for (input, expected) in [
+            (0x0000_0000, 0x0000_0000),
+            (0x8000_0000, 0x8000_0000),
+            (0x3300_0000, 0x0000_0000),
+            (0xb300_0000, 0x8000_0000),
+            (0x3300_0001, 0x3380_0000),
+            (2051.0f32.to_bits(), 2052.0f32.to_bits()),
+            (65_504.0f32.to_bits(), 65_504.0f32.to_bits()),
+            (65_520.0f32.to_bits(), f32::INFINITY.to_bits()),
+        ] {
+            assert_eq!(half_round(f32::from_bits(input)).to_bits(), expected);
+        }
+    }
+
+    /// Cached bounds preserve each authored angle pair and inclusive floating-point boundary.
+    #[test]
+    fn cached_slope_bounds_preserve_original_comparisons() {
+        for min in 0..=u8::MAX {
+            for max in 0..=u8::MAX {
+                let [lower, upper] = slope_bounds(min, max);
+                for normal_z in [
+                    -1.0,
+                    -0.0,
+                    0.0,
+                    1.0,
+                    f32::NEG_INFINITY,
+                    f32::INFINITY,
+                    f32::NAN,
+                    lower.next_down(),
+                    lower,
+                    lower.next_up(),
+                    upper.next_down(),
+                    upper,
+                    upper.next_up(),
+                ] {
+                    assert_eq!(
+                        lower <= normal_z && normal_z <= upper,
+                        slope_allowed(normal_z, min, max),
+                        "min={min} max={max} normal_z={normal_z:?}",
+                    );
+                }
+            }
+        }
     }
 }
