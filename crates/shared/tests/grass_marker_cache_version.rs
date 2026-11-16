@@ -1,7 +1,25 @@
 //! Marker-header policy must not accept masks produced before header filtering.
 
 use rkyv::rancor::Error;
-use shared::grass::{ArchivedGrassCache, GrassCache, validate_archived_cache};
+use shared::grass::{ArchivedGrassCache, GRASS_CACHE_VERSION, GrassCache, validate_archived_cache};
+
+/// Restored model-less slots rebuild earlier masks and keep the current identity explicit.
+#[test]
+fn authored_slots_reject_prior_producers_and_accept_current() {
+    for version in [10, 11, GRASS_CACHE_VERSION] {
+        let cache = GrassCache {
+            version,
+            types: vec![],
+            cells: vec![],
+        };
+        let bytes = rkyv::to_bytes::<Error>(&cache).unwrap();
+        let archived = rkyv::access::<ArchivedGrassCache, Error>(&bytes).unwrap();
+        assert_eq!(
+            validate_archived_cache(archived).is_ok(),
+            version == GRASS_CACHE_VERSION
+        );
+    }
+}
 
 /// A structurally valid v6 archive can still contain invisible marker obstruction bits.
 #[test]

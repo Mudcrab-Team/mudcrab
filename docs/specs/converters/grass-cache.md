@@ -36,7 +36,7 @@ affected cell with a warning while healthy neighbors publish. No instance lists
 are saved; generation remains deterministic at runtime.
 The placement layer adds these sampling fields and base flags and changes selection
 opacity inputs. The current producer (`GRASS_CACHE_VERSION`) also retains non-emitting species slots and recovers malformed LAND items locally;
-producer ten, both prior producer-nine variants and older grass artifacts rebuild. Other asset cache identities
+producers ten through twelve, both prior producer-nine variants and older grass artifacts rebuild. Other asset cache identities
 are unchanged. Runtime generation-only changes do not require a cache version bump.
 Grass cache version two invalidates version-one coverage derived from the capped
 runtime terrain cache; terrain, mesh and texture cache identities stay unchanged.
@@ -303,6 +303,12 @@ placement, retained non-emitting species slots and item-local LAND recovery. It
 rejects prior G7 producer-11 artifacts and the lower layers' producer-12 layout.
 G2 through G6 use `GRASS_CACHE_VERSION` 12 to restore model-less selection slots. Mesh, texture and terrain cache
 identities remain independently versioned.
+
+Resolved model-less species retain their authored cap slots and decodable sampling
+fields, using zero for absent or non-finite scalar values. Per-spot selection consumes
+the reference random draws for those slots before skipping emission. Thus
+`[A, model-less, B]` at cap two emits A only, matching the lower-layer cap contract;
+the G7 reference stream also preserves subsequent species' positions.
 
 Runtime activates a reference's texture swaps as a group once its replacement
 textures are ready. If a replacement texture on another shape fails to load, the
