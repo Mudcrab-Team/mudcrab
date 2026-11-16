@@ -2,8 +2,8 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// Version eleven combines MODS-aware masks with reference-order species slots and LAND recovery.
-pub const GRASS_CACHE_VERSION: u32 = 11;
+/// Version thirteen combines reference-order slots and LAND recovery with restored lower-layer slots.
+pub const GRASS_CACHE_VERSION: u32 = 13;
 pub const GRASS_BLEND_SIDE: usize = 17;
 /// Mask samples per quadrant side (32 Creation units each). An engineering approximation, not a retail value.
 pub const GRASS_EXCLUSION_SIDE: usize = 64;

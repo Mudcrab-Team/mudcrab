@@ -32,7 +32,7 @@ fn mods_visibility_policy_rejects_v9_masks() {
     assert!(validate_archived_cache(archived).is_err());
 }
 
-/// Producer eleven rebuilds producer-ten masks for reference-order placement and LAND recovery.
+/// The current producer rebuilds producer-ten masks for reference-order placement and LAND recovery.
 #[test]
 fn reference_placement_policy_rejects_v10_masks() {
     let legacy = GrassCache {
@@ -43,4 +43,19 @@ fn reference_placement_policy_rejects_v10_masks() {
     let bytes = rkyv::to_bytes::<Error>(&legacy).unwrap();
     let archived = rkyv::access::<ArchivedGrassCache, Error>(&bytes).unwrap();
     assert!(validate_archived_cache(archived).is_err());
+}
+
+/// G7 keeps its LAND layout distinct from both earlier G7 and the restored G2 slots.
+#[test]
+fn g7_layout_rejects_prior_and_lower_layer_producers() {
+    for version in [11, 12] {
+        let legacy = GrassCache {
+            version,
+            types: vec![],
+            cells: vec![],
+        };
+        let bytes = rkyv::to_bytes::<Error>(&legacy).unwrap();
+        let archived = rkyv::access::<ArchivedGrassCache, Error>(&bytes).unwrap();
+        assert!(validate_archived_cache(archived).is_err());
+    }
 }

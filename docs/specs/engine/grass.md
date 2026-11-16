@@ -162,10 +162,10 @@ the audited official grasses use `0x06`. Retail lights every vertex on the insta
 so the Vertex Lighting flag does not change the lighting path.
 
 The existing shader byte decode remains `byte/255`; 128 is approximately half
-brightness. LAND VCLR is retained in the current producer-eleven grass cache for
+brightness. LAND VCLR is retained in the current `GRASS_CACHE_VERSION` grass cache for
 speculative and CPU generation. Runtime grass consumes the committed terrain
-snapshot's luminance instead; missing committed colours use white. Producer ten
-and older caches require regeneration. Wave Period stays in the grass uniform,
+snapshot's luminance instead; missing committed colours use white. Earlier
+producer caches require regeneration. Wave Period stays in the grass uniform,
 but nothing reads it: grass wind is not rendered until the engine has a blended
 weather wind speed and wind direction.
 
