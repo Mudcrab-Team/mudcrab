@@ -148,10 +148,11 @@ A 64 MiB cache accounts for retained triangle allocation capacity and evicts
 least-recently-used models; one oversized model can be decoded transiently but
 is not retained. Model fingerprints remain available after geometry eviction.
 
-When terrain contains no texture linked to a valid grass rule, the producer skips
-obstruction-reference collection and model inspection. Rule warnings and empty
-grass-cache publication still apply. The terrain/link gate is conservative: a
-linked texture is sufficient to retain the ordinary obstruction path.
+When terrain contains no texture linked to a grass rule with a model, the producer
+skips obstruction-reference collection and model inspection. Rule warnings and
+cache publication still apply. The terrain/link gate is conservative: a linked
+modeled rule is sufficient to retain the ordinary obstruction path. This scan
+gate leaves the cached rule and link selection unchanged.
 
 This is a sampled offline mask, not collision-exact placement: a feature narrower
 than a tile may be missed by its center, and a blocked sample excludes the whole
