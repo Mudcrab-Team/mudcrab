@@ -617,6 +617,13 @@ pub fn export_room_graph(
                     "INSERT OR IGNORE INTO room_links(room_ref, linked_ref, link_index) VALUES (?1, ?2, ?3)",
                     params![form_id, linked, index as i64],
                 )?;
+                if inserted == 0 {
+                    // The reverse scan must see the last authored occurrence of this target.
+                    tx.execute(
+                        "UPDATE room_links SET link_index=?3 WHERE room_ref=?1 AND linked_ref=?2",
+                        params![form_id, linked, index as i64],
+                    )?;
+                }
                 report.links += inserted as u64;
             } else {
                 incomplete.insert(cell);
@@ -930,6 +937,85 @@ pub fn add_overlap_rows(conn: &mut Connection) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_room_links_keep_the_last_authored_master_candidate() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::esm::exporter::create_tables(&conn).unwrap();
+        let mut records = HashMap::new();
+        for (id, master, links) in [
+            (1u32, true, vec![]),
+            (2, true, vec![]),
+            (3, false, vec![1u32, 2, 1]),
+        ] {
+            let mut shape = vec![0; 32];
+            for offset in [0, 4, 8] {
+                shape[offset..offset + 4].copy_from_slice(&100f32.to_le_bytes());
+            }
+            shape[28..32].copy_from_slice(&1u32.to_le_bytes());
+            let mut fields = vec![
+                (b"NAME".to_vec(), ROOM_MARKER_BASE.to_le_bytes().to_vec()),
+                (b"DATA".to_vec(), vec![0; 24]),
+                (b"XPRM".to_vec(), shape),
+                (
+                    b"XRMR".to_vec(),
+                    vec![links.len() as u8, 0, u8::from(master), 0],
+                ),
+            ];
+            fields.extend(
+                links
+                    .into_iter()
+                    .map(|id| (b"XLRM".to_vec(), id.to_le_bytes().to_vec())),
+            );
+            records.insert(
+                id,
+                RawRecord {
+                    form_id: id,
+                    record_type: *b"REFR",
+                    flags: 0,
+                    subrecords: fields,
+                    cell_form_id: Some(7),
+                    worldspace_form_id: None,
+                    load_order: 0,
+                },
+            );
+        }
+        let tx = conn.transaction().unwrap();
+        let report = export_room_graph(&tx, &records, &HashSet::from([7])).unwrap();
+        tx.commit().unwrap();
+        let links = conn
+            .prepare("SELECT linked_ref FROM room_links WHERE room_ref=3 ORDER BY link_index")
+            .unwrap()
+            .query_map([], |r| r.get::<_, u32>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            links,
+            vec![2, 1],
+            "the last A in [A,B,A] must remain the first reverse-scan candidate"
+        );
+        assert_eq!(report.links, 2, "the counter describes stored rows");
+        use shared::room_assignment::{JoinedRoom, joined_masters};
+        let rooms = [
+            JoinedRoom {
+                ref_id: 1,
+                master: true,
+                links: vec![],
+            },
+            JoinedRoom {
+                ref_id: 2,
+                master: true,
+                links: vec![],
+            },
+            JoinedRoom {
+                ref_id: 3,
+                master: false,
+                links,
+            },
+        ];
+        assert_eq!(joined_masters(&rooms)[2], Some(0));
+    }
 
     #[test]
     fn authored_multibound_overrides_survive_overlap_integration_of_an_existing_database() {

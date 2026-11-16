@@ -23,10 +23,16 @@ fn main() -> Result<()> {
     );
     let data = Path::new(&args[0]);
     let assets = Path::new(&args[1]);
-    ensure!(
-        !assets.join("meshes").is_symlink() && !assets.join("skyrim_world.db").is_symlink(),
-        "use an independent database and mesh directory, not links to the installed assets"
-    );
+    validate_private_assets(assets)?;
+    let report_path = assets
+        .parent()
+        .unwrap()
+        .join("room-assignment-preparation.json");
+    // Any failure below leaves a visible incomplete marker instead of a previous success receipt.
+    fs::write(
+        &report_path,
+        serde_json::to_vec_pretty(&serde_json::json!({"complete": false}))?,
+    )?;
     let cells: HashSet<u32> = args[2]
         .split(',')
         .map(str::parse)
@@ -105,10 +111,52 @@ fn main() -> Result<()> {
         .collect::<rusqlite::Result<_>>()?;
     let (sources, extracted) =
         prepare_model_sources(data, assets.parent().unwrap(), &models, &plugins)?;
+    let results = convert_capture_models(sources.path(), assets, &models)?;
+    converter::integration::finalize_world_database(assets)?;
+    let conn = Connection::open(assets.join("skyrim_world.db"))?;
+    let bounds: u64 = conn.query_row("SELECT count(*) FROM room_model_bounds", [], |r| r.get(0))?;
+    let report = serde_json::json!({
+        "complete": true,
+        "scope": "private capture fixture; source-verified endpoint flags retained",
+        "cells": cells,
+        "requested_models": models.len(),
+        "extracted_entries": extracted,
+        "base_records_with_source_bounds": bounds,
+        "results": results,
+    });
+    fs::write(&report_path, serde_json::to_vec_pretty(&report)?)?;
+    println!(
+        "Prepared {} models, {bounds} base records with source bounds",
+        models.len()
+    );
+    Ok(())
+}
+
+fn validate_private_assets(assets: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        ensure!(
+            fs::metadata(assets.join("skyrim_world.db"))?.nlink() == 1,
+            "use an independent database, not a hard link to the installed assets"
+        );
+    }
+    ensure!(
+        !assets.join("meshes").is_symlink() && !assets.join("skyrim_world.db").is_symlink(),
+        "use an independent database and mesh directory, not links to the installed assets"
+    );
+    Ok(())
+}
+
+fn convert_capture_models(
+    sources: &Path,
+    assets: &Path,
+    models: &BTreeSet<PathBuf>,
+) -> Result<Vec<serde_json::Value>> {
     let results: Vec<_> = models
         .par_iter()
         .map(|model| {
-            let source = sources.path().join(model);
+            let source = sources.join(model);
             let output = assets.join(model).with_extension("glb");
             let converted = source.is_file().then(|| {
                 MeshConverter::convert_nif_to_glb(&source, &output)
@@ -121,29 +169,12 @@ fn main() -> Result<()> {
             })
         })
         .collect();
-    converter::integration::finalize_world_database(assets)?;
-    let conn = Connection::open(assets.join("skyrim_world.db"))?;
-    let bounds: u64 = conn.query_row("SELECT count(*) FROM room_model_bounds", [], |r| r.get(0))?;
-    let report = serde_json::json!({
-        "scope": "private capture fixture; source-verified endpoint flags retained",
-        "cells": cells,
-        "requested_models": models.len(),
-        "extracted_entries": extracted,
-        "base_records_with_source_bounds": bounds,
-        "results": results,
-    });
-    fs::write(
-        assets
-            .parent()
-            .unwrap()
-            .join("room-assignment-preparation.json"),
-        serde_json::to_vec_pretty(&report)?,
-    )?;
-    println!(
-        "Prepared {} models, {bounds} base records with source bounds",
-        models.len()
+    ensure!(
+        results.iter().all(|result| result["converted"] == true),
+        "capture preparation incomplete: one or more requested source conversions failed: {}",
+        serde_json::to_string(&results)?
     );
-    Ok(())
+    Ok(results)
 }
 
 fn prepare_model_sources(
@@ -198,6 +229,42 @@ fn prepare_model_sources(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn private_database_must_not_share_its_inode() {
+        let root = tempfile::tempdir().unwrap();
+        let original = root.path().join("installed.db");
+        fs::write(&original, b"installed database").unwrap();
+        let assets = root.path().join("assets");
+        fs::create_dir(&assets).unwrap();
+        fs::hard_link(&original, assets.join("skyrim_world.db")).unwrap();
+        assert!(validate_private_assets(&assets).is_err());
+        assert_eq!(fs::read(&original).unwrap(), b"installed database");
+    }
+
+    #[test]
+    fn failed_capture_conversions_cannot_reuse_old_glbs() {
+        let root = tempfile::tempdir().unwrap();
+        let sources = root.path().join("sources");
+        fs::create_dir(&sources).unwrap();
+        let assets = root.path().join("assets");
+        fs::create_dir_all(assets.join("meshes")).unwrap();
+        let model = PathBuf::from("meshes/test.nif");
+        let output = assets.join(&model).with_extension("glb");
+        fs::write(&output, b"previous capture").unwrap();
+        let models = BTreeSet::from([model.clone()]);
+        assert!(
+            convert_capture_models(&sources, &assets, &models).is_err(),
+            "a missing source must abort before finalization"
+        );
+        fs::create_dir(sources.join("meshes")).unwrap();
+        fs::write(sources.join(model), b"invalid NIF").unwrap();
+        assert!(
+            convert_capture_models(&sources, &assets, &models).is_err(),
+            "a failed conversion must abort before finalization"
+        );
+    }
 
     fn archive(data: &Path) -> PathBuf {
         fs::create_dir_all(data).unwrap();

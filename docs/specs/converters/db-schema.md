@@ -1280,8 +1280,8 @@ Columns and rules:
   A broken nonzero link also drops the legacy reader's `XPOD` occurrence rather than clearing
   it to an authored null. The typed reader restores the flags from original source framing;
   its canonical cleared links cannot establish outside connectivity.
-- **`room_links`**: one row per `XLRM` as stored, with its original zero-based `link_index` and
-  no synthesized mirror rows. Migration adds the column with zero defaults; only a fresh export
+- **`room_links`**: one row per distinct `XLRM` target, retaining the last occurrence's
+  zero-based `link_index`, with no synthesized mirror rows. Migration adds the column with zero defaults; only a fresh export
   publishes the authored-assignment version. The target is retained even if no room row exists.
   In authored mode, `XRMR[2] != 0` marks a master (`(flags >> 8) & 255` in `room_bounds`).
   An unlinked marker is also a master. Slaves resolve linked masters, preferring direct masters
