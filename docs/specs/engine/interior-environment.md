@@ -5,9 +5,10 @@
 selects the cell. The selection and the apply step run in PostUpdate, after `DoorCrossingSet`
 and before transform propagation, so the lighting changes in the same frame as `ActiveSpace`.
 
-Sources: `evidence/rea-20261114/registry.md` rows RF-LIGHT-CPU-001 to RF-LIGHT-CPU-016,
-RF-LIGHT-GPU-001 to RF-LIGHT-GPU-010, RF-IMGS-001 and RF-WATER-011, and the verify report
-`evidence/milestone-dossiers-20261114/INTLIGHT/verify-report.md` (retail build 1.7.104.0).
+Sources: registry rows RF-LIGHT-CPU-001 to RF-LIGHT-CPU-016, RF-LIGHT-GPU-001 to
+RF-LIGHT-GPU-010, RF-IMGS-001 and RF-WATER-011, and the INTLIGHT verify report (static trace of
+retail build 1.7.104.0). Both are private maintainer research notes and are not in this
+repository; ask in #264 for a row. This spec states each fact it relies on.
 
 ## The rule
 
@@ -58,6 +59,10 @@ RF-LIGHT-GPU-001 to RF-LIGHT-GPU-010, RF-IMGS-001 and RF-WATER-011, and the veri
    colour lerp (RF-WATER-011). Bevy has no power term and one colour, so power and the far
    colour are reported only. `far <= near` draws no fog. The near/far clamps and the clip
    distance are not applied.
+   A short XCLL (72 to 91 bytes) has no fog max field. Retail behaviour for a short block is
+   unverified (RF-LIGHT-CPU-014 covers a cell without XCLL only). Mudcrab keeps the authored fog
+   distances and applies no cap; no shipped interior has a short block. An authored max of 0
+   still draws no fog.
 8. **Exit**: leaving modes 1 and 2 restores the saved rotation, colour, illuminance, shadows and
    ambient, and the clock sun takes over the next frame. A write by another system while indoors
    (`apply_render_settings` on a preference change), including one in the exit frame itself,
@@ -81,6 +86,12 @@ Use Sky Lighting, the sky mode, and the applied values (`cell_render`).
 - The per-normal DALC ambient term in the shader (RF-LIGHT-CPU-002, RF-LIGHT-GPU-001/003).
 - The Show Sky dome indoors, worldspace templates (`WRLD` `0x20`, Blackreach), the reference
   image space override (RF-IMGS-001 extra `0x77`), and fog power and far colour.
-- The world sign of the key light assumes an identity parent rotation (RF-LIGHT-CPU-012). A
-  retail screenshot of a Z = 90 cell would confirm it.
+- **UNVERIFIED: the world sign of the key light.** RF-LIGHT-CPU-012 settles the local rotation
+  product (high confidence) and that the light travels along column 0 of the world rotation. The
+  world sign (medium-high) also assumes an identity parent rotation, as RF-SUN-002 does for the
+  exterior sun. No rendered interior has been compared with retail. It matters most for
+  rotation Z = 90 (383 of the 786 shipped interiors after template inheritance): the traced
+  light travels straight up, so floors get no key light and ceilings get all of it. If the sign
+  is wrong, those cells are lit from the wrong side. The look checks are in the PR: Alvor's
+  house, one Z = 90 cell and the Bleak Falls Barrow room switch.
 - No headless interior start exists: shots skip interiors and `coc` refuses them (#727).

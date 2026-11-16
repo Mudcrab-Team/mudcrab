@@ -89,8 +89,12 @@ comparison; the output correction does not validate those assumptions.
   `main_pass_post_lighting_processing`; the dome's shader does not ask for fog, so the dome stays
   unfogged. The water reflection camera is left unfogged, because the water surface it renders into
   is fogged once already.
-- **Interiors.** An interior cell has no weather, so `CameraSpace::Interior` takes the fog off
-  every `FogCamera`, as it hides the dome.
+- **Interiors.** An interior cell has no weather, so `CameraSpace::Interior` hides the dome and
+  takes the weather fog off every `FogCamera`. In sky modes 1 and 2 `apply_fog` gives each
+  `FogCamera` the cell's own fog (`InteriorFog`, `docs/specs/engine/interior-environment.md`):
+  Bevy linear fog from the cell's near and far and near colour, with max as a cap. A cell without
+  a fog ramp, and the one mode 3 interior, have no fog. The fog switch still applies; the fog
+  density multiplier does not.
 - **Range.** The visibility distance is longer than the default camera far plane, so terrain is
   hazed rather than swallowed inside the streamed ring, and the dome's transparent band keeps
   the horizon line itself soft. Tune `FOG_VISIBILITY` first; tune tints only after that.

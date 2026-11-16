@@ -7,8 +7,9 @@
 //! This module applies that rule to the engine's sun entity, `GlobalAmbientLight` and the
 //! camera fog, and restores the exterior values on exit.
 //! See docs/specs/engine/interior-environment.md for evidence and the open items.
-//! Sources: evidence/rea-20261114/registry.md RF-LIGHT-CPU-001 to RF-LIGHT-CPU-016,
-//! RF-LIGHT-GPU-001 to RF-LIGHT-GPU-010, RF-IMGS-001 and RF-WATER-011 (scene fog form).
+//! Sources: registry rows RF-LIGHT-CPU-001 to RF-LIGHT-CPU-016, RF-LIGHT-GPU-001 to
+//! RF-LIGHT-GPU-010, RF-IMGS-001 and RF-WATER-011 (scene fog form). The registry is a private
+//! research note and is not in the tree; the spec says where each row matters.
 
 use super::{DirectionalAmbient, EnvironmentCatalog, Lighting, RoomBound};
 use crate::streaming::{ActiveSpace, creation_rotation_to_bevy, creation_to_bevy};
@@ -435,13 +436,19 @@ pub(crate) struct CellFog {
 }
 
 impl CellFog {
-    /// A missing field is 0, as the retail getter returns (RF-LIGHT-CPU-014). Fog with
-    /// `far <= near` has no linear ramp, and fog with `max <= 0` has a factor of 0 everywhere,
-    /// so the engine draws no fog for either.
+    /// A missing field is 0, as the retail getter returns for a cell without XCLL
+    /// (RF-LIGHT-CPU-014). Fog with `far <= near` has no linear ramp, and fog with an authored
+    /// `max <= 0` has a factor of 0 everywhere, so the engine draws no fog for either.
+    ///
+    /// A missing `max` with an authored near and far is different: it comes from a short XCLL
+    /// (72 to 91 bytes, which ends before the max field) or a short template. What retail does
+    /// with a short block is UNVERIFIED (CPU-014 covers a cell without XCLL only). Mudcrab
+    /// treats the missing max as no cap (1.0) so that authored fog distances are not lost.
+    /// No shipped interior is affected: all 786 have a 92-byte XCLL.
     fn from_lighting(lighting: &Lighting) -> Option<Self> {
         let near = lighting.fog_near.unwrap_or(0.0);
         let far = lighting.fog_far.unwrap_or(0.0);
-        let max = lighting.fog_max.unwrap_or(0.0);
+        let max = lighting.fog_max.unwrap_or(1.0);
         (far > near && max > 0.0).then(|| Self {
             near_color: lighting.fog_near_color.unwrap_or([0; 3]),
             far_color: lighting.fog_far_color.unwrap_or([0; 3]),
@@ -707,6 +714,7 @@ fn select_environment(
     space: Res<ActiveSpace>,
     mut scene: ResMut<SceneEnvironment>,
     mut selected_once: Local<bool>,
+    mut warned: Local<std::collections::BTreeSet<u32>>,
 ) {
     let first_selection = !std::mem::replace(&mut *selected_once, true);
     if first_selection
@@ -715,6 +723,19 @@ fn select_environment(
         || scene.interior.is_none() && space.interior.is_some()
     {
         let selected = SceneEnvironment::select(&catalog, &space);
+        // An interior in sky mode 1 or 2 without an XCLL is lit with zeros (RF-LIGHT-CPU-014).
+        // That is what retail reads, but it is visible and often a modding mistake: say so once
+        // per cell and run.
+        if let (Some(cell), Some(interior)) = (selected.cell_render.as_ref(), &selected.interior)
+            && !interior.has_xcll
+            && warned.insert(interior.cell_id)
+        {
+            warn!(
+                cell_id = interior.cell_id,
+                key_color = ?cell.key_color,
+                "interior has no XCLL: it is lit with zero colours as retail reads them"
+            );
+        }
         if *scene != selected {
             info!(environment = ?selected, "selected scene environment");
             *scene = selected;
@@ -1888,6 +1909,42 @@ mod tests {
                 .resource::<SceneEnvironment>()
                 .cell_render
                 .is_none()
+        );
+    }
+
+    /// A short XCLL (72 bytes) ends before the fog max, so `fog_max` and the far colour are NULL
+    /// while near and far are authored. What retail does with a short block is unverified, so the
+    /// engine keeps the authored distances and applies no cap (see `CellFog::from_lighting`).
+    #[test]
+    fn a_72_byte_xcll_keeps_its_fog_with_no_cap() {
+        let connection = Connection::open_in_memory().unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO cell_environment(cell_id,data_flags) VALUES(66,1);
+                 INSERT INTO cell_lighting(cell_id,xcll_size,fog_near_r,fog_near_g,fog_near_b,
+                    fog_near,fog_far)
+                 VALUES(66,72,31,52,46,100.0,4000.0);",
+            )
+            .unwrap();
+        let mut app = app(EnvironmentCatalog::from_connection(&connection));
+        spawn_world_sun(&mut app);
+        enter(&mut app, Some(66));
+        app.update();
+        let fog = app.world().resource::<InteriorFog>().0.unwrap();
+        assert_eq!((fog.near_color, fog.near, fog.far), ([31, 52, 46], 100.0, 4000.0));
+        assert_eq!(fog.max, 1.0);
+        let bevy_fog = fog.distance_fog();
+        assert!((bevy_linear_factor(&bevy_fog, 4000.0) - 1.0).abs() < 1.0e-6);
+        // A full-length block that authors a max of 0 still draws no fog.
+        assert_eq!(
+            CellFog::from_lighting(&Lighting {
+                fog_near: Some(100.0),
+                fog_far: Some(4000.0),
+                fog_max: Some(0.0),
+                ..default()
+            }),
+            None
         );
     }
 

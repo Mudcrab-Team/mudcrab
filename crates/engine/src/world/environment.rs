@@ -69,7 +69,8 @@ pub struct Lighting {
 /// A cell's `XCLL` lighting and `LTMP` template.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct CellLighting {
-    /// Authored XCLL length, including rejected blocks under 72 bytes. None means absent.
+    /// Authored XCLL length in bytes (92, or 72 for the short form). None means absent: the
+    /// converter ignores a block under 72 bytes, so it is stored as None too.
     pub xcll_size: Option<u32>,
     pub lighting_template: Option<u32>,
     pub lighting: Lighting,
@@ -332,8 +333,10 @@ impl EnvironmentCatalog {
         let cell_lighting_available = cells_read.is_ok();
         let cells: HashMap<u32, CellLighting> = cells_read
             .unwrap_or_else(|error| {
-                info!(
-                    "environment: no usable `cell_lighting` table ({error}); authored fields unavailable"
+                // A warning, not info: no interior gets authored lighting and the built-in lights
+                // stay, which changes the picture.
+                warn!(
+                    "environment: no usable `cell_lighting` table ({error}); interiors keep the built-in lights"
                 );
                 Vec::new()
             })
