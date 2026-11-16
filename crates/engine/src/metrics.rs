@@ -664,8 +664,8 @@ fn collect_and_finish(
         },
         &samples.ledger.scored,
     );
-    // Off by default. `None` (no scored frame) cannot meet the bar, but a run with no frames has
-    // already failed the frame rate gate; the `Some(true)` comparison keeps the two independent.
+    // Off by default. `None` (no scored frame) cannot meet the bar, so with the flag a run that
+    // scored no frame fails even when the frame rate limit is 0.
     let frame_pass_bar_met = frame_budget.meets_pass_bar == Some(true);
     let passed = average_fps >= config.accept_min_fps
         && p95 <= config.accept_p95_ms
