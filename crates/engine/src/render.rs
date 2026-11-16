@@ -80,12 +80,6 @@ pub(crate) const WATER_DISTANCE_LITERAL: f32 = 8192.0;
 #[cfg(test)]
 pub(crate) const WATER_SSR_INTENSITY: f32 = 0.5;
 
-/// The cube map retail's water reflects when the worldspace and the cell name none (RF-WATER-007:
-/// `Cubemaps\QuickSky_e.dds`, converted to this KTX2 in the pack). Which cube Tamriel uses is still
-/// medium confidence (the worldspace name is a 2D path and the constructor falls back to a rendered
-/// six-face cube), so this is a data-backed fallback, not a proven match (#698).
-pub const WATER_CUBE_FALLBACK_PATH: &str = "textures/cubemaps/quicksky_e.ktx2";
-
 /// The retail distance term of the reflection mix (RF-SHADER-008).
 #[cfg(test)]
 pub(crate) fn water_dist_t(eye_distance: f32, noise_falloff: f32, flag: f32) -> f32 {
@@ -983,10 +977,6 @@ pub struct WaterExtension {
     noise_normal_1: Option<Handle<Image>>,
     #[texture(108)]
     noise_normal_2: Option<Handle<Image>>,
-    /// The sky cube map the water reflects (retail's `cube` of RF-WATER-009), read with the sampler
-    /// of `flow_normal`. `None` leaves the flat Reflection Color in its place.
-    #[texture(109, dimension = "cube")]
-    cube: Option<Handle<Image>>,
     /// The cell's 64 by 64 flow map (RF-WATER-036): per texel the flow direction (rg), the scale (b)
     /// and the phase speed (a). Read with the sampler of `flow_normal`.
     #[texture(110)]
@@ -1023,8 +1013,8 @@ struct WaterSettings {
     /// frame whose resolve was skipped leaves the texture bound but cleared to a negative sentinel,
     /// which the shader reads as unknown too. y = the record's noise falloff, clamped to
     /// `[1, 8191]` (RF-SHADER-007). z = 1 for a water in an interior cell, which uses retail's
-    /// interior program (RF-WATER-017). w = 1 when the sky cube map is bound to `cube`, 0 when the
-    /// flat Reflection Color stands in for it.
+    /// interior program (RF-WATER-017). w = 1 when the sky gradient below is set, 0 when the flat
+    /// Reflection Color stands in for it.
     depth_params: Vec4,
     /// xyz = the three noise layers' UV scales in world units per texture tile (WATR DNAM
     /// `uvScaleA`); w = 1 when the noise textures are bound, 0 for a flat surface.
@@ -1046,6 +1036,13 @@ struct WaterSettings {
     /// xy = the cell's grid coordinates, z = 1 when the water runs retail's flow-map program
     /// (FNAM bit 3 with a flow map and a flow normal texture bound), w unused (RF-WATER-044).
     flow: Vec4,
+    /// The sky dome's colour table (`SkyUniform`): row elevations in degrees, four rows to a
+    /// vector. The water reflects it where retail reflects its sky cube (see `with_sky`).
+    sky_elevations: [Vec4; 4],
+    /// Per row: the sRGB-encoded dome colour and the row's alpha.
+    sky_colours: [Vec4; 16],
+    /// x = the dome's linear brightness scale.
+    sky_brightness: Vec4,
 }
 
 impl Default for WaterExtension {
@@ -1072,6 +1069,9 @@ impl Default for WaterExtension {
                 sun_color: Vec4::ZERO,
                 refraction: Vec4::new(DEFAULT_WATER_REFRACTION_MAGNITUDE, 0.0, 0.0, 0.0),
                 flow: Vec4::ZERO,
+                sky_elevations: [Vec4::ZERO; 4],
+                sky_colours: [Vec4::ZERO; 16],
+                sky_brightness: Vec4::ZERO,
             },
             reflection: None,
             flow_normal: None,
@@ -1079,7 +1079,6 @@ impl Default for WaterExtension {
             noise_normal_0: None,
             noise_normal_1: None,
             noise_normal_2: None,
-            cube: None,
             flow_map: None,
             multiplier: [1.0; 3],
         }
@@ -1095,7 +1094,6 @@ impl WaterExtension {
             .chain(self.noise_normal_0.iter())
             .chain(self.noise_normal_1.iter())
             .chain(self.noise_normal_2.iter())
-            .chain(self.cube.iter())
             .chain(self.flow_map.iter())
             .map(Handle::id)
     }
@@ -1143,12 +1141,14 @@ impl WaterExtension {
                 sun_color: Vec4::ZERO,
                 refraction: Vec4::new(DEFAULT_WATER_REFRACTION_MAGNITUDE, 0.0, 0.0, 0.0),
                 flow: Vec4::ZERO,
+                sky_elevations: [Vec4::ZERO; 4],
+                sky_colours: [Vec4::ZERO; 16],
+                sky_brightness: Vec4::ZERO,
             },
             bed_depth: None,
             noise_normal_0: None,
             noise_normal_1: None,
             noise_normal_2: None,
-            cube: None,
             flow_map: None,
             multiplier: [1.0; 3],
         }
@@ -1187,12 +1187,35 @@ impl WaterExtension {
         self
     }
 
-    /// Binds the sky cube map the water reflects, or none (the flat Reflection Color then stands in
-    /// for it, which is not retail's behaviour).
-    pub fn with_cube(mut self, cube: Option<Handle<Image>>) -> Self {
-        self.settings.depth_params.w = f32::from(u8::from(cube.is_some()));
-        self.cube = cube;
+    /// Gives the water the sky it reflects, or none (the flat Reflection Color then stands in).
+    /// Retail's exterior water reflects a sky cube: the worldspace names one, and when that name is
+    /// not a cube (Tamriel's is a 2D path) the constructor falls back to a rendered six-face cube of
+    /// the sky (RF-WATER-007; `Cubemaps\QuickSky_e.dds` only when no name exists). The engine
+    /// renders no cube, so the reflection is the sky dome's own colour for the reflected direction:
+    /// the dome the camera draws, as a rendered cube of it would show, without clouds or sun disc.
+    /// The 32 by 32 `quicksky_e` cube was tried first and read as coarse rectangular blocks (its
+    /// BC1 texels, magnified), so it is not used (#698).
+    pub fn with_sky(mut self, sky: Option<&crate::sky::SkyUniform>) -> Self {
+        self.settings.depth_params.w = f32::from(u8::from(sky.is_some()));
+        if let Some(sky) = sky {
+            self.settings.sky_elevations = sky.elevations;
+            self.settings.sky_colours = sky.colours;
+            self.settings.sky_brightness = sky.brightness;
+        }
         self
+    }
+
+    /// Whether the water reflects a sky (an exterior water; an interior one has none).
+    pub(crate) fn reflects_sky(&self) -> bool {
+        self.settings.depth_params.w == 1.0
+    }
+
+    /// Whether the water already holds exactly this sky (the sync system writes only on a change).
+    pub(crate) fn sky_matches(&self, sky: &crate::sky::SkyUniform) -> bool {
+        self.settings.depth_params.w == 1.0
+            && self.settings.sky_elevations == sky.elevations
+            && self.settings.sky_colours == sky.colours
+            && self.settings.sky_brightness == sky.brightness
     }
 
     /// Gives the water its three noise normal maps and the DNAM values that shape and move them.
@@ -2904,33 +2927,28 @@ mod tests {
 
     #[test]
     fn the_flat_colour_is_only_the_part_the_reflection_amount_leaves() {
-        // RF-WATER-050: refl = lerp(ReflectionColor, env, DNAM 0x14); env = lerp(cube, ssr, share).
+        // RF-WATER-050: refl = lerp(ReflectionColor, env, DNAM 0x14); env = lerp(sky, ssr, share).
         // A river (DNAM 0x14 = 0.8) at distT 1 with full image coverage: share = 0.5. The flat
-        // colour's weight is 1 - 0.8 = 0.2 and nothing else; before the cube it was
+        // colour's weight is 1 - 0.8 = 0.2 and nothing else; before the sky it was
         // 0.2 + 0.8 * 0.5 = 0.6 (RF-WATER-050 correction, WATER5 section 1).
         let share = water_reflection_share(1.0, 1.0);
         let only_flat = water_reflection_colour(1.0, 0.0, 0.0, share, 0.8);
         assert!((only_flat - 0.2).abs() < 1.0e-6);
-        let only_cube = water_reflection_colour(0.0, 1.0, 0.0, share, 0.8);
-        assert!((only_cube - 0.8 * 0.5).abs() < 1.0e-6);
+        let only_sky = water_reflection_colour(0.0, 1.0, 0.0, share, 0.8);
+        assert!((only_sky - 0.8 * 0.5).abs() < 1.0e-6);
         let only_ssr = water_reflection_colour(0.0, 0.0, 1.0, share, 0.8);
         assert!((only_ssr - 0.8 * 0.5).abs() < 1.0e-6);
-        // Where the image has no coverage the cube carries all of the 0.8.
+        // Where the image has no coverage the sky carries all of the 0.8.
         let no_image =
             water_reflection_colour(0.0, 1.0, 0.0, water_reflection_share(1.0, 0.0), 0.8);
         assert!((no_image - 0.8).abs() < 1.0e-6);
         // A creek (DNAM 0x14 = 1.0) has no flat share at all.
         assert_eq!(water_reflection_colour(1.0, 0.0, 0.0, share, 1.0), 0.0);
-        // The shader holds the same mix over the bound cube, in Skyrim's axes (x east, y north,
-        // z up) and with the unclamped reflected direction.
+        // The shader holds the same mix over the sky dome's colour for the reflected direction,
+        // in Bevy's axes (the dome shader's elevation of the ray).
         let source = include_str!("shaders/water.wgsl");
-        assert!(source.contains("@binding(109) var water_cube: texture_cube<f32>;"));
-        assert!(
-            source.contains("textureSample(water_cube, water_flow_normal_sampler, cube_direction)")
-        );
-        assert!(source.contains(
-            "let cube_direction = vec3<f32>(cube_reflected.x, -cube_reflected.z, cube_reflected.y);"
-        ));
+        assert!(source.contains("fn sky_dome_colour(elevation: f32) -> vec3<f32>"));
+        assert!(source.contains("let sky_elevation = degrees(asin(clamp(sky_ray.y, -1.0, 1.0)));"));
         assert!(source.contains("let reflection_planar = mix(flat_reflection, environment, water.fresnel_reflectivity.y);"));
     }
 
@@ -3017,18 +3035,15 @@ mod tests {
     }
 
     #[test]
-    fn the_cube_map_is_bound_only_when_there_is_one() {
-        assert_eq!(
-            WATER_CUBE_FALLBACK_PATH,
-            "textures/cubemaps/quicksky_e.ktx2"
-        );
+    fn the_sky_is_set_only_when_there_is_one() {
+        let sky = crate::sky::SkyUniform::new(&crate::sky::SkyPalette::default());
         let without = WaterExtension::default();
         assert_eq!(without.settings.depth_params.w, 0.0);
-        assert_eq!(without.image_ids().count(), 0);
-        let with = WaterExtension::default().with_cube(Some(Handle::default()));
+        assert!(!without.sky_matches(&sky));
+        let with = WaterExtension::default().with_sky(Some(&sky));
         assert_eq!(with.settings.depth_params.w, 1.0);
-        assert_eq!(with.image_ids().count(), 1);
-        assert_eq!(with.with_cube(None).settings.depth_params.w, 0.0);
+        assert!(with.sky_matches(&sky));
+        assert_eq!(with.with_sky(None).settings.depth_params.w, 0.0);
     }
 
     #[test]

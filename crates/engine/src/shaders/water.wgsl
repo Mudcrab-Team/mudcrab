@@ -60,6 +60,11 @@ struct WaterSettings {
     refraction: vec4<f32>,
     // xy = the cell's grid coordinates, z = 1 when the flow-map program runs, w unused.
     flow: vec4<f32>,
+    // The sky dome's colour table (sky.rs `SkyUniform`), which the water reflects: row elevations in
+    // degrees four to a vector, per row the sRGB-encoded colour, and x = the linear brightness.
+    sky_elevations: array<vec4<f32>, 4>,
+    sky_colours: array<vec4<f32>, 16>,
+    sky_brightness: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: WaterSettings;
@@ -75,9 +80,6 @@ struct WaterSettings {
 @group(#{MATERIAL_BIND_GROUP}) @binding(106) var water_noise_0: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(107) var water_noise_1: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(108) var water_noise_2: texture_2d<f32>;
-// The sky cube map of retail's cube-map programs (RF-WATER-009, RF-WATER-050), read with the flow
-// normal's sampler. `depth_params.w` says whether one is bound.
-@group(#{MATERIAL_BIND_GROUP}) @binding(109) var water_cube: texture_cube<f32>;
 // The cell's 64 by 64 flow map (RF-WATER-036): rg = the flow direction as (cos, sin) * 0.5 + 0.5,
 // b = the scale term, a = the phase speed. Read with the flow normal's sampler. `water.flow.z`
 // says whether the flow program runs.
@@ -182,6 +184,38 @@ fn water_body(path: f32, vertical_depth: f32) -> vec3<f32> {
 // draw, so it excludes the water itself, as retail's copy does. `normal_skyrim` is the surface
 // normal in Skyrim's axes, `along` is sat(L / F) and `depth_known` is false when the bed depth is
 // unknown (the interior and no-depth programs, which have no leak test and so no offset).
+const SKY_ROW_COUNT: u32 = 16u;
+
+fn sky_row_elevation(row: u32) -> f32 {
+    return water.sky_elevations[row / 4u][row % 4u];
+}
+
+fn sky_srgb_to_linear(colour: vec3<f32>) -> vec3<f32> {
+    let low = colour / 12.92;
+    let high = pow((colour + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+    return select(high, low, colour <= vec3<f32>(0.04045));
+}
+
+// The sky dome's colour at `elevation` degrees: the dome shader's own interpolation of its colour
+// table (`sky.wgsl`), so the water reflects the sky the camera sees.
+fn sky_dome_colour(elevation: f32) -> vec3<f32> {
+    var colour = water.sky_colours[SKY_ROW_COUNT - 1u].rgb;
+    if elevation <= sky_row_elevation(0u) {
+        colour = water.sky_colours[0].rgb;
+    } else {
+        for (var row = 1u; row < SKY_ROW_COUNT; row += 1u) {
+            let above = sky_row_elevation(row);
+            if elevation <= above {
+                let below = sky_row_elevation(row - 1u);
+                let t = (elevation - below) / max(above - below, 1.0e-6);
+                colour = mix(water.sky_colours[row - 1u].rgb, water.sky_colours[row].rgb, t);
+                break;
+            }
+        }
+    }
+    return sky_srgb_to_linear(colour) * water.sky_brightness.x;
+}
+
 fn refracted_scene(frag_coord: vec4<f32>, world_position: vec3<f32>, normal_skyrim: vec3<f32>, along: f32, depth_known: bool) -> vec3<f32> {
     let unperturbed_uv = (frag_coord.xy - view.viewport.xy) / view.viewport.zw;
     var uv = unperturbed_uv;
@@ -377,20 +411,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         vec2<f32>(1.0),
     );
     let reflection_sample = textureSample(water_reflection, water_reflection_sampler, reflection_uv);
-    // refl = lerp(ReflectionColor, env, DNAM 0x14) with env = lerp(cube * FBR, ssr, s),
+    // refl = lerp(ReflectionColor, env, DNAM 0x14) with env = lerp(sky * FBR, ssr, s),
     // s = sat(distT * fWaterSSRIntensity * ssr.a) (RF-WATER-050). Retail multiplies env by
     // FramebufferRange and the result by its inverse, so env passes unchanged and the flat colour is
-    // divided. The cube is sampled along reflect(V, lerp(up, N, Reflection Magnitude)) in Skyrim's
-    // axes (x east, y north, z up; Bevy (x, y, z) is Skyrim (x, -z, y)), with no clamp as in retail.
+    // divided. The sky is the dome's colour along reflect(V, lerp(up, N, Reflection Magnitude)), with no
+    // clamp as in retail's cube lookup (`WaterExtension::with_sky` says why it is not a cube map).
     // The planar reflection image takes the place of retail's screen-space reflection: it is the
-    // local scene, with an alpha that is 0 where it has no coverage. Without a bound cube the flat
-    // colour stands in for it; that is not retail's behaviour and is only the fallback for a cube
-    // that did not load.
+    // local scene, with an alpha that is 0 where it has no coverage. Without a sky (an interior) the
+    // flat colour stands in for it.
     let flat_reflection = water.reflection_color.rgb / FRAMEBUFFER_RANGE;
-    let cube_reflected = reflect(view_direction, reflected_normal);
-    let cube_direction = vec3<f32>(cube_reflected.x, -cube_reflected.z, cube_reflected.y);
-    let cube_sample = textureSample(water_cube, water_flow_normal_sampler, cube_direction).rgb;
-    let sky = select(flat_reflection, cube_sample, water.depth_params.w > 0.5);
+    let sky_ray = reflect(view_direction, reflected_normal);
+    let sky_elevation = degrees(asin(clamp(sky_ray.y, -1.0, 1.0)));
+    let sky = select(flat_reflection, sky_dome_colour(sky_elevation), water.depth_params.w > 0.5);
     let environment = mix(
         sky,
         reflection_sample.rgb,

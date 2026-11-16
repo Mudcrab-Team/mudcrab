@@ -455,6 +455,7 @@ impl Plugin for SkyPlugin {
                     spawn_sky_domes,
                     follow_sky_cameras,
                     apply_sky,
+                    sync_water_sky,
                     crate::underwater::update_underwater_state,
                     apply_fog,
                 )
@@ -592,6 +593,31 @@ fn apply_sky(
             && let Some(mut sky_material) = materials.get_mut(&material.0)
         {
             sky_material.sky = SkyUniform::new(&adjusted_palette);
+        }
+    }
+}
+
+/// Points every exterior water material at the sky the camera sees, so the water reflects the dome
+/// as it is now (the weather's colours and the player's brightness). Only a material whose sky
+/// differs is written.
+fn sync_water_sky(
+    palette: Res<SkyPalette>,
+    settings: Option<Res<crate::settings::RenderingSettings>>,
+    materials: Option<ResMut<Assets<crate::render::WaterMaterial>>>,
+    mut ids: Local<Vec<AssetId<crate::render::WaterMaterial>>>,
+) {
+    let Some(mut materials) = materials else {
+        return;
+    };
+    let sky = SkyUniform::new(&scaled_palette(&palette, settings.as_deref()));
+    ids.clear();
+    ids.extend(materials.ids());
+    for &id in ids.iter() {
+        let stale = materials.get(id).is_some_and(|material| {
+            material.extension.reflects_sky() && !material.extension.sky_matches(&sky)
+        });
+        if stale && let Some(mut material) = materials.get_mut(id) {
+            material.extension = material.extension.clone().with_sky(Some(&sky));
         }
     }
 }
@@ -857,6 +883,42 @@ mod tests {
                 .iter()
                 .all(|&index| (index as usize) < positions.len())
         );
+    }
+
+    #[test]
+    fn exterior_waters_follow_the_sky_and_interior_waters_have_none() {
+        use crate::render::{WaterExtension, WaterMaterial};
+        let mut app = App::new();
+        app.init_resource::<Assets<WaterMaterial>>()
+            .init_resource::<SkyPalette>()
+            .add_systems(Update, sync_water_sky);
+        let stale = SkyUniform::new(&SkyPalette {
+            brightness: 0.25,
+            ..SkyPalette::default()
+        });
+        let (outside, inside) = {
+            let mut materials = app.world_mut().resource_mut::<Assets<WaterMaterial>>();
+            let material = |extension| WaterMaterial {
+                base: StandardMaterial::default(),
+                extension,
+            };
+            (
+                materials.add(material(WaterExtension::default().with_sky(Some(&stale)))),
+                materials.add(material(WaterExtension::default())),
+            )
+        };
+        app.update();
+        let current = SkyUniform::new(&SkyPalette::default());
+        let materials = app.world().resource::<Assets<WaterMaterial>>();
+        assert!(
+            materials
+                .get(&outside)
+                .unwrap()
+                .extension
+                .sky_matches(&current)
+        );
+        // An interior water has no sky to follow and keeps its flat reflection colour.
+        assert!(!materials.get(&inside).unwrap().extension.reflects_sky());
     }
 
     fn sky_app() -> App {
