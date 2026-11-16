@@ -2,7 +2,8 @@
 //! FormKey follows Mutagen's owner/local identity; source payload words remain source-local.
 use super::{
     EsmParser, GameSettingIdentities, RemapWarnings, binary::parse_plugin_file_with_warnings,
-    form_keys::FormKeyOrder, records::RawRecord, remap_record_using,
+    exporter::validate_inhouse_record, form_keys::FormKeyOrder, records::RawRecord,
+    remap_record_using,
 };
 use color_eyre::Result;
 use shared::{form_key::FormKey, source_form_id::ZeroPolicy};
@@ -134,7 +135,14 @@ impl EsmParser {
                         Ok(word)
                     },
                     false,
-                );
+                )
+                .and_then(|()| {
+                    // Match legacy GMST value admission before registering aliases or winners.
+                    if source.record_type == *b"GMST" && !source.is_deleted() {
+                        validate_inhouse_record(&source)?;
+                    }
+                    Ok(())
+                });
                 if let Err(error) = admission {
                     warnings.skipped_record(name, &source, raw, error.to_string());
                     continue;

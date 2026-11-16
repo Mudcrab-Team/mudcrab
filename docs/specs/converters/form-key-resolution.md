@@ -31,11 +31,16 @@ remains self. Other optional links resolve self in both readers before their exi
 target checks. Both readers build
 a source-header catalogue so forward self links survive, while absent past-master
 field targets with no observed source header publish NULL and retain their prior
-source-context diagnostic. This includes primary VMAD objects, GRAS MODS, LAND BTXT/ATXT/VTEX
+source-context diagnostic when their projected runtime ID is at least `0x800`.
+Projected runtime IDs below `0x800` preserve hardcoded values such as `1`, `0x77`
+and `0x88` without requiring an observed header. This threshold applies to the
+projected runtime ID, rather than the source local ID. This policy includes primary
+VMAD objects, GRAS MODS, LAND BTXT/ATXT/VTEX
 and placed-reference NAME in both readers. Handwritten NPC default-outfit DOFT and
 OTFT item-array INAM also use this optional-link policy before outfit lookup:
-each item resolves independently and a missing past-master target clears to NULL
-without dropping usable siblings or the containing record. NAME follows typed field recovery: the
+each item resolves independently and a missing past-master target at or above the
+runtime threshold clears to NULL without dropping usable siblings or the containing
+record. NAME follows typed field recovery: the
 record survives an absent target; malformed NAME framing or unrepresentable required
 packing still rejects the handwritten candidate. Header identities and group labels
 do not require a target header. Deferred replay and lazy history use the same
@@ -48,7 +53,8 @@ the handwritten record-kind light-width truncation policy for primary VMAD.
 
 Malformed mods intentionally change relative to the old writer: past-master CELL
 XOWN/XCWT survive when their targets have source headers, and required REFR NAME
-uses self ownership when its target has a source header (otherwise NULL). Typed
+uses self ownership when its target has a source header or its projected runtime ID
+is below `0x800` (otherwise NULL). Typed
 enable-parent and other optional links also keep self when their targets are usable. Signatures and
 stored widths remain stable. Explicit plugin paths with invalid identity names
 are skipped during selection with warnings, together with their dependents, before
