@@ -59,6 +59,20 @@ mod report_warnings_official_tests;
 
 pub struct EsmParser;
 
+#[cfg(test)]
+thread_local! {
+    /// A deterministic source change after slots are admitted, before records are opened.
+    static AFTER_PLUGIN_ADMISSION: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+}
+
+#[cfg(test)]
+fn after_plugin_admission_for_test() {
+    let hook = AFTER_PLUGIN_ADMISSION.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 /// Winning records with bounded data-loss warnings and faithful-outcome notices.
 #[derive(Debug)]
 pub(crate) struct RecordConversion {
@@ -210,6 +224,8 @@ impl EsmParser {
         string_sources: inhouse::StringSources<'_>,
     ) -> Result<RecordConversion> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
+        #[cfg(test)]
+        after_plugin_admission_for_test();
         let mut master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
         let (unresolved, localization_warnings, localization_notices) =
             legacy_text::resolve_localized_fields(

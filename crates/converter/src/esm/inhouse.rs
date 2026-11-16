@@ -886,6 +886,8 @@ fn convert_plugins_with_text_sources_report_impl(
     let mut phases = BTreeMap::<String, f64>::new();
     let order_stage = records::profile::ProfileStage::start("read_load_order");
     let order = LoadOrder::read(plugin_paths)?;
+    #[cfg(test)]
+    super::after_plugin_admission_for_test();
     order_stage.finish(plugin_paths.len());
     let mut warnings = Warnings::default();
     let prepared = records::prepare_runtime_schema(schemas);
