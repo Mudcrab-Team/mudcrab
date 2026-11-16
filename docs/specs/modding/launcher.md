@@ -202,8 +202,12 @@ press asks again, so a folder that has filled up since it was chosen, or the def
 
 If the launcher's existing output check finds damaged metadata, **Start**, **Start over**
 and **Resume** first show the unreadable file and its error and ask before reusing or
-replacing that output. The ordinary controls are replaced by **Confirm conversion**
-and **Cancel**. Confirmation continues the selected action, including Resume's kept
+replacing that output. The question stays in its own visible line above the buttons,
+outside the scrolling result and notice history. The ordinary controls are replaced
+by an action-specific confirmation (for example, **Confirm Resume** or **Confirm Start over**)
+and **Cancel**. Confirm stays disabled and ignores presses for the first 500 ms, so a
+double-click on Resume cannot immediately consent when the button row moves.
+Confirmation continues the selected action, including Resume's kept
 staging folder; Cancel leaves that output and staging in place without starting a run.
 Empty folders and valid unfinished conversions keep their normal flow. A damaged
 output still offers leftover staging for Resume, which asks for the same consent.

@@ -30,9 +30,36 @@ struct DamagedOutputRequest {
     output: std::path::PathBuf,
     state: state::ConversionState,
     damage: OutputState,
+    opened_at: std::time::Duration,
 }
 
 impl DamagedOutputRequest {
+    /// Ignore the second press of a double-click when the centred button row moves.
+    fn can_confirm(&self, now: std::time::Duration) -> bool {
+        now.saturating_sub(self.opened_at) >= std::time::Duration::from_millis(500)
+    }
+
+    fn confirm_label(&self) -> &'static str {
+        if self.control == ControlButton::Resume {
+            "Confirm Resume"
+        } else {
+            match state::start_label(&self.state) {
+                "Start over" => "Confirm Start over",
+                "Convert again" => "Confirm Convert again",
+                _ => "Confirm Start",
+            }
+        }
+    }
+
+    fn question(&self) -> String {
+        format!(
+            "{} {} may reuse files here and replace this output when it publishes. Choose {} to continue, or Cancel to leave it in place.",
+            self.damage.message(&self.output),
+            self.control.label(&self.state, OutputReady(false)),
+            self.confirm_label(),
+        )
+    }
+
     /// Folder or staging changes invalidate the earlier question.
     fn matches_context(&self, paths: &GamePathConfig, state: &state::ConversionState) -> bool {
         paths.pair() == Some((self.data.clone(), self.output.clone())) && *state == self.state
@@ -68,7 +95,7 @@ pub enum ControlButton {
     Check,
     /// A full check: the quick check, plus every artifact's hash.
     FullCheck,
-    /// Consent to the specific damaged-output action shown in the notice pane.
+    /// Consent to the specific damaged-output action shown above the button row.
     ConfirmDamagedOutput,
     /// Dismiss the question without starting a run or deleting its staging/output.
     CancelDamagedOutput,
@@ -199,6 +226,10 @@ pub struct NoticePane;
 #[derive(Component, Default, Clone)]
 pub struct NoticeText;
 
+/// The pending question stays outside the scrolling result and rolling notice history.
+#[derive(Component, Default, Clone)]
+pub struct DamagedOutputQuestionText;
+
 pub(crate) const BACKGROUND: Color = Color::srgb(0.08, 0.09, 0.12);
 pub(crate) const PANEL: Color = Color::srgb(0.12, 0.14, 0.18);
 pub(crate) const BORDER: Color = Color::srgb(0.25, 0.28, 0.35);
@@ -240,6 +271,7 @@ pub fn conversion_panel() -> impl Scene {
             ui_clock_line(),
             ui_file_line(),
             ui_notice_pane(),
+            ui_damaged_output_question(),
             ui_button_row(),
         ]
     }
@@ -404,6 +436,20 @@ fn ui_notice_pane() -> impl Scene {
     }
 }
 
+fn ui_damaged_output_question() -> impl Scene {
+    bsn! {
+        DamagedOutputQuestionText
+        Text::new("")
+        TextFont { font_size: FontSize::Px(13.0) }
+        TextColor(TITLE_COLOR)
+        Node {
+            display: Display::None,
+            width: Val::Percent(100.0),
+            flex_shrink: 0.0,
+        }
+    }
+}
+
 fn ui_button_row() -> impl Scene {
     bsn! {
         Node {
@@ -419,7 +465,7 @@ fn ui_button_row() -> impl Scene {
             ui_button(ControlButton::DeleteStaging, Val::Px(150.0)),
             ui_button(ControlButton::Check, Val::Px(100.0)),
             ui_button(ControlButton::FullCheck, Val::Px(120.0)),
-            ui_button(ControlButton::ConfirmDamagedOutput, Val::Px(180.0)),
+            ui_button(ControlButton::ConfirmDamagedOutput, Val::Px(210.0)),
             ui_button(ControlButton::CancelDamagedOutput, Val::Px(110.0))
         ]
     }
@@ -480,6 +526,7 @@ pub fn click_controls(
     mut inputs: ResMut<PendingInputs>,
     mut status: ResMut<ConversionStatus>,
     mut pending: ResMut<PendingDamagedOutput>,
+    time: Res<Time<Real>>,
 ) {
     if pending
         .0
@@ -494,6 +541,14 @@ pub fn click_controls(
             continue;
         }
         if control.is_confirmation() != pending.0.is_some() {
+            continue;
+        }
+        if *control == ControlButton::ConfirmDamagedOutput
+            && pending
+                .0
+                .as_ref()
+                .is_none_or(|request| !request.can_confirm(time.elapsed()))
+        {
             continue;
         }
         let controls = state::controls(&state.0);
@@ -539,12 +594,9 @@ pub fn click_controls(
                     Ok(()) => {
                         let damage = output_state(&output);
                         if matches!(damage, OutputState::Corrupt { .. }) {
-                            status.push_notice(&format!(
-                                "{} {} may reuse files here and replace this output when it publishes. Choose Confirm conversion to continue, or Cancel to leave it in place.",
-                                damage.message(&output), control.label(&state.0, OutputReady(false))
-                            ));
                             pending.0 = Some(DamagedOutputRequest {
                                 control: *control, data, output, state: state.0.clone(), damage,
+                                opened_at: time.elapsed(),
                             });
                         } else {
                             inputs.push(if *control == ControlButton::Start {
@@ -663,6 +715,12 @@ type LabelTexts = (
     Query<'static, 'static, &'static mut Text, With<ClockText>>,
     Query<'static, 'static, &'static mut Text, With<FileText>>,
     Query<'static, 'static, &'static mut Text, With<NoticeText>>,
+    Query<
+        'static,
+        'static,
+        (&'static mut Text, &'static mut Node),
+        With<DamagedOutputQuestionText>,
+    >,
 );
 
 /// Updates source and output path labels for the selected Skyrim Data or MO2 source.
@@ -717,6 +775,7 @@ pub fn draw_bar(
 /// for anything else, whose newest line is last.
 pub fn draw_labels(
     status: Res<ConversionStatus>,
+    pending: Res<PendingDamagedOutput>,
     mut texts: ParamSet<LabelTexts>,
     mut pane: Query<&mut ScrollPosition, With<NoticePane>>,
 ) {
@@ -728,6 +787,17 @@ pub fn draw_labels(
     }
     for mut text in &mut texts.p2() {
         text.0 = status.file_line();
+    }
+    for (mut text, mut node) in &mut texts.p4() {
+        text.0 = pending
+            .0
+            .as_ref()
+            .map_or_else(String::new, |request| request.question());
+        node.display = if pending.0.is_some() {
+            Display::Flex
+        } else {
+            Display::None
+        };
     }
     let notices = status.notice_text();
     let mut changed = false;
@@ -759,6 +829,7 @@ pub fn draw_controls(
     engine: Option<Res<EngineProcess>>,
     source: Option<Res<crate::mo2_settings::SourceSettings>>,
     pending: Res<PendingDamagedOutput>,
+    time: Res<Time<Real>>,
     mut buttons: Query<(
         &ControlButton,
         &Interaction,
@@ -773,9 +844,14 @@ pub fn draw_controls(
         .as_ref()
         .is_none_or(|source| !source.use_mo2 || source.selection.is_some());
     let mo2 = source.as_ref().is_some_and(|source| source.use_mo2);
+    let confirm_ready = pending
+        .0
+        .as_ref()
+        .is_some_and(|request| request.can_confirm(time.elapsed()));
     for (control, interaction, mut background, node) in &mut buttons {
         let shown = control.is_confirmation() == pending.0.is_some();
         let enabled = shown
+            && (*control != ControlButton::ConfirmDamagedOutput || confirm_ready)
             && if mo2 && *control == ControlButton::Detect {
                 crate::mo2_settings::editable(&state.0)
             } else {
@@ -797,6 +873,11 @@ pub fn draw_controls(
     for (label, mut text, mut color) in &mut labels {
         let wanted = if mo2 && label.0 == ControlButton::Detect {
             "MO2 settings"
+        } else if label.0 == ControlButton::ConfirmDamagedOutput {
+            pending
+                .0
+                .as_ref()
+                .map_or("Confirm conversion", |request| request.confirm_label())
         } else {
             label.0.label(&state.0, *ready)
         };
@@ -804,6 +885,7 @@ pub fn draw_controls(
             text.0 = wanted.to_owned();
         }
         let enabled = label.0.is_confirmation() == pending.0.is_some()
+            && (label.0 != ControlButton::ConfirmDamagedOutput || confirm_ready)
             && if mo2 && label.0 == ControlButton::Detect {
                 crate::mo2_settings::editable(&state.0)
             } else {
@@ -1202,6 +1284,17 @@ mod tests {
         app.world().resource::<ConversionStatus>().notice_text()
     }
 
+    /// Advance the real UI clock deterministically; no test sleeps or wall-clock races.
+    fn advance_ui_clock(app: &mut App, milliseconds: u64) {
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_millis(milliseconds),
+        ));
+        app.update();
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::ZERO,
+        ));
+    }
+
     /// A folder that holds other things (a games folder, Documents) is never taken as the Output:
     /// publishing would rename it aside and delete it.
     #[test]
@@ -1314,9 +1407,18 @@ mod tests {
             );
             assert_eq!(app.world().resource::<CurrentConversion>().0, before);
             assert_eq!(std::fs::read(&damaged_path).unwrap(), b"{\"unfinished\":");
-            let notice = notices(&app);
-            assert!(notice.contains(damaged_file), "{notice}");
-            assert!(notice.to_ascii_lowercase().contains("confirm"), "{notice}");
+            let question = app
+                .world()
+                .resource::<PendingDamagedOutput>()
+                .0
+                .as_ref()
+                .unwrap()
+                .question();
+            assert!(question.contains(damaged_file), "{question}");
+            assert!(
+                question.to_ascii_lowercase().contains("confirm"),
+                "{question}"
+            );
         }
     }
 
@@ -1351,6 +1453,13 @@ mod tests {
         );
         assert!(app.world().resource::<PendingDamagedOutput>().0.is_some());
         assert_eq!(app.world().resource::<CurrentConversion>().0, before);
+        advance_ui_clock(&mut app, 499);
+        assert!(press(&mut app, ControlButton::ConfirmDamagedOutput).is_empty());
+        advance_ui_clock(&mut app, 1);
+        assert!(matches!(
+            press(&mut app, ControlButton::ConfirmDamagedOutput).as_slice(),
+            [state::Effect::Begin(_)]
+        ));
     }
 
     /// A question stays outside the scrolling result and cannot be evicted by later notices.
@@ -1391,6 +1500,13 @@ mod tests {
         assert!(notices.contains("Later notice 11"));
         let mut pane = world.query_filtered::<&ScrollPosition, With<NoticePane>>();
         assert_eq!(pane.single(world).unwrap().0.y, 0.0);
+        assert!(press(&mut app, ControlButton::CancelDamagedOutput).is_empty());
+        let world = app.world_mut();
+        let mut question =
+            world.query_filtered::<(&Text, &Node), With<DamagedOutputQuestionText>>();
+        let (text, node) = question.single(world).unwrap();
+        assert!(text.0.is_empty());
+        assert_eq!(node.display, Display::None);
     }
 
     /// Consent starts only the action asked for, retaining Resume's exact staging folder.
@@ -1404,6 +1520,7 @@ mod tests {
                     .nth(action)
                     .unwrap();
                 assert!(press(&mut app, control).is_empty());
+                advance_ui_clock(&mut app, 500);
                 let effects = press(&mut app, ControlButton::ConfirmDamagedOutput);
                 let [state::Effect::Begin(config)] = effects.as_slice() else {
                     panic!("{effects:?}")
@@ -1453,6 +1570,7 @@ mod tests {
         for change in ["data", "output", "state", "metadata", "unsafe"] {
             let (directory, mut app) = damaged_confirmation_app(0, MANIFEST_FILE);
             assert!(press(&mut app, ControlButton::Start).is_empty());
+            advance_ui_clock(&mut app, 500);
             match change {
                 "data" => {
                     let data = directory.path().join("other-data");
@@ -1502,10 +1620,17 @@ mod tests {
     fn damaged_output_confirmation_cannot_publish_while_the_game_runs() {
         let (_directory, mut app) = damaged_confirmation_app(0, MANIFEST_FILE);
         assert!(press(&mut app, ControlButton::Start).is_empty());
+        advance_ui_clock(&mut app, 500);
         let (engine, log) = engine_process("confirm-game-running");
         app.insert_resource(engine);
         assert!(press(&mut app, ControlButton::ConfirmDamagedOutput).is_empty());
         assert!(notices(&app).contains(GAME_RUNNING_NOTICE));
+        assert!(app.world().resource::<PendingDamagedOutput>().0.is_some());
+        drop(app.world_mut().remove_resource::<EngineProcess>());
+        assert!(matches!(
+            press(&mut app, ControlButton::ConfirmDamagedOutput).as_slice(),
+            [state::Effect::Begin(_)]
+        ));
         drop(app);
         std::fs::remove_file(log).unwrap();
     }
@@ -1513,24 +1638,40 @@ mod tests {
     /// Only explicit consent/cancel buttons are shown during the question, then normal controls return.
     #[test]
     fn damaged_output_confirmation_draws_a_separate_choice() {
-        let (_directory, mut app) = damaged_confirmation_app(0, MANIFEST_FILE);
-        app.add_plugins((AssetPlugin::default(), bevy::scene::ScenePlugin))
-            .init_resource::<OutputReady>()
-            .add_systems(Update, draw_controls.after(click_controls));
-        app.world_mut().spawn_scene(conversion_panel()).unwrap();
-        assert!(press(&mut app, ControlButton::Start).is_empty());
-        assert_eq!(
-            drawn_available(&mut app),
-            vec![
-                ControlButton::ConfirmDamagedOutput,
-                ControlButton::CancelDamagedOutput
-            ]
-        );
-        assert!(press(&mut app, ControlButton::CancelDamagedOutput).is_empty());
-        assert_eq!(
-            drawn_available(&mut app),
-            vec![ControlButton::Start, ControlButton::Detect]
-        );
+        for (action, label) in ["Confirm Start", "Confirm Start over", "Confirm Resume"]
+            .into_iter()
+            .enumerate()
+        {
+            let (directory, mut app) = damaged_confirmation_app(action, MANIFEST_FILE);
+            let (_, control) = publishing_presses(&directory.path().join("staging"))
+                .into_iter()
+                .nth(action)
+                .unwrap();
+            app.add_plugins((AssetPlugin::default(), bevy::scene::ScenePlugin))
+                .init_resource::<OutputReady>()
+                .add_systems(Update, draw_controls.after(click_controls));
+            app.world_mut().spawn_scene(conversion_panel()).unwrap();
+            assert!(press(&mut app, control).is_empty());
+            assert_eq!(
+                drawn_available(&mut app),
+                vec![ControlButton::CancelDamagedOutput]
+            );
+            let world = app.world_mut();
+            let mut labels = world.query::<(&ControlLabel, &Text)>();
+            assert!(labels.iter(world).any(|(control, text)| control.0
+                == ControlButton::ConfirmDamagedOutput
+                && text.0 == label));
+            advance_ui_clock(&mut app, 500);
+            assert_eq!(
+                drawn_available(&mut app),
+                vec![
+                    ControlButton::ConfirmDamagedOutput,
+                    ControlButton::CancelDamagedOutput
+                ]
+            );
+            assert!(press(&mut app, ControlButton::CancelDamagedOutput).is_empty());
+            assert!(drawn_available(&mut app).contains(&ControlButton::Start));
+        }
     }
 
     /// The Output folder is looked at again on the press: one that was empty when it was chosen
