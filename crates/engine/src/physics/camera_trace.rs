@@ -133,3 +133,89 @@ pub(super) fn write_walk_camera_trace_row(
         let _ = trace.out.flush();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::{WalkIntent, headless};
+    use super::*;
+
+    /// `--walk-camera-trace <file>` makes the real systems write one row per rendered frame with the
+    /// named columns, and a WALK row carries the frame time, the ticks run, the grounded flag and
+    /// the vertical velocity. Without the option no file is written.
+    #[test]
+    fn the_trace_option_writes_one_row_per_frame_with_the_documented_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.csv");
+        let mut app = headless::fixture_app_with(|app| {
+            app.insert_resource(EngineConfig {
+                walk_camera_trace: Some(path.clone()),
+                ..EngineConfig::default()
+            });
+        });
+        headless::place_player(&mut app, Vec3::new(0.0, 60.0, 850.0));
+        for _ in 0..90 {
+            app.update();
+        }
+        app.insert_resource(WalkIntent {
+            wish_dir: Vec3::X,
+            target_speed: 200.0,
+            jump_pressed: false,
+        });
+        for _ in 0..60 {
+            app.update();
+        }
+        drop(app);
+        let text = std::fs::read_to_string(&path).expect("the trace file was written");
+        let mut lines = text.lines();
+        let header: Vec<&str> = lines.next().unwrap().split(',').collect();
+        for column in [
+            "frame_dt_s",
+            "ticks",
+            "grounded",
+            "vertical_velocity",
+            "feet_y",
+            "camera_y",
+            "lag_y",
+            "weight",
+        ] {
+            assert!(
+                header.contains(&column),
+                "missing column {column}: {header:?}"
+            );
+        }
+        let rows: Vec<Vec<&str>> = lines.map(|line| line.split(',').collect()).collect();
+        assert!(
+            rows.len() >= 100,
+            "{} rows for about 150 frames",
+            rows.len()
+        );
+        assert!(
+            rows.iter().all(|row| row.len() == header.len()),
+            "ragged rows"
+        );
+        let column = |name: &str| header.iter().position(|c| *c == name).unwrap();
+        let walking: Vec<_> = rows
+            .iter()
+            .filter(|row| row[column("mode")] == "walk")
+            .collect();
+        assert!(walking.len() > 50, "{} WALK rows", walking.len());
+        let last = walking[walking.len() - 1];
+        assert!(last[column("frame_dt_s")].parse::<f32>().unwrap() > 0.0);
+        assert!(last[column("ticks")].parse::<u32>().is_ok());
+        assert_eq!(
+            last[column("grounded")],
+            "1",
+            "standing on the fixture ground"
+        );
+        assert!(last[column("vertical_velocity")].parse::<f32>().is_ok());
+
+        // Off by default: no option, no file.
+        let other = dir.path().join("none.csv");
+        let mut app = headless::fixture_app();
+        for _ in 0..10 {
+            app.update();
+        }
+        drop(app);
+        assert!(!other.exists());
+    }
+}
