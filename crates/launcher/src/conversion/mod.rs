@@ -570,14 +570,18 @@ pub fn refresh_output_ready(
     }
     if complete {
         status.push_notice(&manifest_state.message(output));
-    } else if let OutputState::Corrupt { .. } = &manifest_state {
-        // A damaged output is not an empty one: say which file is unreadable.
-        status.push_notice(&manifest_state.message(output));
     } else if run_ended {
-        status.push_notice(
-            "The run finished, but the output does not pass the launcher's check (manifest, world database, cell cache and a passed integration report), so Play stays off.",
-        );
+        if let OutputState::Corrupt { .. } = &manifest_state {
+            // A damaged output is not an empty one: say which file is unreadable.
+            status.push_notice(&manifest_state.message(output));
+        } else {
+            status.push_notice(
+                "The run finished, but the output does not pass the launcher's check (manifest, world database, cell cache and a passed integration report), so Play stays off.",
+            );
+        }
     } else if chosen && !offer_leftover_staging(&mut state.0, &mut status, output) {
+        // A leftover staging folder is offered for Resume first, whether the output is empty or
+        // damaged. Only when nothing is offered does the pane say what is wrong with the output.
         status.push_notice(&manifest_state.message(output));
     }
 }
@@ -1822,6 +1826,61 @@ pub(crate) mod tests {
         );
         assert!(older.is_dir() && newer.is_dir(), "a leftover was deleted");
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A damaged manifest beside a leftover staging folder still offers Resume: the damage does
+    /// not hide the offer an incomplete output got before the output state existed.
+    #[test]
+    fn a_damaged_manifest_beside_a_leftover_staging_folder_still_offers_resume() {
+        let output = complete_output("leftover-corrupt");
+        let manifest = output.join(MANIFEST_FILE);
+        let bytes = std::fs::read(&manifest).unwrap();
+        std::fs::write(&manifest, &bytes[..bytes.len() / 2]).unwrap();
+        assert!(matches!(output_state(&output), OutputState::Corrupt { .. }));
+        let staging = leftover_staging(&output, "1-1");
+        let mut app = refresh_app(&output);
+        app.update();
+
+        let state = app.world().resource::<CurrentConversion>().0.clone();
+        assert_eq!(
+            state,
+            ConversionState::Stopped {
+                staging: Some(staging.clone()),
+                cancelled: false,
+            }
+        );
+        assert!(state::controls(&state).resume, "Resume is offered");
+        assert_eq!(*app.world().resource::<OutputReady>(), OutputReady(false));
+        let pane = app.world().resource::<ConversionStatus>().notice_text();
+        assert!(
+            pane.contains("An unfinished conversion was found"),
+            "{pane:?}"
+        );
+        std::fs::remove_dir_all(&output).unwrap();
+        std::fs::remove_dir_all(&staging).unwrap();
+    }
+
+    /// With no staging folder to offer, a damaged manifest is named in the pane and Play stays off.
+    #[test]
+    fn a_damaged_manifest_without_staging_is_named_in_the_pane() {
+        let output = complete_output("corrupt-pane");
+        let manifest = output.join(MANIFEST_FILE);
+        let bytes = std::fs::read(&manifest).unwrap();
+        std::fs::write(&manifest, &bytes[..bytes.len() / 2]).unwrap();
+        let mut app = refresh_app(&output);
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<CurrentConversion>().0,
+            ConversionState::Idle
+        );
+        assert_eq!(*app.world().resource::<OutputReady>(), OutputReady(false));
+        let pane = app.world().resource::<ConversionStatus>().notice_text();
+        assert!(
+            pane.contains("is damaged") && pane.contains(MANIFEST_FILE),
+            "{pane:?}"
+        );
+        std::fs::remove_dir_all(&output).unwrap();
     }
 
     /// A complete output is ready to play; a staging folder beside it is not offered.
