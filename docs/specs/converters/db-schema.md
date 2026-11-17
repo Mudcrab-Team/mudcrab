@@ -1381,13 +1381,38 @@ the compiled converter digest invalidates old base-database cache bundles, and t
 regenerate source-sphere metadata. These
 additive tables do not change the global world schema or add a feature flag.
 
+The following table describes geometric membership. Whole-cell fallbacks and reference exemptions
+take precedence over the per-object rules. Other renderer visibility checks still apply.
+
+| Case | Converter writes | Engine room filter |
+|---|---|---|
+| Interior without room markers | no room rows | retain the cell |
+| Old database, tables absent | n/a | feature off, no error |
+| Source-verified outside portal side | NULL with an unbounded-side flag | traverse the explicit unbounded node |
+| Missing, invalid, or foreign portal endpoint | NULL without verified outside provenance | retain the cell |
+| Object in several rooms | several `contained = 1` rows | always retained by geometric membership |
+| Object in no room, legacy graph | no `contained = 1` row | always retained |
+| Known object in no room, complete versioned graph | no `contained = 1` row | retained when a visible candidate volume passes its mesh-bound test; candidates come from unbounded space, overlap rooms, and portal sharing |
+| Camera outside every room | n/a | retain the cell, including possible gaps between bounds |
+| Non-box room shape in a new conversion | skipped, counted; cell marked incomplete | retain the cell |
+| Exterior markers | not written | out of scope (#106) |
+
+The geometric filter retains authored overrides including `NONE`, actors and their leveled lists,
+doors, activators, loose inventory references, moving rigid bodies, and explicitly exempt roots
+or meshes. References without valid stored model bounds also stay drawn because pivot-only rows
+do not establish overlap coverage. Unknown references outside the graph are retained.
+Missing or invalid per-mesh bounds and `NoFrustumCulling` skip aperture-bound testing; a candidate
+space must still be reached. Portal-shared geometry can use either endpoint's visible volume.
+
+The authored-assignment path uses these rules:
+
 | Case | Engine |
 |---|---|
 | Interior without room markers or absent room tables | normal rendering |
 | Verified source NULL endpoint in a versioned graph | unbounded-space traversal |
 | Unknown portal endpoint | whole-cell fallback |
 | Incomplete authored cell or unresolved master | whole-cell fallback |
-| Camera outside every authored room union | start in unbounded space |
+| Camera outside every authored room union | whole-cell fallback, including possible gaps between bounds |
 | Reference with no recoverable assignment | keep visible |
 | Exterior markers | outside this feature's scope |
 

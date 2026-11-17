@@ -31,7 +31,7 @@
 //! In legacy graphs, references without stored model bounds stay drawn. Pivot-only membership
 //! cannot establish overlap coverage, even when a loaded mesh supplies an AABB.
 //! A static object's containing and overlapping rooms supply candidate volumes.
-
+//!
 //! An object with one pivot-containing room is hidden when its mesh bounds miss every candidate
 //! volume. The mesh's current AABB is transformed into cell-local space with its full affine
 //! transform, including rotation, scale, and shear. Missing or invalid bounds and `NoFrustumCulling`
@@ -1269,15 +1269,15 @@ pub fn cull_room_views(
                     .authored
                     .as_ref()
                     .is_some_and(|authored| authored.has_source_bound(form_id));
+                // Authored rules and source spheres supply ownership independently.
                 let exempted = |entity| {
                     exemptions
                         .get(entity)
                         .is_ok_and(|(body, marked, legacy, has_model_bounds)| {
                             marked
-                                // Authored rules and source spheres supply ownership independently.
-                            || (entity == reference
-                                && !has_model_bounds
-                                && loaded.graph.authored.is_none())
+                                || (entity == reference
+                                    && !has_model_bounds
+                                    && loaded.graph.authored.is_none())
                                 || (legacy && loaded.graph.authored.is_none())
                                 || (body.is_some_and(|body| body_moves(*body))
                                     && (entity != reference || !has_bound))
