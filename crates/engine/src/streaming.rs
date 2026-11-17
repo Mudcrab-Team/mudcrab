@@ -828,8 +828,8 @@ pub struct RenderOrigin(pub IVec2);
 
 /// The space the player is in. The planner streams only this space: the active interior when
 /// there is one, otherwise the exterior cells around the camera in the active worldspace. A load
-/// door crossing (`crate::door_crossing`) changes it; nothing else does, so the default (no
-/// interior, the configured worldspace) is the behaviour before doors existed.
+/// door crossing (`crate::door_crossing`) or a screenshot pose changes it. The default is the
+/// configured exterior worldspace.
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ActiveSpace {
     /// `None` means the worldspace the engine was configured with.
@@ -1915,6 +1915,12 @@ fn spawn_cell(
             ));
             if let Some(bounds) = bounds.zip(model_bounds) {
                 entity.insert(bounds);
+            }
+            // Authored multibound policies and movable references override stored room membership.
+            if reference.has_multibound_override
+                || crate::room_culling::exempt_record_type(reference.base_record_type.as_deref())
+            {
+                entity.insert(crate::room_culling::RoomCullExempt);
             }
             if let Some(plan) = &actor_plan {
                 entity.insert(plan.actor);
@@ -9345,6 +9351,7 @@ mod tests {
                 references: vec![ReferenceRow {
                     form_id: 0x00F9907,
                     initially_enabled: true,
+                    has_multibound_override: false,
                     starts_dead: false,
                     cell_id: 0x02D4E0,
                     base_form_id: 0x00EF957,
@@ -10388,6 +10395,7 @@ mod tests {
         ReferenceRow {
             form_id,
             initially_enabled: true,
+            has_multibound_override: false,
             starts_dead: false,
             cell_id: 99,
             base_form_id: 0x200 + form_id,
@@ -11327,6 +11335,92 @@ mod tests {
                     .is_some_and(|id| id.0 == form_id)
             })
             .expect("the reference spawned")
+    }
+
+    #[test]
+    fn authored_multibound_override_keeps_a_streamed_static_visible_with_stale_membership() {
+        use crate::room_culling::{
+            Membership, Portal, Room, RoomCullingPlugin, RoomCullingState, cull_room_views,
+        };
+        use bevy::camera::visibility::VisibleEntities;
+        use std::any::TypeId;
+
+        let mut unrestricted = lit_reference(1, None, None);
+        unrestricted.base_record_type = Some("STAT".into());
+        unrestricted.model_path = Some("architecture/wall.nif".into());
+        unrestricted.has_multibound_override = true;
+        unrestricted.bounds_valid = true;
+        unrestricted.bounds_min = [-1.0; 3];
+        unrestricted.bounds_max = [1.0; 3];
+        let mut automatic = unrestricted.clone();
+        automatic.form_id = 2;
+        automatic.has_multibound_override = false;
+        let mut unknown_bounds = automatic.clone();
+        unknown_bounds.form_id = 3;
+        unknown_bounds.bounds_valid = false;
+        let mut app =
+            spawn_reference_cell_app(vec![unrestricted, automatic, unknown_bounds], false);
+        app.add_plugins(RoomCullingPlugin::from_config(&EngineConfig::default()));
+        let root = app.world().resource::<SpawnedCellRoot>().0.unwrap();
+        let meshes = [1, 2, 3].map(|id| {
+            let reference = reference_entity(&app, id);
+            app.world_mut().spawn(ChildOf(reference)).id()
+        });
+        let room = |ref_id, center| Room {
+            ref_id,
+            center,
+            half: Vec3::splat(4.0),
+            rotation: Quat::IDENTITY,
+        };
+        let graph = crate::room_culling::RoomGraph {
+            rooms: vec![room(10, Vec3::ZERO), room(11, Vec3::new(0.0, 0.0, 20.0))],
+            portals: vec![Portal {
+                ref_id: 12,
+                corners: [
+                    Vec3::new(-1.0, -1.0, 10.0),
+                    Vec3::new(1.0, -1.0, 10.0),
+                    Vec3::new(1.0, 1.0, 10.0),
+                    Vec3::new(-1.0, 1.0, 10.0),
+                ],
+                rooms: [Some(0), Some(1)],
+            }],
+            membership: [1, 2, 3]
+                .into_iter()
+                .map(|id| {
+                    (
+                        id,
+                        Membership {
+                            contained: vec![1],
+                            overlapping: vec![],
+                        },
+                    )
+                })
+                .collect(),
+            ..default()
+        };
+        app.world_mut()
+            .resource_mut::<RoomCullingState>()
+            .insert_graph(99, root, graph);
+        let mut visible = VisibleEntities::default();
+        visible.get_mut(TypeId::of::<Mesh3d>()).extend(meshes);
+        let camera = app
+            .world_mut()
+            .spawn((
+                StreamingCamera,
+                GlobalTransform::IDENTITY,
+                Projection::Perspective(PerspectiveProjection::default()),
+                visible,
+            ))
+            .id();
+        app.world_mut().run_system_once(cull_room_views).unwrap();
+        assert_eq!(
+            app.world()
+                .get::<VisibleEntities>(camera)
+                .unwrap()
+                .get(TypeId::of::<Mesh3d>()),
+            &vec![meshes[0], meshes[2]],
+            "NONE and unknown bounds stay visible while the bounded automatic static is culled"
+        );
     }
 
     #[test]

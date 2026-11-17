@@ -37,6 +37,9 @@ pub struct ReferenceRow {
     /// New-game enable-state snapshot, including parent chains. All rows remain available;
     /// this bootstrap value does not represent subsequent script/quest/save state.
     pub initially_enabled: bool,
+    /// The placed reference carries the Multibound flag. Its authored policy, including `NONE`,
+    /// must not be replaced with geometric room membership from an older conversion.
+    pub has_multibound_override: bool,
     /// The winning `ACHR` header's `Starts Dead` flag (`0x200`). Only actor references read it;
     /// other record types assign that bit another meaning. The engine has no death pose or
     /// ragdoll, so a corpse keeps its bind pose instead of playing a standing idle.
@@ -1622,6 +1625,9 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
         ReferenceRow {
             form_id: row.get(0)?,
             initially_enabled: true,
+            has_multibound_override: enable_inputs.header_flags
+                & shared::records::MULTIBOUND_REFERENCE_FLAG
+                != 0,
             starts_dead: enable_inputs.header_flags & ACTOR_STARTS_DEAD != 0,
             cell_id: row.get(1)?,
             base_form_id: row.get(2)?,
@@ -2118,11 +2124,34 @@ mod tests {
     }
 
     #[test]
+    fn authored_multibound_override_survives_the_existing_database_projection() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        enable_columns(&connection);
+        connection
+            .execute(
+                "UPDATE \"references\" SET header_flags=?1 WHERE id=31",
+                [shared::records::MULTIBOUND_REFERENCE_FLAG],
+            )
+            .unwrap();
+        let unrestricted = load_cell(&connection, 1, CellKey::Interior(99)).unwrap();
+        assert!(unrestricted.references[0].has_multibound_override);
+        let automatic = load_cell(&connection, 1, CellKey::Interior(10)).unwrap();
+        assert!(!automatic.references[0].has_multibound_override);
+    }
+
+    #[test]
     fn legacy_reference_columns_default_enabled_but_partial_columns_fail() {
         let connection = Connection::open_in_memory().unwrap();
         fixture(&connection);
         let payload = load_cell(&connection, 1, CellKey::Interior(99)).unwrap();
         assert!(payload.references.iter().all(|row| row.initially_enabled));
+        assert!(
+            payload
+                .references
+                .iter()
+                .all(|row| !row.has_multibound_override)
+        );
         connection
             .execute_batch(
                 "ALTER TABLE \"references\" ADD COLUMN header_flags INTEGER NOT NULL DEFAULT 0;",
