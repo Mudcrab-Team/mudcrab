@@ -1277,8 +1277,7 @@ fn convert_plugins_with_text_sources_report_impl(
             decoded
                 .records
                 .values()
-                .filter(|record| super::is_placed_record_type(&record.record_type))
-                .map(|record| (record.form_id, record.rejected_fields.as_slice())),
+                .filter(|record| super::is_placed_record_type(&record.record_type)),
         )?;
         super::rooms::restore_occluder_source_provenance(
             &tx,

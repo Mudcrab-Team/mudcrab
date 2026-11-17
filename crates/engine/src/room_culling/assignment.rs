@@ -60,7 +60,7 @@ impl Assignments {
             placed,
             ..
         }) = self.rules.get(&id)
-            && transform.abs_diff_eq(*placed, 1.0e-3)
+            && transform == *placed
         {
             return vec![Owner::Room(*room)];
         }

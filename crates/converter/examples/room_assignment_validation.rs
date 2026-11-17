@@ -1,4 +1,7 @@
 //! Rebuild room metadata and selected source meshes in a private asset copy for native captures.
+//!
+//! Each invocation replaces all room metadata with the selected cells. Use a fresh private copy
+//! for independent cell sets, or include every desired cell when reusing a copy.
 use color_eyre::{Result, eyre::ensure};
 use converter::{
     archive::ArchiveExtractor,

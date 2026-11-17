@@ -2597,3 +2597,77 @@ fn malformed_authored_room_links_keep_both_readers_incomplete() {
         }
     }
 }
+
+#[test]
+fn incomplete_placed_payloads_keep_their_cells_open() {
+    for base in [0x1Fu32, 0x999] {
+        for truncated in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let data = directory.path().join("Data");
+            let mut shape = vec![0; 32];
+            for offset in [0, 4, 8] {
+                shape[offset..offset + 4].copy_from_slice(&100f32.to_le_bytes());
+            }
+            shape[28..32].copy_from_slice(&1u32.to_le_bytes());
+            let room = |id| {
+                record(
+                    b"REFR",
+                    id,
+                    0,
+                    [
+                        sub(b"NAME", &0x1Fu32.to_le_bytes()),
+                        sub(b"DATA", &[0; 24]),
+                        sub(b"XPRM", &shape),
+                        sub(b"XRMR", &[0, 0, 1, 0]),
+                    ]
+                    .concat(),
+                )
+            };
+            let mut payload = [sub(b"NAME", &base.to_le_bytes()), sub(b"DATA", &[0; 24])].concat();
+            if base == 0x1F {
+                payload.extend(sub(b"XPRM", &shape));
+            }
+            if truncated {
+                payload.extend(b"XL");
+            }
+            fs::create_dir_all(&data).unwrap();
+            plugin(
+                &data,
+                "Skyrim.esm",
+                &[],
+                1,
+                [
+                    record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+                    group(
+                        6,
+                        0x900,
+                        group(
+                            9,
+                            0x900,
+                            [room(0x800), record(b"REFR", 0x803, 0, payload)].concat(),
+                        ),
+                    ),
+                    record(b"CELL", 0x901, 0, sub(b"DATA", &[1, 0])),
+                    group(6, 0x901, group(9, 0x901, room(0x810))),
+                ]
+                .concat(),
+            );
+            let db = export_room_review_fixture(&data, &directory.path().join("bundle"), true);
+            let conn = rusqlite::Connection::open(db).unwrap();
+            let complete = |cell| {
+                conn.query_row(
+                    "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
+                    [cell],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+            };
+            assert_eq!(
+                complete(0x900),
+                !truncated,
+                "base={base:X}, truncated={truncated}"
+            );
+            assert!(complete(0x901), "a healthy neighbor must remain complete");
+        }
+    }
+}

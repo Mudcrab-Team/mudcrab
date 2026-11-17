@@ -1698,6 +1698,76 @@ mod tests {
     }
 
     #[test]
+    fn named_targets_recheck_scale_changes_before_the_first_cull() {
+        let connection = authored_database();
+        insert_room(&connection, 1, 7, [10003.0, 0.0, 0.0]);
+        insert_room(&connection, 2, 7, [9998.0, 0.0, 0.0]);
+        connection
+            .execute_batch(
+                "UPDATE room_bounds SET half_x=2;
+             INSERT INTO \"references\"(id,cell_id,base_form_id) VALUES(2,7,99);
+             INSERT INTO room_reference_rules VALUES(2,7,'target',2);
+             INSERT INTO room_model_bounds VALUES(99,9998,0,-5,0.1);",
+            )
+            .unwrap();
+        let graph = load_room_graph(&connection, 7).unwrap();
+        let mut scene = scene();
+        scene
+            .app
+            .world_mut()
+            .resource_mut::<RoomCullingState>()
+            .graphs
+            .get_mut(&7)
+            .unwrap()
+            .graph = graph;
+        let reference = scene
+            .app
+            .world()
+            .get::<ChildOf>(scene.far)
+            .unwrap()
+            .parent();
+        scene
+            .app
+            .world_mut()
+            .entity_mut(reference)
+            .insert(GlobalTransform::IDENTITY);
+        scene
+            .app
+            .world_mut()
+            .entity_mut(scene.camera)
+            .insert(GlobalTransform::from_translation(Vec3::new(
+                10003.0, 0.0, 0.0,
+            )));
+        scene.app.world_mut().entity_mut(scene.far).insert((
+            Aabb::from_min_max(-Vec3::splat(0.5), Vec3::splat(0.5)),
+            GlobalTransform::from_translation(Vec3::new(9998.0, 0.0, -5.0)),
+        ));
+        let moved = Transform::from_scale(Vec3::splat(1.0005));
+        let center = moved
+            .to_matrix()
+            .transform_point3(Vec3::new(9998.0, 0.0, -5.0));
+        scene
+            .app
+            .world_mut()
+            .entity_mut(reference)
+            .insert(GlobalTransform::from(moved));
+        scene
+            .app
+            .world_mut()
+            .entity_mut(scene.far)
+            .insert(GlobalTransform::from_translation(center));
+        // The placement changes before the Local cache has ever seen this reference.
+        scene.app.add_systems(Update, cull_room_views);
+        for _ in 0..2 {
+            scene.app.world_mut().run_schedule(Update);
+            assert!(
+                mesh_list(&scene.app, scene.camera).contains(&scene.far),
+                "a changed initial transform must not cache the old named room"
+            );
+        }
+    }
+
+    #[test]
     fn current_source_bound_assignment_replaces_stale_membership_for_a_moving_reference() {
         assert!(assignment_follows_transform(Some("ACTI")));
         let connection = authored_database();
