@@ -42,17 +42,6 @@ fn main() -> Result<()> {
     ensure!(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='visibility_version' AND value=2)",
         [], |row| row.get::<_, bool>(0))?, "fixture input must already have source-verified portal endpoints");
-    let old_endpoints: Vec<_> = conn
-        .prepare("SELECT ref_id,pair_index,unbounded_a,unbounded_b FROM room_portals")?
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, u32>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, bool>(2)?,
-                r.get::<_, bool>(3)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
     let mut master = HashMap::new();
     let mut models = BTreeSet::new();
     for &cell in &cells {
@@ -97,13 +86,7 @@ fn main() -> Result<()> {
             models.insert(model);
         }
     }
-    let tx = conn.transaction()?;
-    rooms::export_room_graph(&tx, &master, &cells)?;
-    // Preserve the previous source-verified NULL distinction; canonical archives can clear links.
-    for (id, pair, a, b) in old_endpoints {
-        tx.execute("UPDATE room_portals SET unbounded_a=?3,unbounded_b=?4 WHERE ref_id=?1 AND pair_index=?2",params![id,pair,a,b])?;
-    }
-    tx.commit()?;
+    rebuild_room_graph(&mut conn, &master, &cells)?;
     drop(conn);
     let plugins: Vec<String> = Connection::open(assets.join("skyrim_world.db"))?
         .prepare("SELECT name FROM plugins ORDER BY priority")?
@@ -129,6 +112,54 @@ fn main() -> Result<()> {
         "Prepared {} models, {bounds} base records with source bounds",
         models.len()
     );
+    Ok(())
+}
+
+fn rebuild_room_graph(
+    conn: &mut Connection,
+    master: &HashMap<u32, RawRecord>,
+    cells: &HashSet<u32>,
+) -> Result<()> {
+    let tx = conn.transaction()?;
+    let old_endpoints: Vec<_> = tx
+        .prepare("SELECT ref_id,pair_index,unbounded_a,unbounded_b FROM room_portals")?
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, u32>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, bool>(2)?,
+                r.get::<_, bool>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let incomplete_cells: Vec<u32> = tx
+        .prepare("SELECT cell_id FROM room_graph_cells WHERE complete=0")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let unknown_assignments: Vec<u32> = tx
+        .prepare("SELECT reference_id FROM room_reference_rules WHERE assignment='unknown'")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    rooms::export_room_graph(&tx, master, cells)?;
+    // Preserve the previous source-verified NULL distinction; canonical archives can clear links.
+    for (id, pair, a, b) in old_endpoints {
+        tx.execute("UPDATE room_portals SET unbounded_a=?3,unbounded_b=?4 WHERE ref_id=?1 AND pair_index=?2",params![id,pair,a,b])?;
+    }
+    // Rejected source fields are absent from canonical records. Rebuilding cannot resolve
+    // their uncertainty; updates affect only rows retained in the selected capture cells.
+    for cell in incomplete_cells {
+        tx.execute(
+            "UPDATE room_graph_cells SET complete=0 WHERE cell_id=?1",
+            [cell],
+        )?;
+    }
+    for id in unknown_assignments {
+        tx.execute(
+            "UPDATE room_reference_rules SET assignment='unknown',target_ref=NULL WHERE reference_id=?1",
+            [id],
+        )?;
+    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -237,6 +268,87 @@ fn prepare_model_sources(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn canonical_fixture() -> (Connection, HashMap<u32, RawRecord>, HashSet<u32>) {
+        let mut conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        let cells = HashSet::from([7, 8]);
+        let mut master = HashMap::new();
+        for (id, cell, base) in [
+            (70u32, 7, rooms::ROOM_MARKER_BASE),
+            (80, 8, rooms::ROOM_MARKER_BASE),
+            (71, 7, 500),
+            (72, 7, 500),
+        ] {
+            let mut fields = vec![
+                (b"NAME".to_vec(), base.to_le_bytes().to_vec()),
+                (b"DATA".to_vec(), vec![0; 24]),
+            ];
+            if base == rooms::ROOM_MARKER_BASE {
+                let mut shape = vec![0; 32];
+                for offset in [0, 4, 8] {
+                    shape[offset..offset + 4].copy_from_slice(&100f32.to_le_bytes());
+                }
+                shape[28..32].copy_from_slice(&1u32.to_le_bytes());
+                fields.push((b"XPRM".to_vec(), shape));
+                fields.push((b"XRMR".to_vec(), vec![0, 0, 1, 0]));
+            }
+            master.insert(
+                id,
+                RawRecord {
+                    form_id: id,
+                    record_type: *b"REFR",
+                    flags: 0,
+                    subrecords: fields,
+                    cell_form_id: Some(cell),
+                    worldspace_form_id: None,
+                    load_order: 0,
+                },
+            );
+        }
+        rebuild_room_graph(&mut conn, &master, &cells).unwrap();
+        (conn, master, cells)
+    }
+
+    #[test]
+    fn capture_rebuild_preserves_source_incomplete_cells() {
+        let (mut conn, master, cells) = canonical_fixture();
+        assert!(master[&70].subrecords.iter().all(|(tag, _)| tag != b"XLRM"));
+        // Source restoration retained a rejected join that the canonical archive omitted.
+        conn.execute("UPDATE room_graph_cells SET complete=0 WHERE cell_id=7", [])
+            .unwrap();
+        rebuild_room_graph(&mut conn, &master, &cells).unwrap();
+        let states = conn
+            .prepare("SELECT cell_id,complete FROM room_graph_cells ORDER BY cell_id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, u32>(0)?, row.get::<_, bool>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(states, vec![(7, false), (8, true)]);
+    }
+
+    #[test]
+    fn capture_rebuild_preserves_source_unknown_assignments() {
+        let (mut conn, master, cells) = canonical_fixture();
+        assert!(master[&71].subrecords.iter().all(|(tag, _)| tag != b"XMBR"));
+        // A malformed source override has already been restored as unknown in this pack.
+        conn.execute("UPDATE room_reference_rules SET assignment='unknown', target_ref=NULL WHERE reference_id=71", []).unwrap();
+        rebuild_room_graph(&mut conn, &master, &cells).unwrap();
+        // Supplying model bounds and rebuilding overlap membership must not erase that rule.
+        conn.execute("INSERT INTO room_model_bounds VALUES (500,0,0,0,10)", [])
+            .unwrap();
+        rooms::add_overlap_rows(&mut conn).unwrap();
+        let rules = conn.prepare("SELECT reference_id,assignment,target_ref FROM room_reference_rules ORDER BY reference_id").unwrap()
+            .query_map([], |row| Ok((row.get::<_,u32>(0)?, row.get::<_,String>(1)?, row.get::<_,Option<u32>>(2)?))).unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        assert_eq!(
+            rules,
+            vec![(71, "unknown".into(), None), (72, "auto".into(), None)]
+        );
+    }
 
     #[cfg(unix)]
     #[test]
