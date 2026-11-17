@@ -129,9 +129,10 @@ next volume. Each room retains a union of these convex volumes. Explicit room li
 incoming volume unchanged. Perspective views use converging rays and orthographic views use
 parallel rays.
 
-Graphs marked `visibility_version = 2` have an explicit unbounded node. A camera outside all room
-boxes starts there with the camera frustum; room-to-outside traversal narrows its volume through
-the same aperture tests. Only an endpoint verified as zero in the source `XPOD` names this node.
+Graphs marked `visibility_version = 2` have an explicit unbounded node. Room-to-outside traversal
+narrows its volume through the same aperture tests. A camera outside every room keeps full
+rendering: room boxes can have seams, so their complement is not verified outside-space coverage.
+This conservative start policy deliberately differs from the traced native null-room traversal. Only an endpoint verified as zero in the source `XPOD` names this node.
 Missing or invalid links remain unknown. The converter adds provenance columns with zero defaults
 and publishes verified flags atomically, so older or interrupted conversions retain safe behavior.
 

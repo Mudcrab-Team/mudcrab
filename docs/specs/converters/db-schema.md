@@ -1306,7 +1306,7 @@ them automatically and probes for them first, as it does for `lights` and the
 additive `waters` columns, so a database without them behaves as before.
 Unbounded traversal also requires both endpoint columns, `visibility_version = 2`, and a complete
 `room_graph_cells` marker for the cell. A skipped unsupported room or invalid room/portal marker
-makes that cell incomplete, so the runtime draws the whole cell. Other complete cells retain
+makes that cell incomplete, so the runtime draws the whole cell. Negative room or portal extents are invalid; the loader also rejects them in older packs. Other complete cells retain
 unbounded traversal. Data without the completeness marker uses the legacy fallback.
 Older conversions retain their conservative outside-camera behavior until a full room export.
 In a versioned graph, the engine reads the cell's `references.id` values to distinguish known

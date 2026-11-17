@@ -551,6 +551,7 @@ pub fn export_room_graph(
             .chain(&position)
             .chain(&rotation)
             .all(|v| v.is_finite())
+            || half.iter().any(|value| *value < 0.0)
         {
             incomplete.insert(cell);
             report.invalid_markers_skipped += 1;
@@ -621,6 +622,8 @@ pub fn export_room_graph(
             .chain(&position)
             .chain(&rotation)
             .all(|v| v.is_finite())
+            || half_x < 0.0
+            || half_z < 0.0
         {
             incomplete.insert(cell);
             report.invalid_markers_skipped += 1;

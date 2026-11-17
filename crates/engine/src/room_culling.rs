@@ -15,9 +15,9 @@
 //! that room to the camera frustum and propagates the wider volume.
 //!
 //! Versioned graphs distinguish rooms, authored unbounded endpoints, and unknown endpoints. A
-//! camera outside every room starts in unbounded space and enters rooms through their apertures.
-//! Unbounded geometry uses its accumulated volume, including when viewed from a room. Legacy
-//! graphs keep their outside-camera fallback. Unknown endpoints or a reached portal-less room
+//! camera outside every room keeps full rendering because room-box seams are not verified outside
+//! space. Unbounded geometry uses its accumulated volume when viewed from a room through an
+//! authored outside portal. Unknown endpoints or a reached portal-less room
 //! still draw the whole cell while authored joins and incomplete graph coverage remain unresolved.
 //!
 //! A static object's containing and overlapping rooms supply its candidate visibility volumes.
@@ -503,12 +503,10 @@ impl RoomGraph {
             return None;
         }
         let outside = room_count;
-        let mut starts = self.rooms_containing(camera);
+        let starts = self.rooms_containing(camera);
         if starts.is_empty() {
-            if !self.supports_unbounded {
-                return None;
-            }
-            starts.push(outside);
+            // Room boxes do not prove outside-space coverage: the camera may be in a seam.
+            return None;
         }
         let mut doorways: Vec<Vec<usize>> = vec![Vec::new(); room_count + 1];
         for (index, portal) in self.portals.iter().enumerate() {
@@ -737,7 +735,13 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
     } else {
         None
     };
-    graph.incomplete = complete == Some(false);
+    graph.incomplete = complete == Some(false)
+        || graph.rooms.iter().any(|room| {
+            !room.center.is_finite()
+                || !room.rotation.is_finite()
+                || !room.half.is_finite()
+                || !room.half.cmpge(Vec3::ZERO).all()
+        });
     let endpoint_columns: bool = connection.query_row(
         "SELECT count(*)=2 FROM pragma_table_info('room_portals') WHERE name IN ('unbounded_a','unbounded_b')", [], |row| row.get(0))?;
     let stats_present: bool = connection.query_row(
@@ -768,16 +772,22 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
                     None => PortalSide::Unknown,
                 })
             };
-            Ok(Portal::from_creation(
-                row.get(0)?,
-                [row.get(1)?, row.get(2)?, row.get(3)?],
-                [row.get(4)?, row.get(5)?, row.get(6)?],
-                [row.get(7)?, row.get(8)?],
-                [side(9)?, side(10)?],
+            let half: [f32; 2] = [row.get(7)?, row.get(8)?];
+            Ok((
+                Portal::from_creation(
+                    row.get(0)?,
+                    [row.get(1)?, row.get(2)?, row.get(3)?],
+                    [row.get(4)?, row.get(5)?, row.get(6)?],
+                    half,
+                    [side(9)?, side(10)?],
+                ),
+                half.iter().all(|value| value.is_finite() && *value >= 0.0),
             ))
         })?;
         for portal in rows {
-            graph.portals.push(portal?);
+            let (portal, valid) = portal?;
+            graph.incomplete |= !valid || portal.corners.iter().any(|point| !point.is_finite());
+            graph.portals.push(portal);
         }
     }
     {
@@ -1390,10 +1400,11 @@ mod tests {
              INSERT INTO room_graph_stats VALUES ('visibility_version',2);
              CREATE TABLE room_graph_cells (cell_id INTEGER PRIMARY KEY, complete INTEGER NOT NULL);
              INSERT INTO room_graph_cells VALUES (7,0),(8,1);
-             CREATE TABLE [references] (id INTEGER,cell_id INTEGER);",
+             CREATE TABLE [references] (id INTEGER,cell_id INTEGER);
+             INSERT INTO room_portals VALUES(10,7,0,0,0,0,0,0,4,6,1,NULL,0,1),(11,8,0,0,0,0,0,0,4,6,2,NULL,0,1);",
             )
             .unwrap();
-        let camera = Vec3::splat(1000.0);
+        let camera = Vec3::ZERO;
         let incomplete = load_room_graph(&connection, 7).unwrap();
         assert!(reached_rooms(&incomplete, camera, clip_from_local()).is_none());
         let complete = load_room_graph(&connection, 8).unwrap();
@@ -1713,17 +1724,70 @@ mod tests {
     }
 
     #[test]
-    fn unbounded_start_enters_only_rooms_seen_through_outside_portals() {
+    fn human_review_camera_crosses_a_room_seam_without_restricting_gap_frames() {
+        let mut graph = outside_graph();
+        graph.rooms = vec![
+            room(1, Vec3::new(-5.595, 0.0, 0.0), 5.0),
+            room(2, Vec3::new(5.595, 0.0, 0.0), 5.0),
+        ];
+        graph.portals = vec![doorway(10, Vec3::ZERO, 2.0, [0, 1])];
+        for x in [-0.7, -0.5, 0.0, 0.5, 0.7] {
+            let camera = Vec3::new(x, 0.0, 0.0);
+            let visible = graph
+                .visibility_volumes(camera, clip_from_local() * Mat4::from_translation(-camera));
+            if graph.rooms_containing(camera).is_empty() {
+                assert!(
+                    visible.is_none(),
+                    "x={x}: a gap is not verified outside space"
+                );
+            } else {
+                let visible =
+                    visible.expect("the authored doorway still connects both bounded sides");
+                assert!(visible.rooms.iter().all(RoomVisibility::is_reached));
+            }
+        }
+    }
+
+    #[test]
+    fn human_review_negative_extents_in_old_packs_only_disable_the_affected_cell() {
+        for invalid_room in [true, false] {
+            let connection = database();
+            insert_room(&connection, 1, 7, [0.0; 3]);
+            insert_room(&connection, 2, 8, [0.0; 3]);
+            if invalid_room {
+                connection
+                    .execute("UPDATE room_bounds SET half_x=-1 WHERE ref_id=1", [])
+                    .unwrap();
+            } else {
+                connection
+                    .execute(
+                        "INSERT INTO room_portals VALUES(10,7,0,0,0,0,0,0,-4,6,1,1)",
+                        [],
+                    )
+                    .unwrap();
+            }
+            let graph = load_room_graph(&connection, 7).unwrap();
+            assert!(
+                graph.incomplete,
+                "invalid_room={invalid_room}: reject invalid source extents even without new metadata"
+            );
+            assert!(
+                graph
+                    .visibility_volumes(Vec3::ZERO, clip_from_local())
+                    .is_none()
+            );
+            assert!(!load_room_graph(&connection, 8).unwrap().incomplete);
+        }
+    }
+
+    #[test]
+    fn unbounded_camera_positions_without_coverage_keep_full_rendering() {
         let graph = outside_graph();
-        let visible = graph
-            .visibility_volumes(Vec3::ZERO, clip_from_local())
-            .unwrap();
-        assert!(visible.unbounded.is_reached());
-        assert!(visible.rooms[0].is_reached());
-        assert!(!visible.rooms[1].is_reached());
-        assert!(graph.mesh_is_drawn(100, &visible, None, None));
-        assert!(!graph.mesh_is_drawn(101, &visible, None, None));
-        assert!(graph.mesh_is_drawn(102, &visible, None, None));
+        assert!(
+            graph
+                .visibility_volumes(Vec3::ZERO, clip_from_local())
+                .is_none()
+        );
     }
 
     #[test]
@@ -1754,9 +1818,10 @@ mod tests {
     #[test]
     fn portal_sharing_includes_the_unbounded_endpoint_volume() {
         let graph = outside_graph();
-        let visible = graph
-            .visibility_volumes(Vec3::ZERO, clip_from_local())
-            .unwrap();
+        // Test shared-geometry consumption independently of conservative camera-start policy.
+        let full = VisibilityVolume::camera(clip_from_local()).unwrap();
+        let mut visible = visibility_for_rooms(&[false, false]);
+        assert!(visible.unbounded.insert(full.clone(), &full).is_some());
         let aggregate = MeshBounds::transformed(
             &Aabb::from_min_max(-Vec3::splat(8.0), Vec3::splat(8.0)),
             Affine3A::from_translation(Vec3::new(0.0, 0.0, -12.0)),

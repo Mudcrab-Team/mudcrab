@@ -3849,6 +3849,43 @@ mod tests {
     }
 
     #[test]
+    fn human_review_negative_room_and_portal_extents_are_incomplete() {
+        for is_room in [true, false] {
+            for axis in if is_room { vec![0, 1, 2] } else { vec![0, 2] } {
+                let mut invalid = if is_room {
+                    room(0x1002, 0x100, [50.0; 3], [0.0; 3], [10.0; 3], vec![])
+                } else {
+                    portal(0x1002, 0x100, Some((0x1001, 0x1001)))
+                };
+                let shape = &mut invalid
+                    .subrecords
+                    .iter_mut()
+                    .find(|(tag, _)| tag == b"XPRM")
+                    .unwrap()
+                    .1;
+                shape[axis * 4..axis * 4 + 4].copy_from_slice(&(-1f32).to_le_bytes());
+                let (conn, report) = export_rooms(vec![
+                    interior_cell(0x100),
+                    room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+                    invalid,
+                ]);
+                assert_eq!(
+                    report.invalid_markers_skipped, 1,
+                    "is_room={is_room},axis={axis}"
+                );
+                let complete: bool = conn
+                    .query_row(
+                        "SELECT complete FROM room_graph_cells WHERE cell_id=0x100",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert!(!complete);
+            }
+        }
+    }
+
+    #[test]
     fn room_and_portal_markers_require_a_complete_transform() {
         for is_room in [true, false] {
             for truncated in [false, true] {
