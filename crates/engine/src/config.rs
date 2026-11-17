@@ -4705,8 +4705,8 @@ mod tests {
         assert_eq!(tier(40, 1.0), Some(LodTier::Tier16));
         // The level-16 block [96, 112) is 391,168 away: dropped beyond 250,000.
         assert_eq!(tier(100, 1.0), None);
-        // The last level-16 block under 250,000: [48, 64) is 192,512 away, kept; [64, 80) is
-        // 258,048 away, dropped.
+        // The last level-16 block under 250,000: [48, 64) is 194,560 away, kept; [64, 80) is
+        // 260,096 away, dropped.
         assert_eq!(tier(60, 1.0), Some(LodTier::Tier16));
         assert_eq!(tier(70, 1.0), None);
         // NAMA 0.25 (Whiterun) halves the split distances to 17,500 and 35,000 and leaves the
