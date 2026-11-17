@@ -60,3 +60,12 @@ source spheres still drive ownership and movement updates without that legacy me
 controls cover both cases alongside the spanning-floor regression for legacy graphs. This layer
 passed all 82 room-culling-related tests after propagation. The retail images above retain their
 recorded executables and were not rerun for this missing-metadata guard.
+
+## Assignment cache invalidation
+
+Cached ownership now recomputes whenever the computed cell-local affine transform changes.
+A fixed tolerance on matrix entries cannot bound sphere displacement: scaling a source sphere
+centered at x=9998 by 1.0005 moves it about five units. The regression keeps one scheduled
+system and its local cache across two frames, then verifies reassignment into the visible room.
+It failed before the fix and passes afterward; all 84 culling-related tests on the assignment
+layer pass. The existing retail captures predate this change and were not rerun.

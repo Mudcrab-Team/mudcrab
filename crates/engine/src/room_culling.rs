@@ -1232,7 +1232,7 @@ pub fn cull_room_views(
                                 &loaded.graph.portals,
                             ),
                         });
-                    if !transform.abs_diff_eq(assigned.transform, 1.0e-3) {
+                    if transform != assigned.transform {
                         assigned.transform = transform;
                         assigned.owners = authored.owners(
                             form_id,
@@ -1462,6 +1462,83 @@ mod tests {
         assert!(
             !mesh_list(&scene.app, scene.camera).contains(&scene.far),
             "an explicit initial target supplies ownership without geometric memberships or spheres"
+        );
+    }
+
+    #[test]
+    fn tiny_scale_changes_reassign_a_cached_offset_source_sphere() {
+        let connection = authored_database();
+        insert_room(&connection, 1, 7, [10003.0, 0.0, 0.0]);
+        insert_room(&connection, 2, 7, [9998.0, 0.0, 0.0]);
+        connection
+            .execute_batch(
+                "UPDATE room_bounds SET half_x=2;
+             INSERT INTO \"references\"(id,cell_id,base_form_id) VALUES(2,7,99);
+             INSERT INTO room_reference_rules VALUES(2,7,'auto',NULL);
+             INSERT INTO room_model_bounds VALUES(99,9998,0,-5,0.1);",
+            )
+            .unwrap();
+        let graph = load_room_graph(&connection, 7).unwrap();
+        let mut scene = scene();
+        scene
+            .app
+            .world_mut()
+            .resource_mut::<RoomCullingState>()
+            .graphs
+            .get_mut(&7)
+            .unwrap()
+            .graph = graph;
+        let reference = scene
+            .app
+            .world()
+            .get::<ChildOf>(scene.far)
+            .unwrap()
+            .parent();
+        scene
+            .app
+            .world_mut()
+            .entity_mut(reference)
+            .insert(GlobalTransform::IDENTITY);
+        scene
+            .app
+            .world_mut()
+            .entity_mut(scene.camera)
+            .insert(GlobalTransform::from_translation(Vec3::new(
+                10003.0, 0.0, 0.0,
+            )));
+        scene.app.world_mut().entity_mut(scene.far).insert((
+            Aabb::from_min_max(-Vec3::splat(0.5), Vec3::splat(0.5)),
+            GlobalTransform::from_translation(Vec3::new(9998.0, 0.0, -5.0)),
+        ));
+        // A stored system preserves its Local assignment cache between frames.
+        scene.app.add_systems(Update, cull_room_views);
+        scene.app.world_mut().run_schedule(Update);
+        assert!(!mesh_list(&scene.app, scene.camera).contains(&scene.far));
+        let moved = Transform::from_scale(Vec3::splat(1.0005));
+        let center = moved
+            .to_matrix()
+            .transform_point3(Vec3::new(9998.0, 0.0, -5.0));
+        scene
+            .app
+            .world_mut()
+            .entity_mut(reference)
+            .insert(GlobalTransform::from(moved));
+        scene
+            .app
+            .world_mut()
+            .entity_mut(scene.far)
+            .insert(GlobalTransform::from_translation(center));
+        scene
+            .app
+            .world_mut()
+            .get_mut::<VisibleEntities>(scene.camera)
+            .unwrap()
+            .get_mut(TypeId::of::<Mesh3d>())
+            .push(scene.far);
+        scene.app.world_mut().run_schedule(Update);
+        assert!(
+            mesh_list(&scene.app, scene.camera).contains(&scene.far),
+            "a sub-tolerance scale change moves the offset sphere into the visible room"
         );
     }
 
