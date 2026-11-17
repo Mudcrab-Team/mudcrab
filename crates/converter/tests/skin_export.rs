@@ -1733,3 +1733,211 @@ fn header_declares_skin(bytes: &[u8]) -> bool {
             })
     })
 }
+
+type Mat4 = [[f32; 4]; 4];
+
+/// Column-major `[column][row]` product `a * b`.
+fn mat_mul(a: &Mat4, b: &Mat4) -> Mat4 {
+    let mut out = [[0.0; 4]; 4];
+    for (column, out_column) in out.iter_mut().enumerate() {
+        for (row, value) in out_column.iter_mut().enumerate() {
+            *value = (0..4).map(|k| a[k][row] * b[column][k]).sum();
+        }
+    }
+    out
+}
+
+/// Translation * rotation (xyzw quaternion) * uniform scale, the order the
+/// NIF bone transform and a glTF node's TRS both use.
+fn trs(translation: [f32; 3], q: [f32; 4], scale: f32) -> Mat4 {
+    let [x, y, z, w] = q;
+    let columns = [
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y + z * w),
+            2.0 * (x * z - y * w),
+        ],
+        [
+            2.0 * (x * y - z * w),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z + x * w),
+        ],
+        [
+            2.0 * (x * z + y * w),
+            2.0 * (y * z - x * w),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+    ];
+    let mut out = [[0.0; 4]; 4];
+    for (column, rotation) in columns.iter().enumerate() {
+        for (row, value) in rotation.iter().enumerate() {
+            out[column][row] = value * scale;
+        }
+    }
+    out[3] = [translation[0], translation[1], translation[2], 1.0];
+    out
+}
+
+fn transform_point(matrix: &Mat4, point: [f32; 3]) -> [f32; 3] {
+    [0, 1, 2].map(|row| (0..3).map(|k| matrix[k][row] * point[k]).sum::<f32>() + matrix[3][row])
+}
+
+fn accessor_mat4(glb: &Glb, index: u64) -> Vec<Mat4> {
+    let accessor = &glb.json["accessors"][index as usize];
+    assert_eq!(accessor["componentType"], 5126);
+    assert_eq!(accessor["type"], "MAT4");
+    let view = &glb.json["bufferViews"][accessor["bufferView"].as_u64().unwrap() as usize];
+    let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize
+        + accessor["byteOffset"].as_u64().unwrap_or(0) as usize;
+    let count = accessor["count"].as_u64().unwrap() as usize;
+    (0..count)
+        .map(|matrix| {
+            let mut out = [[0.0; 4]; 4];
+            for (column, out_column) in out.iter_mut().enumerate() {
+                for (row, value) in out_column.iter_mut().enumerate() {
+                    let at = offset + (matrix * 16 + column * 4 + row) * 4;
+                    *value = f32::from_le_bytes(glb.bin[at..at + 4].try_into().unwrap());
+                }
+            }
+            out
+        })
+        .collect()
+}
+
+/// glTF skinning of every vertex, with each joint node's local transform
+/// replaced by `joint_locals` (keyed by node name). The mesh node and the joints
+/// share a parent and the mesh node has no transform, so a joint's matrix
+/// relative to the mesh is its local matrix.
+fn skin_vertices(glb: &Glb, joint_locals: &BTreeMap<&str, Mat4>) -> Vec<[f32; 3]> {
+    let (mesh_index, skin_index) = skinned_meshes(glb)[0];
+    let attributes = &glb.json["meshes"][mesh_index]["primitives"][0]["attributes"];
+    let positions = accessor_f32x3(glb, attributes["POSITION"].as_u64().unwrap());
+    let joints = accessor_u8x4(glb, attributes["JOINTS_0"].as_u64().unwrap());
+    let weights = accessor_f32x4(glb, attributes["WEIGHTS_0"].as_u64().unwrap());
+    let skin = &glb.json["skins"][skin_index];
+    let inverse_binds = accessor_mat4(glb, skin["inverseBindMatrices"].as_u64().unwrap());
+    let joint_matrices: Vec<Mat4> = skin["joints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(&inverse_binds)
+        .map(|(node, inverse_bind)| {
+            let name = glb.json["nodes"][node.as_u64().unwrap() as usize]["name"]
+                .as_str()
+                .unwrap();
+            mat_mul(&joint_locals[name], inverse_bind)
+        })
+        .collect();
+    positions
+        .iter()
+        .enumerate()
+        .map(|(vertex, position)| {
+            let mut out = [0.0; 3];
+            for slot in 0..4 {
+                let weight = weights[vertex][slot];
+                if weight == 0.0 {
+                    continue;
+                }
+                let moved = transform_point(
+                    &joint_matrices[usize::from(joints[vertex][slot])],
+                    *position,
+                );
+                for axis in 0..3 {
+                    out[axis] += weight * moved[axis];
+                }
+            }
+            out
+        })
+        .collect()
+}
+
+/// The skinned position the fixture's own constants predict: each influence
+/// slot binds the instance bone its palette row names, its weights are
+/// normalised to sum to one, and the bind matrix is the NIF bone transform.
+fn expected_skinned_vertices(bone_locals: [Mat4; 2]) -> Vec<[f32; 3]> {
+    let vertices: [[f32; 3]; 4] = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [-0.5, 3.0_f32.sqrt() / 2.0, 0.0],
+        [-0.5, -3.0_f32.sqrt() / 2.0, 0.0],
+    ];
+    let bind =
+        BONE_TRANSFORMS.map(|(translation, rotation, scale)| trs(translation, rotation, scale));
+    vertices
+        .iter()
+        .zip(WEIGHTS)
+        .map(|(vertex, weights)| {
+            let total: f32 = weights.iter().sum();
+            let mut out = [0.0; 3];
+            for (slot, weight) in weights
+                .iter()
+                .enumerate()
+                .filter(|(_, weight)| **weight > 0.0)
+            {
+                let bone = usize::from(SHUFFLED_PALETTE[slot]);
+                let moved = transform_point(&mat_mul(&bone_locals[bone], &bind[bone]), *vertex);
+                for axis in 0..3 {
+                    out[axis] += weight / total * moved[axis];
+                }
+            }
+            out
+        })
+        .collect()
+}
+
+fn assert_close(actual: &[[f32; 3]], expected: &[[f32; 3]], context: &str) {
+    assert_eq!(actual.len(), expected.len(), "{context}: vertex count");
+    for (vertex, (a, e)) in actual.iter().zip(expected).enumerate() {
+        for axis in 0..3 {
+            // Weights are stored as 16-bit normalised values, so allow their step.
+            assert!(
+                (a[axis] - e[axis]).abs() < 2e-3,
+                "{context}: vertex {vertex} axis {axis}: emitted skin gives {a:?}, fixture predicts {e:?}"
+            );
+        }
+    }
+}
+
+/// The emitted skin must deform the mesh the way the NIF's own bone transforms,
+/// weights and palette say it should, rather than merely carry JOINTS_0/WEIGHTS_0.
+/// Expected values come from the fixture's constants, not from the GLB under test.
+#[test]
+fn legacy_skin_deforms_as_the_nif_specifies() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = spec(
+        SkinInstanceKind::Dismember,
+        &SHUFFLED_PALETTE,
+        &WEIGHTS,
+        true,
+        None,
+    );
+    let nif_path = write_fixture(directory.path(), &fixture);
+    let skeleton_path = write_skeleton_fixture(directory.path(), &fixture);
+    let glb_path = directory.path().join("skin.glb");
+    convert(&nif_path, &skeleton_path, &glb_path).unwrap();
+    let glb = read_glb(&glb_path);
+
+    let identity = trs([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0);
+    let half = std::f32::consts::FRAC_1_SQRT_2;
+    let rest = BTreeMap::from([("Bone0", identity), ("Bone1", identity)]);
+    let rest_expected = expected_skinned_vertices([identity, identity]);
+    assert_close(&skin_vertices(&glb, &rest), &rest_expected, "rest pose");
+
+    // Move each joint differently, so swapping the two joints or ignoring a joint's
+    // transform changes the answer.
+    let bone0 = trs([1.0, 2.0, 3.0], [0.0, half, 0.0, half], 1.0);
+    let bone1 = trs([0.0, 0.0, -1.5], [half, 0.0, 0.0, half], 1.0);
+    let posed = BTreeMap::from([("Bone0", bone0), ("Bone1", bone1)]);
+    let posed_expected = expected_skinned_vertices([bone0, bone1]);
+    let posed_actual = skin_vertices(&glb, &posed);
+    assert_close(&posed_actual, &posed_expected, "posed");
+
+    let moved = posed_expected
+        .iter()
+        .zip(&rest_expected)
+        .any(|(a, b)| (0..3).any(|axis| (a[axis] - b[axis]).abs() > 0.5));
+    assert!(
+        moved,
+        "the posed expectation must differ from rest, or the test proves nothing"
+    );
+}
