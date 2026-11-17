@@ -1381,7 +1381,7 @@ mod tests {
         spawn_box_ahead(&mut app, 5.0, 100.0);
         frames(&mut app, 2);
         hold_activate(&mut app);
-        assert!(held(&app).is_some(), "the box is held before the jump");
+        let taken = held(&app).expect("the box is held before the jump").entity;
         let ground = app
             .world_mut()
             .query_filtered::<&Transform, With<PlayerBody>>()
@@ -1397,6 +1397,11 @@ mod tests {
         let (mut apex, mut launched, mut landings, mut air_ticks) = (0.0_f32, false, 0, 0);
         for _ in 0..240 {
             app.update();
+            assert_eq!(
+                held(&app).map(|held| held.entity),
+                Some(taken),
+                "the jump dropped the held object"
+            );
             let mut query = app
                 .world_mut()
                 .query_filtered::<(&Transform, &crate::physics::WalkState), With<PlayerBody>>();
