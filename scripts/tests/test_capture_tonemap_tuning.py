@@ -230,21 +230,21 @@ fixture=json.loads(Path(arguments[arguments.index('--fixture')+1]).read_text())
         with self.assertRaisesRegex(ValueError, "Frozen skyrim changed"):
             TUNING.validate_existing(output)
 
-    def test_no_grass_campaign_accepts_boolean_false(self):
-        """The no-grass command path accepts the same serialized boolean readiness field."""
+    def test_grass_disabled_campaign_accepts_boolean_false(self):
+        """A campaign without --grass accepts the same serialized boolean readiness field."""
         config_path, engine, assets, source = self.make_campaign()
         config = json.loads(config_path.read_text(encoding="utf-8"))
-        config["common_args"].append("--no-grass")
+        config["common_args"] = [arg for arg in config["common_args"] if arg != "--grass"]
         TUNING.write_json(config_path, config)
-        output = self.root / "no-grass-campaign"
+        output = self.root / "grass-disabled-campaign"
         with patch.object(TUNING, "source_snapshot", return_value=source):
             try:
                 manifest = TUNING.capture(config_path, engine, assets, output)
             except ValueError as error:
-                self.fail(f"--no-grass must accept boolean grass_pending=False: {error}")
+                self.fail(f"a grass-disabled campaign must accept grass_pending=False: {error}")
         self.assertTrue(manifest["passed"])
         for run in manifest["runs"]:
-            self.assertIn("--no-grass", run["command"])
+            self.assertNotIn("--grass", run["command"])
             receipt = json.loads((output / run["receipt_file"]).read_text(encoding="utf-8"))
             self.assertIs(receipt["captured_frame"]["work"]["grass_pending"], False)
 
