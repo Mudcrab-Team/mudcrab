@@ -1256,8 +1256,7 @@ fn convert_plugins_with_text_sources_report_impl(
             decoded
                 .records
                 .values()
-                .filter(|record| super::is_placed_record_type(&record.record_type))
-                .map(|record| (record.form_id, record.rejected_fields.as_slice())),
+                .filter(|record| super::is_placed_record_type(&record.record_type)),
         )?;
         tx.execute(
             "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES ('visibility_version',2)",

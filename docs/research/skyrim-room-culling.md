@@ -254,7 +254,9 @@ selected cells and source meshes in an independent private database/mesh tree. I
 fixture helper for the installed official archives, not a general mod migration path. Normal users
 reconvert through the standard pipeline, which resolves effective sources and refreshes both
 metadata and mesh contracts. The helper's existing endpoint-provenance requirement prevents a
-canonical cleared FormID from being promoted to authored outside space.
+canonical cleared FormID from being promoted to authored outside space. Each invocation replaces
+all room metadata with the selected cells. Use a fresh private copy for independent cell sets,
+or include every desired cell when reusing a copy.
 
 ## Default-on review validation
 
