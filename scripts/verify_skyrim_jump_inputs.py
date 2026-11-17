@@ -9,7 +9,7 @@ import zipfile
 
 from analyze_skyrim_jump_inputs import analyze_rows, decode, require
 from publish_skyrim_evidence import source_digest
-from capture_skyrim_jump_inputs import ROOT, control_prediction, digest
+from capture_skyrim_jump_inputs import ROOT, control_prediction, digest, validate_capture_proof
 
 
 def verify(corpus, plan_path):
@@ -22,7 +22,8 @@ def verify(corpus, plan_path):
     require([r['id'] for r in manifest['runs']] == [c['id'] for c in conditions],
             'Campaign is incomplete or conditions reordered')
     accepted_attempts = [attempt for attempt in manifest['attempts'] if 'failure' not in attempt]
-    require(all(attempt['exit_code'] == 0 for attempt in accepted_attempts) and
+    require(all(attempt['exit_code'] == 0 and attempt.get('status') != 'pending'
+                for attempt in accepted_attempts) and
             [attempt['id'] for attempt in accepted_attempts] == [run['id'] for run in manifest['runs']],
             'Attempt ledger has unclassified or duplicate attempts')
     baseline = manifest['runs'][0]['result']
@@ -33,6 +34,7 @@ def verify(corpus, plan_path):
         path = Path(run['path'])
         require(not path.is_absolute() and '..' not in path.parts, 'Trace escapes corpus')
         rows, raw_digest = decode(corpus / path)
+        validate_capture_proof(rows, run['proof'], plan['frame_cap'])
         require(sum(r['kind'] == 1 for r in rows) == sum(r['kind'] == 5 for r in rows) == 1,
                 'Duplicate header or footer')
         require(run['sha256'] == raw_digest, 'Numeric trace identity differs')

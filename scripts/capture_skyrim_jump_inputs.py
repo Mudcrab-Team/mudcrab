@@ -8,12 +8,16 @@ from pathlib import Path
 import subprocess
 import sys
 import zipfile
+from functools import partial
 
 from analyze_skyrim_jump_inputs import analyze_rows, decode, f32
 from publish_skyrim_evidence import public_value
+from record_skyrim_motion import verify_trace
+from skyrim_capture_attempts import record_attempt, recover_attempts, save_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ['scripts/publish_skyrim_evidence.py', 'scripts/record_skyrim_motion.py', 'scripts/capture_skyrim_jump_inputs.py',
+           'scripts/skyrim_capture_attempts.py',
            'scripts/analyze_skyrim_jump_inputs.py', 'scripts/inspect_skyrim_jump_inputs.py',
            'tools/skyrim-recorder/probe.cpp', 'tools/skyrim-recorder/jump_inputs.h',
            'tools/skyrim-recorder/build.py', 'tools/skyrim-recorder/runtime.json',
@@ -40,6 +44,17 @@ def control_prediction(baseline, condition):
             'setter_argument': argument,
             'controller_height': f32(argument * inputs['game_to_havok']),
             'method': 'Baseline raw factors, requested typed control, native float32 order; no fit.'}
+
+
+def validate_capture_proof(rows, proof, frame_cap):
+    if proof['status'] != 'passed':
+        raise ValueError('Capture proof did not pass')
+    if proof['frame_cap_request'] != frame_cap:
+        raise ValueError('Capture proof requested a different cadence')
+    measured = verify_trace(rows, requested_fps=frame_cap)
+    if measured['status'] != 'passed':
+        raise ValueError('Measured camera cadence did not meet the plan')
+    return measured['camera_cadence']
 
 
 def retain_failure(corpus, output, attempt, failure):
@@ -98,6 +113,7 @@ def main():
             for name, data in source_bytes.items():
                 archive.writestr(name, data)
     sources = {name: hashlib.sha256(data).hexdigest() for name, data in source_bytes.items()}
+    recover_attempts(manifest_path, manifest, args.private_output, partial(retain_failure, args.corpus))
     for condition in plan['conditions']:
         name = condition['id']
         if args.condition and name != args.condition:
@@ -123,63 +139,63 @@ def main():
                    '--ocr-prefix', str(args.ocr_prefix.resolve())]
         receipt = {'session_sha256': digest(args.session / 'session.json'), 'sources': sources,
                    'command': command, 'prediction_before_capture': prediction, 'adopted': bool(adopted)}
-        write(args.private_output / f'{name}-attempt-{attempt}-receipt.json', receipt)
-        print(f'Recording {name}, attempt {attempt}', flush=True)
-        exit_code = 0
-        if not adopted:
-            with Path(str(output) + '.log').open('w') as log:
-                exit_code = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT).returncode
-        attempt_row = {'id': name, 'attempt': attempt, 'exit_code': exit_code}
-        manifest['attempts'].append(attempt_row)
-        write(manifest_path, manifest)
-        if exit_code:
+        with record_attempt(manifest_path, manifest, name, attempt, output, partial(retain_failure, args.corpus)) as attempt_row:
+            write(args.private_output / f'{name}-attempt-{attempt}-receipt.json', receipt)
+            print(f'Recording {name}, attempt {attempt}', flush=True)
+            exit_code = 0
+            if not adopted:
+                with Path(str(output) + '.log').open('x') as log:
+                    exit_code = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT).returncode
+            attempt_row['exit_code'] = exit_code
+            save_manifest(manifest_path, manifest)
+            if exit_code:
+                try:
+                    failure = json.loads((output / 'failure.json').read_text())
+                except FileNotFoundError:
+                    failure = {'phase': 'recorder',
+                               'error': f'Recorder exited with code {exit_code} without failure.json; see private log'}
+                retain_failure(args.corpus, output, attempt_row,
+                               {key: failure[key] for key in ('phase', 'error')})
+                save_manifest(manifest_path, manifest)
+                raise RuntimeError(f'Capture failed; preserved {output}')
             try:
-                failure = json.loads((output / 'failure.json').read_text())
-            except FileNotFoundError:
-                failure = {'phase': 'recorder',
-                           'error': f'Recorder exited with code {exit_code} without failure.json; see private log'}
-            retain_failure(args.corpus, output, attempt_row,
-                           {key: failure[key] for key in ('phase', 'error')})
-            write(manifest_path, manifest)
-            raise RuntimeError(f'Capture failed; preserved {output}')
-        try:
-            proof = json.loads((output / 'proof.json').read_text())
-            rows, raw_digest = decode(output / 'trace.bin')
-            result = analyze_rows(rows)
-            if raw_digest != proof['trace_sha256'] or proof['session'] != session:
-                raise ValueError('Recorded session or native trace differs')
-            if proof['runner_sha256'] != sources['scripts/record_skyrim_motion.py']:
-                raise ValueError('Recorder source changed during capture')
-            if prediction:
-                for key in ('jump_height_min', 'reference_u16'):
-                    if prediction[key] != result['inputs'][key]:
-                        raise ValueError('Requested control did not reach measured memory field')
-                for key in ('setter_argument', 'controller_height'):
-                    if prediction[key] != result[key]:
-                        raise ValueError('Pre-capture field-product prediction failed')
-                original = baseline['result']['inputs']
-                for key in ('npc_type', 'sex_index', 'npc_height', 'race_heights', 'npc_form_id', 'race_form_id'):
-                    if original[key] != result['inputs'][key]:
-                        raise ValueError('Control changed an unrequested base factor')
-            public_proof = {key: proof[key] for key in ('status', 'received_down_up', 'forward_input_accepted',
-                            'source_save_unchanged', 'frame_cap_request', 'dxvk_config', 'ini', 'fixture_sha256')}
-            if 'camera_cadence' in proof:
-                public_proof['camera_cadence'] = proof['camera_cadence']
-            public_proof.update(exe_sha256=session['exe_sha256'], source_save_sha256=session['source_save_sha256'],
-                                dll_sha256=session['build']['dll_sha256'], input_sha256=session['input_sha256'],
-                                proton_sha256=session['proton_sha256'])
-        except Exception as error:
-            retain_failure(args.corpus, output, attempt_row,
-                           {'phase': 'v4-input-proof', 'error': f'{type(error).__name__}: {error}'})
-            write(manifest_path, manifest)
-            raise
-        destination = args.corpus / 'traces' / (name + '.bin.gz')
-        destination.write_bytes(gzip.compress((output / 'trace.bin').read_bytes(), mtime=0))
-        manifest['runs'].append({'id': name, 'path': str(destination.relative_to(args.corpus)),
-                                 'sha256': raw_digest, 'fixture': fixture, 'proof': public_proof,
-                                 'receipt': public_value(receipt), 'result': result})
-        write(manifest_path, manifest)
-        print(json.dumps({'id': name, 'result': result}), flush=True)
+                proof = json.loads((output / 'proof.json').read_text())
+                rows, raw_digest = decode(output / 'trace.bin')
+                cadence = validate_capture_proof(rows, proof, plan['frame_cap'])
+                result = analyze_rows(rows)
+                if raw_digest != proof['trace_sha256'] or proof['session'] != session:
+                    raise ValueError('Recorded session or native trace differs')
+                if proof['runner_sha256'] != sources['scripts/record_skyrim_motion.py']:
+                    raise ValueError('Recorder source changed during capture')
+                if prediction:
+                    for key in ('jump_height_min', 'reference_u16'):
+                        if prediction[key] != result['inputs'][key]:
+                            raise ValueError('Requested control did not reach measured memory field')
+                    for key in ('setter_argument', 'controller_height'):
+                        if prediction[key] != result[key]:
+                            raise ValueError('Pre-capture field-product prediction failed')
+                    original = baseline['result']['inputs']
+                    for key in ('npc_type', 'sex_index', 'npc_height', 'race_heights', 'npc_form_id', 'race_form_id'):
+                        if original[key] != result['inputs'][key]:
+                            raise ValueError('Control changed an unrequested base factor')
+                public_proof = {key: proof[key] for key in ('status', 'received_down_up', 'forward_input_accepted',
+                                'source_save_unchanged', 'frame_cap_request', 'dxvk_config', 'ini', 'fixture_sha256')}
+                public_proof['camera_cadence'] = cadence
+                public_proof.update(exe_sha256=session['exe_sha256'], source_save_sha256=session['source_save_sha256'],
+                                    dll_sha256=session['build']['dll_sha256'], input_sha256=session['input_sha256'],
+                                    proton_sha256=session['proton_sha256'])
+            except Exception as error:
+                retain_failure(args.corpus, output, attempt_row,
+                               {'phase': 'v4-input-proof', 'error': f'{type(error).__name__}: {error}'})
+                save_manifest(manifest_path, manifest)
+                raise
+            destination = args.corpus / 'traces' / (name + '.bin.gz')
+            destination.write_bytes(gzip.compress((output / 'trace.bin').read_bytes(), mtime=0))
+            manifest['runs'].append({'id': name, 'path': str(destination.relative_to(args.corpus)),
+                                     'sha256': raw_digest, 'fixture': fixture, 'proof': public_proof,
+                                     'receipt': public_value(receipt), 'result': result})
+            save_manifest(manifest_path, manifest)
+            print(json.dumps({'id': name, 'result': result}), flush=True)
 
 
 if __name__ == '__main__':

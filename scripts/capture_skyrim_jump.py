@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from skyrim_capture_attempts import record_attempt, recover_attempts, save_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -40,7 +41,7 @@ def main():
     args.private_output.mkdir(parents=True, exist_ok=True)
     args.corpus.mkdir(parents=True, exist_ok=True)
     (args.corpus / 'traces').mkdir(exist_ok=True)
-    sources = ['scripts/capture_skyrim_jump.py', 'scripts/record_skyrim_motion.py',
+    sources = ['scripts/capture_skyrim_jump.py', 'scripts/record_skyrim_motion.py', 'scripts/skyrim_capture_attempts.py',
                'tools/skyrim-recorder/probe.cpp', 'tools/skyrim-recorder/runtime.json',
                'tools/skyrim-recorder/build.py', 'tools/skyrim-recorder/input.c']
     receipt = {'plan_sha256': digest(args.plan), 'session_sha256': digest(args.session / 'session.json'),
@@ -53,6 +54,7 @@ def main():
     manifest_path = args.corpus / 'manifest.json'
     manifest = (json.loads(manifest_path.read_text()) if manifest_path.exists() else
                 {'schema': 1, 'runtime_sha256': plan['runtime_sha256'], 'runs': [], 'attempts': []})
+    recover_attempts(manifest_path, manifest, args.private_output)
     conditions = plan['training' if args.split == 'train' else 'heldout']
     for repeat in range(1, plan['repeats'] + 1):
         for condition in conditions:
@@ -68,34 +70,35 @@ def main():
                        '--session', str(args.session.resolve()), '--output', str(output.resolve()),
                        '--fixture', str(fixture_path.resolve()), '--frame-cap', str(condition['frame_cap']),
                        '--ocr-prefix', str(args.ocr_prefix.resolve())]
-            print(f'Recording {name}, attempt {attempt}', flush=True)
-            with Path(str(output) + '.log').open('w') as log:
-                result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
-            manifest['attempts'].append({'id': name, 'attempt': attempt, 'exit_code': result.returncode})
-            write(manifest_path, manifest)
-            if result.returncode:
-                raise RuntimeError(f'Capture failed; preserved {output} and log. Resume explicitly.')
-            proof = json.loads((output / 'proof.json').read_text())
-            raw = (output / 'trace.bin').read_bytes()
-            if hashlib.sha256(raw).hexdigest() != proof['trace_sha256']:
-                raise ValueError('capture changed after native proof')
-            destination = args.corpus / 'traces' / (name + '.bin.gz')
-            destination.write_bytes(gzip.compress(raw, mtime=0))
-            public_proof = {key: proof[key] for key in
-                            ('status', 'received_down_up', 'forward_input_accepted',
-                             'source_save_unchanged', 'frame_cap_request', 'dxvk_config', 'ini', 'fixture_sha256')}
-            if 'camera_cadence' in proof:
-                public_proof['camera_cadence'] = proof['camera_cadence']
-            public_proof['source_save_sha256'] = session['source_save_sha256']
-            public_proof['exe_sha256'] = session['exe_sha256']
-            public_proof['dll_sha256'] = session['build']['dll_sha256']
-            public_proof['input_sha256'] = session['input_sha256']
-            public_proof['proton_sha256'] = session['proton_sha256']
-            manifest['runs'].append(dict(id=name, split=args.split, repeat=repeat,
-                                         path=str(destination.relative_to(args.corpus)),
-                                         sha256=proof['trace_sha256'], proof=public_proof, **condition))
-            write(manifest_path, manifest)
-            print(f'Accepted native recording {name}', flush=True)
+            with record_attempt(manifest_path, manifest, name, attempt, output) as attempt_row:
+                print(f'Recording {name}, attempt {attempt}', flush=True)
+                with Path(str(output) + '.log').open('x') as log:
+                    result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
+                attempt_row['exit_code'] = result.returncode
+                save_manifest(manifest_path, manifest)
+                if result.returncode:
+                    raise RuntimeError(f'Capture failed; preserved {output} and log. Resume explicitly.')
+                proof = json.loads((output / 'proof.json').read_text())
+                raw = (output / 'trace.bin').read_bytes()
+                if hashlib.sha256(raw).hexdigest() != proof['trace_sha256']:
+                    raise ValueError('capture changed after native proof')
+                destination = args.corpus / 'traces' / (name + '.bin.gz')
+                destination.write_bytes(gzip.compress(raw, mtime=0))
+                public_proof = {key: proof[key] for key in
+                                ('status', 'received_down_up', 'forward_input_accepted',
+                                 'source_save_unchanged', 'frame_cap_request', 'dxvk_config', 'ini', 'fixture_sha256')}
+                if 'camera_cadence' in proof:
+                    public_proof['camera_cadence'] = proof['camera_cadence']
+                public_proof['source_save_sha256'] = session['source_save_sha256']
+                public_proof['exe_sha256'] = session['exe_sha256']
+                public_proof['dll_sha256'] = session['build']['dll_sha256']
+                public_proof['input_sha256'] = session['input_sha256']
+                public_proof['proton_sha256'] = session['proton_sha256']
+                manifest['runs'].append(dict(id=name, split=args.split, repeat=repeat,
+                                             path=str(destination.relative_to(args.corpus)),
+                                             sha256=proof['trace_sha256'], proof=public_proof, **condition))
+                save_manifest(manifest_path, manifest)
+                print(f'Accepted native recording {name}', flush=True)
 
 
 if __name__ == '__main__':
