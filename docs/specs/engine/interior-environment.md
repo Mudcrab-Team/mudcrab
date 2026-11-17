@@ -61,8 +61,9 @@ repository; ask in #264 for a row. This spec states each fact it relies on.
    distance are not applied.
    A short XCLL (72 to 91 bytes) has no fog max field. Retail behaviour for a short block is
    unverified (RF-LIGHT-CPU-014 covers a cell without XCLL only). Mudcrab keeps the authored fog
-   distances and applies no cap; no shipped interior has a short block. An authored max of 0
-   still draws no fog.
+   distances and applies no cap. No shipped interior has a short XCLL, but six take fog
+   distances from a short (72-byte) lighting template that has no max, and now get that fog. An
+   authored max of 0 still draws no fog.
 8. **Exit**: leaving modes 1 and 2 restores the saved rotation, colour, illuminance, shadows and
    ambient, and the clock sun takes over the next frame. A write by another system while indoors
    (`apply_render_settings` on a preference change), including one in the exit frame itself,

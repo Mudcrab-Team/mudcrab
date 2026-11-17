@@ -444,7 +444,8 @@ impl CellFog {
     /// (72 to 91 bytes, which ends before the max field) or a short template. What retail does
     /// with a short block is UNVERIFIED (CPU-014 covers a cell without XCLL only). Mudcrab
     /// treats the missing max as no cap (1.0) so that authored fog distances are not lost.
-    /// No shipped interior is affected: all 786 have a 92-byte XCLL.
+    /// No shipped interior has a short XCLL. Six of the 786 take fog near and far from a short
+    /// (72-byte) lighting template without a max, and now get that fog with no cap.
     fn from_lighting(lighting: &Lighting) -> Option<Self> {
         let near = lighting.fog_near.unwrap_or(0.0);
         let far = lighting.fog_far.unwrap_or(0.0);
@@ -1948,6 +1949,32 @@ mod tests {
                 ..default()
             }),
             None
+        );
+    }
+
+    /// The same for a short lighting template (72 bytes, no fog max): six shipped interiors
+    /// inherit their fog distances from one (inherit bits 0x4, 0x8, 0x10 and 0x200).
+    #[test]
+    fn a_short_lighting_template_keeps_the_inherited_fog_with_no_cap() {
+        let connection = Connection::open_in_memory().unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO cell_environment(cell_id,data_flags) VALUES(77,1);
+                 INSERT INTO cell_lighting(cell_id,lighting_template_id,xcll_size,inherit_flags)
+                 VALUES(77,88,92,540);
+                 INSERT INTO lighting_templates(id,fog_near_r,fog_near_g,fog_near_b,fog_near,fog_far)
+                 VALUES(88,1,2,3,128.0,6000.0);",
+            )
+            .unwrap();
+        let mut app = app(EnvironmentCatalog::from_connection(&connection));
+        spawn_world_sun(&mut app);
+        enter(&mut app, Some(77));
+        app.update();
+        let fog = app.world().resource::<InteriorFog>().0.unwrap();
+        assert_eq!(
+            (fog.near_color, fog.near, fog.far, fog.max),
+            ([1, 2, 3], 128.0, 6000.0, 1.0)
         );
     }
 
