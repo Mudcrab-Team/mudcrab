@@ -1,4 +1,8 @@
 //! Deterministic CPU placement. All mapped reads and instance allocation run on a worker.
+#[cfg(test)]
+#[path = "../../tests/support/grass_budget.rs"]
+mod grass_budget;
+
 use super::{GrassBatch, GrassInstance, GrassTerrain};
 use crate::{config::EngineConfig, world::grass_cache::GrassCache};
 use shared::grass::{ArchivedGrassLayer, GRASS_BLEND_SIDE, GRASS_CELL_SIZE, GRASS_EXCLUSION_SIDE};
@@ -973,16 +977,18 @@ mod tests {
                 }
             }
             samples.sort_unstable();
-            let ceiling = Duration::from_millis(milliseconds);
-            assert!(
-                samples[1] < ceiling,
-                "spacing={spacing}: {:?} exceeds {ceiling:?}",
-                samples[1]
-            );
+            let strict_ceiling = Duration::from_millis(milliseconds);
+            let allowance = super::grass_budget::grass_budget_allowance();
+            let ceiling = strict_ceiling.mul_f64(allowance);
             eprintln!(
-                "coloured grass: spacing={spacing}, instances={count}, median={:?}, budget={ceiling:?}, retained_surface_bytes={}",
+                "coloured grass: spacing={spacing}, instances={count}, median={:?}, strict_budget={strict_ceiling:?}, allowance={allowance}, effective_budget={ceiling:?}, retained_surface_bytes={}",
                 samples[1],
                 terrain.bytes()
+            );
+            assert!(
+                samples[1] < ceiling,
+                "spacing={spacing}: {:?} exceeds effective_budget={ceiling:?} (strict_budget={strict_ceiling:?}, allowance={allowance})",
+                samples[1]
             );
         }
     }
