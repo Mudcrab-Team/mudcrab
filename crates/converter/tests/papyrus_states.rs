@@ -187,8 +187,9 @@ impl Pex {
 fn pex_parent_dispatch_preserves_receiver_and_defining_class() {
     let lua = Lua::new();
     runtime(&lua);
-    let mut grand = Pex::class("Grand", "", "", 1);
+    let mut grand = Pex::class("Grand", "", "", 2);
     grand.state("", vec![returns("Chain", 73), returns("OnlyGrand", 79)]);
+    grand.state("Ready", vec![returns("GrandStateOverParentDefault", 83)]);
     let mut parent_call = returns("Chain", 0);
     parent_call.locals = vec![TypedName {
         name: "result".into(),
@@ -223,6 +224,7 @@ fn pex_parent_dispatch_preserves_receiver_and_defining_class() {
             returns("Value", 41),
             returns("InheritedState", 59),
             returns("Fallback", 57),
+            returns("GrandStateOverParentDefault", 81),
         ],
     );
     parent.state(
@@ -249,7 +251,8 @@ fn pex_parent_dispatch_preserves_receiver_and_defining_class() {
         local function call(name) return rt:call_method(a, name, {}) end
         assert(call('iNhErItEdStAtE') == 61, 'parent named state')
         assert(call('OnlyParent') == 67 and call('OnlyGrand') == 79, 'ancestor fallback')
-        assert(call('Fallback') == 17, 'child empty state precedes parent per dispatch contract')
+        assert(call('Fallback') == 63, 'retail: active-state ancestry precedes child empty-state fallback')
+        assert(call('GrandStateOverParentDefault') == 83, 'retail: grandparent active state precedes parent default')
         assert(call('Chain') == 73, 'nested Parent calls use the defining class')
         assert(call('vIrTuAl') == 31, 'inherited code keeps the original receiver')
     "#,
