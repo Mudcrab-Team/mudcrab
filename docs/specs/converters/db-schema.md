@@ -1318,15 +1318,28 @@ integration also removes stale rows for these references. The engine reads the e
 `references.header_flags` column and exempts flagged roots even when an older conversion still
 contains geometric room rows. Named overrides are conservatively kept visible too.
 
-| Case | Converter writes | Engine |
+The following table describes geometric membership. Whole-cell fallbacks and reference exemptions
+take precedence over the per-object rules. Other renderer visibility checks still apply.
+
+| Case | Converter writes | Engine room filter |
 |---|---|---|
-| Interior without room markers | no rows | draw everything, as today |
+| Interior without room markers | no room rows | retain the cell |
 | Old database, tables absent | n/a | feature off, no error |
-| Portal side 0, missing or not a room | `room_a`/`room_b` NULL | ignore that edge |
-| Object in no room / several | no `contained = 1` row / several | always drawn |
-| Camera outside every room | n/a | draw everything |
-| Non-box room shape | skipped, counted | its objects are in no room, so drawn |
+| Source-verified outside portal side | NULL with an unbounded-side flag | traverse the explicit unbounded node |
+| Missing, invalid, or foreign portal endpoint | NULL without verified outside provenance | retain the cell |
+| Object in several rooms | several `contained = 1` rows | always retained by geometric membership |
+| Object in no room, legacy graph | no `contained = 1` row | always retained |
+| Known object in no room, complete versioned graph | no `contained = 1` row | retained when a visible candidate volume passes its mesh-bound test; candidates come from unbounded space, overlap rooms, and portal sharing |
+| Camera outside every room | n/a | retain the cell, including possible gaps between bounds |
+| Non-box room shape in a new conversion | skipped, counted; cell marked incomplete | retain the cell |
 | Exterior markers | not written | out of scope (#106) |
+
+The geometric filter retains authored overrides including `NONE`, actors and their leveled lists,
+doors, activators, loose inventory references, moving rigid bodies, and explicitly exempt roots
+or meshes. References without valid stored model bounds also stay drawn because pivot-only rows
+do not establish overlap coverage. Unknown references outside the graph are retained.
+Missing or invalid per-mesh bounds and `NoFrustumCulling` skip aperture-bound testing; a candidate
+space must still be reached. Portal-shared geometry can use either endpoint's visible volume.
 
 ---
 
