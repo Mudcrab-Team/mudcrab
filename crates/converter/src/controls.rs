@@ -167,6 +167,7 @@ fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// Skip an entire malformed physical line, never replacing it with a context separator.
+/// Complete a retained CR with LF if removal would merge it with a later blank LF line.
 fn sanitize(key: &str, bytes: &[u8]) -> (Vec<u8>, Vec<usize>) {
     let mut output = Vec::with_capacity(bytes.len());
     let mut skipped = Vec::new();
@@ -182,6 +183,10 @@ fn sanitize(key: &str, bytes: &[u8]) -> (Vec<u8>, Vec<usize>) {
             .unwrap_or(content.len());
         let content = trim(&content[..comment]);
         if content.is_empty() || valid_line(key, content) {
+            // These endings were separate in the input; preserve the blank physical line.
+            if output.last() == Some(&b'\r') && line.first() == Some(&b'\n') {
+                output.push(b'\n');
+            }
             output.extend_from_slice(line);
         } else {
             skipped.push(index + 1);

@@ -979,6 +979,14 @@ impl AssetPipeline {
             )
             .await;
 
+            // Controls have independent payloads and survive unrelated asset extraction failures.
+            crate::controls::extract_archive(
+                &mut control_sources,
+                archive,
+                &archive_key,
+                &control_scratch.path().join(index.to_string()),
+                &mut report,
+            );
             match result {
                 Ok(outcome) => {
                     report
@@ -993,13 +1001,6 @@ impl AssetPipeline {
                     } else {
                         report.converted += outcome.files.len() as u64;
                     }
-                    crate::controls::extract_archive(
-                        &mut control_sources,
-                        archive,
-                        &archive_key,
-                        &control_scratch.path().join(index.to_string()),
-                        &mut report,
-                    );
                     ingestion_journal.record(&archive_key, &outcome.cache_entry)?;
                     manifest.archives.insert(archive_key, outcome.cache_entry);
                 }
@@ -1043,6 +1044,17 @@ impl AssetPipeline {
                 }
             }
         }
+        // Scratch-backed controls need the same unknown-loose-winner masking as the VFS.
+        let blocked_control_prefixes: BTreeSet<_> = undiscovered
+            .iter()
+            .filter_map(|path| path.strip_prefix(&config.data_dir).ok())
+            .map(|relative| PathBuf::from(normalize_separators(relative).to_ascii_lowercase()))
+            .collect();
+        control_sources.retain(|key, _| {
+            !blocked_control_prefixes
+                .iter()
+                .any(|prefix| Path::new(key).starts_with(prefix))
+        });
         crate::controls::publish(staging, control_sources, &mut report)?;
         report.phase_elapsed_ms.insert(
             "archive_ingestion_and_loose_overlay".into(),

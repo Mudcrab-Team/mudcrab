@@ -49,6 +49,12 @@ it cannot introduce a new context. One warning per affected file summarizes
 the skipped-line count and first original 1-based line number, making the report
 and manifest incomplete while valid neighboring lines and files still publish.
 LF, CRLF and CR-only files retain their original endings.
+If removing a malformed row would join a retained CR to a later blank LF row,
+the CR is completed to CRLF so the blank context separator remains distinct.
+Control extraction runs independently of ordinary archive payload failures;
+readable controls still publish with the asset failure warning. Undiscovered
+loose prefixes mask affected control sources as well as ordinary VFS inputs,
+so an unknown loose override cannot expose an older archive binding.
 An unreadable winning file warns and is omitted. Output I/O failures remain
 errors. An empty or absent optional file is permitted.
 
