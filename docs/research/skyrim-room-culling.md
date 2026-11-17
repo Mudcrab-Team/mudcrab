@@ -237,8 +237,11 @@ explanation while retaining the sequence result.
 
 Three shell-facing views do not match full rendering: the old tall-box-center Bleak Falls Barrow
 pose changes 320,661 pixels, Gallows Rock outside-away changes 366,348, and its box-inside/outward
-view changes 207,106. Inspection shows exposed back sides and uncovered shell views. These remain
-failed equality comparisons without an original-game oracle; they are not counted as parity passes.
+view changes 207,106. These historical equality failures were recorded before a retail oracle
+was available. The [2026-11-17 retail comparison](room-assignment-review-20261117.md) now shows
+that Skyrim also omits the large background shells at the Bleak Falls and inside-out Gallows
+poses. Fog, lighting, props, and material sampling still differ. The new outside-camera policy
+keeps full rendering at outside-away, deliberately drawing extra geometry to protect gaps.
 The two new [joined-room views](../../crates/engine/tests/fixtures/room-assignment-shots.json),
 inside the master and slave cave geometry, match in every pairing while exercising culling.
 No final capture timed out or retained pending/failed room-graph reads. These results support the
@@ -250,3 +253,15 @@ fixture helper for the installed official archives, not a general mod migration 
 reconvert through the standard pipeline, which resolves effective sources and refreshes both
 metadata and mesh contracts. The helper's existing endpoint-provenance requirement prevents a
 canonical cleared FormID from being promoted to authored outside space.
+
+## Default-on review validation
+
+[The 2026-11-17 core review record](room-culling-review-20261117.md) contains the graphics toggle,
+three real-interior on/off pairs with counts, repeated release frame times, executable identities,
+and their limits. The core remains a room-reachability foundation, not a complete Skyrim parity claim.
+
+[The boundary review record](room-gap-review-20261117.md) covers conservative camera starts,
+negative extents, legacy-pack handling, and the sampled out-and-back room-boundary sequence.
+
+[The authored-assignment review record](room-assignment-review-20261117.md) adds matched retail
+images for the disputed shells and a fresh named-target/NONE capture from Katariah.
