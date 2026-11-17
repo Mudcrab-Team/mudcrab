@@ -5,7 +5,7 @@ remains available for legacy readers. The 2026-11-15 native trace supersedes its
 `XLRM` interpretation: `XRMR[2]` is the master byte, linked slave bounds join a master room,
 and native static ownership uses the render bound's center and sphere/portal classification.
 The current converter preserves link order and explicit assignment rules, and emits source
-NIF spheres. See [the current schema](../specs/converters/db-schema.md#15-interior-room-graph-room_bounds-room_portals-room_links-reference_rooms-room_graph_stats)
+NIF spheres. See [the current schema](../specs/converters/db-schema.md#15-interior-room-graph-and-occlusion)
 and [native findings](skyrim-native-culling.md#authored-joins-and-object-assignment).
 The older counts and proposed behavior below describe the original investigation, not the
 current authored-assignment path.
