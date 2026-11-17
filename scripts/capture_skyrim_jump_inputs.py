@@ -13,7 +13,7 @@ from functools import partial
 from analyze_skyrim_jump_inputs import analyze_rows, decode, f32
 from publish_skyrim_evidence import public_value
 from record_skyrim_motion import verify_trace
-from skyrim_capture_attempts import record_attempt, recover_attempts, save_manifest
+from skyrim_capture_attempts import corpus_lock, record_attempt, recover_attempts, save_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ['scripts/publish_skyrim_evidence.py', 'scripts/record_skyrim_motion.py', 'scripts/capture_skyrim_jump_inputs.py',
@@ -95,110 +95,115 @@ def main():
         parser.error('Prepared extension source differs')
     args.private_output.mkdir(parents=True, exist_ok=True)
     args.corpus.mkdir(parents=True, exist_ok=True)
-    (args.corpus / 'traces').mkdir(exist_ok=True)
-    manifest_path = args.corpus / 'manifest.json'
-    manifest = (json.loads(manifest_path.read_text()) if manifest_path.exists() else
-                {'schema': 1, 'profile': 'jump-inputs-v4', 'plan_sha256': digest(args.plan),
-                 'runtime_sha256': plan['runtime_sha256'], 'runs': [], 'attempts': []})
-    if manifest['plan_sha256'] != digest(args.plan):
-        parser.error('Declared plan changed; use a new corpus')
-    source_bytes = {name: (ROOT / name).read_bytes() for name in SOURCES}
-    archive_path = args.corpus / 'capture-source.zip'
-    if archive_path.exists():
-        with zipfile.ZipFile(archive_path) as archive:
-            archived = {name: archive.read(name) for name in archive.namelist()}
-        if archived != source_bytes:
-            parser.error('Capture sources changed; use a new corpus')
-    else:
-        if manifest['attempts']:
-            parser.error('Existing attempts lack a source archive; use a new corpus')
-        with zipfile.ZipFile(archive_path, 'x', compression=zipfile.ZIP_DEFLATED) as archive:
-            for name, data in source_bytes.items():
-                archive.writestr(name, data)
-    sources = {name: hashlib.sha256(data).hexdigest() for name, data in source_bytes.items()}
-    recover_attempts(manifest_path, manifest, args.private_output, partial(retain_failure, args.corpus))
-    for condition in plan['conditions']:
-        name = condition['id']
-        if args.condition and name != args.condition:
-            continue
-        if any(run['id'] == name for run in manifest['runs']):
-            continue
-        attempt = 1 + sum(row['id'] == name for row in manifest['attempts'])
-        adopted = name == 'baseline' and args.adopt_baseline
-        output = args.adopt_baseline if adopted else args.private_output / f'{name}-attempt-{attempt}'
-        fixture = dict(plan['fixture'], **{k: v for k, v in condition.items() if k != 'id'})
-        fixture_path = args.private_output / (name + '.json')
-        write(fixture_path, fixture)
-        prediction = None
-        if name != 'baseline':
-            baseline = next((r for r in manifest['runs'] if r['id'] == 'baseline'), None)
-            if baseline is None:
-                parser.error('Collect and accept baseline before controls')
-            prediction = control_prediction(baseline['result'], condition)
-            write(args.private_output / (name + '-prediction.json'), prediction)
-        command = [sys.executable, str(ROOT / 'scripts/record_skyrim_motion.py'), 'run',
-                   '--session', str(args.session.resolve()), '--output', str(output.resolve()),
-                   '--fixture', str(fixture_path.resolve()), '--frame-cap', str(plan['frame_cap']),
-                   '--ocr-prefix', str(args.ocr_prefix.resolve())]
-        receipt = {'session_sha256': digest(args.session / 'session.json'), 'sources': sources,
-                   'command': command, 'prediction_before_capture': prediction, 'adopted': bool(adopted)}
-        with record_attempt(manifest_path, manifest, name, attempt, output, partial(retain_failure, args.corpus)) as attempt_row:
-            write(args.private_output / f'{name}-attempt-{attempt}-receipt.json', receipt)
-            print(f'Recording {name}, attempt {attempt}', flush=True)
-            exit_code = 0
-            if not adopted:
-                with Path(str(output) + '.log').open('x') as log:
-                    exit_code = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT).returncode
-            attempt_row['exit_code'] = exit_code
-            save_manifest(manifest_path, manifest)
-            if exit_code:
+    with corpus_lock(args.corpus):
+        (args.corpus / 'traces').mkdir(exist_ok=True)
+        manifest_path = args.corpus / 'manifest.json'
+        manifest = (json.loads(manifest_path.read_text()) if manifest_path.exists() else
+                    {'schema': 1, 'profile': 'jump-inputs-v4', 'plan_sha256': digest(args.plan),
+                     'runtime_sha256': plan['runtime_sha256'], 'runs': [], 'attempts': []})
+        if manifest['plan_sha256'] != digest(args.plan):
+            parser.error('Declared plan changed; use a new corpus')
+        source_bytes = {name: (ROOT / name).read_bytes() for name in SOURCES}
+        archive_path = args.corpus / 'capture-source.zip'
+        if archive_path.exists():
+            with zipfile.ZipFile(archive_path) as archive:
+                archived = {name: archive.read(name) for name in archive.namelist()}
+            if archived != source_bytes:
+                parser.error('Capture sources changed; use a new corpus')
+        else:
+            if manifest['attempts']:
+                parser.error('Existing attempts lack a source archive; use a new corpus')
+            with zipfile.ZipFile(archive_path, 'x', compression=zipfile.ZIP_DEFLATED) as archive:
+                for name, data in source_bytes.items():
+                    archive.writestr(name, data)
+        sources = {name: hashlib.sha256(data).hexdigest() for name, data in source_bytes.items()}
+        recover_attempts(manifest_path, manifest, args.private_output, partial(retain_failure, args.corpus))
+        for condition in plan['conditions']:
+            name = condition['id']
+            if args.condition and name != args.condition:
+                continue
+            if any(run['id'] == name for run in manifest['runs']):
+                continue
+            next_condition = next(c['id'] for c in plan['conditions']
+                                  if not any(run['id'] == c['id'] for run in manifest['runs']))
+            if name != next_condition:
+                parser.error(f'Collect declared conditions in plan order; next is {next_condition}')
+            attempt = 1 + sum(row['id'] == name for row in manifest['attempts'])
+            adopted = name == 'baseline' and args.adopt_baseline
+            output = args.adopt_baseline if adopted else args.private_output / f'{name}-attempt-{attempt}'
+            fixture = dict(plan['fixture'], **{k: v for k, v in condition.items() if k != 'id'})
+            fixture_path = args.private_output / (name + '.json')
+            write(fixture_path, fixture)
+            prediction = None
+            if name != 'baseline':
+                baseline = next((r for r in manifest['runs'] if r['id'] == 'baseline'), None)
+                if baseline is None:
+                    parser.error('Collect and accept baseline before controls')
+                prediction = control_prediction(baseline['result'], condition)
+                write(args.private_output / (name + '-prediction.json'), prediction)
+            command = [sys.executable, str(ROOT / 'scripts/record_skyrim_motion.py'), 'run',
+                       '--session', str(args.session.resolve()), '--output', str(output.resolve()),
+                       '--fixture', str(fixture_path.resolve()), '--frame-cap', str(plan['frame_cap']),
+                       '--ocr-prefix', str(args.ocr_prefix.resolve())]
+            receipt = {'session_sha256': digest(args.session / 'session.json'), 'sources': sources,
+                       'command': command, 'prediction_before_capture': prediction, 'adopted': bool(adopted)}
+            with record_attempt(manifest_path, manifest, name, attempt, output, partial(retain_failure, args.corpus)) as attempt_row:
+                write(args.private_output / f'{name}-attempt-{attempt}-receipt.json', receipt)
+                print(f'Recording {name}, attempt {attempt}', flush=True)
+                exit_code = 0
+                if not adopted:
+                    with Path(str(output) + '.log').open('x') as log:
+                        exit_code = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT).returncode
+                attempt_row['exit_code'] = exit_code
+                save_manifest(manifest_path, manifest)
+                if exit_code:
+                    try:
+                        failure = json.loads((output / 'failure.json').read_text())
+                    except FileNotFoundError:
+                        failure = {'phase': 'recorder',
+                                   'error': f'Recorder exited with code {exit_code} without failure.json; see private log'}
+                    retain_failure(args.corpus, output, attempt_row,
+                                   {key: failure[key] for key in ('phase', 'error')})
+                    save_manifest(manifest_path, manifest)
+                    raise RuntimeError(f'Capture failed; preserved {output}')
                 try:
-                    failure = json.loads((output / 'failure.json').read_text())
-                except FileNotFoundError:
-                    failure = {'phase': 'recorder',
-                               'error': f'Recorder exited with code {exit_code} without failure.json; see private log'}
-                retain_failure(args.corpus, output, attempt_row,
-                               {key: failure[key] for key in ('phase', 'error')})
+                    proof = json.loads((output / 'proof.json').read_text())
+                    rows, raw_digest = decode(output / 'trace.bin')
+                    cadence = validate_capture_proof(rows, proof, plan['frame_cap'], fixture)
+                    result = analyze_rows(rows)
+                    if raw_digest != proof['trace_sha256'] or proof['session'] != session:
+                        raise ValueError('Recorded session or native trace differs')
+                    if proof['runner_sha256'] != sources['scripts/record_skyrim_motion.py']:
+                        raise ValueError('Recorder source changed during capture')
+                    if prediction:
+                        for key in ('jump_height_min', 'reference_u16'):
+                            if prediction[key] != result['inputs'][key]:
+                                raise ValueError('Requested control did not reach measured memory field')
+                        for key in ('setter_argument', 'controller_height'):
+                            if prediction[key] != result[key]:
+                                raise ValueError('Pre-capture field-product prediction failed')
+                        original = baseline['result']['inputs']
+                        for key in ('npc_type', 'sex_index', 'npc_height', 'race_heights', 'npc_form_id', 'race_form_id'):
+                            if original[key] != result['inputs'][key]:
+                                raise ValueError('Control changed an unrequested base factor')
+                    public_proof = {key: proof[key] for key in ('status', 'received_down_up', 'forward_input_accepted',
+                                    'source_save_unchanged', 'frame_cap_request', 'dxvk_config', 'ini', 'fixture_sha256')}
+                    public_proof['camera_cadence'] = cadence
+                    public_proof.update(exe_sha256=session['exe_sha256'], source_save_sha256=session['source_save_sha256'],
+                                        dll_sha256=session['build']['dll_sha256'], input_sha256=session['input_sha256'],
+                                        proton_sha256=session['proton_sha256'])
+                except Exception as error:
+                    retain_failure(args.corpus, output, attempt_row,
+                                   {'phase': 'v4-input-proof', 'error': f'{type(error).__name__}: {error}'})
+                    save_manifest(manifest_path, manifest)
+                    raise
+                destination = args.corpus / 'traces' / (name + '.bin.gz')
+                destination.write_bytes(gzip.compress((output / 'trace.bin').read_bytes(), mtime=0))
+                manifest['runs'].append({'id': name, 'path': str(destination.relative_to(args.corpus)),
+                                         'sha256': raw_digest, 'fixture': fixture, 'proof': public_proof,
+                                         'receipt': public_value(receipt), 'result': result})
                 save_manifest(manifest_path, manifest)
-                raise RuntimeError(f'Capture failed; preserved {output}')
-            try:
-                proof = json.loads((output / 'proof.json').read_text())
-                rows, raw_digest = decode(output / 'trace.bin')
-                cadence = validate_capture_proof(rows, proof, plan['frame_cap'], fixture)
-                result = analyze_rows(rows)
-                if raw_digest != proof['trace_sha256'] or proof['session'] != session:
-                    raise ValueError('Recorded session or native trace differs')
-                if proof['runner_sha256'] != sources['scripts/record_skyrim_motion.py']:
-                    raise ValueError('Recorder source changed during capture')
-                if prediction:
-                    for key in ('jump_height_min', 'reference_u16'):
-                        if prediction[key] != result['inputs'][key]:
-                            raise ValueError('Requested control did not reach measured memory field')
-                    for key in ('setter_argument', 'controller_height'):
-                        if prediction[key] != result[key]:
-                            raise ValueError('Pre-capture field-product prediction failed')
-                    original = baseline['result']['inputs']
-                    for key in ('npc_type', 'sex_index', 'npc_height', 'race_heights', 'npc_form_id', 'race_form_id'):
-                        if original[key] != result['inputs'][key]:
-                            raise ValueError('Control changed an unrequested base factor')
-                public_proof = {key: proof[key] for key in ('status', 'received_down_up', 'forward_input_accepted',
-                                'source_save_unchanged', 'frame_cap_request', 'dxvk_config', 'ini', 'fixture_sha256')}
-                public_proof['camera_cadence'] = cadence
-                public_proof.update(exe_sha256=session['exe_sha256'], source_save_sha256=session['source_save_sha256'],
-                                    dll_sha256=session['build']['dll_sha256'], input_sha256=session['input_sha256'],
-                                    proton_sha256=session['proton_sha256'])
-            except Exception as error:
-                retain_failure(args.corpus, output, attempt_row,
-                               {'phase': 'v4-input-proof', 'error': f'{type(error).__name__}: {error}'})
-                save_manifest(manifest_path, manifest)
-                raise
-            destination = args.corpus / 'traces' / (name + '.bin.gz')
-            destination.write_bytes(gzip.compress((output / 'trace.bin').read_bytes(), mtime=0))
-            manifest['runs'].append({'id': name, 'path': str(destination.relative_to(args.corpus)),
-                                     'sha256': raw_digest, 'fixture': fixture, 'proof': public_proof,
-                                     'receipt': public_value(receipt), 'result': result})
-            save_manifest(manifest_path, manifest)
-            print(json.dumps({'id': name, 'result': result}), flush=True)
+                print(json.dumps({'id': name, 'result': result}), flush=True)
 
 
 if __name__ == '__main__':

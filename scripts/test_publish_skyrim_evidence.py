@@ -23,6 +23,34 @@ def zipped(members):
 
 
 class PublicationTests(unittest.TestCase):
+    def test_publication_manifest_is_scanned_for_operator_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / publication.MANIFEST
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps(dict(changes={}, scope='/home/alice/capture')))
+            with patch('sys.argv', ['audit', '--root', str(root)]):
+                with self.assertRaisesRegex(SystemExit, 'operator home path'):
+                    publication.main()
+
+    def test_nested_zip_member_names_are_audited_and_rejected_before_transform(self):
+        raw = zipped({'nested.zip': zipped({'/home/alice/capture.txt': b'1'})})
+        self.assertTrue(publication.findings('capture.zip', raw))
+        with self.assertRaisesRegex(ValueError, 'member name'):
+            publication.transform('capture.zip', raw, {})
+
+    def test_missing_recorded_immutable_evidence_fails_the_audit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / publication.MANIFEST
+            manifest.parent.mkdir(parents=True)
+            changes = {'tools/skyrim-recorder/reference/missing.zip':
+                       dict(original_sha256='a' * 64, published_sha256='b' * 64)}
+            manifest.write_text(json.dumps(dict(changes=changes)))
+            with patch('sys.argv', ['audit', '--root', str(root)]):
+                with self.assertRaisesRegex(ValueError, 'missing'):
+                    publication.main()
+
     def test_nested_archives_remove_paths_and_signatures_and_keep_trace_bytes(self):
         original = zipped({'inner.zip': zipped({
             'runtime.json': b'{"camera_signature": "1122334455", "path": "/home/person/game"}',

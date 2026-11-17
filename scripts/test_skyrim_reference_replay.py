@@ -1,6 +1,8 @@
 """The ordinary scripts CI job must score the committed v3 traces and frozen models."""
 import json
+import gzip
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -10,6 +12,65 @@ import report_skyrim_jump as report
 
 
 class RetainedJumpEvidenceTests(unittest.TestCase):
+    def test_report_rejects_changed_traces_or_a_mismatched_score_seal(self):
+        reference = Path(__file__).resolve().parents[1] / 'tools/skyrim-recorder/reference/jump-v3'
+        for mode in ('heldout-trace', 'training-trace', 'seal'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                corpus = Path(directory) / 'corpus'
+                shutil.copytree(reference, corpus)
+                output = Path(directory) / 'output'
+                evaluator.score(corpus / 'manifest.json', corpus / 'frozen.json', output)
+                if mode == 'seal':
+                    scored = json.loads((output / 'report.json').read_text())
+                    scored['frozen_sha256'] = '0' * 64
+                    (output / 'report.json').write_text(json.dumps(scored))
+                else:
+                    manifest = json.loads((corpus / 'manifest.json').read_text())
+                    split = 'train' if mode == 'training-trace' else 'heldout'
+                    run = next(r for r in manifest['runs'] if r['split'] == split)
+                    jump = evaluator.qualify(corpus / run['path'], run)
+                    peak = max(jump['samples'], key=lambda s: s['z'])['sample']
+                    raw = gzip.decompress((corpus / run['path']).read_bytes())
+                    rows = []
+                    for row in evaluator.WIRE.iter_unpack(raw):
+                        row = list(row)
+                        if row[4] == 3 and row[2] == peak:
+                            row[10] += 1
+                        rows.append(evaluator.WIRE.pack(*row))
+                    changed = b''.join(rows)
+                    (corpus / run['path']).write_bytes(gzip.compress(changed))
+                    run['sha256'] = evaluator.digest(changed)
+                    (corpus / 'manifest.json').write_text(json.dumps(manifest))
+                with patch('sys.argv', ['report', '--corpus', str(corpus), '--results', str(output)]):
+                    with self.assertRaisesRegex(ValueError, 'corpus|seal|training'):
+                        report.main()
+
+    def test_report_displays_rejections_with_actual_capture_counts(self):
+        reference = Path(__file__).resolve().parents[1] / 'tools/skyrim-recorder/reference/jump-v3'
+        for all_rejected in (False, True):
+            with self.subTest(all_rejected=all_rejected), tempfile.TemporaryDirectory() as directory:
+                corpus = Path(directory) / 'corpus'
+                shutil.copytree(reference, corpus)
+                manifest = json.loads((corpus / 'manifest.json').read_text())
+                if all_rejected:
+                    manifest['runs'] = [r for r in manifest['runs'] if r['split'] == 'heldout']
+                rejected = [r for r in manifest['runs'] if r['split'] == 'heldout']
+                if not all_rejected:
+                    rejected = rejected[:1]
+                for run in rejected:
+                    run['sha256'] = evaluator.digest(run['id'].encode())
+                (corpus / 'manifest.json').write_text(json.dumps(manifest))
+                output = Path(directory) / 'output'
+                evaluator.score(corpus / 'manifest.json', corpus / 'frozen.json', output)
+                with patch('sys.argv', ['report', '--corpus', str(corpus), '--results', str(output)]):
+                    report.main()
+                html = (output / 'report.html').read_text()
+                self.assertIn('trace hash mismatch', html)
+                self.assertNotIn('Each condition has three independent captures', html)
+                self.assertEqual(len(json.loads((output / 'rejections.json').read_text())), len(rejected))
+                summary = json.loads((output / 'summary.json').read_text())
+                self.assertEqual(sum(r['n'] for r in summary), len(manifest['runs']) - len(rejected))
+
     def assert_summary_matches(self, actual, expected):
         if isinstance(expected, float):
             self.assertAlmostEqual(actual, expected, delta=1e-9)

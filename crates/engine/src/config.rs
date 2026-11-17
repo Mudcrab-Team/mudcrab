@@ -1986,6 +1986,7 @@ mod tests {
         ("stage-release.sh", "--target"),
         ("publish_skyrim_evidence.py", "--sanitize"),
         ("publish_skyrim_evidence.py", "--root"),
+        ("test_publish_skyrim_evidence.py", "--root"),
         ("publish_skyrim_evidence.py", "--start-address"),
         ("publish_skyrim_evidence.py", "--stop-address"),
         // footprint_guard.py owns its own CLI and its test drives that CLI. The

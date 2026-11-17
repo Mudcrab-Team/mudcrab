@@ -9,7 +9,10 @@ import zipfile
 
 from analyze_skyrim_jump_inputs import analyze_rows, decode, require
 from publish_skyrim_evidence import source_digest
-from capture_skyrim_jump_inputs import ROOT, control_prediction, digest, validate_capture_proof
+from capture_skyrim_jump_inputs import ROOT, SOURCES, control_prediction, digest, validate_capture_proof
+
+LEGACY_CAPTURE_SHA256 = '6e85fa44b471005a5179a88fb220d4a1c12e8ab6341cadc640250d93ebc8d9ad'
+LEGACY_SOURCES = set(SOURCES) - {'scripts/publish_skyrim_evidence.py', 'scripts/skyrim_capture_attempts.py'}
 
 
 def verify(corpus, plan_path):
@@ -29,6 +32,11 @@ def verify(corpus, plan_path):
     baseline = manifest['runs'][0]['result']
     with zipfile.ZipFile(corpus / 'capture-source.zip') as archive:
         captured_sources = {name: archive.read(name) for name in archive.namelist()}
+    capture = 'scripts/capture_skyrim_jump_inputs.py'
+    require(capture in captured_sources, 'Missing capture source')
+    acquisition = source_digest(corpus / 'capture-source.zip', capture, captured_sources[capture])
+    required_sources = LEGACY_SOURCES if acquisition == LEGACY_CAPTURE_SHA256 else set(SOURCES)
+    require(set(captured_sources) == required_sources, 'Archived source set is incomplete or unexpected')
     results = []
     for run, condition in zip(manifest['runs'], conditions):
         fixture = dict(plan['fixture'], **{k: v for k, v in condition.items() if k != 'id'})
@@ -46,6 +54,7 @@ def verify(corpus, plan_path):
         require(run['proof']['exe_sha256'] == plan['runtime_sha256'], 'Recorded runtime differs')
         require(run['proof']['source_save_sha256'] == plan['source_save_sha256'], 'Recorded save differs')
         require(run['proof']['source_save_unchanged'], 'Source save was modified')
+        require(set(run['receipt']['sources']) == required_sources, 'Receipt source set is incomplete or unexpected')
         for source, expected in run['receipt']['sources'].items():
             require(source_digest(corpus / 'capture-source.zip', source, captured_sources[source]) == expected,
                     f'Archived capture source differs {source}')

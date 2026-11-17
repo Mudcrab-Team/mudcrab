@@ -1,9 +1,17 @@
 """Persist capture ownership before collection and recover unfinished attempts."""
 from contextlib import contextmanager
+import fcntl
 import json
 import os
 from pathlib import Path
 import tempfile
+
+
+@contextmanager
+def corpus_lock(corpus):
+    with (corpus / '.capture.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
 
 
 def save_manifest(path, manifest):
@@ -31,12 +39,13 @@ def recover_attempts(path, manifest, private_output, retain=None):
         if any(run['id'] == row['id'] for run in manifest['runs']):
             row['exit_code'] = 0
         else:
-            row['recorder_exit_code'] = row.get('exit_code')
+            row.setdefault('recorder_exit_code', row.get('exit_code'))
             row['exit_code'] = -1
             output = (Path(row['private_output']) if 'private_output' in row else
                       private_output / f"{row['id']}-attempt-{row['attempt']}")
-            fail_attempt(row, output, {'phase': 'interrupted',
-                                      'error': 'Capture interrupted before attempt acceptance'}, retain)
+            failure = row.get('failure', {'phase': 'interrupted',
+                                         'error': 'Capture interrupted before attempt acceptance'})
+            fail_attempt(row, output, failure, retain)
         row.pop('status')
         row.pop('private_output', None)
     if pending:
@@ -52,14 +61,19 @@ def record_attempt(path, manifest, name, number, output, retain=None):
     try:
         yield row
     except BaseException as error:
-        row['recorder_exit_code'] = row['exit_code']
-        if row['exit_code'] in (None, 0):
-            row['exit_code'] = -1
-        if 'failure' not in row:
-            fail_attempt(row, output, {'phase': 'interrupted' if isinstance(error, (KeyboardInterrupt, SystemExit)) else 'capture',
-                                      'error': type(error).__name__}, retain)
+        durable = json.loads(path.read_text())
+        if any(run['id'] == name for run in durable['runs']):
+            row['exit_code'] = 0
+        else:
+            row['recorder_exit_code'] = row['exit_code']
+            if row['exit_code'] in (None, 0):
+                row['exit_code'] = -1
+            if 'failure' not in row:
+                fail_attempt(row, output, {'phase': 'interrupted' if isinstance(error, (KeyboardInterrupt, SystemExit)) else 'capture',
+                                          'error': type(error).__name__}, retain)
         raise
     finally:
-        row.pop('status')
-        row.pop('private_output', None)
+        if not retain or 'failure' not in row or 'path' in row or row.get('trace_status') == 'not-created':
+            row.pop('status')
+            row.pop('private_output', None)
         save_manifest(path, manifest)

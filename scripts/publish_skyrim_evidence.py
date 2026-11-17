@@ -14,7 +14,7 @@ import gzip
 import hashlib
 import io
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import zipfile
 
@@ -96,6 +96,8 @@ def transform(name, data, changes):
         output = io.BytesIO()
         with zipfile.ZipFile(io.BytesIO(data)) as source, zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as dest:
             for entry in source.infolist():
+                if unsafe_member(entry.filename):
+                    raise ValueError(f'Unsafe ZIP member name: {entry.filename}')
                 member = transform(entry.filename, source.read(entry), changes.setdefault(name + '!members', {}))
                 info = zipfile.ZipInfo(entry.filename, (1980, 1, 1, 0, 0, 0))
                 info.compress_type = zipfile.ZIP_DEFLATED
@@ -178,11 +180,18 @@ def candidates(root):
     return sorted(p for p in files if p.exists() and p != root / MANIFEST and '__pycache__' not in p.parts)
 
 
+def unsafe_member(name):
+    normalized = name.replace('\\', '/')
+    return (HOME.search(name.encode()) or PurePosixPath(normalized).is_absolute() or
+            '..' in PurePosixPath(normalized).parts or re.match(r'^[A-Za-z]:', normalized))
+
+
 def findings(name, data):
     if name.endswith('.zip'):
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             return [issue for member in archive.namelist()
-                    for issue in findings(name + '!' + member, archive.read(member))]
+                    for issue in ([f'{name}: unsafe ZIP member name {member}'] if unsafe_member(member) else []) +
+                    findings(name + '!' + member, archive.read(member))]
     if name.endswith('.gz'):
         return findings(name[:-3], gzip.decompress(data))
     issues = []
@@ -229,6 +238,16 @@ def main():
             path.write_bytes(published)
         manifest_path.write_text(json.dumps(publication_record(changes), indent=2, sort_keys=True) + '\n')
     issues = [issue for path in candidates(root) for issue in findings(str(path.relative_to(root)), path.read_bytes())]
+    if manifest_path.exists():
+        issues.extend(findings(MANIFEST, manifest_path.read_bytes()))
+        recorded = json.loads(manifest_path.read_bytes())
+        for name in recorded['changes']:
+            if name.endswith('!members'):
+                continue
+            path = root / name
+            if not path.is_file():
+                raise ValueError(f'Recorded publication artifact missing: {name}')
+            artifact_digest(path, root)
     for path in candidates(root):
         artifact_digest(path, root)
     if issues:

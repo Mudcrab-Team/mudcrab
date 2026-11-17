@@ -228,6 +228,7 @@ class CaptureResumeTests(unittest.TestCase):
                 self.assertEqual(result['failed_attempts'], [failure])
                 if mode == 'proof':
                     archive_path = corpus / 'capture-source.zip'
+                    original_archive = archive_path.read_bytes()
                     with zipfile.ZipFile(archive_path, 'a') as archive:
                         archive.writestr('unexpected-source.py', 'changed source set')
                     archived = archive_path.read_bytes()
@@ -239,6 +240,7 @@ class CaptureResumeTests(unittest.TestCase):
                     self.assertIn('Capture sources changed', error.getvalue())
                     self.assertEqual(archive_path.read_bytes(), archived)
                     self.assertEqual((corpus / 'manifest.json').read_bytes(), manifest_bytes)
+                    archive_path.write_bytes(original_archive)
                 if mode not in ('startup', 'preflight'):
                     (corpus / failure['path']).write_bytes(gzip.compress(b'changed'))
                     with self.assertRaisesRegex(ValueError, 'Failed trace identity'):

@@ -1,4 +1,6 @@
 import contextlib
+import fcntl
+from functools import partial
 import gzip
 import hashlib
 import io
@@ -14,6 +16,7 @@ import zipfile
 import capture_skyrim_jump as v3
 import capture_skyrim_jump_inputs as v4
 from verify_skyrim_jump_inputs import verify
+from skyrim_capture_attempts import record_attempt, recover_attempts, save_manifest
 
 
 def campaign(module, root, frame_cap=None):
@@ -41,6 +44,88 @@ def campaign(module, root, frame_cap=None):
 
 
 class CaptureAttemptTests(unittest.TestCase):
+    def test_corpus_lock_rejects_a_second_capture_before_manifest_mutation(self):
+        for module in (v3, v4):
+            with self.subTest(module=module.__name__), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                argv, _ = campaign(module, root)
+                corpus = root / 'corpus'
+                corpus.mkdir()
+                with (corpus / '.capture.lock').open('a') as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    with patch('sys.argv', argv), patch.object(module.subprocess, 'run',
+                                                               return_value=SimpleNamespace(returncode=1)) as recorder:
+                        with self.assertRaises(BlockingIOError):
+                            module.main()
+                        recorder.assert_not_called()
+                self.assertFalse((corpus / 'manifest.json').exists())
+
+    def test_failed_retention_remains_pending_and_recovers_after_storage_returns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'traces').mkdir()
+            output = root / 'capture'
+            output.mkdir()
+            raw = b'failed capture bytes'
+            (output / 'trace.bin').write_bytes(raw)
+            manifest = dict(runs=[], attempts=[])
+            path = root / 'manifest.json'
+            retain = partial(v4.retain_failure, root)
+            with patch.object(Path, 'write_bytes', side_effect=OSError('storage full')):
+                with self.assertRaises(OSError):
+                    with record_attempt(path, manifest, 'baseline', 1, output, retain) as attempt:
+                        attempt['exit_code'] = 1
+                        retain(output, attempt, dict(phase='recorder', error='capture failed'))
+            saved = json.loads(path.read_text())
+            self.assertEqual(saved['attempts'][0]['status'], 'pending')
+            self.assertEqual(saved['attempts'][0]['private_output'], str(output))
+            recover_attempts(path, saved, root, retain)
+            recovered = saved['attempts'][0]
+            self.assertNotIn('status', recovered)
+            self.assertEqual(recovered['failure']['phase'], 'recorder')
+            self.assertEqual(gzip.decompress((root / recovered['path']).read_bytes()), raw)
+            before = path.read_bytes()
+            recover_attempts(path, saved, root, retain)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_progress_failure_cannot_reclassify_a_durably_accepted_attempt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = dict(runs=[], attempts=[])
+            path = root / 'manifest.json'
+            with self.assertRaises(BrokenPipeError):
+                with record_attempt(path, manifest, 'baseline', 1, root) as attempt:
+                    attempt['exit_code'] = 0
+                    manifest['runs'].append(dict(id='baseline'))
+                    save_manifest(path, manifest)
+                    raise BrokenPipeError('closed progress output')
+            accepted = json.loads(path.read_text())['attempts'][0]
+            self.assertEqual(accepted['exit_code'], 0)
+            self.assertNotIn('failure', accepted)
+            self.assertNotIn('status', accepted)
+
+    def test_selected_conditions_must_follow_plan_order_before_recording(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            argv, _ = campaign(v4, root)
+            plan_path = Path(argv[argv.index('--plan') + 1])
+            plan = json.loads(plan_path.read_text())
+            corpus = root / 'corpus'
+            corpus.mkdir()
+            reference = v4.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4/manifest.json'
+            baseline = json.loads(reference.read_text())['runs'][0]
+            manifest = dict(schema=1, profile='jump-inputs-v4', plan_sha256=v4.digest(plan_path),
+                            runtime_sha256=plan['runtime_sha256'], runs=[baseline], attempts=[])
+            (corpus / 'manifest.json').write_text(json.dumps(manifest))
+            argv[argv.index('--condition') + 1] = 'reference-125'
+            with patch('sys.argv', argv), patch.object(v4.subprocess, 'run',
+                                                     side_effect=AssertionError('recording began out of order')) as recorder, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaisesRegex(SystemExit, '2'):
+                    v4.main()
+                recorder.assert_not_called()
+            self.assertEqual(json.loads((corpus / 'manifest.json').read_text()), manifest)
+
     def test_missing_import_can_retry_and_pass_offline_verification(self):
         reference = v4.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
         observed = json.loads((reference / 'manifest.json').read_text())['runs'][0]
@@ -189,17 +274,18 @@ class CaptureAttemptTests(unittest.TestCase):
     def test_offline_verification_rejects_failed_proofs_and_wrong_fixtures(self):
         reference = v4.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
         plan = v4.ROOT / 'tools/skyrim-recorder/fixtures/jump-inputs-v4.json'
-        for mode in ('failed', 'fixture-hash', 'fixture-label'):
+        for mode in ('failed', 'fixture-hash', 'fixture-label', 'missing-source'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 corpus = Path(directory) / 'corpus'
                 shutil.copytree(reference, corpus)
                 manifest = json.loads((corpus / 'manifest.json').read_text())
                 # A fresh test campaign uses current sources, without historical publication transforms.
+                sources = v4.SOURCES[:-1] if mode == 'missing-source' else v4.SOURCES
                 with zipfile.ZipFile(corpus / 'capture-source.zip', 'w') as archive:
-                    for name in v4.SOURCES:
+                    for name in sources:
                         archive.writestr(name, (v4.ROOT / name).read_bytes())
                 for run in manifest['runs']:
-                    run['receipt']['sources'] = {name: v4.digest(v4.ROOT / name) for name in v4.SOURCES}
+                    run['receipt']['sources'] = {name: v4.digest(v4.ROOT / name) for name in sources}
                 baseline = manifest['runs'][0]
                 if mode == 'failed':
                     baseline['proof']['status'] = 'failed'
@@ -207,10 +293,10 @@ class CaptureAttemptTests(unittest.TestCase):
                     other = dict(baseline['fixture'], yaw_degrees=180)
                     baseline['proof']['fixture_sha256'] = hashlib.sha256(
                         (json.dumps(other, indent=2) + '\n').encode()).hexdigest()
-                else:
+                elif mode == 'fixture-label':
                     baseline['fixture']['yaw_degrees'] = 180
                 (corpus / 'manifest.json').write_text(json.dumps(manifest))
-                with self.assertRaisesRegex(ValueError, 'proof|fixture'):
+                with self.assertRaisesRegex(ValueError, 'proof|fixture|source'):
                     verify(corpus, plan)
 
 
