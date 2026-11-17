@@ -3,18 +3,25 @@
 //!
 //! A pack without that table has no object chunks, so nothing here runs for it. For a pack with
 //! it the load fails closed: the rows are validated by [`crate::world::database::load_lod_object_chunks`]
-//! and every listed file is hash-checked before any chunk is drawn. A damaged row, a missing file or
-//! a wrong hash logs an error, draws no object LOD for that pack and is recorded in
-//! [`LodObjects::failure`], never skipped chunk by chunk.
+//! and every listed file is hash-checked, one IO-pool task per file, before any chunk is drawn. A
+//! damaged row, a missing file or a wrong hash logs one error, draws no object LOD for that pack
+//! and is recorded in [`LodObjects::failure`], never skipped chunk by chunk.
 //!
 //! Which chunks draw follows the retail object rule (RF-LOD-004): a chunk of tier `t` draws when
-//! [`TerrainLodDistances::object_tier`] picks `t` for its cells. A tier-16 chunk is therefore drawn
-//! between `fBlockLevel1Distance` and `fBlockMaximumDistance` from the camera. Object chunks do not
-//! hand off to full detail yet: the inner tiers (8 and 4) are not published in the first slice.
+//! [`TerrainLodDistances::object_tier`] picks `t` for its cells. **Only tier 16 draws in this
+//! slice.** A tier-16 chunk draws between `fBlockLevel1Distance` and `fBlockMaximumDistance` from
+//! the camera, where it never meets the loaded grid. Tier 8 and tier 4 rows are ignored, because
+//! object chunks do not hand off to full detail yet and tier 4 would overlap the loaded cells.
+//!
+//! The system runs before `update_render_origin`, so a root spawned in the frame the origin shifts
+//! is rebased in that frame. Spawns follow the streaming controls and the commit budget that
+//! terrain chunks use. The verified rows are kept while the worldspace is unchanged, so leaving
+//! and re-entering the exterior (a door) does not read or hash them again.
 
 use super::{
-    ActiveSpace, RenderOrigin,
+    ActiveSpace, RenderOrigin, StreamingCommitBudget,
     lod::{LodChunkGridOrigin, chunk_min_grid, lod_worldspace, streaming_center},
+    runtime::StreamingRuntime,
 };
 use crate::{
     config::{EngineConfig, TerrainLodDistances},
@@ -29,8 +36,8 @@ use bevy::{
     tasks::{IoTaskPool, Task, block_on},
     world_serialization::{WorldAsset, WorldAssetRoot},
 };
-use shared::lod::ChunkKey;
-use std::{collections::HashMap, path::PathBuf};
+use shared::lod::{ChunkKey, LodTier};
+use std::collections::{HashMap, HashSet};
 
 /// The worldspace multiplier for object LOD (RF-LOD-005): the WRLD `NAMA` value, 1.0 unless the
 /// worldspace says otherwise. The pack does not carry `NAMA` yet, so every worldspace uses 1.0,
@@ -44,15 +51,20 @@ pub struct LodObjectRoot {
     pub key: ChunkKey,
 }
 
+/// One payload check in flight.
+type Check = (LodChunkMetadata, Task<Result<(), String>>);
+
 /// Where the object chunks of the streamed worldspace stand.
 #[derive(Resource, Default)]
 pub struct LodObjects {
     worldspace_id: Option<u32>,
     generation: u64,
     requested: bool,
-    /// Rows read from the database and waiting for their payload check.
-    verifying: Option<Task<Result<Vec<LodChunkMetadata>, String>>>,
-    /// Chunks that passed validation and the payload check.
+    /// One payload check per listed chunk, on the IO pool. Dropping the tasks cancels them.
+    checking: Vec<Check>,
+    /// Chunks whose check has passed while the others are still running.
+    checked: Vec<LodChunkMetadata>,
+    /// Every listed chunk, after all checks passed. Object LOD draws only from this.
     chunks: Vec<LodChunkMetadata>,
     roots: HashMap<ChunkKey, Entity>,
     /// The camera cell and distances the current selection was made for.
@@ -77,18 +89,26 @@ impl LodObjects {
         self.roots.len()
     }
 
+    /// A new worldspace: forget everything, including the verified rows.
     fn reset(&mut self, commands: &mut Commands, worldspace_id: Option<u32>) {
-        for (_, root) in self.roots.drain() {
-            commands.entity(root).try_despawn();
-        }
+        self.suspend(commands);
         self.worldspace_id = worldspace_id;
         self.generation = self.generation.wrapping_add(1);
         self.requested = false;
-        self.verifying = None;
+        self.checking.clear();
+        self.checked.clear();
         self.chunks.clear();
+        self.failure = None;
+    }
+
+    /// No exterior to draw in (an interior, or LOD off): drop the roots and the selection but keep
+    /// the rows and their verified state, so coming back does not read or hash them again.
+    fn suspend(&mut self, commands: &mut Commands) {
+        for (_, root) in self.roots.drain() {
+            commands.entity(root).try_despawn();
+        }
         self.last_center = None;
         self.last_distances = None;
-        self.failure = None;
     }
 
     /// Submits the one-time row request. `requested` is set only after the worker accepted it, so
@@ -113,6 +133,53 @@ impl LodObjects {
         self.last_center = Some(center);
         self.last_distances = Some(*distances);
         true
+    }
+
+    /// Starts one payload check per listed chunk.
+    fn start_checks(&mut self, chunks: Vec<LodChunkMetadata>, assets: &std::path::Path) {
+        self.checked.clear();
+        self.checking = chunks
+            .into_iter()
+            .map(|chunk| {
+                let assets = assets.to_owned();
+                let listed = chunk.clone();
+                let task = IoTaskPool::get().spawn(async move {
+                    verify_lod_object_payloads(&assets, std::slice::from_ref(&listed))
+                        .map_err(|error| format!("{error:#}"))
+                });
+                (chunk, task)
+            })
+            .collect();
+    }
+
+    /// Collects finished checks. The first failure turns object LOD off for the pack and cancels
+    /// the rest; when every check passed, the chunks become drawable.
+    fn poll_checks(&mut self) {
+        if self.checking.is_empty() || self.failure.is_some() {
+            return;
+        }
+        for (chunk, task) in std::mem::take(&mut self.checking) {
+            if !task.is_finished() {
+                self.checking.push((chunk, task));
+                continue;
+            }
+            match block_on(task) {
+                Ok(()) => self.checked.push(chunk),
+                Err(reason) => {
+                    let reason = format!("object LOD is off for this pack: {reason}");
+                    error!("{reason}");
+                    self.failure = Some(reason);
+                    self.checking.clear();
+                    self.checked.clear();
+                    return;
+                }
+            }
+        }
+        if self.checking.is_empty() {
+            let mut chunks = std::mem::take(&mut self.checked);
+            chunks.sort_by_key(|chunk| chunk.key);
+            self.chunks = chunks;
+        }
     }
 }
 
@@ -146,8 +213,10 @@ fn object_root_bundle(
     )
 }
 
-/// The chunks that draw from the camera cell `camera`: those whose cells fall in the tier the
-/// object rule picks for them. All cells of a chunk share its box, so the first cell decides.
+/// The chunks that draw from the camera cell `camera`: tier-16 chunks whose cells fall in the tier
+/// the object rule picks for them. All cells of a chunk share its box, so the first cell decides.
+/// Tier 8 and tier 4 chunks are never selected in this slice: they would draw over the loaded
+/// grid with no hand-off to full detail.
 pub fn wanted_object_chunks(
     chunks: &[LodChunkMetadata],
     camera: IVec2,
@@ -156,6 +225,7 @@ pub fn wanted_object_chunks(
 ) -> Vec<ChunkKey> {
     chunks
         .iter()
+        .filter(|chunk| chunk.key.tier == LodTier::Tier16)
         .filter(|chunk| {
             let (x, y) = chunk_min_grid(chunk.key, chunk.origin);
             let cell = IVec2::new(x as i32, y as i32);
@@ -167,7 +237,7 @@ pub fn wanted_object_chunks(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn update_lod_objects(
+pub(super) fn update_lod_objects(
     mut commands: Commands,
     config: Res<EngineConfig>,
     space: Option<Res<ActiveSpace>>,
@@ -175,35 +245,33 @@ pub fn update_lod_objects(
     origin: Res<RenderOrigin>,
     camera: Query<&Transform, With<StreamingCamera>>,
     asset_server: Res<AssetServer>,
+    runtime: Option<Res<StreamingRuntime>>,
+    mut budget: ResMut<StreamingCommitBudget>,
     mut objects: ResMut<LodObjects>,
 ) {
     let Ok(camera) = camera.single() else {
         return;
     };
     let worldspace = lod_worldspace(config.stream_radius, space.as_deref(), config.worldspace_id);
-    if objects.worldspace_id != worldspace {
-        objects.reset(&mut commands, worldspace);
-    }
     let Some(worldspace_id) = worldspace else {
+        // An interior, or LOD off: keep the verified rows, drop what is drawn.
+        objects.suspend(&mut commands);
         return;
     };
+    if objects.worldspace_id != Some(worldspace_id) {
+        objects.reset(&mut commands, Some(worldspace_id));
+    }
     objects.submit_request(&database, worldspace_id);
 
-    // Rows arrive from the database worker; a failure turns object LOD off for this pack.
+    // Rows arrive from the database worker; a failure turns object LOD off for this pack. A
+    // response of an older generation belongs to a worldspace that is no longer streamed.
     while let Some(response) = database.try_lod_object_response() {
         if response.generation != objects.generation || response.worldspace_id != worldspace_id {
             continue;
         }
         match response.result {
             Ok(chunks) if chunks.is_empty() => {}
-            Ok(chunks) => {
-                let assets: PathBuf = config.assets_dir.clone();
-                objects.verifying = Some(IoTaskPool::get().spawn(async move {
-                    verify_lod_object_payloads(&assets, &chunks)
-                        .map(|()| chunks)
-                        .map_err(|error| format!("{error:#}"))
-                }));
-            }
+            Ok(chunks) => objects.start_checks(chunks, &config.assets_dir),
             Err(failure) => {
                 let reason = format!("object LOD chunk rows are invalid: {}", failure.reason);
                 error!("{reason}");
@@ -211,17 +279,7 @@ pub fn update_lod_objects(
             }
         }
     }
-    if objects.verifying.as_ref().is_some_and(Task::is_finished) {
-        let task = objects.verifying.take().expect("finished task exists");
-        match block_on(task) {
-            Ok(chunks) => objects.chunks = chunks,
-            Err(reason) => {
-                let reason = format!("object LOD is off for this pack: {reason}");
-                error!("{reason}");
-                objects.failure = Some(reason);
-            }
-        }
-    }
+    objects.poll_checks();
     if objects.failure.is_some() || objects.chunks.is_empty() {
         return;
     }
@@ -230,7 +288,7 @@ pub fn update_lod_objects(
     if !objects.selection_changed(center, &config.terrain_lod) {
         return;
     }
-    let wanted: std::collections::HashSet<ChunkKey> = wanted_object_chunks(
+    let wanted: HashSet<ChunkKey> = wanted_object_chunks(
         &objects.chunks,
         center,
         &config.terrain_lod,
@@ -255,13 +313,29 @@ pub fn update_lod_objects(
         .filter(|chunk| wanted.contains(&chunk.key) && !objects.roots.contains_key(&chunk.key))
         .cloned()
         .collect();
+    // Spawns follow the streaming controls and the commit budget terrain chunks use. Chunks left
+    // over make the next frame select again.
+    let mut deferred = false;
     for chunk in to_spawn {
+        if runtime
+            .as_deref()
+            .is_some_and(|runtime| !runtime.cell_requests_allowed())
+            || budget.remaining == 0
+        {
+            deferred = true;
+            break;
+        }
+        budget.remaining -= 1;
+        budget.commits = budget.commits.saturating_add(1);
         let handle: Handle<WorldAsset> =
             asset_server.load(GltfAssetLabel::Scene(0).from_asset(chunk.payload_path.clone()));
         let root = commands
             .spawn((object_root_bundle(&chunk, origin.0), WorldAssetRoot(handle)))
             .id();
         objects.roots.insert(chunk.key, root);
+    }
+    if deferred {
+        objects.last_center = None;
     }
 }
 
@@ -442,8 +516,381 @@ mod tests {
         );
     }
 
+    /// A chunk of `tier` at `anchor` in Tamriel (LOD origin -96).
+    fn chunk_of(tier: LodTier, anchor_x: i32, anchor_y: i32) -> LodChunkMetadata {
+        let mut chunk = chunk(anchor_x, anchor_y);
+        chunk.key = ChunkKey::new(60, tier, ChunkAnchor::new(anchor_x, anchor_y));
+        chunk.payload_path = shared::lod::object_chunk_payload_path(chunk.key);
+        chunk
+    }
+
     #[test]
-    fn the_default_nama_is_the_retail_one_for_tamriel() {
-        assert_eq!(OBJECT_LOD_NAMA, 1.0);
+    fn only_tier_16_rows_are_selected_in_this_slice() {
+        let distances = TerrainLodDistances::default();
+        let camera = IVec2::new(5, -12);
+        // The object rule picks tier 8 for cell (24, -16) and tier 4 for cell (8, -12) from this
+        // camera, so these rows would draw if tiers were not filtered.
+        let tier8 = chunk_of(LodTier::Tier8, 15, 10);
+        let tier4 = chunk_of(LodTier::Tier4, 26, 21);
+        for (row, tier, cell) in [
+            (&tier8, LodTier::Tier8, IVec2::new(24, -16)),
+            (&tier4, LodTier::Tier4, IVec2::new(8, -12)),
+        ] {
+            assert_eq!(
+                distances.object_tier(camera, cell, IVec2::new(-96, -96), 1.0),
+                Some(tier),
+                "the rule alone would draw this row"
+            );
+            assert_eq!(
+                chunk_min_grid(row.key, row.origin),
+                (i64::from(cell.x), i64::from(cell.y))
+            );
+        }
+        let rows = [tier8, tier4, chunk(4, 4)];
+        let wanted = wanted_object_chunks(&rows, camera, &distances, OBJECT_LOD_NAMA);
+        assert_eq!(
+            wanted,
+            vec![rows[2].key],
+            "only the tier-16 row is selected"
+        );
+    }
+
+    // ---- The real `update_lod_objects` system -------------------------------------------------
+
+    use crate::{
+        profiling::ProfilingState,
+        streaming::{StreamingMetrics, runtime::StreamingRuntime},
+        world::database::{DatabaseRequest, LodObjectResponse},
+    };
+    use bevy::asset::{AssetApp, AssetPlugin};
+    use crossbeam_channel::{Receiver, Sender};
+    use sha2::{Digest, Sha256};
+    use std::time::{Duration, Instant};
+
+    /// The real system on a real `AssetServer` and a temporary assets folder, with a database
+    /// whose object channel the test answers itself.
+    struct Rig {
+        app: App,
+        requests: Receiver<DatabaseRequest>,
+        responses: Sender<LodObjectResponse>,
+        assets: tempfile::TempDir,
+        camera: Entity,
+    }
+
+    /// Camera at the centre of cell (5, -12), Riverwood: chunk (4, 4) is in the tier-16 ring.
+    const RIVERWOOD: Vec3 = Vec3::new(5.5 * CELL_SIZE, 0.0, 11.5 * CELL_SIZE);
+    /// Camera inside the block of chunk (4, 4), where tier 16 does not draw.
+    const INSIDE_CHUNK_4_4: Vec3 = Vec3::new(-20.5 * CELL_SIZE, 0.0, 20.5 * CELL_SIZE);
+
+    fn rig(with_rebase: bool) -> Rig {
+        let assets = tempfile::tempdir().unwrap();
+        let (database, requests, responses) = WorldDatabase::channel_fixture_with_lod_objects(4);
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin {
+                file_path: assets.path().to_string_lossy().into_owned(),
+                ..default()
+            },
+        ))
+        .init_asset::<WorldAsset>()
+        .insert_resource(EngineConfig {
+            assets_dir: assets.path().into(),
+            worldspace_id: 60,
+            headless: true,
+            ..default()
+        })
+        .insert_resource(database)
+        .insert_resource(RenderOrigin(IVec2::ZERO))
+        .insert_resource(StreamingCommitBudget {
+            remaining: 100,
+            ..default()
+        })
+        .init_resource::<LodObjects>();
+        if with_rebase {
+            app.init_resource::<ActiveSpace>()
+                .init_resource::<StreamingMetrics>()
+                .init_resource::<ProfilingState>()
+                .add_systems(
+                    Update,
+                    (
+                        update_lod_objects.before(super::super::update_render_origin),
+                        super::super::update_render_origin,
+                    ),
+                );
+        } else {
+            app.add_systems(Update, update_lod_objects);
+        }
+        let camera = app
+            .world_mut()
+            .spawn((StreamingCamera, Transform::from_translation(RIVERWOOD)))
+            .id();
+        Rig {
+            app,
+            requests,
+            responses,
+            assets,
+            camera,
+        }
+    }
+
+    impl Rig {
+        fn objects(&self) -> &LodObjects {
+            self.app.world().resource::<LodObjects>()
+        }
+
+        fn move_camera(&mut self, to: Vec3) {
+            self.app
+                .world_mut()
+                .entity_mut(self.camera)
+                .get_mut::<Transform>()
+                .unwrap()
+                .translation = to;
+        }
+
+        /// Writes `bytes` as the chunk's payload and records their hash in the row.
+        fn write_payload(&self, chunk: &mut LodChunkMetadata, bytes: &[u8]) {
+            chunk.content_hash = Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            let path = self.assets.path().join(&chunk.payload_path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+
+        /// Runs one frame, takes the system's row request and answers it with `chunks`. The
+        /// answer carries the request's generation plus `generation_offset`.
+        fn answer(&mut self, chunks: Vec<LodChunkMetadata>, generation_offset: u64) {
+            self.app.update();
+            let Ok(DatabaseRequest::LoadLodObjectChunks {
+                generation,
+                worldspace_id,
+                ..
+            }) = self.requests.try_recv()
+            else {
+                panic!("the system did not request the object chunks");
+            };
+            self.responses
+                .send(LodObjectResponse {
+                    generation: generation + generation_offset,
+                    worldspace_id,
+                    result: Ok(chunks),
+                })
+                .unwrap();
+        }
+
+        /// Runs frames until `done` holds, or fails after a deadline.
+        fn run_until(&mut self, what: &str, done: impl Fn(&Rig) -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !done(self) {
+                assert!(Instant::now() < deadline, "timed out waiting for {what}");
+                std::thread::sleep(Duration::from_millis(5));
+                self.app.update();
+            }
+        }
+
+        fn root_count(&mut self) -> usize {
+            self.app
+                .world_mut()
+                .query::<&LodObjectRoot>()
+                .iter(self.app.world())
+                .count()
+        }
+    }
+
+    #[test]
+    fn a_missing_payload_turns_object_lod_off_once_and_spawns_nothing() {
+        let mut rig = rig(false);
+        let mut good = chunk(4, 4);
+        rig.write_payload(&mut good, b"good");
+        let missing = chunk(8, 8); // listed, never written
+        rig.answer(vec![good, missing], 0);
+        rig.run_until("the failure", |rig| rig.objects().failure().is_some());
+        let reason = rig.objects().failure().unwrap().to_owned();
+        assert!(
+            reason.contains("x: 8"),
+            "the error names the chunk: {reason}"
+        );
+        // The good chunk is in range but must not draw: the pack fails closed as a whole.
+        for _ in 0..5 {
+            rig.app.update();
+        }
+        assert_eq!(rig.objects().resident(), 0);
+        assert_eq!(rig.root_count(), 0);
+        assert_eq!(
+            rig.objects().failure(),
+            Some(reason.as_str()),
+            "one error, kept"
+        );
+        assert!(rig.objects().chunks().is_empty());
+    }
+
+    #[test]
+    fn a_hash_mismatch_fails_closed_too() {
+        let mut rig = rig(false);
+        let mut chunk = chunk(4, 4);
+        rig.write_payload(&mut chunk, b"as converted");
+        std::fs::write(rig.assets.path().join(&chunk.payload_path), b"damaged").unwrap();
+        rig.answer(vec![chunk], 0);
+        rig.run_until("the failure", |rig| rig.objects().failure().is_some());
+        assert!(rig.objects().failure().unwrap().contains("SHA-256"));
+        assert_eq!(rig.objects().resident(), 0);
+    }
+
+    #[test]
+    fn verified_chunks_in_range_spawn_through_the_system() {
+        let mut rig = rig(false);
+        let mut chunk = chunk(4, 4);
+        rig.write_payload(&mut chunk, b"glb");
+        let expected = object_root_bundle(&chunk, IVec2::ZERO).3.translation;
+        rig.answer(vec![chunk], 0);
+        rig.run_until("the root", |rig| rig.objects().resident() == 1);
+        assert!(rig.objects().failure().is_none());
+        let mut roots = rig.app.world_mut().query::<(&LodObjectRoot, &Transform)>();
+        let found: Vec<_> = roots.iter(rig.app.world()).collect();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0.key.anchor, ChunkAnchor::new(4, 4));
+        assert_eq!(found[0].1.translation, expected);
+    }
+
+    #[test]
+    fn a_response_of_an_older_generation_is_dropped() {
+        let mut rig = rig(false);
+        let mut chunk = chunk(4, 4);
+        rig.write_payload(&mut chunk, b"glb");
+        // The generation of a worldspace that is no longer streamed (offset 5 is never current).
+        rig.answer(vec![chunk], 5);
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(5));
+            rig.app.update();
+        }
+        assert!(rig.objects().chunks().is_empty());
+        assert!(rig.objects().checking.is_empty());
+        assert!(rig.objects().failure().is_none());
+        assert_eq!(rig.root_count(), 0);
+    }
+
+    #[test]
+    fn leaving_the_ring_despawns_the_root_and_coming_back_spawns_it() {
+        let mut rig = rig(false);
+        let mut chunk = chunk(4, 4);
+        rig.write_payload(&mut chunk, b"glb");
+        rig.answer(vec![chunk], 0);
+        rig.run_until("the root", |rig| rig.objects().resident() == 1);
+        rig.move_camera(INSIDE_CHUNK_4_4);
+        rig.app.update();
+        assert_eq!(rig.objects().resident(), 0);
+        assert_eq!(rig.root_count(), 0, "the entity is despawned");
+        rig.move_camera(RIVERWOOD);
+        rig.app.update();
+        assert_eq!(rig.root_count(), 1);
+    }
+
+    #[test]
+    fn an_interior_visit_keeps_the_verified_rows() {
+        let mut rig = rig(false);
+        let mut chunk = chunk(4, 4);
+        rig.write_payload(&mut chunk, b"glb");
+        rig.answer(vec![chunk], 0);
+        rig.run_until("the root", |rig| rig.objects().resident() == 1);
+        // A negative stream radius stands for "no exterior" (as an interior does).
+        rig.app
+            .world_mut()
+            .resource_mut::<EngineConfig>()
+            .stream_radius = -1;
+        rig.app.update();
+        assert_eq!(rig.root_count(), 0, "nothing draws indoors");
+        assert_eq!(
+            rig.objects().chunks().len(),
+            1,
+            "the verified rows are kept"
+        );
+        rig.app
+            .world_mut()
+            .resource_mut::<EngineConfig>()
+            .stream_radius = 2;
+        rig.app.update();
+        assert_eq!(rig.root_count(), 1, "the root returns");
+        assert!(
+            rig.requests.try_recv().is_err(),
+            "no second row request and no second hash pass"
+        );
+    }
+
+    #[test]
+    fn spawns_wait_for_the_commit_budget_and_the_streaming_controls() {
+        let mut rig = rig(false);
+        let mut chunk = chunk(4, 4);
+        rig.write_payload(&mut chunk, b"glb");
+        rig.app
+            .world_mut()
+            .resource_mut::<StreamingCommitBudget>()
+            .remaining = 0;
+        rig.answer(vec![chunk], 0);
+        rig.run_until("the verified rows", |rig| {
+            !rig.objects().chunks().is_empty()
+        });
+        rig.app.update();
+        assert_eq!(rig.root_count(), 0, "no commit budget, no spawn");
+        rig.app
+            .world_mut()
+            .resource_mut::<StreamingCommitBudget>()
+            .remaining = 1;
+        rig.app.update();
+        assert_eq!(
+            rig.root_count(),
+            1,
+            "the deferred spawn follows when budget returns"
+        );
+        assert_eq!(
+            rig.app.world().resource::<StreamingCommitBudget>().commits,
+            1,
+            "the spawn counts against the budget"
+        );
+    }
+
+    #[test]
+    fn a_root_spawned_in_the_frame_the_render_origin_shifts_is_rebased_that_frame() {
+        let mut rig = rig(true);
+        let mut chunk = chunk(4, 4);
+        rig.write_payload(&mut chunk, b"glb");
+        // Start where tier 16 does not draw, so the rows are verified and nothing is spawned.
+        rig.move_camera(INSIDE_CHUNK_4_4);
+        rig.answer(vec![chunk], 0);
+        rig.run_until("the verified rows", |rig| {
+            !rig.objects().chunks().is_empty()
+        });
+        rig.app.update();
+        assert_eq!(rig.root_count(), 0);
+        let origin_before = rig.app.world().resource::<RenderOrigin>().0;
+
+        // One frame: the camera enters the ring (the system spawns with the old origin) and is
+        // far enough from the origin for `update_render_origin` to shift it.
+        // The first frames already rebased the origin, so the target is given relative to it: the
+        // camera stands in global cell (5, -12), which is `translation = global - origin`.
+        rig.move_camera(Vec3::new(
+            (5.5 - origin_before.x as f32) * CELL_SIZE,
+            0.0,
+            (11.5 + origin_before.y as f32) * CELL_SIZE,
+        ));
+        rig.app.update();
+        let origin = rig.app.world().resource::<RenderOrigin>().0;
+        assert_ne!(origin, origin_before, "the origin shifted in this frame");
+        let mut roots = rig.app.world_mut().query::<(&LodObjectRoot, &Transform)>();
+        let found: Vec<_> = roots.iter(rig.app.world()).collect();
+        assert_eq!(found.len(), 1, "the root spawned in the same frame");
+        // Chunk (4, 4) starts at cell (-32, -32): it must sit where a terrain chunk of that cell
+        // sits for the new origin, not for the old one.
+        assert_eq!(
+            found[0].1.translation,
+            Vec3::new(
+                (-32 - origin.x) as f32 * CELL_SIZE,
+                0.0,
+                -((-32 - origin.y) as f32) * CELL_SIZE,
+            )
+        );
+        // The runtime controls are optional: the rig has none, as many headless tests do.
+        assert!(rig.app.world().get_resource::<StreamingRuntime>().is_none());
     }
 }

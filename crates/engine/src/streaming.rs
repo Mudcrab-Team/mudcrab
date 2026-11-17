@@ -157,7 +157,9 @@ impl Plugin for StreamingPlugin {
             .add_observer(lod::mark_lod_world_instance_ready)
             .add_systems(
                 Update,
-                lod_objects::update_lod_objects.after(lod::plan_lod_chunks),
+                lod_objects::update_lod_objects
+                    .after(lod::plan_lod_chunks)
+                    .before(update_render_origin),
             )
             .add_systems(
                 Update,

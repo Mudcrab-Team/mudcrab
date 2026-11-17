@@ -814,6 +814,30 @@ impl WorldDatabase {
         )
     }
 
+    /// [`Self::channel_fixture`] that keeps the object LOD response sender, so a test can answer
+    /// an object chunk request itself.
+    #[cfg(test)]
+    pub(crate) fn channel_fixture_with_lod_objects(
+        capacity: usize,
+    ) -> (Self, Receiver<DatabaseRequest>, Sender<LodObjectResponse>) {
+        let (requests, request_rx) = bounded(capacity);
+        let (_response_tx, responses) = unbounded();
+        let (_lod_tx, lod_responses) = unbounded();
+        let (lod_object_tx, lod_object_responses) = unbounded();
+        (
+            Self {
+                requests,
+                responses,
+                lod_responses,
+                lod_object_responses,
+                worker: None,
+                worker_stopped: Arc::new(AtomicBool::new(true)),
+            },
+            request_rx,
+            lod_object_tx,
+        )
+    }
+
     /// Opens available core doors, including legacy packages with no door table.
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_with(path, WorldDatabaseFeatures::default())
