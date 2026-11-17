@@ -28,7 +28,10 @@
 //! possible owners. Automatic assignment and updates keep missing source spheres drawn. Initial
 //! named targets follow direct native attachment. Each mesh still tests its own bounds.
 //!
-//! In legacy graphs, a static object's containing and overlapping rooms supply candidate volumes.
+//! In legacy graphs, references without stored model bounds stay drawn. Pivot-only membership
+//! cannot establish overlap coverage, even when a loaded mesh supplies an AABB.
+//! A static object's containing and overlapping rooms supply candidate volumes.
+
 //! An object with one pivot-containing room is hidden when its mesh bounds miss every candidate
 //! volume. The mesh's current AABB is transformed into cell-local space with its full affine
 //! transform, including rotation, scale, and shear. Missing or invalid bounds and `NoFrustumCulling`
@@ -1187,6 +1190,7 @@ pub fn cull_room_views(
         Option<&RigidBody>,
         Has<RoomCullExempt>,
         Has<RoomCullLegacyExempt>,
+        Has<ExpectedModelBounds>,
     )>,
     mut owners: Local<HashMap<Entity, (u32, Entity)>>,
     mut assignments: Local<RoomAssignmentCache>,
@@ -1266,12 +1270,18 @@ pub fn cull_room_views(
                     .as_ref()
                     .is_some_and(|authored| authored.has_source_bound(form_id));
                 let exempted = |entity| {
-                    exemptions.get(entity).is_ok_and(|(body, marked, legacy)| {
-                        marked
-                            || (legacy && loaded.graph.authored.is_none())
-                            || (body.is_some_and(|body| body_moves(*body))
-                                && (entity != reference || !has_bound))
-                    })
+                    exemptions
+                        .get(entity)
+                        .is_ok_and(|(body, marked, legacy, has_model_bounds)| {
+                            marked
+                                // Authored rules and source spheres supply ownership independently.
+                            || (entity == reference
+                                && !has_model_bounds
+                                && loaded.graph.authored.is_none())
+                                || (legacy && loaded.graph.authored.is_none())
+                                || (body.is_some_and(|body| body_moves(*body))
+                                    && (entity != reference || !has_bound))
+                        })
                 };
                 let mut ancestor = entity;
                 for _ in 0..=32 {
@@ -1502,6 +1512,50 @@ mod tests {
     }
 
     #[test]
+    fn an_initial_named_target_does_not_require_legacy_stored_bounds() {
+        let connection = authored_database();
+        insert_room(&connection, 1, 7, [0.0; 3]);
+        insert_room(&connection, 2, 7, [0.0, 25.0, 0.0]);
+        connection
+            .execute_batch(
+                "INSERT INTO \"references\"(id,cell_id,base_form_id) VALUES(2,7,99);
+             INSERT INTO room_reference_rules VALUES(2,7,'target',2);",
+            )
+            .unwrap();
+        let graph = load_room_graph(&connection, 7).unwrap();
+        let mut scene = scene();
+        scene
+            .app
+            .world_mut()
+            .resource_mut::<RoomCullingState>()
+            .graphs
+            .get_mut(&7)
+            .unwrap()
+            .graph = graph;
+        let reference = scene
+            .app
+            .world()
+            .get::<ChildOf>(scene.far)
+            .unwrap()
+            .parent();
+        scene
+            .app
+            .world_mut()
+            .entity_mut(reference)
+            .remove::<ExpectedModelBounds>()
+            .insert(GlobalTransform::IDENTITY);
+        scene.app.world_mut().entity_mut(scene.far).insert((
+            Aabb::from_min_max(-Vec3::splat(0.5), Vec3::splat(0.5)),
+            GlobalTransform::from_translation(Vec3::new(0.0, 0.0, -25.0)),
+        ));
+        run_cull(&mut scene.app);
+        assert!(
+            !mesh_list(&scene.app, scene.camera).contains(&scene.far),
+            "an explicit initial target supplies ownership without geometric memberships or spheres"
+        );
+    }
+
+    #[test]
     fn current_source_bound_assignment_replaces_stale_membership_for_a_moving_reference() {
         assert!(assignment_follows_transform(Some("ACTI")));
         let connection = authored_database();
@@ -1531,11 +1585,16 @@ mod tests {
             .get::<ChildOf>(scene.far)
             .unwrap()
             .parent();
-        scene.app.world_mut().entity_mut(reference).insert((
-            GlobalTransform::IDENTITY,
-            RigidBody::Dynamic,
-            RoomCullLegacyExempt,
-        ));
+        scene
+            .app
+            .world_mut()
+            .entity_mut(reference)
+            .remove::<ExpectedModelBounds>()
+            .insert((
+                GlobalTransform::IDENTITY,
+                RigidBody::Dynamic,
+                RoomCullLegacyExempt,
+            ));
         scene.app.world_mut().entity_mut(scene.far).insert((
             Aabb::from_min_max(-Vec3::splat(0.5), Vec3::splat(0.5)),
             GlobalTransform::from_translation(Vec3::new(0.0, 0.0, -25.0)),
@@ -2299,9 +2358,23 @@ mod tests {
         app.world_mut()
             .resource_mut::<RoomCullingState>()
             .insert_graph(7, root, graph);
-        let near_ref = app.world_mut().spawn((FormId(1), ChildOf(root))).id();
+        let near_ref = app
+            .world_mut()
+            .spawn((
+                FormId(1),
+                ChildOf(root),
+                ExpectedModelBounds::new(-Vec3::ONE, Vec3::ONE).unwrap(),
+            ))
+            .id();
         let near = app.world_mut().spawn(ChildOf(near_ref)).id();
-        let far_ref = app.world_mut().spawn((FormId(2), ChildOf(root))).id();
+        let far_ref = app
+            .world_mut()
+            .spawn((
+                FormId(2),
+                ChildOf(root),
+                ExpectedModelBounds::new(-Vec3::ONE, Vec3::ONE).unwrap(),
+            ))
+            .id();
         let far = app.world_mut().spawn(ChildOf(far_ref)).id();
         let loose = app.world_mut().spawn(ChildOf(root)).id();
         let list = |entities: &[Entity]| {
@@ -2539,6 +2612,42 @@ mod tests {
     }
 
     #[test]
+    fn missing_stored_bounds_keep_a_floor_that_extends_out_of_its_pivot_room() {
+        let mut scene = scene();
+        let reference = scene
+            .app
+            .world()
+            .get::<ChildOf>(scene.far)
+            .unwrap()
+            .parent();
+        // The rear pivot has no overlap rows because the converted model bounds were invalid.
+        // Its loaded mesh still extends through the camera's room into the forward view.
+        scene
+            .app
+            .world_mut()
+            .entity_mut(reference)
+            .remove::<ExpectedModelBounds>()
+            .insert(GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 20.0)));
+        scene.app.world_mut().entity_mut(scene.far).insert((
+            Aabb::from_min_max(Vec3::new(-5.0, -0.1, -35.0), Vec3::new(5.0, 0.1, 1.0)),
+            GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 20.0)),
+        ));
+        run_cull(&mut scene.app);
+        assert!(
+            mesh_list(&scene.app, scene.camera).contains(&scene.far),
+            "a runtime mesh AABB does not make pivot-only stored membership complete"
+        );
+        assert_eq!(
+            scene
+                .app
+                .world()
+                .resource::<RoomCullingState>()
+                .culled_last_frame,
+            0
+        );
+    }
+
+    #[test]
     fn room_culling_setting_changes_the_next_frame_and_keeps_capture_counts() {
         let mut scene = scene();
         for enabled in [true, false, true] {
@@ -2655,7 +2764,11 @@ mod tests {
             let reference = scene
                 .app
                 .world_mut()
-                .spawn((FormId(id), ChildOf(root)))
+                .spawn((
+                    FormId(id),
+                    ChildOf(root),
+                    ExpectedModelBounds::new(-Vec3::ONE, Vec3::ONE).unwrap(),
+                ))
                 .id();
             meshes.push(scene.app.world_mut().spawn(ChildOf(reference)).id());
         }
@@ -2937,6 +3050,11 @@ mod tests {
                     Transform::IDENTITY,
                     Visibility::default(),
                     ChildOf(root),
+                    ExpectedModelBounds::new(
+                        Vec3::new(-1.0, -1.0, z - 1.0),
+                        Vec3::new(1.0, 1.0, z + 1.0),
+                    )
+                    .unwrap(),
                 ))
                 .id();
             app.world_mut()
@@ -3120,7 +3238,11 @@ mod tests {
             .unwrap();
         // References 3..=6 are all placed in room B, which the camera cannot reach.
         let add = |app: &mut App, form_id: u32, reference: &dyn Fn(&mut EntityWorldMut)| {
-            let mut reference_entity = app.world_mut().spawn((FormId(form_id), ChildOf(root)));
+            let mut reference_entity = app.world_mut().spawn((
+                FormId(form_id),
+                ChildOf(root),
+                ExpectedModelBounds::new(-Vec3::ONE, Vec3::ONE).unwrap(),
+            ));
             reference(&mut reference_entity);
             let reference_entity = reference_entity.id();
             let mesh = app.world_mut().spawn(ChildOf(reference_entity)).id();

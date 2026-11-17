@@ -51,3 +51,12 @@ as a combined check, not a standalone rerun of #745. [Inputs, counts, comparison
 retain that distinction. Local plane/box occluders are absent from both historical and current
 executables used here. The broader traversal, lighting, shadows, and moving-deformation limits
 remain in the existing research notes.
+
+## Legacy bounds eligibility follow-up
+
+The stored-model-bounds guard applies only to legacy geometric membership. Authored initial
+named targets still supply ownership without a model sphere or legacy aggregate bounds. Authored
+source spheres still drive ownership and movement updates without that legacy metadata. ECS
+controls cover both cases alongside the spanning-floor regression for legacy graphs. This layer
+passed all 82 room-culling-related tests after propagation. The retail images above retain their
+recorded executables and were not rerun for this missing-metadata guard.
