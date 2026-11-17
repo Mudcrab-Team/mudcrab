@@ -31,3 +31,8 @@ This is a sampled sequence of settled camera positions, not a continuous-flight 
 fixture separately covers a 1.19-unit seam between two portal-connected rooms. Neither check
 establishes every shipped doorway safe. The [core review record](room-culling-review-20261117.md)
 contains the live default-on setting, interior on/off images, and timing protocol.
+
+The later stored-bounds eligibility fix keeps references with incomplete geometric membership
+visible before portal-volume testing. This layer passed 71 room-culling-related tests after
+propagation. The boundary images above retain their original recorded executable and were not
+rerun for the missing-metadata guard.

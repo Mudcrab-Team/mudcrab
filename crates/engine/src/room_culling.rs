@@ -20,6 +20,8 @@
 //! authored outside portal. Unknown endpoints or a reached portal-less room
 //! still draw the whole cell while authored joins and incomplete graph coverage remain unresolved.
 //!
+//! References without stored model bounds stay drawn: pivot-only membership cannot establish
+//! overlap coverage, even when a loaded mesh supplies an AABB.
 //! A static object's containing and overlapping rooms supply its candidate visibility volumes.
 //! An object with one pivot-containing room is hidden when its mesh bounds miss every candidate
 //! volume. The mesh's current AABB is transformed into cell-local space with its full affine
@@ -1123,7 +1125,11 @@ pub fn cull_room_views(
     reference_bounds: Query<(&ExpectedModelBounds, &GlobalTransform)>,
     parents: Query<&ChildOf>,
     ids: Query<&FormId>,
-    exemptions: Query<(Option<&RigidBody>, Has<RoomCullExempt>)>,
+    exemptions: Query<(
+        Option<&RigidBody>,
+        Has<RoomCullExempt>,
+        Has<ExpectedModelBounds>,
+    )>,
     mut owners: Local<HashMap<Entity, (u32, Entity)>>,
 ) {
     state.culled_last_frame = 0;
@@ -1191,7 +1197,12 @@ pub fn cull_room_views(
                 let exempted = |entity| {
                     exemptions
                         .get(entity)
-                        .is_ok_and(|(body, marked)| marked || body.is_some_and(|b| body_moves(*b)))
+                        .is_ok_and(|(body, marked, has_model_bounds)| {
+                            marked
+                                // Pivot-only membership does not establish bounds-overlap coverage.
+                                || (entity == reference && !has_model_bounds)
+                                || body.is_some_and(|b| body_moves(*b))
+                        })
                 };
                 if exempted(reference) || exempted(entity) {
                     return true;
@@ -2038,9 +2049,23 @@ mod tests {
         app.world_mut()
             .resource_mut::<RoomCullingState>()
             .insert_graph(7, root, graph);
-        let near_ref = app.world_mut().spawn((FormId(1), ChildOf(root))).id();
+        let near_ref = app
+            .world_mut()
+            .spawn((
+                FormId(1),
+                ChildOf(root),
+                ExpectedModelBounds::new(-Vec3::ONE, Vec3::ONE).unwrap(),
+            ))
+            .id();
         let near = app.world_mut().spawn(ChildOf(near_ref)).id();
-        let far_ref = app.world_mut().spawn((FormId(2), ChildOf(root))).id();
+        let far_ref = app
+            .world_mut()
+            .spawn((
+                FormId(2),
+                ChildOf(root),
+                ExpectedModelBounds::new(-Vec3::ONE, Vec3::ONE).unwrap(),
+            ))
+            .id();
         let far = app.world_mut().spawn(ChildOf(far_ref)).id();
         let loose = app.world_mut().spawn(ChildOf(root)).id();
         let list = |entities: &[Entity]| {
@@ -2278,6 +2303,42 @@ mod tests {
     }
 
     #[test]
+    fn missing_stored_bounds_keep_a_floor_that_extends_out_of_its_pivot_room() {
+        let mut scene = scene();
+        let reference = scene
+            .app
+            .world()
+            .get::<ChildOf>(scene.far)
+            .unwrap()
+            .parent();
+        // The rear pivot has no overlap rows because the converted model bounds were invalid.
+        // Its loaded mesh still extends through the camera's room into the forward view.
+        scene
+            .app
+            .world_mut()
+            .entity_mut(reference)
+            .remove::<ExpectedModelBounds>()
+            .insert(GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 20.0)));
+        scene.app.world_mut().entity_mut(scene.far).insert((
+            Aabb::from_min_max(Vec3::new(-5.0, -0.1, -35.0), Vec3::new(5.0, 0.1, 1.0)),
+            GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 20.0)),
+        ));
+        run_cull(&mut scene.app);
+        assert!(
+            mesh_list(&scene.app, scene.camera).contains(&scene.far),
+            "a runtime mesh AABB does not make pivot-only stored membership complete"
+        );
+        assert_eq!(
+            scene
+                .app
+                .world()
+                .resource::<RoomCullingState>()
+                .culled_last_frame,
+            0
+        );
+    }
+
+    #[test]
     fn room_culling_setting_changes_the_next_frame_and_keeps_capture_counts() {
         let mut scene = scene();
         for enabled in [true, false, true] {
@@ -2394,7 +2455,11 @@ mod tests {
             let reference = scene
                 .app
                 .world_mut()
-                .spawn((FormId(id), ChildOf(root)))
+                .spawn((
+                    FormId(id),
+                    ChildOf(root),
+                    ExpectedModelBounds::new(-Vec3::ONE, Vec3::ONE).unwrap(),
+                ))
                 .id();
             meshes.push(scene.app.world_mut().spawn(ChildOf(reference)).id());
         }
@@ -2675,6 +2740,11 @@ mod tests {
                     Transform::IDENTITY,
                     Visibility::default(),
                     ChildOf(root),
+                    ExpectedModelBounds::new(
+                        Vec3::new(-1.0, -1.0, z - 1.0),
+                        Vec3::new(1.0, 1.0, z + 1.0),
+                    )
+                    .unwrap(),
                 ))
                 .id();
             app.world_mut()
@@ -2858,7 +2928,11 @@ mod tests {
             .unwrap();
         // References 3..=6 are all placed in room B, which the camera cannot reach.
         let add = |app: &mut App, form_id: u32, reference: &dyn Fn(&mut EntityWorldMut)| {
-            let mut reference_entity = app.world_mut().spawn((FormId(form_id), ChildOf(root)));
+            let mut reference_entity = app.world_mut().spawn((
+                FormId(form_id),
+                ChildOf(root),
+                ExpectedModelBounds::new(-Vec3::ONE, Vec3::ONE).unwrap(),
+            ));
             reference(&mut reference_entity);
             let reference_entity = reference_entity.id();
             let mesh = app.world_mut().spawn(ChildOf(reference_entity)).id();
