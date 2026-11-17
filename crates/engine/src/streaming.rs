@@ -58,6 +58,7 @@ use std::time::Instant;
 pub(crate) mod admission;
 pub(crate) mod control;
 pub(crate) mod lod;
+pub mod lod_objects;
 #[cfg(test)]
 mod merged_tests;
 mod priority;
@@ -141,6 +142,7 @@ impl Plugin for StreamingPlugin {
             .init_resource::<StreamingMetrics>()
             .init_resource::<StreamingCommitBudget>()
             .init_resource::<lod::LodStreaming>()
+            .init_resource::<lod_objects::LodObjects>()
             .init_resource::<DiagnosticFallbackAssets>()
             .init_resource::<TerrainContinuity>()
             .init_resource::<SceneSpawnBatch>()
@@ -153,6 +155,10 @@ impl Plugin for StreamingPlugin {
             .init_resource::<crate::pacing::PacingTracker>()
             .add_observer(mark_world_instance_ready)
             .add_observer(lod::mark_lod_world_instance_ready)
+            .add_systems(
+                Update,
+                lod_objects::update_lod_objects.after(lod::plan_lod_chunks),
+            )
             .add_systems(
                 Update,
                 (
