@@ -2159,6 +2159,78 @@ mod runtime_move_tests {
         assert_eq!(&raw.subrecords[0].1[..4], &[0; 4]);
     }
 
+    #[test]
+    fn original_land_recovery_keeps_weights_with_their_own_assignment() {
+        use crate::esm::binary::PluginMetadata;
+
+        let order =
+            LoadOrder::from_metadata(vec!["Paint.esp".into()], vec![PluginMetadata::default()])
+                .unwrap();
+        let weight = |vertex: u16, opacity: f32| {
+            [
+                vertex.to_le_bytes().as_slice(),
+                &[0, 0],
+                &opacity.to_le_bytes(),
+            ]
+            .concat()
+        };
+        let fields = [
+            (
+                b"ATXT".to_vec(),
+                [0x0000_0abcu32.to_le_bytes(), [0, 0, 1, 0]].concat(),
+            ),
+            (b"VTXT".to_vec(), weight(1, 0.25)),
+            // Any other field closes the open assignment in source order.
+            (b"VHGT".to_vec(), vec![0; 4]),
+            (b"VTXT".to_vec(), weight(2, 0.5)),
+            (
+                b"ATXT".to_vec(),
+                [0x0000_0abdu32.to_le_bytes(), [1, 0, 2, 0]].concat(),
+            ),
+            (b"VTXT".to_vec(), weight(3, 0.75)),
+        ];
+        let mut decoded = record();
+        decoded.record_type = *b"LAND";
+        decoded.rejected_fields = vec![*b"VTXT"];
+        decoded.raw_payload = fields
+            .iter()
+            .flat_map(|(tag, data)| {
+                [tag.as_slice(), &(data.len() as u16).to_le_bytes(), data].concat()
+            })
+            .collect();
+        let (raw, unresolved) = original_land_record(&decoded, &order).unwrap();
+        assert_eq!(unresolved, 0);
+        let tags: Vec<&[u8]> = raw
+            .subrecords
+            .iter()
+            .map(|(tag, _)| tag.as_slice())
+            .collect();
+        assert_eq!(
+            tags,
+            [b"ATXT", b"VTXT", b"ATXT", b"VTXT"].map(|tag| tag.as_slice())
+        );
+        let (layers, _) = crate::esm::cell_cache::extract_texture_layers(&raw.subrecords).unwrap();
+        let first = layers.iter().find(|layer| layer.layer == 1).unwrap();
+        let second = layers.iter().find(|layer| layer.layer == 2).unwrap();
+        assert_eq!(
+            first
+                .weights
+                .iter()
+                .map(|weight| weight.vertex)
+                .collect::<Vec<_>>(),
+            [1],
+            "the orphaned block after VHGT stays unassigned"
+        );
+        assert_eq!(
+            second
+                .weights
+                .iter()
+                .map(|weight| weight.vertex)
+                .collect::<Vec<_>>(),
+            [3]
+        );
+    }
+
     /// Hide invalid opaque links around valid repeated signatures and asymmetric payloads.
     fn opaque_race() -> RawRecord {
         RawRecord {
