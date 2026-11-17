@@ -46,11 +46,14 @@ def control_prediction(baseline, condition):
             'method': 'Baseline raw factors, requested typed control, native float32 order; no fit.'}
 
 
-def validate_capture_proof(rows, proof, frame_cap):
+def validate_capture_proof(rows, proof, frame_cap, fixture):
     if proof['status'] != 'passed':
         raise ValueError('Capture proof did not pass')
     if proof['frame_cap_request'] != frame_cap:
         raise ValueError('Capture proof requested a different cadence')
+    fixture_bytes = (json.dumps(fixture, indent=2, allow_nan=False) + '\n').encode()
+    if proof['fixture_sha256'] != hashlib.sha256(fixture_bytes).hexdigest():
+        raise ValueError('Capture proof fixture differs from plan')
     measured = verify_trace(rows, requested_fps=frame_cap)
     if measured['status'] != 'passed':
         raise ValueError('Measured camera cadence did not meet the plan')
@@ -161,7 +164,7 @@ def main():
             try:
                 proof = json.loads((output / 'proof.json').read_text())
                 rows, raw_digest = decode(output / 'trace.bin')
-                cadence = validate_capture_proof(rows, proof, plan['frame_cap'])
+                cadence = validate_capture_proof(rows, proof, plan['frame_cap'], fixture)
                 result = analyze_rows(rows)
                 if raw_digest != proof['trace_sha256'] or proof['session'] != session:
                     raise ValueError('Recorded session or native trace differs')

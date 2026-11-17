@@ -157,11 +157,11 @@ class CaptureAttemptTests(unittest.TestCase):
                 self.assertEqual(log.read_bytes(), original_log)
                 self.assertEqual((first['output'] / 'trace.bin').read_bytes(), b'partial trace')
 
-    def test_adoption_rejects_failed_proofs_and_false_cadence_claims(self):
+    def test_adoption_rejects_failed_proofs_false_cadence_and_wrong_fixtures(self):
         reference = v4.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
         observed = json.loads((reference / 'manifest.json').read_text())['runs'][0]
         raw = gzip.decompress((reference / observed['path']).read_bytes())
-        for mode in ('failed', 'cadence'):
+        for mode in ('failed', 'cadence', 'fixture'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 argv, session = campaign(v4, root, frame_cap=120 if mode == 'cadence' else None)
@@ -173,32 +173,45 @@ class CaptureAttemptTests(unittest.TestCase):
                              runner_sha256=v4.digest(v4.ROOT / 'scripts/record_skyrim_motion.py'))
                 proof['status'] = 'failed' if mode == 'failed' else 'passed'
                 proof['frame_cap_request'] = 120 if mode == 'cadence' else 60
+                if mode == 'fixture':
+                    proof['fixture'] = dict(observed['fixture'], yaw_degrees=180)
+                    proof['fixture_sha256'] = hashlib.sha256(
+                        (json.dumps(proof['fixture'], indent=2) + '\n').encode()).hexdigest()
                 (output / 'proof.json').write_text(json.dumps(proof))
                 argv += ['--adopt-baseline', str(output)]
                 with patch('sys.argv', argv), patch.object(v4.subprocess, 'run') as recorder, \
                         contextlib.redirect_stdout(io.StringIO()):
-                    with self.assertRaisesRegex(ValueError, 'proof|cadence'):
+                    with self.assertRaisesRegex(ValueError, 'proof|cadence|fixture'):
                         v4.main()
                     recorder.assert_not_called()
                 self.assertEqual(json.loads((root / 'corpus/manifest.json').read_text())['runs'], [])
 
-    def test_offline_verification_rejects_a_failed_accepted_proof(self):
+    def test_offline_verification_rejects_failed_proofs_and_wrong_fixtures(self):
         reference = v4.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
         plan = v4.ROOT / 'tools/skyrim-recorder/fixtures/jump-inputs-v4.json'
-        with tempfile.TemporaryDirectory() as directory:
-            corpus = Path(directory) / 'corpus'
-            shutil.copytree(reference, corpus)
-            manifest = json.loads((corpus / 'manifest.json').read_text())
-            # A fresh test campaign uses current sources, without historical publication transforms.
-            with zipfile.ZipFile(corpus / 'capture-source.zip', 'w') as archive:
-                for name in v4.SOURCES:
-                    archive.writestr(name, (v4.ROOT / name).read_bytes())
-            for run in manifest['runs']:
-                run['receipt']['sources'] = {name: v4.digest(v4.ROOT / name) for name in v4.SOURCES}
-            manifest['runs'][0]['proof']['status'] = 'failed'
-            (corpus / 'manifest.json').write_text(json.dumps(manifest))
-            with self.assertRaisesRegex(ValueError, 'proof'):
-                verify(corpus, plan)
+        for mode in ('failed', 'fixture-hash', 'fixture-label'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                corpus = Path(directory) / 'corpus'
+                shutil.copytree(reference, corpus)
+                manifest = json.loads((corpus / 'manifest.json').read_text())
+                # A fresh test campaign uses current sources, without historical publication transforms.
+                with zipfile.ZipFile(corpus / 'capture-source.zip', 'w') as archive:
+                    for name in v4.SOURCES:
+                        archive.writestr(name, (v4.ROOT / name).read_bytes())
+                for run in manifest['runs']:
+                    run['receipt']['sources'] = {name: v4.digest(v4.ROOT / name) for name in v4.SOURCES}
+                baseline = manifest['runs'][0]
+                if mode == 'failed':
+                    baseline['proof']['status'] = 'failed'
+                elif mode == 'fixture-hash':
+                    other = dict(baseline['fixture'], yaw_degrees=180)
+                    baseline['proof']['fixture_sha256'] = hashlib.sha256(
+                        (json.dumps(other, indent=2) + '\n').encode()).hexdigest()
+                else:
+                    baseline['fixture']['yaw_degrees'] = 180
+                (corpus / 'manifest.json').write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(ValueError, 'proof|fixture'):
+                    verify(corpus, plan)
 
 
 if __name__ == '__main__':

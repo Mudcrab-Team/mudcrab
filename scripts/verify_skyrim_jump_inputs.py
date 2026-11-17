@@ -31,10 +31,12 @@ def verify(corpus, plan_path):
         captured_sources = {name: archive.read(name) for name in archive.namelist()}
     results = []
     for run, condition in zip(manifest['runs'], conditions):
+        fixture = dict(plan['fixture'], **{k: v for k, v in condition.items() if k != 'id'})
+        require(run['fixture'] == fixture, 'Stored fixture differs from plan')
         path = Path(run['path'])
         require(not path.is_absolute() and '..' not in path.parts, 'Trace escapes corpus')
         rows, raw_digest = decode(corpus / path)
-        validate_capture_proof(rows, run['proof'], plan['frame_cap'])
+        validate_capture_proof(rows, run['proof'], plan['frame_cap'], fixture)
         require(sum(r['kind'] == 1 for r in rows) == sum(r['kind'] == 5 for r in rows) == 1,
                 'Duplicate header or footer')
         require(run['sha256'] == raw_digest, 'Numeric trace identity differs')
