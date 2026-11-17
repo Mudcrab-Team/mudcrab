@@ -59,17 +59,20 @@ pub(crate) fn record_archive(
 
 /// Read only the optional control payloads, independently of versioned archive packs.
 /// Isolated scratch roots preserve earlier winners if a later archive fails partway.
+/// Return a diagnostic so callers can avoid duplicating an ordinary archive failure warning.
 pub(crate) fn extract_archive(
     sources: &mut BTreeMap<String, Source>,
     archive: &Path,
     provider: &str,
     scratch: &Path,
-    report: &mut PipelineReport,
-) {
+) -> Option<String> {
     let paths = PATHS.iter().map(PathBuf::from).collect();
     match ArchiveExtractor::extract_paths(archive, scratch, &paths) {
-        Ok(files) => record_archive(sources, provider, &files, scratch),
-        Err(error) => report.warnings.push(format!(
+        Ok(files) => {
+            record_archive(sources, provider, &files, scratch);
+            None
+        }
+        Err(error) => Some(format!(
             "{provider}: control input extraction failed: {error:#}"
         )),
     }
