@@ -1181,3 +1181,111 @@ mod schema_addon_controls {
         assert_eq!(count(&conn), 0);
     }
 }
+
+#[cfg(test)]
+mod lazy_presence_tests {
+    use super::*;
+    use std::{cell::Cell, collections::HashSet};
+
+    /// Frame synthetic source bytes inside the test, including their authenticated history bounds.
+    fn decode_fixture(
+        kind: [u8; 4],
+        link: Option<u32>,
+        ids: &HashSet<u32>,
+    ) -> (DecodedRecord, usize) {
+        let mut payload = Vec::new();
+        if let Some(link) = link {
+            payload.extend(b"LTMP");
+            payload.extend(4u16.to_le_bytes());
+            payload.extend(link.to_le_bytes());
+        }
+        let mut bytes = Vec::new();
+        bytes.extend(kind);
+        bytes.extend((payload.len() as u32).to_le_bytes());
+        bytes.extend(0u32.to_le_bytes());
+        bytes.extend(0x800u32.to_le_bytes());
+        bytes.extend([0; 8]);
+        bytes.extend(&payload);
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("Base.esm");
+        std::fs::write(&path, &bytes).unwrap();
+        let order =
+            LoadOrder::from_metadata(vec!["Base.esm".into()], vec![PluginMetadata::default()])
+                .unwrap();
+        let entry = HistoryEntry {
+            form_id: Some(0x800),
+            plugin_index: 0,
+            source_form_id: 0x800,
+            record_type: kind,
+            flags: 0,
+            source_record_offset: 0,
+            source_record_size: payload.len() as u32,
+            source_group_end: bytes.len() as u64,
+            frame_complete: true,
+            accepted: true,
+            reason: None,
+            source_cell_form_id: None,
+            source_worldspace_form_id: None,
+            source_topic_form_id: None,
+            topic_group_offset: None,
+            editor_id: None,
+        };
+        let schemas = RuntimeSchemas::from_addon_bytes(&[]).unwrap();
+        let prepared = decoder::prepare_runtime_schema(&schemas);
+        let calls = Cell::new(0);
+        let mut load = || {
+            calls.set(calls.get() + 1);
+            Ok(ids)
+        };
+        let decoded = decode_version(
+            &path,
+            &Sha256::digest(&bytes),
+            &entry,
+            &order,
+            (&HashMap::new(), &mut load),
+            (&schemas, &prepared),
+            &mut PluginDiagnostics::default(),
+        )
+        .unwrap();
+        (decoded, calls.get())
+    }
+
+    /// Ordinary history, in-range links, and hardcoded low IDs need no full provenance catalogue.
+    #[test]
+    fn history_without_presence_check_avoids_catalogue() {
+        for (kind, link) in [
+            (*b"STAT", None),
+            (*b"CELL", Some(0x0500_0001)),
+            (*b"CELL", Some(0x1880)),
+        ] {
+            let (_, calls) = decode_fixture(kind, link, &HashSet::new());
+            assert_eq!(
+                calls, 0,
+                "history must load presence authority only for a link that needs it"
+            );
+        }
+    }
+
+    /// A lazy lookup still distinguishes absent past-master targets from observed headers.
+    #[test]
+    fn history_lazy_presence_preserves_missing_and_observed_targets() {
+        for present in [false, true] {
+            let ids = if present {
+                HashSet::from([0x1880])
+            } else {
+                HashSet::new()
+            };
+            let (decoded, calls) = decode_fixture(*b"CELL", Some(0x0500_1880), &ids);
+            assert_eq!(calls, 1);
+            let field = decoded
+                .fields
+                .iter()
+                .find(|f| f.signature == *b"LTMP")
+                .unwrap();
+            assert_eq!(
+                field.canonical_bytes,
+                (if present { 0x1880u32 } else { 0 }).to_le_bytes()
+            );
+        }
+    }
+}

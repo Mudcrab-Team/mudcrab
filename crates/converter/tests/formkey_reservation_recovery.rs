@@ -791,3 +791,126 @@ fn malformed_gmst_values_preserve_native_and_published_winners() {
         assert_eq!(ids, [0x800, 0x0100_0810]);
     }
 }
+
+/// Compare native and SQL winner provenance after record-level movement or terrain rejection.
+fn invalid_native_value_keeps_predecessor(kind: &[u8; 4], id: u32, good: &[u8], bad: &[u8]) {
+    let root = tempfile::tempdir().unwrap();
+    plugin(root.path(), "Base.esm", &[], record(kind, id, 0, good));
+    plugin(root.path(), "Other.esm", &[], Vec::new());
+    plugin(
+        root.path(),
+        "Patch.esp",
+        &["Other.esm", "Base.esm"],
+        [
+            record(kind, 0x0100_0000 | id, 0, bad),
+            record(b"STAT", 0x0200_0900, 0, &sub(b"EDID", b"neighbor\0")),
+        ]
+        .concat(),
+    );
+    let paths = ["Base.esm", "Other.esm", "Patch.esp"].map(|name| root.path().join(name));
+    let db = root.path().join("world.db");
+    let (native, _) = EsmParser::convert_form_key_plugins(&paths, &db).unwrap();
+    let conn = Connection::open(db).unwrap();
+    let sql_supplier: u32 = conn
+        .query_row(
+            "SELECT load_order FROM records WHERE form_id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(sql_supplier, 0);
+    let winner = native
+        .records
+        .values()
+        .find(|r| r.source.record_type == *kind)
+        .unwrap();
+    assert_eq!(
+        winner.source.load_order, sql_supplier,
+        "invalid native value must retain the valid predecessor"
+    );
+    assert_eq!(native.records.len(), 2);
+    let count: u32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM records WHERE form_id=33556736",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "healthy patch neighbor must publish");
+    assert_eq!(native.warnings.len(), 1, "{:?}", native.warnings);
+    assert!(
+        native.warnings[0].contains("Patch.esp")
+            && native.warnings[0].contains("unusable record candidate")
+    );
+}
+
+/// Nonidentity master order must recognize the default MOVT by owner/local identity.
+#[test]
+fn native_movt_value_admission_uses_resolved_identity() {
+    let edid = sub(b"EDID", b"NPC_Default_MT\0");
+    let speeds: Vec<u8> = (1..=10).flat_map(|n| (n as f32).to_le_bytes()).collect();
+    let good = [edid.clone(), sub(b"SPED", &speeds)].concat();
+    for bad in [edid.clone(), [edid.clone(), sub(b"SPED", &[1])].concat()] {
+        invalid_native_value_keeps_predecessor(b"MOVT", 0x3580D, &good, &bad);
+    }
+}
+
+/// A safely framed but incomplete authored LAND heightmap cannot replace valid terrain.
+#[test]
+fn native_land_value_admission_preserves_previous_winner() {
+    invalid_native_value_keeps_predecessor(b"LAND", 0x880, &[], &sub(b"VHGT", &[0]));
+}
+
+/// Native RACE recovery drops only malformed movement fields, exactly like SQL publication.
+#[test]
+fn native_race_field_recovery_matches_publication() {
+    let root = tempfile::tempdir().unwrap();
+    plugin(
+        root.path(),
+        "Base.esm",
+        &[],
+        record(b"RACE", 0x880, 0, &sub(b"EDID", b"base\0")),
+    );
+    plugin(
+        root.path(),
+        "Patch.esp",
+        &["Base.esm"],
+        record(
+            b"RACE",
+            0x880,
+            0,
+            &[
+                sub(b"EDID", b"patch\0"),
+                sub(b"WKMV", &[1]),
+                sub(b"RNMV", &[1, 2]),
+                sub(b"SWMV", &0u32.to_le_bytes()),
+            ]
+            .concat(),
+        ),
+    );
+    let db = root.path().join("world.db");
+    let paths = [root.path().join("Base.esm"), root.path().join("Patch.esp")];
+    let (native, _) = EsmParser::convert_form_key_plugins(&paths, &db).unwrap();
+    let winner = native.records.values().next().unwrap();
+    assert_eq!(winner.source.load_order, 1);
+    let conn = Connection::open(db).unwrap();
+    let blob: Vec<u8> = conn
+        .query_row("SELECT data FROM records WHERE form_id=2176", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let sql =
+        rkyv::from_bytes::<converter::esm::types::ArchivedRecordData, rkyv::rancor::Error>(&blob)
+            .unwrap();
+    let fields: Vec<_> = sql
+        .subrecords
+        .into_iter()
+        .map(|f| (f.tag.to_vec(), f.data))
+        .collect();
+    assert_eq!(
+        winner.source.subrecords, fields,
+        "native RACE must publish the same recovered fields as SQL"
+    );
+    assert_eq!(native.warnings.len(), 1, "{:?}", native.warnings);
+    assert!(native.warnings[0].contains("2") && native.warnings[0].contains("Patch.esp"));
+}
