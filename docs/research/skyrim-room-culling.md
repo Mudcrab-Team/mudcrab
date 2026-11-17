@@ -224,3 +224,9 @@ match full rendering. Looking away from the portal into the back side of the lev
 but is not an image-equality pass or an original-game oracle. An earlier Shimmermist probe also
 looked through backfaces outside the cave shell; its differing image and two blank views remain
 recorded as exploratory results. No capture timed out or retained pending or failed graph reads.
+
+## Default-on review validation
+
+[The 2026-11-17 core review record](room-culling-review-20261117.md) contains the graphics toggle,
+three real-interior on/off pairs with counts, repeated release frame times, executable identities,
+and their limits. The core remains a room-reachability foundation, not a complete Skyrim parity claim.
