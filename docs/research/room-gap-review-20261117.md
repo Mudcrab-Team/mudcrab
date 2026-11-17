@@ -36,3 +36,22 @@ The later stored-bounds eligibility fix keeps references with incomplete geometr
 visible before portal-volume testing. This layer passed 71 room-culling-related tests after
 propagation. The boundary images above retain their original recorded executable and were not
 rerun for the missing-metadata guard.
+
+## Objects outside geometric room membership
+
+A read-only inventory of the five freshly reconverted review cells found 187 of 8,938 references
+with neither a containing nor an overlapping `reference_rooms` row. Only 11 had stored bounds,
+a model path, no Multibound flag, and a base type eligible for geometric culling. All 11 already
+lose their models through existing editor-marker or marker-folder rules: four `BlackPlane01`,
+six `XMarker`, and one `NorthMarker`. No bounded renderable candidate remains in this sample.
+
+[Per-cell counts and database identity](evidence/room-review-20261117/unassigned-inventory.json)
+and the [read-only SQL query](evidence/room-review-20261117/unassigned-inventory.sql) record the
+inventory. For example, run `sqlite3 -readonly -header -csv skyrim_world.db < unassigned-inventory.sql`
+against that fixture. The database hash was unchanged after the query.
+
+These counts describe geometric membership, not the authored source-sphere assignment introduced
+in #745. They do not count runtime culled meshes or establish coverage across Skyrim. The reviewed
+captures therefore do not validate original-game parity for a renderable object outside every
+room with no overlap. That case remains unverified; native null-room traversal alone does not
+prove object attachment semantics.
