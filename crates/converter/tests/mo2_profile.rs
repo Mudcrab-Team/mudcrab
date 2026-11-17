@@ -1214,6 +1214,15 @@ async fn missing_and_disabled_master_closures_preserve_profile_publication() {
 async fn final_unicode_profile_master_override_publishes() {
     let (_dir, config, instance) = fixture();
     plugin(&instance.join("mods/Low/CAF\u{c9}.esp"), "Skyrim.esm", 67.0);
+    let owner = instance.join("mods/Low/CAF\u{c9}.esp");
+    let mut owner_bytes = fs::read(&owner).unwrap();
+    owner_bytes.extend(record(
+        b"KYWD",
+        0x0100_0801,
+        0,
+        sub(b"EDID", b"UnicodeOwner\0"),
+    ));
+    fs::write(&owner, owner_bytes).unwrap();
     let header = [sub(b"MAST", b"cAf\xe9.ESP\0"), sub(b"DATA", &[0; 8])].concat();
     let bytes = [
         record(b"TES4", 0, 0, header),
@@ -1227,6 +1236,7 @@ async fn final_unicode_profile_master_override_publishes() {
             ]
             .concat(),
         ),
+        record(b"KYWD", 0x801, 0, sub(b"EDID", b"UnicodeOwnerOverride\0")),
     ]
     .concat();
     write(&instance, "overwrite/PATCH.esp", bytes);
@@ -1262,8 +1272,16 @@ async fn final_unicode_profile_master_override_publishes() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
-    // GMST retains the first owner's identity despite overrides from both later plugins.
-    assert!(winning.contains(&(0x0100_0800, 3)), "{winning:?}");
+    // GMST retains Skyrim's identity despite the three later plugins.
+    assert!(winning.contains(&(0x0000_000B, 3)), "{winning:?}");
+    let owner_priority: u32 = conn
+        .query_row(
+            "SELECT load_order FROM records WHERE form_id=?1 AND record_type='KYWD'",
+            [0x0200_0801_u32],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(owner_priority, 3);
     assert!(
         report
             .notices
