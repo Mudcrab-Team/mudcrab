@@ -803,11 +803,13 @@ async fn rebuild_into(
             .to_string_lossy()
             .replace('\\', "/")
             .to_ascii_lowercase();
-        if let Some(warning) =
-            crate::controls::extract_archive(&mut control_sources, archive, &provider, &root)
-        {
-            report.warnings.push(warning);
-        }
+        let warnings =
+            match crate::controls::extract_archive(&mut control_sources, archive, &provider, &root)
+            {
+                Ok(warnings) => warnings,
+                Err(warning) => vec![warning],
+            };
+        report.warnings.extend(warnings);
     }
     for file in &files {
         if let Ok(relative) = file.strip_prefix(&config.data_dir) {

@@ -980,12 +980,18 @@ impl AssetPipeline {
             .await;
 
             // Controls have independent payloads and survive unrelated asset extraction failures.
-            let control_warning = crate::controls::extract_archive(
+            let control_warning = match crate::controls::extract_archive(
                 &mut control_sources,
                 archive,
                 &archive_key,
                 &control_scratch.path().join(index.to_string()),
-            );
+            ) {
+                Ok(warnings) => {
+                    report.warnings.extend(warnings);
+                    None
+                }
+                Err(warning) => Some(warning),
+            };
             match result {
                 Ok(outcome) => {
                     if let Some(warning) = control_warning {

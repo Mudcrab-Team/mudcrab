@@ -32,6 +32,10 @@ the same.
 Archives overlay in the existing plugin load order, last provider wins, then
 loose Data files (or the effective MO2 loose winner) override archives. Paths
 match case-insensitively and publish in lowercase.
+Each control payload is extracted independently. A failed payload emits one
+warning for that path and leaves its earlier archive provider intact (or absent),
+while readable files from the same archive still win normally. An unreadable
+archive retains one archive-level warning rather than repeating it per path.
 
 Rows receive structural validation, preserving binding expressions as opaque
 text for the input layer. Controlmap rows have seven tab-separated fields

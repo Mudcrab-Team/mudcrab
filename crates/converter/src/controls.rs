@@ -8,7 +8,7 @@ use crate::{
 use color_eyre::{Result, eyre::eyre};
 use serde::Serialize;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -57,25 +57,38 @@ pub(crate) fn record_archive(
     }
 }
 
-/// Read only the optional control payloads, independently of versioned archive packs.
-/// Isolated scratch roots preserve earlier winners if a later archive fails partway.
-/// Return a diagnostic so callers can avoid duplicating an ordinary archive failure warning.
+/// Extract each optional control file independently, recording every readable winner.
+/// Failed files retain their earlier providers and return at most one warning per path.
+/// An unreadable archive returns one diagnostic separately so callers can avoid duplicates.
 pub(crate) fn extract_archive(
     sources: &mut BTreeMap<String, Source>,
     archive: &Path,
     provider: &str,
     scratch: &Path,
-) -> Option<String> {
-    let paths = PATHS.iter().map(PathBuf::from).collect();
-    match ArchiveExtractor::extract_paths(archive, scratch, &paths) {
-        Ok(files) => {
-            record_archive(sources, provider, &files, scratch);
-            None
+) -> std::result::Result<Vec<String>, String> {
+    let paths = match ArchiveExtractor::list_paths(archive) {
+        Ok(paths) => paths,
+        Err(error) => {
+            return Err(format!(
+                "{provider}: control input extraction failed: {error:#}"
+            ));
         }
-        Err(error) => Some(format!(
-            "{provider}: control input extraction failed: {error:#}"
-        )),
+    };
+    let mut warnings = Vec::new();
+    for key in PATHS {
+        let path = PathBuf::from(key);
+        if !paths.contains(&path) {
+            continue;
+        }
+        let selected = BTreeSet::from([path]);
+        match ArchiveExtractor::extract_paths(archive, scratch, &selected) {
+            Ok(files) => record_archive(sources, provider, &files, scratch),
+            Err(error) => warnings.push(format!(
+                "{provider}:{key}: control input extraction failed: {error:#}"
+            )),
+        }
     }
+    Ok(warnings)
 }
 
 /// Loose winners (including MO2-resolved paths) override every archive provider.
