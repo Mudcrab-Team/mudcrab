@@ -1508,14 +1508,32 @@ fn original_land_record(
         return Ok((record.to_raw_record(), 0));
     }
     let priority = record.load_order as usize;
+    // Keep only paint fields, and keep a VTXT only while an ATXT assignment is still
+    // open in source order. A BTXT or any other field closes the assignment, exactly as
+    // `extract_texture_layers` reads the full record, so filtering never re-attaches
+    // a weight block to an earlier texture.
+    let mut assignment_open = false;
+    let mut paint = Vec::new();
+    for (tag, data) in crate::esm::extractors::extract_subrecords(&record.raw_payload)? {
+        match tag.as_slice() {
+            b"ATXT" => {
+                assignment_open = true;
+                paint.push((tag, data));
+            }
+            b"BTXT" => {
+                assignment_open = false;
+                paint.push((tag, data));
+            }
+            b"VTXT" if assignment_open => paint.push((tag, data)),
+            b"VTXT" => {}
+            _ => assignment_open = false,
+        }
+    }
     let mut raw = RawRecord {
         form_id: record.form_id,
         record_type: record.record_type,
         flags: record.flags,
-        subrecords: crate::esm::extractors::extract_subrecords(&record.raw_payload)?
-            .into_iter()
-            .filter(|(tag, _)| matches!(tag.as_slice(), b"BTXT" | b"ATXT" | b"VTXT"))
-            .collect(),
+        subrecords: paint,
         cell_form_id: None,
         worldspace_form_id: None,
         load_order: record.load_order,
