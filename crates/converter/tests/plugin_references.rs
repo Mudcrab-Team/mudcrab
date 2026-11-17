@@ -2444,6 +2444,61 @@ fn malformed_authored_assignments_stay_unknown_in_both_readers() {
 }
 
 #[test]
+fn repeated_multibound_targets_stay_unknown_in_both_readers() {
+    let mut unexpected = Vec::new();
+    for typed in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let mut references = Vec::new();
+        for record_type in [b"REFR", b"ACHR"] {
+            for flags in [0, 0x8000_0000] {
+                for targets in [[0x800u32, 0x801], [0x800, 0x800]] {
+                    let id = 0xa00 + references.len() as u32;
+                    let fields = [
+                        sub(b"NAME", &0x999u32.to_le_bytes()),
+                        sub(b"DATA", &[0; 24]),
+                        sub(b"XMBR", &targets[0].to_le_bytes()),
+                        sub(b"XMBR", &targets[1].to_le_bytes()),
+                    ]
+                    .concat();
+                    references.push(record(record_type, id, flags, fields));
+                }
+            }
+        }
+        room_graph_review_fixture_with_fields(&data, None, None, references);
+        let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let rules = conn
+            .prepare(
+                "SELECT reference_id,assignment,target_ref FROM room_reference_rules \
+                 WHERE reference_id BETWEEN 0xa00 AND 0xa07 ORDER BY reference_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<u32>>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(rules.len(), 8, "typed={typed}: retain every placement rule");
+        unexpected.extend(
+            rules
+                .into_iter()
+                .filter(|(_, rule, target)| rule != "unknown" || target.is_some())
+                .map(|rule| (typed, rule)),
+        );
+    }
+    assert!(
+        unexpected.is_empty(),
+        "repeated XMBR must not select a target in either reader: {unexpected:?}"
+    );
+}
+
+#[test]
 fn malformed_authored_room_links_keep_both_readers_incomplete() {
     for typed in [false, true] {
         for link in [

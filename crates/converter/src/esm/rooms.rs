@@ -749,7 +749,9 @@ pub fn export_room_graph(
             continue;
         }
         let view = SubrecordView::new(&record.subrecords);
-        let target = view.get_form_id(b"XMBR").filter(|&id| id != 0);
+        let target = view
+            .get_form_id(b"XMBR")
+            .filter(|&id| id != 0 && view.find_all(b"XMBR").count() == 1);
         let assignment = if target.is_some() {
             "target"
         } else if view.find(b"XMBR").is_some() {
