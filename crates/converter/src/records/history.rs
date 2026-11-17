@@ -462,16 +462,30 @@ fn decode_version<'a>(
         source_record_offset: entry.source_record_offset,
         payload,
     };
+    let source_ids = std::cell::RefCell::new(source_ids);
+    let catalogue_error = std::cell::RefCell::new(None);
+    let lazy_ids = decoder::LazySourceHeaders(|id| match (source_ids.borrow_mut())() {
+        Ok(ids) => Ok(ids.contains(&id)),
+        Err(error) => {
+            let error = error.to_string();
+            *catalogue_error.borrow_mut() = Some(error.clone());
+            Err(error)
+        }
+    });
     let context = decoder::Context {
         order,
         plugin_index: entry.plugin_index as usize,
         localized: order.metadata[entry.plugin_index as usize].flags & 0x80 != 0,
-        source_ids: Some(source_ids()?),
+        source_ids: Some(&lazy_ids),
         winning_types: Some(kinds),
     };
-    let mut record =
-        decoder::decode_with_prepared(scanned, schemas.schema(), prepared, &context, diagnostics)
-            .map_err(color_eyre::eyre::Error::msg)?;
+    let decoded =
+        decoder::decode_with_prepared(scanned, schemas.schema(), prepared, &context, diagnostics);
+    // Optional-link recovery cannot hide a failed provenance query from the history caller.
+    if let Some(error) = catalogue_error.into_inner() {
+        return Err(color_eyre::eyre::eyre!("{error}"));
+    }
+    let mut record = decoded.map_err(color_eyre::eyre::Error::msg)?;
     record.form_id = entry.form_id.unwrap_or(record.form_id);
     ensure!(
         record.payload_complete && record.rejected_fields.is_empty(),
@@ -590,7 +604,7 @@ pub fn read_history(pack: &Path, data: Option<&Path>, form_id: u32) -> Result<Hi
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     // Do not scan all provenance for histories that cannot authenticate a source.
-    // Cache both success and failure once per request, after native frame checks.
+    // Cache success and failure once per request, only when a decoded link needs presence.
     let source_ids = std::cell::OnceCell::new();
     let mut load_source_ids = || {
         source_ids

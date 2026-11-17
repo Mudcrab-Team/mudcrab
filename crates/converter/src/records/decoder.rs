@@ -82,13 +82,33 @@ fn record_decode_visit(field: &FieldSchema, diagnostics: &PluginDiagnostics) {
     });
 }
 
+/// Presence authority can be materialized by conversion or loaded on demand by history.
+pub(crate) trait SourceHeaders {
+    fn contains_source(&self, id: u32) -> Result<bool, String>;
+}
+
+impl SourceHeaders for std::collections::HashSet<u32> {
+    fn contains_source(&self, id: u32) -> Result<bool, String> {
+        Ok(self.contains(&id))
+    }
+}
+
+/// Adapt a history loader without invoking it until the decoder needs a presence check.
+pub(crate) struct LazySourceHeaders<F>(pub F);
+
+impl<F: Fn(u32) -> Result<bool, String>> SourceHeaders for LazySourceHeaders<F> {
+    fn contains_source(&self, id: u32) -> Result<bool, String> {
+        (self.0)(id)
+    }
+}
+
 /// Per-file interpretation supplied by the shared load-order authority.
 pub(crate) struct Context<'a> {
     pub order: &'a LoadOrder,
     pub plugin_index: usize,
     pub localized: bool,
     /// All safely observed source headers, including forward optional-link targets.
-    pub source_ids: Option<&'a std::collections::HashSet<u32>>,
+    pub source_ids: Option<&'a dyn SourceHeaders>,
     pub winning_types: Option<&'a HashMap<u32, [u8; 4]>>,
 }
 
@@ -598,9 +618,10 @@ fn remap(
             && past_master
             && source_field
             && projected >= 0x800
-            && context
-                .source_ids
-                .is_some_and(|ids| !ids.contains(&projected))
+            && match context.source_ids {
+                Some(ids) => !ids.contains_source(projected)?,
+                None => false,
+            }
         {
             note_decode_link(
                 diagnostics,
