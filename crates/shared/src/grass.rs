@@ -2,8 +2,8 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// Version ten applies supported placed-STAT MODS visibility to obstruction masks.
-pub const GRASS_CACHE_VERSION: u32 = 10;
+/// Version twelve retains non-emitting authored species slots alongside MODS-aware masks.
+pub const GRASS_CACHE_VERSION: u32 = 12;
 pub const GRASS_BLEND_SIDE: usize = 17;
 /// Mask samples per quadrant side (32 Creation units each). An engineering approximation, not a retail value.
 pub const GRASS_EXCLUSION_SIDE: usize = 64;
@@ -13,6 +13,8 @@ pub const GRASS_CELL_SIZE: f32 = 4096.0;
 #[rkyv(bytecheck())]
 pub struct GrassType {
     pub form_id: u32,
+    /// Empty for a resolved species that occupies an authored cap slot and emits no plants.
+    /// Runtime applies the species cap to the retained link order before skipping these rules.
     pub model_path: String,
     pub density: u8,
     pub min_slope: u8,
@@ -94,8 +96,7 @@ pub fn validate_archived_cache(cache: &ArchivedGrassCache) -> Result<(), &'stati
             return Err("grass types must have sorted unique nonzero IDs");
         }
         previous = Some(id);
-        if rule.model_path.is_empty()
-            || rule.water_comparison > 7
+        if rule.water_comparison > 7
             || [
                 rule.position_range,
                 rule.height_range,

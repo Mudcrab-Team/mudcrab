@@ -174,6 +174,16 @@ mod grass_ini;
 #[cfg(test)]
 mod skyrim_ini_grass_tests;
 
+/// Where the water surface reads the depth of the bed behind it (`--water-depth`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WaterDepthSource {
+    /// Snapshot the main opaque pass depth before the transparent pass draws water.
+    #[default]
+    Snapshot,
+    /// Draw water as its deep colour at its ANAM opacity, as if no depth were available.
+    Constant,
+}
+
 #[derive(Debug, Clone, Resource)]
 pub struct EngineConfig {
     /// Optional local appearance settings; CLI overrides MUDCRAB_GRASS_TUNING.
@@ -348,6 +358,14 @@ pub struct EngineConfig {
     pub profile_hardware: String,
     pub acceptance_screenshot: Option<PathBuf>,
     pub screenshot_camera_offset: Option<(f32, f32, f32)>,
+    /// `--water-time <seconds>`: pins the water's wave phase at this time, so two capture runs at
+    /// the same pose draw the same waves. `None` lets the waves run on the clock, or on the
+    /// terrain/water fixture's fixed phase.
+    pub water_time: Option<f32>,
+    /// `--water-depth <snapshot|constant>`: how water learns the depth of the bed behind it.
+    /// `constant` exists to measure and diagnose the fallback, which a snapshot-less run would
+    /// otherwise reach silently.
+    pub water_depth: WaterDepthSource,
     /// `--shots <file>`: render the camera poses in a shots file, one PNG each, and exit instead of
     /// running interactively. See [`crate::shots`].
     pub shots: Option<PathBuf>,
@@ -487,6 +505,8 @@ impl Default for EngineConfig {
             profile_hardware: "unspecified".into(),
             acceptance_screenshot: None,
             screenshot_camera_offset: None,
+            water_time: None,
+            water_depth: WaterDepthSource::Snapshot,
             shots: None,
             matched_route: None,
             shots_out: None,
@@ -608,6 +628,8 @@ Benchmark and profiling:
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
   --shots-settle-timeout <seconds>      maximum settling time per shot (default: 30, maximum: 600)
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
+  --water-time <seconds>                pin the water's wave phase so captures match
+  --water-depth <snapshot|constant>     how water reads the bed depth (default: snapshot)
   --profile-output <dir>                profile bundle directory (default: no bundle)
   --profile-gpu-inventory               expensive GPU inventory diagnostic; requires --profile-output
   --profile-scenario <name>             scenario name recorded in the profile (default: adhoc)
@@ -1621,6 +1643,29 @@ impl EngineConfig {
                         "a directory for the shots' images and log",
                         args.next(),
                     )?);
+                }
+                "--water-time" => {
+                    config.water_time = Some(take_number(
+                        "--water-time",
+                        "a finite number of seconds, 0 or more",
+                        Bound::NonNegative,
+                        args.next(),
+                    )?);
+                }
+                "--water-depth" => {
+                    const EXPECTED: &str = "\"snapshot\" or \"constant\"";
+                    let raw = take_raw("--water-depth", EXPECTED, args.next())?;
+                    config.water_depth = if raw == "snapshot" {
+                        WaterDepthSource::Snapshot
+                    } else if raw == "constant" {
+                        WaterDepthSource::Constant
+                    } else {
+                        return Err(ConfigError::invalid_value(
+                            "--water-depth",
+                            Some(raw),
+                            EXPECTED,
+                        ));
+                    };
                 }
                 "--diagnostic-asset-fallbacks" => config.diagnostic_asset_fallbacks = true,
                 "--material-fixture" => config.material_fixture = true,
@@ -3410,6 +3455,49 @@ mod tests {
     }
 
     #[test]
+    fn parses_a_pinned_water_time() {
+        assert_eq!(run_config(&["--water-time", "1.5"]).water_time, Some(1.5));
+        assert_eq!(run_config(&["--water-time", "0"]).water_time, Some(0.0));
+        assert_eq!(EngineConfig::default().water_time, None);
+    }
+
+    #[test]
+    fn a_negative_or_non_finite_water_time_is_refused() {
+        for value in ["-1", "NaN", "inf"] {
+            assert!(
+                matches!(
+                    parse_error(&["--water-time", value]),
+                    ConfigError::InvalidValue { .. }
+                ),
+                "{value} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_the_water_depth_source() {
+        assert_eq!(
+            run_config(&["--water-depth", "constant"]).water_depth,
+            WaterDepthSource::Constant
+        );
+        assert_eq!(
+            run_config(&["--water-depth", "snapshot"]).water_depth,
+            WaterDepthSource::Snapshot
+        );
+        assert_eq!(
+            EngineConfig::default().water_depth,
+            WaterDepthSource::Snapshot
+        );
+        assert!(matches!(
+            parse_error(&["--water-depth", "deep"]),
+            ConfigError::InvalidValue {
+                option: "--water-depth",
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn parses_the_optional_sun_bearing_and_elevation() {
         let config = run_config(&["--sun-position", "450,35"]);
         assert_eq!(config.sun_position, Some((90.0, 35.0)));
@@ -4249,6 +4337,11 @@ mod tests {
         // beside the engine arguments it builds. Only complete option literals
         // outside its parser declarations are engine arguments.
         let harness_tool = is_perf_harness(path);
+        // This capture comparison removes enable switches before assembling engine arguments.
+        // Scope its exact literal-only filter to this tool; emitted options remain audited.
+        let capture_tool = path
+            .file_name()
+            .is_some_and(|name| name == "capture_tonemap_tuning.py");
         let engine_lines: String;
         let scanned = if harness_tool {
             engine_lines = emitted_python_options(script);
@@ -4260,6 +4353,13 @@ mod tests {
                     line.split(|c: char| !c.is_alphanumeric())
                         .any(|word| word == "engine")
                 })
+                .collect::<Vec<_>>()
+                .join("\n");
+            engine_lines.as_str()
+        } else if capture_tool {
+            engine_lines = script
+                .lines()
+                .filter(|line| line.trim() != r#"if argument not in ("--grass", "--no-grass")]"#)
                 .collect::<Vec<_>>()
                 .join("\n");
             engine_lines.as_str()
@@ -4424,6 +4524,33 @@ mod tests {
             index += 1;
         }
         emitted.join(" ")
+    }
+
+    /// Capture normalization compares disabled flags locally while emitted options stay checked.
+    #[test]
+    fn the_capture_audit_distinguishes_removed_switches_from_emitted_options() {
+        let capture = std::path::Path::new("capture_tonemap_tuning.py");
+        let filter = r#"arguments = [argument for argument in arguments
+            if argument not in ("--grass", "--no-grass")]
+            arguments.append("--grass")"#;
+        assert_eq!(checked_script_engine_flags(filter, capture), 1);
+        for flag in ["--no-grass", "--unknown-engine-option"] {
+            let emitted = format!("{filter}\ncommand = [engine,\n    \"{flag}\"]");
+            if parser_options().contains(&flag) {
+                assert_eq!(checked_script_engine_flags(&emitted, capture), 2);
+            } else {
+                assert!(
+                    std::panic::catch_unwind(|| checked_script_engine_flags(&emitted, capture))
+                        .is_err()
+                );
+            }
+        }
+        let other = std::path::Path::new("another_capture.py");
+        if !parser_options().contains(&"--no-grass") {
+            assert!(
+                std::panic::catch_unwind(|| checked_script_engine_flags(filter, other)).is_err()
+            );
+        }
     }
 
     #[test]
