@@ -39,6 +39,8 @@ const PLAYER_FORM_ID: u32 = 0x0000_0007;
 /// The `RACE` the player's `RNAM` names. It carries no `WKMV`/`RNMV`, like the
 /// player's race in `Skyrim.esm`, so the default movement type applies.
 const PLAYER_RACE_FORM_ID: u32 = 0x0000_000A;
+/// Fixture-local `fJumpHeightMin`; the retail setting uses `0x000A_BEF6`.
+const JUMP_HEIGHT_FORM_ID: u32 = 0x0000_000B;
 /// `NPC_Default_MT`, the `MOVT` the engine selects for an unset race link.
 const NPC_DEFAULT_MOVT_FORM_ID: u32 = 0x0003_580D;
 /// `NPC_Default_MT`'s `SPED` speeds (left, right, forward and back; walk and
@@ -290,6 +292,7 @@ fn write_plugin(
     bytes.extend_from_slice(&movement_type_record()?);
     bytes.extend_from_slice(&player_race_record()?);
     bytes.extend_from_slice(&player_record()?);
+    bytes.extend_from_slice(&jump_height_record()?);
     bytes.extend_from_slice(&landscape_texture_record()?);
     bytes.extend_from_slice(&worldspace_record(spec)?);
 
@@ -506,23 +509,42 @@ fn movement_type_record() -> Result<Vec<u8>> {
     )
 }
 
-/// The player's `RACE`, with no movement links.
+/// The player's `RACE`, with distinct sex heights and no movement links.
 fn player_race_record() -> Result<Vec<u8>> {
+    let mut data = vec![0; 128];
+    data[16..20].copy_from_slice(&1.03_f32.to_le_bytes());
+    data[20..24].copy_from_slice(&1.0_f32.to_le_bytes());
     record(
         *b"RACE",
         PLAYER_RACE_FORM_ID,
-        &[(*b"EDID", cstring("NordRace"))],
+        &[(*b"EDID", cstring("GeneratedRace")), (*b"DATA", data)],
     )
 }
 
-/// The player `NPC_`: its race is the only field the engine needs.
+/// A male player with neutral speed and a non-unit NPC height.
 fn player_record() -> Result<Vec<u8>> {
+    let mut acbs = vec![0; 24];
+    acbs[14..16].copy_from_slice(&100_u16.to_le_bytes());
     record(
         *b"NPC_",
         PLAYER_FORM_ID,
         &[
             (*b"EDID", cstring("Player")),
+            (*b"ACBS", acbs),
             (*b"RNAM", PLAYER_RACE_FORM_ID.to_le_bytes().to_vec()),
+            (*b"NAM6", 1.1_f32.to_le_bytes().to_vec()),
+        ],
+    )
+}
+
+/// The fixture's base jump setting, before actor height multipliers apply.
+fn jump_height_record() -> Result<Vec<u8>> {
+    record(
+        *b"GMST",
+        JUMP_HEIGHT_FORM_ID,
+        &[
+            (*b"EDID", cstring("fJumpHeightMin")),
+            (*b"DATA", 76.0_f32.to_le_bytes().to_vec()),
         ],
     )
 }
@@ -1006,7 +1028,7 @@ mod tests {
     /// gone, and this constant stands in for it. A deliberate change to the
     /// exterior bytes refreshes it in the same commit, which is what keeps the
     /// change visible.
-    const EXTERIOR_ONLY_HASH: u64 = 0xF389_D351_445D_66D4;
+    const EXTERIOR_ONLY_HASH: u64 = 0xBAC9_2B58_4586_B322;
 
     /// FNV-1a over every byte of `bytes`.
     fn fnv1a(bytes: &[u8]) -> u64 {
