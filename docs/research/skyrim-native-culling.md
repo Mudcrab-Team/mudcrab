@@ -4,6 +4,9 @@ Research date: 2026-11-15. Mudcrab baseline: `8624434`.
 
 ## Overview
 
+For the current implementation and the later REA trace of exclusion predicates, portal
+visitation, and selective complexity fallback, see [remaining parity gaps from REA](skyrim-culling-rea-parity.md).
+
 Decompilation of the installed SkyrimSE 1.7.104.0 executable establishes that Skyrim retains
 **per-node visibility volumes and consumes them during object culling**. Mudcrab at baseline
 `8624434` discards portal regions after traversal and retains room booleans. This is a demonstrated
@@ -265,6 +268,8 @@ Legacy graphs retain their previous behavior. The authored path removes heuristi
 and portal-less-room fallbacks, while incomplete graphs still retain full rendering.
 
 Remaining assignment limits include native candidate/hash order, named-target neighbor precedence,
-unsupported/animated source bounds, primitive overrides, and forced/actor paths. Clipping tolerances,
-occluders, traversal revisits, lights, shadows, and always-render pass ownership remain separate
+unsupported/animated source bounds, primitive overrides, and forced/actor paths. Independent static
+plane and box occluders now have export and path-local exclusion support; see the
+[implementation contract](skyrim-culling-rea-parity.md#independent-occluder-implementation).
+Linked/stateful occluders, clipping tolerances, traversal revisits, lights, shadows, and always-render pass ownership remain separate
 parity work. These implementations do not establish full original-runtime parity.

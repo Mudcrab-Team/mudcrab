@@ -67,7 +67,8 @@ Skyrim's native compound-frustum interpreter evaluates unions and intersections 
 including occluder exclusions. Our runtime now retains unions of convex portal volumes and tests
 individual transformed mesh bounds against them. Separate paths retain their apertures rather
 than filling the screen rectangle between them. Versioned graphs also traverse unbounded space
-and test portal-shared geometry against both endpoint volumes. Occluder exclusions remain absent;
+and test portal-shared geometry against both endpoint volumes. Source-verified independent plane
+and box occluders now contribute path-local exclusions, tested with conservative enclosing spheres;
 unresolved connections still draw the whole cell.
 
 No reconstruction source was copied into the engine. A later
@@ -129,6 +130,17 @@ are clipped against incoming convex volumes; aperture edges and the doorway plan
 volume. Separate paths remain a union. Perspective views use converging rays and orthographic views
 use parallel rays. The work limits remain 16 contributions per space and 64 planes per volume;
 exceeding either widens that space conservatively. These limits differ from the native operator budget.
+
+Full source conversions publish `occlusion_version = 1` with authored plane and box geometry.
+Supported independent occluders add exclusions to their containing joined room or unbounded space.
+Exclusions propagate with each path; an alternative clear path retains the mesh. Rejection requires
+full containment of the mesh AABB's enclosing sphere. Budget widening retains local exclusions.
+Linked, stateful, overridden, and ambiguously assigned primitives remain inactive. Older exports
+retain their previous behavior until reconverted. See the [occluder implementation contract](skyrim-culling-rea-parity.md#independent-occluder-implementation).
+
+An interior with no authored rooms can apply verified independent occluders directly to the full
+camera volume. In an interior with rooms, occluders do not establish portal coverage: a camera
+outside every room still retains full rendering.
 
 Graphs with `visibility_version = 2` have explicit unbounded space. Only endpoints verified as zero
 in source `XPOD` name it. Missing, invalid, or foreign-cell links remain unknown and trigger full

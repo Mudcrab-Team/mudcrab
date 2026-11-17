@@ -1176,7 +1176,7 @@ CREATE TABLE inhouse_unresolved_terrain_textures (      -- LAND layer textures t
 
 ---
 
-### 15. Interior Room Graph (`room_bounds`, `room_portals`, `room_links`, `reference_rooms`, `room_graph_stats`)
+### 15. Interior room graph and occlusion
 
 Skyrim marks the rooms of an interior with `RoomMarker` references (base `0x1F`) and the
 doorways between them with `PortalMarker` references (base `0x20`). The converter decodes both
@@ -1185,7 +1185,7 @@ objects to draw is the engine's policy (design: `docs/research/interior-room-gra
 upstream issue #188). Only interior cells and only box rooms (`XPRM` shape 1) are written;
 exterior markers are skipped silently, and rooms of other shapes, and rooms or portals with a non-finite size or transform, are skipped and counted in the conversion report.
 All FormIDs are in load-order numbering, like `references.id`.
-The two marker base forms are the ones `Skyrim.esm` defines (always load-order slot 0, so the numbers do not change with the load order). A plugin that places rooms with a marker base of its own is not recognised and produces no rows; the conversion report does not count that case.
+These marker base forms, and the occlusion `PlaneMarker` (`0x17`), are the ones `Skyrim.esm` defines (always load-order slot 0, so the numbers do not change with the load order). A plugin that places rooms with a marker base of its own is not recognised and produces no rows; the conversion report does not count that case.
 
 ```sql
 CREATE TABLE IF NOT EXISTS room_bounds (       -- one row per interior RoomMarker with a box XPRM
@@ -1214,6 +1214,25 @@ CREATE TABLE IF NOT EXISTS room_portals (      -- one row per XPOD pair of an in
     PRIMARY KEY (ref_id, pair_index)
 );
 CREATE INDEX IF NOT EXISTS idx_room_portals_cell ON room_portals(cell_id);
+
+CREATE TABLE IF NOT EXISTS room_occluders (
+    ref_id INTEGER PRIMARY KEY, cell_id INTEGER NOT NULL,
+    shape INTEGER NOT NULL CHECK(shape IN (1,3)), -- XPRM box or plane
+    pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,
+    rot_x REAL NOT NULL, rot_y REAL NOT NULL, rot_z REAL NOT NULL,
+    half_x REAL NOT NULL, half_y REAL NOT NULL, half_z REAL NOT NULL,
+    scale REAL NOT NULL,
+    header_flags INTEGER NOT NULL,
+    has_enable_parent INTEGER NOT NULL,
+    has_links INTEGER NOT NULL,
+    target_ref INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_room_occluders_cell ON room_occluders(cell_id);
+CREATE TABLE IF NOT EXISTS room_occluder_links (
+    ref_id INTEGER NOT NULL, link_index INTEGER NOT NULL,
+    linked_ref INTEGER NOT NULL,
+    PRIMARY KEY (ref_id, link_index)
+);
 
 CREATE TABLE IF NOT EXISTS room_links (        -- ordered authored room-group links
     room_ref INTEGER NOT NULL,
@@ -1254,6 +1273,22 @@ CREATE TABLE IF NOT EXISTS room_graph_stats (  -- report counters and version ma
 
 Columns and rules:
 
+- **`room_occluders`** stores interior `PlaneMarker` placements, base form `0x17`, including
+  cells with no room markers. Shape 1 is a box; shape 3 is a local X-Z plane. Geometry comes
+  from `DATA`, `XPRM`, and `XSCL`. The native record loader consumes legacy `XOCP` without
+  retaining its geometry, so it cannot replace these fields. Non-finite geometry, non-positive
+  scale, unsupported shapes, and deleted placements produce no row. Disabled-state flags,
+  enable-parent presence, and linked-plane presence are retained for runtime policy.
+  `target_ref` is NULL only when `XMBR` is absent; zero preserves an unresolved or malformed
+  explicit override. `has_links` remains true for malformed `XORD`, including after remapping.
+- **`room_occluder_links`** preserves nonzero linked FormIDs from complete 16-byte `XORD`
+  occurrences. Slots are numbered `occurrence * 4 + slot`, without asserting the historical
+  edge names. All four FormIDs are remapped. Links remain when source geometry is skipped,
+  so a linked target cannot become an independent occluder. Malformed occurrences have no
+  link rows. They preserve `has_links` when the source has valid geometry and set the cell's
+  `complete` flag to false. A full trusted runtime export publishes
+  `room_graph_stats.occlusion_version = 1` in the in-house source-data transaction.
+  Legacy and untrusted canonical exports omit this marker.
 - **`room_bounds`**: the box is centred on the marker's position and oriented by its rotation
   (the same Euler convention as any reference, `shared::coordinates`). `half_*` are the `XPRM`
   half-extents in the room's own frame. `lighting_template_id` (`LNAM`) and `image_space_id`
@@ -1316,7 +1351,8 @@ Columns and rules:
   pairs can add several), `portals_with_extra_pairs` (markers whose `XPOD` holds more than one
   pair), `portals_with_trailing_xpod_bytes` (markers whose `XPOD` length is not a multiple of 8),
   `non_box_rooms_skipped`, `portals_without_size_skipped`, `invalid_markers_skipped` (rooms and portals with a missing, truncated, or non-finite transform, or a non-finite size), `objects_in_no_room` and
-  `objects_in_several_rooms` (both by pivot), and `overlap_rows`.
+  `objects_in_several_rooms` (both by pivot), `overlap_rows`, `occluders` (valid geometry rows),
+  and `invalid_occluders_skipped` (unsupported or malformed occlusion primitives).
   `assignment_version = 1` enables authored master/slave resolution and reference ownership,
   together with the three assignment tables, `link_index`, and `visibility_version = 2`.
   `visibility_version = 2` additionally marks graphs whose outside endpoints have verified

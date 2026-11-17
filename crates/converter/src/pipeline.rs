@@ -1902,6 +1902,10 @@ fn reusable_manifest(
                             settings.schemas()?.as_ref(),
                             &settings.language,
                         ),
+                        crate::cache::inhouse_adapter14_reader_identity(
+                            settings.schemas()?.as_ref(),
+                            &settings.language,
+                        ),
                     ]
                     .into_iter()
                     .flatten()
@@ -7054,6 +7058,7 @@ mod tests {
         for (reader, prior) in [
             (crate::config::RecordReader::Inhouse, 12),
             (crate::config::RecordReader::Inhouse, 13),
+            (crate::config::RecordReader::Inhouse, 14),
             (crate::config::RecordReader::Legacy, 4),
             (crate::config::RecordReader::Legacy, 5),
         ] {

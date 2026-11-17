@@ -1979,6 +1979,40 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
                         marker(0x804, 0x20, 3, None),
                         marker(0x810, 0x1F, 1, None),
                         marker(0x811, 0x1F, 1, None),
+                        marker(0x830, 0x17, 3, None),
+                        record(
+                            b"REFR",
+                            0x831,
+                            0x8000_0800,
+                            [
+                                sub(b"NAME", &0x17u32.to_le_bytes()),
+                                sub(b"DATA", &[0; 24]),
+                                sub(b"XPRM", &{
+                                    let mut primitive = shape.clone();
+                                    primitive[28..32].copy_from_slice(&3u32.to_le_bytes());
+                                    primitive
+                                }),
+                                sub(b"XESP", &[]),
+                                sub(b"XMBR", &[0; 3]),
+                            ]
+                            .concat(),
+                        ),
+                        record(
+                            b"REFR",
+                            0x832,
+                            0,
+                            [
+                                sub(b"NAME", &0x17u32.to_le_bytes()),
+                                sub(b"DATA", &[0; 24]),
+                                sub(b"XPRM", &{
+                                    let mut primitive = shape.clone();
+                                    primitive[28..32].copy_from_slice(&3u32.to_le_bytes());
+                                    primitive
+                                }),
+                                sub(b"XSCL", &[0; 3]),
+                            ]
+                            .concat(),
+                        ),
                         record(
                             b"REFR",
                             0x820,
@@ -2022,6 +2056,43 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
     let output = dir.path().join("bundle");
     converter::esm::inhouse::export_record_bundle_typed(&data, &order, &output, &[]).unwrap();
     let conn = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT value FROM room_graph_stats WHERE name='occlusion_version'",
+            [],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT shape FROM room_occluders WHERE ref_id=2096",
+            [],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        3
+    );
+    assert_eq!(conn.query_row("SELECT header_flags,has_enable_parent,target_ref FROM room_occluders WHERE ref_id=2097", [], |row| Ok((row.get::<_,u32>(0)?,row.get::<_,bool>(1)?,row.get::<_,Option<u32>>(2)?))).unwrap(), (0x8000_0800,true,Some(0)));
+    assert!(
+        !conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM room_occluders WHERE ref_id=2098)",
+                [],
+                |row| row.get::<_, bool>(0)
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT value FROM room_graph_stats WHERE name='occluders'",
+            [],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        2
+    );
     for (id, outside) in [(0x801, true), (0x802, false), (0x803, false), (0x804, true)] {
         let actual: (Option<u32>, bool) = conn
             .query_row(

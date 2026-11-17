@@ -26,7 +26,7 @@ use std::{
 };
 
 /// Decoder/adapter behavior version for output changes outside the authored schema.
-pub const ADAPTER_VERSION: u32 = 14;
+pub const ADAPTER_VERSION: u32 = 15;
 
 /// Legacy metadata projection contract: preserve WRLD payloads and record-aware VMAD links.
 /// Version 4 resolves localized string fields to the in-house reader's text (`legacy_text`).
@@ -109,6 +109,8 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "script_property_values",
     "room_bounds",
     "room_portals",
+    "room_occluders",
+    "room_occluder_links",
     "room_links",
     "room_reference_rules",
     "room_model_bounds",
@@ -970,6 +972,25 @@ fn convert_plugins_with_text_sources_report_impl(
         .transpose()?;
     let projection_stage = records::profile::ProfileStage::start("typed_export_runtime_projection");
     let mut master = HashMap::with_capacity(decoded.records.len());
+    // Projection moves canonical fields out of DecodedRecord. Retain only the small
+    // occluder set so source publication can still resolve identity and incoming links.
+    let occluder_records = if mode == RecordBundleMode::Full {
+        decoded
+            .records
+            .values()
+            .filter(|record| {
+                record.record_type == *b"REFR"
+                    && record.fields.iter().any(|field| {
+                        field.signature == *b"NAME"
+                            && field.canonical_bytes.as_slice()
+                                == super::rooms::OCCLUSION_MARKER_BASE.to_le_bytes()
+                    })
+            })
+            .map(|record| (record.form_id, record.to_raw_record()))
+            .collect()
+    } else {
+        HashMap::new()
+    };
     let mut opaque_fields = HashMap::new();
     // Sort compact keys, leaving record payloads in place and streaming one JSON line at a time.
     // The same traversal fixes localized provenance rowids when no typed dump is requested.
@@ -1259,8 +1280,13 @@ fn convert_plugins_with_text_sources_report_impl(
                 .filter(|record| super::is_placed_record_type(&record.record_type))
                 .map(|record| (record.form_id, record.rejected_fields.as_slice())),
         )?;
+        super::rooms::restore_occluder_source_provenance(
+            &tx,
+            &occluder_records,
+            decoded.records.values(),
+        )?;
         tx.execute(
-            "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES ('visibility_version',2)",
+            "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES ('visibility_version',2),('occlusion_version',1)",
             [],
         )?;
     }

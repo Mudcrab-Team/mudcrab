@@ -1053,7 +1053,7 @@ fn export_records(
             // the full in-house source transaction verifies and publishes them.
             tx.execute("UPDATE room_portals SET unbounded_a=0,unbounded_b=0", [])?;
             tx.execute(
-                "DELETE FROM room_graph_stats WHERE name='visibility_version'",
+                "DELETE FROM room_graph_stats WHERE name IN ('visibility_version','occlusion_version')",
                 [],
             )?;
         }
@@ -3130,11 +3130,26 @@ mod tests {
             }],
         )
         .unwrap();
+        let mut occluder = portal(0x3002, 0x100, None);
+        occluder
+            .subrecords
+            .iter_mut()
+            .find(|(tag, _)| tag.as_slice() == b"NAME")
+            .unwrap()
+            .1 = rooms::OCCLUSION_MARKER_BASE.to_le_bytes().to_vec();
+        occluder.subrecords.push((
+            b"XORD".to_vec(),
+            [0x3003u32, 0, 0, 0]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect(),
+        ));
         let records = vec![
             interior_cell(0x100),
             room(0x1001, 0x100, [0.0; 3], [0.0; 3], [100.0; 3], vec![]),
             portal(0x3001, 0x100, Some((0x1001, 0))),
             reference(0x2001, 0x100, 0x500, [20.0, 0.0, 0.0], [0.0; 3]),
+            occluder,
         ];
         let master: HashMap<u32, RawRecord> = records
             .into_iter()
@@ -3153,13 +3168,35 @@ mod tests {
         .unwrap();
         let expected = rooms::RoomGraphReport::read(&conn).unwrap();
         assert_eq!((expected.rooms, expected.portals), (1, 1));
+        assert_eq!(expected.occluders, 1);
         assert_eq!(rooms_of(&conn, 0x2001), vec![(0x1001, 1)]);
+        assert!(
+            !conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='occlusion_version')",
+                    [],
+                    |row| row.get::<_, bool>(0)
+                )
+                .unwrap()
+        );
 
         conn.execute("INSERT INTO room_model_bounds VALUES(1280,1,2,3,4)", [])
             .unwrap();
         export_to_db(&conn, &HashMap::new()).unwrap();
         assert_eq!(rooms::RoomGraphReport::read(&conn).unwrap(), expected);
         assert_eq!(rooms_of(&conn, 0x2001), vec![(0x1001, 1)]);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM room_occluders", [], |row| row
+                .get::<_, u32>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM room_occluder_links", [], |row| row
+                .get::<_, u32>(0))
+                .unwrap(),
+            1
+        );
         assert_eq!(
             conn.query_row("SELECT count(*) FROM room_model_bounds", [], |r| r
                 .get::<_, u32>(0))
@@ -3171,6 +3208,8 @@ mod tests {
         for table in [
             "room_bounds",
             "room_portals",
+            "room_occluders",
+            "room_occluder_links",
             "room_links",
             "room_graph_cells",
             "reference_rooms",
@@ -3193,7 +3232,7 @@ mod tests {
         let canonical_rows: u64 = conn
             .query_row("SELECT count(*) FROM records", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(canonical_rows, 4);
+        assert_eq!(canonical_rows, 5);
         export_inhouse_to_db(
             &conn,
             &master,

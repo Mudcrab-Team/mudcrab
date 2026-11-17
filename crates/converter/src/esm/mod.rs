@@ -618,6 +618,7 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         },
         b"XLRM" | b"LNAM" | b"INAM" if record_type == b"REFR" => Fixed(SINGLE),
         b"XMBR" if is_placed_record_type(record_type) => Fixed(SINGLE),
+        b"XORD" if record_type == b"REFR" => Fixed(&[(16, &[0, 4, 8, 12])]),
         // Regions.
         b"XCLR" if record_type == b"CELL" => Array {
             stride: 4,
@@ -663,6 +664,9 @@ fn remap_record_form_ids(
         b"GRAS" | b"LTEX" | b"TXST" | b"LAND" | b"CELL" | b"WRLD"
     );
     let record_type = record.record_type;
+    let occluder = record_type == *b"REFR"
+        && extractors::SubrecordView::new(&record.subrecords).get_form_id(b"NAME")
+            == Some(rooms::OCCLUSION_MARKER_BASE);
     let remap_with_validation = |form_id: u32, strict: bool| -> Result<u32> {
         if form_id == 0 {
             return Ok(0);
@@ -829,7 +833,15 @@ fn remap_record_form_ids(
                             record.form_id
                         ),
                     );
-                    malformed_subrecords.push(index);
+                    if (record_type == *b"REFR" && tag.as_slice() == b"XORD")
+                        || (occluder && matches!(tag.as_slice(), b"XESP" | b"XMBR"))
+                    {
+                        // Presence marks uncertain occlusion state. Dropping it could
+                        // promote this marker to an independently usable occluder.
+                        data.clear();
+                    } else {
+                        malformed_subrecords.push(index);
+                    }
                     continue;
                 }
             };
@@ -902,6 +914,75 @@ fn remap_record_form_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn occlusion_links_remap_all_four_slots_and_keep_malformed_presence() {
+        let indices = HashMap::from([("base.esm".into(), 0), ("patch.esp".into(), 2)]);
+        let warnings = RemapWarnings::default();
+        let mut record = RawRecord {
+            form_id: 0x0100_0800,
+            record_type: *b"REFR",
+            flags: 0,
+            subrecords: vec![
+                (
+                    b"XORD".to_vec(),
+                    [0x0100_0900u32, 0x0000_0901, 0x0100_0902, 0x0300_0903]
+                        .into_iter()
+                        .flat_map(u32::to_le_bytes)
+                        .collect(),
+                ),
+                (b"XORD".to_vec(), vec![1; 12]),
+            ],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        };
+        remap_record_form_ids(
+            &mut record,
+            "patch.esp",
+            &["base.esm".into()],
+            &indices,
+            &HashMap::new(),
+            &warnings,
+        )
+        .unwrap();
+        assert_eq!(
+            record.subrecords[0].1,
+            [0x0200_0900u32, 0x0000_0901, 0x0200_0902, 0]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(record.subrecords[1], (b"XORD".to_vec(), Vec::new()));
+    }
+
+    #[test]
+    fn malformed_occlusion_state_preserves_enable_parent_and_override_presence() {
+        let mut record = RawRecord {
+            form_id: 0x0100_0800,
+            record_type: *b"REFR",
+            flags: 0,
+            subrecords: vec![
+                (b"NAME".to_vec(), 0x17u32.to_le_bytes().to_vec()),
+                (b"XESP".to_vec(), vec![0; 3]),
+                (b"XMBR".to_vec(), vec![0; 3]),
+            ],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        };
+        remap_record_form_ids(
+            &mut record,
+            "patch.esp",
+            &["base.esm".into()],
+            &HashMap::from([("base.esm".into(), 0), ("patch.esp".into(), 2)]),
+            &HashMap::new(),
+            &RemapWarnings::default(),
+        )
+        .unwrap();
+        assert_eq!(record.subrecords[1], (b"XESP".to_vec(), Vec::new()));
+        assert_eq!(record.subrecords[2], (b"XMBR".to_vec(), Vec::new()));
+    }
 
     #[test]
     fn invalid_optional_links_are_cleared_and_warnings_are_aggregated() {

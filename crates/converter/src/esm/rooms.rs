@@ -12,10 +12,15 @@ use rusqlite::{Connection, OptionalExtension, Result, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+mod occluders;
+pub(crate) use occluders::restore_source_provenance as restore_occluder_source_provenance;
+
 /// `RoomMarker` base form in `Skyrim.esm`, which is always load-order slot 0.
 pub const ROOM_MARKER_BASE: u32 = 0x1F;
 /// `PortalMarker` base form in `Skyrim.esm`.
 pub const PORTAL_MARKER_BASE: u32 = 0x20;
+/// `PlaneMarker` base form, used by both plane and box occlusion primitives.
+pub const OCCLUSION_MARKER_BASE: u32 = 0x17;
 /// `XPRM` shape value of a box room.
 const SHAPE_BOX: u32 = 1;
 
@@ -42,6 +47,22 @@ pub const ROOM_TABLES_SQL: &str = r#"
              PRIMARY KEY (ref_id, pair_index)
          );
          CREATE INDEX IF NOT EXISTS idx_room_portals_cell ON room_portals(cell_id);
+         CREATE TABLE IF NOT EXISTS room_occluders (
+             ref_id INTEGER PRIMARY KEY, cell_id INTEGER NOT NULL,
+             shape INTEGER NOT NULL CHECK(shape IN (1,3)),
+             pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,
+             rot_x REAL NOT NULL, rot_y REAL NOT NULL, rot_z REAL NOT NULL,
+             half_x REAL NOT NULL, half_y REAL NOT NULL, half_z REAL NOT NULL,
+             scale REAL NOT NULL, header_flags INTEGER NOT NULL,
+             has_enable_parent INTEGER NOT NULL, has_links INTEGER NOT NULL,
+             target_ref INTEGER
+         );
+         CREATE INDEX IF NOT EXISTS idx_room_occluders_cell ON room_occluders(cell_id);
+         CREATE TABLE IF NOT EXISTS room_occluder_links (
+             ref_id INTEGER NOT NULL, link_index INTEGER NOT NULL,
+             linked_ref INTEGER NOT NULL,
+             PRIMARY KEY (ref_id, link_index)
+         );
          CREATE TABLE IF NOT EXISTS room_links (
              room_ref INTEGER NOT NULL, linked_ref INTEGER NOT NULL,
              link_index INTEGER NOT NULL DEFAULT 0,
@@ -270,9 +291,15 @@ pub struct RoomGraphReport {
     pub objects_in_several_rooms: u64,
     /// `reference_rooms` rows with `contained = 0`, added after model bounds are known.
     pub overlap_rows: u64,
+    /// Supported occlusion primitives exported, including authored state flags.
+    #[serde(default)]
+    pub occluders: u64,
+    /// Occlusion markers with missing, malformed or unsupported geometry.
+    #[serde(default)]
+    pub invalid_occluders_skipped: u64,
 }
 
-const STAT_NAMES: [&str; 12] = [
+const STAT_NAMES: [&str; 14] = [
     "rooms",
     "portals",
     "links",
@@ -285,10 +312,12 @@ const STAT_NAMES: [&str; 12] = [
     "objects_in_no_room",
     "objects_in_several_rooms",
     "overlap_rows",
+    "occluders",
+    "invalid_occluders_skipped",
 ];
 
 impl RoomGraphReport {
-    fn values(&self) -> [u64; 12] {
+    fn values(&self) -> [u64; 14] {
         [
             self.rooms,
             self.portals,
@@ -302,6 +331,8 @@ impl RoomGraphReport {
             self.objects_in_no_room,
             self.objects_in_several_rooms,
             self.overlap_rows,
+            self.occluders,
+            self.invalid_occluders_skipped,
         ]
     }
 
@@ -350,6 +381,8 @@ impl RoomGraphReport {
                 "objects_in_no_room" => report.objects_in_no_room = value,
                 "objects_in_several_rooms" => report.objects_in_several_rooms = value,
                 "overlap_rows" => report.overlap_rows = value,
+                "occluders" => report.occluders = value,
+                "invalid_occluders_skipped" => report.invalid_occluders_skipped = value,
                 _ => {}
             }
         }
@@ -362,6 +395,8 @@ pub fn clear(conn: &Connection) -> Result<()> {
     for table in [
         "room_bounds",
         "room_portals",
+        "room_occluders",
+        "room_occluder_links",
         "room_links",
         "room_reference_rules",
         "room_graph_cells",
@@ -742,10 +777,18 @@ pub fn export_room_graph(
         report.portals += 1;
     }
 
+    let occluders = occluders::export(tx, &ordered)?;
+    report.occluders = occluders.count;
+    report.invalid_occluders_skipped = occluders.invalid;
+    incomplete.extend(occluders.incomplete_cells);
+
     // Assignment rules are independent of geometric membership and survive missing models.
     for &(&id, record) in &ordered {
         let base = base_of(record);
-        if base == ROOM_MARKER_BASE || base == PORTAL_MARKER_BASE {
+        if matches!(
+            base,
+            ROOM_MARKER_BASE | PORTAL_MARKER_BASE | OCCLUSION_MARKER_BASE
+        ) {
             continue;
         }
         let view = SubrecordView::new(&record.subrecords);
@@ -778,6 +821,7 @@ pub fn export_room_graph(
             let base = base_of(record);
             if base == ROOM_MARKER_BASE
                 || base == PORTAL_MARKER_BASE
+                || base == OCCLUSION_MARKER_BASE
                 || record.flags & shared::records::MULTIBOUND_REFERENCE_FLAG != 0
             {
                 continue;
@@ -814,7 +858,12 @@ pub fn export_room_graph(
          WHERE source.cell_id=?1 AND NOT EXISTS(SELECT 1 FROM room_bounds target \
          WHERE target.ref_id=l.linked_ref AND target.cell_id=?1))",
     )?;
-    for &cell in rooms_by_cell.keys() {
+    let cells: HashSet<_> = rooms_by_cell
+        .keys()
+        .copied()
+        .chain(occluders.cells)
+        .collect();
+    for cell in cells {
         let dangling: bool = dangling_links.query_row([cell], |row| row.get(0))?;
         tx.execute(
             "INSERT INTO room_graph_cells VALUES (?1,?2)",

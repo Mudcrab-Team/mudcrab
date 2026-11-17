@@ -84,7 +84,7 @@ expression: manifest
     "pex": "36a71880028a9c1d6bcd8b3c1cf149805dbe384a48a765bab57df47a3cbea565"
   },
   "complete": true,
-  "configuration_hash": "101deff2afbfbcd4112e9f85a46e67f3c48f40f45740f3d35761c2776b94d180",
+  "configuration_hash": "b487fc1a74b4dcf65fa6f3f7c1992a395b3dd348cd2d8b393c74f98da1fd56ce",
   "entries": {
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",
