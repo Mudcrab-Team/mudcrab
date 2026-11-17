@@ -34,8 +34,16 @@ charges its retained colour plane separately. It is a synthetic worker test;
 the converted-fixture test above remains the converter integration check.
 Neither test requires a GPU.
 
-The respective 6 ms, 25 ms and 60 ms per-cell ceilings have headroom for shared CI
-runners. They are worker-latency regression limits, not frame-time guarantees.
+CI runners vary; the strict budget applies to local and release runs.
+The respective strict per-cell ceilings remain 6 ms, 25 ms and 60 ms. Both tests
+apply a shared 1.5x time allowance only when the environment variable `CI` is
+exactly `true` (as on GitHub Actions), giving effective ceilings of 9 ms, 37.5 ms
+and 90 ms. Unset or other values use 1.0x, including local `--release` runs.
+This CI-only allowance accounts for hosted-runner variability: identical grass
+code and an unchanged companion benchmark can slow down between runners.
+Each timing-budget line prints the strict ceiling, allowance and effective ceiling;
+memory and heap limits remain unchanged.
+These are worker-latency regression limits, not frame-time guarantees.
 Inspect the printed measurements and the runtime profiler on the target machine.
 The fixture does not establish performance for every authored mesh or grass mod.
 
@@ -91,7 +99,8 @@ native allocations and GPU resources. The library test only checks
 the generator's reported output size (32 bytes per potential instance plus 32 KiB).
 
 Both ignored tests require the actual Cargo OPT_LEVEL to be 3 (including a
-guard against custom profiles with lower optimization). CI runs both with --release. The tighter 6/25/60 ms limits are
+guard against custom profiles with lower optimization). CI runs both with --release
+and the CI-only 1.5x time allowance described above. The strict 6/25/60 ms limits are
 portable regression policy, not a measured Linux baseline or a guarantee that a
 particular slowdown factor fails; runner measurements must be collected before
 claiming that. Determinism covers same-cache replay and byte-identical caches from two independent conversions at CPU/IO job counts 2 and 1.
