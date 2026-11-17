@@ -71,3 +71,18 @@ These captures exercise the coarse core layer, before portal-aperture and author
 layers. The separate local plane and box occluder implementation is absent from this executable.
 Actor spawns report existing unresolved-record warnings in these assets. These references remain outside
 room culling. Lighting, shadows, and original-game performance are outside this comparison.
+
+## Missing stored bounds follow-up
+
+A reference without `ExpectedModelBounds` now stays drawn under legacy room membership. The
+converter can write its pivot row without any bounds-overlap rows when `bounds_valid=0`. A loaded
+mesh AABB does not establish that the stored memberships cover its full extent. The eligibility
+check reads the existing component on the reference root before applying room rejection.
+
+The spanning-floor regression failed before this guard, with its rear-room pivot causing the
+visible forward portion to disappear. It now passes. The streamed override fixture also verifies
+that NONE and unknown-bounds references stay drawn while a bounded automatic reference is culled.
+Synthetic fixtures that represent complete membership now explicitly supply stored model bounds.
+The updated core passed all 1,611 engine tests with 11 ignored, formatting, and strict engine
+library/test Clippy. This run includes 51 room-culling tests. Earlier screenshots and timing remain
+pinned to their recorded executable; they were not rerun for this missing-metadata guard.

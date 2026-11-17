@@ -18,7 +18,9 @@
 //! a portal on the starting room does not establish coverage further along the walk. A camera in
 //! no room also draws the whole cell.
 //!
-//! An object is hidden from the view only when it is contained (pivot inside the box) in exactly
+//! References without stored model bounds stay drawn: their pivot rows cannot establish overlap
+//! coverage, even when a loaded mesh supplies an AABB. An object with stored model bounds is hidden
+//! from the view only when it is contained (pivot inside the box) in exactly
 //! one room and none of the rooms it belongs to - that one, plus any room its bounds merely overlap
 //! (`contained = 0`) - was reached. Every other object is drawn: one that is in no room, one whose
 //! pivot is in several rooms, anything outside the room graph, and everything when the camera is in
@@ -120,7 +122,9 @@
 
 use crate::{
     config::EngineConfig,
-    world::components::{CellRef, ExteriorCellGrid, FormId, StreamedCellRoot, StreamingCamera},
+    world::components::{
+        CellRef, ExpectedModelBounds, ExteriorCellGrid, FormId, StreamedCellRoot, StreamingCamera,
+    },
 };
 use bevy::{
     camera::visibility::{VisibilitySystems, VisibleEntities, check_visibility_cpu_culling},
@@ -1024,7 +1028,11 @@ pub fn cull_room_views(
     >,
     parents: Query<&ChildOf>,
     ids: Query<&FormId>,
-    exemptions: Query<(Option<&RigidBody>, Has<RoomCullExempt>)>,
+    exemptions: Query<(
+        Option<&RigidBody>,
+        Has<RoomCullExempt>,
+        Has<ExpectedModelBounds>,
+    )>,
     mut owners: Local<HashMap<Entity, (u32, Entity)>>,
 ) {
     state.culled_last_frame = 0;
@@ -1094,7 +1102,12 @@ pub fn cull_room_views(
                 let exempted = |entity| {
                     exemptions
                         .get(entity)
-                        .is_ok_and(|(body, marked)| marked || body.is_some_and(|b| body_moves(*b)))
+                        .is_ok_and(|(body, marked, has_model_bounds)| {
+                            marked
+                                // Pivot-only membership does not establish bounds-overlap coverage.
+                                || (entity == reference && !has_model_bounds)
+                                || body.is_some_and(|b| body_moves(*b))
+                        })
                 };
                 if exempted(reference) || exempted(entity) {
                     return true;
@@ -1646,9 +1659,23 @@ mod tests {
         app.world_mut()
             .resource_mut::<RoomCullingState>()
             .insert_graph(7, root, graph);
-        let near_ref = app.world_mut().spawn((FormId(1), ChildOf(root))).id();
+        let near_ref = app
+            .world_mut()
+            .spawn((
+                FormId(1),
+                ChildOf(root),
+                ExpectedModelBounds::new(-Vec3::ONE, Vec3::ONE).unwrap(),
+            ))
+            .id();
         let near = app.world_mut().spawn(ChildOf(near_ref)).id();
-        let far_ref = app.world_mut().spawn((FormId(2), ChildOf(root))).id();
+        let far_ref = app
+            .world_mut()
+            .spawn((
+                FormId(2),
+                ChildOf(root),
+                ExpectedModelBounds::new(-Vec3::ONE, Vec3::ONE).unwrap(),
+            ))
+            .id();
         let far = app.world_mut().spawn(ChildOf(far_ref)).id();
         let loose = app.world_mut().spawn(ChildOf(root)).id();
         let list = |entities: &[Entity]| {
@@ -1708,6 +1735,42 @@ mod tests {
         app.world_mut()
             .run_system_once(cull_room_views)
             .expect("cull_room_views runs");
+    }
+
+    #[test]
+    fn missing_stored_bounds_keep_a_floor_that_extends_out_of_its_pivot_room() {
+        let mut scene = scene();
+        let reference = scene
+            .app
+            .world()
+            .get::<ChildOf>(scene.far)
+            .unwrap()
+            .parent();
+        // The rear pivot has no overlap rows because the converted model bounds were invalid.
+        // Its loaded mesh still extends through the camera's room into the forward view.
+        scene
+            .app
+            .world_mut()
+            .entity_mut(reference)
+            .remove::<ExpectedModelBounds>()
+            .insert(GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 20.0)));
+        scene.app.world_mut().entity_mut(scene.far).insert((
+            Aabb::from_min_max(Vec3::new(-5.0, -0.1, -35.0), Vec3::new(5.0, 0.1, 1.0)),
+            GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 20.0)),
+        ));
+        run_cull(&mut scene.app);
+        assert!(
+            mesh_list(&scene.app, scene.camera).contains(&scene.far),
+            "a runtime mesh AABB does not make pivot-only stored membership complete"
+        );
+        assert_eq!(
+            scene
+                .app
+                .world()
+                .resource::<RoomCullingState>()
+                .culled_last_frame,
+            0
+        );
     }
 
     #[test]
@@ -1827,7 +1890,11 @@ mod tests {
             let reference = scene
                 .app
                 .world_mut()
-                .spawn((FormId(id), ChildOf(root)))
+                .spawn((
+                    FormId(id),
+                    ChildOf(root),
+                    ExpectedModelBounds::new(-Vec3::ONE, Vec3::ONE).unwrap(),
+                ))
                 .id();
             meshes.push(scene.app.world_mut().spawn(ChildOf(reference)).id());
         }
@@ -2094,7 +2161,16 @@ mod tests {
         let mesh_in = |app: &mut App, form_id: u32, z: f32| {
             let reference = app
                 .world_mut()
-                .spawn((FormId(form_id), Visibility::default(), ChildOf(root)))
+                .spawn((
+                    FormId(form_id),
+                    Visibility::default(),
+                    ChildOf(root),
+                    ExpectedModelBounds::new(
+                        Vec3::new(-1.0, -1.0, z - 1.0),
+                        Vec3::new(1.0, 1.0, z + 1.0),
+                    )
+                    .unwrap(),
+                ))
                 .id();
             app.world_mut()
                 .spawn((
@@ -2254,7 +2330,11 @@ mod tests {
             .unwrap();
         // References 3..=6 are all placed in room B, which the camera cannot reach.
         let add = |app: &mut App, form_id: u32, reference: &dyn Fn(&mut EntityWorldMut)| {
-            let mut reference_entity = app.world_mut().spawn((FormId(form_id), ChildOf(root)));
+            let mut reference_entity = app.world_mut().spawn((
+                FormId(form_id),
+                ChildOf(root),
+                ExpectedModelBounds::new(-Vec3::ONE, Vec3::ONE).unwrap(),
+            ));
             reference(&mut reference_entity);
             let reference_entity = reference_entity.id();
             let mesh = app.world_mut().spawn(ChildOf(reference_entity)).id();

@@ -10903,13 +10903,20 @@ mod tests {
         unrestricted.base_record_type = Some("STAT".into());
         unrestricted.model_path = Some("architecture/wall.nif".into());
         unrestricted.has_multibound_override = true;
+        unrestricted.bounds_valid = true;
+        unrestricted.bounds_min = [-1.0; 3];
+        unrestricted.bounds_max = [1.0; 3];
         let mut automatic = unrestricted.clone();
         automatic.form_id = 2;
         automatic.has_multibound_override = false;
-        let mut app = spawn_reference_cell_app(vec![unrestricted, automatic], false);
+        let mut unknown_bounds = automatic.clone();
+        unknown_bounds.form_id = 3;
+        unknown_bounds.bounds_valid = false;
+        let mut app =
+            spawn_reference_cell_app(vec![unrestricted, automatic, unknown_bounds], false);
         app.add_plugins(RoomCullingPlugin::from_config(&EngineConfig::default()));
         let root = app.world().resource::<SpawnedCellRoot>().0.unwrap();
-        let meshes = [1, 2].map(|id| {
+        let meshes = [1, 2, 3].map(|id| {
             let reference = reference_entity(&app, id);
             app.world_mut().spawn(ChildOf(reference)).id()
         });
@@ -10931,7 +10938,7 @@ mod tests {
                 ],
                 rooms: [Some(0), Some(1)],
             }],
-            membership: [1, 2]
+            membership: [1, 2, 3]
                 .into_iter()
                 .map(|id| {
                     (
@@ -10965,8 +10972,8 @@ mod tests {
                 .get::<VisibleEntities>(camera)
                 .unwrap()
                 .get(TypeId::of::<Mesh3d>()),
-            &vec![meshes[0]],
-            "NONE stays visible while the ordinary static in the same unreached room is culled"
+            &vec![meshes[0], meshes[2]],
+            "NONE and unknown bounds stay visible while the bounded automatic static is culled"
         );
     }
 
