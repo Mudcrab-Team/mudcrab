@@ -5,6 +5,8 @@ use crate::{config::EngineConfig, world::grass_cache::GrassCache};
 use shared::grass::{ArchivedGrassQuadrant, GRASS_CELL_SIZE, GRASS_EXCLUSION_SIDE};
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
+#[path = "fade_sort.rs"]
+mod fade_sort;
 #[path = "random.rs"]
 mod random;
 #[path = "sampling.rs"]
@@ -368,6 +370,8 @@ fn generate_field<const OBSERVE: bool>(
                     if n == 0 {
                         continue;
                     }
+                    let [slope_lower, slope_upper] =
+                        sampling::slope_bounds(rule.min_slope, rule.max_slope);
                     let inv = 1.0 / n as f32;
                     let half = 256.0 * inv * 0.5;
                     let two = inv + inv;
@@ -417,11 +421,9 @@ fn generate_field<const OBSERVE: bool>(
                                 water,
                                 rule.units_from_water.into(),
                                 rule.water_comparison.into(),
-                            ) || !sampling::slope_allowed(
-                                sample.normal[2],
-                                rule.min_slope,
-                                rule.max_slope,
-                            ) {
+                            ) || !(slope_lower <= sample.normal[2]
+                                && sample.normal[2] <= slope_upper)
+                            {
                                 continue;
                             }
                             // Preserve the reference stream: appearance rolls happen after LAND filters,
@@ -550,7 +552,7 @@ fn generate_field<const OBSERVE: bool>(
         // Compact once per species before sorting and publication. Boxing gives the
         // retained vector exact capacity while preserving the staged instance order.
         let mut values = values.into_boxed_slice().into_vec();
-        values.sort_by_key(GrassInstance::candidate_slot);
+        fade_sort::sort(&mut values);
         let rule = cache.species(id).expect("generated species is mapped");
         result.bytes += values.capacity() * std::mem::size_of::<GrassInstance>()
             + rule.model_path.len()
@@ -578,3 +580,7 @@ fn generate_field<const OBSERVE: bool>(
 #[cfg(test)]
 #[path = "selection_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "committed_perf_probe.rs"]
+mod committed_perf_probe;
