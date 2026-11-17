@@ -2,8 +2,8 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// Version eleven combines MODS-aware masks with reference-order species slots and LAND recovery.
-pub const GRASS_CACHE_VERSION: u32 = 11;
+/// Version thirteen combines reference-order slots and LAND recovery with restored lower-layer slots.
+pub const GRASS_CACHE_VERSION: u32 = 13;
 pub const GRASS_BLEND_SIDE: usize = 17;
 /// Mask samples per quadrant side (32 Creation units each). An engineering approximation, not a retail value.
 pub const GRASS_EXCLUSION_SIDE: usize = 64;
@@ -13,7 +13,9 @@ pub const GRASS_CELL_SIZE: f32 = 4096.0;
 #[rkyv(bytecheck())]
 pub struct GrassType {
     pub form_id: u32,
-    /// Empty for a non-emitting species that still takes a selection slot and random draws.
+    /// Empty for a resolved species that occupies an authored cap slot and emits no plants.
+    /// Runtime applies the species cap to the retained link order before skipping these rules.
+    /// Per-spot selection also consumes their reference random draws before skipping emission.
     pub model_path: String,
     pub density: u8,
     pub min_slope: u8,

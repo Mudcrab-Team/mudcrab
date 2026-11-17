@@ -35,8 +35,8 @@ empty synthetic fields allow runtime fallbacks. Invalid field lengths skip the
 affected cell with a warning while healthy neighbors publish. No instance lists
 are saved; generation remains deterministic at runtime.
 The placement layer adds these sampling fields and base flags and changes selection
-opacity inputs. Producer eleven also retains non-emitting species slots and recovers malformed LAND items locally;
-producer ten, both prior producer-nine variants and older grass artifacts rebuild. Other asset cache identities
+opacity inputs. The current producer (`GRASS_CACHE_VERSION`) also retains non-emitting species slots and recovers malformed LAND items locally;
+producers ten through twelve, both prior producer-nine variants and older grass artifacts rebuild. Other asset cache identities
 are unchanged. Runtime generation-only changes do not require a cache version bump.
 Grass cache version two invalidates version-one coverage derived from the capped
 runtime terrain cache; terrain, mesh and texture cache identities stay unchanged.
@@ -242,7 +242,7 @@ neighboring cells remain publishable. Only unreadable record framing skips a who
 Permanent obstruction masks include only STAT, MSTT, ACTI, FURN, CONT and DOOR
 bases. Pick-up clutter, vegetation and unknown base types do not obstruct grass.
 G2 producer 9 introduced static-like obstruction filtering; this combined selection
-producer advances through 10 to 11 so earlier selection producers cannot reuse their masks. Older masks
+producer advances through 10 and 11 to the current `GRASS_CACHE_VERSION` so earlier selection producers cannot reuse their masks. Older masks
 are rebuilt. Corrupt GLB containers remain limited to their projected bounds.
 Each selected scene node is inspected once, including on static skin fallback.
 Repeated roots or child edges omit that optional model with a diagnostic. The
@@ -298,11 +298,19 @@ converted-world path. Producer 10 rejects producer-9 masks even when their other
 inputs happen to match. Mesh, texture and terrain cache identities are unchanged by
 this grass policy change.
 
-Producer 11 combines producer-10 MODS-aware obstruction masks with reference-order
+The current producer (`shared::grass::GRASS_CACHE_VERSION`, 13) combines MODS-aware obstruction masks with reference-order
 placement, retained non-emitting species slots and item-local LAND recovery. It
-rejects producer-10 artifacts as well as older masks; G6 retains producer 10 because
-its startup/settings changes preserve placement. Mesh, texture and terrain cache
+rejects prior G7 producer-11 artifacts and the lower layers' producer-12 layout.
+G2 through G6 use `GRASS_CACHE_VERSION` 12 to restore model-less selection slots. Mesh, texture and terrain cache
 identities remain independently versioned.
+
+Resolved model-less species retain their authored cap slots and decodable sampling
+fields, using zero for absent or non-finite scalar values. Per-spot selection consumes
+the reference random draws for those slots before skipping emission. Thus
+`[A, model-less, B]` with two admitted slots emits A only. G7's configured limit is
+checked after adding a nomination: setting 1 admits two slots, while default 2
+admits all three. Each admitted model-less slot counts toward that limit; the G7
+reference stream also preserves subsequent species' positions.
 
 Runtime activates a reference's texture swaps as a group once its replacement
 textures are ready. If a replacement texture on another shape fails to load, the

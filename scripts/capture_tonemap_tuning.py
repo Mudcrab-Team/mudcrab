@@ -504,6 +504,10 @@ def capture(config_path, engine, assets, output, grass_tuning_files=None):
         # Repeated CLI paths form a matrix sharing the config's scene/common arguments.
         require("--grass-tuning" not in command_options(config.get("common_args", [])),
                 "A grass tuning file matrix cannot also set common --grass-tuning")
+        # Every tuning stage renders grass, including campaigns whose baseline disables it.
+        config["common_args"] = [argument for argument in config.get("common_args", [])
+                                 if argument not in ("--grass", "--no-grass")]
+        config["common_args"].append("--grass")
         config["variants"] = [{"name": path.stem, "args": ["--grass-tuning", str(path.resolve(strict=True))]}
                               for path in grass_tuning_files]
     validate_variants(config)
@@ -575,7 +579,8 @@ def capture(config_path, engine, assets, output, grass_tuning_files=None):
                 argument = inputs[input_name]["path"]
             arguments.append(argument)
         arguments, grass_tuning = freeze_grass_tuning(arguments, engine, directory)
-        command = [str(engine), "--no-grass", "--assets", str(assets), "--shots", inputs["camera"]["path"],
+        grass_default = [] if grass_tuning_files else ["--no-grass"]
+        command = [str(engine), *grass_default, "--assets", str(assets), "--shots", inputs["camera"]["path"],
                    "--ini", inputs["ini"]["path"], "--shots-out", str(directory / "capture"),
                    "--hidden-window", "--shots-settle-timeout", str(settle_timeout),
                    *arguments]
