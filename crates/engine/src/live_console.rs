@@ -80,9 +80,16 @@ impl Plugin for StdinConsolePlugin {
                     });
                     Ok(format!("live screenshot requested: {}", path.display()))
                 }),
-            })
-            .add_systems(Update, dispatch_stdin);
+            });
+        register_stdin_dispatch(app);
     }
+}
+
+fn register_stdin_dispatch(app: &mut App) {
+    app.add_systems(
+        Update,
+        dispatch_stdin.after(crate::room_culling::RoomGraphReadiness),
+    );
 }
 
 fn build_live_capture_receipt(
@@ -161,6 +168,9 @@ fn scene_state(world: &World, baseline: crate::shots::Failures) -> serde_json::V
         .get_resource::<crate::visual_profile::VisualProfile>()
         .map(|profile| profile.name());
     let streaming = world.get_resource::<StreamingMetrics>();
+    let room_graphs = world.get_resource::<crate::room_culling::RoomCullingState>();
+    let pending_room_graphs = room_graphs.map_or(0, |state| state.pending_reads());
+    let failed_room_graphs = room_graphs.map_or(0, |state| state.failed_reads());
     let pending_terrain = world
         .get_resource::<TerrainMeshUploadReadiness>()
         .map_or(0, |uploads| uploads.outstanding());
@@ -199,6 +209,8 @@ fn scene_state(world: &World, baseline: crate::shots::Failures) -> serde_json::V
         && pending_terrain == 0
         && pending_specializations == Some(0)
         && pending_transfers == Some(0)
+        && pending_room_graphs == 0
+        && failed_room_graphs == 0
         && pending_batches == 0.0;
     let source = world
         .get_resource::<SceneGradeSource>()
@@ -226,6 +238,8 @@ fn scene_state(world: &World, baseline: crate::shots::Failures) -> serde_json::V
         "pending_specializations": pending_specializations,
         "pending_render_transfers": pending_transfers,
         "pending_batches": pending_batches,
+        "pending_room_graphs": pending_room_graphs,
+        "failed_room_graphs": failed_room_graphs,
         "renderer_ready": renderer_ready,
         "loading_cells": streaming.map(|s| s.loading_cells),
         "pending_assets": streaming.map(|s| s.pending_asset_instances),
@@ -294,6 +308,7 @@ mod tests {
             },
             terrain_coverage: default(),
             terrain_gauges: default(),
+            room_culling: None,
             visual_profile: Some(crate::visual_profile::VisualProfile::Mudcrab),
             grass_tuning: None,
             grass_snow_gate: false,
@@ -429,6 +444,45 @@ mod tests {
     }
 
     #[test]
+    fn scene_shot_waits_for_room_graphs_and_rejects_failed_reads() {
+        use crate::{
+            room_culling::{RoomCullingPlugin, RoomCullingState},
+            world::components::{CellRef, StreamedCellRoot},
+        };
+        bevy::tasks::AsyncComputeTaskPool::get_or_init(Default::default);
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::new();
+        *app.world_mut() = ready_scene_world();
+        app.init_resource::<bevy::ecs::schedule::Schedules>();
+        app.add_plugins(RoomCullingPlugin {
+            database_path: directory.path().join("missing.db"),
+        });
+        assert!(prepare_scene_shot(app.world()).is_ok());
+        let root = app.world_mut().spawn((StreamedCellRoot, CellRef(7))).id();
+        app.world_mut().run_schedule(Update);
+        let state = scene_state(app.world(), crate::shots::Failures::default());
+        assert_eq!(state["ready"], false);
+        assert_eq!(state["pending_room_graphs"], 1);
+        assert!(prepare_scene_shot(app.world()).is_err());
+        for _ in 0..500 {
+            app.world_mut().run_schedule(Update);
+            if app.world().resource::<RoomCullingState>().failed_reads() == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(app.world().resource::<RoomCullingState>().failed_reads(), 1);
+        let state = scene_state(app.world(), crate::shots::Failures::default());
+        assert_eq!(state["ready"], false);
+        assert_eq!(state["pending_room_graphs"], 0);
+        assert_eq!(state["failed_room_graphs"], 1);
+        assert!(prepare_scene_shot(app.world()).is_err());
+        assert!(app.world_mut().despawn(root));
+        app.world_mut().run_schedule(Update);
+        assert!(prepare_scene_shot(app.world()).is_ok());
+    }
+
+    #[test]
     fn scene_shot_stays_blocked_for_unrecovered_lod_and_missing_resources() {
         let mut world = ready_scene_world();
         world
@@ -502,6 +556,56 @@ mod tests {
             let error = build_live_capture_receipt(&request_state, &frame, [1920, 1080])
                 .expect_err("a new failure must reject this frame's receipt");
             assert!(error.contains("not settled"), "{failure}: {error}");
+        }
+    }
+
+    #[test]
+    fn queued_capture_commands_see_new_room_graph_requests_in_either_registration_order() {
+        use crate::{
+            room_culling::RoomCullingPlugin,
+            world::components::{CellRef, StreamedCellRoot},
+        };
+        bevy::tasks::AsyncComputeTaskPool::get_or_init(Default::default);
+        for console_first in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut app = App::new();
+            *app.world_mut() = ready_scene_world();
+            app.init_resource::<bevy::ecs::schedule::Schedules>();
+            let (sender, receiver) = mpsc::sync_channel(32);
+            app.insert_resource(IncomingCommands(Mutex::new(receiver)))
+                .init_resource::<ConsoleState>();
+            let accepted = std::sync::Arc::new(Mutex::new(Vec::new()));
+            let observed = accepted.clone();
+            app.add_console_command(ConsoleCommand {
+                name: "ProbeShot",
+                short: None,
+                usage: "ProbeShot",
+                help: "test live capture readiness at stdin dispatch",
+                handler: Box::new(move |world, _| {
+                    observed
+                        .lock()
+                        .unwrap()
+                        .push(prepare_scene_shot(world).is_ok());
+                    Ok("probed capture readiness".into())
+                }),
+            });
+            if console_first {
+                register_stdin_dispatch(&mut app);
+            }
+            app.add_plugins(RoomCullingPlugin {
+                database_path: directory.path().join("missing.db"),
+            });
+            if !console_first {
+                register_stdin_dispatch(&mut app);
+            }
+            app.world_mut().spawn((StreamedCellRoot, CellRef(7)));
+            sender.send("ProbeShot".into()).unwrap();
+            app.world_mut().run_schedule(Update);
+            assert_eq!(
+                *accepted.lock().unwrap(),
+                [false],
+                "console_first={console_first}: a new room read must hold the queued command"
+            );
         }
     }
 

@@ -1,0 +1,369 @@
+{
+  "layer": "core",
+  "verdict": "saving",
+  "saved_ms": 1.459236853333305,
+  "saved_percent": 5.81406013575963,
+  "nonoverlapping_run_ranges": true,
+  "modes": {
+    "on": {
+      "mean_ms": {
+        "median": 23.639176635000013,
+        "minimum": 23.16014439833329,
+        "maximum": 24.880974418333327,
+        "runs": [
+          24.880974418333327,
+          23.639176635000013,
+          23.951618396666674,
+          23.16014439833329,
+          23.60118112166668
+        ]
+      },
+      "p50_ms": {
+        "median": 22.860947,
+        "minimum": 21.877637,
+        "maximum": 26.544822999999997,
+        "runs": [
+          26.544822999999997,
+          22.860947,
+          25.874731,
+          21.877637,
+          22.267274
+        ]
+      },
+      "p95_ms": {
+        "median": 27.683473,
+        "minimum": 27.302056,
+        "maximum": 27.914271,
+        "runs": [
+          27.914271,
+          27.463359999999998,
+          27.302056,
+          27.683473,
+          27.728498000000002
+        ]
+      },
+      "drawn": [
+        426
+      ],
+      "listed": [
+        768
+      ]
+    },
+    "off": {
+      "mean_ms": {
+        "median": 25.098413488333318,
+        "minimum": 24.91167447333334,
+        "maximum": 26.06102904333336,
+        "runs": [
+          24.91167447333334,
+          26.06102904333336,
+          25.751570490000002,
+          25.098413488333318,
+          24.924394926666693
+        ]
+      },
+      "p50_ms": {
+        "median": 27.089697,
+        "minimum": 26.884589000000002,
+        "maximum": 27.551188,
+        "runs": [
+          26.948531000000003,
+          27.551188,
+          27.512826,
+          27.089697,
+          26.884589000000002
+        ]
+      },
+      "p95_ms": {
+        "median": 28.600049,
+        "minimum": 28.352637,
+        "maximum": 28.773472,
+        "runs": [
+          28.688554,
+          28.773472,
+          28.600049,
+          28.428662,
+          28.352637
+        ]
+      },
+      "drawn": [
+        768
+      ],
+      "listed": [
+        768
+      ]
+    }
+  },
+  "profiles": [
+    {
+      "mode": "on",
+      "mean_ms": 24.901604686666662,
+      "cpu_percent": 129.85630976932686,
+      "gpu_utilization_median": 36.0,
+      "gpu_clocks_mhz": [
+        720.0,
+        1035.0
+      ],
+      "cpu_phases": {
+        "extract": 0.9051184540901509,
+        "main_world": 5.531368026711184,
+        "render/cleanup": 0.08216682637729547,
+        "render/extract_commands_and_assets": 0.5981737946577633,
+        "render/graph_and_present": 15.75176281135225,
+        "render/prepare": 6.427629671118533,
+        "render/queue": 0.18125813188647738,
+        "render/specialize_and_views": 0.6995626644407344,
+        "render/swapchain_acquire": 0.12206625542570952,
+        "render_thread": 23.75466494657763,
+        "wait_for_render_thread": 17.935153030050103
+      },
+      "gpu_pass_mean_ms": {
+        "render/bin_unpacking/elapsed_gpu": 1.113758293333333,
+        "render/clustering/elapsed_gpu": 0.13350101333333336,
+        "render/early prepass/elapsed_gpu": 0.15747199999999986,
+        "render/early_mesh_preprocessing/elapsed_gpu": 0.0870899200000001,
+        "render/late prepass/elapsed_gpu": 0.005743360000000001,
+        "render/late_mesh_preprocessing/elapsed_gpu": 0.038109866666666645,
+        "render/main_opaque_pass_3d/elapsed_gpu": 0.9172305066666663,
+        "render/main_transparent_pass_3d/elapsed_gpu": 0.007688106666666652,
+        "render/tonemapping/elapsed_gpu": 0.37858303999999987,
+        "render/upscaling/elapsed_gpu": 0.3959419733333338
+      }
+    },
+    {
+      "mode": "off",
+      "mean_ms": 27.327384756666657,
+      "cpu_percent": 121.97989414263597,
+      "gpu_utilization_median": 39.0,
+      "gpu_clocks_mhz": [
+        750.0,
+        1020.0
+      ],
+      "cpu_phases": {
+        "extract": 0.9056502136894821,
+        "main_world": 5.369907183639403,
+        "render/cleanup": 0.08427339565943237,
+        "render/extract_commands_and_assets": 0.6053375025041734,
+        "render/graph_and_present": 18.137418227045064,
+        "render/prepare": 6.454878088480802,
+        "render/queue": 0.18309229215358933,
+        "render/specialize_and_views": 0.6956249048414027,
+        "render/swapchain_acquire": 0.12257826711185323,
+        "render_thread": 26.175713672788003,
+        "wait_for_render_thread": 20.522344968280485
+      },
+      "gpu_pass_mean_ms": {
+        "render/bin_unpacking/elapsed_gpu": 1.2171336533333326,
+        "render/clustering/elapsed_gpu": 0.14709120000000026,
+        "render/early prepass/elapsed_gpu": 0.2981478399999999,
+        "render/early_mesh_preprocessing/elapsed_gpu": 0.09819392,
+        "render/late prepass/elapsed_gpu": 0.007750826666666664,
+        "render/late_mesh_preprocessing/elapsed_gpu": 0.044903253333333414,
+        "render/main_opaque_pass_3d/elapsed_gpu": 1.12402816,
+        "render/main_transparent_pass_3d/elapsed_gpu": 0.035467519999999926,
+        "render/tonemapping/elapsed_gpu": 0.4984601600000005,
+        "render/upscaling/elapsed_gpu": 0.5326195199999998
+      }
+    }
+  ],
+  "runs": [
+    {
+      "repeat": 1,
+      "directory": "RiftenMercerFreyHouse-room0-c-on-1",
+      "mode": "on",
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "frames": 600,
+      "drawn": 426,
+      "listed": 768,
+      "p50_ms": 26.544822999999997,
+      "mean_ms": 24.880974418333327,
+      "p95_ms": 27.914271,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "report": "report.json",
+      "frame_sum_ms": 14928.585
+    },
+    {
+      "repeat": 1,
+      "directory": "RiftenMercerFreyHouse-room0-c-off-1",
+      "mode": "off",
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "frames": 600,
+      "drawn": 768,
+      "listed": 768,
+      "p50_ms": 26.948531000000003,
+      "mean_ms": 24.91167447333334,
+      "p95_ms": 28.688554,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "report": "report.json",
+      "frame_sum_ms": 14947.0045
+    },
+    {
+      "repeat": 2,
+      "directory": "RiftenMercerFreyHouse-room0-c-off-2",
+      "mode": "off",
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "frames": 600,
+      "drawn": 768,
+      "listed": 768,
+      "p50_ms": 27.551188,
+      "mean_ms": 26.06102904333336,
+      "p95_ms": 28.773472,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "report": "report.json",
+      "frame_sum_ms": 15636.6167
+    },
+    {
+      "repeat": 2,
+      "directory": "RiftenMercerFreyHouse-room0-c-on-2",
+      "mode": "on",
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "frames": 600,
+      "drawn": 426,
+      "listed": 768,
+      "p50_ms": 22.860947,
+      "mean_ms": 23.639176635000013,
+      "p95_ms": 27.463359999999998,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "report": "report.json",
+      "frame_sum_ms": 14183.5066
+    },
+    {
+      "repeat": 3,
+      "directory": "RiftenMercerFreyHouse-room0-c-on-3",
+      "mode": "on",
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "frames": 600,
+      "drawn": 426,
+      "listed": 768,
+      "p50_ms": 25.874731,
+      "mean_ms": 23.951618396666674,
+      "p95_ms": 27.302056,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "report": "report.json",
+      "frame_sum_ms": 14370.9711
+    },
+    {
+      "repeat": 3,
+      "directory": "RiftenMercerFreyHouse-room0-c-off-3",
+      "mode": "off",
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "frames": 600,
+      "drawn": 768,
+      "listed": 768,
+      "p50_ms": 27.512826,
+      "mean_ms": 25.751570490000002,
+      "p95_ms": 28.600049,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "report": "report.json",
+      "frame_sum_ms": 15450.942000000001
+    },
+    {
+      "repeat": 4,
+      "directory": "RiftenMercerFreyHouse-room0-c-off-4",
+      "mode": "off",
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "frames": 600,
+      "drawn": 768,
+      "listed": 768,
+      "p50_ms": 27.089697,
+      "mean_ms": 25.098413488333318,
+      "p95_ms": 28.428662,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "report": "report.json",
+      "frame_sum_ms": 15059.0471
+    },
+    {
+      "repeat": 4,
+      "directory": "RiftenMercerFreyHouse-room0-c-on-4",
+      "mode": "on",
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "frames": 600,
+      "drawn": 426,
+      "listed": 768,
+      "p50_ms": 21.877637,
+      "mean_ms": 23.16014439833329,
+      "p95_ms": 27.683473,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "report": "report.json",
+      "frame_sum_ms": 13896.087
+    },
+    {
+      "repeat": 5,
+      "directory": "RiftenMercerFreyHouse-room0-c-on-5",
+      "mode": "on",
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "frames": 600,
+      "drawn": 426,
+      "listed": 768,
+      "p50_ms": 22.267274,
+      "mean_ms": 23.60118112166668,
+      "p95_ms": 27.728498000000002,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "report": "report.json",
+      "frame_sum_ms": 14160.7081
+    },
+    {
+      "repeat": 5,
+      "directory": "RiftenMercerFreyHouse-room0-c-off-5",
+      "mode": "off",
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "frames": 600,
+      "drawn": 768,
+      "listed": 768,
+      "p50_ms": 26.884589000000002,
+      "mean_ms": 24.924394926666693,
+      "p95_ms": 28.352637,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "report": "report.json",
+      "frame_sum_ms": 14954.6361
+    }
+  ],
+  "protocol": {
+    "claim": "At this settled Mercer house camera, enabling default room culling changes end-to-end frame time by the measured amount; this excludes local occluders.",
+    "binary": "Same release binary and geometry. Independent off database copy removes the four room tables, selecting the existing no-room-tables full-render fallback. Automated shots intentionally ignore interactive preferences.",
+    "modes": [
+      "on",
+      "off"
+    ],
+    "frames": 600,
+    "warmup_frames": 300,
+    "resolution": [
+      1400,
+      900
+    ],
+    "backend": "Vulkan",
+    "surface": "Native Wayland floating window; screenshot dimensions asserted; benchmark disables vsync",
+    "repeats": 5,
+    "profile": "Separate two-sided instrumented run, excluded from timing medians",
+    "acceptance": "No timeout or pending/failed work; correct camera; renderer proofs; off drawn=listed"
+  },
+  "build": {
+    "returncode": 0,
+    "seconds": 729.4697968959808,
+    "sha256": "e6d152f3e2aabf2687df5edf6955d0c5041b2bd599b372e8f5e800ae30097ba8"
+  },
+  "source": "19376d359bd911dfed4e2000cd0a7c28694113df",
+  "system": {
+    "kernel": "6.18.63",
+    "nix_os": "ANSI_COLOR=\"0;38;2;126;186;228\"\nBUG_REPORT_URL=\"https://github.com/NixOS/nixpkgs/issues\"\nBUILD_ID=\"26.11.20261111.d4f25a3\"\nCPE_NAME=\"cpe:/o:nixos:nixos:26.11\"\nDEFAULT_HOSTNAME=nixos\nDOCUMENTATION_URL=\"https://nixos.org/learn.html\"\nHOME_URL=\"https://nixos.org/\"\nID=nixos\nLOGO=\"nix-snowflake\"\nNAME=NixOS\nPRETTY_NAME=\"NixOS 26.11 (Zokor)\"\nSUPPORT_URL=\"https://nixos.org/community.html\"\nVENDOR_NAME=NixOS\nVENDOR_URL=\"https://nixos.org/\"\nVERSION=\"26.11 (Zokor)\"\nVERSION_CODENAME=zokor\nVERSION_ID=\"26.11\"\n",
+    "logical_cores": 12,
+    "cpu": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           43 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  12\nOn-line CPU(s) list:                     0-11\nVendor ID:                               AuthenticAMD\nModel name:                              AMD Ryzen 5 1600 Six-Core Processor\nCPU family:                              23\nModel:                                   1\nThread(s) per core:                      2\nCore(s) per socket:                      6\nSocket(s):                               1\nStepping:                                1\nMicrocode version:                       0x8001139\nFrequency boost:                         enabled\nCPU(s) scaling MHz:                      106%\nCPU max MHz:                             3200.0000\nCPU min MHz:                             1550.0000\nBogoMIPS:                                6400.24\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl nonstop_tsc cpuid extd_apicid aperfmperf rapl pni pclmulqdq monitor ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand lahf_lm cmp_legacy svm extapic cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw skinit wdt tce topoext perfctr_core perfctr_nb bpext perfctr_llc mwaitx cpb hw_pstate ssbd ibpb vmmcall fsgsbase bmi1 avx2 smep bmi2 rdseed adx smap clflushopt sha_ni xsaveopt xsavec xgetbv1 clzero xsaveerptr arat npt lbrv svm_lock nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold avic v_vmsave_vmload vgif overflow_recov succor smca sev\nVirtualization:                          AMD-V\nL1d cache:                               192 KiB (6 instances)\nL1i cache:                               384 KiB (6 instances)\nL2 cache:                                3 MiB (6 instances)\nL3 cache:                                16 MiB (2 instances)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-11\nVulnerability Gather data sampling:      Not affected\nVulnerability Ghostwrite:                Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Old microcode:             Not affected\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Mitigation; untrained return thunk; SMT vulnerable\nVulnerability Spec rstack overflow:      Mitigation; Safe RET\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Retpolines; IBPB conditional; STIBP disabled; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Mitigation; IBPB before exit to userspace",
+    "gpu": "NVIDIA GeForce GTX 1660, 595.112.07, 6144 MiB",
+    "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "initial_load": "04:34:50  up 21:55,  0 users,  load average: 6.47, 6.80, 5.78"
+  },
+  "start_load": {
+    "uptime": " 04:39:45  up 22:00,  0 users,  load average: 2.45, 5.68, 5.73\n",
+    "cores": 12,
+    "busy": []
+  },
+  "measured_frames": 6000,
+  "errors": 0,
+  "limitations": [
+    "One stationary Mercer house view per layer on Ryzen 5 1600 / GTX 1660, Vulkan, native Wayland, 1400x900.",
+    "Off control uses missing room tables. Interactive preference behavior is verified separately by tests.",
+    "Separate instrumented profiles are excluded from all timing summaries.",
+    "Render-thread graph/present interval dominates; native driver stacks were not sampled. GPU pass and CPU phase times overlap and are not added.",
+    "No local occluder work, native-game performance comparison, cold-load timing, continuous flight, or other renderer backend is included."
+  ]
+}
