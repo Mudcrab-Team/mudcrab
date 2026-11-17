@@ -64,6 +64,7 @@ pub struct RenderingSettings {
     pub wave_speed: f32,
     pub wave_strength: f32,
     pub cpu_frustum_culling: bool,
+    pub room_culling: bool,
     pub indirect_drawing: bool,
     pub occlusion_culling: bool,
     pub depth_prepass: bool,
@@ -143,6 +144,7 @@ impl Default for RenderingSettings {
             wave_speed: crate::render::DEFAULT_WAVE_SPEED,
             wave_strength: crate::render::WAVE_STRENGTH,
             cpu_frustum_culling: true,
+            room_culling: true,
             indirect_drawing: true,
             occlusion_culling: true,
             depth_prepass: true,
@@ -314,6 +316,7 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
     number!(Graphics, "Water", "Water wave speed", wave_speed; 0.0, 2.0, 0.05).when(|s| s.water_waves),
     number!(Graphics, "Water", "Water wave strength", wave_strength; 0.0, 2.0, 0.05).when(|s| s.water_waves),
     toggle!("Culling and drawing", "CPU frustum culling", cpu_frustum_culling),
+    toggle!("Culling and drawing", "Room culling", room_culling),
     toggle!("Culling and drawing", "GPU indirect drawing", indirect_drawing),
     toggle!("Culling and drawing", "GPU occlusion culling", occlusion_culling),
     toggle!("Culling and drawing", "Depth prepass", depth_prepass),
@@ -2521,6 +2524,32 @@ mod tests {
             file.status
         );
         assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+
+    #[test]
+    fn room_culling_defaults_on_for_old_settings_and_persists_the_menu_choice() {
+        let mut settings: RenderingSettings =
+            serde_json::from_value(serde_json::json!({"cpu_frustum_culling":false})).unwrap();
+        assert_eq!(
+            serde_json::to_value(&settings).unwrap()["room_culling"],
+            true
+        );
+        let control = SETTING_SPECS
+            .iter()
+            .find(|setting| setting.label == "Room culling")
+            .unwrap();
+        control.adjust(&mut settings, 1);
+        assert_eq!(control.value_label(&settings), "Off");
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_settings(&path, &settings).unwrap();
+        let restored: RenderingSettings =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&restored).unwrap()["room_culling"],
+            false
+        );
+        assert!(!restored.cpu_frustum_culling);
     }
 
     #[test]
