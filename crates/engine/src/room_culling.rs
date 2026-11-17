@@ -1093,7 +1093,7 @@ pub fn cull_room_views(
     >,
     mesh_bounds: Query<(&Aabb, &GlobalTransform), Without<NoFrustumCulling>>,
     reference_bounds: Query<(&ExpectedModelBounds, &GlobalTransform)>,
-    reference_transforms: Query<&GlobalTransform>,
+    reference_transforms: Query<(&GlobalTransform, Option<&Transform>)>,
     parents: Query<&ChildOf>,
     ids: Query<&FormId>,
     exemptions: Query<(
@@ -1216,10 +1216,21 @@ pub fn cull_room_views(
                     if !authored.has_rule(form_id) {
                         return true;
                     }
-                    let Ok(matrix) = reference_transforms.get(reference) else {
+                    let Ok((matrix, local)) = reference_transforms.get(reference) else {
                         return true;
                     };
-                    let transform = local_from_world * matrix.affine();
+                    // Streamed references are direct cell children. Their local placement avoids
+                    // root-composition rounding on initial attachment and later origin rebases.
+                    let transform = local
+                        .filter(|_| {
+                            parents
+                                .get(reference)
+                                .is_ok_and(|parent| parent.parent() == loaded.root)
+                        })
+                        .map_or_else(
+                            || local_from_world * matrix.affine(),
+                            Transform::compute_affine,
+                        );
                     let assigned = assignments
                         .0
                         .entry((*cell, loaded.root, reference))
@@ -1498,7 +1509,7 @@ mod tests {
             .app
             .world_mut()
             .entity_mut(reference)
-            .insert(GlobalTransform::IDENTITY);
+            .insert((Transform::IDENTITY, GlobalTransform::IDENTITY));
         scene
             .app
             .world_mut()
@@ -1522,7 +1533,7 @@ mod tests {
             .app
             .world_mut()
             .entity_mut(reference)
-            .insert(GlobalTransform::from(moved));
+            .insert((moved, GlobalTransform::from(moved)));
         scene
             .app
             .world_mut()
@@ -1540,6 +1551,80 @@ mod tests {
             mesh_list(&scene.app, scene.camera).contains(&scene.far),
             "a sub-tolerance scale change moves the offset sphere into the visible room"
         );
+    }
+
+    #[test]
+    fn named_targets_survive_transformed_cell_roots_and_rebasing() {
+        let connection = authored_database();
+        insert_room(&connection, 1, 7, [0.0; 3]);
+        insert_room(&connection, 2, 7, [0.0, -25.0, 0.0]);
+        connection.execute_batch(
+            "INSERT INTO \"references\"(id,cell_id,base_form_id,pos_x,pos_y,pos_z) VALUES(2,7,99,0.3,0.5,0.7);
+             INSERT INTO room_reference_rules VALUES(2,7,'target',1);
+             INSERT INTO room_model_bounds VALUES(99,0,0,25,0.1);"
+        ).unwrap();
+        let graph = load_room_graph(&connection, 7).unwrap();
+        let mut scene = scene();
+        let root = {
+            let mut state = scene.app.world_mut().resource_mut::<RoomCullingState>();
+            let loaded = state.graphs.get_mut(&7).unwrap();
+            loaded.graph = graph;
+            loaded.root
+        };
+        let reference = scene
+            .app
+            .world()
+            .get::<ChildOf>(scene.far)
+            .unwrap()
+            .parent();
+        let placement = Transform::from_xyz(0.3, 0.7, -0.5);
+        let translated = GlobalTransform::from_xyz(8192.125, -12345.75, 32768.5);
+        assert_ne!(
+            translated.affine().inverse() * translated.mul_transform(placement).affine(),
+            placement.compute_affine(),
+            "the unchanged placement must exercise world-composition rounding"
+        );
+        scene.app.add_systems(Update, cull_room_views);
+        for root_transform in [
+            translated,
+            GlobalTransform::IDENTITY,
+            GlobalTransform::from(
+                Transform::from_xyz(-4000.25, 100.0, 2000.125)
+                    .with_rotation(Quat::from_rotation_y(0.37))
+                    .with_scale(Vec3::splat(1.25)),
+            ),
+        ] {
+            scene
+                .app
+                .world_mut()
+                .entity_mut(root)
+                .insert(root_transform);
+            scene
+                .app
+                .world_mut()
+                .entity_mut(reference)
+                .insert((placement, root_transform.mul_transform(placement)));
+            scene
+                .app
+                .world_mut()
+                .entity_mut(scene.camera)
+                .insert(root_transform);
+            scene.app.world_mut().entity_mut(scene.far).insert((
+                Aabb::from_min_max(-Vec3::splat(0.5), Vec3::splat(0.5)),
+                root_transform.mul_transform(Transform::from_xyz(0.0, 0.0, -5.0)),
+            ));
+            *scene
+                .app
+                .world_mut()
+                .get_mut::<VisibleEntities>(scene.camera)
+                .unwrap()
+                .get_mut(TypeId::of::<Mesh3d>()) = vec![scene.far];
+            scene.app.world_mut().run_schedule(Update);
+            assert!(
+                mesh_list(&scene.app, scene.camera).contains(&scene.far),
+                "an unchanged named target must survive the initial root and later rebases"
+            );
+        }
     }
 
     #[test]
@@ -1575,7 +1660,7 @@ mod tests {
             .app
             .world_mut()
             .entity_mut(reference)
-            .insert(GlobalTransform::IDENTITY);
+            .insert((Transform::IDENTITY, GlobalTransform::IDENTITY));
         scene
             .app
             .world_mut()
@@ -1595,7 +1680,7 @@ mod tests {
             .app
             .world_mut()
             .entity_mut(reference)
-            .insert(GlobalTransform::from(moved));
+            .insert((moved, GlobalTransform::from(moved)));
         scene
             .app
             .world_mut()
