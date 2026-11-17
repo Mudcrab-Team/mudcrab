@@ -151,3 +151,9 @@ whose database lacks the four optional room tables. Keep geometry and all other 
 identical. Compare repeated, settled captures at the same poses, including a portal-less hall and
 an exterior return. This exercises the actual missing-table fallback without adding a product
 flag. Mesh-list reduction alone does not establish image parity or an FPS improvement.
+
+## Default-on review validation
+
+[The 2026-11-17 core review record](room-culling-review-20261117.md) contains the graphics toggle,
+three real-interior on/off pairs with counts, repeated release frame times, executable identities,
+and their limits. The core remains a room-reachability foundation, not a complete Skyrim parity claim.
