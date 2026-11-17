@@ -1327,6 +1327,9 @@ The tables are derived data: a full load-order export clears and rebuilds them f
 records on every conversion, like the grass tables. Subsets without placed references, including
 movement annotation, leave the graph alone. A subset that replaces a placed reference clears its
 membership and marks its previous and new cells incomplete until a full export rebuilds the graph.
+A subset that changes or removes an existing base model also deletes that base's source sphere
+and marks every referencing cell incomplete in the same transaction. An unchanged model retains
+its sphere and cell completeness. A full room export restores completeness after rebuilding.
 `create_tables` adds these tables to an older reused database.
 
 **These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`.** The engine reads

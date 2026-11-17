@@ -78,3 +78,15 @@ and direct child-link checks remain in place. The linked-parent regression faile
 all five utility tests now pass. An actual CLI run with disposable files rejected the linked
 ancestor before any write, preserving both the database bytes and an existing receipt. No game
 assets were used in that check.
+
+## Subset model replacement
+
+A subset export that changes or removes an existing base model now removes that base's cached
+source sphere and marks every referencing cell incomplete in the same transaction. A full room
+export rebuilds completeness. Unchanged models retain their spheres and cell metadata; unrelated
+bases and cells are untouched. A light that loses its model also loses its old drawable row.
+
+The nonempty-subset regression failed when replacing `A.nif` with `B.nif`: the old sphere survived.
+It now covers replacement, removal, and unchanged-model updates for both `STAT` and modeled `LIGH`
+records, including affected cells and unrelated controls. This fixes derived ownership metadata;
+the existing retail images were not rerun for subset conversion.

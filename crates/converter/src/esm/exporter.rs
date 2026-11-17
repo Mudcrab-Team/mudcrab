@@ -880,11 +880,18 @@ fn export_records(
                 // a meshless entry in `statics` for every candle in the game, so
                 // those are skipped; a light with geometry is stored like any
                 // other base object.
-                if let Some(model_path) = view.get_string(b"MODL").filter(|path| !path.is_empty()) {
+                let model = view.get_string(b"MODL").filter(|path| !path.is_empty());
+                if order.is_none() {
+                    invalidate_changed_model_room_data(&tx, form_id, model.as_deref())?;
+                }
+                if let Some(model_path) = model {
                     tx.prepare_cached(
                         "INSERT OR REPLACE INTO statics(id, editor_id, model_path, flags, full_name) VALUES (?1, ?2, ?3, ?4, ?5)")?.execute(
                         params![form_id, view.get_string(b"EDID"), model_path, record.flags, view.get_string(b"FULL")],
                     )?;
+                } else if order.is_none() {
+                    tx.prepare_cached("DELETE FROM statics WHERE id=?1")?
+                        .execute([form_id])?;
                 }
             }
             // Every base record type with a world model. The runtime spawns
@@ -911,6 +918,9 @@ fn export_records(
                     view.get_string(b"MODL")
                 }
                 .filter(|path| !path.is_empty());
+                if order.is_none() {
+                    invalidate_changed_model_room_data(&tx, form_id, model.as_deref())?;
+                }
                 tx.prepare_cached(
                     "INSERT OR REPLACE INTO statics(id, editor_id, model_path, flags, full_name) VALUES (?1, ?2, ?3, ?4, ?5)")?.execute(
                     params![form_id, view.get_string(b"EDID"), model, record.flags, view.get_string(b"FULL")],
@@ -1055,6 +1065,29 @@ fn export_records(
         super::doors::project_door_links(&tx)?;
     }
     tx.commit()
+}
+
+fn invalidate_changed_model_room_data(
+    tx: &Transaction<'_>,
+    base_form_id: u32,
+    model: Option<&str>,
+) -> Result<()> {
+    let changed: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM statics WHERE id=?1 AND model_path IS NOT ?2)",
+        params![base_form_id, model],
+        |row| row.get(0),
+    )?;
+    if changed {
+        tx.prepare_cached("DELETE FROM room_model_bounds WHERE base_form_id=?1")?
+            .execute([base_form_id])?;
+        tx.prepare_cached(
+            "INSERT INTO room_graph_cells(cell_id,complete) \
+             SELECT DISTINCT cell_id,0 FROM [references] WHERE base_form_id=?1 \
+             ON CONFLICT(cell_id) DO UPDATE SET complete=0",
+        )?
+        .execute([base_form_id])?;
+    }
+    Ok(())
 }
 
 /// Publishes the actor model catalog for a complete load-order export in the same transaction.
@@ -3942,6 +3975,83 @@ mod tests {
                     )
                     .unwrap();
                 assert!(!complete);
+            }
+        }
+    }
+
+    #[test]
+    fn subset_base_model_updates_invalidate_spheres_and_referencing_cells() {
+        for kind in [b"STAT", b"LIGH"] {
+            for replacement in [Some("A.nif"), Some("B.nif"), None] {
+                let base = |model: Option<&str>| {
+                    let mut fields = model
+                        .map(|path| (b"MODL".to_vec(), cstr(path)))
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    if kind == b"LIGH" {
+                        fields.push((b"DATA".to_vec(), vec![0; 48]));
+                    }
+                    record(0x500, kind, None, None, fields)
+                };
+                let (conn, _) = export_rooms(vec![
+                    interior_cell(0x100),
+                    interior_cell(0x200),
+                    interior_cell(0x300),
+                    room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+                    room(0x1002, 0x200, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+                    room(0x1003, 0x300, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+                    reference(0x2001, 0x100, 0x500, [0.0; 3], [0.0; 3]),
+                    reference(0x2002, 0x200, 0x500, [0.0; 3], [0.0; 3]),
+                    reference(0x2003, 0x300, 0x501, [0.0; 3], [0.0; 3]),
+                    base(Some("A.nif")),
+                ]);
+                conn.execute_batch(
+                    "INSERT INTO room_model_bounds VALUES(1280,1,2,3,4),(1281,5,6,7,8)",
+                )
+                .unwrap();
+                export_to_db(&conn, &HashMap::from([(0x500, base(replacement))])).unwrap();
+                let unchanged = replacement == Some("A.nif");
+                let retained: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM room_model_bounds WHERE base_form_id=1280)",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    retained, unchanged,
+                    "kind={kind:?}, replacement={replacement:?}: never keep another model's sphere"
+                );
+                for cell in [0x100, 0x200, 0x300] {
+                    let complete: bool = conn
+                        .query_row(
+                            "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
+                            [cell],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        complete,
+                        unchanged || cell == 0x300,
+                        "kind={kind:?}, replacement={replacement:?}, cell={cell:x}"
+                    );
+                }
+                let path: Option<String> = conn
+                    .query_row(
+                        "SELECT max(model_path) FROM statics WHERE id=1280",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(path.as_deref(), replacement);
+                let other_radius: f32 = conn
+                    .query_row(
+                        "SELECT radius FROM room_model_bounds WHERE base_form_id=1281",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(other_radius, 8.0);
             }
         }
     }
