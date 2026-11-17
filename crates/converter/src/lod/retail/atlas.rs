@@ -3,21 +3,17 @@
 //! Object LOD draws from one `textures/terrain/<world>/objects/<world>.objects.dds` per world
 //! (and a `_n` normal map); tree LOD from `textures/terrain/<world>/trees/<world>treelod.dds`.
 //! This reads only the header: size, mip count, pixel format and the payload length that header
-//! implies, so an importer can check a file before it decodes or re-encodes it.
+//! implies, so an importer can check a file before it decodes or re-encodes it. The header is
+//! parsed by the converter's shared reader (`texture_gpu::read_header`, built on `ddsfile`); this
+//! module adds the sizing and the layout checks.
 
+use ddsfile::{Caps2, D3D10ResourceDimension, FourCC, MiscFlag, PixelFormatFlags};
 use std::fmt;
 
-const MAGIC: &[u8; 4] = b"DDS ";
-const HEADER_BYTES: usize = 124;
+/// Bytes before the pixel data without a DX10 extension: the magic and the 124-byte header.
+const BASE_DATA_OFFSET: usize = 128;
+/// The DX10 extension header that follows when the four-character code is `DX10`.
 const DX10_BYTES: usize = 20;
-const DDPF_FOURCC: u32 = 0x4;
-const DDPF_RGB: u32 = 0x40;
-/// Legacy `caps2` bits: a cube map or a volume texture has more than one surface.
-const DDSCAPS2_CUBEMAP: u32 = 0x200;
-const DDSCAPS2_VOLUME: u32 = 0x20_0000;
-/// DX10 header: `resourceDimension` 3 is a 2D texture; `miscFlag` bit 4 marks a cube map.
-const DX10_TEXTURE2D: u32 = 3;
-const DX10_MISC_TEXTURECUBE: u32 = 0x4;
 
 /// Pixel format of a DDS texture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,7 +85,8 @@ pub enum DdsError {
         len: usize,
     },
     BadMagic,
-    BadHeaderSize(u32),
+    /// The header failed the shared DDS reader (`texture_gpu::read_header`).
+    InvalidHeader(String),
     ZeroSize {
         width: u32,
         height: u32,
@@ -113,7 +110,7 @@ impl fmt::Display for DdsError {
         match self {
             Self::TooShort { len } => write!(f, "DDS is {len} bytes, shorter than its header"),
             Self::BadMagic => write!(f, "DDS magic is missing"),
-            Self::BadHeaderSize(size) => write!(f, "DDS header size is {size}, expected 124"),
+            Self::InvalidHeader(reason) => write!(f, "DDS header is invalid: {reason}"),
             Self::ZeroSize { width, height } => write!(f, "DDS size is {width}x{height}"),
             Self::TooManyMips { mip_levels, max } => {
                 write!(f, "DDS declares {mip_levels} mips, at most {max} fit")
@@ -130,84 +127,74 @@ impl fmt::Display for DdsError {
 
 impl std::error::Error for DdsError {}
 
-fn word(bytes: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
-}
-
-/// Reads the header of a DDS file. The pixel data is not read or checked.
+/// Reads the header of a DDS file with the converter's shared header reader. The pixel data is not
+/// read or checked.
 pub fn read_dds_info(bytes: &[u8]) -> Result<DdsInfo, DdsError> {
-    if bytes.len() < 4 + HEADER_BYTES {
+    if bytes.len() < BASE_DATA_OFFSET {
         return Err(DdsError::TooShort { len: bytes.len() });
     }
-    if &bytes[..4] != MAGIC {
+    if &bytes[..4] != b"DDS " {
         return Err(DdsError::BadMagic);
     }
-    let size = word(bytes, 4);
-    if size != HEADER_BYTES as u32 {
-        return Err(DdsError::BadHeaderSize(size));
+    if bytes[84..88] == *b"DX10" && bytes.len() < BASE_DATA_OFFSET + DX10_BYTES {
+        return Err(DdsError::TooShort { len: bytes.len() });
     }
-    let height = word(bytes, 12);
-    let width = word(bytes, 16);
+    let dds = crate::texture_gpu::read_header(bytes)
+        .map_err(|error| DdsError::InvalidHeader(format!("{error:#}")))?;
+    let (width, height) = (dds.get_width(), dds.get_height());
     if width == 0 || height == 0 {
         return Err(DdsError::ZeroSize { width, height });
     }
-    // Only a single 2D surface is sized. A cube map or volume (legacy caps) has more surfaces.
-    let caps2 = word(bytes, 112);
-    if caps2 & DDSCAPS2_CUBEMAP != 0 {
+    // Only a single 2D surface is sized. A cube map, volume or array has more surfaces.
+    if dds.header.caps2.contains(Caps2::CUBEMAP) {
         return Err(DdsError::UnsupportedLayout { reason: "cube map" });
     }
-    if caps2 & DDSCAPS2_VOLUME != 0 {
+    if dds.header.caps2.contains(Caps2::VOLUME) {
         return Err(DdsError::UnsupportedLayout {
             reason: "volume texture",
         });
     }
-    let mip_levels = word(bytes, 28).max(1);
+    let mip_levels = dds.get_num_mipmap_levels().max(1);
     let max = 32 - width.max(height).leading_zeros();
     if mip_levels > max {
         return Err(DdsError::TooManyMips { mip_levels, max });
     }
-    // The pixel format starts at offset 76: size, flags, four-character code, bit count, masks.
-    let flags = word(bytes, 80);
-    let mut data_offset = 4 + HEADER_BYTES;
-    let format = if flags & DDPF_FOURCC != 0 {
-        let code: [u8; 4] = bytes[84..88].try_into().unwrap();
-        if &code == b"DX10" {
-            if bytes.len() < data_offset + DX10_BYTES {
-                return Err(DdsError::TooShort { len: bytes.len() });
-            }
-            let dxgi = word(bytes, data_offset);
-            if word(bytes, data_offset + 4) != DX10_TEXTURE2D {
-                return Err(DdsError::UnsupportedLayout {
-                    reason: "DX10 resource is not a 2D texture",
-                });
-            }
-            if word(bytes, data_offset + 8) & DX10_MISC_TEXTURECUBE != 0 {
-                return Err(DdsError::UnsupportedLayout {
-                    reason: "DX10 cube map",
-                });
-            }
-            if word(bytes, data_offset + 12) != 1 {
-                return Err(DdsError::UnsupportedLayout {
-                    reason: "DX10 texture array",
-                });
-            }
-            data_offset += DX10_BYTES;
-            DdsFormat::Dxgi(dxgi)
-        } else {
-            DdsFormat::FourCc(code)
+    let spf = &dds.header.spf;
+    let mut data_offset = BASE_DATA_OFFSET;
+    let format = if let Some(header10) = &dds.header10 {
+        if header10.resource_dimension != D3D10ResourceDimension::Texture2D {
+            return Err(DdsError::UnsupportedLayout {
+                reason: "DX10 resource is not a 2D texture",
+            });
         }
-    } else if flags & DDPF_RGB != 0 {
+        if header10.misc_flag.contains(MiscFlag::TEXTURECUBE) {
+            return Err(DdsError::UnsupportedLayout {
+                reason: "DX10 cube map",
+            });
+        }
+        if header10.array_size != 1 {
+            return Err(DdsError::UnsupportedLayout {
+                reason: "DX10 texture array",
+            });
+        }
+        data_offset += DX10_BYTES;
+        DdsFormat::Dxgi(header10.dxgi_format as u32)
+    } else if let Some(FourCC(code)) = spf.fourcc {
+        DdsFormat::FourCc(code.to_le_bytes())
+    } else if spf.flags.contains(PixelFormatFlags::RGB) {
         DdsFormat::Uncompressed {
-            bits: word(bytes, 88),
+            bits: spf.rgb_bit_count.unwrap_or(0),
             masks: [
-                word(bytes, 92),
-                word(bytes, 96),
-                word(bytes, 100),
-                word(bytes, 104),
+                spf.r_bit_mask.unwrap_or(0),
+                spf.g_bit_mask.unwrap_or(0),
+                spf.b_bit_mask.unwrap_or(0),
+                spf.a_bit_mask.unwrap_or(0),
             ],
         }
     } else {
-        return Err(DdsError::UnsupportedPixelFormat { flags });
+        return Err(DdsError::UnsupportedPixelFormat {
+            flags: spf.flags.bits(),
+        });
     };
     Ok(DdsInfo {
         width,
@@ -220,6 +207,15 @@ pub fn read_dds_info(bytes: &[u8]) -> Result<DdsInfo, DdsError> {
 
 #[cfg(test)]
 mod tests {
+    const MAGIC: &[u8; 4] = b"DDS ";
+    const HEADER_BYTES: usize = 124;
+    const DDSD_REQUIRED: u32 = 0x1 | 0x2 | 0x4 | 0x1000 | 0x2_0000;
+    const DDPF_FOURCC: u32 = 0x4;
+    const DDPF_RGB: u32 = 0x40;
+    const DDSCAPS2_CUBEMAP: u32 = 0x200;
+    const DDSCAPS2_VOLUME: u32 = 0x20_0000;
+    const DX10_MISC_TEXTURECUBE: u32 = 0x4;
+
     use super::*;
 
     fn header(
@@ -232,6 +228,8 @@ mod tests {
     ) -> Vec<u8> {
         let mut bytes = vec![0u8; 4 + HEADER_BYTES];
         bytes[..4].copy_from_slice(MAGIC);
+        // Caps, height, width, pixel format and mip-count flags, as real files set them.
+        bytes[8..12].copy_from_slice(&DDSD_REQUIRED.to_le_bytes());
         bytes[4..8].copy_from_slice(&124u32.to_le_bytes());
         bytes[12..16].copy_from_slice(&height.to_le_bytes());
         bytes[16..20].copy_from_slice(&width.to_le_bytes());
