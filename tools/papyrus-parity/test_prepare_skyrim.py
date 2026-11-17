@@ -49,6 +49,40 @@ class PreparationTests(unittest.TestCase):
                 self.assertTrue(file.is_file())
                 self.assertFalse(file.is_symlink())
 
+    def test_escaping_user_ancestry_is_rejected_before_unlinking(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            game, pex, template = self.inputs(root)
+            external = root / "external-user"
+            external.mkdir()
+            real_documents = root / "external-documents"
+            real_documents.mkdir()
+            documents = external / "Documents"
+            documents.symlink_to(real_documents)
+            user = template / "pfx/drive_c/users/steamuser"
+            user.parent.mkdir(parents=True)
+            user.symlink_to(external)
+            with self.assertRaisesRegex(ValueError, "escaped.*prefix"):
+                prepare(game, pex, template, root / "session")
+            self.assertTrue(documents.is_symlink())
+            self.assertEqual(list(external.iterdir()), [documents])
+            self.assertEqual(list(real_documents.iterdir()), [])
+
+    def test_nested_profile_directories_are_checked_before_creation(self):
+        for relative in ("Documents/My Games", "Documents/My Games/Skyrim Special Edition/Logs",
+                         "AppData"):
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                game, pex, template = self.inputs(root)
+                external = root / "external-directory"
+                external.mkdir()
+                link = template / "pfx/drive_c/users/steamuser" / relative
+                link.parent.mkdir(parents=True)
+                link.symlink_to(external)
+                with self.assertRaisesRegex(ValueError, "escaped.*prefix"):
+                    prepare(game, pex, template, root / "session")
+                self.assertEqual(list(external.iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()

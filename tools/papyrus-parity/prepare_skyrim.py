@@ -36,6 +36,11 @@ def plugin():
     return record("TES4", 0, header) + group + quests
 
 
+def require_contained(path, prefix):
+    if not path.resolve().is_relative_to(prefix.resolve()):
+        raise ValueError(f"Directory escaped the copied prefix: {path}")
+
+
 def prepare(game, pex, prefix_template, output):
     game = game.resolve(strict=True)
     pex = pex.resolve(strict=True)
@@ -64,6 +69,7 @@ def prepare(game, pex, prefix_template, output):
     compat = output / "compatdata"
     shutil.copytree(prefix_template, compat, symlinks=True)
     user = compat / "pfx/drive_c/users/steamuser"
+    require_contained(user, compat)
     # Wine may create user-directory links into the real home. Replace those
     # only in the copied prefix before any game process can write through them.
     for name in ("Documents", "My Documents", "Desktop", "Downloads", "Pictures", "Music", "Videos"):
@@ -72,8 +78,9 @@ def prepare(game, pex, prefix_template, output):
             folder.unlink()
         folder.mkdir(exist_ok=True)
     documents = user / "Documents/My Games/Skyrim Special Edition"
+    require_contained(documents, compat)
     documents.mkdir(parents=True, exist_ok=True)
-    assert documents.resolve().is_relative_to(compat.resolve()), "Documents escaped the copied prefix"
+    require_contained(documents / "Logs/Script", compat)
     (documents / "Logs/Script").mkdir(parents=True, exist_ok=True)
     for name in ("Skyrim.ini", "SkyrimPrefs.ini"):
         filename = documents / name
@@ -106,8 +113,8 @@ bEnableFileSelection=1
 """
     (documents / "SkyrimPrefs.ini").write_text(prefs)
     local = user / "AppData/Local/Skyrim Special Edition"
+    require_contained(local, compat)
     local.mkdir(parents=True, exist_ok=True)
-    assert local.resolve().is_relative_to(compat.resolve()), "AppData escaped the copied prefix"
     for name in ("plugins.txt", "loadorder.txt"):
         filename = local / name
         if filename.is_symlink():
