@@ -230,3 +230,6 @@ recorded as exploratory results. No capture timed out or retained pending or fai
 [The 2026-11-17 core review record](room-culling-review-20261117.md) contains the graphics toggle,
 three real-interior on/off pairs with counts, repeated release frame times, executable identities,
 and their limits. The core remains a room-reachability foundation, not a complete Skyrim parity claim.
+
+[The boundary review record](room-gap-review-20261117.md) covers conservative camera starts,
+negative extents, legacy-pack handling, and the sampled out-and-back room-boundary sequence.
