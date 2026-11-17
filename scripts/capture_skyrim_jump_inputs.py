@@ -49,6 +49,8 @@ def control_prediction(baseline, condition):
 def validate_capture_proof(rows, proof, frame_cap, fixture):
     if proof['status'] != 'passed':
         raise ValueError('Capture proof did not pass')
+    if not proof['source_save_unchanged']:
+        raise ValueError('Capture proof source save was modified')
     if proof['frame_cap_request'] != frame_cap:
         raise ValueError('Capture proof requested a different cadence')
     fixture_bytes = (json.dumps(fixture, indent=2, allow_nan=False) + '\n').encode()

@@ -9,6 +9,10 @@ import tempfile
 import evaluate_skyrim_jump as evaluator
 
 
+def html_json(value):
+    return json.dumps(value).replace('<', r'\u003c')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--corpus', type=Path, required=True)
@@ -105,7 +109,9 @@ for(let h=0;h<=80;h+=20){add(a,'line',{x1:55,x2:675,y1:bottom-h*scale,y2:bottom-
 add(a,'text',{x:55,y:25},'Observed sampled apex · Creation units');summary.forEach((r,i)=>{const x=55+(i+.5)*620/summary.length;add(a,'rect',{x:x-35,y:bottom-r.apex_median*scale,width:70,height:r.apex_median*scale,fill:'var(--chart-1)',opacity:.75});add(a,'line',{x1:x,x2:x,y1:bottom-r.apex_min*scale,y2:bottom-r.apex_max*scale,stroke:'var(--foreground)','stroke-width':3});add(a,'text',{x,y:bottom-r.apex_median*scale-9,'text-anchor':'middle'},r.apex_median.toFixed(3));add(a,'text',{x,y:242,'text-anchor':'middle'},r.observed_camera_hz_median.toFixed(1)+' Hz / '+r.condition.split(', ')[1]);add(a,'text',{x,y:258,'text-anchor':'middle'},r.condition.includes('heldout')?'held out':'training')});
 document.getElementById('table').innerHTML='<thead><tr><th>Requested condition</th><th>Captures</th><th>Observed Hz</th><th>Apex</th><th>Evaluator RMSE</th><th>Mudcrab RMSE</th></tr></thead><tbody>'+summary.map(r=>`<tr><td>${r.condition}</td><td>${r.n}</td><td>${r.observed_camera_hz_median.toFixed(2)}</td><td>${r.apex_median.toFixed(3)}</td><td>${r.native_rmse_median.toFixed(4)}</td><td>${r.mudcrab_rmse_median.toFixed(3)}</td></tr>`).join('')+'</tbody>';
 const rejectedList=document.getElementById('rejected');rejected.forEach(r=>{const p=document.createElement('p');p.textContent='Rejected '+r.id+': '+r.reason;rejectedList.appendChild(p)});
-</script></body></html>'''.replace('CURVES', json.dumps(curves)).replace('SUMMARY', json.dumps(summary)).replace('REJECTED', json.dumps(rejected))
+</script></body></html>'''.replace(
+        'const curves=CURVES;const summary=SUMMARY;const rejected=REJECTED;',
+        f'const curves={html_json(curves)};const summary={html_json(summary)};const rejected={html_json(rejected)};')
     (args.results / 'report.html').write_text(html)
     print(args.results / 'report.html')
 

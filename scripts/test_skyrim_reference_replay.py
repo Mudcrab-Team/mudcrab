@@ -3,6 +3,8 @@ import json
 import gzip
 from pathlib import Path
 import shutil
+import re
+from collections import Counter
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -12,6 +14,26 @@ import report_skyrim_jump as report
 
 
 class RetainedJumpEvidenceTests(unittest.TestCase):
+    def test_report_keeps_corpus_identifiers_out_of_executable_markup(self):
+        reference = Path(__file__).resolve().parents[1] / 'tools/skyrim-recorder/reference/jump-v3'
+        with tempfile.TemporaryDirectory() as directory:
+            corpus = Path(directory) / 'corpus'
+            shutil.copytree(reference, corpus)
+            manifest = json.loads((corpus / 'manifest.json').read_text())
+            run = next(r for r in manifest['runs'] if r['split'] == 'heldout')
+            malicious = '</script><script>alert(1)</script> SUMMARY REJECTED'
+            run['id'] = malicious
+            (corpus / 'manifest.json').write_text(json.dumps(manifest))
+            output = Path(directory) / 'output'
+            evaluator.score(corpus / 'manifest.json', corpus / 'frozen.json', output)
+            with patch('sys.argv', ['report', '--corpus', str(corpus), '--results', str(output)]):
+                report.main()
+            html = (output / 'report.html').read_text()
+            self.assertEqual(html.count('</script>'), 1)
+            self.assertNotIn(malicious, html)
+            curves = json.loads(re.search(r'const curves=(.*?);const summary=', html).group(1))
+            self.assertIn(malicious, [curve['id'] for curve in curves])
+
     def test_report_rejects_changed_traces_or_a_mismatched_score_seal(self):
         reference = Path(__file__).resolve().parents[1] / 'tools/skyrim-recorder/reference/jump-v3'
         for mode in ('heldout-trace', 'training-trace', 'seal', 'training-frame-cap', 'training-timescale'):
@@ -93,6 +115,18 @@ class RetainedJumpEvidenceTests(unittest.TestCase):
 
     def check_corpus(self, name):
         corpus = Path(__file__).resolve().parents[1] / 'tools/skyrim-recorder/reference' / name
+        manifest = json.loads((corpus / 'manifest.json').read_text())
+        for run in manifest['runs']:
+            self.assertEqual(run['proof']['status'], 'passed')
+            jump = evaluator.qualify(corpus / run['path'], run)
+            samples = jump['samples']
+            apex = max(range(len(samples)), key=lambda i: samples[i]['z'])
+            landing = next(s['sample'] for s in samples[apex + 1:]
+                           if abs(s['z'] - jump['baseline']) <= 2)
+            callbacks = Counter(row['sample'] for row in jump['rows']
+                                if row['kind'] == 8 and row['v'][16] == 2)
+            for sample in range(jump['origin']['sample'], landing):
+                self.assertEqual(callbacks[sample], 1, (run['id'], sample))
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
             scored = evaluator.score(corpus / 'manifest.json', corpus / 'frozen.json', output)

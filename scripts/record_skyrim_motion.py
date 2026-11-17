@@ -216,6 +216,9 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
         raise ValueError('Experimental frame cap must be 30, 60, or 120')
     fixture = read_fixture(fixture_path) if fixture_path else None
     config = json.loads((session / 'session.json').read_text())
+    if (fixture and config.get('profile_name') != 'inputs-v4' and
+            any(key in fixture for key in ('jump_height_min', 'reference_scale'))):
+        raise ValueError('Jump-input interventions require an inputs-v4 session')
     if sha256(session / 'game/SkyrimSE.exe') != config['exe_sha256']:
         raise ValueError('Prepared executable changed')
     if sha256(session / 'game/dinput8.dll') != config['build']['dll_sha256']:

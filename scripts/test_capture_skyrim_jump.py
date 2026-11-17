@@ -23,7 +23,8 @@ class CampaignProfileTests(unittest.TestCase):
             session = root / 'session'
             session.mkdir()
             config = {'exe_sha256': plan['runtime_sha256'],
-                      'source_save_sha256': plan['source_save_sha256']}
+                      'source_save_sha256': plan['source_save_sha256'],
+                      'build': {'source_sha256': capture.digest(capture.ROOT / 'tools/skyrim-recorder/probe.cpp')}}
             if profile is not None:
                 config['profile_name'] = profile
             (session / 'session.json').write_text(json.dumps(config))

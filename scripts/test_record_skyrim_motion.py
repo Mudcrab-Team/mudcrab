@@ -1,4 +1,5 @@
 import unittest
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
@@ -72,6 +73,24 @@ class ScreenshotOwnershipTests(unittest.TestCase):
 
 
 class MotionProofTests(unittest.TestCase):
+    def test_v3_sessions_reject_typed_v4_interventions_before_recording(self):
+        for control, value in (('jump_height_min', 64.0), ('reference_scale', 1.25)):
+            with self.subTest(control=control), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / 'session.json').write_text('{}')
+                fixture = dict(schema=1, kind='jump', position=[0, 0, 0], yaw_degrees=0,
+                               hold_ms=500, modifier='jump', **{control: value})
+                path = root / 'fixture.json'
+                path.write_text(json.dumps(fixture))
+                with patch.object(recorder, 'sha256', side_effect=AssertionError('recorder preflight started')):
+                    with self.assertRaisesRegex(ValueError, 'inputs-v4'):
+                        recorder.run_recording(root, root / 'output', root, path)
+                self.assertFalse((root / 'output').exists())
+                (root / 'session.json').write_text(json.dumps(dict(profile_name='inputs-v4')))
+                with patch.object(recorder, 'sha256', side_effect=AssertionError('recorder preflight started')):
+                    with self.assertRaisesRegex(AssertionError, 'recorder preflight started'):
+                        recorder.run_recording(root, root / 'output', root, path)
+
     def test_dialog_quotes_do_not_swallow_the_no_button(self):
         text, words = parse_ocr('left\ttop\twidth\theight\ttext\n'
                                '10\t20\t30\t40\t"Survival\n'

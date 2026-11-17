@@ -38,6 +38,8 @@ def main():
         parser.error('session does not match the preregistered v3 executable/save/profile')
     if args.split == 'heldout' and (args.frozen is None or not args.frozen.is_file()):
         parser.error('held-out collection requires an existing frozen fit')
+    if session['build']['source_sha256'] != digest(ROOT / 'tools/skyrim-recorder/probe.cpp'):
+        parser.error('Prepared recorder source differs; prepare the session again')
     args.private_output.mkdir(parents=True, exist_ok=True)
     args.corpus.mkdir(parents=True, exist_ok=True)
     with corpus_lock(args.corpus):

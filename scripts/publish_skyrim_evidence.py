@@ -7,6 +7,8 @@ transformation, not a replacement acquisition receipt or proof of original bytes
 Live-source source_transforms describe the one-time historical transformation;
 only immutable evidence changes are checked against publication hashes. Live
 sources continue to be leak-audited and may evolve.
+The audit scans DIRECT, TREES, and the publication manifest below. Other Skyrim
+tools and unrelated repository files are outside this acquisition-evidence audit.
 Reproduce with --sanitize on a private checkout of original acquisition artifacts.
 """
 import argparse

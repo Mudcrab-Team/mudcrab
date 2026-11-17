@@ -58,12 +58,15 @@ def record_attempt(path, manifest, name, number, output, retain=None):
                private_output=str(output.resolve()))
     manifest['attempts'].append(row)
     save_manifest(path, manifest)
+    durable = None
+    finalized = False
     try:
         yield row
     except BaseException as error:
         durable = json.loads(path.read_text())
         if any(run['id'] == name for run in durable['runs']):
             row['exit_code'] = 0
+            finalized = True
         else:
             manifest['runs'] = durable['runs']
             row['recorder_exit_code'] = row['exit_code']
@@ -72,9 +75,13 @@ def record_attempt(path, manifest, name, number, output, retain=None):
             if 'failure' not in row:
                 fail_attempt(row, output, {'phase': 'interrupted' if isinstance(error, (KeyboardInterrupt, SystemExit)) else 'capture',
                                           'error': type(error).__name__}, retain)
+            finalized = not retain or 'path' in row or row.get('trace_status') == 'not-created'
         raise
+    else:
+        finalized = True
     finally:
-        if not retain or 'failure' not in row or 'path' in row or row.get('trace_status') == 'not-created':
+        if finalized:
             row.pop('status')
             row.pop('private_output', None)
-        save_manifest(path, manifest)
+        if finalized or durable is not None:
+            save_manifest(path, manifest)

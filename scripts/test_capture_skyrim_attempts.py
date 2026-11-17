@@ -44,6 +44,46 @@ def campaign(module, root, frame_cap=None):
 
 
 class CaptureAttemptTests(unittest.TestCase):
+    def test_failed_classification_preserves_the_last_pending_checkpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'traces').mkdir()
+            output = root / 'capture'
+            output.mkdir()
+            (output / 'trace.bin').write_bytes(b'captured trace')
+            manifest = dict(runs=[], attempts=[])
+            path = root / 'manifest.json'
+            retain = partial(v4.retain_failure, root)
+            with patch.object(Path, 'read_text', side_effect=OSError('temporary manifest read error')):
+                with self.assertRaises(OSError):
+                    with record_attempt(path, manifest, 'baseline', 1, output, retain) as attempt:
+                        attempt['exit_code'] = 0
+                        manifest['runs'].append(dict(id='baseline'))
+                        raise KeyboardInterrupt()
+            pending = json.loads(path.read_text())
+            self.assertEqual(pending['runs'], [])
+            self.assertEqual(pending['attempts'][0]['status'], 'pending')
+            self.assertEqual(pending['attempts'][0]['private_output'], str(output))
+            recover_attempts(path, pending, root, retain)
+            failed = json.loads(path.read_text())['attempts'][0]
+            self.assertNotIn('status', failed)
+            self.assertNotEqual(failed['exit_code'], 0)
+            self.assertEqual(gzip.decompress((root / failed['path']).read_bytes()), b'captured trace')
+
+    def test_v3_receipt_rejects_a_changed_prepared_recorder_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            argv, session = campaign(v3, root)
+            session['build']['source_sha256'] = '0' * 64
+            (root / 'session/session.json').write_text(json.dumps(session))
+            with patch('sys.argv', argv), patch.object(v3.subprocess, 'run',
+                                                     side_effect=AssertionError('recorder started')) as recorder, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaisesRegex(SystemExit, '2'):
+                    v3.main()
+                recorder.assert_not_called()
+            self.assertFalse((root / 'corpus/train-capture.json').exists())
+
     def test_interrupted_acceptance_rolls_back_unsaved_runs_and_allows_retry(self):
         for error in (KeyboardInterrupt, OSError):
             with self.subTest(error=error.__name__), tempfile.TemporaryDirectory() as directory:
@@ -277,7 +317,7 @@ class CaptureAttemptTests(unittest.TestCase):
         reference = v4.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
         observed = json.loads((reference / 'manifest.json').read_text())['runs'][0]
         raw = gzip.decompress((reference / observed['path']).read_bytes())
-        for mode in ('failed', 'cadence', 'fixture'):
+        for mode in ('failed', 'cadence', 'fixture', 'changed-save'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 argv, session = campaign(v4, root, frame_cap=120 if mode == 'cadence' else None)
@@ -289,6 +329,8 @@ class CaptureAttemptTests(unittest.TestCase):
                              runner_sha256=v4.digest(v4.ROOT / 'scripts/record_skyrim_motion.py'))
                 proof['status'] = 'failed' if mode == 'failed' else 'passed'
                 proof['frame_cap_request'] = 120 if mode == 'cadence' else 60
+                if mode == 'changed-save':
+                    proof['source_save_unchanged'] = False
                 if mode == 'fixture':
                     proof['fixture'] = dict(observed['fixture'], yaw_degrees=180)
                     proof['fixture_sha256'] = hashlib.sha256(
