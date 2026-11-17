@@ -1871,13 +1871,17 @@ fn a_two_pair_xpod_is_remapped_in_every_pair() {
         record(b"REFR", 0x0100_0900, 0, sub(b"XPOD", &payload[..14])),
     );
     let merged = EsmParser::merge_plugins(&[base, patch]).unwrap();
-    assert!(
-        merged[&0x0100_0900]
-            .subrecords
-            .iter()
-            .filter(|(name, _)| name.as_slice() == b"XPOD")
-            .all(|(_, data)| data.is_empty())
+    let xpods: Vec<_> = merged[&0x0100_0900]
+        .subrecords
+        .iter()
+        .filter(|(name, _)| name.as_slice() == b"XPOD")
+        .collect();
+    assert_eq!(
+        xpods.len(),
+        1,
+        "the malformed XPOD keeps one empty occurrence"
     );
+    assert!(xpods[0].1.is_empty());
 }
 
 #[test]
@@ -1894,13 +1898,13 @@ fn broken_portal_links_do_not_become_authored_outside_endpoints() {
             record(b"REFR", 0x0100_0900, 0, sub(b"XPOD", &payload)),
         );
         let merged = EsmParser::merge_plugins(&[base, patch]).unwrap();
-        assert_eq!(
-            merged[&0x0100_0900]
-                .subrecords
-                .iter()
-                .any(|(tag, data)| tag.as_slice() == b"XPOD" && !data.is_empty()),
-            kept
-        );
+        let xpods: Vec<_> = merged[&0x0100_0900]
+            .subrecords
+            .iter()
+            .filter(|(tag, _)| tag.as_slice() == b"XPOD")
+            .collect();
+        assert_eq!(xpods.len(), 1, "the source XPOD keeps one occurrence");
+        assert_eq!(!xpods[0].1.is_empty(), kept);
     }
 }
 
