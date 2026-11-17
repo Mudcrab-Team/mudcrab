@@ -95,6 +95,9 @@ impl UnderwaterPass {
     }
 }
 
+/// Preparation and drawing use only the current frame's extracted underwater state.
+type ActiveUnderwaterView = With<UnderwaterPass>;
+
 /// The share of the blurred frame at view depth `d` (RF-WATER-053, far side only):
 /// `sat((d - focus) / range) * strength`.
 #[cfg(test)]
@@ -128,7 +131,9 @@ impl Plugin for UnderwaterPassPlugin {
             .add_systems(
                 Render,
                 (
-                    prepare_underwater_textures.in_set(RenderSystems::PrepareResources),
+                    (clear_inactive_underwater_views, prepare_underwater_textures)
+                        .chain()
+                        .in_set(RenderSystems::PrepareResources),
                     prepare_underwater_pipelines.in_set(RenderSystems::Prepare),
                 ),
             )
@@ -241,6 +246,31 @@ struct UnderwaterPipelineIds {
     horizontal: CachedRenderPipelineId,
     vertical: CachedRenderPipelineId,
     composite: CachedRenderPipelineId,
+    format: TextureFormat,
+}
+
+/// Releases per-view state as soon as the extracted effect leaves the view.
+fn clear_inactive_underwater_views(
+    mut commands: Commands,
+    views: Query<
+        Entity,
+        (
+            Without<UnderwaterPass>,
+            Or<(
+                With<UnderwaterTextures>,
+                With<UnderwaterPipelineIds>,
+                With<DynamicUniformIndex<UnderwaterPass>>,
+            )>,
+        ),
+    >,
+) {
+    for entity in &views {
+        commands.entity(entity).remove::<(
+            UnderwaterTextures,
+            UnderwaterPipelineIds,
+            DynamicUniformIndex<UnderwaterPass>,
+        )>();
+    }
 }
 
 fn prepare_underwater_pipelines(
@@ -248,7 +278,7 @@ fn prepare_underwater_pipelines(
     pipeline: Res<UnderwaterPipeline>,
     pipeline_cache: Res<PipelineCache>,
     mut pipelines: ResMut<SpecializedRenderPipelines<UnderwaterPipeline>>,
-    views: Query<(Entity, &ExtractedView), With<UnderwaterPass>>,
+    views: Query<(Entity, &ExtractedView), ActiveUnderwaterView>,
 ) {
     for (entity, view) in &views {
         let mut id = |stage| {
@@ -265,6 +295,7 @@ fn prepare_underwater_pipelines(
             horizontal: id(Stage::BlurHorizontal),
             vertical: id(Stage::BlurVertical),
             composite: id(Stage::Composite),
+            format: view.target_format,
         });
     }
 }
@@ -275,16 +306,37 @@ fn prepare_underwater_pipelines(
 struct UnderwaterTextures {
     first: CachedTexture,
     second: CachedTexture,
+    target: UnderwaterTarget,
+}
+
+/// The attachment contract for both blur textures and the view they will composite into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UnderwaterTarget {
+    size: UVec2,
+    format: TextureFormat,
+}
+
+/// A resized or reformatted view waits until matching resources are prepared.
+fn underwater_resources_current(
+    target: UnderwaterTarget,
+    textures: UnderwaterTarget,
+    pipeline_format: TextureFormat,
+) -> bool {
+    target.size.x > 0 && target.size.y > 0 && target == textures && target.format == pipeline_format
 }
 
 fn prepare_underwater_textures(
     mut commands: Commands,
     mut cache: ResMut<TextureCache>,
     device: Res<RenderDevice>,
-    views: Query<(Entity, &ExtractedCamera, &ExtractedView), With<UnderwaterPass>>,
+    views: Query<(Entity, &ExtractedCamera, &ExtractedView), ActiveUnderwaterView>,
 ) {
     for (entity, camera, view) in &views {
-        let Some(size) = camera.physical_target_size else {
+        let Some(size) = camera
+            .physical_target_size
+            .filter(|size| size.x > 0 && size.y > 0)
+        else {
+            commands.entity(entity).remove::<UnderwaterTextures>();
             continue;
         };
         let mut texture = |label| {
@@ -308,21 +360,29 @@ fn prepare_underwater_textures(
         };
         let first = texture("underwater_blur_first");
         let second = texture("underwater_blur_second");
-        commands
-            .entity(entity)
-            .insert(UnderwaterTextures { first, second });
+        commands.entity(entity).insert(UnderwaterTextures {
+            first,
+            second,
+            target: UnderwaterTarget {
+                size,
+                format: view.target_format,
+            },
+        });
     }
 }
 
 /// Runs the blur pair and the composite for a view that is under water. Without the water depth
 /// snapshot (or when it is unresolved this frame) the composite leaves the frame as it is.
 fn run_underwater_pass(
-    view: ViewQuery<(
-        &ViewTarget,
-        &DynamicUniformIndex<UnderwaterPass>,
-        &UnderwaterTextures,
-        &UnderwaterPipelineIds,
-    )>,
+    view: ViewQuery<
+        (
+            &ViewTarget,
+            &DynamicUniformIndex<UnderwaterPass>,
+            &UnderwaterTextures,
+            &UnderwaterPipelineIds,
+        ),
+        ActiveUnderwaterView,
+    >,
     uniforms: Res<ComponentUniforms<UnderwaterPass>>,
     pipeline: Res<UnderwaterPipeline>,
     pipeline_cache: Res<PipelineCache>,
@@ -331,6 +391,19 @@ fn run_underwater_pass(
     mut ctx: RenderContext,
 ) {
     let (target, index, textures, ids) = view.into_inner();
+    if !underwater_resources_current(
+        UnderwaterTarget {
+            size: UVec2::new(
+                target.main_texture().width(),
+                target.main_texture().height(),
+            ),
+            format: target.main_texture_format(),
+        },
+        textures.target,
+        ids.format,
+    ) {
+        return;
+    }
     let Some(settings) = uniforms.uniforms().binding() else {
         return;
     };
@@ -423,6 +496,107 @@ fn run_underwater_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Resource, Default)]
+    struct RecordedViews(Vec<Entity>);
+
+    /// Exercises the same current-view filter used by preparation and the fullscreen writer.
+    fn record_active_view(
+        view: ViewQuery<Entity, ActiveUnderwaterView>,
+        mut recorded: ResMut<RecordedViews>,
+    ) {
+        recorded.0.push(view.entity());
+    }
+
+    #[test]
+    fn removing_underwater_state_stops_the_view_and_releases_retained_resources() {
+        use bevy::render::renderer::CurrentView;
+
+        let mut app = App::new();
+        app.init_resource::<RecordedViews>().add_systems(
+            Update,
+            (record_active_view, clear_inactive_underwater_views).chain(),
+        );
+        let pass = UnderwaterPass::new(LinearRgba::new(0.1, 0.2, 0.3, 1.0), -500.0, 1600.0, 0.1);
+        let retained = UnderwaterPipelineIds {
+            horizontal: CachedRenderPipelineId::INVALID,
+            vertical: CachedRenderPipelineId::INVALID,
+            composite: CachedRenderPipelineId::INVALID,
+            format: TextureFormat::Rgba16Float,
+        };
+        let view = app.world_mut().spawn((pass, retained)).id();
+        app.insert_resource(CurrentView(view));
+        app.update();
+        assert_eq!(app.world().resource::<RecordedViews>().0, [view]);
+        assert!(app.world().get::<UnderwaterPipelineIds>(view).is_some());
+
+        // Extraction removes the effect while the retained view still has its cached pipeline IDs.
+        app.world_mut().entity_mut(view).remove::<UnderwaterPass>();
+        assert!(app.world().get::<UnderwaterPipelineIds>(view).is_some());
+        app.update();
+        assert_eq!(app.world().resource::<RecordedViews>().0, [view]);
+        assert!(app.world().get::<UnderwaterPipelineIds>(view).is_none());
+
+        // A later submersion reactivates the same view with fresh per-view state.
+        app.world_mut().entity_mut(view).insert((pass, retained));
+        app.update();
+        assert_eq!(app.world().resource::<RecordedViews>().0, [view, view]);
+    }
+
+    #[test]
+    fn resized_and_reformatted_views_wait_for_matching_underwater_resources() {
+        let initial = UnderwaterTarget {
+            size: UVec2::new(800, 600),
+            format: TextureFormat::Rgba16Float,
+        };
+        let resized = UnderwaterTarget {
+            size: UVec2::new(1600, 900),
+            ..initial
+        };
+        let reformatted = UnderwaterTarget {
+            format: TextureFormat::Rgba8Unorm,
+            ..resized
+        };
+        assert!(underwater_resources_current(
+            initial,
+            initial,
+            initial.format
+        ));
+        assert!(!underwater_resources_current(
+            resized,
+            initial,
+            initial.format
+        ));
+        assert!(underwater_resources_current(
+            resized,
+            resized,
+            resized.format
+        ));
+        assert!(!underwater_resources_current(
+            reformatted,
+            resized,
+            resized.format
+        ));
+        assert!(!underwater_resources_current(
+            reformatted,
+            reformatted,
+            resized.format
+        ));
+        assert!(underwater_resources_current(
+            reformatted,
+            reformatted,
+            reformatted.format
+        ));
+        let minimized = UnderwaterTarget {
+            size: UVec2::ZERO,
+            ..initial
+        };
+        assert!(!underwater_resources_current(
+            minimized,
+            minimized,
+            minimized.format
+        ));
+    }
 
     #[test]
     fn the_blur_and_fog_shares_are_the_retail_ramps() {

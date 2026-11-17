@@ -18,7 +18,7 @@
 use crate::world::database::CellKey;
 use bevy::{
     asset::{RenderAssetUsages, embedded_asset},
-    camera::visibility::NoFrustumCulling,
+    camera::visibility::{NoFrustumCulling, VisibilitySystems},
     light::NotShadowCaster,
     mesh::{Indices, MeshVertexBufferLayoutRef, PrimitiveTopology},
     pbr::{
@@ -445,23 +445,25 @@ pub struct SkyPlugin;
 impl Plugin for SkyPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "shaders/sky.wgsl");
-        app.add_plugins(MaterialPlugin::<SkyMaterial>::default())
-            .init_resource::<SkyPalette>()
-            .init_resource::<CameraSpace>()
-            .init_resource::<crate::underwater::UnderwaterState>()
-            .add_systems(
-                PostUpdate,
-                (
-                    spawn_sky_domes,
-                    follow_sky_cameras,
-                    crate::underwater::update_underwater_state,
-                    apply_sky,
-                    sync_water_sky,
-                    apply_fog,
-                )
-                    .chain()
-                    .before(TransformSystems::Propagate),
-            );
+        app.add_plugins((
+            MaterialPlugin::<SkyMaterial>::default(),
+            crate::underwater::UnderwaterStatePlugin,
+        ))
+        .init_resource::<SkyPalette>()
+        .init_resource::<CameraSpace>()
+        .add_systems(
+            PostUpdate,
+            (spawn_sky_domes, follow_sky_cameras)
+                .chain()
+                .before(TransformSystems::Propagate),
+        )
+        .add_systems(
+            PostUpdate,
+            (apply_sky, sync_water_sky, apply_fog)
+                .chain()
+                .after(crate::underwater::UnderwaterStateSet)
+                .before(VisibilitySystems::VisibilityPropagate),
+        );
     }
 }
 
