@@ -138,18 +138,24 @@ impl TerrainLodDistances {
     }
 
     /// The object LOD (`.bto`) tier retail draws for `cell`, or `None` when the block is dropped
-    /// (RF-LOD-004, RF-LOD-005, RF-LOD-006 in `registry.md`; the verified REA report).
+    /// (RF-LOD-004, RF-LOD-005 in `registry.md`; the verified REA report).
     ///
-    /// Retail walks the block tree from level 32. A level-32 block holds no object mesh and
-    /// always splits. A level-16 block splits into its level-8 children while the box distance
-    /// is under `fBlockLevel1Distance` x sqrt(`nama`) (retail compares the squared distance with
-    /// `fBlockLevel1Distance`^2 x `nama`), and a level-8 block splits into level-4 blocks under
-    /// `fBlockLevel0Distance` x sqrt(`nama`). A block is dropped when its box distance is at or
-    /// beyond `fBlockMaximumDistance`, which `nama` does not scale. `nama` is the worldspace
-    /// multiplier: 1.0 for Tamriel, 0.25 for Whiterun, Markarth, Windhelm and Alftand.
+    /// Retail walks the block tree from level 32, and at every node it visits it first applies the
+    /// outer gate: a node whose box distance is at or beyond `fBlockMaximumDistance` releases its
+    /// data, and `nama` does not scale that gate. A node that passes then splits into its four
+    /// children while its box distance is under its split distance: level 32 always splits (it
+    /// holds no object mesh), level 16 under `fBlockLevel1Distance` x sqrt(`nama`) and level 8
+    /// under `fBlockLevel0Distance` x sqrt(`nama`) (retail compares the squared distance with the
+    /// squared setting times `nama`). Level 4 never splits. A child is checked only after its
+    /// parent splits, so the gate is applied to the level-16 block, to its level-8 child and to the
+    /// level-4 block in turn. `nama` is the worldspace multiplier: 1.0 for Tamriel, 0.25 for
+    /// Whiterun, Markarth, Windhelm and Alftand. With a large `nama` a split distance can exceed
+    /// the outer gate, which is why the gate must be checked for each visited block.
     ///
     /// Terrain uses a different rule ([`Self::terrain_tier`]); the two share only the block box.
-    /// The same engineering guard applies: the camera position is the centre of its cell.
+    /// The same engineering guard applies: the camera position is the centre of its cell. Retail
+    /// flag 0x8000 (blocks touching the large-reference square always split, RF-LOD-006) is not
+    /// implemented.
     pub fn object_tier(
         &self,
         camera: IVec2,
@@ -159,15 +165,24 @@ impl TerrainLodDistances {
     ) -> Option<LodTier> {
         let scale = f64::from(nama.max(0.0)).sqrt();
         let split = |distance: f32| f64::from(distance) * scale;
+        let maximum = f64::from(self.block_maximum_distance);
         let distance = |level| f64::from(Self::terrain_block_distance(camera, cell, origin, level));
-        if distance(16) >= f64::from(self.block_maximum_distance) {
+        if distance(16) >= maximum {
             return None;
         }
         if distance(16) >= split(self.block_level1_distance) {
             return Some(LodTier::Tier16);
         }
+        // The level-16 block splits: its level-8 child is visited next.
+        if distance(8) >= maximum {
+            return None;
+        }
         if distance(8) >= split(self.block_level0_distance) {
             return Some(LodTier::Tier8);
+        }
+        // The level-8 block splits: the level-4 block is a leaf and still passes the gate.
+        if distance(4) >= maximum {
+            return None;
         }
         Some(LodTier::Tier4)
     }
@@ -4698,6 +4713,50 @@ mod tests {
         // outer cut alone: block [16, 24) is now past 35,000, so level 16 draws.
         assert_eq!(tier(20, 0.25), Some(LodTier::Tier16));
         assert_eq!(tier(70, 0.25), None);
+    }
+
+    /// RF-LOD-004: the outer gate applies to every visited block, not only the level-16 one, and
+    /// `nama` never scales it.
+    #[test]
+    fn object_tier_applies_the_outer_cut_to_each_visited_block() {
+        let high = TerrainLodDistances::default();
+        // NAMA 16 scales the split distances by 4: level 16 splits under 280,000 and level 8 under
+        // 140,000. Cell (63, 47) from camera cell (0, 0): its level-16 block is 233,453 units away
+        // (under 280,000, so it splits), its level-8 child 279,025 away (past 250,000). The child
+        // is dropped; before the per-block gate it drew as tier 8.
+        let far = high.object_tier(IVec2::ZERO, IVec2::new(63, 47), IVec2::ZERO, 16.0);
+        assert_eq!(far, None);
+        // With NAMA 1.0 the level-16 block (233,453 away, inside 250,000) does not split, so it
+        // draws as tier 16: only the larger NAMA reaches the level-8 child.
+        assert_eq!(
+            high.object_tier(IVec2::ZERO, IVec2::new(63, 47), IVec2::ZERO, 1.0),
+            Some(LodTier::Tier16)
+        );
+
+        // The level-4 leaf is gated too. With NAMA 100 both blocks above it split (levels 16 and 8
+        // split under 700,000 and 350,000). LOD origin -3 puts the level-8 block at [61, 69) and
+        // the level-4 blocks at [61, 65) and [65, 69): from camera cell 0 the level-16 and level-8
+        // blocks are 247,808 units away (inside 250,000) and the level-4 block holding cell 66 is
+        // 264,192 away (outside).
+        let origin = IVec2::new(-3, 0);
+        let tier = |x: i32, distances: &TerrainLodDistances| {
+            distances.object_tier(IVec2::ZERO, IVec2::new(x, 0), origin, 100.0)
+        };
+        assert_eq!(tier(62, &high), Some(LodTier::Tier4));
+        assert_eq!(tier(66, &high), None);
+
+        // The cut is "at or beyond": a block exactly 247,808 units away is dropped, one unit more
+        // reach keeps it. NAMA does not move it.
+        let at = TerrainLodDistances {
+            block_maximum_distance: 247_808.0,
+            ..high
+        };
+        assert_eq!(tier(62, &at), None);
+        let past = TerrainLodDistances {
+            block_maximum_distance: 247_809.0,
+            ..high
+        };
+        assert_eq!(tier(62, &past), Some(LodTier::Tier4));
     }
 
     /// Tiers 4 and 8 no longer reach 1.5 times too far: the old rule gave cells 12 and 25 for the
