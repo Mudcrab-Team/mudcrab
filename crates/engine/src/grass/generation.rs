@@ -1,5 +1,9 @@
 //! Per-spot grass selection follows spud (MIT, chasmlol/spud), revision e5f2de4.
 //! Rust implementation and packed renderer adaptation; notice: grass/SPUD-MIT.txt.
+#[cfg(test)]
+#[path = "../../tests/support/grass_budget.rs"]
+mod grass_budget;
+
 use super::{GrassBatch, GrassInstance, GrassTerrain};
 use crate::{config::EngineConfig, world::grass_cache::GrassCache};
 use shared::grass::{ArchivedGrassQuadrant, GRASS_CELL_SIZE, GRASS_EXCLUSION_SIDE};

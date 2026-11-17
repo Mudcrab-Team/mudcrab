@@ -736,10 +736,12 @@ fn performance_coloured_terrain_generation() {
             }
         }
         times.sort_unstable();
-        let ceiling = Duration::from_millis(millis);
+        let strict_ceiling = Duration::from_millis(millis);
+        let allowance = super::grass_budget::grass_budget_allowance();
+        let ceiling = strict_ceiling.mul_f64(allowance);
         timing_passed &= times[1] < ceiling;
         eprintln!(
-            "coloured grass: spacing={spacing} instances={count} median={:?} budget={ceiling:?}",
+            "coloured grass: spacing={spacing} instances={count} median={:?} strict_budget={strict_ceiling:?} allowance={allowance} effective_budget={ceiling:?}",
             times[1]
         );
     }

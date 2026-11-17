@@ -1,5 +1,8 @@
 //! Authored synthetic plugins through the converter, then the real mapped CPU generator.
 //! Retain a GPU smoke pack by setting MUDCRAB_GRASS_FIXTURE_OUTPUT to a new output folder.
+#[path = "support/grass_budget.rs"]
+mod grass_budget;
+
 use converter::{config::TextureEncoder, esm::EsmParser};
 use dummy_content::{esm, layout, nif};
 use engine::{
@@ -14,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-// This binary contains one test; only synchronous generation is measured, after
+// The performance test measures only synchronous generation, after
 // conversion tasks have joined. Counts Rust heap allocations, not mmap or GPU memory.
 struct CountingAllocator;
 static LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -298,7 +301,15 @@ fn obstruction_mesh(data: &Path) {
 }
 
 /// Check bounded deterministic generation and report each cell's median budget result.
-fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: Duration) -> bool {
+fn measured(
+    cache: &GrassCache,
+    ids: &[u32],
+    spacing: f32,
+    slots: u32,
+    strict_ceiling: Duration,
+) -> bool {
+    let allowance = grass_budget::grass_budget_allowance();
+    let ceiling = strict_ceiling.mul_f64(allowance);
     let config = EngineConfig {
         grass: true,
         grass_min_spacing: spacing,
@@ -407,14 +418,14 @@ fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: 
         let within_budget = samples[1] < ceiling;
         timing_passed &= within_budget;
         eprintln!(
-            "grass cell generation: spacing={spacing}, cell={id:08X}, median={:?}, budget={ceiling:?}, within_budget={within_budget}",
+            "grass cell generation: spacing={spacing}, cell={id:08X}, median={:?}, strict_budget={strict_ceiling:?}, allowance={allowance}, effective_budget={ceiling:?}, within_budget={within_budget}",
             samples[1]
         );
         durations.push(samples[1]);
     }
     durations.sort_unstable();
     eprintln!(
-        "grass generation: spacing={spacing}, cells={}, slots/cell={slots}, instances={total_instances}, median={:?}, worst-cell-median={:?}, budget={ceiling:?}",
+        "grass generation: spacing={spacing}, cells={}, slots/cell={slots}, instances={total_instances}, median={:?}, worst-cell-median={:?}, strict_budget={strict_ceiling:?}, allowance={allowance}, effective_budget={ceiling:?}",
         ids.len(),
         durations[durations.len() / 2],
         durations.last().unwrap()
@@ -535,8 +546,8 @@ async fn performance_grass_generation() {
             "the converted opaque box must block its sixteen upward-ray mask samples"
         );
     }
-    // These are worker-latency regression ceilings, with headroom for shared CI
-    // runners. The printed measurements, not these ceilings, describe a machine's
+    // CI runners vary; the strict budget applies to local and release runs.
+    // The printed measurements, not these worker-latency ceilings, describe a machine's
     // observed performance; generation never runs in the frame's cell commit.
     let mut timing_passed = measured(&cache, &cells, 64.0, 4096, Duration::from_millis(6));
     timing_passed &= measured(&cache, &cells, 32.0, 16384, Duration::from_millis(25));
