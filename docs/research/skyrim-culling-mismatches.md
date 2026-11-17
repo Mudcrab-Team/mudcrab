@@ -100,3 +100,10 @@ claim. These fixes establish the targeted web/foliage behavior, not complete Sky
 
 Skyrim exited without saving, temporary preferences were restored, the pose batch was removed,
 and the private display was stopped.
+
+## Human review recheck, 2026-11-17
+
+The [fresh review comparison](room-assignment-review-20261117.md) supplies matched retail images
+for the previously disputed shell views and adds Katariah named-target and NONE coverage. The
+[combined frame-cost record](room-culling-combined-review-20261117.md) uses the latest reviewed code
+with no local occluders. Its timing ranges overlap, so it does not establish a reliable speedup.
