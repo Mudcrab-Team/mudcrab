@@ -2191,6 +2191,7 @@ mod runtime_move_tests {
         ];
         let mut decoded = record();
         decoded.record_type = *b"LAND";
+        decoded.load_order = 0;
         decoded.rejected_fields = vec![*b"VTXT"];
         decoded.raw_payload = fields
             .iter()
