@@ -1,0 +1,300 @@
+{
+  "width": 1400,
+  "height": 1050,
+  "shots": [
+    {
+      "name": "BleakFallsBarrow01-room0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 225758,
+      "position": [
+        -6000.0,
+        1088.0,
+        1792.0
+      ],
+      "yaw": 83.22,
+      "pitch": 13.99,
+      "hfov": 75.0,
+      "note": "room 226772 centre, looking at the doorway (portal 226052) into room 226771"
+    },
+    {
+      "name": "BleakFallsBarrow01-room1-c",
+      "worldspace_id": null,
+      "interior_cell_id": 225758,
+      "position": [
+        -467.16,
+        -3488.0,
+        -2080.0
+      ],
+      "yaw": 90.0,
+      "pitch": -0.0,
+      "hfov": 75.0,
+      "note": "room 234060 centre, no portal, looking down the room's long axis"
+    },
+    {
+      "name": "BleakFallsBarrow01-room2-c",
+      "worldspace_id": null,
+      "interior_cell_id": 225758,
+      "position": [
+        -802.29,
+        -5280.0,
+        -2080.0
+      ],
+      "yaw": 79.45,
+      "pitch": -12.21,
+      "hfov": 75.0,
+      "note": "room 234037 centre, looking at the doorway (portal 234056) into room 234061"
+    },
+    {
+      "name": "BleakFallsBarrow01-portal0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 225758,
+      "position": [
+        1018.55,
+        -4962.72,
+        -2011.23
+      ],
+      "yaw": 260.12,
+      "pitch": 2.13,
+      "hfov": 75.0,
+      "note": "through portal 234056 (234061 -> 234037), eye in room 234061"
+    },
+    {
+      "name": "BleakFallsBarrow01-portal1-c",
+      "worldspace_id": null,
+      "interior_cell_id": 225758,
+      "position": [
+        -617.28,
+        -5950.13,
+        -2849.4
+      ],
+      "yaw": 178.16,
+      "pitch": 1.37,
+      "hfov": 75.0,
+      "note": "through portal 234057 (234037 -> 234039), eye in room 234037"
+    },
+    {
+      "name": "WhiterunDragonsreach-room0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 91555,
+      "position": [
+        -384.0,
+        1080.0,
+        984.0
+      ],
+      "yaw": 295.39,
+      "pitch": 17.34,
+      "hfov": 75.0,
+      "note": "room 933570 centre, looking at the doorway (portal 933574) into room 933569"
+    },
+    {
+      "name": "WhiterunDragonsreach-room1-c",
+      "worldspace_id": null,
+      "interior_cell_id": 91555,
+      "position": [
+        -576.0,
+        4416.0,
+        1544.0
+      ],
+      "yaw": 0.0,
+      "pitch": -0.0,
+      "hfov": 75.0,
+      "note": "room 933577 centre, no portal, looking down the room's long axis"
+    },
+    {
+      "name": "WhiterunDragonsreach-portal0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 91555,
+      "position": [
+        -1706.34,
+        1913.62,
+        201.22
+      ],
+      "yaw": 122.23,
+      "pitch": -26.6,
+      "hfov": 75.0,
+      "note": "through portal 933574 (933569 -> 933570), eye in room 933569"
+    },
+    {
+      "name": "WhiterunDragonsreach-portal1-c",
+      "worldspace_id": null,
+      "interior_cell_id": 91555,
+      "position": [
+        909.77,
+        1920.0,
+        268.04
+      ],
+      "yaw": 237.01,
+      "pitch": -24.9,
+      "hfov": 75.0,
+      "note": "through portal 933582 (933572 -> 933570), eye in room 933572"
+    },
+    {
+      "name": "RiftenMercerFreyHouse-room0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 228550,
+      "position": [
+        -1234.68,
+        1797.12,
+        -87.11
+      ],
+      "yaw": 265.74,
+      "pitch": -11.23,
+      "hfov": 75.0,
+      "note": "room 347646 centre, looking at the doorway (portal 347651) into room 347647"
+    },
+    {
+      "name": "RiftenMercerFreyHouse-room1-c",
+      "worldspace_id": null,
+      "interior_cell_id": 228550,
+      "position": [
+        -4800.76,
+        2277.69,
+        -871.25
+      ],
+      "yaw": 65.71,
+      "pitch": -18.07,
+      "hfov": 75.0,
+      "note": "room 1030309 centre, looking at the doorway (portal 1030314) into room 1030308"
+    },
+    {
+      "name": "RiftenMercerFreyHouse-portal0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 228550,
+      "position": [
+        -1419.59,
+        1774.68,
+        -42.75
+      ],
+      "yaw": 266.48,
+      "pitch": -10.61,
+      "hfov": 75.0,
+      "note": "through portal 347651 (347646 -> 347647), eye in room 347646"
+    },
+    {
+      "name": "WhiterunJorrvaskrBasement-room0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 496762,
+      "position": [
+        520.0,
+        -536.0,
+        204.0
+      ],
+      "yaw": 337.43,
+      "pitch": 9.47,
+      "hfov": 75.0,
+      "note": "room 785104 centre, looking at the doorway (portal 785110) into room 785109"
+    },
+    {
+      "name": "WhiterunJorrvaskrBasement-portal0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 496762,
+      "position": [
+        1793.94,
+        -1067.8,
+        86.92
+      ],
+      "yaw": 24.91,
+      "pitch": -10.82,
+      "hfov": 75.0,
+      "note": "through portal 785114 (785106 -> 785103), eye in room 785106"
+    },
+    {
+      "name": "NightcallerTemple01-room0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 633418,
+      "position": [
+        13005.47,
+        2099.15,
+        -144.0
+      ],
+      "yaw": 49.95,
+      "pitch": 34.02,
+      "hfov": 75.0,
+      "note": "room 644895 centre, looking at the doorway (portal 644926) into room 644897"
+    },
+    {
+      "name": "NightcallerTemple01-portal0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 633418,
+      "position": [
+        3345.87,
+        2509.67,
+        -1376.73
+      ],
+      "yaw": 43.02,
+      "pitch": 18.03,
+      "hfov": 75.0,
+      "note": "through portal 644915 (644881 -> 644894), eye in room 644881"
+    },
+    {
+      "name": "SwindlersDen01-room0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 268151,
+      "position": [
+        944.0,
+        208.0,
+        2143.47
+      ],
+      "yaw": 2.49,
+      "pitch": 7.33,
+      "hfov": 75.0,
+      "note": "room 271363 centre, looking at the doorway (portal 271402) into room 271364"
+    },
+    {
+      "name": "SwindlersDen01-portal0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 268151,
+      "position": [
+        4810.56,
+        1814.42,
+        1449.17
+      ],
+      "yaw": 357.46,
+      "pitch": -22.35,
+      "hfov": 75.0,
+      "note": "through portal 271406 (271370 -> 271383), eye in room 271370"
+    },
+    {
+      "name": "Alftand01-room0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 86723,
+      "position": [
+        -1728.0,
+        4656.0,
+        624.0
+      ],
+      "yaw": 137.25,
+      "pitch": 3.53,
+      "hfov": 75.0,
+      "note": "room 410320 centre, looking at the doorway (portal 410352) into room 410321"
+    },
+    {
+      "name": "Alftand01-portal0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 86723,
+      "position": [
+        -441.86,
+        12809.55,
+        -896.9
+      ],
+      "yaw": 102.46,
+      "pitch": -0.92,
+      "hfov": 75.0,
+      "note": "through portal 605520 (605517 -> 605516), eye in room 605517"
+    },
+    {
+      "name": "BleakFallsBarrow02-room0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 225757,
+      "position": [
+        -5152.0,
+        64.0,
+        736.0
+      ],
+      "yaw": 93.07,
+      "pitch": 3.62,
+      "hfov": 75.0,
+      "note": "room 228103 centre, looking at the doorway (portal 244361) into room 244360"
+    }
+  ]
+}

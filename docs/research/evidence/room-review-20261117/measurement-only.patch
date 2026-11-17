@@ -1,0 +1,38 @@
+diff --git a/crates/engine/src/app.rs b/crates/engine/src/app.rs
+index f5f7c916..59c57c67 100644
+--- a/crates/engine/src/app.rs
++++ b/crates/engine/src/app.rs
+@@ -735,2 +734,0 @@ fn prepare_shots(config: &mut EngineConfig) -> Result<Option<ShotsRun>> {
+-        || config.benchmark_frames.is_some()
+-        || config.benchmark_duration_secs.is_some()
+@@ -2509 +2507 @@ fn setup_world(
+-    if let Some(output) = shot_output {
++    if let Some(output) = shot_output.filter(|_| !config.is_benchmark_run()) {
+diff --git a/crates/engine/src/shots.rs b/crates/engine/src/shots.rs
+index d926be51..0bf00a46 100644
+--- a/crates/engine/src/shots.rs
++++ b/crates/engine/src/shots.rs
+@@ -700,0 +701 @@ enum Phase {
++    Measure,
+@@ -957,0 +959,3 @@ fn run_shots(
++        Phase::Measure => {
++            place_camera(shot, run.file.aspect(), origin.0, &mut transform, &mut projection);
++        }
+@@ -1090,0 +1095,2 @@ fn run_shots(
++                } else if std::env::var_os("MUDCRAB_CULLING_BENCH").is_some() {
++                    run.enter(Phase::Measure);
+@@ -1137 +1143 @@ fn request_capture(
+-        .spawn((Screenshot::image(output.clone()), ticket))
++        .spawn((if std::env::var_os("MUDCRAB_CULLING_BENCH").is_some() { Screenshot::primary_window() } else { Screenshot::image(output.clone()) }, ticket))
+@@ -2531,0 +2538,5 @@ mod tests {
++
++/// Measurement-only gate: screenshot readback must finish before warm-up starts.
++pub(crate) fn shot_benchmark_ready(run: Option<Res<ShotsRun>>) -> bool {
++    run.is_none_or(|run| run.phase == Phase::Measure)
++}
+diff --git a/crates/engine/src/metrics.rs b/crates/engine/src/metrics.rs
+index 8243569c..8a49f554 100644
+--- a/crates/engine/src/metrics.rs
++++ b/crates/engine/src/metrics.rs
+@@ -61,0 +62 @@ impl Plugin for AcceptanceMetricsPlugin {
++                    .run_if(crate::shots::shot_benchmark_ready)
