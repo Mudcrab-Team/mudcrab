@@ -14,7 +14,7 @@ import report_skyrim_jump as report
 class RetainedJumpEvidenceTests(unittest.TestCase):
     def test_report_rejects_changed_traces_or_a_mismatched_score_seal(self):
         reference = Path(__file__).resolve().parents[1] / 'tools/skyrim-recorder/reference/jump-v3'
-        for mode in ('heldout-trace', 'training-trace', 'seal'):
+        for mode in ('heldout-trace', 'training-trace', 'seal', 'training-frame-cap', 'training-timescale'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 corpus = Path(directory) / 'corpus'
                 shutil.copytree(reference, corpus)
@@ -24,6 +24,12 @@ class RetainedJumpEvidenceTests(unittest.TestCase):
                     scored = json.loads((output / 'report.json').read_text())
                     scored['frozen_sha256'] = '0' * 64
                     (output / 'report.json').write_text(json.dumps(scored))
+                elif mode in ('training-frame-cap', 'training-timescale'):
+                    manifest = json.loads((corpus / 'manifest.json').read_text())
+                    run = next(r for r in manifest['runs'] if r['split'] == 'train')
+                    run['frame_cap' if mode == 'training-frame-cap' else 'time_multiplier'] = (
+                        30 if mode == 'training-frame-cap' else .5)
+                    (corpus / 'manifest.json').write_text(json.dumps(manifest))
                 else:
                     manifest = json.loads((corpus / 'manifest.json').read_text())
                     split = 'train' if mode == 'training-trace' else 'heldout'

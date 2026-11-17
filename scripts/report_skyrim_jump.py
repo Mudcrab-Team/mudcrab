@@ -25,6 +25,10 @@ def main():
     if result != current:
         raise ValueError('Score report differs from current corpus or frozen seal')
     scores = {s['id']: s for s in frozen['training_scores'] + result['runs']}
+    for run in manifest['runs']:
+        if run['split'] == 'train' and any(scores[run['id']][key] != run[key]
+                                         for key in ('frame_cap', 'time_multiplier')):
+            raise ValueError('Report training condition differs from frozen calibration')
     groups = {}
     curves = []
     rejected = []
