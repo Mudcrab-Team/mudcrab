@@ -244,3 +244,12 @@ fixture helper for the installed official archives, not a general mod migration 
 reconvert through the standard pipeline, which resolves effective sources and refreshes both
 metadata and mesh contracts. The helper's existing endpoint-provenance requirement prevents a
 canonical cleared FormID from being promoted to authored outside space.
+
+## Default-on review validation
+
+[The 2026-11-17 core review record](room-culling-review-20261117.md) contains the graphics toggle,
+three real-interior on/off pairs with counts, repeated release frame times, executable identities,
+and their limits. The core remains a room-reachability foundation, not a complete Skyrim parity claim.
+
+[The boundary review record](room-gap-review-20261117.md) covers conservative camera starts,
+negative extents, legacy-pack handling, and the sampled out-and-back room-boundary sequence.
