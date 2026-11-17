@@ -108,11 +108,13 @@ converter. The other two are water activators, already protected by the activato
 The flag/target distribution supports the `NONE` interpretation; it is not a controlled CK edit
 or a reconstruction of Skyrim's assignment code.
 
-The room-basics page establishes that Skyrim restricts views from outside room bounds to portals.
-Versioned graphs now enter rooms from unbounded space through portal apertures. Legacy graphs
-retain the whole-cell outside-camera fallback because their NULL endpoints lost the distinction
-between authored outside and invalid links. Unknown references also remain drawn. These fallbacks
-preserve geometry when the converted graph lacks connectivity or assignment information.
+The room-basics page describes Skyrim restricting views from outside room bounds to portals.
+Mudcrab keeps whole-cell rendering when the camera is outside every room, including in versioned
+graphs, because gaps between bounds are not verified outside space. From a containing room,
+versioned graphs can traverse an authored outside endpoint through its portal aperture. Legacy
+NULL endpoints cannot distinguish authored outside from invalid links. Unknown references remain
+drawn. This conservative camera-start policy differs from the traced native null-room traversal;
+it does not change versioned object membership to draw every unassigned reference.
 
 Its dropped-object warning also shows why a reference's original placement is insufficient for
 moving objects. Our actor and movable-object exemptions deliberately avoid culling by stale
