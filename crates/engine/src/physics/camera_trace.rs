@@ -215,6 +215,21 @@ mod tests {
             .filter(|row| row[column("mode")] == "walk")
             .collect();
         assert!(walking.len() > 50, "{} WALK rows", walking.len());
+        // The rows follow the body the player moves: it walked about 200 units forward in the
+        // test, and the camera moves with it. A trace of an idle body would show one position.
+        let range = |name: &str| {
+            walking
+                .iter()
+                .map(|row| row[column(name)].parse::<f32>().unwrap())
+                .fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)))
+        };
+        for name in ["body_x", "feet_x", "camera_x"] {
+            let (low, high) = range(name);
+            assert!(
+                high - low > 100.0,
+                "{name} did not follow the moving body: from {low} to {high}"
+            );
+        }
         let last = walking[walking.len() - 1];
         assert!(last[column("frame_dt_s")].parse::<f32>().unwrap() > 0.0);
         assert!(last[column("ticks")].parse::<u32>().is_ok());
