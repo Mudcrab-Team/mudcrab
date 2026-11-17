@@ -508,10 +508,18 @@ mod tests {
         world: &mut World,
         underwater: bool,
     ) -> bool {
-        let pass = world.register_component::<UnderwaterPass>();
+        let mut present = vec![
+            world.register_component::<ViewTarget>(),
+            world.register_component::<DynamicUniformIndex<UnderwaterPass>>(),
+            world.register_component::<UnderwaterTextures>(),
+            world.register_component::<UnderwaterPipelineIds>(),
+        ];
+        if underwater {
+            present.push(world.register_component::<UnderwaterPass>());
+        }
         world
             .query_filtered::<D, F>()
-            .matches_component_set(&|id| underwater || id != pass)
+            .matches_component_set(&|id| present.contains(&id))
     }
 
     #[test]
@@ -527,7 +535,14 @@ mod tests {
 
     #[test]
     fn production_plugin_registers_cleanup_before_texture_preparation() {
-        use bevy::{app::SubApp, asset::AssetApp, ecs::schedule::Schedules};
+        use bevy::{
+            app::SubApp,
+            asset::AssetApp,
+            ecs::{
+                schedule::Schedules,
+                system::{IntoSystem, System},
+            },
+        };
 
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
@@ -544,15 +559,15 @@ mod tests {
             .systems_in_set(RenderSystems::PrepareResources.intern())
             .unwrap();
         let systems: Vec<_> = schedule.systems().unwrap().collect();
+        let cleanup_type = IntoSystem::into_system(clear_inactive_underwater_views).system_type();
+        let textures_type = IntoSystem::into_system(prepare_underwater_textures).system_type();
         let cleanup = systems
             .iter()
-            .position(|(id, system)| {
-                prepare.contains(id) && system.name().ends_with("clear_inactive_underwater_views")
-            })
+            .position(|(id, system)| prepare.contains(id) && system.system_type() == cleanup_type)
             .expect("the production plugin registers inactive-view cleanup in PrepareResources");
         let textures = systems
             .iter()
-            .position(|(_, system)| system.name().ends_with("prepare_underwater_textures"))
+            .position(|(_, system)| system.system_type() == textures_type)
             .unwrap();
         assert!(
             cleanup < textures,
