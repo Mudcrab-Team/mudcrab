@@ -12,7 +12,7 @@ runs per mode give:
 Each run measures 600 frames after 300 warm-up frames, using a release executable built from
 `4de561bef462ec1e956fad9c1a4c67387ae47ace` plus the same
 [measurement-only patch](evidence/room-review-20261117/measurement-only.patch) used for the
-[core-layer comparison](room-culling-review-20261117.md). Its SHA-256 is
+[core-layer comparison](room-culling-review-20261117.md). The executable's SHA-256 is
 `1b845509a6b83186f88477b2db25032304a71d7fc157481ce1a233c9f7d7c775`.
 Both controls use that executable and identical geometry. The independent off database copy
 omits room tables. The newly reconverted assets differ from the core campaign, so the two
