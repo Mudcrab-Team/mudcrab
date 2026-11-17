@@ -61,6 +61,11 @@ A `RenderOrigin` rebase does not reset the spring. The streamer shifts the body 
 - UNVERIFIED, ordering assumptions: the weight is updated before the lag is evaluated, and the 500 units per second gate reads the velocity of the previous frame. The registry states neither.
 - Horizontal lag follows the registry formula. Its effect on running camera feel is not measured here.
 
+## Engine plumbing around the spring (not retail)
+
+- A frame with no elapsed time (focus pause, console) keeps the spring state and shows the same lag. A zero-length step would scale the lag by the weight again on every paused frame and clear the velocity. RF-CAM-007 gives no rule for a zero clock.
+- The shown camera carries the spring lag, so anything that must follow the body uses the body: the carry hold point and grab ray use the body eye (#689, #691), and the return point of a door crossing uses the body feet in WALK. A small target under the crosshair can be missed by the lag while running (up to about 20 units, decaying to 0 within about 0.5 s when standing still). A follow-up is drafted under #691.
+
 ## Tests
 
 The pure unit tests in `camera_follow.rs` reproduce the numbers from the reverse-engineering notes for a 24 unit rise with `W = 1`:
