@@ -914,3 +914,39 @@ fn native_race_field_recovery_matches_publication() {
     assert_eq!(native.warnings.len(), 1, "{:?}", native.warnings);
     assert!(native.warnings[0].contains("2") && native.warnings[0].contains("Patch.esp"));
 }
+
+/// The default MOVT local in a different owner must keep its ordinary-record admission policy.
+#[test]
+fn native_movt_nondefault_owner_is_not_selected_by_raw_word() {
+    let root = tempfile::tempdir().unwrap();
+    plugin(root.path(), "Base.esm", &[], Vec::new());
+    plugin(
+        root.path(),
+        "Other.esm",
+        &[],
+        record(b"MOVT", 0x3580D, 0, &sub(b"EDID", b"ordinary\0")),
+    );
+    plugin(
+        root.path(),
+        "Patch.esp",
+        &["Other.esm", "Base.esm"],
+        record(b"MOVT", 0x3580D, 0, &sub(b"EDID", b"override\0")),
+    );
+    let paths = ["Base.esm", "Other.esm", "Patch.esp"].map(|n| root.path().join(n));
+    let db = root.path().join("world.db");
+    let (native, _) = EsmParser::convert_form_key_plugins(&paths, &db).unwrap();
+    let winner = native.records.values().next().unwrap();
+    assert_eq!(winner.source.load_order, 2);
+    assert_eq!(winner.source.form_id, 0x3580D);
+    assert_eq!(native.records.len(), 1);
+    assert!(native.warnings.is_empty(), "{:?}", native.warnings);
+    let conn = Connection::open(db).unwrap();
+    let supplier: u32 = conn
+        .query_row(
+            "SELECT load_order FROM records WHERE form_id=?1",
+            [0x0103_580Du32],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(supplier, winner.source.load_order);
+}

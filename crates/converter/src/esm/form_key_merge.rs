@@ -2,7 +2,7 @@
 //! FormKey follows Mutagen's owner/local identity; source payload words remain source-local.
 use super::{
     EsmParser, GameSettingIdentities, RemapWarnings, binary::parse_plugin_file_with_warnings,
-    exporter::validate_inhouse_record, form_keys::FormKeyOrder, records::RawRecord,
+    exporter::validate_inhouse_record_with_identity, form_keys::FormKeyOrder, records::RawRecord,
     remap_record_using,
 };
 use color_eyre::Result;
@@ -20,7 +20,7 @@ pub struct ResolvedLink {
     pub key: Option<FormKey>,
 }
 
-/// Native supplier bytes and resolved identities are separate from legacy writer projections.
+/// Recovered native supplier fields and resolved identities are separate from legacy projections.
 #[derive(Debug)]
 pub struct FormKeyRecord {
     pub source: RawRecord,
@@ -137,15 +137,25 @@ impl EsmParser {
                     false,
                 )
                 .and_then(|()| {
-                    // Match legacy GMST value admission before registering aliases or winners.
-                    if source.record_type == *b"GMST" && !source.is_deleted() {
-                        validate_inhouse_record(&source)?;
+                    // Validate the recovered fields before registering aliases or winners.
+                    if !source.is_deleted() {
+                        let default_movement =
+                            key.map(|key| order.identity_sort_tuple(key)).transpose()?
+                                == Some((0, 0, 0x0003_580D));
+                        validate_inhouse_record_with_identity(&checked, default_movement)?;
+                        if source.record_type == *b"LAND" {
+                            super::cell_cache::validate_inhouse_land(&checked)?;
+                        }
                     }
                     Ok(())
                 });
                 if let Err(error) = admission {
                     warnings.skipped_record(name, &source, raw, error.to_string());
                     continue;
+                }
+                if source.record_type == *b"RACE" {
+                    // Keep the same field-level recovery as legacy publication, with native words.
+                    source.subrecords = checked.subrecords;
                 }
                 // from_facts allocates every supplier and requires all original masters to precede it.
                 if let Some(key) = key {

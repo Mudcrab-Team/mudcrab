@@ -601,9 +601,17 @@ fn runtime_projection(
 
 /// Validate movement projections before either frontend replaces a usable predecessor.
 pub(crate) fn validate_inhouse_record(record: &RawRecord) -> Result<()> {
+    validate_inhouse_record_with_identity(record, record.form_id == 0x0003_580D)
+}
+
+/// Native callers identify the default MOVT by resolved owner/local identity before packing.
+pub(crate) fn validate_inhouse_record_with_identity(
+    record: &RawRecord,
+    default_movement: bool,
+) -> Result<()> {
     let view = SubrecordView::new(&record.subrecords);
     match &record.record_type {
-        b"MOVT" if record.form_id == 0x0003_580D => {
+        b"MOVT" if default_movement => {
             decode_npc_default_speeds(&view, record.form_id)?;
         }
         b"GMST"
