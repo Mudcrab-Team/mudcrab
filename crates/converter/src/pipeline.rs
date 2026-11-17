@@ -14632,6 +14632,87 @@ mod tests {
         assert!(!output.join("textures/broken.ktx2").exists());
     }
 
+    /// A broken optional file preserves readable siblings and only its own earlier provider.
+    #[tokio::test]
+    async fn greptile_741_bad_gamepad_preserves_other_controls() {
+        let temp = tempfile::tempdir().unwrap();
+        for earlier_gamepad in [true, false] {
+            let case = temp.path().join(if earlier_gamepad {
+                "fallback"
+            } else {
+                "absent"
+            });
+            let data = case.join("Data");
+            let output = case.join("modern");
+            fs::create_dir_all(&data).unwrap();
+            let controlmap = "interface/controls/pc/controlmap.txt";
+            let gamepad = "interface/controls/pc/gamepad.txt";
+            let keyboard = "interface/controls/pc/keyboard_english.txt";
+            let old_controlmap = b"Old\t0x10\t0xff\t0x1000\t1\t0\t1\n";
+            let new_controlmap = b"New\t0x11\t0xff\t0x1000\t1\t0\t1\n";
+            let old_gamepad = b"Earlier\t0x1000\n";
+            let new_keyboard = b"New Key\t0x11\n";
+            let mut earlier = vec![dummy_content::Entry::new(controlmap, old_controlmap)];
+            if earlier_gamepad {
+                earlier.push(dummy_content::Entry::new(gamepad, old_gamepad));
+            }
+            fs::write(
+                data.join("a.bsa"),
+                dummy_content::bsa::v105(&earlier, dummy_content::bsa::Compression::None).unwrap(),
+            )
+            .unwrap();
+            let mut archive = dummy_content::ba2::general(
+                &[
+                    dummy_content::Entry::new(gamepad, b"Later\t0x2000\n"),
+                    dummy_content::Entry::new(controlmap, new_controlmap),
+                    dummy_content::Entry::new(keyboard, new_keyboard),
+                ],
+                dummy_content::ba2::Compression::Zlib,
+            )
+            .unwrap();
+            // Corrupt only GNRL record zero's compressed gamepad payload.
+            let offset = u64::from_le_bytes(archive[40..48].try_into().unwrap()) as usize;
+            let length = u32::from_le_bytes(archive[48..52].try_into().unwrap()) as usize;
+            archive[offset..offset + length].fill(0xff);
+            fs::write(data.join("z.ba2"), archive).unwrap();
+            let mut config = cpu_lod_config(&data, &output);
+            config.enable_ba2 = true;
+            let report = run_without_progress(config).await;
+            assert!(!report.complete);
+            assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+            assert!(
+                report.warnings[0].contains("z.ba2") && report.warnings[0].contains("gamepad.txt")
+            );
+            assert_eq!(
+                fs::read(output.join(controlmap)).unwrap(),
+                new_controlmap,
+                "a corrupt gamepad must not discard the later archive's readable controlmap"
+            );
+            assert_eq!(fs::read(output.join(keyboard)).unwrap(), new_keyboard);
+            let provenance: serde_json::Value = serde_json::from_slice(
+                &fs::read(output.join("interface/controls/pc/provenance.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(provenance[controlmap]["provider"], "archive:z.ba2");
+            assert_eq!(
+                provenance[controlmap]["source_sha256"],
+                hash_bytes(new_controlmap)
+            );
+            assert_eq!(provenance[keyboard]["provider"], "archive:z.ba2");
+            if earlier_gamepad {
+                assert_eq!(fs::read(output.join(gamepad)).unwrap(), old_gamepad);
+                assert_eq!(provenance[gamepad]["provider"], "archive:a.bsa");
+                assert_eq!(
+                    provenance[gamepad]["source_sha256"],
+                    hash_bytes(old_gamepad)
+                );
+            } else {
+                assert!(!output.join(gamepad).exists());
+                assert!(provenance.get(gamepad).is_none());
+            }
+        }
+    }
+
     /// Unknown loose winners mask archived controls while a readable neighboring subtree publishes.
     #[tokio::test]
     async fn review_741_undiscovered_loose_prefix_masks_archive_controls() {
