@@ -44,6 +44,37 @@ def campaign(module, root, frame_cap=None):
 
 
 class CaptureAttemptTests(unittest.TestCase):
+    def test_interrupted_acceptance_rolls_back_unsaved_runs_and_allows_retry(self):
+        for error in (KeyboardInterrupt, OSError):
+            with self.subTest(error=error.__name__), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / 'traces').mkdir()
+                output = root / 'capture'
+                output.mkdir()
+                (output / 'trace.bin').write_bytes(b'captured trace')
+                prior = dict(id='prior')
+                manifest = dict(runs=[prior], attempts=[dict(id='prior', attempt=1, exit_code=0)])
+                path = root / 'manifest.json'
+                retain = partial(v4.retain_failure, root)
+                with self.assertRaises(error):
+                    with record_attempt(path, manifest, 'baseline', 1, output, retain) as attempt:
+                        attempt['exit_code'] = 0
+                        manifest['runs'].append(dict(id='baseline'))
+                        with patch('skyrim_capture_attempts.os.replace', side_effect=error):
+                            save_manifest(path, manifest)
+                saved = json.loads(path.read_text())
+                self.assertEqual(saved['runs'], [prior])
+                failed = saved['attempts'][-1]
+                self.assertNotEqual(failed['exit_code'], 0)
+                self.assertEqual(gzip.decompress((root / failed['path']).read_bytes()), b'captured trace')
+                with record_attempt(path, saved, 'baseline', 2, output, retain) as attempt:
+                    attempt['exit_code'] = 0
+                    saved['runs'].append(dict(id='baseline'))
+                    save_manifest(path, saved)
+                accepted = json.loads(path.read_text())
+                self.assertEqual(accepted['runs'], [prior, dict(id='baseline')])
+                self.assertEqual([r['exit_code'] for r in accepted['attempts']], [0, -1, 0])
+
     def test_corpus_lock_rejects_a_second_capture_before_manifest_mutation(self):
         for module in (v3, v4):
             with self.subTest(module=module.__name__), tempfile.TemporaryDirectory() as directory:

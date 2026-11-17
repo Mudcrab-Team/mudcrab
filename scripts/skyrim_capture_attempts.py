@@ -65,6 +65,7 @@ def record_attempt(path, manifest, name, number, output, retain=None):
         if any(run['id'] == name for run in durable['runs']):
             row['exit_code'] = 0
         else:
+            manifest['runs'] = durable['runs']
             row['recorder_exit_code'] = row['exit_code']
             if row['exit_code'] in (None, 0):
                 row['exit_code'] = -1
