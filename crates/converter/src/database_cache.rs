@@ -2,7 +2,10 @@
 use crate::{
     cache::{CONVERTER_SCHEMA_VERSION, hash_bytes, hash_file},
     config::{PipelineConfig, RecordReader},
-    esm::{cell_cache::validate_cell_cache, exporter::validate_database, inhouse},
+    esm::{
+        cell_cache::validate_cell_cache, exporter::validate_database, inhouse,
+        load_order::LoadOrder,
+    },
     pipeline::{Cancellation, Interrupted},
 };
 use color_eyre::{
@@ -14,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use shared::asset_lock::AssetLock;
 use std::{
     collections::BTreeMap,
+    fmt::Write as _,
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -155,7 +159,8 @@ fn source_fingerprint() -> String {
     )
 }
 
-pub(super) fn identity(
+#[cfg(test)]
+fn identity(
     config: &PipelineConfig,
     plugins: &[PathBuf],
     sources: inhouse::StringSources<'_>,
@@ -164,19 +169,64 @@ pub(super) fn identity(
     identity_with_program(config, plugins, sources, cancellation, program_digest)
 }
 
+/// Cache proof must describe bytes with the same master/flag authority as admission.
+/// A changed or unavailable source disables reuse without duplicating reader warnings.
+pub(super) fn identity_with_admitted_order(
+    config: &PipelineConfig,
+    plugins: &[PathBuf],
+    sources: inhouse::StringSources<'_>,
+    cancellation: &Cancellation,
+    admitted: &LoadOrder,
+) -> Result<Option<Identity>> {
+    ensure!(
+        plugins.len() == admitted.names.len() && plugins.len() == admitted.metadata.len(),
+        "plugin/admitted-order length mismatch"
+    );
+    identity_with_program_and_admission(
+        config,
+        plugins,
+        sources,
+        cancellation,
+        Some(admitted),
+        program_digest,
+    )
+}
+
 /// The running converter's own bytes. An unreadable or replaced executable is an optional proof
-/// failure, not a conversion failure: see [`identity_with_program`].
+/// failure, not a conversion failure: see [`identity_with_admitted_order`].
 fn program_digest() -> Result<String> {
     hash_file(&std::env::current_exe()?)
 }
 
 /// The identity with the converter's digest supplied by `program`. A digest that cannot be
 /// produced makes the database uncacheable for this run; conversion itself continues.
+#[cfg(test)]
 fn identity_with_program(
     config: &PipelineConfig,
     plugins: &[PathBuf],
     sources: inhouse::StringSources<'_>,
     cancellation: &Cancellation,
+    program: impl FnOnce() -> Result<String>,
+) -> Result<Option<Identity>> {
+    identity_with_program_and_admission(config, plugins, sources, cancellation, None, program)
+}
+
+/// Optional proof errors never suppress cancellation or turn bad input into a run failure.
+fn optional_cache_proof<T>(proof: Result<T>, cancellation: &Cancellation) -> Result<Option<T>> {
+    cancelled(cancellation)?;
+    match proof {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.downcast_ref::<Interrupted>().is_some() => Err(error),
+        Err(_) => Ok(None),
+    }
+}
+
+fn identity_with_program_and_admission(
+    config: &PipelineConfig,
+    plugins: &[PathBuf],
+    sources: inhouse::StringSources<'_>,
+    cancellation: &Cancellation,
+    admitted: Option<&LoadOrder>,
     program: impl FnOnce() -> Result<String>,
 ) -> Result<Option<Identity>> {
     let mut plugin_inputs = Vec::new();
@@ -186,9 +236,19 @@ fn identity_with_program(
         // Source files may disappear after their load-order slots were admitted. This is
         // optional cache proof, not another opportunity to reject usable neighboring data.
         let input = (|| -> Result<(u64, String)> {
-            Ok((fs::metadata(plugin)?.len(), hash_file(plugin)?))
+            if let Some(admitted) = admitted {
+                let (size, checksum) =
+                    crate::esm::binary::admitted_plugin_proof(plugin, &admitted.metadata[index])?;
+                let mut sha256 = String::with_capacity(64);
+                for byte in checksum {
+                    write!(sha256, "{byte:02x}")?;
+                }
+                Ok((size, sha256))
+            } else {
+                Ok((fs::metadata(plugin)?.len(), hash_file(plugin)?))
+            }
         })();
-        let Ok((size, sha256)) = input else {
+        let Some((size, sha256)) = optional_cache_proof(input, cancellation)? else {
             return Ok(None);
         };
         plugin_inputs.push(serde_json::json!({
@@ -215,11 +275,13 @@ fn identity_with_program(
                     }
                 }
             })();
-            let Ok(input) = lookup else { return Ok(None) };
+            let Some(input) = optional_cache_proof(lookup, cancellation)? else {
+                return Ok(None);
+            };
             localization.push(input);
         }
     }
-    let Ok(program_sha256) = program() else {
+    let Some(program_sha256) = optional_cache_proof(program(), cancellation)? else {
         return Ok(None);
     };
     let inputs = serde_json::json!({
@@ -243,7 +305,8 @@ fn identity_with_program(
     }))
 }
 
-pub(super) fn inputs_unchanged(
+#[cfg(test)]
+fn inputs_unchanged(
     expected: &Identity,
     config: &PipelineConfig,
     plugins: &[PathBuf],
@@ -253,6 +316,22 @@ pub(super) fn inputs_unchanged(
     Ok(identity(config, plugins, sources, cancellation)?
         .as_ref()
         .is_some_and(|current| current.key == expected.key))
+}
+
+/// Recheck both the admitted header authority and the complete optional cache identity.
+pub(super) fn inputs_unchanged_with_admitted_order(
+    expected: &Identity,
+    config: &PipelineConfig,
+    plugins: &[PathBuf],
+    sources: inhouse::StringSources<'_>,
+    cancellation: &Cancellation,
+    admitted: &LoadOrder,
+) -> Result<bool> {
+    Ok(
+        identity_with_admitted_order(config, plugins, sources, cancellation, admitted)?
+            .as_ref()
+            .is_some_and(|current| current.key == expected.key),
+    )
 }
 
 fn is_key(key: &str) -> bool {
@@ -1017,6 +1096,77 @@ mod tests {
                 .unwrap_err()
                 .downcast_ref::<Interrupted>()
                 .is_some()
+        );
+    }
+
+    /// Cache hits require admission-compatible headers, even for stable readable replacements.
+    #[test]
+    fn admitted_header_change_disables_cache_proof_without_hiding_cancellation() {
+        let fixture = fixture();
+        let admitted = LoadOrder::read(&fixture.plugins).unwrap();
+        let vfs = fixture.staging.join("vfs");
+        let sources = test_sources(&fixture.config, &vfs);
+        let cancellation = Cancellation::new();
+        let proven = identity_with_admitted_order(
+            &fixture.config,
+            &fixture.plugins,
+            sources,
+            &cancellation,
+            &admitted,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(proven.key, fixture.identity.key);
+        assert!(
+            inputs_unchanged_with_admitted_order(
+                &proven,
+                &fixture.config,
+                &fixture.plugins,
+                sources,
+                &cancellation,
+                &admitted,
+            )
+            .unwrap()
+        );
+
+        let mut replacement = fs::read(&fixture.plugins[0]).unwrap();
+        let flags = u32::from_le_bytes(replacement[8..12].try_into().unwrap());
+        replacement[8..12].copy_from_slice(&(flags ^ 0x80).to_le_bytes());
+        fs::write(&fixture.plugins[0], replacement).unwrap();
+        assert!(
+            identity_with_admitted_order(
+                &fixture.config,
+                &fixture.plugins,
+                sources,
+                &cancellation,
+                &admitted,
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            !inputs_unchanged_with_admitted_order(
+                &proven,
+                &fixture.config,
+                &fixture.plugins,
+                sources,
+                &cancellation,
+                &admitted,
+            )
+            .unwrap()
+        );
+        cancellation.cancel();
+        assert!(
+            identity_with_admitted_order(
+                &fixture.config,
+                &fixture.plugins,
+                sources,
+                &cancellation,
+                &admitted,
+            )
+            .unwrap_err()
+            .downcast_ref::<Interrupted>()
+            .is_some()
         );
     }
 

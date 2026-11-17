@@ -1180,6 +1180,7 @@ fn convert_plugins_with_text_sources_report_impl(
     let mut checksum_warnings = Vec::new();
     let checksums = super::prepare_plugin_checksums(
         plugin_paths,
+        &order,
         &mut decoded.skipped_inputs,
         &mut checksum_warnings,
     );

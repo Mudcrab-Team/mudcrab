@@ -20,7 +20,7 @@ fn skipped_plugin_checksum_keeps_its_row_without_reopening_a_reappeared_path() {
     fs::write(&paths[1], b"replacement generation").unwrap();
     let mut skipped = std::collections::BTreeSet::from([1]);
     let mut warnings = Vec::new();
-    let checksums = super::prepare_plugin_checksums(&paths, &mut skipped, &mut warnings);
+    let checksums = super::prepare_plugin_checksums_for_test(&paths, &mut skipped, &mut warnings);
     assert_eq!(checksums[0], Sha256::digest(b"healthy source").to_vec());
     assert!(checksums[1].is_empty());
     assert!(
@@ -50,10 +50,14 @@ fn missing_plugin_checksum_warns_once_and_retains_the_assigned_slot() {
     let paths = [directory.path().join("Gone.esp")];
     let mut skipped = std::collections::BTreeSet::new();
     let mut warnings = Vec::new();
-    assert!(super::prepare_plugin_checksums(&paths, &mut skipped, &mut warnings)[0].is_empty());
+    assert!(
+        super::prepare_plugin_checksums_for_test(&paths, &mut skipped, &mut warnings)[0].is_empty()
+    );
     assert_eq!(skipped, std::collections::BTreeSet::from([0]));
     assert_eq!(warnings.len(), 1);
-    assert!(super::prepare_plugin_checksums(&paths, &mut skipped, &mut warnings)[0].is_empty());
+    assert!(
+        super::prepare_plugin_checksums_for_test(&paths, &mut skipped, &mut warnings)[0].is_empty()
+    );
     assert_eq!(warnings.len(), 1);
 }
 

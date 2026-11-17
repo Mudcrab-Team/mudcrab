@@ -1,5 +1,6 @@
 //! Checked input framing with recoverable record errors and bounded inflation.
 use super::PluginDiagnostics;
+use crate::esm::binary::PluginMetadata;
 use color_eyre::{Result, eyre::WrapErr};
 use flate2::{Decompress, FlushDecompress, Status};
 use std::{fs::File, path::Path};
@@ -49,8 +50,30 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
 /// Read source inputs only; ownership and slot assignment remain with LoadOrder.
 /// False means later proof stages must not reopen this unavailable or changed source;
 /// already decoded records can still be retained. Local record errors alone return true.
+pub(crate) fn scan_admitted_plugin(
+    (path, admitted): (&Path, &PluginMetadata),
+    diagnostics: &mut PluginDiagnostics,
+    observe: impl FnMut(ObservedHeader),
+    receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
+) -> Result<bool> {
+    scan_plugin_impl(path, Some(admitted), diagnostics, observe, receive)
+}
+
+/// Framing tests without a load-order admission retain the original scanner entry point.
+#[cfg(test)]
 pub(crate) fn scan_plugin(
     path: &Path,
+    diagnostics: &mut PluginDiagnostics,
+    observe: impl FnMut(ObservedHeader),
+    receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
+) -> Result<bool> {
+    scan_plugin_impl(path, None, diagnostics, observe, receive)
+}
+
+/// Check an optional admission authority before exposing framed records to callbacks.
+fn scan_plugin_impl(
+    path: &Path,
+    admitted: Option<&PluginMetadata>,
     diagnostics: &mut PluginDiagnostics,
     mut observe: impl FnMut(ObservedHeader),
     mut receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
@@ -72,6 +95,16 @@ pub(crate) fn scan_plugin(
     };
     if map.len() < 24 || &map[..4] != b"TES4" {
         diagnostics.note("record", || "input has no complete TES4 header".into());
+        return Ok(false);
+    }
+    if let Some(admitted) = admitted
+        && let Err(error) = crate::esm::binary::verify_admitted_metadata(&map, admitted)
+    {
+        diagnostics.set_record(0, Some(*b"TES4"), None, None, "admission");
+        diagnostics.event_context.action = Some("skipped");
+        diagnostics.note("record", || {
+            format!("unusable input {}: {error:#}", path.display())
+        });
         return Ok(false);
     }
     scan_bytes_observed(&map, diagnostics, &mut receive, &mut observe);
@@ -305,6 +338,69 @@ mod tests {
         bytes[12..16].copy_from_slice(&id.to_le_bytes());
         bytes.extend_from_slice(payload);
         bytes
+    }
+
+    /// Every semantic flag change is rejected before a header or record reaches a callback.
+    #[test]
+    fn admission_guard_rejects_changed_flags_before_callbacks() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ChangedMod.esp");
+        let admitted = PluginMetadata::default();
+        for flags in [0x1, 0x80, 0x200] {
+            let mut bytes = frame(b"TES4", 0, flags, &[]);
+            bytes.extend(frame(b"STAT", 0x101, 0, b"EDID\x02\x00x\0"));
+            std::fs::write(&path, bytes).unwrap();
+            let mut diagnostics = PluginDiagnostics::default();
+            let mut observed = 0;
+            let mut received = 0;
+            let usable = scan_admitted_plugin(
+                (&path, &admitted),
+                &mut diagnostics,
+                |_| observed += 1,
+                |_, _| received += 1,
+            )
+            .unwrap();
+            assert!(!usable);
+            assert_eq!((observed, received), (0, 0));
+            assert_eq!(diagnostics.skipped_records, 1);
+            assert_eq!(diagnostics.event_context.action, Some("skipped"));
+            let warnings = diagnostics.warning_summary_lines("ChangedMod.esp");
+            assert_eq!(warnings.len(), 1);
+            assert!(warnings[0].contains("changed after load order was read"));
+        }
+    }
+
+    /// Case-equivalent master names pass admission while one corrupt record stays local.
+    #[test]
+    fn admission_guard_keeps_case_equivalent_masters_and_usable_record_neighbors() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("UnchangedMod.esp");
+        let mut masters = b"MAST".to_vec();
+        masters.extend(9u16.to_le_bytes());
+        masters.extend(b"BASE.ESM\0");
+        let mut bytes = frame(b"TES4", 0, 0, &masters);
+        bytes.extend(frame(b"STAT", 0x101, 0x40000, &[0, 0, 0, 0, 99]));
+        bytes.extend(frame(b"STAT", 0x102, 0, b"EDID\x02\x00x\0"));
+        std::fs::write(&path, bytes).unwrap();
+        let admitted = PluginMetadata {
+            flags: 0,
+            masters: vec!["base.esm".into()],
+        };
+        let mut diagnostics = PluginDiagnostics::default();
+        let mut observed = Vec::new();
+        let mut received = Vec::new();
+        let usable = scan_admitted_plugin(
+            (&path, &admitted),
+            &mut diagnostics,
+            |header| observed.push(header.source_form_id),
+            |record, _| received.push(record.source_form_id),
+        )
+        .unwrap();
+        assert!(usable);
+        assert_eq!(observed, [0, 0x101, 0x102]);
+        assert_eq!(received, [0, 0x102]);
+        assert_eq!(diagnostics.skipped_records, 1);
+        assert_eq!(diagnostics.input_changes, 0);
     }
 
     /// A corrupt compressed neighbor must not hide a later usable record.

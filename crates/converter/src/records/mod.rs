@@ -20,7 +20,7 @@ pub(crate) mod review_recovery_tests;
 
 use crate::esm::{load_order::LoadOrder, records::RawRecord};
 use color_eyre::Result;
-use scanner::scan_plugin;
+use scanner::scan_admitted_plugin as scan_plugin;
 use schema_format::Schema;
 use serde::{Serialize, Serializer};
 use sha2::{Digest, Sha256};
@@ -640,7 +640,8 @@ fn read_plugins_with_prepared(
                 .borrow_mut()
                 .push(history::header_entry(header, order, index));
         };
-        let usable = scan_plugin(path, &mut diagnostics, observe, |scanned, diagnostics| {
+        let input = (path.as_path(), &order.metadata[index]);
+        let usable = scan_plugin(input, &mut diagnostics, observe, |scanned, diagnostics| {
             let offset = scanned.source_record_offset;
             let context = decoder::Context {
                 order,

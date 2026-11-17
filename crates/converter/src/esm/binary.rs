@@ -14,7 +14,7 @@ use nom::{
     bytes::complete::take,
     number::complete::{le_f32, le_i32, le_u16, le_u32},
 };
-use std::path::Path;
+use std::{borrow::Cow, path::Path};
 
 const FLAG_COMPRESSED: u32 = 0x00040000;
 
@@ -33,11 +33,17 @@ pub fn parse_plugin_metadata(path: &Path) -> Result<PluginMetadata> {
 /// Bound TES4 decoding before extracting the master dependency list.
 fn parse_plugin_metadata_inner(path: &Path) -> Result<PluginMetadata> {
     let reader = EsmReader::open(path)?;
-    let data = reader.as_slice();
+    let metadata = parse_plugin_metadata_bytes(reader.as_slice())?;
+    reader.verify_source()?;
+    Ok(metadata)
+}
+
+/// Decode admission facts from the same checked view the caller will scan or hash.
+pub(crate) fn parse_plugin_metadata_bytes(data: &[u8]) -> Result<PluginMetadata> {
     let (rest, header) =
         parse_record_header(data).map_err(|error| eyre!("failed to parse TES4 header: {error}"))?;
     if &header.type_tag != b"TES4" || header.data_size as usize > rest.len() {
-        return Err(eyre!("invalid TES4 record in {}", path.display()));
+        return Err(eyre!("invalid or truncated TES4 record"));
     }
     let payload = &rest[..header.data_size as usize];
     let decoded = if header.flags & FLAG_COMPRESSED != 0 {
@@ -49,9 +55,9 @@ fn parse_plugin_metadata_inner(path: &Path) -> Result<PluginMetadata> {
         if output.len() != expected {
             return Err(eyre!("TES4 decompressed size mismatch"));
         }
-        output
+        Cow::Owned(output)
     } else {
-        payload.to_vec()
+        Cow::Borrowed(payload)
     };
     let masters = extract_subrecords(&decoded)?
         .into_iter()
@@ -63,11 +69,49 @@ fn parse_plugin_metadata_inner(path: &Path) -> Result<PluginMetadata> {
             })
         })
         .collect();
-    reader.verify_source()?;
     Ok(PluginMetadata {
         masters,
         flags: header.flags,
     })
+}
+
+/// Require the original master order and flags used for slot assignment/localized decoding.
+/// Compression is a physical encoding detail, not an admission fact; names are case-insensitive.
+pub(crate) fn verify_admitted_metadata(data: &[u8], admitted: &PluginMetadata) -> Result<()> {
+    let current = parse_plugin_metadata_bytes(data)
+        .wrap_err("changed after load order was read: unreadable TES4 metadata")?;
+    const ADMISSION_FLAGS: u32 = 0x1 | 0x80 | 0x200;
+    let flags_match = (current.flags ^ admitted.flags) & ADMISSION_FLAGS == 0;
+    let masters_match = current.masters.len() == admitted.masters.len()
+        && current
+            .masters
+            .iter()
+            .zip(&admitted.masters)
+            .all(|(current, admitted)| {
+                shared::plugin_selection::normalize_plugin_name(current)
+                    == shared::plugin_selection::normalize_plugin_name(admitted)
+            });
+    if !flags_match || !masters_match {
+        return Err(eyre!(
+            "changed after load order was read: master list or ESM/ESL/localized flags differ"
+        ));
+    }
+    Ok(())
+}
+
+/// Bind a checksum to admitted header facts on one checked source view, never two reopens.
+/// Optional cache/checksum callers treat failure as absent proof, not a conversion-wide error.
+pub(crate) fn admitted_plugin_proof(
+    path: &Path,
+    admitted: &PluginMetadata,
+) -> Result<(u64, [u8; 32])> {
+    let reader = EsmReader::open(path)?;
+    let mut data = reader.as_slice();
+    verify_admitted_metadata(data, admitted)?;
+    let size = data.len() as u64;
+    let checksum = super::plugin_checksum(&mut data)?;
+    reader.verify_source()?;
+    Ok((size, checksum))
 }
 
 /// Cap decompressed output so a corrupt size cannot reserve gigabytes up front.
@@ -375,14 +419,29 @@ pub fn parse_plugin_file(path: &Path) -> Result<Vec<RawRecord>> {
 pub(crate) fn parse_plugin_file_with_warnings(
     path: &Path,
 ) -> Result<(Vec<RawRecord>, Vec<String>)> {
-    parse_plugin_file_inner(path)
+    parse_plugin_file_inner(path, None)
         .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))
 }
 
-/// Keep header checks and local recovery unchanged while returning their bounded summary.
-fn parse_plugin_file_inner(path: &Path) -> Result<(Vec<RawRecord>, Vec<String>)> {
+/// Parse only bytes whose master/flag interpretation still matches the captured admission.
+pub(crate) fn parse_admitted_plugin_file_with_warnings(
+    path: &Path,
+    admitted: &PluginMetadata,
+) -> Result<(Vec<RawRecord>, Vec<String>)> {
+    parse_plugin_file_inner(path, Some(admitted))
+        .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))
+}
+
+/// Keep corruption local after checking any supplied admission authority on this view.
+fn parse_plugin_file_inner(
+    path: &Path,
+    admitted: Option<&PluginMetadata>,
+) -> Result<(Vec<RawRecord>, Vec<String>)> {
     let reader = EsmReader::open(path)?;
     let data = reader.as_slice();
+    if let Some(admitted) = admitted {
+        verify_admitted_metadata(data, admitted)?;
+    }
 
     let mut records = Vec::new();
 

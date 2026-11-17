@@ -1,15 +1,16 @@
 use crate::esm::{
-    binary::parse_plugin_file_with_warnings,
+    binary::parse_admitted_plugin_file_with_warnings,
     exporter::{create_tables, validate_inhouse_record},
     records::RawRecord,
 };
 use color_eyre::{Result, eyre::WrapErr};
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::fs::File;
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap},
-    fs::File,
     io::Read,
     path::{Path, PathBuf},
 };
@@ -93,24 +94,49 @@ pub(super) struct PluginRows<'a> {
     checksums: &'a [Vec<u8>],
 }
 
-/// Missing checksum proof is local to its admitted slot, not a publication failure.
+/// Bind production checksums to the admitted metadata on the same opened source view.
 fn prepare_plugin_checksums(
+    paths: &[PathBuf],
+    admitted: &load_order::LoadOrder,
+    skipped: &mut BTreeSet<usize>,
+    warnings: &mut Vec<String>,
+) -> Vec<Vec<u8>> {
+    prepare_plugin_checksum_rows(paths, skipped, warnings, |index, path| {
+        let metadata = admitted.metadata.get(index).ok_or_else(|| {
+            color_eyre::eyre::eyre!("missing admitted plugin metadata at {index}")
+        })?;
+        binary::admitted_plugin_proof(path, metadata).map(|(_, checksum)| checksum)
+    })
+}
+
+/// Exporter-only fixtures without source admission still exercise streaming row insertion.
+#[cfg(test)]
+fn prepare_plugin_checksums_for_test(
     paths: &[PathBuf],
     skipped: &mut BTreeSet<usize>,
     warnings: &mut Vec<String>,
+) -> Vec<Vec<u8>> {
+    prepare_plugin_checksum_rows(paths, skipped, warnings, |_, path| {
+        let mut file = File::open(path)?;
+        let stamp = crate::source_input::SourceStamp::capture(&file)?;
+        let checksum = plugin_checksum(&mut file)?;
+        stamp.verify(&file, path)?;
+        Ok(checksum)
+    })
+}
+
+/// Missing checksum proof is local to its admitted slot, not a publication failure.
+fn prepare_plugin_checksum_rows(
+    paths: &[PathBuf],
+    skipped: &mut BTreeSet<usize>,
+    warnings: &mut Vec<String>,
+    mut proof: impl FnMut(usize, &Path) -> Result<[u8; 32]>,
 ) -> Vec<Vec<u8>> {
     paths.iter().enumerate().map(|(index, path)| {
         if skipped.contains(&index) {
             return Vec::new();
         }
-        let read = || -> Result<[u8; 32]> {
-            let mut file = File::open(path)?;
-            let stamp = crate::source_input::SourceStamp::capture(&file)?;
-            let checksum = plugin_checksum(&mut file)?;
-            stamp.verify(&file, path)?;
-            Ok(checksum)
-        };
-        match read() {
+        match proof(index, path) {
             Ok(checksum) => checksum.to_vec(),
             Err(error) => {
                 skipped.insert(index);
@@ -315,6 +341,7 @@ impl EsmParser {
         create_tables(&conn)?;
         let checksums = prepare_plugin_checksums(
             plugin_paths,
+            &order,
             &mut master.skipped_inputs,
             &mut master.warnings,
         );
@@ -363,19 +390,20 @@ impl EsmParser {
             // Final ID -> (source ID, whether its master index was out of range). Two different
             // source IDs that resolve to one final ID would silently replace each other.
             let mut sources: HashMap<u32, (u32, bool)> = HashMap::new();
-            let (records, parser_summaries) = match parse_plugin_file_with_warnings(path) {
-                Ok(parsed) => parsed,
-                Err(error) => {
-                    let message = format!(
-                        "warning: {}: skipped unusable plugin input: {error:#}",
-                        order.names[priority]
-                    );
-                    eprintln!("{message}");
-                    summaries.push(message);
-                    skipped_inputs.insert(priority);
-                    continue;
-                }
-            };
+            let (records, parser_summaries) =
+                match parse_admitted_plugin_file_with_warnings(path, &order.metadata[priority]) {
+                    Ok(parsed) => parsed,
+                    Err(error) => {
+                        let message = format!(
+                            "warning: {}: skipped unusable plugin input: {error:#}",
+                            order.names[priority]
+                        );
+                        eprintln!("{message}");
+                        summaries.push(message);
+                        skipped_inputs.insert(priority);
+                        continue;
+                    }
+                };
             summaries.extend(parser_summaries);
             for mut record in records {
                 record.load_order = priority as u32;

@@ -1059,7 +1059,13 @@ impl AssetPipeline {
             let cache_identity = if plugin_hashes.iter().any(String::is_empty) {
                 None
             } else {
-                database_cache::identity(config, &plugins, string_sources, cancellation)?
+                database_cache::identity_with_admitted_order(
+                    config,
+                    &plugins,
+                    string_sources,
+                    cancellation,
+                    &admitted_order,
+                )?
             };
             report.database_cache_key =
                 cache_identity.as_ref().map(|identity| identity.key.clone());
@@ -1095,12 +1101,13 @@ impl AssetPipeline {
                 .insert("database_cache_lookup".into(), restore_ms);
             if restored.is_some() {
                 let recheck_started = Instant::now();
-                let unchanged = database_cache::inputs_unchanged(
+                let unchanged = database_cache::inputs_unchanged_with_admitted_order(
                     cache_identity.as_ref().unwrap(),
                     config,
                     &plugins,
                     string_sources,
                     cancellation,
+                    &admitted_order,
                 )?;
                 report.phase_elapsed_ms.insert(
                     "database_cache_restore_input_recheck".into(),
@@ -1108,6 +1115,7 @@ impl AssetPipeline {
                 );
                 if !unchanged {
                     restored = None;
+                    report.database_cache_key = None;
                     report
                         .phase_elapsed_ms
                         .insert("database_cache_rejected_validation".into(), validation_ms);
@@ -1221,7 +1229,13 @@ impl AssetPipeline {
                 if let Some(identity) = &cache_identity {
                     let recheck_started = Instant::now();
                     let current = if conversion.skipped_inputs.is_empty() {
-                        database_cache::identity(config, &plugins, string_sources, cancellation)?
+                        database_cache::identity_with_admitted_order(
+                            config,
+                            &plugins,
+                            string_sources,
+                            cancellation,
+                            &admitted_order,
+                        )?
                     } else {
                         // The reader already reported these inputs. Do not reopen or warn again.
                         report.database_cache_key = None;
@@ -1231,6 +1245,12 @@ impl AssetPipeline {
                         "database_cache_input_recheck".into(),
                         recheck_started.elapsed().as_millis(),
                     );
+                    if current
+                        .as_ref()
+                        .is_none_or(|current| current.key != identity.key)
+                    {
+                        report.database_cache_key = None;
+                    }
                     if current
                         .as_ref()
                         .is_some_and(|current| current.key == identity.key)

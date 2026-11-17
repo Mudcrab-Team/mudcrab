@@ -115,6 +115,16 @@ recovery decision supplies the warning, and later metadata/proof stages do not
 reopen a known skipped source or emit it again. Such output is incomplete and its
 unavailable source cannot authenticate cache reuse or source-version decoding.
 
+Before decoding records, both readers compare the TES4 header in their opened input
+view with the admitted ordered master names and ESM, ESL and localized flags.
+Master-name comparison ignores case; compression is only a physical encoding detail.
+A mismatch skips that input before any records are merged and reports one bounded
+warning containing `changed after load order was read`. Its original plugin row and
+slot remain, with an empty checksum, so neighboring plugin identities do not shift.
+Checksums and database-cache proofs check the header and hash the same source view;
+cache eligibility is checked before restore, after restore and before storage.
+These checks also apply with `--no-lod`.
+
 ---
 
 ### 2. Primary Record Database (`records`)

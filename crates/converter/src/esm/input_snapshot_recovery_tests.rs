@@ -171,6 +171,7 @@ enum HeaderReplacement {
     Masters,
     Esm,
     Light,
+    Localized,
 }
 
 /// Reset the deterministic replacement hook even if a regression assertion fails.
@@ -218,6 +219,7 @@ fn write_header_replacement(replacement: &Path, master: &str, kind: HeaderReplac
         HeaderReplacement::Masters => 0u32,
         HeaderReplacement::Esm => 1,
         HeaderReplacement::Light => 0x200,
+        HeaderReplacement::Localized => 0x80,
     };
     bytes[8..12].copy_from_slice(&flags.to_le_bytes());
     std::fs::write(replacement, bytes).unwrap();
@@ -524,4 +526,57 @@ async fn changed_admitted_header_legacy_rejects_seeded_cache() {
 #[tokio::test(flavor = "current_thread")]
 async fn changed_admitted_header_inhouse_rejects_seeded_cache() {
     assert_changed_header_has_no_database_cache(crate::config::RecordReader::Inhouse, true).await;
+}
+
+/// Localized-field interpretation must use the same flag facts as admission in legacy mode.
+#[test]
+fn changed_admitted_localized_legacy_keep_neighbor_slots() {
+    assert_changed_admitted_header(
+        crate::config::RecordReader::Legacy,
+        HeaderReplacement::Localized,
+    );
+}
+
+/// Localized-field interpretation must use the same flag facts as admission in in-house mode.
+#[test]
+fn changed_admitted_localized_inhouse_keep_neighbor_slots() {
+    assert_changed_admitted_header(
+        crate::config::RecordReader::Inhouse,
+        HeaderReplacement::Localized,
+    );
+}
+
+/// A checksum cannot authenticate changed header facts, even after records were read earlier.
+#[test]
+fn admitted_checksum_uses_semantic_header_and_warns_once_for_replacement() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = [
+        directory.path().join("HealthyA.esm"),
+        directory.path().join("MutableMod.esp"),
+    ];
+    plugin(&paths[0], 0x811);
+    plugin_with_master(&paths[1], 0x0100_0822, Some("HealthyA.esm"));
+    let order = load_order::LoadOrder::read(&paths).unwrap();
+    // A case-only spelling change preserves the ordered master authority.
+    plugin_with_master(&paths[1], 0x0100_0822, Some("HEALTHYA.ESM"));
+    let mut skipped = BTreeSet::new();
+    let mut warnings = Vec::new();
+    let proof = super::prepare_plugin_checksums(&paths, &order, &mut skipped, &mut warnings);
+    assert_eq!(proof.iter().map(Vec::len).collect::<Vec<_>>(), [32, 32]);
+    assert!(skipped.is_empty() && warnings.is_empty());
+    // Removing the master changes every source index; do not attach that digest to old facts.
+    plugin(&paths[1], 0x822);
+    let proof = super::prepare_plugin_checksums(&paths, &order, &mut skipped, &mut warnings);
+    assert_eq!(proof.iter().map(Vec::len).collect::<Vec<_>>(), [32, 0]);
+    assert_eq!(skipped, BTreeSet::from([1]));
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("changed after load order was read"));
+    plugin_with_master(&paths[1], 0x0100_0822, Some("HealthyA.esm"));
+    let proof = super::prepare_plugin_checksums(&paths, &order, &mut skipped, &mut warnings);
+    assert_eq!(proof[1].len(), 0);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "known unavailable sources must not be reopened or warn again"
+    );
 }

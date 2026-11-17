@@ -523,7 +523,8 @@ fn export_inhouse_to_db(
     unresolved: &HashMap<u32, BTreeSet<usize>>,
     offsets: &HashMap<u32, u64>,
 ) -> Result<()> {
-    let checksums = super::prepare_plugin_checksums(paths, &mut BTreeSet::new(), &mut Vec::new());
+    let checksums =
+        super::prepare_plugin_checksums_for_test(paths, &mut BTreeSet::new(), &mut Vec::new());
     export_inhouse_with_plugins_to_db(
         conn,
         master,
@@ -544,7 +545,8 @@ fn export_inhouse_record_archive_to_db(
     order: &LoadOrder,
     paths: &[PathBuf],
 ) -> Result<()> {
-    let checksums = super::prepare_plugin_checksums(paths, &mut BTreeSet::new(), &mut Vec::new());
+    let checksums =
+        super::prepare_plugin_checksums_for_test(paths, &mut BTreeSet::new(), &mut Vec::new());
     export_inhouse_record_archive_with_plugins_to_db(
         conn,
         master,
