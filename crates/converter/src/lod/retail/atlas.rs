@@ -1,0 +1,268 @@
+//! DDS header reader for the retail LOD atlases.
+//!
+//! Object LOD draws from one `textures/terrain/<world>/objects/<world>.objects.dds` per world
+//! (and a `_n` normal map); tree LOD from `textures/terrain/<world>/trees/<world>treelod.dds`.
+//! This reads only the header: size, mip count, pixel format and the payload length that header
+//! implies, so an importer can check a file before it decodes or re-encodes it.
+
+use std::fmt;
+
+const MAGIC: &[u8; 4] = b"DDS ";
+const HEADER_BYTES: usize = 124;
+const DX10_BYTES: usize = 20;
+const DDPF_FOURCC: u32 = 0x4;
+const DDPF_RGB: u32 = 0x40;
+
+/// Pixel format of a DDS texture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DdsFormat {
+    /// Uncompressed with a bit count and channel masks (`R, G, B, A`).
+    Uncompressed { bits: u32, masks: [u32; 4] },
+    /// A block-compressed or other format named by its four-character code.
+    FourCc([u8; 4]),
+    /// A format named by a DXGI value in the DX10 extension header.
+    Dxgi(u32),
+}
+
+/// What a DDS header declares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DdsInfo {
+    pub width: u32,
+    pub height: u32,
+    /// Mip levels; at least 1.
+    pub mip_levels: u32,
+    pub format: DdsFormat,
+    /// Bytes before the pixel data (128, or 148 with a DX10 header).
+    pub data_offset: usize,
+}
+
+impl DdsInfo {
+    /// Bytes of pixel data the header implies for all mips, or `None` for a format this reader
+    /// does not size (the caller must not guess).
+    pub fn expected_payload_bytes(&self) -> Option<u64> {
+        let block_bytes = match self.format {
+            DdsFormat::Uncompressed { bits, .. } if bits % 8 == 0 && bits > 0 => {
+                return Some(
+                    self.sum_mips(|w, h| u64::from(w) * u64::from(h) * u64::from(bits / 8)),
+                );
+            }
+            DdsFormat::FourCc(code) => match &code {
+                b"DXT1" | b"ATI1" | b"BC4U" => 8,
+                b"DXT3" | b"DXT5" | b"ATI2" | b"BC5U" => 16,
+                _ => return None,
+            },
+            // 71 BC1, 74 BC2, 77 BC3, 80 BC4, 83 BC5, 98 BC7 (the UNORM and SRGB variants).
+            DdsFormat::Dxgi(71 | 72 | 80 | 81) => 8,
+            DdsFormat::Dxgi(74 | 75 | 77 | 78 | 83 | 84 | 98 | 99) => 16,
+            _ => return None,
+        };
+        Some(
+            self.sum_mips(|w, h| u64::from(w.div_ceil(4)) * u64::from(h.div_ceil(4)) * block_bytes),
+        )
+    }
+
+    fn sum_mips(&self, level_bytes: impl Fn(u32, u32) -> u64) -> u64 {
+        (0..self.mip_levels)
+            .map(|level| level_bytes((self.width >> level).max(1), (self.height >> level).max(1)))
+            .sum()
+    }
+}
+
+/// Why a DDS header does not parse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DdsError {
+    TooShort {
+        len: usize,
+    },
+    BadMagic,
+    BadHeaderSize(u32),
+    ZeroSize {
+        width: u32,
+        height: u32,
+    },
+    /// More mip levels than the dimensions allow.
+    TooManyMips {
+        mip_levels: u32,
+        max: u32,
+    },
+    UnsupportedPixelFormat {
+        flags: u32,
+    },
+}
+
+impl fmt::Display for DdsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooShort { len } => write!(f, "DDS is {len} bytes, shorter than its header"),
+            Self::BadMagic => write!(f, "DDS magic is missing"),
+            Self::BadHeaderSize(size) => write!(f, "DDS header size is {size}, expected 124"),
+            Self::ZeroSize { width, height } => write!(f, "DDS size is {width}x{height}"),
+            Self::TooManyMips { mip_levels, max } => {
+                write!(f, "DDS declares {mip_levels} mips, at most {max} fit")
+            }
+            Self::UnsupportedPixelFormat { flags } => {
+                write!(f, "DDS pixel format flags {flags:#x} are not supported")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DdsError {}
+
+fn word(bytes: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+}
+
+/// Reads the header of a DDS file. The pixel data is not read or checked.
+pub fn read_dds_info(bytes: &[u8]) -> Result<DdsInfo, DdsError> {
+    if bytes.len() < 4 + HEADER_BYTES {
+        return Err(DdsError::TooShort { len: bytes.len() });
+    }
+    if &bytes[..4] != MAGIC {
+        return Err(DdsError::BadMagic);
+    }
+    let size = word(bytes, 4);
+    if size != HEADER_BYTES as u32 {
+        return Err(DdsError::BadHeaderSize(size));
+    }
+    let height = word(bytes, 12);
+    let width = word(bytes, 16);
+    if width == 0 || height == 0 {
+        return Err(DdsError::ZeroSize { width, height });
+    }
+    let mip_levels = word(bytes, 28).max(1);
+    let max = 32 - width.max(height).leading_zeros();
+    if mip_levels > max {
+        return Err(DdsError::TooManyMips { mip_levels, max });
+    }
+    // The pixel format starts at offset 76: size, flags, four-character code, bit count, masks.
+    let flags = word(bytes, 80);
+    let mut data_offset = 4 + HEADER_BYTES;
+    let format = if flags & DDPF_FOURCC != 0 {
+        let code: [u8; 4] = bytes[84..88].try_into().unwrap();
+        if &code == b"DX10" {
+            if bytes.len() < data_offset + DX10_BYTES {
+                return Err(DdsError::TooShort { len: bytes.len() });
+            }
+            let dxgi = word(bytes, data_offset);
+            data_offset += DX10_BYTES;
+            DdsFormat::Dxgi(dxgi)
+        } else {
+            DdsFormat::FourCc(code)
+        }
+    } else if flags & DDPF_RGB != 0 {
+        DdsFormat::Uncompressed {
+            bits: word(bytes, 88),
+            masks: [
+                word(bytes, 92),
+                word(bytes, 96),
+                word(bytes, 100),
+                word(bytes, 104),
+            ],
+        }
+    } else {
+        return Err(DdsError::UnsupportedPixelFormat { flags });
+    };
+    Ok(DdsInfo {
+        width,
+        height,
+        mip_levels,
+        format,
+        data_offset,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn header(
+        width: u32,
+        height: u32,
+        mips: u32,
+        flags: u32,
+        fourcc: &[u8; 4],
+        bits: u32,
+    ) -> Vec<u8> {
+        let mut bytes = vec![0u8; 4 + HEADER_BYTES];
+        bytes[..4].copy_from_slice(MAGIC);
+        bytes[4..8].copy_from_slice(&124u32.to_le_bytes());
+        bytes[12..16].copy_from_slice(&height.to_le_bytes());
+        bytes[16..20].copy_from_slice(&width.to_le_bytes());
+        bytes[28..32].copy_from_slice(&mips.to_le_bytes());
+        bytes[76..80].copy_from_slice(&32u32.to_le_bytes());
+        bytes[80..84].copy_from_slice(&flags.to_le_bytes());
+        bytes[84..88].copy_from_slice(fourcc);
+        bytes[88..92].copy_from_slice(&bits.to_le_bytes());
+        for (index, mask) in [0x00FF_0000u32, 0x0000_FF00, 0x0000_00FF, 0xFF00_0000]
+            .into_iter()
+            .enumerate()
+        {
+            bytes[92 + index * 4..96 + index * 4].copy_from_slice(&mask.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn an_uncompressed_bgra_atlas_with_one_mip() {
+        let info = read_dds_info(&header(2048, 2048, 1, DDPF_RGB, &[0; 4], 32)).unwrap();
+        assert_eq!((info.width, info.height, info.mip_levels), (2048, 2048, 1));
+        assert!(matches!(
+            info.format,
+            DdsFormat::Uncompressed { bits: 32, .. }
+        ));
+        assert_eq!(info.data_offset, 128);
+        assert_eq!(info.expected_payload_bytes(), Some(2048 * 2048 * 4));
+    }
+
+    #[test]
+    fn a_dxt5_normal_map_with_a_full_mip_chain() {
+        let info = read_dds_info(&header(2048, 2048, 12, DDPF_FOURCC, b"DXT5", 0)).unwrap();
+        assert_eq!(info.format, DdsFormat::FourCc(*b"DXT5"));
+        // Levels 2048 down to 1: 16 bytes per 4x4 block, the last three levels are one block.
+        let expected: u64 = (0..12u32)
+            .map(|level| {
+                let side = (2048u32 >> level).max(1).div_ceil(4) as u64;
+                side * side * 16
+            })
+            .sum();
+        assert_eq!(info.expected_payload_bytes(), Some(expected));
+    }
+
+    #[test]
+    fn a_dx10_header_moves_the_data_offset() {
+        let mut bytes = header(64, 64, 1, DDPF_FOURCC, b"DX10", 0);
+        bytes.extend(98u32.to_le_bytes());
+        bytes.extend([0u8; 16]);
+        let info = read_dds_info(&bytes).unwrap();
+        assert_eq!(info.format, DdsFormat::Dxgi(98));
+        assert_eq!(info.data_offset, 148);
+        assert_eq!(info.expected_payload_bytes(), Some(16 * 16 * 16));
+    }
+
+    #[test]
+    fn bad_headers_are_errors() {
+        assert!(matches!(
+            read_dds_info(&[0; 10]),
+            Err(DdsError::TooShort { .. })
+        ));
+        let mut bytes = header(8, 8, 1, DDPF_RGB, &[0; 4], 32);
+        bytes[0] = b'X';
+        assert_eq!(read_dds_info(&bytes), Err(DdsError::BadMagic));
+        assert!(matches!(
+            read_dds_info(&header(0, 8, 1, DDPF_RGB, &[0; 4], 32)),
+            Err(DdsError::ZeroSize { .. })
+        ));
+        assert!(matches!(
+            read_dds_info(&header(8, 8, 9, DDPF_RGB, &[0; 4], 32)),
+            Err(DdsError::TooManyMips { max: 4, .. })
+        ));
+        assert!(matches!(
+            read_dds_info(&header(8, 8, 1, 0, &[0; 4], 0)),
+            Err(DdsError::UnsupportedPixelFormat { .. })
+        ));
+        // An unknown four-character code reads, but is not sized.
+        let info = read_dds_info(&header(8, 8, 1, DDPF_FOURCC, b"ZZZZ", 0)).unwrap();
+        assert_eq!(info.expected_payload_bytes(), None);
+    }
+}
