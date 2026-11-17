@@ -1207,6 +1207,21 @@ mod lazy_presence_tests {
         link: Option<u32>,
         ids: &HashSet<u32>,
     ) -> (DecodedRecord, usize) {
+        let calls = Cell::new(0);
+        let mut load = || {
+            calls.set(calls.get() + 1);
+            Ok(ids)
+        };
+        let decoded = decode_fixture_with_loader(kind, link, &mut load).unwrap();
+        (decoded, calls.get())
+    }
+
+    /// Exercise source-authority failures through the same authenticated native frame.
+    fn decode_fixture_with_loader<'a>(
+        kind: [u8; 4],
+        link: Option<u32>,
+        load: &mut impl FnMut() -> Result<&'a HashSet<u32>>,
+    ) -> Result<DecodedRecord> {
         let mut payload = Vec::new();
         if let Some(link) = link {
             payload.extend(b"LTMP");
@@ -1246,22 +1261,38 @@ mod lazy_presence_tests {
         };
         let schemas = RuntimeSchemas::from_addon_bytes(&[]).unwrap();
         let prepared = decoder::prepare_runtime_schema(&schemas);
-        let calls = Cell::new(0);
-        let mut load = || {
-            calls.set(calls.get() + 1);
-            Ok(ids)
-        };
-        let decoded = decode_version(
+        decode_version(
             &path,
             &Sha256::digest(&bytes),
             &entry,
             &order,
-            (&HashMap::new(), &mut load),
+            (&HashMap::new(), load),
             (&schemas, &prepared),
             &mut PluginDiagnostics::default(),
         )
-        .unwrap();
-        (decoded, calls.get())
+    }
+
+    /// A failed loader surfaces for a link needing presence; an unrelated version still decodes.
+    #[test]
+    fn history_loader_error_is_reported_only_when_presence_is_needed() {
+        for (kind, link, expected_calls) in [(*b"CELL", Some(0x0500_1880), 1), (*b"STAT", None, 0)]
+        {
+            let calls = Cell::new(0);
+            let mut load = || -> Result<&HashSet<u32>> {
+                calls.set(calls.get() + 1);
+                Err(color_eyre::eyre::eyre!("synthetic catalogue query failure"))
+            };
+            let decoded = decode_fixture_with_loader(kind, link, &mut load);
+            assert_eq!(calls.get(), expected_calls);
+            if expected_calls == 1 {
+                assert_eq!(
+                    decoded.unwrap_err().to_string(),
+                    "synthetic catalogue query failure"
+                );
+            } else {
+                assert!(decoded.is_ok(), "{decoded:?}");
+            }
+        }
     }
 
     /// Ordinary history, in-range links, and hardcoded low IDs need no full provenance catalogue.

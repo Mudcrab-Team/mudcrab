@@ -911,8 +911,17 @@ fn native_race_field_recovery_matches_publication() {
         winner.source.subrecords, fields,
         "native RACE must publish the same recovered fields as SQL"
     );
+    let tags: Vec<_> = winner
+        .source
+        .subrecords
+        .iter()
+        .map(|(tag, _)| tag.as_slice())
+        .collect();
+    assert_eq!(tags, [b"EDID".as_slice(), b"SWMV".as_slice()]);
     assert_eq!(native.warnings.len(), 1, "{:?}", native.warnings);
-    assert!(native.warnings[0].contains("2") && native.warnings[0].contains("Patch.esp"));
+    assert!(native.warnings[0].starts_with(
+        "warning: Patch.esp: skipped 2 invalid optional FormID links (cleared or removed; first:"
+    ));
 }
 
 /// The default MOVT local in a different owner must keep its ordinary-record admission policy.
