@@ -1,7 +1,8 @@
 # Skyrim room visibility and the default engine policy
 
-The engine uses the converted room graph automatically. There is no enable flag or configuration
-switch. Missing tables, unread graphs and incomplete traversal data leave extra geometry drawn.
+The engine uses the converted room graph automatically, without an enable flag. Room culling
+is on by default; the Graphics settings panel can disable it immediately and save that preference.
+Missing tables, unread graphs and incomplete traversal data leave extra geometry drawn.
 This policy uses Skyrim's authored room and portal records, but does not claim exact replication
 of Skyrim's traversal.
 
@@ -126,7 +127,10 @@ exceeding either widens that space conservatively. These limits differ from the 
 
 Graphs with `visibility_version = 2` have explicit unbounded space. Only endpoints verified as zero
 in source `XPOD` name it. Missing, invalid, or foreign-cell links remain unknown and trigger full
-rendering. Older conversions keep the outside-camera fallback until a full room export.
+rendering. Room-to-outside traversal narrows its volume through the same aperture tests. A camera
+outside every room keeps full rendering: room boxes can have seams, so their complement is not
+verified outside-space coverage. This conservative start policy deliberately differs from the
+traced native null-room traversal. Older conversions retain their outside-camera fallback.
 
 New conversions additionally publish `assignment_version = 1`, ordered `XLRM` links, per-reference
 rules, source NIF spheres, and per-cell completeness. `XRMR[2]` selects explicit masters. Slaves
