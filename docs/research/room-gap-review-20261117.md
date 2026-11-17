@@ -55,3 +55,19 @@ in #745. They do not count runtime culled meshes or establish coverage across Sk
 captures therefore do not validate original-game parity for a renderable object outside every
 room with no overlap. That case remains unverified; native null-room traversal alone does not
 prove object attachment semantics.
+
+## Implicit edges and room overhangs
+
+Implicit connections now pass the incoming visibility volume unchanged. A room box establishes
+inferred connectivity but does not bound every child mesh. Clipping to its projected rectangle
+could hide an in-frustum child whose reference pivot belongs only to that room.
+
+The seven-unit-gap overhang regression failed before this fix and passes afterward. All 72
+culling-related tests on the volume layer pass. The updated overlap fixtures test actual mesh
+bounds: an authored doorway still rejects off-aperture meshes and the camera still rejects
+geometry behind it. The obsolete room-box projection and rectangle-clipping helpers were removed.
+
+This is a conservative expansion for geometric membership. Authored portal clipping is unchanged;
+#745 uses authored joins instead of constructing these inferred edges. The captures and timing
+above predate this fix and were not rerun. No new image-parity or performance claim follows from
+these tests.

@@ -160,18 +160,6 @@ impl VisibilityVolume {
         }
         Some(through)
     }
-
-    /// Preserve the existing conservative screen-rectangle policy for implicit overlap edges.
-    pub(super) fn through_screen_rect(&self, min: Vec2, max: Vec2, clip: Mat4) -> Self {
-        let (x, y, w) = (clip.row(0), clip.row(1), clip.row(3));
-        let mut through = self.clone();
-        for plane in [x - min.x * w, max.x * w - x, y - min.y * w, max.y * w - y] {
-            if let Some(plane) = normalized(plane) {
-                through.planes.push(plane);
-            }
-        }
-        through
-    }
 }
 
 /// Union of the volumes arriving at one room. An empty union is unreached.
