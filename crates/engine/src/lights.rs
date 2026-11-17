@@ -428,7 +428,9 @@ fn warn_on_shadow_encoder_load(
         limit = METAL_OUTSTANDING_COMMAND_BUFFER_LIMIT,
         cap = MAX_SHADOW_CASTING_POINT_LIGHTS,
         "lights: so many shadow-casting point lights that the Metal command buffer limit may be \
-         reached and the GPU device lost; turn off Point-light shadows"
+         reached and the GPU device lost; the Point-light shadows setting controls only Skyrim \
+         lights, so also disable or reduce other shadow-casting lights (spot lights, and lights \
+         owned by other systems)"
     );
 }
 
@@ -1353,13 +1355,13 @@ mod tests {
         };
         assert_eq!(xs(&mut app), vec![100.0, 110.0, 120.0, 130.0]);
 
-        move_camera(&mut app, Vec3::new(140.0, 0.0, 0.0));
+        move_camera(&mut app, Vec3::new(141.0, 0.0, 0.0));
         assert_eq!(
             app.world().resource::<LightBudget>().chosen_at,
             Some(Vec3::ZERO),
             "the move is inside the cache distance, so the budget was not re-made"
         );
-        const { assert!(140.0 < BUDGET_RECHOOSE_DISTANCE) };
+        const { assert!(141.0 < BUDGET_RECHOOSE_DISTANCE) };
         assert_eq!(
             xs(&mut app),
             vec![130.0, 140.0, 150.0, 160.0],
@@ -1372,26 +1374,46 @@ mod tests {
         );
     }
 
-    /// Two lights at the same distance keep the same shadow, however the camera moves without
-    /// changing that: the entity breaks the tie, so nothing flickers.
+    /// Two lights at the same distance compete for the last shadow of four, and the one with the
+    /// lower entity wins every time, however the camera moves without changing that: the entity
+    /// breaks the tie, so nothing flickers.
     #[test]
     fn equidistant_lights_keep_the_same_shadow_when_the_camera_moves() {
-        // Four lights on the x axis, one on each side at the same distance: the fifth and sixth
-        // nearest tie for the last shadow of four.
+        // Three lights nearer than the rest, then a pair on either side of the camera at the same
+        // distance for the fourth shadow, then one farther. Spawned with the pair first, so the
+        // winner is the one spawned first.
         let mut app = budget_app_with(
             Vec3::ZERO,
-            [10.0, -10.0, 20.0, -20.0, 30.0, -30.0].map(|x| Vec3::new(x, 0.0, 0.0)),
+            [40.0, -40.0, 10.0, 20.0, -30.0, 100.0].map(|x| Vec3::new(x, 0.0, 0.0)),
             Some(shadows_on()),
         );
-        let first = shadow_casting_lights(&mut app);
-        assert_eq!(first.len(), MAX_SHADOW_CASTING_POINT_LIGHTS);
-        for step in 1..=5 {
-            // Along y the distances to the symmetric pair stay equal.
+        let pair: Vec<Entity> = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<(Entity, &Transform), With<SkyrimLight>>();
+            query
+                .iter(app.world())
+                .filter(|(_, transform)| transform.translation.x.abs() == 40.0)
+                .map(|(entity, _)| entity)
+                .collect()
+        };
+        assert_eq!(pair.len(), 2);
+        let winner = *pair.iter().min().unwrap();
+
+        for step in 0..=5 {
+            // Along y the distances to the pair stay equal to each other.
             move_camera(&mut app, Vec3::new(0.0, step as f32, 0.0));
+            let casting = shadow_casting_lights(&mut app);
+            assert_eq!(casting.len(), MAX_SHADOW_CASTING_POINT_LIGHTS);
+            let from_pair: Vec<Entity> = casting
+                .iter()
+                .map(|(_, entity)| *entity)
+                .filter(|entity| pair.contains(entity))
+                .collect();
             assert_eq!(
-                shadow_casting_lights(&mut app),
-                first,
-                "the tie went the same way at step {step}"
+                from_pair,
+                vec![winner],
+                "the lower entity of the tied pair has the fourth shadow at step {step}"
             );
         }
     }
