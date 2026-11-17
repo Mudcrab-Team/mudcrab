@@ -41,6 +41,39 @@ def campaign(module, root, frame_cap=None):
 
 
 class CaptureAttemptTests(unittest.TestCase):
+    def test_missing_import_can_retry_and_pass_offline_verification(self):
+        reference = v4.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
+        observed = json.loads((reference / 'manifest.json').read_text())['runs'][0]
+        raw = gzip.decompress((reference / observed['path']).read_bytes())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            argv, session = campaign(v4, root)
+            plan = json.loads(Path(argv[argv.index('--plan') + 1]).read_text())
+            plan['conditions'] = plan['conditions'][:1]
+            plan_path = root / 'plan.json'
+            plan_path.write_text(json.dumps(plan))
+            argv[argv.index('--plan') + 1] = str(plan_path)
+            imported = root / 'imported'
+            imported.mkdir()
+            argv += ['--adopt-baseline', str(imported)]
+            with patch('sys.argv', argv), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(FileNotFoundError):
+                    v4.main()
+                (imported / 'trace.bin').write_bytes(raw)
+                proof = dict(observed['proof'], session=session,
+                             trace_sha256=hashlib.sha256(raw).hexdigest(),
+                             runner_sha256=v4.digest(v4.ROOT / 'scripts/record_skyrim_motion.py'))
+                (imported / 'proof.json').write_text(json.dumps(proof))
+                v4.main()
+            corpus = root / 'corpus'
+            self.assertEqual(verify(corpus, plan_path)['status'], 'passed')
+            attempts = json.loads((corpus / 'manifest.json').read_text())['attempts']
+            self.assertEqual([row['attempt'] for row in attempts], [1, 2])
+            self.assertNotEqual(attempts[0]['exit_code'], 0)
+            self.assertEqual(attempts[0]['recorder_exit_code'], 0)
+            self.assertEqual(attempts[0]['trace_status'], 'not-created')
+            self.assertEqual(attempts[1]['exit_code'], 0)
+
     def test_interrupted_adoption_recovers_the_imported_trace(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

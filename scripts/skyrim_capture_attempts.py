@@ -52,7 +52,8 @@ def record_attempt(path, manifest, name, number, output, retain=None):
     try:
         yield row
     except BaseException as error:
-        if row['exit_code'] is None:
+        row['recorder_exit_code'] = row['exit_code']
+        if row['exit_code'] in (None, 0):
             row['exit_code'] = -1
         if 'failure' not in row:
             fail_attempt(row, output, {'phase': 'interrupted' if isinstance(error, (KeyboardInterrupt, SystemExit)) else 'capture',
