@@ -81,8 +81,14 @@ fn sample_grid(side: usize, x: f32, y: f32, mut value: impl FnMut(usize) -> f32)
     (a + (b - a) * tx) * (1.0 - ty) + (c + (d - c) * tx) * ty
 }
 
-/// Sample the rendered terrain triangles and derive their normal and slope.
-fn terrain(height_at: &impl Fn(usize) -> f32, x: f32, y: f32) -> (f32, [i8; 3], f32) {
+/// Sample rendered terrain triangles and derive the requested normal and slope.
+fn terrain(
+    height_at: &impl Fn(usize) -> f32,
+    x: f32,
+    y: f32,
+    need_slope: bool,
+    pack_normal: bool,
+) -> (f32, [i8; 3], f32) {
     // Match build_terrain_quadrant_mesh's [a,b,c, b,d,c] triangles.
     // Bilinear interpolation can bury short grass on nonplanar terrain quads.
     let px = x.clamp(0.0, 1.0) * 32.0;
@@ -104,12 +110,26 @@ fn terrain(height_at: &impl Fn(usize) -> f32, x: f32, y: f32) -> (f32, [i8; 3], 
             d - b,
         )
     };
+    // Unrestricted jittered candidates need only height before the final root is accepted.
+    if !need_slope && !pack_normal {
+        return (height, [0; 3], 0.0);
+    }
     let dx = dx / (GRASS_CELL_SIZE / 32.0);
     let dy = dy / (GRASS_CELL_SIZE / 32.0);
     let length = (dx * dx + dy * dy + 1.0).sqrt();
     let normal = [-dx / length, -dy / length, 1.0 / length];
-    let slope = normal[2].clamp(-1.0, 1.0).acos().to_degrees();
-    (height, normal.map(|v| (v * 127.0).round() as i8), slope)
+    // Geometric normal Z is nonnegative; a zero-to-ninety rule accepts every slope.
+    let slope = if need_slope {
+        normal[2].clamp(-1.0, 1.0).acos().to_degrees()
+    } else {
+        0.0
+    };
+    let packed = if pack_normal {
+        normal.map(|v| (v * 127.0).round() as i8)
+    } else {
+        [0; 3]
+    };
+    (height, packed, slope)
 }
 
 /// Encode a bounded span-relative value into an unsigned 16-bit field.
@@ -164,6 +184,68 @@ fn layer_weight(layer: &ArchivedGrassLayer, x: f32, y: f32, config: &EngineConfi
         0.0
     } else {
         weight
+    }
+}
+
+/// Cache a bounded ordered nomination prefix; larger valid inputs retain the full iterator.
+struct NominatedLayers<'a> {
+    mask: &'a shared::grass::ArchivedGrassQuadrant,
+    id: u32,
+    cached: Option<[Option<&'a ArchivedGrassLayer>; 16]>,
+}
+
+impl<'a> NominatedLayers<'a> {
+    /// Keep matching layers in source order, using the complete iterator on cache overflow.
+    fn new(mask: &'a shared::grass::ArchivedGrassQuadrant, id: u32, config: &EngineConfig) -> Self {
+        let mut layers = [None; 16];
+        let mut overflow = false;
+        for (index, layer) in mask
+            .layers
+            .iter()
+            .filter(|layer| {
+                layer
+                    .grass_ids
+                    .iter()
+                    .take(config.effective_grass_species_cap())
+                    .any(|grass| u32::from(*grass) == id)
+            })
+            .enumerate()
+        {
+            if index == layers.len() {
+                overflow = true;
+                break;
+            }
+            layers[index] = Some(layer);
+        }
+        Self {
+            mask,
+            id,
+            cached: (!overflow).then_some(layers),
+        }
+    }
+
+    /// Sample matching layers with the original per-layer threshold and ordered sum.
+    fn weight(&self, x: f32, y: f32, config: &EngineConfig) -> f32 {
+        if let Some(layers) = &self.cached {
+            layers
+                .iter()
+                .flatten()
+                .map(|layer| layer_weight(layer, x, y, config))
+                .sum()
+        } else {
+            self.mask
+                .layers
+                .iter()
+                .filter(|layer| {
+                    layer
+                        .grass_ids
+                        .iter()
+                        .take(config.effective_grass_species_cap())
+                        .any(|grass| u32::from(*grass) == self.id)
+                })
+                .map(|layer| layer_weight(layer, x, y, config))
+                .sum()
+        }
     }
 }
 
@@ -263,27 +345,26 @@ fn generate_field(
             continue;
         }
         let seed = hash(cell_id, id, 12);
+        let nominated: [Option<NominatedLayers<'_>>; 4] = std::array::from_fn(|quadrant| {
+            cell.quadrants
+                .iter()
+                .find(|mask| usize::from(mask.quadrant) == quadrant)
+                .map(|mask| NominatedLayers::new(mask, id, config))
+        });
+        let need_slope = species.min_slope != 0 || species.max_slope < 90;
+        let position_range: f32 = species.position_range.into();
         for slot in 0..slots {
             let [x, y] = candidate(seed, slot);
             let quadrant = (x * 2.0) as u8 + (y * 2.0) as u8 * 2;
-            let Some(mask) = cell.quadrants.iter().find(|q| q.quadrant == quadrant) else {
+            let Some(nomination) = nominated
+                .get(usize::from(quadrant))
+                .and_then(Option::as_ref)
+            else {
                 continue;
             };
-            let support = |mask: &shared::grass::ArchivedGrassQuadrant, x, y| -> f32 {
-                mask.layers
-                    .iter()
-                    .filter(|layer| {
-                        layer
-                            .grass_ids
-                            .iter()
-                            .take(config.effective_grass_species_cap())
-                            .any(|grass| u32::from(*grass) == id)
-                    })
-                    .map(|layer| layer_weight(layer, x, y, config))
-                    .sum()
-            };
-            let weight = support(mask, (x * 2.0).fract(), (y * 2.0).fract());
-            let (height, normal, slope) = terrain(&height_at, x, y);
+            let weight = nomination.weight((x * 2.0).fract(), (y * 2.0).fract(), config);
+            let (height, normal, slope) =
+                terrain(&height_at, x, y, need_slope, position_range == 0.0);
             if weight <= 0.0
                 || slope < f32::from(species.min_slope)
                 || slope > f32::from(species.max_slope)
@@ -300,7 +381,6 @@ fn generate_field(
             {
                 continue;
             }
-            let position_range: f32 = species.position_range.into();
             // Authored Position Range is a total jitter span, not a radius.
             let px = x * GRASS_CELL_SIZE + (unit(hash(seed, slot, 5)) - 0.5) * position_range;
             let py = y * GRASS_CELL_SIZE + (unit(hash(seed, slot, 6)) - 0.5) * position_range;
@@ -312,9 +392,10 @@ fn generate_field(
             let jx = px / GRASS_CELL_SIZE;
             let jy = py / GRASS_CELL_SIZE;
             let jq = (jx * 2.0) as u8 + (jy * 2.0) as u8 * 2;
-            let Some(jmask) = cell.quadrants.iter().find(|q| q.quadrant == jq) else {
+            let Some(jnomination) = nominated.get(usize::from(jq)).and_then(Option::as_ref) else {
                 continue;
             };
+            let jmask = jnomination.mask;
             let jbit = ((jy * 2.0).fract() * GRASS_EXCLUSION_SIDE as f32) as usize
                 * GRASS_EXCLUSION_SIDE
                 + ((jx * 2.0).fract() * GRASS_EXCLUSION_SIDE as f32) as usize;
@@ -325,23 +406,12 @@ fn generate_field(
             {
                 continue;
             }
-            let final_weight: f32 = jmask
-                .layers
-                .iter()
-                .filter(|layer| {
-                    layer
-                        .grass_ids
-                        .iter()
-                        .take(config.effective_grass_species_cap())
-                        .any(|grass| u32::from(*grass) == id)
-                })
-                .map(|layer| layer_weight(layer, (jx * 2.0).fract(), (jy * 2.0).fract(), config))
-                .sum();
+            let final_weight = jnomination.weight((jx * 2.0).fract(), (jy * 2.0).fract(), config);
             if final_weight <= 0.0 {
                 continue;
             }
             let (jh, jnormal, jslope) = if position_range != 0.0 {
-                terrain(&height_at, jx, jy)
+                terrain(&height_at, jx, jy, need_slope, true)
             } else {
                 (height, normal, slope)
             };
@@ -421,6 +491,10 @@ fn generate_field(
     result.generation_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     result
 }
+
+#[cfg(test)]
+#[path = "committed_perf_probe.rs"]
+mod committed_perf_probe;
 
 #[cfg(test)]
 mod tests {
@@ -1017,11 +1091,19 @@ mod tests {
             (1.0, 0.0, 32.0),
             (0.0, 1.0, -144.0),
         ] {
-            let (height, _, _) = terrain(&height_at, (11.0 + tx) / 32.0, (9.0 + ty) / 32.0);
+            let (height, _, _) = terrain(
+                &height_at,
+                (11.0 + tx) / 32.0,
+                (9.0 + ty) / 32.0,
+                true,
+                true,
+            );
             assert!((height - expected).abs() < 0.001, "({tx},{ty}): {height}");
         }
-        let (_, lower_normal, lower_slope) = terrain(&height_at, 11.25 / 32.0, 9.25 / 32.0);
-        let (_, upper_normal, upper_slope) = terrain(&height_at, 11.75 / 32.0, 9.75 / 32.0);
+        let (_, lower_normal, lower_slope) =
+            terrain(&height_at, 11.25 / 32.0, 9.25 / 32.0, true, true);
+        let (_, upper_normal, upper_slope) =
+            terrain(&height_at, 11.75 / 32.0, 9.75 / 32.0, true, true);
         assert!(lower_normal[0] < -100 && lower_normal[1] < 0);
         assert!(upper_normal[0] > 0 && upper_normal[1] > 100);
         assert!((lower_slope - upper_slope).abs() < 0.001);
@@ -1328,5 +1410,177 @@ mod tests {
             let px = f32::from(instance.position[0]) / 65535.0 * GRASS_CELL_SIZE;
             px % 2048.0 <= 895.9 && unit(hash(hash(42, 7, 12), instance.candidate_slot(), 4)) > 0.15
         }));
+    }
+
+    /// Retain the original full terrain calculation as an independent test oracle.
+    fn terrain_original(height_at: &impl Fn(usize) -> f32, x: f32, y: f32) -> (f32, [i8; 3], f32) {
+        let px = x.clamp(0.0, 1.0) * 32.0;
+        let py = y.clamp(0.0, 1.0) * 32.0;
+        let ix = (px as usize).min(31);
+        let iy = (py as usize).min(31);
+        let tx = px - ix as f32;
+        let ty = py - iy as f32;
+        let a = height_at(iy * 33 + ix);
+        let b = height_at(iy * 33 + ix + 1);
+        let c = height_at((iy + 1) * 33 + ix);
+        let d = height_at((iy + 1) * 33 + ix + 1);
+        let (height, dx, dy) = if tx + ty <= 1.0 {
+            (a + tx * (b - a) + ty * (c - a), b - a, c - a)
+        } else {
+            (
+                d + (1.0 - tx) * (c - d) + (1.0 - ty) * (b - d),
+                d - c,
+                d - b,
+            )
+        };
+        let dx = dx / (GRASS_CELL_SIZE / 32.0);
+        let dy = dy / (GRASS_CELL_SIZE / 32.0);
+        let length = (dx * dx + dy * dy + 1.0).sqrt();
+        let normal = [-dx / length, -dy / length, 1.0 / length];
+        let slope = normal[2].clamp(-1.0, 1.0).acos().to_degrees();
+        (height, normal.map(|v| (v * 127.0).round() as i8), slope)
+    }
+
+    /// Requested terrain fields retain the original float law on ordinary and overflowing surfaces.
+    #[test]
+    fn terrain_flags_preserve_original_samples() {
+        for surface in 0..3 {
+            let heights: Vec<f32> = (0..1089)
+                .map(|i| match surface {
+                    0 => 120.0,
+                    1 => 120.0 + (((i % 33 * 17 + i / 33 * 11) % 13) as f32 - 6.0) * 9.1,
+                    _ => [f32::MAX, -f32::MAX, 0.0, f32::MIN_POSITIVE][i % 4],
+                })
+                .collect();
+            let height_at = |i| heights[i];
+            for (x, y) in [
+                (0.0, 0.0),
+                (1.0, 1.0),
+                (0.0078125, 0.0078125),
+                (0.0234375, 0.0234375),
+                (11.25 / 32.0, 9.25 / 32.0),
+                (11.75 / 32.0, 9.75 / 32.0),
+            ] {
+                let (height, normal, slope) = terrain_original(&height_at, x, y);
+                for (min, max) in [(0u8, 90u8), (0, 180), (18, 58), (0, 35), (90, 90)] {
+                    let need_slope = min != 0 || max < 90;
+                    for pack_normal in [false, true] {
+                        let (actual_height, actual_normal, actual_slope) =
+                            terrain(&height_at, x, y, need_slope, pack_normal);
+                        if height.is_nan() {
+                            assert!(actual_height.is_nan());
+                        } else {
+                            assert_eq!(actual_height.to_bits(), height.to_bits());
+                        }
+                        assert_eq!(actual_normal, if pack_normal { normal } else { [0; 3] });
+                        if need_slope && slope.is_nan() {
+                            assert!(actual_slope.is_nan());
+                        } else {
+                            assert_eq!(
+                                actual_slope.to_bits(),
+                                if need_slope { slope } else { 0.0 }.to_bits()
+                            );
+                        }
+                        assert_eq!(
+                            slope < f32::from(min) || slope > f32::from(max),
+                            actual_slope < f32::from(min) || actual_slope > f32::from(max),
+                            "surface={surface} x={x} y={y} min={min} max={max} packed={pack_normal}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Zero jitter publishes the original pre-jitter packed normal on an asymmetric surface.
+    #[test]
+    fn zero_jitter_retains_original_packed_normals() {
+        let mut source = fixture(vec![layer(9, vec![7], 1.0)]);
+        source.heights = (0..1089)
+            .map(|i| 120.0 + (((i % 33 * 17 + i / 33 * 11) % 13) as f32 - 6.0) * 9.1)
+            .collect();
+        let cache = mapped(vec![species(7)], source);
+        let config = EngineConfig {
+            grass_min_spacing: 128.0,
+            ..Default::default()
+        };
+        let generated = generate(&cache, 42, &config);
+        let source = cache.cell(42).unwrap();
+        let height_at = |i| f32::from(source.heights[i]);
+        let mut count = 0;
+        for batch in generated.batches {
+            for instance in batch.instances.iter() {
+                let [x, y] = candidate(hash(42, 7, 12), instance.candidate_slot());
+                assert_eq!(instance.normal, terrain_original(&height_at, x, y).1);
+                count += 1;
+            }
+        }
+        assert!(
+            count > 500,
+            "fixture must publish nonempty zero-jitter terrain normals"
+        );
+    }
+
+    /// Cached and overflow support preserve repeated layers, cap membership and f32 sum order.
+    #[test]
+    fn nominated_layers_preserve_support_and_overflow() {
+        for count in [0, 16, 17, 24] {
+            let layers = (0..count)
+                .map(|index| {
+                    let mut item = layer(9 + index, vec![7, 11, 13], 1.0);
+                    item.weights = (0..289)
+                        .map(|i| ((i * 7 + index as usize * 3) % 11) as f32 / 10.0)
+                        .collect();
+                    item
+                })
+                .collect();
+            let cache = mapped(vec![species(7), species(11), species(13)], fixture(layers));
+            for cap in [0, 1, 4] {
+                let config = EngineConfig {
+                    grass_max_types_per_texture: cap,
+                    grass_texture_threshold: 0.2,
+                    ..Default::default()
+                };
+                for mask in cache.cell(42).unwrap().quadrants.iter() {
+                    for id in [7, 11, 13] {
+                        let nominated = NominatedLayers::new(mask, id, &config);
+                        let matches = mask
+                            .layers
+                            .iter()
+                            .filter(|layer| {
+                                layer
+                                    .grass_ids
+                                    .iter()
+                                    .take(config.effective_grass_species_cap())
+                                    .any(|grass| u32::from(*grass) == id)
+                            })
+                            .count();
+                        assert_eq!(nominated.cached.is_some(), matches <= 16);
+                        if let Some(cached) = &nominated.cached {
+                            assert_eq!(cached.iter().flatten().count(), matches);
+                        }
+                        for (x, y) in [(0.0, 0.0), (0.25, 0.75), (0.5, 0.5), (1.0, 1.0)] {
+                            let expected: f32 = mask
+                                .layers
+                                .iter()
+                                .filter(|layer| {
+                                    layer
+                                        .grass_ids
+                                        .iter()
+                                        .take(config.effective_grass_species_cap())
+                                        .any(|grass| u32::from(*grass) == id)
+                                })
+                                .map(|layer| layer_weight(layer, x, y, &config))
+                                .sum();
+                            assert_eq!(
+                                nominated.weight(x, y, &config).to_bits(),
+                                expected.to_bits(),
+                                "layers={count} cap={cap} id={id} x={x} y={y}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }
