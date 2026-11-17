@@ -1,6 +1,37 @@
 use super::*;
 use shared::grass::{GRASS_CACHE_VERSION, GrassCell, GrassLayer, GrassQuadrant, GrassType};
 
+/// Per-spot selection counts the modelless middle nomination in its post-add admission limit.
+#[test]
+fn modelless_middle_species_keeps_authored_cap_slot() {
+    let mut placeholder = rule(2, 128.0);
+    placeholder.model_path.clear();
+    let cache = mapped(
+        vec![rule(1, 128.0), placeholder, rule(3, 128.0)],
+        cell(vec![layer(vec![1, 2, 3], 1.0, true)]),
+    );
+    for (configured, admitted) in [(1, 2), (2, 3)] {
+        let config = EngineConfig {
+            grass_max_types_per_texture: configured,
+            ..Default::default()
+        };
+        assert_eq!(config.effective_grass_species_cap(), admitted);
+        let generated = generate(&cache, 42, &config);
+        let ids: Vec<_> = generated
+            .batches
+            .iter()
+            .map(|batch| batch.grass_id)
+            .collect();
+        assert_eq!(ids, if admitted == 2 { vec![1] } else { vec![1, 3] });
+        assert!(
+            generated
+                .batches
+                .iter()
+                .all(|batch| !batch.instances.is_empty())
+        );
+    }
+}
+
 /// Reference selection and rendered grounding intentionally retain their distinct diagonals.
 #[test]
 fn reference_selection_and_committed_grounding_keep_distinct_contracts() {
