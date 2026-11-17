@@ -12,6 +12,12 @@ const HEADER_BYTES: usize = 124;
 const DX10_BYTES: usize = 20;
 const DDPF_FOURCC: u32 = 0x4;
 const DDPF_RGB: u32 = 0x40;
+/// Legacy `caps2` bits: a cube map or a volume texture has more than one surface.
+const DDSCAPS2_CUBEMAP: u32 = 0x200;
+const DDSCAPS2_VOLUME: u32 = 0x20_0000;
+/// DX10 header: `resourceDimension` 3 is a 2D texture; `miscFlag` bit 4 marks a cube map.
+const DX10_TEXTURE2D: u32 = 3;
+const DX10_MISC_TEXTURECUBE: u32 = 0x4;
 
 /// Pixel format of a DDS texture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +102,10 @@ pub enum DdsError {
     UnsupportedPixelFormat {
         flags: u32,
     },
+    /// More than one surface (an array, cube map or volume), which this reader does not size.
+    UnsupportedLayout {
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for DdsError {
@@ -110,6 +120,9 @@ impl fmt::Display for DdsError {
             }
             Self::UnsupportedPixelFormat { flags } => {
                 write!(f, "DDS pixel format flags {flags:#x} are not supported")
+            }
+            Self::UnsupportedLayout { reason } => {
+                write!(f, "DDS layout is not supported: {reason}")
             }
         }
     }
@@ -138,6 +151,16 @@ pub fn read_dds_info(bytes: &[u8]) -> Result<DdsInfo, DdsError> {
     if width == 0 || height == 0 {
         return Err(DdsError::ZeroSize { width, height });
     }
+    // Only a single 2D surface is sized. A cube map or volume (legacy caps) has more surfaces.
+    let caps2 = word(bytes, 112);
+    if caps2 & DDSCAPS2_CUBEMAP != 0 {
+        return Err(DdsError::UnsupportedLayout { reason: "cube map" });
+    }
+    if caps2 & DDSCAPS2_VOLUME != 0 {
+        return Err(DdsError::UnsupportedLayout {
+            reason: "volume texture",
+        });
+    }
     let mip_levels = word(bytes, 28).max(1);
     let max = 32 - width.max(height).leading_zeros();
     if mip_levels > max {
@@ -153,6 +176,21 @@ pub fn read_dds_info(bytes: &[u8]) -> Result<DdsInfo, DdsError> {
                 return Err(DdsError::TooShort { len: bytes.len() });
             }
             let dxgi = word(bytes, data_offset);
+            if word(bytes, data_offset + 4) != DX10_TEXTURE2D {
+                return Err(DdsError::UnsupportedLayout {
+                    reason: "DX10 resource is not a 2D texture",
+                });
+            }
+            if word(bytes, data_offset + 8) & DX10_MISC_TEXTURECUBE != 0 {
+                return Err(DdsError::UnsupportedLayout {
+                    reason: "DX10 cube map",
+                });
+            }
+            if word(bytes, data_offset + 12) != 1 {
+                return Err(DdsError::UnsupportedLayout {
+                    reason: "DX10 texture array",
+                });
+            }
             data_offset += DX10_BYTES;
             DdsFormat::Dxgi(dxgi)
         } else {
@@ -211,6 +249,14 @@ mod tests {
         bytes
     }
 
+    /// The 20-byte DX10 extension: DXGI format, resource dimension, misc flag, array size and
+    /// the second misc flag.
+    fn push_dx10(bytes: &mut Vec<u8>, dxgi: u32, dimension: u32, misc: u32, array_size: u32) {
+        for value in [dxgi, dimension, misc, array_size, 0] {
+            bytes.extend(value.to_le_bytes());
+        }
+    }
+
     #[test]
     fn an_uncompressed_bgra_atlas_with_one_mip() {
         let info = read_dds_info(&header(2048, 2048, 1, DDPF_RGB, &[0; 4], 32)).unwrap();
@@ -240,8 +286,7 @@ mod tests {
     #[test]
     fn a_dx10_header_moves_the_data_offset() {
         let mut bytes = header(64, 64, 1, DDPF_FOURCC, b"DX10", 0);
-        bytes.extend(98u32.to_le_bytes());
-        bytes.extend([0u8; 16]);
+        push_dx10(&mut bytes, 98, 3, 0, 1);
         let info = read_dds_info(&bytes).unwrap();
         assert_eq!(info.format, DdsFormat::Dxgi(98));
         assert_eq!(info.data_offset, 148);
@@ -279,6 +324,46 @@ mod tests {
             Some(u64::from(u32::MAX) * u64::from(u32::MAX))
         );
         assert_eq!(level(2).expected_payload_bytes(), None);
+    }
+
+    #[test]
+    fn layouts_with_more_than_one_surface_are_rejected() {
+        let dx10 = |dimension, misc, array_size| {
+            let mut bytes = header(64, 64, 1, DDPF_FOURCC, b"DX10", 0);
+            push_dx10(&mut bytes, 98, dimension, misc, array_size);
+            bytes.extend([0u8; 4096]);
+            read_dds_info(&bytes)
+        };
+        // A 64x64 BC7 array of two would otherwise size as one surface (4,096 bytes, not 8,192).
+        assert!(matches!(
+            dx10(3, 0, 2),
+            Err(DdsError::UnsupportedLayout { .. })
+        ));
+        assert!(matches!(
+            dx10(3, DX10_MISC_TEXTURECUBE, 1),
+            Err(DdsError::UnsupportedLayout { .. })
+        ));
+        assert!(matches!(
+            dx10(4, 0, 1),
+            Err(DdsError::UnsupportedLayout { .. })
+        ));
+        assert!(matches!(
+            dx10(3, 0, 0),
+            Err(DdsError::UnsupportedLayout { .. })
+        ));
+        assert!(dx10(3, 0, 1).is_ok());
+        // Legacy cube map and volume caps.
+        for caps2 in [DDSCAPS2_CUBEMAP, DDSCAPS2_VOLUME] {
+            let mut bytes = header(64, 64, 1, DDPF_FOURCC, b"DXT5", 0);
+            bytes[112..116].copy_from_slice(&caps2.to_le_bytes());
+            assert!(
+                matches!(
+                    read_dds_info(&bytes),
+                    Err(DdsError::UnsupportedLayout { .. })
+                ),
+                "{caps2:#x}"
+            );
+        }
     }
 
     #[test]

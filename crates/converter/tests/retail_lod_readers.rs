@@ -19,8 +19,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
-fn data_dir() -> Option<PathBuf> {
-    std::env::var_os("MUDCRAB_SKYRIM_DATA").map(PathBuf::from)
+/// The install these tests read. They are `#[ignore]`d, so reaching one means someone asked for
+/// it: an unset or wrong `MUDCRAB_SKYRIM_DATA` is a setup error, never a silent pass.
+fn data_dir() -> PathBuf {
+    let value = std::env::var_os("MUDCRAB_SKYRIM_DATA").expect(
+        "set MUDCRAB_SKYRIM_DATA to a Skyrim Special Edition Data folder to run the ignored retail LOD tests",
+    );
+    let path = PathBuf::from(value);
+    assert!(
+        path.is_dir(),
+        "MUDCRAB_SKYRIM_DATA does not name a directory: {}",
+        path.display()
+    );
+    path
 }
 
 fn archives(data: &Path, prefix: &str) -> Vec<PathBuf> {
@@ -60,7 +71,7 @@ fn extract(archives: &[PathBuf], out: &Path, keep: impl Fn(&Path) -> bool) -> Ve
 #[test]
 #[ignore = "requires MUDCRAB_SKYRIM_DATA with a locally installed Skyrim Special Edition"]
 fn tamriel_level_16_object_lod_parses_and_matches_the_format_study() {
-    let Some(data) = data_dir() else { return };
+    let data = data_dir();
     let temp = tempfile::tempdir().unwrap();
     let files = extract(&archives(&data, "Skyrim - Meshes"), temp.path(), |path| {
         let text = path.to_string_lossy();
@@ -100,7 +111,7 @@ fn tamriel_level_16_object_lod_parses_and_matches_the_format_study() {
 #[test]
 #[ignore = "requires MUDCRAB_SKYRIM_DATA with a locally installed Skyrim Special Edition"]
 fn tree_lists_and_blocks_parse_and_solstheim_is_reported_not_guessed() {
-    let Some(data) = data_dir() else { return };
+    let data = data_dir();
     let temp = tempfile::tempdir().unwrap();
     let files = extract(&archives(&data, "Skyrim - Meshes"), temp.path(), |path| {
         let text = path.to_string_lossy();
@@ -165,7 +176,7 @@ fn billboards_in_trailing(files: &[PathBuf]) -> usize {
 #[test]
 #[ignore = "requires MUDCRAB_SKYRIM_DATA with a locally installed Skyrim Special Edition"]
 fn tamriel_object_atlas_header_reads() {
-    let Some(data) = data_dir() else { return };
+    let data = data_dir();
     let temp = tempfile::tempdir().unwrap();
     let files = extract(&archives(&data, "Skyrim - Textures"), temp.path(), |path| {
         path.to_string_lossy() == "textures/terrain/tamriel/objects/tamriel.objects.dds"
@@ -186,7 +197,7 @@ fn tamriel_object_atlas_header_reads() {
 #[test]
 #[ignore = "requires MUDCRAB_SKYRIM_DATA with a locally installed Skyrim Special Edition"]
 fn tamriel_level_4_large_references_are_kept_as_opaque_blocks() {
-    let Some(data) = data_dir() else { return };
+    let data = data_dir();
     let temp = tempfile::tempdir().unwrap();
     let files = extract(&archives(&data, "Skyrim - Meshes"), temp.path(), |path| {
         let text = path.to_string_lossy();
