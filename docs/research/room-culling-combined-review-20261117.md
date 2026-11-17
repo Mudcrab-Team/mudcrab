@@ -37,3 +37,11 @@ continuous camera movement, original Skyrim's frame cost, another backend, or lo
 The 48 fresh visual captures and the matched retail oracle are in
 [the authored review record](room-assignment-review-20261117.md), and the 34 boundary captures are
 in [the room-gap review record](room-gap-review-20261117.md).
+
+## Stored-bounds eligibility follow-up
+
+The later unknown-bounds guard protects legacy geometric memberships. Authored named-target and
+source-sphere controls preserve their independent ownership behavior. After propagation, the
+combined engine passed 1,642 library tests with 11 ignored, formatting, and strict engine
+library/test Clippy. Converter source is unchanged by this follow-up. The measurements and images
+above remain pinned to their recorded executables and were not rerun for the eligibility guard.
