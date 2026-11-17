@@ -70,7 +70,7 @@
 //!
 //! In legacy graphs, touching or overlapping boxes gain edges within [`OVERLAP_TOLERANCE`], unless
 //! an authored portal or link already joins the pair. Between two rooms with portals, the edge
-//! tests the destination box against the incoming volume and clips to its projected rectangle.
+//! preserves the incoming visibility volume because room boxes need not bound their meshes.
 //! An edge to a portal-less room instead triggers the whole-cell fallback above.
 //!
 //! Authored graphs disable these edges and the portal-less-room heuristic. They use the authored
@@ -132,7 +132,6 @@ use bevy::{
             NoFrustumCulling, VisibilitySystems, VisibleEntities, check_visibility_cpu_culling,
         },
     },
-    math::Affine3A,
     prelude::*,
     tasks::{AsyncComputeTaskPool, Task, futures_lite::future},
 };
@@ -207,10 +206,6 @@ pub struct RoomCullingView;
 /// 8 covers the player's body leaning into a doorway without opening doorways the player is
 /// clearly beside. The image comparison against a real interior is where to retune it.
 const PORTAL_OPEN_DISTANCE: f32 = 8.0;
-
-/// Smallest clip-space `w` kept when clipping a doorway against the camera; anything nearer is
-/// behind the lens.
-const CLIP_W_EPSILON: f32 = 1.0e-3;
 
 /// The owner cache is emptied past this many entries, which drops the despawned meshes in it.
 const OWNER_CACHE_LIMIT: usize = 100_000;
@@ -444,9 +439,8 @@ pub struct RoomGraph {
     pub links: Vec<(usize, usize)>,
     /// Sources of authored links whose targets could not be loaded in this cell.
     pub unresolved_link_rooms: HashSet<usize>,
-    /// Implicit edges between rooms whose boxes overlap or touch ([`overlap_links`]). Unlike a link,
-    /// an overlap is walked thick - narrowed to the neighbour's screen rectangle - between two rooms
-    /// that both have a portal of the cell; reaching a neighbour without one draws the whole cell.
+    /// Inferred connections between touching or overlapping room boxes ([`overlap_links`]).
+    /// They pass the incoming volume unchanged; a reached portal-less room draws the whole cell.
     pub overlaps: Vec<(usize, usize)>,
     /// Membership by placed-reference id. The key is one number under three names: the `FormId`
     /// component of a spawned reference (`streaming::spawn_cell` inserts `FormId(reference.form_id)`),
@@ -455,56 +449,6 @@ pub struct RoomGraph {
     /// It is the placement's id, not the base object's `base_form_id`. A test proves the chain
     /// through the real loader (`the_membership_key_is_the_reference_id_the_loader_delivers`).
     pub membership: HashMap<u32, Membership>,
-}
-
-/// An axis-aligned rectangle in normalised device coordinates.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Rect {
-    min: Vec2,
-    max: Vec2,
-}
-
-/// The screen rectangle a room's box covers, with its edges clipped against the camera like a
-/// doorway's: `None` when the whole box is behind the lens.
-fn project_box(room: &Room, clip_from_local: Mat4) -> Option<Rect> {
-    let corner = |index: usize| {
-        let sign = |bit: usize| if index & bit == 0 { -1.0 } else { 1.0 };
-        let local = Vec3::new(
-            sign(1) * room.half.x,
-            sign(2) * room.half.y,
-            sign(4) * room.half.z,
-        );
-        clip_from_local * (room.center + room.rotation * local).extend(1.0)
-    };
-    let corners: Vec<Vec4> = (0..8).map(corner).collect();
-    let mut points: Vec<Vec4> = Vec::with_capacity(20);
-    for (index, &current) in corners.iter().enumerate() {
-        if current.w >= CLIP_W_EPSILON {
-            points.push(current);
-        }
-        // Each of the 12 edges once: from a corner to the one with a higher bit set.
-        for bit in [1, 2, 4] {
-            if index & bit != 0 {
-                continue;
-            }
-            let next = corners[index | bit];
-            if (current.w >= CLIP_W_EPSILON) != (next.w >= CLIP_W_EPSILON) {
-                let t = (CLIP_W_EPSILON - current.w) / (next.w - current.w);
-                points.push(current + (next - current) * t);
-            }
-        }
-    }
-    if points.is_empty() {
-        return None;
-    }
-    let mut min = Vec2::splat(f32::INFINITY);
-    let mut max = Vec2::splat(f32::NEG_INFINITY);
-    for point in points {
-        let ndc = Vec2::new(point.x, point.y) / point.w;
-        min = min.min(ndc);
-        max = max.max(ndc);
-    }
-    (min.is_finite() && max.is_finite()).then_some(Rect { min, max })
 }
 
 impl RoomGraph {
@@ -616,34 +560,10 @@ impl RoomGraph {
             for &other in &linked[room] {
                 pending.push((other, seen.clone()));
             }
-            // Clip implicit overlaps to the neighbour's box only when both rooms have portal
-            // data. Queue an open neighbour without clipping so the whole-cell fallback runs.
+            // Room boxes establish inferred connectivity, not an aperture or a bound on
+            // their children's geometry. Preserve the incoming portal volume across them.
             for &other in &overlapping[room] {
-                if !has_portal[room] || !has_portal[other] {
-                    pending.push((other, seen.clone()));
-                    continue;
-                }
-                let destination = &self.rooms[other];
-                if destination.contains(camera) {
-                    pending.push((other, seen.clone()));
-                    continue;
-                }
-                let bounds = MeshBounds::transformed(
-                    &Aabb::from_min_max(-destination.half, destination.half),
-                    Affine3A::from_rotation_translation(destination.rotation, destination.center),
-                );
-                if bounds
-                    .as_ref()
-                    .is_some_and(|bounds| !seen.intersects(bounds))
-                {
-                    continue;
-                }
-                if let Some(screen) = project_box(destination, clip_from_local) {
-                    pending.push((
-                        other,
-                        seen.through_screen_rect(screen.min, screen.max, clip_from_local),
-                    ));
-                }
+                pending.push((other, seen.clone()));
             }
         }
         let unbounded = visibility
@@ -1398,7 +1318,7 @@ mod tests {
             },
         },
         ecs::system::RunSystemOnce,
-        math::primitives::ViewFrustum,
+        math::{Affine3A, primitives::ViewFrustum},
         transform::TransformPlugin,
     };
 
@@ -3447,8 +3367,7 @@ mod tests {
         assert!(rooms_overlap(&mirrored, &neighbour));
     }
 
-    /// A (camera) sees B through a narrow doorway; C overlaps B. The overlap is walked only when C's
-    /// box is on screen inside the region the doorway leaves.
+    /// A sees B through a narrow doorway; C inherits that aperture through an implicit B-C edge.
     fn overlap_scene(c_center: Vec3) -> RoomGraph {
         let mut rooms = vec![
             room(1, Vec3::ZERO, 10.0),
@@ -3456,8 +3375,7 @@ mod tests {
             room(3, c_center, 12.0),
         ];
         let mut portals = vec![doorway(10, Vec3::new(0.0, 0.0, -10.0), 1.0, [0, 1])];
-        // C carries a portal of its own, so the B-C overlap edge stays thick: an edge with a
-        // portal-less room is walked open now, and C would be reached whatever the doorway left.
+        // A portal on C prevents the legacy portal-less-room whole-cell fallback.
         park_portals(&mut rooms, &mut portals, &[2]);
         RoomGraph {
             portals,
@@ -3473,12 +3391,32 @@ mod tests {
     }
 
     #[test]
-    fn an_overlapping_room_outside_the_region_is_not_reached() {
-        // C is beside B and overlaps it, but lies wholly to the right of what the doorway shows.
-        let graph = overlap_scene(Vec3::new(22.0, 0.0, -34.0));
+    fn an_implicit_edge_preserves_the_authored_aperture_for_mesh_tests() {
+        let mut graph = overlap_scene(Vec3::new(22.0, 0.0, -34.0));
         assert!(graph.overlaps.contains(&(1, 2)), "B and C overlap");
-        let reached = reached_rooms(&graph, Vec3::ZERO, clip_from_local()).unwrap();
-        assert_eq!(reached, vec![true, true, false, false]);
+        graph.membership.insert(
+            42,
+            Membership {
+                contained: vec![2],
+                overlapping: vec![],
+            },
+        );
+        let visible = graph
+            .visibility_volumes(Vec3::ZERO, clip_from_local())
+            .unwrap();
+        assert!(visible.rooms[2].is_reached());
+        for (x, drawn) in [(22.0, false), (0.0, true)] {
+            let bounds = MeshBounds::transformed(
+                &Aabb::from_min_max(-Vec3::splat(0.5), Vec3::splat(0.5)),
+                Affine3A::from_translation(Vec3::new(x, 0.0, -34.0)),
+            )
+            .unwrap();
+            assert_eq!(
+                graph.mesh_is_drawn(42, &visible, Some(&bounds), None),
+                drawn,
+                "the arriving doorway still bounds meshes, including overhanging ones"
+            );
+        }
     }
 
     #[test]
@@ -3490,16 +3428,15 @@ mod tests {
     }
 
     #[test]
-    fn an_overlapping_room_behind_the_camera_is_not_reached() {
+    fn an_implicit_edge_does_not_admit_meshes_behind_the_camera() {
         let mut rooms = vec![
             room(1, Vec3::ZERO, 10.0),
             room(2, Vec3::new(0.0, 0.0, 15.0), 10.0),
         ];
         let mut portals = Vec::new();
-        // Both rooms carry a portal, so the overlap edge stays thick. An edge with a portal-less
-        // room is walked open (the whole screen passes), which would reach the room behind.
+        // Both rooms carry a portal to avoid the legacy whole-cell fallback.
         park_portals(&mut rooms, &mut portals, &[0, 1]);
-        let graph = RoomGraph {
+        let mut graph = RoomGraph {
             unresolved_link_rooms: HashSet::new(),
             incomplete: false,
             overlaps: overlap_links(&rooms),
@@ -3507,14 +3444,26 @@ mod tests {
             rooms,
             ..Default::default()
         };
-        let reached = reached_rooms(&graph, Vec3::ZERO, clip_from_local()).unwrap();
-        // Room 2 spans z 5..25, behind a camera that looks down -Z.
-        assert_eq!(reached, vec![true, false, false]);
+        graph.membership.insert(
+            42,
+            Membership {
+                contained: vec![1],
+                overlapping: vec![],
+            },
+        );
+        let visible = graph
+            .visibility_volumes(Vec3::ZERO, clip_from_local())
+            .unwrap();
+        let bounds = MeshBounds::transformed(
+            &Aabb::from_min_max(-Vec3::ONE, Vec3::ONE),
+            Affine3A::from_translation(Vec3::new(0.0, 0.0, 15.0)),
+        )
+        .unwrap();
+        assert!(visible.rooms[1].is_reached());
+        assert!(!graph.mesh_is_drawn(42, &visible, Some(&bounds), None));
     }
 
-    /// Rooms from a list as a graph whose edges are the implicit overlaps, with every room carrying
-    /// a portal (a doorway to a room parked behind the camera) so the overlaps keep the
-    /// thick-portal narrowing these fixtures test.
+    /// Implicit-edge fixtures with parked portals to prevent the legacy whole-cell fallback.
     fn overlap_only(rooms: Vec<Room>) -> RoomGraph {
         let mut rooms = rooms;
         let mut portals = Vec::new();
@@ -3530,15 +3479,51 @@ mod tests {
         }
     }
 
+    #[test]
+    fn implicit_edges_keep_in_frustum_meshes_overhanging_the_room_box() {
+        let mut graph = overlap_only(vec![
+            room(1, Vec3::ZERO, 6.0),
+            room(2, Vec3::new(0.0, 0.0, -18.0), 5.0),
+        ]);
+        assert_eq!(
+            graph.overlaps,
+            vec![(0, 1)],
+            "the boxes have a seven-unit gap"
+        );
+        graph.membership.insert(
+            42,
+            Membership {
+                contained: vec![1],
+                overlapping: vec![],
+            },
+        );
+        let bounds = MeshBounds::transformed(
+            &Aabb::from_min_max(Vec3::splat(-0.2), Vec3::splat(0.2)),
+            Affine3A::from_translation(Vec3::new(8.0, 0.0, -18.0)),
+        )
+        .unwrap();
+        assert!(
+            VisibilityVolume::camera(clip_from_local())
+                .unwrap()
+                .intersects(&bounds)
+        );
+        let visible = graph
+            .visibility_volumes(Vec3::ZERO, clip_from_local())
+            .unwrap();
+        assert!(visible.rooms[1].is_reached());
+        assert!(
+            graph.mesh_is_drawn(42, &visible, Some(&bounds), None),
+            "a child's geometry may extend beyond its pivot-containing room"
+        );
+    }
+
     fn small(ref_id: u32, center: Vec3, half: f32) -> Room {
         room(ref_id, center, half)
     }
 
-    /// A (camera) overlaps B; C lies 6 units beside B, so B and C are joined, but C's box on screen
-    /// is wholly outside B's. Crossing A-B narrows the region to B's rectangle, so C is not reached
-    /// through B.
+    /// An inferred chain carries the camera volume even when the room rectangles do not overlap.
     #[test]
-    fn a_thick_portal_narrows_the_region_to_both_boxes() {
+    fn implicit_edge_chains_preserve_the_arriving_volume() {
         let graph = overlap_only(vec![
             small(1, Vec3::ZERO, 6.0),
             small(2, Vec3::new(0.0, 0.0, -18.0), 5.0),
@@ -3547,7 +3532,7 @@ mod tests {
         assert!(graph.overlaps.contains(&(0, 1)) && graph.overlaps.contains(&(1, 2)));
         assert!(!graph.overlaps.contains(&(0, 2)));
         let reached = reached_rooms(&graph, Vec3::ZERO, clip_from_local()).unwrap();
-        assert_eq!(reached, vec![true, true, false, false]);
+        assert_eq!(reached, vec![true, true, true, false]);
     }
 
     /// The real-data pillar case: the far room C is seen through the space it shares with B, so it
@@ -3658,11 +3643,7 @@ mod tests {
         );
     }
 
-    /// The same shape with a `PortalMarker` between the hall and the corridor: both rooms then
-    /// carry a portal, the corridor's overlap edge to the backdrop still narrows (the backdrop has
-    /// a portal of its own), and the doorway's small aperture - not the whole screen - is what the
-    /// walk carries in. The backdrop's box lies outside that aperture, so it stays culled: the
-    /// backdrop behind the wall the rule must keep culling (design-1100 §5).
+    /// An authored doorway still excludes backdrop meshes after an implicit edge.
     #[test]
     fn a_portal_between_the_hall_and_the_corridor_still_culls_the_backdrop() {
         let mut rooms = vec![
@@ -3694,19 +3675,32 @@ mod tests {
             rooms,
             ..Default::default()
         };
-        let reached = reached_rooms(&graph, Vec3::ZERO, clip_from_local()).unwrap();
-        assert_eq!(
-            &reached[..3],
-            [true, true, false],
-            "the backdrop is behind the wall"
+        let mut graph = graph;
+        graph.membership.insert(
+            42,
+            Membership {
+                contained: vec![2],
+                overlapping: vec![],
+            },
+        );
+        let visible = graph
+            .visibility_volumes(Vec3::ZERO, clip_from_local())
+            .unwrap();
+        assert!(visible.rooms[2].is_reached());
+        let bounds = MeshBounds::transformed(
+            &Aabb::from_min_max(-Vec3::splat(100.0), Vec3::splat(100.0)),
+            Affine3A::from_translation(graph.rooms[2].center),
+        )
+        .unwrap();
+        assert!(
+            !graph.mesh_is_drawn(42, &visible, Some(&bounds), None),
+            "the backdrop mesh remains outside the authored doorway"
         );
     }
 
-    /// A pair of rooms that both carry a portal keeps the thick edge: crossing the overlap narrows
-    /// the region to the neighbour's box, and the neighbour is culled when its box lies outside the
-    /// region the walk arrived with. This is the property the passing poses rest on.
+    /// Parked portals prevent whole-cell fallback without narrowing the inferred links.
     #[test]
-    fn a_pair_of_rooms_that_both_have_portals_still_narrows() {
+    fn rooms_with_portals_preserve_implicit_edges_without_box_clipping() {
         let mut rooms = vec![
             small(1, Vec3::ZERO, 6.0),
             small(2, Vec3::new(0.0, 0.0, -18.0), 5.0),
@@ -3724,7 +3718,7 @@ mod tests {
         };
         assert!(graph.overlaps.contains(&(1, 2)));
         let reached = reached_rooms(&graph, Vec3::ZERO, clip_from_local()).unwrap();
-        assert_eq!(&reached[..3], [true, true, false]);
+        assert_eq!(&reached[..3], [true, true, true]);
         // Removing those portals makes the reached corridor incomplete. Even though the camera
         // keeps its own portal, the whole cell must stay drawn.
         let mut open = graph.clone();
