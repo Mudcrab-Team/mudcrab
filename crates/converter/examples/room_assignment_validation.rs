@@ -133,6 +133,14 @@ fn main() -> Result<()> {
 }
 
 fn validate_private_assets(assets: &Path) -> Result<()> {
+    let absolute = std::path::absolute(assets)?;
+    for path in absolute.ancestors() {
+        ensure!(
+            !path.is_symlink(),
+            "fixture assets follow a symlink: {}",
+            path.display()
+        );
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -241,6 +249,28 @@ mod tests {
         fs::hard_link(&original, assets.join("skyrim_world.db")).unwrap();
         assert!(validate_private_assets(&assets).is_err());
         assert_eq!(fs::read(&original).unwrap(), b"installed database");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_assets_reject_a_symlinked_ancestor() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = root.path().canonicalize().unwrap();
+        let parent = physical.join("independent");
+        let assets = parent.join("assets");
+        fs::create_dir_all(assets.join("meshes")).unwrap();
+        fs::write(assets.join("skyrim_world.db"), b"independent database").unwrap();
+        assert!(validate_private_assets(&assets).is_ok());
+        let alias = physical.join("alias");
+        std::os::unix::fs::symlink(&parent, &alias).unwrap();
+        assert!(
+            validate_private_assets(&alias.join("assets")).is_err(),
+            "an indirect link must be rejected before the receipt or database is opened"
+        );
+        assert_eq!(
+            fs::read(assets.join("skyrim_world.db")).unwrap(),
+            b"independent database"
+        );
     }
 
     #[test]
