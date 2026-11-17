@@ -114,10 +114,14 @@ object path (`streaming/lod_objects.rs`) works as follows.
   units at the defaults and never meet the loaded grid. Tier 8 and tier 4 rows are ignored until
   object chunks hand off to full detail.
 - **Fail closed.** The rows are validated (canonical path, SHA-256, bounds, build identity) and
-  every listed file is hash-checked, one IO-pool task per file. A bad row, a missing file or a
-  wrong hash logs one error and turns object LOD off for the pack. No chunk is skipped on its own.
-- **Order and limits.** The system runs after `plan_lod_chunks` and before `update_render_origin`,
-  so a root spawned in the frame the origin shifts is rebased in that frame (it carries
+  every tier-16 file is hash-checked, one IO-pool task per file; rows of tiers that do not draw
+  are not read. A bad row, a missing file or a wrong hash logs one error and turns object LOD off
+  for the pack. No chunk is skipped on its own, and the failure stays through worldspace changes
+  until the pack changes.
+- **Order and limits.** The system runs inside the commit window: after `plan_lod_chunks`,
+  `collect_cells` and `collect_lod_chunks`, before
+  `finish_streaming_commit_budget` and before `update_render_origin`, so a root spawned in the
+  frame the origin shifts is rebased in that frame (it carries
   `LodChunkGridOrigin`, like a terrain chunk). Spawns follow `cell_requests_allowed` and the
   commit budget. They do not use the scene-request admission, which is for terrain's streaming
   controls: an object chunk is one asset-server load, bounded by the commit budget.

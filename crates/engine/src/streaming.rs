@@ -159,6 +159,9 @@ impl Plugin for StreamingPlugin {
                 Update,
                 lod_objects::update_lod_objects
                     .after(lod::plan_lod_chunks)
+                    .after(collect_cells)
+                    .after(lod::collect_lod_chunks)
+                    .before(finish_streaming_commit_budget)
                     .before(update_render_origin),
             )
             .add_systems(
@@ -7562,6 +7565,32 @@ mod tests {
         assert_eq!(overflowed.unloaded_cells, 28);
         assert_eq!(resident_root_count(&mut app), 0);
         assert_eq!(overflowed.streaming_invariant_failures, 0);
+    }
+
+    /// The object LOD system takes the commit budget, so it must sit inside the commit window:
+    /// after the cell and terrain LOD collectors, before the budget is closed, and before the
+    /// render-origin rebase. A schedule graph of the whole plugin is not cheap to build in a unit
+    /// test, so this reads the registration in this file (whitespace removed). The expected text
+    /// is assembled from parts, so the test's own source never contains it.
+    #[test]
+    fn the_object_lod_system_is_registered_inside_the_commit_window() {
+        let source: String = include_str!("streaming.rs")
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+        let registration = [
+            "lod_objects::update_lod_objects",
+            ".after(lod::plan_lod_chunks)",
+            ".after(collect_cells)",
+            ".after(lod::collect_lod_chunks)",
+            ".before(finish_streaming_commit_budget)",
+            ".before(update_render_origin)",
+        ]
+        .concat();
+        assert!(
+            source.contains(&registration),
+            "update_lod_objects must keep its five ordering edges in the plugin"
+        );
     }
 
     #[test]

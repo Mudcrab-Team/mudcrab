@@ -3,9 +3,11 @@
 //!
 //! A pack without that table has no object chunks, so nothing here runs for it. For a pack with
 //! it the load fails closed: the rows are validated by [`crate::world::database::load_lod_object_chunks`]
-//! and every listed file is hash-checked, one IO-pool task per file, before any chunk is drawn. A
-//! damaged row, a missing file or a wrong hash logs one error, draws no object LOD for that pack
-//! and is recorded in [`LodObjects::failure`], never skipped chunk by chunk.
+//! and every tier-16 file (the only tier drawn in this slice) is hash-checked, one IO-pool task
+//! per file, before any chunk is drawn. A damaged row, a missing file or a wrong hash logs one
+//! error, draws no object LOD for that pack and is recorded in [`LodObjects::failure`], never
+//! skipped chunk by chunk. The failure belongs to the pack: it stays through worldspace changes
+//! and is cleared only when the pack changes. Rows of tiers that do not draw are not read.
 //!
 //! Which chunks draw follows the retail object rule (RF-LOD-004): a chunk of tier `t` draws when
 //! [`TerrainLodDistances::object_tier`] picks `t` for its cells. **Only tier 16 draws in this
@@ -37,7 +39,10 @@ use bevy::{
     world_serialization::{WorldAsset, WorldAssetRoot},
 };
 use shared::lod::{ChunkKey, LodTier};
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 
 /// The worldspace multiplier for object LOD (RF-LOD-005): the WRLD `NAMA` value, 1.0 unless the
 /// worldspace says otherwise. The pack does not carry `NAMA` yet, so every worldspace uses 1.0,
@@ -67,6 +72,8 @@ pub struct LodObjects {
     /// Every listed chunk, after all checks passed. Object LOD draws only from this.
     chunks: Vec<LodChunkMetadata>,
     roots: HashMap<ChunkKey, Entity>,
+    /// The pack (assets folder) the state above belongs to.
+    pack: Option<PathBuf>,
     /// The camera cell and distances the current selection was made for.
     last_center: Option<IVec2>,
     last_distances: Option<TerrainLodDistances>,
@@ -98,7 +105,14 @@ impl LodObjects {
         self.checking.clear();
         self.checked.clear();
         self.chunks.clear();
+        // `failure` stays: it belongs to the pack, not to the worldspace.
+    }
+
+    /// A different pack: forget everything, including a failure.
+    fn reset_pack(&mut self, commands: &mut Commands, pack: PathBuf) {
+        self.reset(commands, None);
         self.failure = None;
+        self.pack = Some(pack);
     }
 
     /// No exterior to draw in (an interior, or LOD off): drop the roots and the selection but keep
@@ -135,11 +149,12 @@ impl LodObjects {
         true
     }
 
-    /// Starts one payload check per listed chunk.
+    /// Starts one payload check per tier-16 row, the only rows that can draw in this slice.
     fn start_checks(&mut self, chunks: Vec<LodChunkMetadata>, assets: &std::path::Path) {
         self.checked.clear();
         self.checking = chunks
             .into_iter()
+            .filter(|chunk| chunk.key.tier == LodTier::Tier16)
             .map(|chunk| {
                 let assets = assets.to_owned();
                 let listed = chunk.clone();
@@ -252,6 +267,9 @@ pub(super) fn update_lod_objects(
     let Ok(camera) = camera.single() else {
         return;
     };
+    if objects.pack.as_deref() != Some(config.assets_dir.as_path()) {
+        objects.reset_pack(&mut commands, config.assets_dir.clone());
+    }
     let worldspace = lod_worldspace(config.stream_radius, space.as_deref(), config.worldspace_id);
     let Some(worldspace_id) = worldspace else {
         // An interior, or LOD off: keep the verified rows, drop what is drawn.
@@ -260,6 +278,10 @@ pub(super) fn update_lod_objects(
     };
     if objects.worldspace_id != Some(worldspace_id) {
         objects.reset(&mut commands, Some(worldspace_id));
+    }
+    // A failure keeps object LOD off for the whole pack, whatever the worldspace.
+    if objects.failure.is_some() {
+        return;
     }
     objects.submit_request(&database, worldspace_id);
 
@@ -727,6 +749,64 @@ mod tests {
     }
 
     #[test]
+    fn a_failure_belongs_to_the_pack_and_survives_a_worldspace_change() {
+        let mut rig = rig(false);
+        let mut good = chunk(4, 4);
+        rig.write_payload(&mut good, b"good");
+        rig.answer(vec![good, chunk(8, 8)], 0); // (8, 8) is listed but never written
+        rig.run_until("the failure", |rig| rig.objects().failure().is_some());
+
+        // Entering another worldspace does not clear it: no request, no roots.
+        rig.app
+            .world_mut()
+            .resource_mut::<EngineConfig>()
+            .worldspace_id = 61;
+        for _ in 0..3 {
+            rig.app.update();
+        }
+        assert!(rig.objects().failure().is_some(), "still off for the pack");
+        assert!(rig.requests.try_recv().is_err(), "no new row request");
+        assert_eq!(rig.root_count(), 0);
+
+        // A different pack starts clean and asks for its own rows.
+        let other = tempfile::tempdir().unwrap();
+        rig.app
+            .world_mut()
+            .resource_mut::<EngineConfig>()
+            .assets_dir = other.path().into();
+        rig.app.update();
+        assert!(
+            rig.objects().failure().is_none(),
+            "a new pack clears the failure"
+        );
+        assert!(matches!(
+            rig.requests.try_recv(),
+            Ok(DatabaseRequest::LoadLodObjectChunks {
+                worldspace_id: 61,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn rows_of_tiers_that_do_not_draw_are_not_read() {
+        let mut rig = rig(false);
+        let mut drawable = chunk(4, 4);
+        rig.write_payload(&mut drawable, b"glb");
+        // A tier-8 row whose file is missing: it can never draw in this slice, so it is not
+        // checked and does not turn object LOD off.
+        let ignored = chunk_of(LodTier::Tier8, 15, 10);
+        rig.answer(vec![drawable, ignored], 0);
+        rig.run_until("the root", |rig| rig.objects().resident() == 1);
+        assert!(rig.objects().failure().is_none());
+        assert_eq!(
+            rig.objects().chunks().len(),
+            1,
+            "only the tier-16 row is kept"
+        );
+    }
+
+    #[test]
     fn a_hash_mismatch_fails_closed_too() {
         let mut rig = rig(false);
         let mut chunk = chunk(4, 4);
@@ -819,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn spawns_wait_for_the_commit_budget_and_the_streaming_controls() {
+    fn spawns_wait_for_the_commit_budget() {
         let mut rig = rig(false);
         let mut chunk = chunk(4, 4);
         rig.write_payload(&mut chunk, b"glb");
