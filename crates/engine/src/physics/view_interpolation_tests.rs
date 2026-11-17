@@ -192,16 +192,10 @@ fn view_rotation_stays_immediate() {
 }
 
 #[test]
-fn authoritative_eye_is_the_latest_tick_not_the_blend() {
-    let tuning = MovementTuning::default();
+fn the_view_pose_blends_the_last_two_ticks() {
     let mut pose = WalkViewPose::default();
-    assert_eq!(pose.authoritative_eye(&tuning), None, "no tick yet");
     pose.snap(Vec3::new(1.0, 2.0, 3.0));
     pose.previous = Vec3::new(1.0, 2.0, 13.0);
-    assert_eq!(
-        pose.authoritative_eye(&tuning),
-        Some(Vec3::new(1.0, 2.0 + tuning.eye_height, 3.0))
-    );
     assert_eq!(pose.shown(0.0), Vec3::new(1.0, 2.0, 13.0));
     assert_eq!(pose.shown(1.0), Vec3::new(1.0, 2.0, 3.0));
     assert_eq!(pose.shown(0.5), Vec3::new(1.0, 2.0, 8.0));

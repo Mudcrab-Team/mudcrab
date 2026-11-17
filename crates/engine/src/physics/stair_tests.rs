@@ -961,6 +961,7 @@ fn walk_real_stairs(
     });
     app.world_mut().resource_mut::<WalkTickLog>().0.clear();
     let mut frames = Vec::new();
+    let mut reached = false;
     for &delta in deltas {
         app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
             std::time::Duration::from_secs_f32(delta),
@@ -980,9 +981,16 @@ fn walk_real_stairs(
                 .map_or(0.0, |spring| spring.weight),
         });
         if (descend && position.x < -276.0 - 100.0) || (!descend && position.x > 279.0 + 100.0) {
+            reached = true;
             break;
         }
     }
+    assert!(
+        reached,
+        "the walk ended before the player crossed the flight (descend={descend}, speed={speed}): \
+         the frame limit is too short for these frame times, so the measures would describe an \
+         unfinished flight"
+    );
     let ticks = std::mem::take(&mut app.world_mut().resource_mut::<WalkTickLog>().0)
         .into_iter()
         .filter(|tick| (-276.0..279.0).contains(&tick.position.x))

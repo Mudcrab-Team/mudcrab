@@ -2063,8 +2063,8 @@ fn walk_step_rise(
 /// the next tick (`Time<Fixed>::overstep_fraction`).
 ///
 /// This is presentation only. The body, its collision and every physics query keep the latest tick
-/// position, which stays the authoritative eye (see [`WalkViewPose::authoritative_eye`]). The view
-/// trails it by 0 to one tick, at most 16.7 ms. Look rotation is not interpolated, so turning has no
+/// position (the tankard spawn ray, the carry hold point and the door return point read the body,
+/// not this pose). The view trails it by 0 to one tick, at most 16.7 ms. Look rotation is not interpolated, so turning has no
 /// added latency.
 ///
 /// The blended position is the input of the first-person follow spring
@@ -2119,12 +2119,6 @@ impl WalkViewPose {
 
     fn shown(&self, fraction: f32) -> Vec3 {
         self.previous.lerp(self.latest, fraction.clamp(0.0, 1.0))
-    }
-
-    /// The eye the physics and picking agree on: the latest tick, not the blended view.
-    pub fn authoritative_eye(&self, tuning: &MovementTuning) -> Option<Vec3> {
-        self.valid
-            .then(|| self.latest + Vec3::Y * tuning.eye_height)
     }
 }
 
@@ -2376,9 +2370,6 @@ mod walk_camera_presentation_tests {
         }
     }
 
-    /// A floating-origin rebase moves the body, the view and the smoothed point by the same
-    /// displacement. The lag, which is about 20 units while running, must not change in the world
-    /// frame, so the view does not pop forward at a cell border.
     /// While no time passes (focus pause, console), the follow spring keeps its lag, velocity and
     /// weight. A zero-length step would scale the lag by the weight on every paused frame.
     #[test]
@@ -2432,6 +2423,9 @@ mod walk_camera_presentation_tests {
         );
     }
 
+    /// A floating-origin rebase moves the body, the view and the smoothed point by the same
+    /// displacement. The lag, which is about 20 units while running, must not change in the world
+    /// frame, so the view does not pop forward at a cell border.
     #[test]
     fn a_render_origin_rebase_while_running_keeps_the_camera_offset() {
         let mut app = headless::fixture_app();

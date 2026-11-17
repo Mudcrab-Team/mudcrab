@@ -3282,8 +3282,6 @@ mod tests {
         }
     }
 
-    /// A shots path left out does not swallow the next option, and it is an error rather than a
-    /// silent fallback: continuing would run the engine interactively, a mode nobody asked for.
     /// The WALK camera trace is off by default and needs a file.
     #[test]
     fn the_walk_camera_trace_is_off_by_default_and_takes_a_file() {
@@ -3296,6 +3294,8 @@ mod tests {
         assert!(error.contains("--walk-camera-trace"), "{error}");
     }
 
+    /// A shots path left out does not swallow the next option, and it is an error rather than a
+    /// silent fallback: continuing would run the engine interactively, a mode nobody asked for.
     #[test]
     fn a_valueless_shots_flag_is_an_error() {
         let error = parse_error(&["--shots", "--shots-out", "--lights"]).to_string();
