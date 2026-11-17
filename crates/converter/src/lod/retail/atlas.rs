@@ -71,6 +71,11 @@ impl DdsInfo {
 
     /// Sums `level_bytes` over every mip level, or `None` if a level or the total overflows.
     fn sum_mips(&self, level_bytes: impl Fn(u32, u32) -> Option<u64>) -> Option<u64> {
+        // `width >> level` is defined for levels 0 to 31 only. A hand-built `DdsInfo` can declare
+        // more levels than a u32 dimension has, which is not a size this reader can give.
+        if self.mip_levels > u32::BITS {
+            return None;
+        }
         (0..self.mip_levels).try_fold(0u64, |total, level| {
             let bytes = level_bytes((self.width >> level).max(1), (self.height >> level).max(1))?;
             total.checked_add(bytes)
@@ -362,6 +367,31 @@ mod tests {
                 "{caps2:#x}"
             );
         }
+    }
+
+    #[test]
+    fn more_mip_levels_than_a_dimension_has_bits_size_to_none_without_panicking() {
+        let info = |mip_levels| DdsInfo {
+            width: 4,
+            height: 4,
+            mip_levels,
+            format: DdsFormat::Uncompressed {
+                bits: 8,
+                masks: [0; 4],
+            },
+            data_offset: 128,
+        };
+        assert_eq!(info(1).expected_payload_bytes(), Some(16));
+        // 32 levels use shifts 0 to 31, which are valid; 33 would shift by 32.
+        assert!(info(32).expected_payload_bytes().is_some());
+        assert_eq!(info(33).expected_payload_bytes(), None);
+        // 32 levels of a huge image still overflow to None rather than panic.
+        let huge = DdsInfo {
+            width: u32::MAX,
+            height: u32::MAX,
+            ..info(32)
+        };
+        assert_eq!(huge.expected_payload_bytes(), None);
     }
 
     #[test]
