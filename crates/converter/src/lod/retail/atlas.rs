@@ -38,13 +38,17 @@ pub struct DdsInfo {
 
 impl DdsInfo {
     /// Bytes of pixel data the header implies for all mips, or `None` for a format this reader
-    /// does not size (the caller must not guess).
+    /// does not size (the caller must not guess) or a size that does not fit in `u64`. Every
+    /// multiplication and addition is checked, so a header with huge dimensions cannot overflow.
     pub fn expected_payload_bytes(&self) -> Option<u64> {
-        let block_bytes = match self.format {
+        let block_bytes: u64 = match self.format {
             DdsFormat::Uncompressed { bits, .. } if bits % 8 == 0 && bits > 0 => {
-                return Some(
-                    self.sum_mips(|w, h| u64::from(w) * u64::from(h) * u64::from(bits / 8)),
-                );
+                let pixel_bytes = u64::from(bits / 8);
+                return self.sum_mips(|w, h| {
+                    u64::from(w)
+                        .checked_mul(u64::from(h))?
+                        .checked_mul(pixel_bytes)
+                });
             }
             DdsFormat::FourCc(code) => match &code {
                 b"DXT1" | b"ATI1" | b"BC4U" => 8,
@@ -56,15 +60,19 @@ impl DdsInfo {
             DdsFormat::Dxgi(74 | 75 | 77 | 78 | 83 | 84 | 98 | 99) => 16,
             _ => return None,
         };
-        Some(
-            self.sum_mips(|w, h| u64::from(w.div_ceil(4)) * u64::from(h.div_ceil(4)) * block_bytes),
-        )
+        self.sum_mips(|w, h| {
+            u64::from(w.div_ceil(4))
+                .checked_mul(u64::from(h.div_ceil(4)))?
+                .checked_mul(block_bytes)
+        })
     }
 
-    fn sum_mips(&self, level_bytes: impl Fn(u32, u32) -> u64) -> u64 {
-        (0..self.mip_levels)
-            .map(|level| level_bytes((self.width >> level).max(1), (self.height >> level).max(1)))
-            .sum()
+    /// Sums `level_bytes` over every mip level, or `None` if a level or the total overflows.
+    fn sum_mips(&self, level_bytes: impl Fn(u32, u32) -> Option<u64>) -> Option<u64> {
+        (0..self.mip_levels).try_fold(0u64, |total, level| {
+            let bytes = level_bytes((self.width >> level).max(1), (self.height >> level).max(1))?;
+            total.checked_add(bytes)
+        })
     }
 }
 
@@ -238,6 +246,39 @@ mod tests {
         assert_eq!(info.format, DdsFormat::Dxgi(98));
         assert_eq!(info.data_offset, 148);
         assert_eq!(info.expected_payload_bytes(), Some(16 * 16 * 16));
+    }
+
+    #[test]
+    fn a_huge_header_sizes_to_none_instead_of_overflowing() {
+        // u32::MAX x u32::MAX x 4 bytes is more than u64 holds: the header reads, the size does
+        // not, and nothing panics with overflow checks on.
+        let info = read_dds_info(&header(u32::MAX, u32::MAX, 1, DDPF_RGB, &[0; 4], 32)).unwrap();
+        assert_eq!((info.width, info.height), (u32::MAX, u32::MAX));
+        assert_eq!(info.expected_payload_bytes(), None);
+        // The compressed path: (2^30)^2 blocks of 16 bytes is exactly 2^64, one past u64::MAX.
+        let compressed =
+            read_dds_info(&header(u32::MAX, u32::MAX, 1, DDPF_FOURCC, b"DXT5", 0)).unwrap();
+        assert_eq!(compressed.expected_payload_bytes(), None);
+        // A size that fits still sizes: 65,536 x 65,536 x 4 bytes is 2^34.
+        let fits = read_dds_info(&header(65_536, 65_536, 1, DDPF_RGB, &[0; 4], 32)).unwrap();
+        assert_eq!(fits.expected_payload_bytes(), Some(1 << 34));
+        // The mip total is checked too: one 1-byte-per-pixel level of (2^32 - 1)^2 bytes fits in
+        // u64, but adding the second level (about 2^62 bytes) does not.
+        let level = |mip_levels| DdsInfo {
+            width: u32::MAX,
+            height: u32::MAX,
+            mip_levels,
+            format: DdsFormat::Uncompressed {
+                bits: 8,
+                masks: [0; 4],
+            },
+            data_offset: 128,
+        };
+        assert_eq!(
+            level(1).expected_payload_bytes(),
+            Some(u64::from(u32::MAX) * u64::from(u32::MAX))
+        );
+        assert_eq!(level(2).expected_payload_bytes(), None);
     }
 
     #[test]
