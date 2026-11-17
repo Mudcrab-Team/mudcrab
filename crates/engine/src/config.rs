@@ -137,6 +137,41 @@ impl TerrainLodDistances {
         Some(LodTier::Tier4)
     }
 
+    /// The object LOD (`.bto`) tier retail draws for `cell`, or `None` when the block is dropped
+    /// (RF-LOD-004, RF-LOD-005, RF-LOD-006 in `registry.md`; the verified REA report).
+    ///
+    /// Retail walks the block tree from level 32. A level-32 block holds no object mesh and
+    /// always splits. A level-16 block splits into its level-8 children while the box distance
+    /// is under `fBlockLevel1Distance` x sqrt(`nama`) (retail compares the squared distance with
+    /// `fBlockLevel1Distance`^2 x `nama`), and a level-8 block splits into level-4 blocks under
+    /// `fBlockLevel0Distance` x sqrt(`nama`). A block is dropped when its box distance is at or
+    /// beyond `fBlockMaximumDistance`, which `nama` does not scale. `nama` is the worldspace
+    /// multiplier: 1.0 for Tamriel, 0.25 for Whiterun, Markarth, Windhelm and Alftand.
+    ///
+    /// Terrain uses a different rule ([`Self::terrain_tier`]); the two share only the block box.
+    /// The same engineering guard applies: the camera position is the centre of its cell.
+    pub fn object_tier(
+        &self,
+        camera: IVec2,
+        cell: IVec2,
+        origin: IVec2,
+        nama: f32,
+    ) -> Option<LodTier> {
+        let scale = f64::from(nama.max(0.0)).sqrt();
+        let split = |distance: f32| f64::from(distance) * scale;
+        let distance = |level| f64::from(Self::terrain_block_distance(camera, cell, origin, level));
+        if distance(16) >= f64::from(self.block_maximum_distance) {
+            return None;
+        }
+        if distance(16) >= split(self.block_level1_distance) {
+            return Some(LodTier::Tier16);
+        }
+        if distance(8) >= split(self.block_level0_distance) {
+            return Some(LodTier::Tier8);
+        }
+        Some(LodTier::Tier4)
+    }
+
     /// The Chebyshev cell radius around the camera's cell within which `tier` chunks can be
     /// drawn, used to query, keep and drop chunks. Tier 4 draws in blocks of level 8 that are
     /// split, so it reaches the level-8 split distance plus the 8 cells of the block. Tier 8
@@ -4636,6 +4671,33 @@ mod tests {
         // Outer reach: 250,000 x 1.5 = 375,000 units from the cell's own box.
         assert_eq!(tier(92), Some(LodTier::Tier16));
         assert_eq!(tier(93), None);
+    }
+
+    /// RF-LOD-004 for Tamriel (NAMA 1.0) with the High defaults: objects split at 35,000 and
+    /// 70,000 units and are dropped at 250,000. Camera cell 0, origin 0, cells to the east.
+    #[test]
+    fn object_tier_follows_the_retail_object_distances() {
+        let high = TerrainLodDistances::default();
+        let tier =
+            |x: i32, nama: f32| high.object_tier(IVec2::ZERO, IVec2::new(x, 0), IVec2::ZERO, nama);
+        // Block [0, 8) holds the camera: level 4.
+        assert_eq!(tier(7, 1.0), Some(LodTier::Tier4));
+        // Block [8, 16) is 30,720 away, under 35,000: still level 4.
+        assert_eq!(tier(12, 1.0), Some(LodTier::Tier4));
+        // Block [16, 24) is 63,488 away: past 35,000 so level 8, under 70,000 so not level 16.
+        assert_eq!(tier(20, 1.0), Some(LodTier::Tier8));
+        // Block [32, 48) is 129,024 away: past 70,000, so level 16 draws.
+        assert_eq!(tier(40, 1.0), Some(LodTier::Tier16));
+        // The level-16 block [96, 112) is 391,168 away: dropped beyond 250,000.
+        assert_eq!(tier(100, 1.0), None);
+        // The last level-16 block under 250,000: [48, 64) is 192,512 away, kept; [64, 80) is
+        // 258,048 away, dropped.
+        assert_eq!(tier(60, 1.0), Some(LodTier::Tier16));
+        assert_eq!(tier(70, 1.0), None);
+        // NAMA 0.25 (Whiterun) halves the split distances to 17,500 and 35,000 and leaves the
+        // outer cut alone: block [16, 24) is now past 35,000, so level 16 draws.
+        assert_eq!(tier(20, 0.25), Some(LodTier::Tier16));
+        assert_eq!(tier(70, 0.25), None);
     }
 
     /// Tiers 4 and 8 no longer reach 1.5 times too far: the old rule gave cells 12 and 25 for the
