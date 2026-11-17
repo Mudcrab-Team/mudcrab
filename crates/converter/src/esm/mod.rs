@@ -66,7 +66,7 @@ thread_local! {
 }
 
 #[cfg(test)]
-fn after_plugin_admission_for_test() {
+pub(crate) fn after_plugin_admission_for_test() {
     let hook = AFTER_PLUGIN_ADMISSION.with(|slot| slot.borrow_mut().take());
     if let Some(hook) = hook {
         hook();

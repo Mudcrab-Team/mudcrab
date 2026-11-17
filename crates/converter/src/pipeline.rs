@@ -749,6 +749,8 @@ impl AssetPipeline {
         // Preserve admission flags, master lists and slot positions across archive extraction
         // and parsing. A later header reopen must not compact or reject this admitted order.
         let admitted_order = crate::esm::load_order::LoadOrder::read(&plugins)?;
+        #[cfg(test)]
+        crate::esm::after_plugin_admission_for_test();
         report.load_order = plugins
             .iter()
             .map(|path| {
