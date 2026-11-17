@@ -213,7 +213,10 @@ selects a stationary camera session.
 `--no-render-diagnostics` disables Bevy's GPU timing and pipeline-statistics queries
 for troubleshooting Metal counter-buffer allocation failures. It preserves the
 scene settings, CPU frame timing, streaming gauges, and capture-readiness checks.
-GPU timing evidence is unavailable in runs using this option.
+GPU timing evidence is unavailable in runs using this option. The engine applies the same
+rule by itself to hidden-window runs on macOS (`--hidden-window`), which never present and so
+leave Bevy's per-frame counter sample buffers unpaced. It logs `GPU render diagnostics are off`
+once at start.
 
 Two named visual presets preserve the approved look while allowing experiments:
 

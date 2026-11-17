@@ -56,7 +56,9 @@ trace of a hidden run recorded about 157,000 command buffers in 30 s and zero dr
 acquisitions: a hidden window renders but never acquires a drawable or presents, so its timings
 exclude presentation, and the CPU cost of acquiring and handing over drawables with it. (In the
 visible run `render/swapchain_acquire` averaged 4.5 ms and `render/specialize_and_views` 4.7 ms; in
-the hidden run 0.03 ms and 0.27 ms.) A hidden window also renders black frames on macOS, so `shots`
+the hidden run 0.03 ms and 0.27 ms.) A hidden macOS run also records no per-pass GPU time: the engine skips Bevy's GPU timing recorder
+there, because without presents its Metal counter sample buffers can pile up until the device is
+lost (`Cannot allocate sample buffer`). A hidden window also renders black frames on macOS, so `shots`
 refuses it there (`hidden_window_black_frames`). `compare` puts a warning in `summary.md` when it
 ran hidden on macOS, and refuses a scenario whose base and candidate ran in different modes
 (`window_mode_mismatch`). Hidden remains fine on platforms where it presents normally.

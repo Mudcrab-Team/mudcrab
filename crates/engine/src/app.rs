@@ -563,8 +563,14 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         app.add_systems(Startup, setup_world);
         app.add_systems(Startup, setup_synthetic_benchmark);
     }
-    if !app.world().resource::<EngineConfig>().no_render_diagnostics {
-        app.add_plugins(RenderDiagnosticsPlugin);
+    match render_diagnostics_off_reason(
+        app.world().resource::<EngineConfig>(),
+        cfg!(target_os = "macos"),
+    ) {
+        Some(reason) => info!(reason, "GPU render diagnostics are off"),
+        None => {
+            app.add_plugins(RenderDiagnosticsPlugin);
+        }
     }
     if app.world().resource::<EngineConfig>().stdin_console && !shots_active {
         app.add_plugins(crate::capture_frame::CaptureFramePlugin);
@@ -659,6 +665,24 @@ fn finished(exit: &AppExit) -> Result<()> {
         AppExit::Error(code) => Err(color_eyre::eyre::eyre!(
             "the run failed (exit code {code:?})"
         )),
+    }
+}
+
+/// Why Bevy's GPU timing recorder (`RenderDiagnosticsPlugin`) stays off, or `None` when it runs.
+///
+/// A hidden window on macOS never acquires a drawable and never presents, so nothing paces the
+/// frames. Bevy's recorder keeps one Metal counter sample buffer for each frame that is still in
+/// flight and has no limit. When the GPU falls behind the CPU, the buffers can grow until Metal
+/// refuses the allocation ("Cannot allocate sample buffer") and the device is lost. This is the
+/// likely cause; the live buffer count at a failure is not measured. Any new macOS capture mode
+/// that does not present must also return a reason here.
+fn render_diagnostics_off_reason(config: &EngineConfig, macos: bool) -> Option<&'static str> {
+    if config.no_render_diagnostics {
+        Some("--no-render-diagnostics")
+    } else if macos && config.hidden_window {
+        Some("hidden window on macOS never presents, so Metal counter sample buffers could pile up")
+    } else {
+        None
     }
 }
 
@@ -3070,6 +3094,38 @@ struct ScreenshotCaptureState {
 
 #[cfg(test)]
 mod tests {
+    /// Hidden macOS runs skip Bevy's GPU timing recorder. Visible runs, other platforms and the
+    /// existing flag keep their behaviour.
+    #[test]
+    fn render_diagnostics_are_off_only_for_the_flag_or_a_hidden_macos_window() {
+        let hidden = EngineConfig {
+            hidden_window: true,
+            ..EngineConfig::default()
+        };
+        let visible = EngineConfig::default();
+        let flagged = EngineConfig {
+            no_render_diagnostics: true,
+            ..EngineConfig::default()
+        };
+        let hidden_and_flagged = EngineConfig {
+            hidden_window: true,
+            no_render_diagnostics: true,
+            ..EngineConfig::default()
+        };
+
+        assert!(render_diagnostics_off_reason(&hidden, true).is_some());
+        assert!(render_diagnostics_off_reason(&visible, true).is_none());
+        assert!(render_diagnostics_off_reason(&flagged, true).is_some());
+        assert!(render_diagnostics_off_reason(&flagged, false).is_some());
+        assert_eq!(
+            render_diagnostics_off_reason(&hidden_and_flagged, true),
+            Some("--no-render-diagnostics")
+        );
+        // Linux and Windows present in a hidden window, so they are unchanged.
+        assert!(render_diagnostics_off_reason(&hidden, false).is_none());
+        assert!(render_diagnostics_off_reason(&visible, false).is_none());
+    }
+
     /// A `--route` file shares the camera with neither `--shots` nor `--matched-route`. The refusal
     /// comes before the shots file is read, so the file names here need not exist.
     #[test]
