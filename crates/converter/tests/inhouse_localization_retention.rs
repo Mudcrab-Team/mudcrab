@@ -1055,6 +1055,8 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "script_property_values",
             "room_bounds",
             "room_portals",
+            "room_occluders",
+            "room_occluder_links",
             "room_links",
             "room_reference_rules",
             "room_model_bounds",
