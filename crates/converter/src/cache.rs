@@ -472,6 +472,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "leaf-ordered-and-static-skin-room-spheres",
     "complete-root-room-spheres",
     "export-leaf-scene-nodes",
+    "skin-auto-quality-room-spheres",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical

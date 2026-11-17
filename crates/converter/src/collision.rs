@@ -58,7 +58,10 @@ pub(crate) fn skin_pose_is_fixed(path: &Path) -> Result<bool> {
                 return Ok(false);
             }
             let mass = f32_at(raw, BODY_MASS)?;
+            // Automatic quality can resolve to a moving body; it cannot prove a fixed bind pose.
             if !mass.is_finite()
+                || (raw[BODY_QUALITY_TYPE] == 0
+                    && SIMULATED_MOTION_SYSTEMS.contains(&raw[BODY_MOTION_SYSTEM]))
                 || classify(raw[BODY_MOTION_SYSTEM], raw[BODY_QUALITY_TYPE], mass)
                     != BodyKind::Fixed
             {
@@ -1449,6 +1452,47 @@ mod tests {
     }
 
     #[test]
+    fn automatic_quality_cannot_prove_a_simulated_skin_pose_fixed() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("skin-bodies.nif");
+        let mut bytes = body_nif();
+        let (data, header) = crate::mesh::parse_skyrim_header(&bytes, &path).unwrap();
+        let mut offset = bytes.len() - data.len();
+        let mut bodies = Vec::new();
+        for index in 0..header.block_count as usize {
+            if matches!(
+                header.get_block_type(index).unwrap(),
+                "bhkRigidBody" | "bhkRigidBodyT"
+            ) {
+                bodies.push(offset);
+            }
+            offset += header.block_size_index[index] as usize;
+        }
+        assert!(!bodies.is_empty());
+        for &offset in &bodies {
+            bytes[offset + BODY_MOTION_SYSTEM] = 7;
+            bytes[offset + BODY_QUALITY_TYPE] = 0;
+            bytes[offset + BODY_MASS..offset + BODY_MASS + 4]
+                .copy_from_slice(&0.0f32.to_le_bytes());
+        }
+        fs::write(&path, &bytes).unwrap();
+        assert!(skin_pose_is_fixed(&path).unwrap());
+        let offset = bodies[0];
+        for motion in SIMULATED_MOTION_SYSTEMS {
+            for mass in [0.0f32, 5.0] {
+                bytes[offset + BODY_MOTION_SYSTEM] = motion;
+                bytes[offset + BODY_MASS..offset + BODY_MASS + 4]
+                    .copy_from_slice(&mass.to_le_bytes());
+                fs::write(&path, &bytes).unwrap();
+                assert!(
+                    !skin_pose_is_fixed(&path).unwrap(),
+                    "motion={motion}, automatic quality, mass={mass}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn skin_pose_checks_dynamics_even_on_unexported_collision_layers() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("skin-bodies.nif");
@@ -1468,7 +1512,7 @@ mod tests {
         assert!(!bodies.is_empty());
         for &offset in &bodies {
             bytes[offset + BODY_LAYER] = 20;
-            bytes[offset + BODY_MOTION_SYSTEM] = 5;
+            bytes[offset + BODY_MOTION_SYSTEM] = 7;
             bytes[offset + BODY_QUALITY_TYPE] = 0;
             bytes[offset + BODY_MASS..offset + BODY_MASS + 4]
                 .copy_from_slice(&0.0f32.to_le_bytes());
@@ -1476,6 +1520,7 @@ mod tests {
         fs::write(&path, &bytes).unwrap();
         assert!(skin_pose_is_fixed(&path).unwrap());
         let offset = bodies[0];
+        bytes[offset + BODY_MOTION_SYSTEM] = 5;
         bytes[offset + BODY_QUALITY_TYPE] = 4;
         bytes[offset + BODY_MASS..offset + BODY_MASS + 4].copy_from_slice(&5.0f32.to_le_bytes());
         fs::write(&path, bytes).unwrap();
