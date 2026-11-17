@@ -50,7 +50,10 @@ def compare(text, luau, deployed):
             "plugin_sha256": deployed["plugin_sha256"], "pex_sha256": deployed["pex_sha256"],
             "helper_sha256": luau["helper_sha256"], "cases": cases,
             "probe_only_wait_adapter_matches": adapter["trace"] == traces["latent"]
-                and not adapter["error"] and adapter["finished"]}
+                and not adapter["error"] and adapter["finished"]
+                and adapter.get("yields") == [{"kind": "Wait", "seconds": 0.5,
+                    "trace_before_resume": ["MCPARITY|latent|begin", "MCPARITY|latent|outer.before",
+                                            "MCPARITY|latent|inner.before"]}]}
 
 
 def verify_deployment(manifest, inputs):

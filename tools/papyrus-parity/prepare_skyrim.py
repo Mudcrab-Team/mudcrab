@@ -40,6 +40,9 @@ def prepare(game, pex, prefix_template, output):
     game = game.resolve(strict=True)
     pex = pex.resolve(strict=True)
     prefix_template = prefix_template.resolve(strict=True)
+    output = output.resolve()
+    if output.is_relative_to(prefix_template):
+        raise ValueError("Output inside the prefix template is not allowed")
     if output.exists():
         raise ValueError("Use a fresh output directory; an existing game/profile is never modified")
     output.mkdir(parents=True, mode=0o700)
@@ -72,6 +75,10 @@ def prepare(game, pex, prefix_template, output):
     documents.mkdir(parents=True, exist_ok=True)
     assert documents.resolve().is_relative_to(compat.resolve()), "Documents escaped the copied prefix"
     (documents / "Logs/Script").mkdir(parents=True, exist_ok=True)
+    for name in ("Skyrim.ini", "SkyrimPrefs.ini"):
+        filename = documents / name
+        if filename.is_symlink():
+            filename.unlink()
     ini = configparser.ConfigParser(strict=False)
     ini.optionxform = str
     ini.read(game / "Skyrim_Default.ini")
@@ -101,6 +108,10 @@ bEnableFileSelection=1
     local = user / "AppData/Local/Skyrim Special Edition"
     local.mkdir(parents=True, exist_ok=True)
     assert local.resolve().is_relative_to(compat.resolve()), "AppData escaped the copied prefix"
+    for name in ("plugins.txt", "loadorder.txt"):
+        filename = local / name
+        if filename.is_symlink():
+            filename.unlink()
     masters = "Skyrim.esm\nUpdate.esm\nDawnguard.esm\nHearthFires.esm\nDragonborn.esm\n"
     (local / "plugins.txt").write_text("*MCParity.esp\n")
     (local / "loadorder.txt").write_text(masters + "MCParity.esp\n")

@@ -252,7 +252,9 @@
   },
   "validation": {
     "state_regressions_passed": 9,
-    "comparator_controls_passed": 6,
+    "comparator_controls_passed": 8,
+    "profile_preparation_regressions_passed": 2,
+    "snapshot_isolation_regressions_passed": 1,
     "failing_before": "pex_parent_dispatch_preserves_receiver_and_defining_class: active-state ancestry assertion",
     "excluded_trial": "First unguarded capture rejected because OnInit ran twice per quest",
     "limits": [

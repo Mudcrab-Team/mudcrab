@@ -4,6 +4,7 @@ use mlua::{Function, Lua, Table, ThreadStatus, Value};
 use serde_json::{Value as Json, json};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     fs,
     path::Path,
     sync::{Arc, Mutex},
@@ -20,6 +21,18 @@ const CLASSES: &[&str] = &[
     "MCParityNestedBegin",
     "MCParityLatent",
 ];
+
+fn snapshot_pex(source: &Path) -> Result<(tempfile::TempDir, BTreeMap<String, String>)> {
+    let snapshot = tempfile::tempdir()?;
+    let mut hashes = BTreeMap::new();
+    for name in CLASSES {
+        let filename = format!("{name}.pex");
+        let bytes = fs::read(source.join(&filename))?;
+        hashes.insert(filename.clone(), format!("{:x}", Sha256::digest(&bytes)));
+        fs::write(snapshot.path().join(filename), bytes)?;
+    }
+    Ok((snapshot, hashes))
+}
 
 fn run_case(pex: &Path, class_name: &str, wait_adapter: bool) -> Result<Json> {
     let lua = Lua::new();
@@ -122,7 +135,8 @@ fn main() -> Result<()> {
     if args.len() != 2 {
         return Err("usage: papyrus_parity PEX_DIRECTORY OUTPUT_JSON".into());
     }
-    let pex = Path::new(&args[0]);
+    let (snapshot, pex_hashes) = snapshot_pex(Path::new(&args[0]))?;
+    let pex = snapshot.path();
     let mut cases = serde_json::Map::new();
     for (name, class) in [
         ("inheritance", "MCParityInheritance"),
@@ -133,14 +147,6 @@ fn main() -> Result<()> {
         cases.insert(name.into(), run_case(pex, class, false)?);
     }
     let adapter = run_case(pex, "MCParityLatent", true)?;
-    let pex_hashes = CLASSES
-        .iter()
-        .map(|name| {
-            let filename = format!("{name}.pex");
-            let digest = format!("{:x}", Sha256::digest(fs::read(pex.join(&filename))?));
-            Ok((filename, digest))
-        })
-        .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
     let result = json!({"scope": "Current converter and shared helper; native services are explicit probe stubs",
         "helper_sha256": format!("{:x}", Sha256::digest(RUNTIME.as_bytes())),
         "pex_sha256": pex_hashes,
@@ -151,4 +157,26 @@ fn main() -> Result<()> {
     )?;
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replacing_source_bytecode_does_not_change_probe_inputs_or_hashes() -> Result<()> {
+        let source = tempfile::tempdir()?;
+        for name in CLASSES {
+            fs::write(source.path().join(format!("{name}.pex")), b"original")?;
+        }
+        let (snapshot, hashes) = snapshot_pex(source.path())?;
+        for name in CLASSES {
+            let filename = format!("{name}.pex");
+            fs::write(source.path().join(&filename), b"replacement")?;
+            let bytes = fs::read(snapshot.path().join(&filename))?;
+            assert_eq!(bytes, b"original");
+            assert_eq!(hashes[&filename], format!("{:x}", Sha256::digest(&bytes)));
+        }
+        Ok(())
+    }
 }

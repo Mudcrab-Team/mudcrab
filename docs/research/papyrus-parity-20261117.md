@@ -106,4 +106,6 @@ The focused lookup regression failed before the fix at the active-state ancestry
 
 The final native comparison matches inheritance and both nested-state traces. It intentionally remains a nonzero comparison because the primary latent case is unsupported. The probe-only adapter matches its ordering separately.
 
+Review follow-up strengthens the probe adapter check to require one wait token with argument 0.5 and the exact pre-resume trace. The runner now converts and hashes a private PEX snapshot. Profile preparation rejects output inside its template and replaces copied configuration-file symlinks before writing. Eight comparator controls, two profile-preparation regressions, and one snapshot-isolation test cover these paths. The new Python controls failed before the fixes. The original native capture remains unchanged.
+
 This is a bounded parity result for these programs and Skyrim 1.7.104.0. It does not cover inherited instance-variable initialization, properties, arbitrary state combinations, concurrency, persistence, menu/game-time waits, cancellation, or the full Papyrus native API. No full workspace or in-engine Mudcrab gameplay run was performed.

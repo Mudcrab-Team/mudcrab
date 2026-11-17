@@ -63,7 +63,7 @@ python3 -B tools/papyrus-parity/compare_traces.py \
 	--deployed "$SESSION/inputs.json" --output "$AUDIT/comparison.json"
 ```
 
-The runner converts the actual PEX files with `ScriptConverter`, executes the shared helper, and records script traces, failures, yields, and hashes. Debug output is a capture stub. The primary run does not supply a `Utility::Wait` provider. A separate probe-only Luau adapter yields and resumes the coroutine to test continuation ordering. Its success never counts as shipped engine support.
+The runner copies the six PEX inputs into a private temporary snapshot, then uses that snapshot for every conversion and its input hashes. It executes the shared helper and records script traces, failures, yields, and hashes. Debug output is a capture stub. The primary run does not supply a `Utility::Wait` provider. A separate probe-only Luau adapter yields and resumes the coroutine to test continuation ordering. The comparator requires exactly one wait of 0.5 with the pre-resume trace ending at `inner.before`. Its success never counts as shipped engine support.
 
 The comparator rechecks the deployed executable, plugin, and PEX hashes. It requires identical Skyrim and Luau bytecode inputs and compares order separately for each quest. Exit codes are 0 for a complete match, 1 for measured differences or unsupported native calls, and 2 for incomplete evidence. It does not compare elapsed time or global ordering across concurrently initialized quests.
 

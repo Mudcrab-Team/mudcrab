@@ -5,12 +5,16 @@ from compare_traces import CASES, compare, retail_traces
 
 def inputs():
     traces = {name: [f"MCPARITY|{name}|begin", f"MCPARITY|{name}|done"] for name in CASES}
+    traces["latent"] = ["MCPARITY|latent|" + marker for marker in
+                        ("begin", "outer.before", "inner.before", "inner.after", "outer.after=42", "done")]
     luau = {"cases": {name: {"trace": trace, "error": None, "finished": True}
                       for name, trace in traces.items()},
             "pex_sha256": {"fixture.pex": "same"}, "helper_sha256": "helper",
-            "probe_only_wait_adapter": {"trace": traces["latent"], "error": None, "finished": True}}
+            "probe_only_wait_adapter": {"trace": traces["latent"], "error": None, "finished": True,
+                                        "yields": [{"kind": "Wait", "seconds": 0.5,
+                                                    "trace_before_resume": traces["latent"][:3]}]}}
     deployed = {"pex_sha256": {"fixture.pex": "same"}, "game_exe_sha256": "game", "plugin_sha256": "plugin"}
-    text = "\n".join("[date] " + trace[i] for i in range(2) for trace in traces.values())
+    text = "\n".join("[date] " + trace[i] for i in range(6) for trace in traces.values() if i < len(trace))
     return text, luau, deployed
 
 
@@ -48,6 +52,23 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(result["cases"]["latent"]["status"], "unsupported_native")
         self.assertEqual(result["status"], "differences")
         self.assertTrue(result["probe_only_wait_adapter_matches"])
+
+    def test_probe_wait_requires_one_yield_at_the_pause(self):
+        for yields in ([], [{"kind": "Wait", "seconds": 0.5, "trace_before_resume": []}],
+                       [{"kind": "Wait", "seconds": 0.5, "trace_before_resume": ["too late"]}]):
+            with self.subTest(yields=yields):
+                text, luau, deployed = inputs()
+                luau["probe_only_wait_adapter"]["yields"] = yields
+                self.assertFalse(compare(text, luau, deployed)["probe_only_wait_adapter_matches"])
+
+    def test_probe_wait_requires_the_expected_argument_and_count(self):
+        for seconds, count in ((1.0, 1), (0.5, 2)):
+            with self.subTest(seconds=seconds, count=count):
+                text, luau, deployed = inputs()
+                token = luau["probe_only_wait_adapter"]["yields"][0]
+                token["seconds"] = seconds
+                luau["probe_only_wait_adapter"]["yields"] = [token] * count
+                self.assertFalse(compare(text, luau, deployed)["probe_only_wait_adapter_matches"])
 
 
 if __name__ == "__main__":
