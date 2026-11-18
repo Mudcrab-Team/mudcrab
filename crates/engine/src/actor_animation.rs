@@ -298,23 +298,25 @@ fn advance_idle_sequences(
     }
 }
 
+/// Sequences whose body is ready but that have neither a player nor a clip request pending.
+type StalledIdleSequences<'w, 's> = Query<
+    'w,
+    's,
+    (Entity, &'static Actor, &'static mut IdleSequence),
+    (
+        With<ActorBodyReady>,
+        Without<AnimationPlayer>,
+        Without<ActorClips>,
+    ),
+>;
+
 /// Continues a sequence whose clip did not start.
 ///
 /// `start_actor_animations` removes the clip request without installing a player when the clip has
 /// no animation or the body has no animation root. Without a player [`advance_idle_sequences`]
 /// never runs again. This marks the clip as failed and asks for another one, so one bad clip cannot
 /// stop the sequence. When every clip failed, the sequence is removed.
-fn recover_idle_sequences(
-    mut commands: Commands,
-    mut sequences: Query<
-        (Entity, &Actor, &mut IdleSequence),
-        (
-            With<ActorBodyReady>,
-            Without<AnimationPlayer>,
-            Without<ActorClips>,
-        ),
-    >,
-) {
+fn recover_idle_sequences(mut commands: Commands, mut sequences: StalledIdleSequences) {
     for (entity, actor, mut sequence) in &mut sequences {
         let failed = sequence.current;
         warn!(
@@ -1623,7 +1625,7 @@ mod tests {
             assert_eq!(sequence.position(), (0, 5));
             assert_eq!(sequence.current_source(), "clip0");
             for _ in 0..200 {
-                sequence.advance();
+                sequence.advance_for_test();
                 let (current, size) = sequence.position();
                 assert!(current < size, "reference {reference:#x}");
             }
@@ -1637,7 +1639,7 @@ mod tests {
         let mut repeats = 0;
         let mut previous = 0;
         for _ in 0..4000 {
-            sequence.advance();
+            sequence.advance_for_test();
             let current = sequence.position().0;
             counts[current] += 1;
             repeats += u32::from(current == previous);
@@ -1657,7 +1659,7 @@ mod tests {
             let mut sequence = IdleSequence::new(pool(4), reference).unwrap();
             (0..64)
                 .map(|_| {
-                    sequence.advance();
+                    sequence.advance_for_test();
                     sequence.position().0
                 })
                 .collect::<Vec<_>>()
