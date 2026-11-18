@@ -11,20 +11,20 @@ Settings are grouped under headings (for example Point lights, Sun shadows, Wate
 ## Graphics
 
 - Point lights, enabled-light budget, point-light shadows and shadow-map resolution. Enabling lights also creates them in already loaded cells; disabling them hides those lights. Authored invalid, negative, and initially off lights retain their existing exclusion rules.
-- Sun lighting, illuminance and RGB color; ambient brightness and RGB color.
+- Sun lighting, illuminance and RGB color; ambient brightness and RGB color. These are exterior settings. An interior in sky mode 1 or 2 uses the cell's own key light and ambient colour instead, so the sun toggle, illuminance, colour and shadows do not change it (ambient brightness still applies). Leaving the interior restores the current settings.
 - Sun shadows, shadow-map resolution, cascade count and distance multiplier. The underlying shadow range follows the full-detail unload grid.
-- Sky dome, sky-brightness multiplier, exterior distance fog and fog-density multiplier. Interior cells retain their existing sky/fog rules.
+- Sky dome, sky-brightness multiplier, exterior distance fog and fog-density multiplier. Indoors the sky dome is hidden. An interior in sky mode 1 or 2 uses the cell's own fog, which the fog switch turns off and the fog-density multiplier does not scale.
 - Water reflections and reflection multiplier; waves, flow normals, wave scale, speed and strength. The reflection multiplier layers over each water's converted Fresnel and reflectivity values.
-- CPU frustum culling, GPU indirect drawing, GPU occlusion culling and depth prepass. Enabling occlusion enables its depth-prepass and indirect-drawing dependencies; disabling either dependency disables occlusion.
-- MSAA, exposure, tone mapping, vertical FOV, VSync, window mode and windowed resolution. Walking sprint adds its existing FOV bonus to the chosen base FOV.
+- CPU frustum culling, room culling, GPU indirect drawing, GPU occlusion culling and depth prepass. Room culling defaults to On, applies to interiors, and changes immediately without rebuilding assets. Enabling occlusion enables its depth-prepass and indirect-drawing dependencies; disabling either dependency disables occlusion.
+- MSAA, exposure, tone mapping, vertical FOV, VSync, window mode and windowed resolution.
 - Color grading: Off, Saturation, Full (legacy), Approved sRGB, Snapshot linear and Record sRGB, with live saturation, brightness, contrast, pivot, tint amount and tint RGB. Defaults preserve the approved Sleeping Giant sRGB appearance and Cool Gray sky/fog. Stage-dependent rows dim while inactive. Reflections stay ungraded. Console commands synchronize the menu. See the integration contract below for domains, persistence, launch precedence and capture isolation.
 - Status HUD and diagnostic asset fallbacks for subsequent loads. Existing failed instances keep their current fallback state. Collision outlines remain a session-only toggle available in the Graphics tab and the console.
 
-The panel lists room culling as unavailable until #188 supplies an implementation. HDR scene composition stays enabled. Renderer backend and adapter information are displayed; backend/device capabilities require renderer initialization. Authored material colors, texture tiling, and per-water factors remain asset data.
+Room culling can be disabled independently when diagnosing interior visibility. HDR scene composition stays enabled. Renderer backend and adapter information are displayed; backend/device capabilities require renderer initialization. Authored material colors, texture tiling, and per-water factors remain asset data.
 
 ## Streaming
 
-The UI exposes the full-detail and unload radii; all four supported terrain LOD distance settings; cell commit count/time budgets; cell unload, model spawn, and render-asset upload budgets; and IO-thread count. LOD distance changes refresh queries at the current camera position. The unload radius must cover the full-detail radius.
+The UI exposes the full-detail and unload radii; the four supported LOD distance settings (two terrain: the split multiplier and the outer reach; two object LOD distances that do not affect terrain until object LOD lands); cell commit count/time budgets; cell unload, model spawn, and render-asset upload budgets; and IO-thread count. LOD distance changes refresh queries at the current camera position. The unload radius must cover the full-detail radius.
 
 IO threads and the visual profile ([visual-profiles.md](visual-profiles.md)) are fixed at startup. Changing either requires Save and a restart; other settings apply during the session, with diagnostic fallbacks taking effect on subsequent loads. Numerical UI limits bound interactive edits. A zero budget is unlimited only where the label says so.
 
@@ -130,3 +130,24 @@ At commit `52266688`, 1,054 engine-library CPU tests passed with 1 ignored,
 strict engine/shared Clippy passed for all targets and features with `-D warnings`,
 and workspace formatting passed. Native UI, GPU behavior, visual parity, gameplay
 and performance were not exercised. CI on the published head remains a merge gate.
+
+## Window focus and world simulation
+
+The primary game window pauses virtual world time when it loses focus, including normal
+minimisation that loses focus. `[General] bAlwaysActive=1` in a file supplied by `--ini`, or
+`--always-active`, opts out; the default is `0`. Other windows do not own this pause reason.
+Visible `--stdin-console` sessions driven from a terminal should pass `--always-active`
+to keep physics, door transitions and time-driven animation running while unfocused.
+The `collision-measure` feature with `MUDCRAB_COLLISION_MEASURE` set also keeps simulation
+active for its automated measurement route. Each focus-pause acquisition logs an info line
+pointing to `--always-active`.
+Focus loss releases input without resetting airborne velocity or jump state, with either policy.
+Regaining focus discards background elapsed time before resuming simulation. Closing Settings
+or the console while still unfocused releases only that menu's pause. Automated/hidden capture
+modes keep their existing focus-independent simulation policy. Occlusion alone does not pause;
+platform-specific minimisation without focus loss is not covered by this policy.
+
+Menu input ownership is separate from physics: on admitted fixed ticks WALK integrates neutral
+input, retaining inertia and gravity, and safe spawn/door placement continues. Unsafe door holds
+remain guarded. During a world pause, async loading and rendering continue, but door landing,
+rollback, space/teleport commits and automatic held-object target assignments wait for resume.

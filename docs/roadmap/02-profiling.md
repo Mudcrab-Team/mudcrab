@@ -413,7 +413,7 @@ cannot drift apart).
   Nothing is zero-filled here either: a counter the report left `null` stays `null`. When the engine
   ends a repeat on a failed acceptance gate the window records `acceptance`: `runs_failed_gates` (the
   repeats whose report says `passed: false`), `runs` (the repeat count) and `failed_gates` (the sorted
-  union of the `thresholds` names whose value is the boolean `false`); a baseline run measures through
+  union of the `thresholds` names whose value is the boolean `false`, except `frame_pass_bar_required`, which is the `--accept-frame-pass-bar` setting, and `frame_pass_bar_met`, which counts only when the run required it); a baseline run measures through
   an engine gate rather than failing on it, because the report a gated run wrote is still a
   measurement, and only a report that cannot be shown to be this repeat's (missing, stale, malformed,
   zero frames, another run's) throws.
@@ -476,7 +476,8 @@ baseline therefore measures a moving scene and reports the frame-time distributi
 **The pass bar (proposed).** At least 99.9% of the frames of a travel window are within the budget
 (6.25 ms) and no frame is over twice the budget (12.5 ms). `--frame-budget-ms` changes the budget
 (default 6.25); the report says whether the window met the bar (`meets_pass_bar`) for whatever budget
-it was given. The bar is a proposal, not a decision.
+it was given. The bar is a proposal, not a decision: `--accept-frame-pass-bar` makes a missed bar
+fail the run, and it is off by default.
 
 **The routes.** `--route <file>` makes the camera follow a route file (`scripts/routes/`): waypoints in
 Skyrim world units, a speed in units per second (Skyrim running is about 400), an eye height above

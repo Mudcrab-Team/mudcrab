@@ -1456,17 +1456,17 @@ mod tests {
 
     #[test]
     fn initial_acknowledgments_wait_for_current_camera_and_readiness_masks() {
-        // Both cells are inside one compiler tier-4 chunk, but initially only the first is in
-        // the default twelve-cell reach. A ready old mask must not flatten the hierarchy before
-        // the newly in-range second cell's nonempty replacement has uploaded.
+        // Both cells are inside one compiler tier-16 chunk, but initially only the first is in
+        // the default outer reach (cell 92 is, cell 94 is not, and they sit in different 2x2 batches). A ready old mask must not
+        // flatten the hierarchy before the newly in-range second cell's nonempty replacement has
+        // uploaded.
         {
             let mut app = selection_app();
-            let fixture = fixture(&mut app, &[IVec2::ZERO, IVec2::new(3, 0)], LodTier::Tier4);
-            {
-                let world = app.world_mut();
-                let mut cameras = world.query_filtered::<&mut Transform, With<StreamingCamera>>();
-                cameras.single_mut(world).unwrap().translation.x = -9.5 * CELL_SIZE;
-            }
+            let fixture = fixture(
+                &mut app,
+                &[IVec2::new(92, 0), IVec2::new(94, 0)],
+                LodTier::Tier16,
+            );
             ready_source(&mut app, &fixture);
             queue_source(&mut app, &fixture);
             app.update();
@@ -1489,7 +1489,7 @@ mod tests {
             {
                 let world = app.world_mut();
                 let mut cameras = world.query_filtered::<&mut Transform, With<StreamingCamera>>();
-                cameras.single_mut(world).unwrap().translation.x = 0.5 * CELL_SIZE;
+                cameras.single_mut(world).unwrap().translation.x = 2.5 * CELL_SIZE;
             }
             app.update();
             let chunk = app.world().get::<LodTerrainBatches>(fixture.root).unwrap();

@@ -1,6 +1,7 @@
 //! Offline conversion of Skyrim assets into runtime-ready Mudcrab assets.
 
 pub mod actor_models;
+pub mod actor_outfits;
 pub mod animation;
 pub mod archive;
 pub mod asset_path;
@@ -9,7 +10,9 @@ pub mod check;
 pub mod collision;
 pub mod compose;
 pub mod config;
+pub mod derive_outfits;
 pub mod esm;
+pub mod extensions;
 pub mod integration;
 pub mod lip;
 pub mod lod;
@@ -21,6 +24,7 @@ pub mod progress;
 pub mod reader_diff;
 pub mod records;
 pub mod repair;
+mod reuse;
 pub mod script;
 pub mod streaming_costs;
 pub mod terrain_arrays;

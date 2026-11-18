@@ -1629,7 +1629,7 @@ async fn adapter10_metadata_rebuild_preserves_original_assets_and_saved_addons_a
     rebuild_config(mod_config(&data, &second, &[]), &first, false).await;
     for output in [&first, &second] {
         let reader = json_artifact(output, "record-reader.json");
-        assert_eq!(reader["adapter_version"], 13);
+        assert_eq!(reader["adapter_version"], 14);
         let manifest = json_artifact(output, "conversion-manifest.json");
         let provenance = json_artifact(output, "metadata-rebuild.json");
         assert_ne!(
