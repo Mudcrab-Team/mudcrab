@@ -5,6 +5,9 @@
 //! optional: a database converted before them, or with a table of another shape, loads an empty
 //! map for that table and the engine keeps its built-in lighting. The clock/climate sun path
 //! consumes this catalog; other lighting and sky work can consume the remaining fields (#264).
+//! [`interior`] applies the authored interior lighting in sky modes 1 and 2 (RF-LIGHT-CPU-010).
+
+pub mod interior;
 
 use bevy::prelude::*;
 use rusqlite::{Connection, OpenFlags, Row};
@@ -35,7 +38,7 @@ impl TimeOfDay {
 
 /// A directional ambient block (`DALC`): colours along X+, X-, Y+, Y-, Z+, and Z-.
 /// Specular colour and scale are optional. Colours are 8-bit sRGB.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize)]
 pub struct DirectionalAmbient {
     pub colors: [[u8; 3]; 6],
     pub specular: Option<[u8; 3]>,
@@ -44,7 +47,7 @@ pub struct DirectionalAmbient {
 
 /// The lighting fields an `XCLL` and an `LGTM` `DATA` share. A field is `None` when the block is
 /// absent or too short to hold it. Colours are 8-bit sRGB; rotations are degrees, as authored.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize)]
 pub struct Lighting {
     pub ambient: Option<[u8; 3]>,
     pub directional: Option<[u8; 3]>,
@@ -66,6 +69,9 @@ pub struct Lighting {
 /// A cell's `XCLL` lighting and `LTMP` template.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct CellLighting {
+    /// Authored XCLL length in bytes (92, or 72 for the short form). None means absent: the
+    /// converter ignores a block under 72 bytes, so it is stored as None too.
+    pub xcll_size: Option<u32>,
     pub lighting_template: Option<u32>,
     pub lighting: Lighting,
     /// Which fields come from the lighting template instead (db-schema.md lists the bits).
@@ -187,7 +193,14 @@ pub struct ClimateWeather {
 
 #[derive(Resource, Debug, Default)]
 pub struct EnvironmentCatalog {
+    /// Whether the `cell_lighting` table could be read. When it could not, the catalog knows
+    /// nothing about any cell, which is not the same as an authored cell without XCLL.
+    cell_lighting_available: bool,
     cells: HashMap<u32, CellLighting>,
+    cell_flags: HashMap<u32, Option<u32>>,
+    /// `cell_environment.image_space_id` (XCIM) by cell. A cell is absent when the table or the
+    /// column is missing. A present entry may hold `None` (the cell has no XCIM).
+    cell_image_spaces: HashMap<u32, Option<u32>>,
     worldspaces: HashMap<u32, WorldspaceEnvironment>,
     templates: HashMap<u32, LightingTemplate>,
     weathers: HashMap<u32, Weather>,
@@ -197,6 +210,20 @@ pub struct EnvironmentCatalog {
     parent_worlds: HashMap<u32, u32>,
     /// The pack's winning sun GMSTs in `sun::SUN_KEYS` order; `None` where the pack has none.
     sun_settings: [Option<f32>; 5],
+    /// `room_bounds` rows with a lighting template, by cell, in `ref_id` order.
+    room_bounds: HashMap<u32, Vec<RoomBound>>,
+}
+
+/// A room marker's box and its `LNAM` lighting template (`room_bounds`, db-schema.md). Position
+/// and rotation are the reference's Creation-axis values (rotation in radians); `half` is the
+/// half extent along the box's own Creation axes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RoomBound {
+    pub ref_id: u32,
+    pub position: [f32; 3],
+    pub rotation: [f32; 3],
+    pub half: [f32; 3],
+    pub lighting_template: u32,
 }
 
 /// A directional ambient block's 22 columns after `prefix`.
@@ -285,23 +312,49 @@ impl EnvironmentCatalog {
 
     /// Load optional authored tables and sun game settings without requiring a complete pack.
     pub fn from_connection(connection: &Connection) -> Self {
-        let cells = read(
+        let cell_lighting_sql = format!(
+            "SELECT cell_id, lighting_template_id, {}, inherit_flags, xcll_size FROM cell_lighting",
+            lighting_columns()
+        );
+        // A pack converted before the environment tables, or one whose rows cannot be read, tells
+        // the engine nothing about any cell. That is different from a cell without a row, which
+        // the converter writes only for cells with an XCLL or LTMP.
+        let cells_read = try_read_rows(connection, &cell_lighting_sql, |row| {
+            Ok((
+                row.get(0)?,
+                CellLighting {
+                    xcll_size: row.get(3 + LIGHTING_WIDTH)?,
+                    lighting_template: row.get(1)?,
+                    lighting: lighting(row, 2)?,
+                    inherit_flags: row.get(2 + LIGHTING_WIDTH)?,
+                },
+            ))
+        });
+        let cell_lighting_available = cells_read.is_ok();
+        let cells: HashMap<u32, CellLighting> = cells_read
+            .unwrap_or_else(|error| {
+                // A warning, not info: no interior gets authored lighting and the built-in lights
+                // stay, which changes the picture.
+                warn!(
+                    "environment: no usable `cell_lighting` table ({error}); interiors keep the built-in lights"
+                );
+                Vec::new()
+            })
+            .into_iter()
+            .collect();
+        let cell_flags = read(
             connection,
-            &format!(
-                "SELECT cell_id, lighting_template_id, {}, inherit_flags FROM cell_lighting",
-                lighting_columns()
-            ),
-            "cell_lighting",
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    CellLighting {
-                        lighting_template: row.get(1)?,
-                        lighting: lighting(row, 2)?,
-                        inherit_flags: row.get(2 + LIGHTING_WIDTH)?,
-                    },
-                ))
-            },
+            "SELECT cell_id, data_flags FROM cell_environment",
+            "cell_environment",
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        );
+        // A separate read: a database converted without the `image_space_id` column still loads
+        // its flags, and reports the cell image space as missing.
+        let cell_image_spaces = read(
+            connection,
+            "SELECT cell_id, image_space_id FROM cell_environment",
+            "cell_environment.image_space_id",
+            |row| Ok((row.get(0)?, row.get(1)?)),
         );
         let worldspaces = read(
             connection,
@@ -410,8 +463,35 @@ impl EnvironmentCatalog {
             image_spaces.len(),
             climate_weathers.len()
         );
+        let mut room_bounds: HashMap<u32, Vec<RoomBound>> = HashMap::new();
+        for (cell, room) in read_rows(
+            connection,
+            "SELECT cell_id, ref_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, half_x, half_y, \
+             half_z, lighting_template_id FROM room_bounds \
+             WHERE lighting_template_id IS NOT NULL ORDER BY ref_id",
+            "room_bounds",
+            |row| {
+                let f = |index: usize| row.get::<_, f64>(index).map(|value| value as f32);
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    RoomBound {
+                        ref_id: row.get(1)?,
+                        position: [f(2)?, f(3)?, f(4)?],
+                        rotation: [f(5)?, f(6)?, f(7)?],
+                        half: [f(8)?, f(9)?, f(10)?],
+                        lighting_template: row.get(11)?,
+                    },
+                ))
+            },
+        ) {
+            room_bounds.entry(cell).or_default().push(room);
+        }
         Self {
+            room_bounds,
+            cell_lighting_available,
             cells,
+            cell_flags,
+            cell_image_spaces,
             worldspaces,
             templates,
             weathers,
@@ -421,6 +501,28 @@ impl EnvironmentCatalog {
             parent_worlds,
             sun_settings,
         }
+    }
+
+    /// The cell's room markers that carry a lighting template, in `ref_id` order.
+    pub fn room_bounds(&self, cell_id: u32) -> &[RoomBound] {
+        self.room_bounds.get(&cell_id).map_or(&[], Vec::as_slice)
+    }
+
+    /// CELL DATA flags, including independent Show Sky and Use Sky Lighting bits.
+    pub fn cell_flags(&self, cell_id: u32) -> Option<u32> {
+        self.cell_flags.get(&cell_id).copied().flatten()
+    }
+
+    /// The cell's XCIM image space (`cell_environment.image_space_id`). `None` means the database
+    /// has no value for the cell (old database or no row). `Some(None)` means the cell has no XCIM.
+    pub fn cell_image_space(&self, cell_id: u32) -> Option<Option<u32>> {
+        self.cell_image_spaces.get(&cell_id).copied()
+    }
+
+    /// Whether the database has the `cell_lighting` table at all. Without it no interior has
+    /// authored lighting to apply (an older pack), and the built-in lights stay.
+    pub fn has_cell_lighting_table(&self) -> bool {
+        self.cell_lighting_available
     }
 
     /// The cell's authored lighting, or `None` when it has none or the database predates it.
@@ -774,20 +876,42 @@ fn read_rows<T>(
     table: &str,
     map: impl FnMut(&Row<'_>) -> rusqlite::Result<T>,
 ) -> Vec<T> {
-    let rows = connection.prepare(sql).and_then(|mut statement| {
+    try_read_rows(connection, sql, map).unwrap_or_else(|error| {
+        info!("environment: no usable `{table}` table ({error}); authored fields unavailable");
+        Vec::new()
+    })
+}
+
+fn try_read_rows<T>(
+    connection: &Connection,
+    sql: &str,
+    map: impl FnMut(&Row<'_>) -> rusqlite::Result<T>,
+) -> rusqlite::Result<Vec<T>> {
+    connection.prepare(sql).and_then(|mut statement| {
         statement
             .query_map([], map)?
             .collect::<rusqlite::Result<Vec<_>>>()
-    });
-    rows.unwrap_or_else(|error| {
-        info!("environment: no usable `{table}` table ({error}); built-in lighting stays");
-        Vec::new()
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An older pack's `cell_lighting` has fewer columns, or no table exists: the catalog reports
+    /// the table as unavailable, which is not the same as a table without a row for a cell.
+    #[test]
+    fn cell_lighting_availability_follows_what_can_be_read() {
+        let connection = Connection::open_in_memory().unwrap();
+        assert!(!EnvironmentCatalog::from_connection(&connection).has_cell_lighting_table());
+        connection
+            .execute_batch("CREATE TABLE cell_lighting(cell_id INTEGER PRIMARY KEY);")
+            .unwrap();
+        assert!(!EnvironmentCatalog::from_connection(&connection).has_cell_lighting_table());
+        let connection = Connection::open_in_memory().unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        assert!(EnvironmentCatalog::from_connection(&connection).has_cell_lighting_table());
+    }
 
     /// A child uses the parent climate only when PNAM requests it; cycles are safely absent.
     #[test]

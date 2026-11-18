@@ -4857,6 +4857,11 @@ fn validate_terrain_snapshot(
                     texture_form_id = layer.texture_form_id,
                     "LAND texture has no converted diffuse image; retaining its layer and weights with a missing-image fallback"
                 );
+                crate::texture_fallback::record(
+                    crate::texture_fallback::FallbackKind::LandTextureWithoutImage,
+                    &format!("LTEX {:08X}", layer.texture_form_id),
+                    "diffuse",
+                );
             }
         }
     }
