@@ -415,7 +415,7 @@ def validate_mappings(result):
 
 
 def report(result):
-    lines = ["# World-data inventory", "", f"Schema status: **{result['schema_status']}**. Reviewed source: `{result['reviewed_at_commit']}`.", "",
+    lines = ["# World-data inventory", "", f"Schema status: **{result['schema_status']}**. Original field-trace baseline: `{result['reviewed_at_commit']}`.", "",
              "Prepare dependencies are not executed rows, mapped rows, semantic use, population, or retail parity.", "",
              "## Denominators", "", *[f"- {key}: {'unknown' if value is None else value}" for key, value in result["denominators"].items()], "",
              "## Traced examples", "", "| Field | Decoded | Preserved | Projected | Query-dependent | Mapped | Semantic use | Role / reason |",

@@ -324,6 +324,6 @@
     "crates/engine/src/world/inventory_tests.rs": "ab21f2aa58e71bfab6c3b86c2730f0fdec71fe9be8e10aa3e391ce50151be94e",
     "tools/world_data_inventory/dispositions.json": "324b06d20469a5484ddc16ebb93b70df861c87113b7083cd478616bb6256abc6",
     "tools/world_data_inventory/dispositions.schema.json": "23e3b0df8b2fbcb6c55af460b35345162df8acbabc97bdf01025119c4b692061",
-    "tools/world_data_inventory/inventory.py": "2b97b002c92edd0c571d8a703b7f3e020d764cb0387b6a03d9d960c33f1c77db"
+    "tools/world_data_inventory/inventory.py": "1441f02c4f860b022b444b4e899f4df42cf0a367822484716073b38683726ae0"
   }
 }
