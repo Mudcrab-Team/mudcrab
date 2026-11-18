@@ -70,6 +70,11 @@ fn parse() -> Result<Args> {
     Ok(args)
 }
 
+/// The most symbolic links `expand_symlinks` follows for one path. An engineering guard against a
+/// link loop, not a data rule. 40 is the per-lookup limit of the Linux kernel: far more than any
+/// real chain of links, and low enough to stop a loop at once.
+const MAX_SYMLINK_HOPS: usize = 40;
+
 /// One piece of a path, owned, so a symbolic link's target can be queued in front of the rest.
 enum Part {
     Root(std::ffi::OsString),
@@ -117,7 +122,7 @@ fn expand_symlinks(path: &Path) -> Result<PathBuf> {
                 }
                 hops += 1;
                 ensure!(
-                    hops <= 40,
+                    hops <= MAX_SYMLINK_HOPS,
                     "too many symbolic links while resolving {}",
                     path.display()
                 );
@@ -178,6 +183,27 @@ fn ensure_outside(label: &str, path: &Path, inputs: &[(&str, &Path)]) -> Result<
     Ok(())
 }
 
+/// Checks, before the audit starts, that an output can be created: its parent folder exists and a
+/// file can be made there. A missing folder would otherwise fail the write after a long run.
+fn ensure_parent_writable(label: &str, path: &Path) -> Result<()> {
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    ensure!(
+        parent.is_dir(),
+        "the folder of {label} {} does not exist; create it first",
+        path.display()
+    );
+    tempfile::NamedTempFile::new_in(parent).wrap_err_with(|| {
+        format!(
+            "cannot create a file next to {label} {}; is the folder writable?",
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args = parse()?;
@@ -209,6 +235,7 @@ fn main() -> Result<()> {
     ] {
         if let Some(path) = path {
             ensure_outside(label, path, &inputs)?;
+            ensure_parent_writable(label, path)?;
         }
     }
 
@@ -360,8 +387,10 @@ fn ensure_distinct_paths(paths: &[(&str, Option<&Path>)]) -> Result<()> {
 }
 
 fn read_baseline(path: &Path) -> Result<Baseline> {
-    serde_json::from_slice(&fs::read(path)?)
-        .wrap_err_with(|| format!("failed to read baseline {}", path.display()))
+    let bytes =
+        fs::read(path).wrap_err_with(|| format!("failed to read baseline {}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .wrap_err_with(|| format!("failed to parse baseline {}", path.display()))
 }
 
 #[cfg(test)]
@@ -454,6 +483,29 @@ mod tests {
         // A different spelling of the same file counts as the same file.
         let spelled = base.join("sub/../baseline.json");
         assert!(paths(&spelled, &csv, &baseline, &baseline).is_err());
+    }
+
+    #[test]
+    fn an_output_folder_that_is_missing_is_refused_before_the_audit() {
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("report.json");
+        ensure_parent_writable("--json", &existing).unwrap();
+        // The check leaves no file behind.
+        assert!(fs::read_dir(dir.path()).unwrap().next().is_none());
+        let missing = dir.path().join("new/dir/report.json");
+        let error = ensure_parent_writable("--json", &missing).unwrap_err();
+        assert!(format!("{error:#}").contains("does not exist"), "{error:#}");
+    }
+
+    #[test]
+    fn a_missing_baseline_names_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("none.json");
+        let error = read_baseline(&missing).unwrap_err();
+        assert!(
+            format!("{error:#}").contains(&missing.display().to_string()),
+            "{error:#}"
+        );
     }
 
     #[cfg(unix)]
