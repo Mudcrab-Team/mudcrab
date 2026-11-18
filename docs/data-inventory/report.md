@@ -6,7 +6,7 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 
 ## Denominators
 
-- rusqlite_candidates: 88
+- rusqlite_candidates: 90
 - emitted_schema_columns: unknown
 - manually_traced_fields: 14
 - named_external_stores: 3
@@ -106,11 +106,13 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 | `crates/engine/src/route.rs:350` query_row | unknown |
 | `crates/engine/src/streaming/collision_placement_probe.rs:52` query_row | literal |
 | `crates/engine/src/streaming/lod.rs:935` prepare | unknown |
-| `crates/engine/src/world/actor_catalog.rs:176` prepare | literal |
-| `crates/engine/src/world/actor_catalog.rs:200` query_row | literal |
-| `crates/engine/src/world/actor_catalog.rs:220` prepare | unknown |
-| `crates/engine/src/world/actor_catalog.rs:221` prepare | unknown |
-| `crates/engine/src/world/actor_catalog.rs:280` prepare | literal |
+| `crates/engine/src/world/actor_catalog.rs:183` prepare | literal |
+| `crates/engine/src/world/actor_catalog.rs:207` query_row | literal |
+| `crates/engine/src/world/actor_catalog.rs:227` prepare | unknown |
+| `crates/engine/src/world/actor_catalog.rs:228` prepare | unknown |
+| `crates/engine/src/world/actor_catalog.rs:288` prepare | literal |
+| `crates/engine/src/world/actor_scale.rs:208` query_row | literal |
+| `crates/engine/src/world/actor_scale.rs:220` prepare | literal |
 | `crates/engine/src/world/database.rs:539` prepare | literal |
 | `crates/engine/src/world/database.rs:554` prepare | literal |
 | `crates/engine/src/world/database.rs:568` prepare | literal |

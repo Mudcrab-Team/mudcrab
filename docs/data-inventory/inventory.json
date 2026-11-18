@@ -3,7 +3,7 @@
     "emitted_schema_columns": null,
     "manually_traced_fields": 14,
     "named_external_stores": 3,
-    "rusqlite_candidates": 88
+    "rusqlite_candidates": 90
   },
   "fields": {
     "cells.data": {
@@ -998,7 +998,7 @@
     {
       "expression": "\"SELECT race_id,sex,skeleton_nif,project_hkx FROM race_animation_sources\"",
       "id": "crates/engine/src/world/actor_catalog.rs::prepare::db741a616bcea57b::1",
-      "line": 176,
+      "line": 183,
       "method": "prepare",
       "path": "crates/engine/src/world/actor_catalog.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1008,7 +1008,7 @@
     {
       "expression": "\"SELECT EXISTS(SELECT 1 FROM pragma_table_info('actor_models') WHERE name='weight')\"",
       "id": "crates/engine/src/world/actor_catalog.rs::query_row::82e20e9fd11f6a91::1",
-      "line": 200,
+      "line": 207,
       "method": "query_row",
       "path": "crates/engine/src/world/actor_catalog.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1018,7 +1018,7 @@
     {
       "expression": "&toned",
       "id": "crates/engine/src/world/actor_catalog.rs::prepare::b7739f53c1246c7c::1",
-      "line": 220,
+      "line": 227,
       "method": "prepare",
       "path": "crates/engine/src/world/actor_catalog.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1028,7 +1028,7 @@
     {
       "expression": "&untoned",
       "id": "crates/engine/src/world/actor_catalog.rs::prepare::9e247fd08ccc965c::1",
-      "line": 221,
+      "line": 228,
       "method": "prepare",
       "path": "crates/engine/src/world/actor_catalog.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1038,11 +1038,31 @@
     {
       "expression": "\"SELECT npc_id, slot, model_path FROM actor_model_parts\"",
       "id": "crates/engine/src/world/actor_catalog.rs::prepare::211e31dd551ea0f3::1",
-      "line": 280,
+      "line": 288,
       "method": "prepare",
       "path": "crates/engine/src/world/actor_catalog.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
       "sql": "SELECT npc_id, slot, model_path FROM actor_model_parts",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='records')\"",
+      "id": "crates/engine/src/world/actor_scale.rs::query_row::5765c9ca20be4b06::1",
+      "line": 208,
+      "method": "query_row",
+      "path": "crates/engine/src/world/actor_scale.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='records')",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT form_id, record_type, data FROM records WHERE record_type IN ('NPC_','RACE')\"",
+      "id": "crates/engine/src/world/actor_scale.rs::prepare::411eb7dd4f06606d::1",
+      "line": 220,
+      "method": "prepare",
+      "path": "crates/engine/src/world/actor_scale.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT form_id, record_type, data FROM records WHERE record_type IN ('NPC_','RACE')",
       "status": "literal"
     },
     {
@@ -1447,7 +1467,7 @@
     }
   ],
   "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
-  "reviewed_source_guard_sha256": "26d1ee0183f404b1908204cc08fda25d31c08bf3dd03c3b4c13f9afcd65e0969",
+  "reviewed_source_guard_sha256": "2702642efa919079170e6e4b04a54cbedf8f9d453c178fed9e3d05efb74269bc",
   "schema_status": "not_extracted",
   "schemas": {},
   "stores": {
