@@ -44,16 +44,47 @@ fn write_nif(data: &Path, name: &str, diffuse: &str, normal: &str) -> u32 {
         .shape_block
 }
 
-/// What a fixture GLB binds. `diffuse` and `normal` index `images`; an image that is listed and
-/// not bound reaches no slot.
-struct Glb<'a> {
-    images: &'a [&'a str],
+/// One material of a fixture GLB. `diffuse` and `normal` index `images`; an image that is listed
+/// and not bound reaches no slot.
+#[derive(Clone, Copy)]
+struct Mat {
+    shape_block: Option<u32>,
     diffuse: Option<usize>,
     normal: Option<usize>,
+}
+
+/// What a fixture GLB holds: images, materials, and one primitive per entry of `primitives`, each
+/// naming the material it uses. A material no primitive names is unused.
+struct Glb<'a> {
+    images: &'a [&'a str],
+    materials: Vec<Mat>,
+    primitives: Vec<usize>,
     has_uvs: bool,
-    shape_block: Option<u32>,
     /// The converter's `texturePathRepairs`: an original URI and the URI that replaced it.
     repairs: Option<(&'a str, &'a str)>,
+}
+
+impl<'a> Glb<'a> {
+    /// One material, used by one primitive: the usual converted shape.
+    fn single(
+        images: &'a [&'a str],
+        diffuse: Option<usize>,
+        normal: Option<usize>,
+        has_uvs: bool,
+        shape_block: Option<u32>,
+    ) -> Self {
+        Self {
+            images,
+            materials: vec![Mat {
+                shape_block,
+                diffuse,
+                normal,
+            }],
+            primitives: vec![0],
+            has_uvs,
+            repairs: None,
+        }
+    }
 }
 
 /// A GLB with only a JSON chunk: the audit reads nothing else.
@@ -65,26 +96,39 @@ fn write_glb(pack: &Path, name: &str, spec: &Glb<'_>) {
     if spec.has_uvs {
         attributes["TEXCOORD_0"] = serde_json::json!(1);
     }
-    let mut material = serde_json::json!({
-        "name": "m",
-        "pbrMetallicRoughness": {},
-        "extras": {"openSkyrim": {"shaderFamily": "lighting"}}
-    });
-    if let Some(block) = spec.shape_block {
-        material["extras"]["openSkyrim"]["shapeBlock"] = serde_json::json!(block);
-    }
-    if let Some(index) = spec.diffuse {
-        material["pbrMetallicRoughness"]["baseColorTexture"] = serde_json::json!({"index": index});
-    }
-    if let Some(index) = spec.normal {
-        material["normalTexture"] = serde_json::json!({"index": index});
-    }
+    let materials: Vec<_> = spec
+        .materials
+        .iter()
+        .map(|mat| {
+            let mut material = serde_json::json!({
+                "name": "m",
+                "pbrMetallicRoughness": {},
+                "extras": {"openSkyrim": {"shaderFamily": "lighting"}}
+            });
+            if let Some(block) = mat.shape_block {
+                material["extras"]["openSkyrim"]["shapeBlock"] = serde_json::json!(block);
+            }
+            if let Some(index) = mat.diffuse {
+                material["pbrMetallicRoughness"]["baseColorTexture"] =
+                    serde_json::json!({"index": index});
+            }
+            if let Some(index) = mat.normal {
+                material["normalTexture"] = serde_json::json!({"index": index});
+            }
+            material
+        })
+        .collect();
+    let primitives: Vec<_> = spec
+        .primitives
+        .iter()
+        .map(|material| serde_json::json!({"attributes": attributes, "material": material}))
+        .collect();
     let mut document = serde_json::json!({
         "asset": {"version": "2.0"},
         "images": spec.images.iter().map(|uri| serde_json::json!({"uri": uri})).collect::<Vec<_>>(),
         "textures": textures,
-        "materials": [material],
-        "meshes": [{"name": name, "primitives": [{"attributes": attributes, "material": 0}]}]
+        "materials": materials,
+        "meshes": [{"name": name, "primitives": primitives}]
     });
     if let Some((original, replacement)) = spec.repairs {
         document["extras"] = serde_json::json!({
@@ -114,17 +158,26 @@ fn touch(root: &Path, relative: &str) {
 
 const PRESENT: &str = "../../textures/fix/present.opensky-srgb.ktx2";
 const PRESENT_N: &str = "../../textures/fix/present_n.ktx2";
+const REPAIR_N: &str = "../../textures/fix/repair_n.ktx2";
+const REPAIRED_N: &str = "../../textures/dlc/repair_n.ktx2";
 
-/// Eight meshes:
+/// Twelve meshes. Each source NIF wants a diffuse and a normal texture.
 ///
 /// * `pruned`: wants `absent_n.dds`, which the game data does not hold; the converter pruned it.
 /// * `lost`: wants `lost.dds`, which the game data holds but the pack never converted.
 /// * `dropped`: wants `present_n.dds`; the pack holds it and the GLB lists the image, but no
 ///   material binds it to the normal slot.
+/// * `unused`: two materials carry the shape block. One binds both images but no primitive uses
+///   it; the used one binds only the diffuse. The unused material must not clear the normal.
 /// * `aliased`: the GLB binds `present_n.opensky-srgb.ktx2`, a file the pack does not hold, though
 ///   the pack holds `present_n.ktx2` under the same base name. The engine requests the exact file.
 /// * `repaired`: wants `repair_n.dds`, which the game data does not hold; the converter replaced
 ///   the image with `textures/dlc/repair_n.ktx2` and published the repair, so nothing is missing.
+/// * `repaired_unbound`: the same repair is published, but the material carries no shape block, so
+///   nothing shows that the shape binds the replacement. It must not count as resolved.
+/// * `nometa`: the only material has no shape block, so the audit cannot tell it belongs to the
+///   shape.
+/// * `dup`: two used materials carry the same shape block.
 /// * `flat`: every texture resolves, but the primitive has no UVs.
 /// * `generated`: a GLB with no source NIF that references a texture that exists nowhere.
 /// * `refused`: a GLB with no source NIF whose image URI has an invalid escape.
@@ -134,36 +187,18 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     let pack = root.path().join("pack");
     let scratch = root.path().join("scratch");
     let block = |name, diffuse, normal| write_nif(&data, name, diffuse, normal);
-    let pruned = block(
-        "pruned",
-        "textures/fix/present.dds",
-        "textures/fix/absent_n.dds",
-    );
-    let lost = block(
-        "lost",
-        "textures/fix/lost.dds",
-        "textures/fix/present_n.dds",
-    );
-    let dropped = block(
-        "dropped",
-        "textures/fix/present.dds",
-        "textures/fix/present_n.dds",
-    );
-    let aliased = block(
-        "aliased",
-        "textures/fix/present.dds",
-        "textures/fix/present_n.dds",
-    );
-    let flat = block(
-        "flat",
-        "textures/fix/present.dds",
-        "textures/fix/present_n.dds",
-    );
-    let repaired = block(
-        "repaired",
-        "textures/fix/present.dds",
-        "textures/fix/repair_n.dds",
-    );
+    const D: &str = "textures/fix/present.dds";
+    const N: &str = "textures/fix/present_n.dds";
+    let pruned = block("pruned", D, "textures/fix/absent_n.dds");
+    let lost = block("lost", "textures/fix/lost.dds", N);
+    let dropped = block("dropped", D, N);
+    let unused = block("unused", D, N);
+    let aliased = block("aliased", D, N);
+    let flat = block("flat", D, N);
+    let repaired = block("repaired", D, "textures/fix/repair_n.dds");
+    block("repaired_unbound", D, "textures/fix/repair_n.dds");
+    block("nometa", D, N);
+    let dup = block("dup", D, N);
     for dds in ["present", "present_n", "lost"] {
         touch(&data, &format!("textures/fix/{dds}.dds"));
     }
@@ -173,79 +208,126 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     touch(&pack, "textures/dlc/repair_n.ktx2");
     let lost_image = "../../textures/fix/lost.opensky-srgb.ktx2";
     let aliased_image = "../../textures/fix/present_n.opensky-srgb.ktx2";
-    fn spec<'a>(
+    fn single<'a>(
         images: &'a [&'a str],
         diffuse: Option<usize>,
         normal: Option<usize>,
         has_uvs: bool,
         shape_block: u32,
     ) -> Glb<'a> {
-        Glb {
-            images,
-            diffuse,
-            normal,
-            has_uvs,
-            shape_block: Some(shape_block),
-            repairs: None,
-        }
+        Glb::single(images, diffuse, normal, has_uvs, Some(shape_block))
     }
     write_glb(
         &pack,
         "pruned",
-        &spec(&[PRESENT], Some(0), None, true, pruned),
+        &single(&[PRESENT], Some(0), None, true, pruned),
     );
     write_glb(
         &pack,
         "lost",
-        &spec(&[lost_image, PRESENT_N], Some(0), Some(1), true, lost),
+        &single(&[lost_image, PRESENT_N], Some(0), Some(1), true, lost),
     );
     write_glb(
         &pack,
         "dropped",
-        &spec(&[PRESENT, PRESENT_N], Some(0), None, true, dropped),
+        &single(&[PRESENT, PRESENT_N], Some(0), None, true, dropped),
+    );
+    write_glb(
+        &pack,
+        "unused",
+        &Glb {
+            images: &[PRESENT, PRESENT_N],
+            materials: vec![
+                Mat {
+                    shape_block: Some(unused),
+                    diffuse: Some(0),
+                    normal: Some(1),
+                },
+                Mat {
+                    shape_block: Some(unused),
+                    diffuse: Some(0),
+                    normal: None,
+                },
+            ],
+            primitives: vec![1],
+            has_uvs: true,
+            repairs: None,
+        },
     );
     write_glb(
         &pack,
         "aliased",
-        &spec(&[PRESENT, aliased_image], Some(0), Some(1), true, aliased),
+        &single(&[PRESENT, aliased_image], Some(0), Some(1), true, aliased),
     );
     write_glb(
         &pack,
         "flat",
-        &spec(&[PRESENT, PRESENT_N], Some(0), Some(1), false, flat),
+        &single(&[PRESENT, PRESENT_N], Some(0), Some(1), false, flat),
     );
     write_glb(
         &pack,
         "repaired",
         &Glb {
-            images: &[PRESENT, "../../textures/dlc/repair_n.ktx2"],
-            diffuse: Some(0),
-            normal: Some(1),
-            has_uvs: true,
-            shape_block: Some(repaired),
-            repairs: Some((
-                "../../textures/fix/repair_n.ktx2",
-                "../../textures/dlc/repair_n.ktx2",
-            )),
+            repairs: Some((REPAIR_N, REPAIRED_N)),
+            ..Glb::single(
+                &[PRESENT, REPAIRED_N],
+                Some(0),
+                Some(1),
+                true,
+                Some(repaired),
+            )
         },
     );
-    let generated = |images: &'static [&'static str]| Glb {
-        images,
+    write_glb(
+        &pack,
+        "repaired_unbound",
+        &Glb {
+            repairs: Some((REPAIR_N, REPAIRED_N)),
+            ..Glb::single(&[PRESENT, REPAIRED_N], Some(0), Some(1), true, None)
+        },
+    );
+    write_glb(
+        &pack,
+        "nometa",
+        &Glb::single(&[PRESENT, PRESENT_N], Some(0), Some(1), true, None),
+    );
+    let both = Mat {
+        shape_block: Some(dup),
         diffuse: Some(0),
-        normal: None,
-        has_uvs: true,
-        shape_block: None,
-        repairs: None,
+        normal: Some(1),
     };
     write_glb(
         &pack,
+        "dup",
+        &Glb {
+            images: &[PRESENT, PRESENT_N],
+            materials: vec![both, both],
+            primitives: vec![0, 1],
+            has_uvs: true,
+            repairs: None,
+        },
+    );
+    write_glb(
+        &pack,
         "generated",
-        &generated(&["../../textures/fix/gone.opensky-srgb.ktx2"]),
+        &Glb::single(
+            &["../../textures/fix/gone.opensky-srgb.ktx2"],
+            Some(0),
+            None,
+            true,
+            None,
+        ),
     );
     write_glb(
         &pack,
         "refused",
-        &generated(&["../../textures/fix/stone%zz.ktx2"]),
+        &Glb::single(
+            &["../../textures/fix/stone%zz.ktx2"],
+            Some(0),
+            None,
+            true,
+            None,
+        ),
     );
     (root, data, pack, scratch)
 }
@@ -295,6 +377,8 @@ fn each_cause_is_found_with_its_slot_and_source() {
         [
             "meshes/fix/generated.glb image textures/fix/gone.dds",
             "meshes/fix/pruned.glb normal textures/fix/absent_n.dds",
+            // The replacement is listed, but nothing shows that the shape binds it.
+            "meshes/fix/repaired_unbound.glb normal textures/fix/repair_n.dds",
         ]
     );
     assert_eq!(
@@ -306,14 +390,30 @@ fn each_cause_is_found_with_its_slot_and_source() {
     );
     assert_eq!(
         of(&report, Cause::SlotUnreferenced),
-        ["meshes/fix/dropped.glb normal textures/fix/present_n.dds"]
+        [
+            "meshes/fix/dropped.glb normal textures/fix/present_n.dds",
+            // The unused material that binds the normal does not clear the used one.
+            "meshes/fix/unused.glb normal textures/fix/present_n.dds",
+        ]
+    );
+    // No single used material can be tied to these shapes: none carries the shape block, or two
+    // do. The textures exist, but the slots are not proven, so they are not resolved.
+    assert_eq!(
+        of(&report, Cause::BindingAmbiguous),
+        [
+            "meshes/fix/dup.glb diffuse textures/fix/present.dds",
+            "meshes/fix/dup.glb normal textures/fix/present_n.dds",
+            "meshes/fix/nometa.glb diffuse textures/fix/present.dds",
+            "meshes/fix/nometa.glb normal textures/fix/present_n.dds",
+            "meshes/fix/repaired_unbound.glb diffuse textures/fix/present.dds",
+        ]
     );
     assert_eq!(
         of(&report, Cause::UnparseablePath),
         ["meshes/fix/refused.glb image ../../textures/fix/stone%zz.ktx2"]
     );
     assert_eq!(of(&report, Cause::PrimitiveWithoutUvs).len(), 1);
-    assert_eq!(report.summary.unresolved_slots, 7);
+    assert_eq!(report.summary.unresolved_slots, 14);
     assert_eq!(report.summary.glb_files_audited_without_source, 2);
     let lost = report
         .findings
@@ -357,7 +457,7 @@ fn the_checked_in_baseline_holds_and_a_lower_one_fails() {
     stale.max_by_cause.insert(Cause::SlotUnreferenced, 5);
     assert_eq!(
         improvements(&report, &stale),
-        ["SlotUnreferenced: lower the baseline from 5 to 1"]
+        ["SlotUnreferenced: lower the baseline from 5 to 2"]
     );
 }
 
@@ -370,7 +470,7 @@ fn an_unreadable_mesh_makes_the_audit_incomplete_instead_of_better() {
     fs::write(&glb, &bytes[..bytes.len() / 2]).unwrap();
     let report = audit(&data, &pack, &scratch, None).unwrap();
     assert_eq!(report.summary.nif_files_failed, 1);
-    assert!(of(&report, Cause::SourceTextureAbsent).len() < 2);
+    assert!(of(&report, Cause::SourceTextureAbsent).len() < 3);
     let problems = compare_to_baseline(&report, &baseline("baseline.json"));
     assert!(
         problems
@@ -403,8 +503,8 @@ fn loose_folders_with_capital_letters_are_read() {
     fs::rename(data.join("textures"), data.join("Textures_tmp")).unwrap();
     fs::rename(data.join("Textures_tmp"), data.join("Textures")).unwrap();
     let report = audit(&data, &pack, &scratch, None).unwrap();
-    assert_eq!(report.summary.glb_files_with_source_nif, 6);
-    assert_eq!(of(&report, Cause::SourceTextureAbsent).len(), 2);
+    assert_eq!(report.summary.glb_files_with_source_nif, 10);
+    assert_eq!(of(&report, Cause::SourceTextureAbsent).len(), 3);
 }
 
 #[test]

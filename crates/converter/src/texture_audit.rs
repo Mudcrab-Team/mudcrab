@@ -68,10 +68,14 @@ pub enum Cause {
     /// An alternate-texture entry (`MODS`/`MO2S`/`MO3S`/`MO4S`) names a texture set that no
     /// plugin defines and that is not the engine's NullTextureSet (RF-TEX-005).
     OverrideTargetUnresolved,
+    /// The audit cannot tell which GLB material belongs to the NIF shape (no material that a
+    /// primitive uses carries its shape block, or several do), so it cannot say whether the
+    /// slot is bound. The texture exists, so the slot is not counted as resolved.
+    BindingAmbiguous,
 }
 
 impl Cause {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::SourceTextureAbsent,
         Self::ConvertedTextureMissing,
         Self::SlotUnreferenced,
@@ -80,6 +84,7 @@ impl Cause {
         Self::TextureSetUnresolved,
         Self::LandTextureUnresolved,
         Self::OverrideTargetUnresolved,
+        Self::BindingAmbiguous,
     ];
 }
 
@@ -588,13 +593,48 @@ struct ImageRef {
 }
 
 /// The images a material binds, found through the NIF shape block the converter records.
-#[derive(Debug, Clone, Copy, Default)]
+///
+/// Every slot the converter publishes is here: the glTF bindings (base colour, normal, emissive
+/// for the glow slot, specular colour for the `_s` slot) and the other slots the converter keeps
+/// in `OPEN_SKYRIM_material.textureSlots`, keyed by NIF slot index.
+#[derive(Debug, Clone, Default)]
 struct MaterialBinding {
     shape_block: Option<u32>,
-    /// Index into `GlbFacts::images` of the base-colour image.
+    /// True when at least one primitive uses this material. A material nothing draws with
+    /// proves nothing about a shape.
+    used: bool,
+    /// Indices into `GlbFacts::images`.
     diffuse: Option<usize>,
-    /// Index into `GlbFacts::images` of the normal image.
     normal: Option<usize>,
+    emissive: Option<usize>,
+    specular_color: Option<usize>,
+    /// NIF slot index to image index.
+    slots: Vec<(u8, usize)>,
+}
+
+impl MaterialBinding {
+    /// The image this material binds for a NIF slot of the given meaning.
+    fn image_for(&self, semantic: NifTextureSemantic, slot: u8) -> Option<usize> {
+        match semantic {
+            NifTextureSemantic::Diffuse => self.diffuse,
+            NifTextureSemantic::Normal => self.normal,
+            NifTextureSemantic::Glow => self.emissive,
+            NifTextureSemantic::Specular => self.specular_color,
+            _ => self
+                .slots
+                .iter()
+                .find(|(index, _)| *index == slot)
+                .map(|(_, image)| *image),
+        }
+    }
+}
+
+/// The GLB material that belongs to one NIF shape.
+enum ShapeMaterial<'a> {
+    /// Exactly one material that a primitive uses carries the shape block.
+    Unique(&'a MaterialBinding),
+    /// No used material, or several, carry the shape block; the reason says which.
+    Unmatched(String),
 }
 
 /// What a GLB says about textures.
@@ -618,6 +658,27 @@ struct NoUv {
     mesh: String,
     material: String,
     texture: Option<String>,
+}
+
+/// Finds the material of a NIF shape by following the primitives: only a material that some
+/// primitive uses counts, and it must be the only one that carries the shape block. A missing or
+/// ambiguous match is reported, never read as "bound".
+fn shape_material(facts: &GlbFacts, shape_block: u32) -> ShapeMaterial<'_> {
+    let used: Vec<&MaterialBinding> = facts
+        .bindings
+        .iter()
+        .filter(|binding| binding.used && binding.shape_block == Some(shape_block))
+        .collect();
+    match used.as_slice() {
+        [only] => ShapeMaterial::Unique(only),
+        [] => ShapeMaterial::Unmatched(format!(
+            "no material used by a primitive carries shape block {shape_block}"
+        )),
+        several => ShapeMaterial::Unmatched(format!(
+            "{} materials used by primitives carry shape block {shape_block}",
+            several.len()
+        )),
+    }
 }
 
 /// Reads the JSON chunk of a GLB without reading geometry. The header must be a version-2 GLB
@@ -729,13 +790,30 @@ fn glb_facts(pack: &Path, glb: &Path) -> Result<GlbFacts> {
         .cloned()
         .unwrap_or_default();
     for material in &materials {
+        let slots = material
+            .pointer("/extensions/OPEN_SKYRIM_material/textureSlots")
+            .and_then(|slots| slots.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                let slot = u8::try_from(entry.get("slot")?.as_u64()?).ok()?;
+                let texture = serde_json::json!({ "index": entry.get("texture")? });
+                Some((slot, image_of_texture(Some(&texture))?))
+            })
+            .collect();
         facts.bindings.push(MaterialBinding {
             shape_block: material
                 .pointer("/extras/openSkyrim/shapeBlock")
                 .and_then(|block| block.as_u64())
                 .and_then(|block| u32::try_from(block).ok()),
+            used: false,
             diffuse: image_of_texture(material.pointer("/pbrMetallicRoughness/baseColorTexture")),
             normal: image_of_texture(material.get("normalTexture")),
+            emissive: image_of_texture(material.get("emissiveTexture")),
+            specular_color: image_of_texture(
+                material.pointer("/extensions/KHR_materials_specular/specularColorTexture"),
+            ),
+            slots,
         });
     }
     for mesh in document
@@ -754,13 +832,6 @@ fn glb_facts(pack: &Path, glb: &Path) -> Result<GlbFacts> {
             .into_iter()
             .flatten()
         {
-            let has_uv = primitive
-                .get("attributes")
-                .and_then(|attributes| attributes.get("TEXCOORD_0"))
-                .is_some();
-            if has_uv {
-                continue;
-            }
             let Some(index) = primitive
                 .get("material")
                 .and_then(|material| material.as_u64())
@@ -768,10 +839,20 @@ fn glb_facts(pack: &Path, glb: &Path) -> Result<GlbFacts> {
             else {
                 continue;
             };
-            let (Some(binding), Some(material)) = (facts.bindings.get(index), materials.get(index))
+            let (Some(binding), Some(material)) =
+                (facts.bindings.get_mut(index), materials.get(index))
             else {
                 continue;
             };
+            binding.used = true;
+            let binding = binding.clone();
+            let has_uv = primitive
+                .get("attributes")
+                .and_then(|attributes| attributes.get("TEXCOORD_0"))
+                .is_some();
+            if has_uv {
+                continue;
+            }
             if let Some(image) = binding.diffuse.or(binding.normal) {
                 facts.no_uv_primitives.push(NoUv {
                     mesh: mesh_name.to_owned(),
@@ -827,6 +908,8 @@ fn semantic_name(semantic: NifTextureSemantic) -> &'static str {
 /// A slot the NIF authored, before it is checked.
 struct WantedSlot {
     shape_block: u32,
+    /// The NIF texture slot index (`BSShaderTextureSet` order).
+    slot_index: u8,
     semantic: NifTextureSemantic,
     shape: String,
     slot: String,
@@ -839,18 +922,15 @@ enum SlotView<'a> {
     /// A record path: the engine loads the converted file that
     /// [`shared::texture_aliases::converted_record_texture_path`] names.
     Record,
-    /// The image the shape's own material binds to this slot, found through the shape block the
-    /// converter records. `None` means the material binds no image there.
+    /// The image the shape's own material binds to this slot. The material is the only one that
+    /// a primitive uses and that carries the shape block. `None` means it binds no image there.
     Bound {
         image: Option<&'a ImageRef>,
         repairs: &'a HashMap<String, String>,
     },
-    /// No single material identifies the shape or the slot has no glTF binding to follow, so
-    /// any image of the GLB may carry it.
-    Any {
-        images: &'a [ImageRef],
-        repairs: &'a HashMap<String, String>,
-    },
+    /// No single material can be tied to the shape; the reason says why. The slot is never
+    /// cleared from some other image of the GLB.
+    Unmatched { reason: String },
 }
 
 struct SlotCheck<'a> {
@@ -925,14 +1005,16 @@ impl SlotCheck<'_> {
                     return None;
                 }
             }
-            SlotView::Any { images, repairs } => {
-                let candidates: Vec<&ImageRef> = images
-                    .iter()
-                    .filter(|image| accepts(&wanted_base, repairs, &image.base))
-                    .collect();
-                if self.classify(&mut finding, &wanted_base, &candidates) {
-                    return None;
-                }
+            SlotView::Unmatched { reason } => {
+                finding.pack_has_ktx2 = self.pack_textures.has_base(&wanted_base);
+                finding.cause = if finding.pack_has_ktx2 {
+                    // The texture exists, but nothing shows that the shape binds it.
+                    Cause::BindingAmbiguous
+                } else {
+                    // Nothing exists to bind: the same cause as for a matched shape.
+                    absent_or_missing(finding.source_has_dds)
+                };
+                finding.came_from = format!("{came_from}; {reason}");
             }
         }
         if finding.wanted_key.is_none() {
@@ -1197,6 +1279,7 @@ pub fn audit_pack(options: &AuditOptions<'_>) -> Result<Report> {
                     if seen.insert((shape.shape_block, slot.slot)) {
                         wanted.push(WantedSlot {
                             shape_block: shape.shape_block,
+                            slot_index: slot.slot,
                             semantic: slot.semantic,
                             shape: shape_name.clone(),
                             slot: semantic_name(slot.semantic).to_owned(),
@@ -1211,31 +1294,17 @@ pub fn audit_pack(options: &AuditOptions<'_>) -> Result<Report> {
             }
             result.wanted = wanted.len() as u64;
             for slot in &wanted {
-                // Diffuse and normal follow the shape's own material binding. A shape that no
-                // single material identifies, and the other slots, may be carried by any image.
-                let mut matching = facts
-                    .bindings
-                    .iter()
-                    .filter(|binding| binding.shape_block == Some(slot.shape_block));
-                let binding = matching.next().filter(|_| matching.next().is_none());
-                let image = |index: Option<usize>| {
-                    index
-                        .and_then(|index| facts.images.get(index))
-                        .and_then(|image| image.as_ref())
-                };
-                let view = match (slot.semantic, binding) {
-                    (NifTextureSemantic::Diffuse, Some(binding)) => SlotView::Bound {
-                        image: image(binding.diffuse),
+                // Every slot follows the material of the primitive that draws the shape. When no
+                // single used material carries the shape block, the slot stays unproven.
+                let view = match shape_material(&facts, slot.shape_block) {
+                    ShapeMaterial::Unique(material) => SlotView::Bound {
+                        image: material
+                            .image_for(slot.semantic, slot.slot_index)
+                            .and_then(|index| facts.images.get(index))
+                            .and_then(|image| image.as_ref()),
                         repairs: &facts.repairs,
                     },
-                    (NifTextureSemantic::Normal, Some(binding)) => SlotView::Bound {
-                        image: image(binding.normal),
-                        repairs: &facts.repairs,
-                    },
-                    _ => SlotView::Any {
-                        images: &facts.external,
-                        repairs: &facts.repairs,
-                    },
+                    ShapeMaterial::Unmatched(reason) => SlotView::Unmatched { reason },
                 };
                 if let Some(finding) = check.check(
                     Origin::NifShape,
@@ -2189,6 +2258,91 @@ mod tests {
         assert_eq!(audit.unresolved_target_entries, 1);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].cause, Cause::OverrideTargetUnresolved);
+    }
+
+    /// Writes a JSON-only GLB into a temporary pack and returns the pack root and the GLB path.
+    fn write_json_glb(document: &serde_json::Value) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let pack = fs::canonicalize(root.path()).unwrap();
+        let path = pack.join("meshes/m.glb");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut json = serde_json::to_vec(document).unwrap();
+        while !json.len().is_multiple_of(4) {
+            json.push(b' ');
+        }
+        let mut bytes = b"glTF".to_vec();
+        bytes.extend(2u32.to_le_bytes());
+        bytes.extend((20 + json.len() as u32).to_le_bytes());
+        bytes.extend((json.len() as u32).to_le_bytes());
+        bytes.extend(b"JSON");
+        bytes.extend(json);
+        fs::write(&path, bytes).unwrap();
+        (root, pack, path)
+    }
+
+    #[test]
+    fn every_slot_the_converter_publishes_is_read_from_the_used_material() {
+        // Six images: 0 unused-material diffuse, 1 diffuse, 2 normal, 3 glow, 4 `_s`, 5 height.
+        let uris: Vec<_> = (0..6)
+            .map(|index| serde_json::json!({"uri": format!("../textures/t{index}.ktx2")}))
+            .collect();
+        let textures: Vec<_> = (0..6)
+            .map(|index| serde_json::json!({"source": index}))
+            .collect();
+        let shape = |block: u32| serde_json::json!({"openSkyrim": {"shapeBlock": block}});
+        let document = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "images": uris,
+            "textures": textures,
+            "materials": [
+                // Nothing draws with this one, though it carries shape block 5 and binds image 0.
+                {"extras": shape(5), "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}},
+                {
+                    "extras": shape(5),
+                    "pbrMetallicRoughness": {"baseColorTexture": {"index": 1}},
+                    "normalTexture": {"index": 2},
+                    "emissiveTexture": {"index": 3},
+                    "extensions": {
+                        "KHR_materials_specular": {"specularColorTexture": {"index": 4}},
+                        "OPEN_SKYRIM_material": {"textureSlots": [{"slot": 3, "texture": 5}]}
+                    }
+                },
+                {"extras": shape(9)},
+                {"extras": shape(9)}
+            ],
+            "meshes": [{"name": "m", "primitives": [
+                {"attributes": {"POSITION": 0, "TEXCOORD_0": 1}, "material": 1},
+                {"attributes": {"POSITION": 0, "TEXCOORD_0": 1}, "material": 2},
+                {"attributes": {"POSITION": 0, "TEXCOORD_0": 1}, "material": 3}
+            ]}]
+        });
+        let (_root, pack, path) = write_json_glb(&document);
+        let facts = glb_facts(&pack, &path).unwrap();
+        let ShapeMaterial::Unique(material) = shape_material(&facts, 5) else {
+            panic!("shape block 5 has one used material");
+        };
+        // The unused material (image 0) is ignored; every slot kind comes from the used one.
+        assert_eq!(material.image_for(NifTextureSemantic::Diffuse, 0), Some(1));
+        assert_eq!(material.image_for(NifTextureSemantic::Normal, 1), Some(2));
+        assert_eq!(material.image_for(NifTextureSemantic::Glow, 2), Some(3));
+        assert_eq!(material.image_for(NifTextureSemantic::Specular, 7), Some(4));
+        // A slot the converter keeps in `textureSlots` is found by its NIF slot index.
+        assert_eq!(material.image_for(NifTextureSemantic::Height, 3), Some(5));
+        // A slot the material does not bind is not cleared by another image of the GLB.
+        assert_eq!(material.image_for(NifTextureSemantic::Height, 4), None);
+        assert_eq!(
+            material.image_for(NifTextureSemantic::EnvironmentCube, 4),
+            None
+        );
+        // Two used materials carry shape block 9, and none carries 7.
+        assert!(matches!(
+            shape_material(&facts, 9),
+            ShapeMaterial::Unmatched(reason) if reason.starts_with("2 materials")
+        ));
+        assert!(matches!(
+            shape_material(&facts, 7),
+            ShapeMaterial::Unmatched(reason) if reason.contains("shape block 7")
+        ));
     }
 
     #[test]

@@ -7,7 +7,8 @@
     "primitive_without_uvs": 24,
     "texture_set_unresolved": 29,
     "land_texture_unresolved": 2,
-    "override_target_unresolved": 0
+    "override_target_unresolved": 0,
+    "binding_ambiguous": 0
   },
   "note": "Measured on the second v0.1.0 candidate pack with Skyrim SE 1.6 game data. source_texture_absent counts the two volcanic grass normals the converter repairs as resolved. primitive_without_uvs falls from 24 to 3 once the pack is rebuilt with the non-finite UV repair. Lower a value when a cause is fixed; never raise one."
 }
