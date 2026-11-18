@@ -427,6 +427,22 @@ impl EnvironmentCatalog {
 /// fog at 850.
 const FOG_NEAR_CLAMP_FRACTION: f32 = 0.17;
 
+/// The fog far distance retail uses when the authored far is <= 0 or above it (`RF-FOG-001`,
+/// constant `0x141844d48`, 163,840). Only the room blend uses it: a side without a fog ramp stands
+/// for it, since fog that starts at 27,853 units is not visible indoors.
+const FOG_FAR_CLAMP: f32 = 163_840.0;
+
+/// The linear blend of two colours given as bytes, rounded to a byte. Retail blends the colour
+/// triples as floats (`0x140415D50`); a byte step is 1/255 and is not visible.
+fn lerp_bytes(from: [u8; 3], to: [u8; 3], w: f32) -> [u8; 3] {
+    let channel = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * w).round() as u8;
+    [
+        channel(from[0], to[0]),
+        channel(from[1], to[1]),
+        channel(from[2], to[2]),
+    ]
+}
+
 /// The cell fog the engine applies in sky modes 1 and 2. Retail scene fog (RF-WATER-011) is
 /// `f = min(saturate((d - near) / (far - near))^power, max)` and `colour = lerp(near colour, far
 /// colour, f)`, so `max` caps the factor. Bevy's linear fog (`fog.wgsl` `linear_fog`) is
@@ -480,6 +496,42 @@ impl CellFog {
             power: lighting.fog_power.unwrap_or(0.0),
             max,
         })
+    }
+
+    /// The fog at weight `w` between `previous` and `current` (`RF-LIGHT-CPU-025`, `0x140416E30`):
+    /// both colours, near, far, power and max blend linearly. A side with no fog ramp stands for
+    /// retail's clamp of far <= 0 ([`FOG_FAR_CLAMP`], near 0.17 of it, `RF-FOG-001`), which is
+    /// fog far beyond any interior, with the other side's colours, power and max; so fog fades in
+    /// or out instead of switching. At full weight the result is `current` itself, with no fog if
+    /// that is what it has.
+    fn blend(previous: Option<Self>, current: Option<Self>, w: f32) -> Option<Self> {
+        let (from, to) = match (previous, current) {
+            (None, None) => return None,
+            (Some(from), Some(to)) => (from, to),
+            (Some(from), None) => (from, Self::without_ramp(&from)),
+            (None, Some(to)) => (Self::without_ramp(&to), to),
+        };
+        if w >= 1.0 {
+            return current;
+        }
+        let lerp = |a: f32, b: f32| a + (b - a) * w;
+        Some(Self {
+            near_color: lerp_bytes(from.near_color, to.near_color, w),
+            far_color: lerp_bytes(from.far_color, to.far_color, w),
+            near: lerp(from.near, to.near),
+            far: lerp(from.far, to.far),
+            power: lerp(from.power, to.power),
+            max: lerp(from.max, to.max),
+        })
+    }
+
+    /// The no-ramp side of a blend: retail's clamped far, with `other`'s colours, power and max.
+    fn without_ramp(other: &Self) -> Self {
+        Self {
+            near: FOG_NEAR_CLAMP_FRACTION * FOG_FAR_CLAMP,
+            far: FOG_FAR_CLAMP,
+            ..*other
+        }
     }
 
     pub(crate) fn distance_fog(&self) -> DistanceFog {
@@ -541,7 +593,7 @@ impl InteriorRender {
     /// cell's inherit bits do not apply to a room: a template without a fog ramp gives a room
     /// without fog, even in a cell that has one. Only the key-light rotation
     /// (`Sun::Update`, RF-LIGHT-CPU-011) stays the cell's. Retail blends to the new template
-    /// (RF-LIGHT-CPU-024); the engine switches at once.
+    /// (RF-LIGHT-CPU-024); [`RoomBlend`] does that, over this value and the cell's.
     fn with_room_template(mut self, template: &super::LightingTemplate) -> Self {
         let lighting = &template.lighting;
         self.key_color = lighting.directional.unwrap_or([0; 3]);
@@ -550,6 +602,27 @@ impl InteriorRender {
             .map_or([[0; 3]; 6], |dalc| dalc.colors);
         self.fog = CellFog::from_lighting(lighting);
         self
+    }
+
+    /// The blend of `self` (previous) toward `current` by `w`, as retail blends a room change
+    /// (`RF-LIGHT-CPU-025`): the directional colour, the six DALC colours (their mean is the
+    /// ambient) and the fog. The rotation, the sunlight scale and the key illuminance are the
+    /// cell's and are not blended. The light fade squares are reported only, so there is nothing to
+    /// blend. The room image space is not blended: `room_bounds` carries no image-space data yet.
+    fn blended_with(&self, current: &Self, w: f32) -> Self {
+        let mut faces = [[0; 3]; 6];
+        for (face, (from, to)) in faces
+            .iter_mut()
+            .zip(self.ambient_faces.iter().zip(&current.ambient_faces))
+        {
+            *face = lerp_bytes(*from, *to, w);
+        }
+        Self {
+            key_color: lerp_bytes(self.key_color, current.key_color, w),
+            ambient_faces: faces,
+            fog: CellFog::blend(self.fog, current.fog, w),
+            ..*current
+        }
     }
 
     pub(crate) fn key_light_color(&self) -> Color {
@@ -680,15 +753,116 @@ impl SceneEnvironment {
         }
     }
 
-    /// The values to apply now, or `None` in mode 3. The first room (in `ref_id` order) whose
-    /// box holds the camera takes precedence over the cell (RF-LIGHT-CPU-013). Retail tracks the
-    /// current room through the portal system (`Sky+0x30`/`+0x34`); which reference it names is a
-    /// medium-confidence lead, so the camera position stands in for it.
-    pub(crate) fn active_render(&self, camera: Option<Vec3>) -> Option<&InteriorRender> {
+    /// The room the camera point is in, or `None` for no room (the cell's own lighting).
+    ///
+    /// RF-LIGHT-CPU-026: retail first re-tests the room it already has, and only when the point has
+    /// left that room scans the cell's rooms in order and takes the first that holds it. `last` is
+    /// the room chosen on the previous frame, so a point inside two overlapping rooms stays in the
+    /// first one it entered. Retail's point is the camera plus its near distance along the view
+    /// direction (RF-ROOM-002); the near distance is not traced, so the camera position stands in.
+    pub(crate) fn room_at(&self, camera: Option<Vec3>, last: Option<u32>) -> Option<u32> {
+        let position = camera?;
+        if let Some(room) = last.and_then(|id| self.rooms.iter().find(|room| room.ref_id == id))
+            && room.contains(position)
+        {
+            return Some(room.ref_id);
+        }
+        self.rooms
+            .iter()
+            .find(|room| room.contains(position))
+            .map(|room| room.ref_id)
+    }
+
+    /// What one side of a blend applies: the room's lighting, or the cell's when `room` is `None`
+    /// or names no room of this cell. `None` in mode 3.
+    fn render_of(&self, room: Option<u32>) -> Option<&InteriorRender> {
         let cell = self.cell_render.as_ref()?;
-        let room =
-            camera.and_then(|position| self.rooms.iter().find(|room| room.contains(position)));
-        Some(room.map_or(cell, |room| &room.render))
+        Some(
+            room.and_then(|id| self.rooms.iter().find(|room| room.ref_id == id))
+                .map_or(cell, |room| &room.render),
+        )
+    }
+
+    /// The values to apply now, or `None` in mode 3: the current side of the blend, or the blend
+    /// of the previous and current sides while a transition runs (RF-LIGHT-CPU-024, `-025`).
+    pub(crate) fn blended_render(&self, blend: &RoomBlend) -> Option<InteriorRender> {
+        let current = *self.render_of(blend.current)?;
+        if blend.weight <= 0.0 {
+            return Some(current);
+        }
+        let previous = *self.render_of(blend.previous)?;
+        Some(previous.blended_with(&current, blend.weight))
+    }
+}
+
+/// `fRoomLightingTransitionDuration`: the seconds a switch between room lightings takes
+/// (`RF-LIGHT-CPU-024`: record `0x14209E7C0`, default 3.0, one reader `0x14041206C`, no ESM
+/// override found). The unit is the frame delta of the renderer's clock, which about 200 retail
+/// readers use as seconds per frame (medium confidence), so it is real time here.
+pub(crate) const ROOM_LIGHTING_TRANSITION_SECONDS: f32 = 3.0;
+
+/// The weight a started transition begins at (`RF-LIGHT-CPU-024`, `0x3727C5AC`, 1.0e-5). A weight
+/// above 0 is what marks a transition as running.
+const ROOM_TRANSITION_START_WEIGHT: f32 = 1.0e-5;
+
+/// The retail room-lighting transition (`RF-LIGHT-CPU-024`, `Sky::Update` `0x140411EC0`).
+///
+/// A side is a room's `ref_id`, or `None` for the cell's own lighting (retail's "default handle").
+/// - A new room differing from `current` starts a transition only while none runs: previous takes
+///   current, current takes the new room, weight starts at 1.0e-5. A room change during a transition
+///   is not started; it is picked up after the transition ends.
+/// - While it runs, elapsed time grows by the frame delta, `t = clamp(elapsed / 3.0, 0, 1)` and the
+///   weight is `w = (3 - 2t) * t^2`. At `w >= 1` previous returns to the default side, and weight
+///   and elapsed return to 0.
+/// - A cell change takes the new room at once (`Sky+0x1DC` bit 0x100): previous = current = new,
+///   elapsed 0, no transition.
+#[derive(Resource, Debug, Clone, PartialEq, Default)]
+pub(crate) struct RoomBlend {
+    /// The cell the state belongs to. A different cell snaps.
+    cell_id: Option<u32>,
+    /// The room the camera is in now, as chosen by [`SceneEnvironment::room_at`].
+    target: Option<u32>,
+    previous: Option<u32>,
+    current: Option<u32>,
+    elapsed: f32,
+    weight: f32,
+}
+
+impl RoomBlend {
+    /// A cell change: no transition, the new room applies at once.
+    fn snap(&mut self, cell_id: Option<u32>, room: Option<u32>) {
+        *self = Self {
+            cell_id,
+            target: room,
+            previous: room,
+            current: room,
+            elapsed: 0.0,
+            weight: 0.0,
+        };
+    }
+
+    /// One frame: the camera is in `room`, and `delta` seconds have passed.
+    fn step(&mut self, room: Option<u32>, delta: f32) {
+        self.target = room;
+        if room != self.current && self.weight == 0.0 {
+            self.previous = self.current;
+            self.current = room;
+            self.weight = ROOM_TRANSITION_START_WEIGHT;
+            self.elapsed = 0.0;
+        }
+        if self.weight > 0.0 {
+            self.elapsed += delta.max(0.0);
+            let t = (self.elapsed / ROOM_LIGHTING_TRANSITION_SECONDS).clamp(0.0, 1.0);
+            let w = (3.0 - 2.0 * t) * t * t;
+            if w >= 1.0 {
+                self.previous = None;
+                self.weight = 0.0;
+                self.elapsed = 0.0;
+            } else {
+                // Never below the start weight: the transition stays marked as running.
+                self.weight = w.max(ROOM_TRANSITION_START_WEIGHT);
+            }
+        }
     }
 }
 
@@ -721,9 +895,10 @@ impl Plugin for InteriorEnvironmentPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SceneEnvironment>()
             .init_resource::<InteriorFog>()
+            .init_resource::<RoomBlend>()
             .add_systems(
                 PostUpdate,
-                (select_environment, apply_interior_lighting)
+                (select_environment, step_room_blend, apply_interior_lighting)
                     .chain()
                     .in_set(EnvironmentSet)
                     .after(crate::door_crossing::DoorCrossingSet)
@@ -767,6 +942,29 @@ fn select_environment(
     }
 }
 
+/// Advances the room-lighting blend one frame (`RF-LIGHT-CPU-024`): a cell change takes the new
+/// room at once, and a room crossing inside the cell starts or continues a blend.
+fn step_room_blend(
+    scene: Res<SceneEnvironment>,
+    cameras: Query<&Transform, (With<StreamingCamera>, Without<WorldSun>)>,
+    mut blend: ResMut<RoomBlend>,
+    time: Option<Res<Time<Real>>>,
+) {
+    let camera = cameras.iter().next().map(|transform| transform.translation);
+    let cell_id = scene.interior.as_ref().map(|interior| interior.cell_id);
+    let room = scene.room_at(camera, blend.target);
+    let delta = time.map_or(0.0, |time| time.delta_secs());
+    if blend.cell_id != cell_id {
+        blend.snap(cell_id, room);
+        return;
+    }
+    let mut next = blend.clone();
+    next.step(room, delta);
+    if *blend != next {
+        *blend = next;
+    }
+}
+
 /// Applies sky modes 1 and 2 to the [`WorldSun`], `GlobalAmbientLight` and [`InteriorFog`]
 /// (verify-report "The rule", steps 2-8):
 /// - Key light: colour `srgb_u8(directional)`, [`interior_key_illuminance`], and the
@@ -786,7 +984,6 @@ fn select_environment(
 /// current setting.
 fn apply_interior_lighting(
     scene: Res<SceneEnvironment>,
-    cameras: Query<&Transform, (With<StreamingCamera>, Without<WorldSun>)>,
     mut suns: Query<
         (
             Entity,
@@ -798,11 +995,11 @@ fn apply_interior_lighting(
     >,
     ambient: Option<ResMut<GlobalAmbientLight>>,
     mut fog: ResMut<InteriorFog>,
+    blend: Res<RoomBlend>,
     mut saved_ambient: Local<Option<Color>>,
     mut commands: Commands,
 ) {
-    let camera = cameras.iter().next().map(|transform| transform.translation);
-    let wanted = scene.active_render(camera).copied();
+    let wanted = scene.blended_render(&blend);
     let wanted_fog = InteriorFog(wanted.and_then(|render| render.fog));
     if *fog != wanted_fog {
         *fog = wanted_fog;
@@ -920,7 +1117,9 @@ fn set_sun(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::time::TimeUpdateStrategy;
     use rusqlite::Connection;
+    use std::time::Duration;
 
     fn fixture() -> EnvironmentCatalog {
         let connection = Connection::open_in_memory().unwrap();
@@ -2097,6 +2296,9 @@ mod tests {
     #[test]
     fn a_room_template_has_precedence_over_the_cell_colours() {
         let mut app = app(rule_catalog());
+        // One update is longer than the transition, so a crossing completes in the frame it
+        // happens in; the blend itself is tested below.
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs(4)));
         let sun = spawn_world_sun(&mut app);
         let camera = app
             .world_mut()
@@ -2247,6 +2449,233 @@ mod tests {
         assert_eq!(cell.with_room_template(&equal).fog, None);
         // The rotation stays the cell's.
         assert_eq!(room.key_travel, cell.key_travel);
+    }
+
+    /// The retail curve (`RF-LIGHT-CPU-024`): `w = (3 - 2t) t^2` with `t = elapsed / 3.0 s`, a
+    /// weight of 1.0e-5 when the transition starts, and the end at `t = 1` returning to the default
+    /// side with weight 0.
+    #[test]
+    fn the_room_blend_follows_the_retail_smoothstep_over_three_seconds() {
+        assert_eq!(ROOM_LIGHTING_TRANSITION_SECONDS, 3.0, "RF-LIGHT-CPU-024");
+        let mut blend = RoomBlend::default();
+        blend.snap(Some(7), None);
+        assert_eq!(
+            (blend.previous, blend.current, blend.weight),
+            (None, None, 0.0)
+        );
+        // A frame of zero length still starts the transition, at the 1e-5 weight.
+        blend.step(Some(5), 0.0);
+        assert_eq!((blend.previous, blend.current), (None, Some(5)));
+        assert_eq!(blend.weight, ROOM_TRANSITION_START_WEIGHT);
+        // 0.75 s steps: t = 0.25, 0.5, 0.75.
+        for (t, expected) in [(0.25_f32, 0.156_25), (0.5, 0.5), (0.75, 0.843_75)] {
+            blend.step(Some(5), 0.75);
+            assert!(
+                (blend.weight - expected).abs() < 1.0e-5,
+                "t = {t}: {}",
+                blend.weight
+            );
+            assert_eq!(blend.current, Some(5));
+        }
+        // t = 1: done. Previous returns to the default side, and the weight to 0.
+        blend.step(Some(5), 0.75);
+        assert_eq!(
+            (blend.previous, blend.current, blend.weight),
+            (None, Some(5), 0.0)
+        );
+        assert_eq!(blend.elapsed, 0.0);
+    }
+
+    /// A room change while a transition runs is not started; it is picked up after the transition
+    /// ends (`RF-LIGHT-CPU-024`).
+    #[test]
+    fn a_room_change_during_a_transition_waits_for_it_to_end() {
+        let mut blend = RoomBlend::default();
+        blend.snap(Some(7), None);
+        blend.step(Some(1), 1.0);
+        assert_eq!(blend.current, Some(1));
+        blend.step(Some(2), 1.0);
+        assert_eq!((blend.previous, blend.current), (None, Some(1)));
+        assert_eq!(blend.target, Some(2));
+        blend.step(Some(2), 1.0);
+        // The first transition ends; the second has not started yet.
+        assert_eq!((blend.current, blend.weight), (Some(1), 0.0));
+        blend.step(Some(2), 1.0);
+        assert_eq!((blend.previous, blend.current), (Some(1), Some(2)));
+        assert!(blend.weight > 0.0);
+    }
+
+    /// A new cell takes its lighting at once: no transition, whatever was running.
+    #[test]
+    fn a_cell_change_snaps_the_room_blend() {
+        let mut blend = RoomBlend::default();
+        blend.snap(Some(7), Some(1));
+        blend.step(Some(2), 1.0);
+        assert!(blend.weight > 0.0);
+        blend.snap(Some(8), None);
+        assert_eq!(
+            blend,
+            RoomBlend {
+                cell_id: Some(8),
+                ..default()
+            }
+        );
+    }
+
+    /// The blend covers the directional colour, the six DALC colours, both fog colours and
+    /// near, far, power and max (`RF-LIGHT-CPU-025`), and leaves the rotation, the sunlight scale
+    /// and the key illuminance to the cell.
+    #[test]
+    fn the_blend_covers_every_listed_field_and_keeps_the_cell_rotation() {
+        let side = |value: u8, fog: Option<CellFog>| InteriorRender {
+            key_color: [value; 3],
+            sunlight_scale: 1.5,
+            key_illuminance: 100.0,
+            key_travel: [0.0, 1.0, 0.0],
+            ambient_faces: [[value; 3]; 6],
+            fog,
+        };
+        let fog = |value: u8, near: f32, far: f32, power: f32, max: f32| CellFog {
+            near_color: [value; 3],
+            far_color: [value + 1; 3],
+            near,
+            far,
+            power,
+            max,
+        };
+        let previous = side(0, Some(fog(0, 100.0, 1000.0, 1.0, 0.5)));
+        let current = side(100, Some(fog(100, 300.0, 3000.0, 3.0, 1.0)));
+        let half = previous.blended_with(&current, 0.5);
+        assert_eq!(half.key_color, [50; 3]);
+        assert_eq!(half.ambient_faces, [[50; 3]; 6]);
+        let fog = half.fog.unwrap();
+        assert_eq!((fog.near_color, fog.far_color), ([50; 3], [51; 3]));
+        assert_eq!(
+            (fog.near, fog.far, fog.power, fog.max),
+            (200.0, 2000.0, 2.0, 0.75)
+        );
+        assert_eq!(half.key_travel, current.key_travel);
+        assert_eq!((half.sunlight_scale, half.key_illuminance), (1.5, 100.0));
+        // The ends are the sides themselves.
+        assert_eq!(previous.blended_with(&current, 1.0), current);
+        // A side with no fog ramp stands for retail's far clamp: fog fades in over the blend, and
+        // a blend that ends on no fog ends with none.
+        let none = side(100, None);
+        let fading = previous.blended_with(&none, 0.5).fog.unwrap();
+        assert!(
+            fading.far > 80_000.0 && fading.far < FOG_FAR_CLAMP,
+            "{}",
+            fading.far
+        );
+        assert_eq!(previous.blended_with(&none, 1.0).fog, None);
+        let arriving = none.blended_with(&current, 0.5).fog.unwrap();
+        assert_eq!(arriving.far, 0.5 * (FOG_FAR_CLAMP + 3000.0));
+        assert_eq!(FOG_FAR_CLAMP, 163_840.0, "RF-FOG-001");
+        assert_eq!(none.blended_with(&none, 0.5).fog, None);
+    }
+
+    /// The point stays in the room it is in while it is still inside, and only otherwise takes the
+    /// first room in order that holds it (`RF-LIGHT-CPU-026`).
+    #[test]
+    fn the_room_choice_is_sticky_while_the_point_stays_inside() {
+        let render = InteriorRender::new(&Lighting::default(), 1.0);
+        let room = |ref_id: u32, x: f32| {
+            RoomLighting::new(
+                &RoomBound {
+                    ref_id,
+                    position: [x, 0.0, 0.0],
+                    rotation: [0.0; 3],
+                    half: [100.0; 3],
+                    lighting_template: 1,
+                },
+                render,
+            )
+        };
+        // Rooms 1 and 2 overlap between x = 50 and x = 100 (Creation x is engine x).
+        let scene = SceneEnvironment {
+            cell_render: Some(render),
+            rooms: vec![room(1, 0.0), room(2, 150.0)],
+            ..default()
+        };
+        let at = |x: f32| Some(Vec3::new(x, 0.0, 0.0));
+        assert_eq!(scene.room_at(at(0.0), None), Some(1));
+        assert_eq!(scene.room_at(at(75.0), None), Some(1), "first in order");
+        assert_eq!(scene.room_at(at(75.0), Some(2)), Some(2), "sticky");
+        assert_eq!(scene.room_at(at(150.0), Some(1)), Some(2), "left room 1");
+        assert_eq!(scene.room_at(at(1000.0), Some(2)), None, "in no room");
+        assert_eq!(scene.room_at(None, Some(2)), None, "no camera");
+    }
+
+    /// End to end in the plugin: a door crossing applies the cell at once, a room crossing starts a
+    /// blend that is not at the room's lighting until three seconds have passed, and a cell change
+    /// during it applies the new cell with no blend.
+    #[test]
+    fn a_room_crossing_blends_over_three_seconds_and_a_cell_change_does_not() {
+        let mut app = app(rule_catalog());
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
+            0.5,
+        )));
+        let sun = spawn_world_sun(&mut app);
+        let camera = app
+            .world_mut()
+            .spawn((StreamingCamera, Transform::from_xyz(0.0, 5000.0, 0.0)))
+            .id();
+        enter(&mut app, Some(BLEAK_FALLS));
+        for _ in 0..3 {
+            app.update();
+        }
+        let cell_color = Color::srgb_u8(44, 47, 48);
+        let room_color = Color::srgb_u8(68, 79, 81);
+        assert_eq!(sun_light(&app, sun).color, cell_color, "the cell, at once");
+        // Into room 90193.
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation = creation_to_bevy(Vec3::new(7936.0, -5015.0, -1900.0));
+        app.update();
+        // One 0.5 s frame: t = 1/6, w = 0.074, so red has moved about 2 of the 24 from 44 to 68.
+        let start = sun_light(&app, sun).color.to_srgba().red * 255.0;
+        assert!(
+            (44.0..50.0).contains(&start),
+            "the first frame is still near the cell's lighting: {start}"
+        );
+        // 0.5 s per update: after six more the transition is at t = 1.
+        let mut weights = Vec::new();
+        for _ in 0..6 {
+            app.update();
+            let weight = app.world().resource::<RoomBlend>().weight;
+            if weight == 0.0 {
+                break;
+            }
+            weights.push(weight);
+            assert_ne!(
+                sun_light(&app, sun).color,
+                room_color,
+                "not at the room's colour before the end"
+            );
+        }
+        assert!(
+            weights.len() >= 4 && weights.windows(2).all(|pair| pair[0] < pair[1]),
+            "{weights:?}"
+        );
+        app.update();
+        assert_eq!(
+            sun_light(&app, sun).color,
+            room_color,
+            "the room, at the end"
+        );
+        // Back out starts a new blend toward the cell; a door crossing to another cell during it
+        // takes that cell at once.
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation = Vec3::ZERO;
+        app.update();
+        app.update();
+        assert!(app.world().resource::<RoomBlend>().weight > 0.0);
+        enter(&mut app, Some(ALVOR));
+        assert_eq!(app.world().resource::<RoomBlend>().weight, 0.0);
+        assert_eq!(sun_light(&app, sun).color, Color::srgb_u8(65, 70, 80));
     }
 
     /// Retail takes the sky mode from the cell the player is in (RF-LIGHT-CPU-010), and an
