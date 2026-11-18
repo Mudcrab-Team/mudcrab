@@ -1948,6 +1948,13 @@ fn spawn_cell(
                             body_scene: plan.scene_path.clone(),
                         },
                     ));
+                    // Stand-in for the retail behaviour graph's idle variety; see `IdleSequence`.
+                    if let Some(sequence) = crate::actor_animation::IdleSequence::new(
+                        actor_catalog.idle_sequence_pool(plan),
+                        reference.form_id,
+                    ) {
+                        entity.insert(sequence.preload(asset_server));
+                    }
                 } else if let Some(scene) = actor_catalog.legacy_creature_idle_scene(plan) {
                     entity.insert(crate::actor_animation::ActorClips::load_idle(
                         asset_server,
