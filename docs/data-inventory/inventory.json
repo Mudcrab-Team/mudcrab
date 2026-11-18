@@ -1,7 +1,7 @@
 {
   "denominators": {
     "emitted_schema_columns": null,
-    "manually_traced_fields": 14,
+    "manually_traced_fields": 15,
     "named_external_stores": 3,
     "rusqlite_candidates": 88
   },
@@ -307,6 +307,32 @@
         }
       ]
     },
+    "plugins.checksum": {
+      "evidence": [
+        {
+          "anchor": "fn prepare_plugin_checksum_rows(",
+          "path": "crates/converter/src/esm/mod.rs"
+        },
+        {
+          "anchor": "expected.len() == 32",
+          "path": "crates/converter/src/records/history.rs"
+        }
+      ],
+      "owner": "converter record readers (#746)",
+      "reason": "The readers publish a SHA-256 for sources with verified bytes. An empty BLOB marks an unavailable checksum while the admitted plugin keeps its slot. In-house history requires the 32-byte checksum before decoding a source version.",
+      "roles": [
+        "provenance",
+        "validation"
+      ],
+      "states": {
+        "decoded": "unknown",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
     "race_movement_links.run_movt_id": {
       "evidence": [
         {
@@ -553,6 +579,16 @@
       ],
       "key": "terrain unresolved_texture_ids JSON",
       "reason": "Owned legacy snapshot replaced by scalar diagnostic rows, not a second runtime store."
+    },
+    {
+      "evidence": [
+        {
+          "anchor": "pub(crate) fn stored_order(",
+          "path": "crates/converter/src/records/history.rs"
+        }
+      ],
+      "key": "in-house history before inhouse_plugin_inputs",
+      "reason": "Retained in-house packs rebuild admitted slots from TES4 history and the stored master order. Current packs use explicit admission rows so replay can recover a slot even when its TES4 history is missing."
     }
   ],
   "limitations": [
@@ -1446,8 +1482,8 @@
       "status": "literal"
     }
   ],
-  "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
-  "reviewed_source_guard_sha256": "a56b70818f0b669586d6636a68bb3f732a362939910e9950ce24107084c60391",
+  "reviewed_at_commit": "3490f96ad4be909ad4ccc5c4ba39fc086fc020b9",
+  "reviewed_source_guard_sha256": "4579153706c5efa7a7e0d2af5713fc2365a148035193092bfe4e4416abaf7413",
   "schema_status": "not_extracted",
   "schemas": {},
   "stores": {

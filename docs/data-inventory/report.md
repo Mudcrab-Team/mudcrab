@@ -1,6 +1,6 @@
 # World-data inventory
 
-Schema status: **not_extracted**. Reviewed source: `64108a1c38b0a854d4f82d7031ea50b57c336a5a`.
+Schema status: **not_extracted**. Reviewed source: `3490f96ad4be909ad4ccc5c4ba39fc086fc020b9`.
 
 Prepare dependencies are not executed rows, mapped rows, semantic use, population, or retail parity.
 
@@ -8,7 +8,7 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 
 - rusqlite_candidates: 88
 - emitted_schema_columns: unknown
-- manually_traced_fields: 14
+- manually_traced_fields: 15
 - named_external_stores: 3
 
 ## Traced examples
@@ -23,6 +23,7 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 | `lights.falloff` | source_decoded | source_preserved | source_projected | unknown | unknown | unknown | result: Published LIGH falloff; no mapping in the audited ReferenceQuery light suffix. Other paths remain unknown. Active PR #488 adds a consumer; it is not part of this reviewed head. |
 | `lights.radius` | source_decoded | source_preserved | source_projected | source_reference | source_mapping | source_sink | result: Source path sets PointLight.range and intensity through radius_of; overrides and caps remain separate policy. No native parity claim. |
 | `movement_types.forward_run` | source_decoded | source_preserved | source_projected | source_reference | source_mapping | source_sink | result: Selected NPC_Default_MT speed feeds directional target_speed. Selection and sprint multiplier remain #264 research gaps. |
+| `plugins.checksum` | unknown | source_preserved | source_projected | unknown | unknown | unknown | provenance, validation: The readers publish a SHA-256 for sources with verified bytes. An empty BLOB marks an unavailable checksum while the admitted plugin keeps its slot. In-house history requires the 32-byte checksum before decoding a source version. |
 | `race_movement_links.run_movt_id` | source_decoded | source_preserved | source_projected | source_reference | source_mapping | source_sink | validation: Read to reject unsupported non-null race selection; not proof that the linked movement profile controls speed. Active PR #246 owns selection changes. |
 | `race_movement_links.walk_movt_id` | source_decoded | source_preserved | source_projected | source_reference | source_mapping | source_sink | validation: Read to reject unsupported non-null race selection; not proof that the linked movement profile controls speed. Active PR #246 owns selection changes. |
 | `records.data` | unknown | source_preserved | source_projected | unknown | unknown | unknown | provenance: Opaque archive/payload disposition. Preservation does not establish interpretation of every subrecord. Current image-space reader decodes selected records.data; no blanket unused claim. |
@@ -46,6 +47,7 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 - `lights.falloff`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/world/database.rs](../../crates/engine/src/world/database.rs). Exact anchors in inventory.json.
 - `lights.radius`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/lights.rs](../../crates/engine/src/lights.rs), [crates/engine/src/world/database.rs](../../crates/engine/src/world/database.rs). Exact anchors in inventory.json.
 - `movement_types.forward_run`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/physics.rs](../../crates/engine/src/physics.rs). Exact anchors in inventory.json.
+- `plugins.checksum`: [crates/converter/src/esm/mod.rs](../../crates/converter/src/esm/mod.rs), [crates/converter/src/records/history.rs](../../crates/converter/src/records/history.rs). Exact anchors in inventory.json.
 - `race_movement_links.run_movt_id`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/physics.rs](../../crates/engine/src/physics.rs). Exact anchors in inventory.json.
 - `race_movement_links.walk_movt_id`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/physics.rs](../../crates/engine/src/physics.rs). Exact anchors in inventory.json.
 - `records.data`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/world/imagespace.rs](../../crates/engine/src/world/imagespace.rs). Exact anchors in inventory.json.
@@ -58,6 +60,7 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 - `room_portals pre-pair_index`: Retained legacy migration; old primary key is not a current emitted shape.
 - `door_links pre-destination_name`: Optional legacy column migration; missing door table uses NULL query suffix.
 - `terrain unresolved_texture_ids JSON`: Owned legacy snapshot replaced by scalar diagnostic rows, not a second runtime store.
+- `in-house history before inhouse_plugin_inputs`: Retained in-house packs rebuild admitted slots from TES4 history and the stored master order. Current packs use explicit admission rows so replay can recover a slot even when its TES4 history is missing.
 
 ## Query extraction
 
