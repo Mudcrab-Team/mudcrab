@@ -3853,6 +3853,13 @@ fn weld_merged_cell(
     Ok(())
 }
 
+/// A coverage node whose coverage or children changed: the only place a LOD source mesh can be
+/// found, since the mesh child carries no coverage of its own.
+type ChangedCoverageNode = (
+    With<TerrainCoverage>,
+    Or<(Added<TerrainCoverage>, Changed<Children>)>,
+);
+
 /// A terrain mesh that has not been given [`NotShadowCaster`] yet.
 type UncastingTerrain = (
     With<Mesh3d>,
@@ -3864,9 +3871,6 @@ type UncastingTerrain = (
     Without<NotShadowCaster>,
 );
 
-/// A mesh spawned this frame that has no [`NotShadowCaster`].
-type NewUncastingMesh = (Added<Mesh3d>, Without<NotShadowCaster>);
-
 /// Retail land does not cast sun shadows unless `bDrawLandShadows` is 1 (`RF-SHADER-011`,
 /// `0x1402b3380`: land shader flag 9 = the setting, default 0; flag 8, receiving, is always 1).
 /// Every terrain mesh - the merged cell, the quadrant patches, the LOD terrain sources and their
@@ -3876,16 +3880,17 @@ type NewUncastingMesh = (Added<Mesh3d>, Without<NotShadowCaster>);
 /// Terrain is found through [`TerrainPatch`], [`TerrainCoverage`] and
 /// [`lod::terrain_batching::LandMesh`] on the mesh itself, and through the mesh children of a
 /// [`TerrainCoverage`] node: a LOD chunk's quadrant node carries the coverage and its single
-/// primitive child carries the mesh, and that child draws until the chunk is batched. Either order
-/// of arrival is handled (the node gaining coverage after its child exists, or the child spawning
-/// under a node that has it). The queries skip an entity that already has the marker, so a frame
-/// with no new terrain visits nothing.
+/// primitive child carries the mesh, and that child draws until the chunk is batched.
+///
+/// Cost: the `terrain` query has archetype filters only, so once a mesh has the marker it matches
+/// no archetype and costs nothing. `covered_nodes` visits only entities that carry a
+/// [`TerrainCoverage`] and whose coverage or `Children` changed. Both arrival orders are handled
+/// there: the node gaining coverage after its child exists (`Added<TerrainCoverage>`), and a child
+/// spawning under a covered node (`Changed<Children>`). No other mesh in the world is looked at.
 fn apply_land_shadow_policy(
     config: Option<Res<crate::config::EngineConfig>>,
     terrain: Query<Entity, UncastingTerrain>,
-    covered_nodes: Query<&Children, Added<TerrainCoverage>>,
-    new_meshes: Query<(Entity, &ChildOf), NewUncastingMesh>,
-    coverage: Query<(), With<TerrainCoverage>>,
+    covered_nodes: Query<&Children, ChangedCoverageNode>,
     uncasting_meshes: Query<(), (With<Mesh3d>, Without<NotShadowCaster>)>,
     mut commands: Commands,
 ) {
@@ -3900,11 +3905,6 @@ fn apply_land_shadow_policy(
             if uncasting_meshes.contains(child) {
                 commands.entity(child).insert(NotShadowCaster);
             }
-        }
-    }
-    for (entity, parent) in &new_meshes {
-        if coverage.contains(parent.parent()) {
-            commands.entity(entity).insert(NotShadowCaster);
         }
     }
 }

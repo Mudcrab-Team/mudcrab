@@ -2153,6 +2153,19 @@ mod tests {
             assert!(batch.fallback_entities.iter().all(|&fallback| {
                 *app.world().get::<Visibility>(fallback).unwrap() == Visibility::Inherited
             }));
+            // `spawn_render_mesh` tags the batch and every fallback, so the land shadow policy
+            // finds them whichever order the source flags arrived in.
+            for entity in batch
+                .fallback_entities
+                .iter()
+                .copied()
+                .chain([batch.entity])
+            {
+                assert!(
+                    app.world().entity(entity).contains::<LandMesh>(),
+                    "a LOD terrain render mesh lacks LandMesh"
+                );
+            }
         }
         assert_eq!(
             *app.world().get::<Visibility>(entity).unwrap(),

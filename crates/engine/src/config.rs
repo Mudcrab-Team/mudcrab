@@ -243,7 +243,8 @@ pub struct EngineConfig {
     /// Optional upper bound for sun-shadow cascades from `[Display] fShadowDistance`.
     pub sun_shadow_distance_limit: Option<f32>,
     /// Whether terrain casts sun shadows: `[Display] bDrawLandShadows`. The default is retail's
-    /// [`RETAIL_DRAW_LAND_SHADOWS`] (off). Terrain receives shadows either way.
+    /// [`RETAIL_DRAW_LAND_SHADOWS`] (off). Terrain receives shadows either way. In retail the
+    /// setting affects near land only; until a later change limits it, it also affects LOD land here.
     pub land_shadows: bool,
     /// Optional sun bearing clockwise from north and elevation above the horizon, in degrees.
     pub sun_position: Option<(f32, f32)>,

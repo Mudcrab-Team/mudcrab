@@ -15,7 +15,7 @@
 //! | `[Sky]` | `fSunXExtreme`, `fSunYExtreme`, `fSunZExtreme`, `fSunDirXExtreme`, `fSunAlphaTransTime` | explicit sun-path overrides over the pack's GMST (retail exe default for a missing GMST) |
 //! | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2` |
 //! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units |
-//! | `[Display]` | `bDrawLandShadows` | 1 makes terrain cast sun shadows; the default 0 is retail's (`RF-SHADER-011`) |
+//! | `[Display]` | `bDrawLandShadows` | 1 makes terrain cast sun shadows; the default 0 is retail's (`RF-SHADER-011`). In retail it affects near land only; here it also affects LOD land until a later change limits it |
 //! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD split rule: a block of `level` cells splits into its four children under `fSplitDistanceMult` x `level` x 2,048 x sqrt(2) units (34,756 / 69,512 at levels 8 / 16 with 1.5) |
 //! | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists (not a retail terrain cut) |
 //! | `[TerrainManager]` | `fBlockLevel0Distance` | parsed and kept for the object LOD rule (level 8 hands over to level 4); does not affect terrain, so it changes nothing on screen until object LOD lands |
@@ -120,12 +120,13 @@ impl SkyrimIni {
             let key = key.trim().to_ascii_lowercase();
             let value = value.trim();
             let slot = (section.clone(), key);
-            // A later file's unusable value must not replace an earlier usable one: `apply` would
+            // A later unusable value (in a later file, or later in the same file) must not replace an
+            // earlier usable one: `apply` would
             // reject it and the earlier value would be lost. Report it here and keep the old one.
             if is_usable(&slot.0, &slot.1, value) == Some(false) && self.values.contains_key(&slot)
             {
                 eprintln!(
-                    "warning: ignoring {}={value:?} in a later INI; keeping the earlier value",
+                    "warning: ignoring the later {}={value:?}; keeping the earlier usable value",
                     slot.1
                 );
                 continue;
@@ -393,6 +394,15 @@ mod tests {
         // With no earlier value, an unusable one changes nothing.
         let config = layered("", "[Display]\nbDrawLandShadows=2\n");
         assert!(!config.land_shadows);
+    }
+
+    /// A duplicate key inside one file behaves like two layered files: a later unusable line keeps
+    /// the earlier usable value, a later usable one overrides it.
+    #[test]
+    fn a_duplicate_key_in_one_file_keeps_the_last_usable_value() {
+        assert!(apply("[Display]\nbDrawLandShadows=1\nbDrawLandShadows=2\n").land_shadows);
+        assert!(!apply("[Display]\nbDrawLandShadows=1\nbDrawLandShadows=0\n").land_shadows);
+        assert!(apply("[Display]\nbDrawLandShadows=0\nbDrawLandShadows=1\n").land_shadows);
     }
 
     /// Terrain casts no sun shadow by default (retail `bDrawLandShadows` = 0, `RF-SHADER-011`);
