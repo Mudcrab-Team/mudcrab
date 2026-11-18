@@ -1,10 +1,10 @@
 {
   "projection_sources": {
     "crates/converter/build.rs": "460fe1fec3f1afc4ae0791d3c9085cb8ff6e881cd5c478d5a19767abd4bf423c",
-    "crates/converter/src/actor_models.rs": "88c9cc04d7777b6be25df2b11489c353a75631765a39f9075ee13f4427ac81c1",
+    "crates/converter/src/actor_models.rs": "e80270b593967a3ad2a0fb00e8ab9166ded4fe621ff33112c75eb7e655d043ca",
     "crates/converter/src/actor_outfits.rs": "6b97e0abadd15b93f6bf2464f1f0baff4d7dcabf40085dff4102969ac13371b2",
     "crates/converter/src/actor_outfits/tests.rs": "fb932ca0cfb577310d0d5062a6690f198a3dd6496223354d8e05be26a2cd9dbf",
-    "crates/converter/src/animation/authoring.rs": "8bbb81d2630462cc73cc0f7d6e43923d1a35ee5646b2976075df5d3120d967a6",
+    "crates/converter/src/animation/authoring.rs": "e5cb62d760f61cfcba94c783985da97c098357c6d2b1417328956416462ba0bb",
     "crates/converter/src/animation/classes.rs": "71ce8d0ab6585d66f1bcccdadef004b2120fa5a2a86b9beddb172684a30fd20d",
     "crates/converter/src/animation/glb.rs": "6cf9d38029c3d26d3ae84e66995a267ada803415cec711d713cd566f3e160c21",
     "crates/converter/src/animation/idle_defaults.rs": "8a9239debb7f19694f079868039bb5a19406cb1fad3a0dbac13cfd6c01f8971f",
@@ -54,7 +54,7 @@
     "crates/converter/src/esm/emittance_parity_tests.rs": "a70d20fa34a6445f4181b0c44aeccbcdf05f45e712f948e79e5f2cc02412982e",
     "crates/converter/src/esm/environment.rs": "07b435e0da40e77cc4ac1f2ad63e200ee41248868bbf9d31d8a6e7b78e88632c",
     "crates/converter/src/esm/environment_parity_tests.rs": "50959c570d1b71eb9bb760d656296c5ef0489b48c1fa571f7b22ccc16364c130",
-    "crates/converter/src/esm/exporter.rs": "3ceb3d675dababba619b62589e76e20435c328254d7b55ca859d579b8c76d6be",
+    "crates/converter/src/esm/exporter.rs": "9cded78eb7bc0a50e17d10fd73453da5d3cd3b9c92280380dad85b0ffadc244a",
     "crates/converter/src/esm/extractors.rs": "4b506eec8c8436bc5804a61c41a8d39607bf5eb9deb86284d4ef75ce20ac8c4d",
     "crates/converter/src/esm/inhouse.rs": "9a6898c8afa96d5b449d3ffa2e17fea372a206d7fd17aef4eedf6a6f4dd304e4",
     "crates/converter/src/esm/inhouse_determinism_tests.rs": "f766df152300a8642f2593b32990aff948fc3f369072db37ad9fc16b8c56ed1c",
@@ -71,7 +71,7 @@
     "crates/converter/src/esm/object_materials.rs": "f5a37e40487d8edce22dd5c511555f7a59e06e21f491faceb32d368d623daed0",
     "crates/converter/src/esm/plugin_table_tests.rs": "2ff4a42118514a9eda39ecd9f2f1a9ed831d6729df73c8ea22d83a3ebcef7cb4",
     "crates/converter/src/esm/plugins_txt.rs": "f67388f786b050ca47b0d954f2d608f15edd43d8dba50d472c0362d68bc1b5e3",
-    "crates/converter/src/esm/projection_omissions.rs": "94edbae43f8dd5692a700d64ed087a3b888bfd02f4d75bbac6629c6b577b1e33",
+    "crates/converter/src/esm/projection_omissions.rs": "896cfba095390f1f328093d01de798e2c666917c564ba25f577bc0644e94da5c",
     "crates/converter/src/esm/records/aact.rs": "c4a85922d0c8802a9b40f153b289dfd14a74fddfca2864548c2f17ca93054399",
     "crates/converter/src/esm/records/achr.rs": "1866009a2e6973f4eb94660bed3097433c353d51bf138bf4ab8a65ba24845502",
     "crates/converter/src/esm/records/clfm.rs": "7fd6c822e5a43947693ad50144a66899558aaf3f449bc4c6c08f54ee3d8cd8a9",
@@ -105,7 +105,7 @@
     "crates/converter/src/material.rs": "53bdf8f8f1e37ba47399e5e3d1ec62cf1b1b3320701053dffde3b298e3c395d5",
     "crates/converter/src/mesh.rs": "99f114cb7f0479d1e80f89716c8539f5c1f8252b60ac22c30b81dd61e648708a",
     "crates/converter/src/metadata.rs": "47d769d96c1d42dfa67a25c18be012d9ce5aac06a463acb12ed23beeaec38edb",
-    "crates/converter/src/pipeline.rs": "578f2ee98c51b31a1b02b11e3f1554bfa415a24b869002d1522e27f649b51e31",
+    "crates/converter/src/pipeline.rs": "5550f0aef0313e9d463a549091405634e70cf7368038a5a033c3342a53b9f769",
     "crates/converter/src/pipeline/authored_actor_idle.rs": "65a308649b7dbc4cf47baff573c8ee93518bed48898e2726986a9efa904e080d",
     "crates/converter/src/pipeline/creature_idle.rs": "5b3a12d728755e43d4f009acfdcf9619a80dac397229ec4cd1dffbebd3eb6fa1",
     "crates/converter/src/pipeline/recovery_tests.rs": "9d919f78348fe036db75d97e028fc6c6d0efa79f6008b3cf319f91324855acc9",
@@ -282,7 +282,7 @@
     "crates/engine/src/world/imagespace.rs::prepare::e00b22ed53d96ea7::1"
   ],
   "reader_sources": {
-    "crates/converter/src/esm/exporter.rs": "3ceb3d675dababba619b62589e76e20435c328254d7b55ca859d579b8c76d6be",
+    "crates/converter/src/esm/exporter.rs": "9cded78eb7bc0a50e17d10fd73453da5d3cd3b9c92280380dad85b0ffadc244a",
     "crates/engine/src/app.rs": "24d0dfdf94339f7365a1693c11c0c1eb8684b9592632217f0ee2a36033e29c0f",
     "crates/engine/src/bin/world-inspect.rs": "861f7a36b9494f9d72bee16c44047e98db0ec139ea8d5b511e80a9e4196e1185",
     "crates/engine/src/bug_report/snapshot.rs": "5b13eda93385a5d89331c1017f6141ed89895fe6f79346fac0a11b192fa476b8",
@@ -307,7 +307,7 @@
   },
   "tooling_sources": {
     "crates/engine/src/world/inventory_tests.rs": "ab21f2aa58e71bfab6c3b86c2730f0fdec71fe9be8e10aa3e391ce50151be94e",
-    "tools/world_data_inventory/dispositions.json": "0edd3baed3208e4488eebf6353e77f87eccf006c45a5b8107311fcf5d8bead53",
+    "tools/world_data_inventory/dispositions.json": "c9918bf819c18a5464da7ba95aa1d079ddded3da86911db46f9ec7b3bbbfa130",
     "tools/world_data_inventory/dispositions.schema.json": "23e3b0df8b2fbcb6c55af460b35345162df8acbabc97bdf01025119c4b692061",
     "tools/world_data_inventory/inventory.py": "2b97b002c92edd0c571d8a703b7f3e020d764cb0387b6a03d9d960c33f1c77db"
   }

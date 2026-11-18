@@ -640,7 +640,7 @@
     "actor_model_parts": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "The actor catalog uses the shared RACE authoring scan when selecting creature body parts. Unreadable authoring retains the existing body selection fallback. Field-level semantics remain deferred."
     },
     "actor_models": {
       "classification": "deferred",
@@ -820,17 +820,17 @@
     "projection_omission_samples": {
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+      "reason": "Bounded FormID and reason samples of runtime projection omissions include unreadable RACE animation authoring."
     },
     "projection_omission_stats": {
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+      "reason": "Persists the count and severity of projection omissions. Each live RACE with unreadable animation authoring contributes one race_unreadable_authoring data-loss omission to the conversion report."
     },
     "race_animation_sources": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "Projects readable live RACE animation authoring by FormID and sex from the scan shared with actor body selection. Unreadable authoring omits those rows and retains the canonical RACE record. Field-level semantics remain deferred."
     },
     "race_movement_links": {
       "classification": "deferred",
