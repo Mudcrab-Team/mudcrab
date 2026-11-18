@@ -1,5 +1,8 @@
 import unittest
 import json
+import os
+import runpy
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
@@ -70,6 +73,56 @@ class ScreenshotOwnershipTests(unittest.TestCase):
                     second.result(timeout=3)
             self.assertEqual((root / 'first.png').read_bytes(), images[':1'])
             self.assertEqual((root / 'second.png').read_bytes(), images[':2'])
+
+
+class RecordingLifecycleTests(unittest.TestCase):
+    def test_display_handshake_and_cleanup_with_unwritable_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / 'capture'
+            ready = output / 'display.json'
+            config = dict(exe_sha256='test', build=dict(dll_sha256='test'), input_sha256='test',
+                          proton_sha256='test', source_save_sha256='test', proton='/proton',
+                          source_save='/save', source_game='/games/steam/common/skyrim')
+            (root / 'session.json').write_text(json.dumps(config))
+            started, stopped, visible_during_write = [], [], []
+            write_text = Path.write_text
+
+            def write(path, data, *args, **kwargs):
+                if data.startswith('{"DISPLAY":'):
+                    path.touch()
+                    visible_during_write.append(ready.exists())
+                if path.name in ('game-journal.log', 'failure.json'):
+                    raise OSError('out of space')
+                return write_text(path, data, *args, **kwargs)
+
+            def run(argv, **kwargs):
+                if argv[0] == 'systemd-run':
+                    started.append(next(arg.removeprefix('--unit=') for arg in argv if arg.startswith('--unit=')))
+                    if argv[-1].endswith('display_ready.py'):
+                        with patch.object(recorder.time, 'sleep', side_effect=StopIteration):
+                            with self.assertRaises(StopIteration):
+                                runpy.run_path(argv[-1])
+                elif argv[:3] == ['systemctl', '--user', 'stop']:
+                    stopped.append(argv[-1])
+                return subprocess.CompletedProcess(argv, 0, stdout='', stderr='')
+
+            with patch.dict(os.environ, dict(DISPLAY=':42', INVOCATION_ID='inv', XDG_RUNTIME_DIR=directory)), \
+                    patch.object(recorder, 'sha256', return_value='test'), \
+                    patch.object(recorder.subprocess, 'run', side_effect=run), \
+                    patch.object(recorder.subprocess, 'check_output', return_value='inv'), \
+                    patch.object(recorder, 'initialize_prefix'), \
+                    patch.object(recorder, 'GameWindow', side_effect=RuntimeError('game window failed')), \
+                    patch.object(Path, 'write_text', write):
+                with self.assertRaises((OSError, RuntimeError)) as failure:
+                    recorder.run_recording(root, output, root)
+            with self.subTest('display handshake'):
+                self.assertEqual(visible_during_write, [False])
+                self.assertEqual(json.loads(ready.read_text())['DISPLAY'], ':42')
+            with self.subTest('service ownership'):
+                self.assertEqual(len(started), 2)
+                self.assertEqual(stopped, started[::-1])
+                self.assertEqual(str(failure.exception), 'game window failed')
 
 
 class MotionProofTests(unittest.TestCase):

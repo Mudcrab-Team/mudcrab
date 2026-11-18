@@ -2,6 +2,7 @@
 """Record and verify one native Skyrim W press in an isolated Gamescope session."""
 
 import argparse
+from contextlib import suppress
 import csv
 import ctypes as C
 import fcntl
@@ -237,8 +238,11 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
     environment_file = output / 'display.json'
     ready_script = output / 'display_ready.py'
     ready_script.write_text('import os,json,time\nfrom pathlib import Path\n'
-                           f'Path({str(environment_file)!r}).write_text(json.dumps({{k:os.environ.get(k, "") '
+                           f'path = Path({str(environment_file)!r})\n'
+                           'pending = path.with_suffix(".tmp")\n'
+                           'pending.write_text(json.dumps({k:os.environ.get(k, "") '
                            'for k in ["DISPLAY","GAMESCOPE_WAYLAND_DISPLAY","LIBEI_SOCKET","INVOCATION_ID"]}))\n'
+                           'pending.replace(path)\n'
                            'while True: time.sleep(3600)\n')
     phase = 'display-start'
     owned = []
@@ -435,30 +439,42 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
         if proof['status'] != 'passed':
             raise ValueError('Camera cadence did not meet the requested frame cap; retained proof and trace')
     except BaseException as error:
-        (output / 'failure.json').write_text(json.dumps({'phase': phase, 'error': str(error),
-                                                        'traceback': traceback.format_exc()}, indent=2) + '\n')
+        with suppress(OSError):
+            (output / 'failure.json').write_text(json.dumps({'phase': phase, 'error': str(error),
+                                                            'traceback': traceback.format_exc()}, indent=2) + '\n')
         raise
     finally:
-        if keyboard:
-            keyboard.close()
         try:
-            journal = subprocess.run(['journalctl', '--user', '-u', game_unit, '--no-pager'],
-                                     capture_output=True, text=True, timeout=10)
-            (output / 'game-journal.log').write_text(journal.stdout + journal.stderr)
-        except (OSError, subprocess.SubprocessError) as error:
-            (output / 'game-journal.log').write_text(str(error) + '\n')
-        cleanup_errors = []
-        for unit in reversed(owned):
+            if keyboard:
+                keyboard.close()
             try:
-                subprocess.run(['systemctl', '--user', 'stop', unit], timeout=20, capture_output=True)
-            except subprocess.TimeoutExpired:
-                try:
-                    subprocess.run(['systemctl', '--user', 'kill', '--signal=KILL', unit],
-                                   timeout=10, capture_output=True, check=True)
-                except (OSError, subprocess.SubprocessError) as error:
-                    cleanup_errors.append(f'{unit}: {error}')
-        if cleanup_errors:
-            (output / 'cleanup-errors.log').write_text('\n'.join(cleanup_errors) + '\n')
+                journal = subprocess.run(['journalctl', '--user', '-u', game_unit, '--no-pager'],
+                                         capture_output=True, text=True, timeout=10)
+                diagnostic = journal.stdout + journal.stderr
+            except (OSError, subprocess.SubprocessError) as error:
+                diagnostic = str(error) + '\n'
+            with suppress(OSError):
+                (output / 'game-journal.log').write_text(diagnostic)
+        finally:
+            stop_owned_services(owned, output)
+
+
+def stop_owned_services(owned, output):
+    cleanup_errors = []
+    for unit in reversed(owned):
+        try:
+            subprocess.run(['systemctl', '--user', 'stop', unit], timeout=20, capture_output=True, check=True)
+        except (OSError, subprocess.SubprocessError) as stop_error:
+            try:
+                subprocess.run(['systemctl', '--user', 'kill', '--signal=KILL', unit],
+                               timeout=10, capture_output=True, check=True)
+            except (OSError, subprocess.SubprocessError) as kill_error:
+                cleanup_errors.append(f'{unit}: stop: {stop_error}, kill: {kill_error}')
+    if cleanup_errors:
+        diagnostic = '\n'.join(cleanup_errors) + '\n'
+        print(diagnostic, file=sys.stderr, end='')
+        with suppress(OSError):
+            (output / 'cleanup-errors.log').write_text(diagnostic)
 
 
 def read_trace(path, *, live=False):

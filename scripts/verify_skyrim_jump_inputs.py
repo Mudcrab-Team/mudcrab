@@ -24,11 +24,19 @@ def verify(corpus, plan_path):
     conditions = plan['conditions']
     require([r['id'] for r in manifest['runs']] == [c['id'] for c in conditions],
             'Campaign is incomplete or conditions reordered')
-    accepted_attempts = [attempt for attempt in manifest['attempts'] if 'failure' not in attempt]
-    require(all(attempt['exit_code'] == 0 and attempt.get('status') != 'pending'
-                for attempt in accepted_attempts) and
-            [attempt['id'] for attempt in accepted_attempts] == [run['id'] for run in manifest['runs']],
-            'Attempt ledger has unclassified or duplicate attempts')
+    accepted = 0
+    next_attempt = 1
+    for attempt in manifest['attempts']:
+        require(accepted < len(conditions) and attempt['id'] == conditions[accepted]['id']
+                and type(attempt['attempt']) is int and attempt['attempt'] == next_attempt
+                and attempt.get('status') != 'pending', 'Attempt ledger is out of sequence or pending')
+        if 'failure' in attempt:
+            next_attempt += 1
+        else:
+            require(attempt['exit_code'] == 0, 'Attempt ledger has an unclassified attempt')
+            accepted += 1
+            next_attempt = 1
+    require(accepted == len(conditions), 'Attempt ledger is incomplete')
     baseline = manifest['runs'][0]['result']
     with zipfile.ZipFile(corpus / 'capture-source.zip') as archive:
         captured_sources = {name: archive.read(name) for name in archive.namelist()}
@@ -37,6 +45,7 @@ def verify(corpus, plan_path):
     acquisition = source_digest(corpus / 'capture-source.zip', capture, captured_sources[capture])
     required_sources = LEGACY_SOURCES if acquisition == LEGACY_CAPTURE_SHA256 else set(SOURCES)
     require(set(captured_sources) == required_sources, 'Archived source set is incomplete or unexpected')
+    trace_hashes = set()
     results = []
     for run, condition in zip(manifest['runs'], conditions):
         fixture = dict(plan['fixture'], **{k: v for k, v in condition.items() if k != 'id'})
@@ -48,6 +57,8 @@ def verify(corpus, plan_path):
         require(sum(r['kind'] == 1 for r in rows) == sum(r['kind'] == 5 for r in rows) == 1,
                 'Duplicate header or footer')
         require(run['sha256'] == raw_digest, 'Numeric trace identity differs')
+        require(raw_digest not in trace_hashes, 'Native trace reused across conditions')
+        trace_hashes.add(raw_digest)
         result = analyze_rows(rows)
         require(result == run['result'], 'Stored input result differs from recomputation')
         require(result['setter_call_rva'] in ('0x6752ba', '0x7cf269'), 'Unknown native setter path')

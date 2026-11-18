@@ -171,6 +171,8 @@ def main():
                 try:
                     proof = json.loads((output / 'proof.json').read_text())
                     rows, raw_digest = decode(output / 'trace.bin')
+                    if any(run['sha256'] == raw_digest for run in manifest['runs']):
+                        raise ValueError('Native trace reused across conditions')
                     cadence = validate_capture_proof(rows, proof, plan['frame_cap'], fixture)
                     result = analyze_rows(rows)
                     if raw_digest != proof['trace_sha256'] or proof['session'] != session:

@@ -39,6 +39,39 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'member name'):
             publication.transform('capture.zip', raw, {})
 
+    def test_nested_zip_comment_only_changes_are_audited_and_recorded(self):
+        for location in ('archive', 'entry'):
+            with self.subTest(location=location):
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, 'w') as archive:
+                    entry = zipfile.ZipInfo('capture.log')
+                    archive.comment = b'/home/alice/private' if location == 'archive' else b'public'
+                    entry.comment = b'/Users/alice/private' if location == 'entry' else b'public'
+                    archive.writestr(entry, b'unchanged')
+                original = zipped({'inner.zip': buf.getvalue()})
+                self.assertTrue(publication.findings('outer.zip', original))
+                changes = {}
+                public = publication.transform('outer.zip', original, changes)
+                self.assertEqual(changes['outer.zip']['published_sha256'], publication.sha(public))
+                self.assertFalse(publication.findings('outer.zip', public))
+                with zipfile.ZipFile(io.BytesIO(public)) as outer:
+                    with zipfile.ZipFile(io.BytesIO(outer.read('inner.zip'))) as inner:
+                        self.assertEqual(inner.read('capture.log'), b'unchanged')
+                        self.assertEqual(inner.comment, b'' if location == 'archive' else b'public')
+                        self.assertEqual(inner.getinfo('capture.log').comment, b'' if location == 'entry' else b'public')
+                self.assertEqual(publication.transform('outer.zip', public, {}), public)
+
+    def test_duplicate_zip_entries_cannot_hide_the_earlier_payload(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as archive:
+            archive.writestr('capture.log', b'/home/alice/private')
+            with self.assertWarns(UserWarning):
+                archive.writestr('capture.log', b'public')
+        issues = publication.findings('capture.zip', buf.getvalue())
+        self.assertIn('capture.zip!capture.log: operator home path', issues)
+        with self.assertRaisesRegex(ValueError, 'duplicate ZIP member'):
+            publication.transform('capture.zip', buf.getvalue(), {})
+
     def test_missing_recorded_immutable_evidence_fails_the_audit(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

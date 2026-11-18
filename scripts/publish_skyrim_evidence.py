@@ -97,17 +97,25 @@ def transform(name, data, changes):
     if name.endswith('.zip'):
         output = io.BytesIO()
         with zipfile.ZipFile(io.BytesIO(data)) as source, zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as dest:
+            if len(set(source.namelist())) != len(source.infolist()):
+                raise ValueError(f'{name}: duplicate ZIP member name')
+            dest.comment = b'' if content_findings(name + '!archive comment', source.comment) else source.comment
+            metadata_changed = dest.comment != source.comment
             for entry in source.infolist():
                 if unsafe_member(entry.filename):
                     raise ValueError(f'Unsafe ZIP member name: {entry.filename}')
                 member = transform(entry.filename, source.read(entry), changes.setdefault(name + '!members', {}))
                 info = zipfile.ZipInfo(entry.filename, (1980, 1, 1, 0, 0, 0))
                 info.compress_type = zipfile.ZIP_DEFLATED
+                if content_findings(entry.filename + '!member comment', entry.comment):
+                    metadata_changed = True
+                else:
+                    info.comment = entry.comment
                 dest.writestr(info, member)
         candidate = output.getvalue()
-        if changes.get(name + '!members'):
+        if metadata_changed or changes.get(name + '!members'):
             data = candidate
-        else:
+        if not changes.get(name + '!members'):
             changes.pop(name + '!members', None)
     elif name.endswith('.gz'):
         raw = gzip.decompress(data)
@@ -191,11 +199,22 @@ def unsafe_member(name):
 def findings(name, data):
     if name.endswith('.zip'):
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            return [issue for member in archive.namelist()
-                    for issue in ([f'{name}: unsafe ZIP member name {member}'] if unsafe_member(member) else []) +
-                    findings(name + '!' + member, archive.read(member))]
+            issues = content_findings(name + '!archive comment', archive.comment)
+            for entry in archive.infolist():
+                member = name + '!' + entry.filename
+                if unsafe_member(entry.filename):
+                    issues.append(f'{name}: unsafe ZIP member name {entry.filename}')
+                issues.extend(content_findings(member + '!member comment', entry.comment))
+                issues.extend(findings(member, archive.read(entry)))
+            if len(set(archive.namelist())) != len(archive.infolist()):
+                issues.append(f'{name}: duplicate ZIP member name')
+            return issues
     if name.endswith('.gz'):
         return findings(name[:-3], gzip.decompress(data))
+    return content_findings(name, data)
+
+
+def content_findings(name, data):
     issues = []
     if HOME.search(data):
         issues.append(name + ': operator home path')

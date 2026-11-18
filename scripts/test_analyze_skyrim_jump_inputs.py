@@ -253,6 +253,36 @@ class CaptureResumeTests(unittest.TestCase):
                         verify(corpus, plan)
 
 
+    def test_missing_failed_attempt_breaks_ledger_continuity(self):
+        reference = capture.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
+        plan = capture.ROOT / 'tools/skyrim-recorder/fixtures/jump-inputs-v4.json'
+        with tempfile.TemporaryDirectory() as directory:
+            corpus = Path(directory)
+            manifest = json.loads((reference / 'manifest.json').read_text())
+            del manifest['attempts'][0]
+            capture.write(corpus / 'manifest.json', manifest)
+            for name in ('capture-source.zip', 'traces'):
+                (corpus / name).symlink_to(reference / name)
+            with self.assertRaisesRegex(ValueError, 'Attempt ledger'):
+                verify(corpus, plan)
+
+    def test_repeat_baseline_requires_independent_trace_bytes(self):
+        reference = capture.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
+        plan = capture.ROOT / 'tools/skyrim-recorder/fixtures/jump-inputs-v4.json'
+        with tempfile.TemporaryDirectory() as directory:
+            corpus = Path(directory)
+            shutil.copytree(reference / 'traces', corpus / 'traces')
+            (corpus / 'capture-source.zip').symlink_to(reference / 'capture-source.zip')
+            manifest = json.loads((reference / 'manifest.json').read_text())
+            baseline, repeat = manifest['runs'][0], manifest['runs'][-1]
+            for key in ('sha256', 'proof', 'result'):
+                repeat[key] = baseline[key]
+            raw = gzip.decompress((corpus / baseline['path']).read_bytes())
+            (corpus / repeat['path']).write_bytes(gzip.compress(raw, mtime=1))
+            capture.write(corpus / 'manifest.json', manifest)
+            with self.assertRaisesRegex(ValueError, 'trace reused'):
+                verify(corpus, plan)
+
     def test_unclassified_attempt_cannot_disappear_after_a_successful_retry(self):
         reference = capture.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
         plan = capture.ROOT / 'tools/skyrim-recorder/fixtures/jump-inputs-v4.json'
