@@ -4052,6 +4052,49 @@ mod tests {
                 .any(|part| part.as_os_str().to_str() == Some("perf"))
     }
 
+    /// Locate the command or parser declaration that owns this particular option literal.
+    /// Argument lists in the native capture scripts continue on the next line after a comma.
+    fn native_tool_owns_option(script: &str, flag: &str) -> bool {
+        let offset = flag.as_ptr() as usize - script.as_ptr() as usize;
+        let mut lines = script[..offset].rsplit('\n');
+        let current = lines.next().unwrap_or_default();
+        if current.trim_start().starts_with('#') {
+            return true;
+        }
+        let mut start = current;
+        for previous in lines {
+            if !previous.trim_end().ends_with([',', '[', '(']) {
+                break;
+            }
+            start = previous;
+        }
+        [
+            ".add_argument(",
+            "scripts/record_skyrim_motion.py",
+            "tools/skyrim-recorder/build.py",
+            "['pkg-config',",
+            "['systemd-run',",
+            "['gamescope',",
+            "['journalctl',",
+            "['systemctl',",
+            "[str(args.test_binary.resolve()),",
+            "['cargo', 'test',",
+            "['capture',",
+            "['record',",
+            "['report',",
+            "patch('sys.argv', argv + [",
+        ]
+        .iter()
+        .any(|owner| start.contains(owner) || current.contains(owner))
+            || (current.contains("command += [")
+                && matches!(flag, "--setenv" | "--working-directory"))
+            || (current.contains("argv += [")
+                && matches!(flag, "--condition" | "--split" | "--adopt-baseline"))
+            || current.ends_with(".index('")
+            || current.ends_with(".startswith('")
+            || current.ends_with(".removeprefix('")
+    }
+
     fn checked_script_engine_flags(script: &str, path: &std::path::Path) -> usize {
         let options = parser_options();
         let mut checked = 0;
@@ -4151,6 +4194,9 @@ mod tests {
                     .iter()
                     .any(|&(script, scoped)| name == script && flag == scoped)
             });
+            let publication_test_option = path.ends_with("test_publish_skyrim_evidence.py")
+                && flag == "--sanitize"
+                && native_tool_owns_option(scanned, flag);
             let native_jump_option =
                 path.file_name()
                     .and_then(|name| name.to_str())
@@ -4207,7 +4253,7 @@ mod tests {
                                 | "--signal"
                                 | "--unit"
                                 | "--working-directory"
-                        )
+                        ) && native_tool_owns_option(scanned, flag)
                     });
             // The standalone HTML report embeds CSS custom properties.
             let chart_style = path.file_name().is_some_and(|name| {
@@ -4232,6 +4278,7 @@ mod tests {
                 || harness_option
                 || inspector_option
                 || release_option
+                || publication_test_option
                 || native_jump_option
                 || chart_style
             {
@@ -4467,11 +4514,13 @@ mod tests {
     fn native_jump_tool_options_do_not_become_engine_options() {
         let native = std::path::Path::new("record_skyrim_motion.py");
         assert_eq!(
-            checked_script_engine_flags("--session fixture --profile inputs-v4", native),
+            checked_script_engine_flags("run.add_argument('--session')", native),
             0
         );
         for (text, path) in [
             ("engine --unknown-engine-option", native),
+            ("engine --session fixture", native),
+            ("cmd = ['engine',\n    '--session', 'fixture']", native),
             (
                 "engine --session fixture",
                 std::path::Path::new("launch.sh"),
