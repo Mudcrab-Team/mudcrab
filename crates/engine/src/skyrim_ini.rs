@@ -14,7 +14,7 @@
 //! | `[General]` | `bAlwaysActive` | `0` (default) pauses on focus loss; `1` keeps simulation active |
 //! | `[Sky]` | `fSunXExtreme`, `fSunYExtreme`, `fSunZExtreme`, `fSunDirXExtreme`, `fSunAlphaTransTime` | explicit sun-path overrides over the pack's GMST (retail exe default for a missing GMST) |
 //! | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2` |
-//! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units |
+//! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units; the default is retail's 8000, and a reference capture or benchmark pins its own (`config.rs`) |
 //! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD split rule: a block of `level` cells splits into its four children under `fSplitDistanceMult` x `level` x 2,048 x sqrt(2) units (34,756 / 69,512 at levels 8 / 16 with 1.5) |
 //! | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists (not a retail terrain cut) |
 //! | `[TerrainManager]` | `fBlockLevel0Distance` | parsed and kept for the object LOD rule (level 8 hands over to level 4); does not affect terrain, so it changes nothing on screen until object LOD lands |
@@ -253,10 +253,14 @@ mod tests {
     }
 
     #[test]
-    fn malformed_or_unusable_shadow_distances_leave_the_limit_unset() {
+    fn malformed_or_unusable_shadow_distances_keep_the_retail_default() {
         for value in ["0", "699", "NaN", "inf", "far"] {
             let config = apply(&format!("[Display]\nfShadowDistance={value}\n"));
-            assert_eq!(config.sun_shadow_distance_limit, None, "{value}");
+            assert_eq!(
+                config.sun_shadow_distance_limit,
+                Some(crate::config::RETAIL_SUN_SHADOW_DISTANCE),
+                "{value}"
+            );
         }
     }
 }

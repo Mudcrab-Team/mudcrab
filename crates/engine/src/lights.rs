@@ -21,12 +21,17 @@
 //!
 //! The budget enables the [`ENABLED_LIGHT_BUDGET`] emitting lights that rank first (wider lights
 //! before tiny ones, then nearest the camera) and hides the rest. Shadows are a smaller set than
-//! the budget: only the [`MAX_SHADOW_CASTING_POINT_LIGHTS`] nearest of the enabled lights get a
-//! cube shadow map, and only when the Point-light shadows setting is on. See that constant for the
-//! retail rule and for the Metal limit the cap keeps the frame under. The shadow set is not cached
-//! with the budget: it is re-ranked among the enabled lights whenever the camera has moved. A
-//! light spawns unshadowed. The record's own shadow flags (`RF-LIGHT-GPU-009`) are left for later,
-//! so an unshadowed light also lights the far side of the wall it is mounted on.
+//! the budget, and two rules pick it. Eligibility is retail's: only a light whose record carries a
+//! shadow flag ([`LIGHT_FLAG_SHADOW_MODES`], `RF-LIGHT-GPU-015`) may cast a shadow, and only when
+//! the Point-light shadows setting is on. The count is retail's too: at most
+//! [`MAX_SHADOW_CASTING_POINT_LIGHTS`] (`RF-LIGHT-GPU-014`). Only the choice among eligible lights
+//! is an approximation: retail takes the first four in scene-attach order and this engine has no
+//! attach order, so it takes the four nearest the camera. See that constant for the rule and for
+//! the Metal limit the cap keeps the frame under. The shadow set is not cached with the budget: it
+//! is re-ranked among the enabled eligible lights whenever the camera has moved. A light spawns
+//! unshadowed, so an unflagged light also lights the far side of the wall it is mounted on, as in
+//! retail. Retail's frustum and shadow-distance tests for a shadow light (`RF-LIGHT-GPU-014`) are
+//! not applied.
 
 use crate::world::{components::StreamingCamera, database::LightRow};
 use bevy::prelude::*;
@@ -294,14 +299,21 @@ fn record_light_coverage(
 /// references, so the far ones are switched off rather than paid for.
 pub const ENABLED_LIGHT_BUDGET: usize = 64;
 
-/// The most point lights that cast shadows at once: the first 4, which is retail's limit.
+/// The most point lights that cast shadows at once: 4, which is retail's limit.
 ///
-/// Retail's lighting pixel shader shadows "the first min(NumShadowLights, 4)" of the point lights
-/// it draws (registry row `RF-LIGHT-GPU-004`, traced from the shader bytecode, confidence high).
-/// The row gives the limit and not the order of the "first", so the engine takes the nearest to
-/// the camera, which is the order of the budget. Retail also shadows only a light whose record
-/// carries a shadow flag (`RF-LIGHT-GPU-009`); this engine does not read that flag yet, so it
-/// shadows the nearest budgeted lights whatever their flags.
+/// Retail compares the number of active shadow lights with a literal 4 (`0x1415389b0`,
+/// `RF-LIGHT-GPU-014`), and its lighting pixel shader shadows "the first min(NumShadowLights, 4)"
+/// of the point lights it draws (`RF-LIGHT-GPU-004`, traced from the shader bytecode, confidence
+/// high).
+///
+/// Which lights fill the 4 slots is where this engine differs, and only for lack of data. Retail
+/// walks its shadow-light array in scene-attach order and takes the first four that pass the
+/// per-frame visibility tests; it never ranks lights by distance and has no hysteresis
+/// (`RF-LIGHT-GPU-014`; the order is stable). This engine does not keep an attach order, so it
+/// takes the nearest to the camera among the lights that are eligible ([`LIGHT_FLAG_SHADOW_MODES`],
+/// `RF-LIGHT-GPU-015`). That is an approximation and not retail's rule; it is also steadier than a
+/// ranking that follows attach order would be. The retail "player plus 450 units" rule is not this:
+/// it belongs to actor focus shadows (`RF-LIGHT-GPU-011`), which are sun shadow maps.
 ///
 /// The cap is also what keeps a frame under a hard GPU limit. wgpu's Metal backend refuses to open
 /// a new command encoder once 4096 are outstanding and reports the device as lost
@@ -369,7 +381,12 @@ pub const MAX_RADIUS_OVERRIDE: f32 = 8_192.0;
 
 /// Native 1.7.104 CreatePointLight, RVA 0x2746d2; not an editor hint or arbitrary range knob.
 pub const NATIVE_NONPOSITIVE_RADIUS: f32 = 0.1;
-/// Native constructor dispatches DATA falloff only for spot/hemi/omni shadow modes.
+/// `LIGH` `DATA` flags `0x400` (spotlight), `0x800` (hemisphere) and `0x1000` (omni): the shadow
+/// modes. The native constructor dispatches DATA falloff only for these, and retail creates a shadow
+/// light object (`BSShadowLight`) only for a record with one of them, so only such a light can cast
+/// a shadow (`RF-LIGHT-GPU-015`, `0x140274390`, `ShadowSceneNode::CreateLight` `0x14150c810`;
+/// confidence high). A torch or sconce usually has none; the shipped `BleakFallsSunlight01`
+/// (`0x2401`, a 90-degree spotlight) has one.
 pub const LIGHT_FLAG_SHADOW_MODES: u32 = 0x1c00;
 
 /// Bounded compatibility lumens for unit fade. The normalization is frozen at b5259d33 and is
@@ -398,6 +415,21 @@ pub struct SkyrimLight {
     pub form_id: u32,
     /// The cell that reference belongs to.
     pub cell_id: u32,
+    /// Whether the record may cast a shadow: its `DATA` flags have one of
+    /// [`LIGHT_FLAG_SHADOW_MODES`]. Set by [`SkyrimLight::new`]. The budget gives a shadow map to
+    /// no other light.
+    pub casts_shadow: bool,
+}
+
+impl SkyrimLight {
+    /// The marker for a light from a `LIGH` record with the given `DATA` flags.
+    pub fn new(form_id: u32, cell_id: u32, light_flags: u32) -> Self {
+        Self {
+            form_id,
+            cell_id,
+            casts_shadow: light_flags & LIGHT_FLAG_SHADOW_MODES != 0,
+        }
+    }
 }
 
 /// The lights the budget chose last, and where it chose them.
@@ -544,8 +576,8 @@ fn warn_on_shadow_encoder_load(
 
 /// Enables emitting lights up to the configured budget and hides the rest. Wider lights precede
 /// tiny lights; camera distance orders each class. With the Point-light shadows setting on, the
-/// [`MAX_SHADOW_CASTING_POINT_LIGHTS`] nearest of the enabled lights also get cube shadow maps and
-/// every other light has them off. The enabled set is cached until the camera has moved
+/// [`MAX_SHADOW_CASTING_POINT_LIGHTS`] nearest of the enabled lights whose record has a shadow flag
+/// ([`SkyrimLight::casts_shadow`]) also get cube shadow maps, and every other light has them off. The enabled set is cached until the camera has moved
 /// [`BUDGET_RECHOOSE_DISTANCE`] or the set of lights or their budget classes change; the shadow set
 /// is re-ranked among the enabled lights after every camera move.
 ///
@@ -566,6 +598,7 @@ fn budget_lights(
         (Entity, &GlobalTransform, &mut PointLight, &mut Visibility),
         With<SkyrimLight>,
     >,
+    markers: Query<&SkyrimLight>,
     config: Option<Res<crate::config::EngineConfig>>,
     settings: Option<Res<crate::settings::RenderingSettings>>,
 ) {
@@ -675,6 +708,10 @@ fn budget_lights(
         shadow_scratch.clear();
         if shadow_count > 0 {
             shadow_scratch.extend(enabled.iter().filter_map(|&entity| {
+                // Retail gives a shadow only to a light whose record has a shadow flag.
+                if !markers.get(entity).is_ok_and(|marker| marker.casts_shadow) {
+                    return None;
+                }
                 let (_, transform, _, _) = lights.get(entity).ok()?;
                 Some((
                     entity,
@@ -723,8 +760,8 @@ fn sort_for_budget(ranked: &mut [(Entity, LightBudgetClass, f32)]) {
     );
 }
 
-/// How many of the nearest lights cast shadows: none when the Point-light shadows setting is off,
-/// otherwise the enabled budget, but never more than [`MAX_SHADOW_CASTING_POINT_LIGHTS`].
+/// How many of the nearest eligible lights cast shadows: none when the Point-light shadows setting
+/// is off, otherwise the enabled budget, but never more than [`MAX_SHADOW_CASTING_POINT_LIGHTS`].
 fn shadow_casting_count(budget_size: usize, shadows_on: bool) -> usize {
     if shadows_on {
         budget_size.min(MAX_SHADOW_CASTING_POINT_LIGHTS)
@@ -767,10 +804,7 @@ mod tests {
                 Transform::from_xyz(100.0, 0.0, 0.0),
                 DeferredPointLight {
                     light: point_light(&light_row(512.0, 0), None).unwrap(),
-                    marker: SkyrimLight {
-                        form_id: 1,
-                        cell_id: 2,
-                    },
+                    marker: SkyrimLight::new(1, 2, 0),
                 },
             ))
             .id();
@@ -1181,10 +1215,7 @@ mod tests {
         ));
         for position in light_positions {
             app.world_mut().spawn((
-                SkyrimLight {
-                    form_id: 1,
-                    cell_id: 2,
-                },
+                SkyrimLight::new(1, 2, LIGHT_FLAG_SHADOW_MODES),
                 // The real bundle: `PointLight` is what gives a light its `Transform`, its
                 // `Visibility` and its `GlobalTransform`.
                 point_light(&light_row(512.0, 0), None).unwrap(),
@@ -1220,10 +1251,7 @@ mod tests {
             tiny.insert(
                 app.world_mut()
                     .spawn((
-                        SkyrimLight {
-                            form_id: 3,
-                            cell_id: 4,
-                        },
+                        SkyrimLight::new(3, 4, LIGHT_FLAG_SHADOW_MODES),
                         point_light(&light_row(0.0, 0), None).unwrap(),
                         Transform::default(),
                     ))
@@ -1232,10 +1260,7 @@ mod tests {
             dark.insert(
                 app.world_mut()
                     .spawn((
-                        SkyrimLight {
-                            form_id: 5,
-                            cell_id: 4,
-                        },
+                        SkyrimLight::new(5, 4, LIGHT_FLAG_SHADOW_MODES),
                         point_light(
                             &LightRow {
                                 fade: Some(0.0),
@@ -1282,10 +1307,7 @@ mod tests {
         let changed = app
             .world_mut()
             .spawn((
-                SkyrimLight {
-                    form_id: 3,
-                    cell_id: 4,
-                },
+                SkyrimLight::new(3, 4, LIGHT_FLAG_SHADOW_MODES),
                 point_light(
                     &LightRow {
                         fade: Some(0.0),
@@ -1435,10 +1457,7 @@ mod tests {
         let arrived = app
             .world_mut()
             .spawn((
-                SkyrimLight {
-                    form_id: 3,
-                    cell_id: 4,
-                },
+                SkyrimLight::new(3, 4, LIGHT_FLAG_SHADOW_MODES),
                 point_light(&light_row(512.0, 0), None).unwrap(),
                 Transform::from_translation(Vec3::new(5.0, 0.0, 0.0)),
             ))
@@ -1601,6 +1620,71 @@ mod tests {
             .point_light_shadows = false;
         app.update();
         assert!(shadow_casting_lights(&mut app).is_empty());
+    }
+
+    /// Spawns one light with the given record flags at `x` and returns it.
+    fn spawn_flagged_light(app: &mut App, x: f32, flags: u32) -> Entity {
+        app.world_mut()
+            .spawn((
+                SkyrimLight::new(1, 2, flags),
+                point_light(&light_row(512.0, flags), None).unwrap(),
+                Transform::from_xyz(x, 0.0, 0.0),
+            ))
+            .id()
+    }
+
+    /// Retail: only a record with `flags & 0x1C00` is a shadow light (`RF-LIGHT-GPU-015`). Each of
+    /// the three bits qualifies, and the record's other flags (`0x2000`, `0x1`) change nothing.
+    #[test]
+    fn only_a_record_with_a_shadow_flag_may_cast_a_shadow() {
+        assert_eq!(LIGHT_FLAG_SHADOW_MODES, 0x1C00, "RF-LIGHT-GPU-015");
+        for flags in [
+            0x0400, // spotlight
+            0x0800, // hemisphere
+            0x1000, // omni
+            0x2401, // BleakFallsSunlight01
+        ] {
+            assert!(SkyrimLight::new(1, 2, flags).casts_shadow, "{flags:#x}");
+        }
+        for flags in [0, 0x2001, 0x0001, 0x0200, 0x2000] {
+            assert!(!SkyrimLight::new(1, 2, flags).casts_shadow, "{flags:#x}");
+        }
+    }
+
+    /// The nearest lights have no shadow flag, so they are skipped; the flagged lights behind them
+    /// take the slots, and fewer flagged lights than the cap all cast.
+    #[test]
+    fn unflagged_lights_never_take_a_shadow_slot() {
+        let mut app = budget_app_with(Vec3::ZERO, [], Some(shadows_on()));
+        // Six unflagged wall lights nearest the camera, then two flagged lights farther out.
+        for index in 0..6 {
+            spawn_flagged_light(&mut app, 10.0 + index as f32, 0x2001);
+        }
+        let near_flagged = spawn_flagged_light(&mut app, 200.0, 0x0400);
+        let far_flagged = spawn_flagged_light(&mut app, 300.0, 0x1000);
+        app.update();
+        let casting: Vec<Entity> = shadow_casting_lights(&mut app)
+            .into_iter()
+            .map(|(_, entity)| entity)
+            .collect();
+        assert_eq!(casting, vec![near_flagged, far_flagged]);
+    }
+
+    /// With more flagged lights than the cap, the cap still holds and the nearest flagged lights
+    /// win (the nearest-first choice is the documented stand-in for retail's attach order).
+    #[test]
+    fn the_cap_of_four_holds_among_flagged_lights() {
+        let mut app = budget_app_with(Vec3::ZERO, [], Some(shadows_on()));
+        for index in 0..8 {
+            spawn_flagged_light(&mut app, 10.0 + index as f32, 0x2001);
+            spawn_flagged_light(&mut app, 100.0 + index as f32, 0x1000);
+        }
+        app.update();
+        let casting: Vec<f32> = shadow_casting_lights(&mut app)
+            .into_iter()
+            .map(|(x, _)| x)
+            .collect();
+        assert_eq!(casting, vec![100.0, 101.0, 102.0, 103.0]);
     }
 
     /// A light that is not a Skyrim light keeps whatever shadow setting its owner gave it.

@@ -1985,11 +1985,15 @@ fn spawn_cell(
             if let Some(evaluation) = &evaluated_light {
                 entity.insert(evaluation.clone());
             }
+            let light_flags = evaluated_light
+                .as_ref()
+                .map_or(0, |evaluation| evaluation.source.flags);
             if let Some(light) = evaluated_light.and_then(|evaluation| evaluation.point_light()) {
-                let marker = crate::lights::SkyrimLight {
-                    form_id: reference.form_id,
-                    cell_id: reference.cell_id,
-                };
+                let marker = crate::lights::SkyrimLight::new(
+                    reference.form_id,
+                    reference.cell_id,
+                    light_flags,
+                );
                 if !lights {
                     entity.insert(crate::lights::DeferredPointLight { light, marker });
                 } else {
