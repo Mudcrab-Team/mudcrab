@@ -172,7 +172,9 @@ def record_attempt(path, manifest, name, number, output, retain=None, *, private
             if 'failure' not in row:
                 fail_attempt(row, output, {'phase': 'interrupted' if isinstance(error, (KeyboardInterrupt, SystemExit)) else 'capture',
                                           'error': type(error).__name__}, retain)
-            finalized = not retain or 'path' in row or row.get('trace_status') == 'not-created'
+                finalized = True
+            else:
+                finalized = not retain or 'path' in row or row.get('trace_status') == 'not-created'
         raise
     else:
         finalized = True

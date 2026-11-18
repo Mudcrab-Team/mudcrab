@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 
 import evaluate_skyrim_jump as evaluator
+from record_skyrim_motion import stopped_capture_services
 from skyrim_capture_attempts import (claim_private_output, corpus_lock, private_attempt_paths, record_attempt,
                                      recover_attempts, run_recorder, save_manifest, verify_retained_trace)
 
@@ -41,6 +42,11 @@ def validate_frozen(data, session):
         raise ValueError('frozen evaluator or model mismatch')
     if frozen['runtime_sha256'] != session['exe_sha256'] or frozen['provenance_contract'] != provenance(session):
         raise ValueError('frozen fit differs from the prepared session')
+
+
+def retain_failure(output, attempt, failure):
+    with stopped_capture_services(output, attempt):
+        attempt['failure'] = failure
 
 
 def main():
@@ -91,7 +97,7 @@ def main():
                 parser.error('capture source, plan, session or frozen model changed; use a new corpus')
         else:
             save_manifest(receipt_path, receipt)
-        recover_attempts(manifest_path, manifest, args.private_output)
+        recover_attempts(manifest_path, manifest, args.private_output, retain_failure)
         conditions = plan['training' if args.split == 'train' else 'heldout']
         for repeat in range(1, plan['repeats'] + 1):
             for condition in conditions:
@@ -108,7 +114,8 @@ def main():
                            '--session', str(session_dir), '--output', str(output.resolve()),
                            '--fixture', str(fixture_path.resolve()), '--frame-cap', str(condition['frame_cap']),
                            '--ocr-prefix', str(args.ocr_prefix.resolve())]
-                with record_attempt(manifest_path, manifest, name, attempt, output) as attempt_row:
+                with record_attempt(manifest_path, manifest, name, attempt, output, retain_failure,
+                                    private_session=session_dir) as attempt_row:
                     inputs.mkdir()
                     expected_fixture = write(fixture_path, fixture, exclusive=True)
                     print(f'Recording {name}, attempt {attempt}', flush=True)

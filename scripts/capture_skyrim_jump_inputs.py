@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Capture the declared v4 input controls with immutable per-run numeric receipts."""
 import argparse
-from contextlib import ExitStack
-import fcntl
 import gzip
 import hashlib
 import json
@@ -14,7 +12,7 @@ from functools import partial
 
 from analyze_skyrim_jump_inputs import analyze_rows, decode_bytes, f32
 from publish_skyrim_evidence import public_value
-from record_skyrim_motion import session_units, unit_stopped, verify_trace
+from record_skyrim_motion import stopped_capture_services, verify_trace
 from skyrim_capture_attempts import (claim_private_output, corpus_lock, private_attempt_paths, record_attempt,
                                      recover_attempts, run_recorder, save_manifest, verify_retained_trace)
 
@@ -99,41 +97,7 @@ def stopped_trace(output, attempt):
         if hashlib.sha256(raw).hexdigest() == proof['trace_sha256']:
             return raw
 
-    with ExitStack() as locks:
-        sessions = set()
-
-        def lock_session(session, mode):
-            if session not in sessions:
-                lock = locks.enter_context((session / '.recording.lock').open(mode))
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                sessions.add(session)
-
-        if 'private_session' in attempt:
-            lock_session(Path(attempt['private_session']), 'a')
-        try:
-            owner = json.loads((output / 'trace-writer.json').read_bytes())
-        except FileNotFoundError:
-            if not sessions:
-                raise RuntimeError(f'Unknown native trace writer for {output}; attempt remains pending')
-            # Before writer receipts, every recorder confirmed its display before
-            # launching Skyrim. Check both historical unit naming schemes.
-            try:
-                (output / 'display.json').stat()
-            except FileNotFoundError:
-                units = []
-            else:
-                session, = sessions
-                token = hashlib.sha256(str(output.resolve()).encode()).hexdigest()[:10]
-                units = [session_units(session)[2], 'mudcrab-record-game-' + token]
-        else:
-            session = Path(owner['session'])
-            if not session.is_absolute() or owner['game_unit'] != session_units(session)[2]:
-                raise ValueError(f'Invalid native trace writer receipt in {output}; attempt remains pending')
-            lock_session(session, 'r')
-            units = [owner['game_unit']]
-        for unit in units:
-            if not unit_stopped(unit):
-                raise RuntimeError(f'Native writer {unit} is still active; attempt remains pending')
+    with stopped_capture_services(output, attempt):
         try:
             return trace.read_bytes()
         except FileNotFoundError:

@@ -23,6 +23,7 @@ import capture_skyrim_jump as v3
 import capture_skyrim_jump_inputs as v4
 import skyrim_capture_attempts as attempts
 from verify_skyrim_jump_inputs import verify
+import record_skyrim_motion as recorder
 from skyrim_capture_attempts import claim_private_output, record_attempt, recover_attempts, save_manifest
 
 
@@ -65,6 +66,42 @@ def install_fake_recorder(module, root, fake_recorder):
 
 
 class CaptureAttemptTests(unittest.TestCase):
+    def test_campaign_failure_and_recovery_wait_for_all_detached_services(self):
+        for module in (v3, v4):
+            for role in ('game', 'display', 'prefix'):
+                with self.subTest(module=module.__name__, role=role), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    argv, _ = campaign(module, root)
+                    session = root / 'session'
+                    corpus = root / 'corpus'
+                    display, prefix, game = recorder.session_units(session)
+                    active = {'game': game, 'display': display, 'prefix': prefix}[role]
+
+                    def killed(command, **kwargs):
+                        output = Path(command[command.index('--output') + 1])
+                        output.mkdir()
+                        save_manifest(output / 'trace-writer.json', dict(session=str(session), game_unit=game))
+                        (output / 'trace.bin').write_bytes(b'partial trace')
+                        raise SystemExit(143)
+
+                    with patch('sys.argv', argv), patch.object(module, 'run_recorder', side_effect=killed) as run, \
+                            patch.object(recorder, 'unit_stopped', side_effect=lambda unit: unit != active):
+                        for _ in range(2):
+                            with self.assertRaisesRegex(RuntimeError, active):
+                                module.main()
+                            row, = json.loads((corpus / 'manifest.json').read_bytes())['attempts']
+                            self.assertEqual(row['status'], 'pending')
+                            self.assertNotIn('path', row)
+                        run.assert_called_once()
+                    retain = partial(v4.retain_failure, corpus) if module is v4 else v3.retain_failure
+                    path = corpus / 'manifest.json'
+                    with patch.object(recorder, 'unit_stopped', return_value=True) as stopped:
+                        recover_attempts(path, json.loads(path.read_bytes()), root / 'private', retain)
+                    self.assertEqual({call.args[0] for call in stopped.call_args_list}, {display, prefix, game})
+                    row, = json.loads(path.read_bytes())['attempts']
+                    self.assertNotIn('status', row)
+                    self.assertIn('failure', row)
+
     def test_only_one_corpus_claims_an_unused_private_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -202,15 +239,14 @@ with open(sys.argv[1], 'wb') as trace:
                 try:
                     self.assertEqual(writer.stdout.readline().strip(), b'writing')
                     def stopped(unit):
-                        self.assertEqual(unit, game_unit)
-                        return writer.poll() is not None
-                    with patch.object(v4, 'unit_stopped', stopped):
-                        with self.assertRaisesRegex(RuntimeError, 'writer .* still active'):
+                        return unit != game_unit or writer.poll() is not None
+                    with patch.object(recorder, 'unit_stopped', stopped):
+                        with self.assertRaisesRegex(RuntimeError, 'service .* still active'):
                             with record_attempt(path, manifest, 'baseline', 1, output, retain, private_session=session):
                                 raise RuntimeError('recorder died')
                     saved = path.read_bytes()
                     self.assertEqual(json.loads(saved)['attempts'][0]['status'], 'pending')
-                    with patch.object(v4, 'unit_stopped', side_effect=OSError('manager unreachable')):
+                    with patch.object(recorder, 'unit_stopped', side_effect=OSError('manager unreachable')):
                         with self.assertRaisesRegex(OSError, 'manager unreachable'):
                             recover_attempts(path, json.loads(saved), root, retain)
                     with (session / '.recording.lock').open('a') as busy:
@@ -222,7 +258,7 @@ with open(sys.argv[1], 'wb') as trace:
                 finally:
                     writer.stdin.close()
                     writer.wait(timeout=3)
-            with patch.object(v4, 'unit_stopped', stopped):
+            with patch.object(recorder, 'unit_stopped', stopped):
                 recover_attempts(path, json.loads(saved), root, retain)
             row, = json.loads(path.read_text())['attempts']
             self.assertNotIn('status', row)

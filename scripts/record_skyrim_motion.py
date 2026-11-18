@@ -2,7 +2,7 @@
 """Record and verify one native Skyrim W press in an isolated Gamescope session."""
 
 import argparse
-from contextlib import suppress
+from contextlib import ExitStack, contextmanager, suppress
 import csv
 import fcntl
 import hashlib
@@ -197,6 +197,54 @@ def fixture_receipt(path):
 def session_units(session):
     token = hashlib.sha256(str(session.resolve()).encode()).hexdigest()[:24]
     return [f'mudcrab-record-{role}-{token}' for role in ('display', 'prefix', 'game')]
+
+
+@contextmanager
+def stopped_capture_services(output, attempt):
+    """Hold the session locks while classifying an interrupted capture."""
+    with ExitStack() as locks:
+        sessions = set()
+
+        def lock_session(session, mode):
+            if session not in sessions:
+                lock = locks.enter_context((session / '.recording.lock').open(mode))
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                sessions.add(session)
+
+        if 'private_session' in attempt:
+            lock_session(Path(attempt['private_session']), 'a')
+        try:
+            owner = json.loads((output / 'trace-writer.json').read_bytes())
+        except FileNotFoundError:
+            if not sessions:
+                try:
+                    output.stat()
+                except FileNotFoundError:
+                    yield
+                    return
+                raise RuntimeError(f'Unknown capture session for {output}; attempt remains pending')
+            # Historical recorders wrote the ready script before starting any service.
+            units = []
+            for marker in ('display_ready.py', 'display.json'):
+                try:
+                    (output / marker).stat()
+                except FileNotFoundError:
+                    continue
+                session, = sessions
+                token = hashlib.sha256(str(output.resolve()).encode()).hexdigest()[:10]
+                units = session_units(session) + [
+                    f'mudcrab-record-{role}-{token}' for role in ('display', 'prefix', 'game')]
+                break
+        else:
+            session = Path(owner['session'])
+            if not session.is_absolute() or owner['game_unit'] != session_units(session)[2]:
+                raise ValueError(f'Invalid native trace writer receipt in {output}; attempt remains pending')
+            lock_session(session, 'r')
+            units = session_units(session)
+        for unit in units:
+            if not unit_stopped(unit):
+                raise RuntimeError(f'Capture service {unit} is still active; attempt remains pending')
+        yield
 
 
 def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
