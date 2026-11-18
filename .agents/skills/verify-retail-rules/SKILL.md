@@ -158,11 +158,11 @@ with a counterexample. Then revert and confirm that every harness passes again.
 | M8 | Compute the outer product of `retail_reference_scale` in `f64` and round once | `reference_scale_uses_the_retail_grouping` |
 | M9 | In `reference_rotation`, drop Z for an actor reference | `the_heading_is_always_kept`, `only_an_achr_drops_x_and_y` |
 | M10 | In `sex_index`, read `ACBS` bit 1 instead of bit 0 | `sex_index_is_acbs_bit_zero`, `a_female_npc_gets_the_female_height`, the unit test and the retail rows |
-| M11 | In `base_form_scale_factor` or `placed_reference_rotation`, test another form type | `only_an_npc_base_adds_the_npc_scale`, `only_an_achr_drops_x_and_y` |
+| M11 | In `base_form_scale_factor` or `placed_reference_rotation`, test another form type | `only_an_npc_base_adds_the_npc_scale`, `a_placed_reference_without_an_npc_base_keeps_its_scale`, `only_an_achr_drops_x_and_y` |
 | M12 | Add a contradictory `kani::assume` (for example `x > 1.0 && x < 0.0`) to any harness | `check-kani-log.sh` (Kani itself still reports SUCCESSFUL) |
 
-The pilot ran M1 to M4 and M12. The independent review of #804 ran M6 to M10. M5 and M11 are
-not yet run. One limit: computing a single product of two `f32` values in `f64` and rounding once
+The pilot ran M1 to M4, M11 and M12. The independent review of #804 ran M6 to M10. M5 is not
+yet run. One limit: computing a single product of two `f32` values in `f64` and rounding once
 gives the same bits as `f32`, so no proof detects it, and it is not a bug.
 
 The API passes the NPC scale to `reference_scale` as one value, so the crate itself cannot
