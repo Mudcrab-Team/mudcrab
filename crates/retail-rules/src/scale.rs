@@ -269,6 +269,13 @@ mod proofs {
         value.is_finite() && value.abs() <= HEIGHT_RANGE
     }
 
+    /// True unless `a × b` is zero times an infinity. IEEE arithmetic, and so retail, gives NaN
+    /// for that product. Kani reports every NaN that a multiplication makes from non-NaN inputs as
+    /// a failure, so a harness over all floats excludes exactly this case and no other.
+    fn not_zero_times_infinity(a: f32, b: f32) -> bool {
+        !((a == 0.0 && b.is_infinite()) || (a.is_infinite() && b == 0.0))
+    }
+
     /// RF-NPC-005: an NPC's index is bit 0 of its flags. Any other form gives -1.
     #[kani::proof]
     fn sex_index_is_acbs_bit_zero() {
@@ -322,6 +329,7 @@ mod proofs {
         } else {
             0.0
         };
+        kani::assume(not_zero_times_infinity(selected, height));
         assert!(same(
             npc_scale(Some(race), sex, Some(height)),
             selected * height
@@ -380,23 +388,26 @@ mod proofs {
         kani::cover!(scale.is_infinite(), "two finite heights overflow");
     }
 
-    /// RF-REFR-002 and RF-NPC-004, with the retail grouping: the code computes `(percent × 0.01) × (race height × NPC height)`, in
-    /// that grouping, bit for bit. The expected value is written out here.
+    /// RF-REFR-002 with the retail grouping, outer step: the reference scale is
+    /// `(percent × 0.01) × npc scale`, bit for bit, with the NPC scale as one value. Together with
+    /// `sex_index_selects_the_race_height` (NPC scale = race height × NPC height, bit for bit),
+    /// this proves `(percent × 0.01) × (race height × NPC height)` for every input except zero
+    /// times an infinity.
+    ///
+    /// The two steps are proved apart on purpose. Each has one multiplication on each side of
+    /// the comparison. One harness over the whole chain, with two on each side, also passes, but
+    /// it took 13 minutes on a loaded laptop, against about 3 minutes for this step and under one
+    /// minute for the other.
     #[kani::proof]
-    fn reference_scale_uses_the_stated_grouping() {
+    fn reference_scale_uses_the_retail_grouping() {
         let percent: u16 = kani::any();
-        let race = RaceHeights {
-            male: kani::any(),
-            female: kani::any(),
-        };
-        let sex: i32 = kani::any();
-        kani::assume(sex == 0 || sex == 1);
-        let height: f32 = kani::any();
-        let selected = if sex == 0 { race.male } else { race.female };
-        let expected = (f32::from(percent) * 0.01) * (selected * height);
-        let actual =
-            retail_reference_scale(percent, Some(npc_scale(Some(race), sex, Some(height))));
-        assert!(same(actual, expected));
+        let npc: f32 = kani::any();
+        let stored = f32::from(percent) * 0.01;
+        kani::assume(not_zero_times_infinity(stored, npc));
+        assert!(same(
+            retail_reference_scale(percent, Some(npc)),
+            stored * npc
+        ));
     }
 
     /// The grouping matters: for some inputs in range, another grouping gives different bits.
