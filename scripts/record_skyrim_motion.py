@@ -13,6 +13,7 @@ import math
 import os
 from pathlib import Path
 import shutil
+import signal
 import statistics
 import struct
 import subprocess
@@ -248,16 +249,35 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
     owned = []
     keyboard = None
 
+    termination_requested = False
+    interruptible = True
+
+    def terminate(signum, _frame):
+        nonlocal termination_requested
+        if not termination_requested:
+            termination_requested = True
+            if interruptible:
+                raise SystemExit(128 + signum)
+
     def start(unit, argv, environment=None, cwd=None):
+        nonlocal interruptible
         command = ['systemd-run', '--user', '--collect', '--unit=' + unit,
                    '--property=TimeoutStopSec=10']
         if environment:
             command += ['--setenv=' + k + '=' + v for k, v in environment.items()]
         if cwd:
             command += ['--working-directory=' + str(cwd)]
-        subprocess.run(command + argv, check=True, capture_output=True)
-        owned.append(unit)
+        # Finish the launch handshake so cleanup knows exactly which units we own.
+        interruptible = False
+        try:
+            subprocess.run(command + argv, check=True, capture_output=True)
+            owned.append(unit)
+        finally:
+            interruptible = True
+        if termination_requested:
+            raise SystemExit(128 + signal.SIGTERM)
 
+    previous_handler = signal.signal(signal.SIGTERM, terminate)
     try:
         start(display_unit, ['gamescope', '--backend', 'headless', '-W', '1280', '-H', '720',
                              '-w', '1280', '-h', '720', '-r', str(frame_cap), '--keep-alive', '--',
@@ -445,6 +465,7 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
         raise
     finally:
         try:
+            interruptible = False
             if keyboard:
                 keyboard.close()
             try:
@@ -456,7 +477,12 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
             with suppress(OSError):
                 (output / 'game-journal.log').write_text(diagnostic)
         finally:
-            stop_owned_services(owned, output)
+            try:
+                stop_owned_services(owned, output)
+            finally:
+                signal.signal(signal.SIGTERM, previous_handler)
+                if termination_requested:
+                    raise SystemExit(128 + signal.SIGTERM)
 
 
 def stop_owned_services(owned, output):

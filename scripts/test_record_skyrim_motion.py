@@ -1,5 +1,8 @@
 import unittest
 import json
+import fcntl
+import multiprocessing
+import signal
 import os
 import runpy
 import subprocess
@@ -76,6 +79,65 @@ class ScreenshotOwnershipTests(unittest.TestCase):
 
 
 class RecordingLifecycleTests(unittest.TestCase):
+    def test_sigterm_stops_owned_units_before_unlocking(self):
+        for when in ('launch', 'capture', 'cleanup'):
+            with self.subTest(when=when), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                output = root / 'capture'
+                lock = root / '.recording.lock'
+                config = dict(exe_sha256='test', build=dict(dll_sha256='test'), input_sha256='test',
+                              proton_sha256='test', source_save_sha256='test', proton='/proton',
+                              source_save='/save', source_game='/games/steam/common/skyrim')
+                (root / 'session.json').write_text(json.dumps(config))
+
+                def terminate():
+                    os.kill(os.getpid(), signal.SIGTERM)
+
+                def run(argv, **kwargs):
+                    if argv[0] == 'systemd-run':
+                        if argv[-1].endswith('display_ready.py'):
+                            display = dict(DISPLAY=':42', INVOCATION_ID='inv', LIBEI_SOCKET='socket',
+                                           GAMESCOPE_WAYLAND_DISPLAY='wayland')
+                            (output / 'display.json').write_text(json.dumps(display))
+                        elif when == 'launch':
+                            terminate()
+                    elif argv[:3] == ['systemctl', '--user', 'stop']:
+                        with lock.open('a') as contender, self.assertRaises(BlockingIOError):
+                            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        terminate()
+                        with (root / 'stops').open('a') as log:
+                            print(argv[-1], file=log)
+                    return subprocess.CompletedProcess(argv, 0, stdout='', stderr='')
+
+                def game_window(display):
+                    if when == 'capture':
+                        terminate()
+                    raise RuntimeError('end simulated recording')
+
+                def record():
+                    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+                    args = ['record', 'run', '--session', directory, '--output', str(output), '--ocr-prefix', directory]
+                    with patch('sys.argv', args), patch.dict(os.environ, XDG_RUNTIME_DIR=directory), \
+                            patch.object(recorder, 'sha256', return_value='test'), \
+                            patch.object(recorder.subprocess, 'run', side_effect=run), \
+                            patch.object(recorder.subprocess, 'check_output', return_value='inv'), \
+                            patch.object(recorder, 'initialize_prefix'), patch.object(recorder, 'GameWindow', game_window):
+                        recorder.main()
+
+                child = multiprocessing.get_context('fork').Process(target=record)
+                child.start()
+                try:
+                    child.join(5)
+                    self.assertEqual(child.exitcode, 128 + signal.SIGTERM)
+                finally:
+                    if child.is_alive():
+                        child.kill()
+                    child.join()
+                stops = (root / 'stops').read_text().splitlines()
+                self.assertEqual([unit.split('-')[2] for unit in stops], ['game', 'display'])
+                with lock.open('a') as contender:
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
     def test_display_handshake_and_cleanup_with_unwritable_diagnostics(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
