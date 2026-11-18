@@ -335,14 +335,12 @@ fn record_texture_fallbacks(
     mesh: &gltf::Mesh<'_>,
     material: &gltf::Material<'_>,
 ) {
-    let has_uvs = primitive
-        .get(&::gltf::Semantic::TexCoords(0))
-        .is_some();
+    let has_uvs = primitive.get(&::gltf::Semantic::TexCoords(0)).is_some();
     let found = texture_fallbacks(material, has_uvs);
     if found.is_empty() {
         return;
     }
-    let path = context.asset_path().to_string();
+    let path = context.path().to_string();
     let shape = mesh.name().or_else(|| material.name()).unwrap_or("unnamed");
     for (kind, slot) in found {
         record(kind, &path, &format!("{slot} ({shape})"));

@@ -60,8 +60,12 @@ fn parse() -> Result<Args> {
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args = parse()?;
-    let pack = args.pack.ok_or_else(|| color_eyre::eyre::eyre!("--pack is required"))?;
-    let data = args.data.ok_or_else(|| color_eyre::eyre::eyre!("--data is required"))?;
+    let pack = args
+        .pack
+        .ok_or_else(|| color_eyre::eyre::eyre!("--pack is required"))?;
+    let data = args
+        .data
+        .ok_or_else(|| color_eyre::eyre::eyre!("--data is required"))?;
     let scratch = args
         .scratch
         .ok_or_else(|| color_eyre::eyre::eyre!("--scratch is required"))?;
@@ -73,8 +77,7 @@ fn main() -> Result<()> {
                 path,
                 OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
             )?;
-            let mut statement =
-                connection.prepare("SELECT name FROM plugins ORDER BY priority")?;
+            let mut statement = connection.prepare("SELECT name FROM plugins ORDER BY priority")?;
             statement
                 .query_map([], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?

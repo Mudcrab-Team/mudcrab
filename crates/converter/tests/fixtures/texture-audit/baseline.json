@@ -1,6 +1,6 @@
 {
   "max_by_cause": {
-    "source_texture_absent": 1,
+    "source_texture_absent": 2,
     "converted_texture_missing": 1,
     "slot_unreferenced": 1,
     "unparseable_path": 0,

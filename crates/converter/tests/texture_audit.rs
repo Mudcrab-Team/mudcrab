@@ -56,7 +56,7 @@ fn write_glb(pack: &Path, name: &str, images: &[&str], has_uvs: bool) {
         "meshes": [{"name": name, "primitives": [{"attributes": attributes, "material": 0}]}]
     });
     let mut json = serde_json::to_vec(&document).unwrap();
-    while json.len() % 4 != 0 {
+    while !json.len().is_multiple_of(4) {
         json.push(b' ');
     }
     let mut bytes = b"glTF".to_vec();
@@ -76,21 +76,42 @@ fn touch(root: &Path, relative: &str) {
     fs::write(path, b"x").unwrap();
 }
 
-/// Four meshes, one per cause:
+/// Five meshes, one per cause plus a generated one:
 ///
 /// * `pruned`: wants `absent_n.dds`, which the game data does not hold; the converter pruned it.
 /// * `lost`: wants `lost.dds`, which the game data holds but the pack never converted.
 /// * `dropped`: wants `present_n.dds`, which the pack holds but the GLB does not reference.
 /// * `flat`: every texture resolves, but the primitive has no UVs.
+/// * `generated`: a GLB with no source NIF that references a texture that exists nowhere.
 fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     let root = tempfile::tempdir().unwrap();
     let data = root.path().join("Data");
     let pack = root.path().join("pack");
     let scratch = root.path().join("scratch");
-    write_nif(&data, "pruned", "textures/fix/present.dds", "textures/fix/absent_n.dds");
-    write_nif(&data, "lost", "textures/fix/lost.dds", "textures/fix/present_n.dds");
-    write_nif(&data, "dropped", "textures/fix/present.dds", "textures/fix/present_n.dds");
-    write_nif(&data, "flat", "textures/fix/present.dds", "textures/fix/present_n.dds");
+    write_nif(
+        &data,
+        "pruned",
+        "textures/fix/present.dds",
+        "textures/fix/absent_n.dds",
+    );
+    write_nif(
+        &data,
+        "lost",
+        "textures/fix/lost.dds",
+        "textures/fix/present_n.dds",
+    );
+    write_nif(
+        &data,
+        "dropped",
+        "textures/fix/present.dds",
+        "textures/fix/present_n.dds",
+    );
+    write_nif(
+        &data,
+        "flat",
+        "textures/fix/present.dds",
+        "textures/fix/present_n.dds",
+    );
     for dds in ["present", "present_n", "lost"] {
         touch(&data, &format!("textures/fix/{dds}.dds"));
     }
@@ -103,6 +124,12 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     write_glb(&pack, "lost", &[lost, present_n], true);
     write_glb(&pack, "dropped", &[present], true);
     write_glb(&pack, "flat", &[present, present_n], false);
+    write_glb(
+        &pack,
+        "generated",
+        &["../../textures/fix/gone.opensky-srgb.ktx2"],
+        true,
+    );
     (root, data, pack, scratch)
 }
 
@@ -139,8 +166,12 @@ fn each_cause_is_found_with_its_slot_and_source() {
     };
     assert_eq!(
         of(Cause::SourceTextureAbsent),
-        ["meshes/fix/pruned.glb normal textures/fix/absent_n.dds"]
+        [
+            "meshes/fix/generated.glb image textures/fix/gone.dds",
+            "meshes/fix/pruned.glb normal textures/fix/absent_n.dds",
+        ]
     );
+    assert_eq!(report.summary.glb_files_audited_without_source, 1);
     assert_eq!(
         of(Cause::ConvertedTextureMissing),
         ["meshes/fix/lost.glb diffuse textures/fix/lost.dds"]
@@ -150,7 +181,7 @@ fn each_cause_is_found_with_its_slot_and_source() {
         ["meshes/fix/dropped.glb normal textures/fix/present_n.dds"]
     );
     assert_eq!(of(Cause::PrimitiveWithoutUvs).len(), 1);
-    assert_eq!(report.summary.unresolved_slots, 4);
+    assert_eq!(report.summary.unresolved_slots, 5);
     let lost = report
         .findings
         .iter()
@@ -160,7 +191,7 @@ fn each_cause_is_found_with_its_slot_and_source() {
     let pruned = report
         .findings
         .iter()
-        .find(|finding| finding.cause == Cause::SourceTextureAbsent)
+        .find(|finding| finding.cause == Cause::SourceTextureAbsent && finding.slot == "normal")
         .unwrap();
     assert!(!pruned.source_has_dds && !pruned.glb_references_it);
 }

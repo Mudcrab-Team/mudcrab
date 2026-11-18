@@ -146,6 +146,9 @@ pub struct Summary {
     pub glb_files: u64,
     pub glb_files_with_source_nif: u64,
     pub glb_files_without_source_nif: u64,
+    /// Of those, the GLBs audited from their own contents (image references and UVs).
+    #[serde(default)]
+    pub glb_files_audited_without_source: u64,
     pub nif_files_failed: u64,
     pub wanted_slots: u64,
     pub resolved_slots: u64,
@@ -269,7 +272,10 @@ impl SourceCatalog {
                 archives.push(path);
             }
         }
-        let plugins: Vec<PathBuf> = plugin_names.iter().map(|name| data_dir.join(name)).collect();
+        let plugins: Vec<PathBuf> = plugin_names
+            .iter()
+            .map(|name| data_dir.join(name))
+            .collect();
         crate::pipeline::sort_archives_by_load_order(&mut archives, &plugins);
         let mut catalog = Self::default();
         for archive in &archives {
@@ -327,7 +333,10 @@ impl SourceCatalog {
     fn index_stems(&mut self) {
         for key in self.textures.keys() {
             let stem = key.rsplit('/').next().unwrap_or(key).to_owned();
-            self.texture_stems.entry(stem).or_default().push(key.clone());
+            self.texture_stems
+                .entry(stem)
+                .or_default()
+                .push(key.clone());
         }
         for keys in self.texture_stems.values_mut() {
             keys.sort();
@@ -495,7 +504,12 @@ fn glb_facts(pack: &Path, glb: &Path) -> Result<GlbFacts> {
             .get(index)
             .and_then(|texture| texture.get("source"))
             .and_then(|source| source.as_u64())
-            .and_then(|source| image_keys.get(usize::try_from(source).ok()?).cloned().flatten())
+            .and_then(|source| {
+                image_keys
+                    .get(usize::try_from(source).ok()?)
+                    .cloned()
+                    .flatten()
+            })
     };
     let materials = document
         .get("materials")
@@ -669,6 +683,39 @@ impl SlotCheck<'_> {
     }
 }
 
+impl SlotCheck<'_> {
+    /// Checks one image a GLB references when there is no source NIF to say what was wanted.
+    fn check_reference(&self, base_key: &str, mesh: &str) -> Option<Finding> {
+        if self.pack_textures.has_base(base_key) {
+            return None;
+        }
+        let source_key = base_key
+            .strip_suffix(".ktx2")
+            .map(|stem| format!("{stem}.dds"))?;
+        let source = self.sources.texture(&source_key);
+        Some(Finding {
+            cause: if source.is_some() {
+                Cause::ConvertedTextureMissing
+            } else {
+                Cause::SourceTextureAbsent
+            },
+            origin: Origin::GlbPrimitive,
+            mesh: mesh.to_owned(),
+            shape: String::new(),
+            slot: "image".to_owned(),
+            wanted_path: source_key,
+            wanted_key: Some(base_key.to_owned()),
+            came_from: "GLB image URI (no source NIF)".to_owned(),
+            source_has_dds: source.is_some(),
+            source_archive: source.map(SourceLocation::label),
+            pack_has_ktx2: false,
+            glb_references_it: true,
+            same_name_elsewhere: None,
+            used_by: UsedBy::default(),
+        })
+    }
+}
+
 fn unresolved_cause_for_absent(cause: Cause) -> Cause {
     match cause {
         Cause::TextureSetUnresolved => Cause::TextureSetUnresolved,
@@ -732,6 +779,8 @@ pub fn audit_pack(options: &AuditOptions<'_>) -> Result<Report> {
         findings: Vec<Finding>,
         wanted: u64,
         has_source: bool,
+        /// A GLB with no source NIF, audited from its own contents only.
+        generated: bool,
         failed: Option<String>,
     }
 
@@ -742,13 +791,10 @@ pub fn audit_pack(options: &AuditOptions<'_>) -> Result<Report> {
                 findings: Vec::new(),
                 wanted: 0,
                 has_source: false,
+                generated: false,
                 failed: None,
             };
             let nif_key = format!("{}.nif", relative.trim_end_matches(".glb"));
-            let Some(_) = options.sources.mesh(&nif_key) else {
-                return result;
-            };
-            result.has_source = true;
             let facts = match glb_facts(options.pack, glb_path) {
                 Ok(facts) => facts,
                 Err(error) => {
@@ -756,6 +802,40 @@ pub fn audit_pack(options: &AuditOptions<'_>) -> Result<Report> {
                     return result;
                 }
             };
+            let no_uv_findings = |result: &mut MeshResult| {
+                for primitive in &facts.no_uv_primitives {
+                    result.findings.push(Finding {
+                        cause: Cause::PrimitiveWithoutUvs,
+                        origin: Origin::GlbPrimitive,
+                        mesh: relative.clone(),
+                        shape: primitive.mesh.clone(),
+                        slot: "base_color".to_owned(),
+                        wanted_path: primitive.texture.clone().unwrap_or_default(),
+                        wanted_key: primitive.texture.clone(),
+                        came_from: format!("GLB material {}", primitive.material),
+                        source_has_dds: true,
+                        source_archive: None,
+                        pack_has_ktx2: primitive.texture.is_some(),
+                        glb_references_it: primitive.texture.is_some(),
+                        same_name_elsewhere: None,
+                        used_by: UsedBy::default(),
+                    });
+                }
+            };
+            if options.sources.mesh(&nif_key).is_none() {
+                // A composed or generated model has no source NIF to compare with, so only
+                // what the GLB itself says can be checked: every image it references must
+                // exist in the pack, and no textured primitive may lack UVs.
+                result.generated = true;
+                for base in &facts.referenced_bases {
+                    if let Some(finding) = check.check_reference(base, relative) {
+                        result.findings.push(finding);
+                    }
+                }
+                no_uv_findings(&mut result);
+                return result;
+            }
+            result.has_source = true;
             let shapes = options
                 .sources
                 .mesh_path(&nif_key, options.scratch)
@@ -811,24 +891,7 @@ pub fn audit_pack(options: &AuditOptions<'_>) -> Result<Report> {
                     result.findings.push(finding);
                 }
             }
-            for primitive in &facts.no_uv_primitives {
-                result.findings.push(Finding {
-                    cause: Cause::PrimitiveWithoutUvs,
-                    origin: Origin::GlbPrimitive,
-                    mesh: relative.clone(),
-                    shape: primitive.mesh.clone(),
-                    slot: "base_color".to_owned(),
-                    wanted_path: primitive.texture.clone().unwrap_or_default(),
-                    wanted_key: primitive.texture.clone(),
-                    came_from: format!("GLB material {}", primitive.material),
-                    source_has_dds: true,
-                    source_archive: None,
-                    pack_has_ktx2: primitive.texture.is_some(),
-                    glb_references_it: primitive.texture.is_some(),
-                    same_name_elsewhere: None,
-                    used_by: UsedBy::default(),
-                });
-            }
+            no_uv_findings(&mut result);
             result
         })
         .collect();
@@ -843,6 +906,9 @@ pub fn audit_pack(options: &AuditOptions<'_>) -> Result<Report> {
             summary.glb_files_with_source_nif += 1;
         } else {
             summary.glb_files_without_source_nif += 1;
+        }
+        if result.generated {
+            summary.glb_files_audited_without_source += 1;
         }
         if let Some(failure) = result.failed {
             summary.nif_files_failed += 1;
@@ -887,13 +953,12 @@ pub fn audit_pack(options: &AuditOptions<'_>) -> Result<Report> {
 
 fn summarize(summary: &mut Summary, findings: &[Finding]) {
     summary.unresolved_slots = findings.len() as u64;
-    summary.resolved_slots = (summary.wanted_slots + summary.texture_set_paths)
-        .saturating_sub(
-            findings
-                .iter()
-                .filter(|finding| finding.origin != Origin::GlbPrimitive)
-                .count() as u64,
-        );
+    summary.resolved_slots = (summary.wanted_slots + summary.texture_set_paths).saturating_sub(
+        findings
+            .iter()
+            .filter(|finding| finding.origin != Origin::GlbPrimitive)
+            .count() as u64,
+    );
     let mut textures: BTreeMap<Cause, BTreeSet<&str>> = BTreeMap::new();
     let mut meshes: BTreeMap<Cause, BTreeSet<&str>> = BTreeMap::new();
     for finding in findings {
@@ -951,7 +1016,9 @@ fn audit_records(connection: &Connection, check: &SlotCheck<'_>) -> Result<(u64,
             continue;
         };
         let rows = statement
-            .query_map([], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?)))?
+            .query_map([], |row| {
+                Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for (id, path) in rows {
             checked += 1;
@@ -1088,7 +1155,14 @@ fn attach_used_by(connection: &Connection, findings: &mut [Finding]) -> Result<(
             row.get::<_, u64>(3)?,
         ))
     })?;
-    let mut by_mesh: HashMap<String, (HashSet<u32>, u64, HashMap<u32, u64>)> = HashMap::new();
+    /// The placements found for one mesh.
+    #[derive(Default)]
+    struct MeshUse {
+        statics: HashSet<u32>,
+        references: u64,
+        cells: HashMap<u32, u64>,
+    }
+    let mut by_mesh: HashMap<String, MeshUse> = HashMap::new();
     for row in rows {
         let (model, static_id, cell_id, count) = row?;
         let Ok(key) = canonical_asset_path(&model, AssetKind::Mesh, "glb") else {
@@ -1098,10 +1172,10 @@ fn attach_used_by(connection: &Connection, findings: &mut [Finding]) -> Result<(
             continue;
         }
         let entry = by_mesh.entry(key).or_default();
-        entry.0.insert(static_id);
+        entry.statics.insert(static_id);
         if let Some(cell_id) = cell_id {
-            entry.1 += count;
-            *entry.2.entry(cell_id).or_default() += count;
+            entry.references += count;
+            *entry.cells.entry(cell_id).or_default() += count;
         }
     }
     let cell_label = |cell_id: u32| -> String {
@@ -1129,7 +1203,12 @@ fn attach_used_by(connection: &Connection, findings: &mut [Finding]) -> Result<(
     };
     let mut cache: HashMap<String, UsedBy> = HashMap::new();
     for finding in findings.iter_mut() {
-        let Some((statics, references, cells)) = by_mesh.get(&finding.mesh) else {
+        let Some(MeshUse {
+            statics,
+            references,
+            cells,
+        }) = by_mesh.get(&finding.mesh)
+        else {
             continue;
         };
         let used = cache.entry(finding.mesh.clone()).or_insert_with(|| {
@@ -1179,7 +1258,9 @@ pub struct AlternateTexture {
 /// `u32` length, that many name bytes, a `u32` texture-set id and an `i32` 3D index.
 pub fn parse_alternate_textures(body: &[u8]) -> Option<Vec<AlternateTexture>> {
     let word = |at: usize| -> Option<u32> {
-        Some(u32::from_le_bytes(body.get(at..at.checked_add(4)?)?.try_into().ok()?))
+        Some(u32::from_le_bytes(
+            body.get(at..at.checked_add(4)?)?.try_into().ok()?,
+        ))
     };
     let count = usize::try_from(word(0)?).ok()?;
     let mut entries = Vec::new();
@@ -1222,9 +1303,10 @@ fn alternate_texture_subrecords(payload: &[u8]) -> Vec<Vec<AlternateTexture>> {
 
 /// What the alternate-texture entries of a pack come to, by the retail rules (RF-TEX-001..005).
 ///
-/// Neither the converter nor the engine applies these entries yet (CF-ALT-TEXTURE-001, issue
-/// 508), so every surface they name keeps its model's own texture. The counts show how many
-/// entries that affects and how many of them are retail behaviour rather than misses.
+/// A pack that publishes `base_texture_swaps` carries the entries the engine applies; an older
+/// pack is read from the source records instead and nothing applies them
+/// (`engine_applies_entries` is false). The counts separate retail behaviour (a hidden shape, an
+/// empty set) from misses (a target no plugin defines).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OverrideAudit {
     pub records_with_alternate_textures: u64,
@@ -1241,11 +1323,151 @@ pub struct OverrideAudit {
     /// Entries whose texture set no plugin defines. Counted as a miss.
     pub unresolved_target_entries: u64,
     pub by_record_type: BTreeMap<String, u64>,
-    /// True once the converter and engine apply the entries; false today.
+    /// True when the pack publishes `base_texture_swaps`, which the engine applies.
     pub engine_applies_entries: bool,
+    /// Entries whose texture set fills a slot other than diffuse (TX00) or normal (TX01). The
+    /// engine applies only those two, so such a shape keeps its model material for the rest.
+    #[serde(default)]
+    pub entries_with_unapplied_slots: u64,
 }
 
 fn audit_overrides(connection: &Connection) -> Result<(OverrideAudit, Vec<Finding>)> {
+    let published = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='base_texture_swaps'",
+            [],
+            |row| row.get::<_, u32>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if published {
+        audit_published_swaps(connection)
+    } else {
+        audit_source_overrides(connection)
+    }
+}
+
+/// Audits the `base_texture_swaps` table the converter publishes for the engine.
+fn audit_published_swaps(connection: &Connection) -> Result<(OverrideAudit, Vec<Finding>)> {
+    let mut audit = OverrideAudit {
+        engine_applies_entries: true,
+        ..OverrideAudit::default()
+    };
+    let mut findings = Vec::new();
+    // (has any path, has a path in a slot other than diffuse and normal)
+    let mut sets: HashMap<u32, (bool, bool)> = HashMap::new();
+    if let Ok(mut statement) = connection.prepare(
+        "SELECT id,
+                coalesce(diffuse_path,'') || coalesce(normal_path,''),
+                coalesce(glow_path,'') || coalesce(height_path,'') || coalesce(environment_path,'')
+                || coalesce(mask_path,'') || coalesce(specular_path,'') || coalesce(detail_path,'')
+         FROM texture_sets",
+    ) {
+        for row in statement.query_map([], |row| {
+            Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })? {
+            let (id, applied, other) = row?;
+            sets.insert(
+                id,
+                (!applied.is_empty() || !other.is_empty(), !other.is_empty()),
+            );
+        }
+    }
+    let mut statement = connection.prepare(
+        "SELECT b.base_id, b.position, b.shape_name, b.shape_index, b.texture_set_id,
+                b.disposition, coalesce(f.record_type, '')
+         FROM base_texture_swaps b LEFT JOIN formid_map f ON f.form_id = b.base_id
+         ORDER BY b.base_id, b.position",
+    )?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i32>(3)?,
+                row.get::<_, u32>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut records = HashSet::new();
+    for (base, shape, index, texture_set, disposition, record_type) in rows {
+        if records.insert(base) {
+            audit.records_with_alternate_textures += 1;
+            *audit.by_record_type.entry(record_type.clone()).or_default() += 1;
+        }
+        audit.entries += 1;
+        if index < 0 {
+            audit.skipped_index_minus_one += 1;
+            continue;
+        }
+        match disposition.as_str() {
+            "null_texture_set" => audit.hide_shape_entries += 1,
+            "texture_set" => match sets.get(&texture_set) {
+                Some((true, unapplied)) => {
+                    audit.entries_with_texture_paths += 1;
+                    audit.entries_with_unapplied_slots += u64::from(*unapplied);
+                }
+                Some((false, _)) => audit.empty_texture_set_entries += 1,
+                None => {
+                    audit.unresolved_target_entries += 1;
+                    findings.push(unresolved_override(
+                        &record_type,
+                        base,
+                        &shape,
+                        index,
+                        texture_set,
+                    ));
+                }
+            },
+            _ => {
+                audit.unresolved_target_entries += 1;
+                findings.push(unresolved_override(
+                    &record_type,
+                    base,
+                    &shape,
+                    index,
+                    texture_set,
+                ));
+            }
+        }
+    }
+    Ok((audit, findings))
+}
+
+fn unresolved_override(
+    record_type: &str,
+    base: u32,
+    shape: &str,
+    index: i32,
+    texture_set: u32,
+) -> Finding {
+    Finding {
+        cause: Cause::OverrideTargetUnresolved,
+        origin: Origin::TextureSet,
+        mesh: format!("{record_type} {base:08X}"),
+        shape: shape.to_owned(),
+        slot: format!("3D index {index}"),
+        wanted_path: format!("TXST {texture_set:08X}"),
+        wanted_key: None,
+        came_from: format!("{record_type} {base:08X} alternate textures"),
+        source_has_dds: false,
+        source_archive: None,
+        pack_has_ktx2: false,
+        glb_references_it: false,
+        same_name_elsewhere: None,
+        used_by: UsedBy::default(),
+    }
+}
+
+/// Reads the alternate-texture subrecords of the source records, for a pack that does not
+/// publish `base_texture_swaps`.
+fn audit_source_overrides(connection: &Connection) -> Result<(OverrideAudit, Vec<Finding>)> {
     let mut audit = OverrideAudit::default();
     let mut findings = Vec::new();
     let Ok(mut records) = connection.prepare(
@@ -1323,7 +1545,10 @@ fn audit_overrides(connection: &Connection) -> Result<(OverrideAudit, Vec<Findin
                 continue;
             }
             let master = usize::try_from(entry.texture_set >> 24).unwrap_or(usize::MAX);
-            let target_plugin = masters.get(master).unwrap_or(&own_name).to_ascii_lowercase();
+            let target_plugin = masters
+                .get(master)
+                .unwrap_or(&own_name)
+                .to_ascii_lowercase();
             let internal = entry.texture_set & 0x00FF_FFFF;
             if target_plugin == "skyrim.esm" && internal == NULL_TEXTURE_SET_ID {
                 audit.hide_shape_entries += 1;
@@ -1410,7 +1635,12 @@ pub fn findings_csv(report: &Report) -> String {
             finding.used_by.references.to_string(),
             cells,
         ];
-        out.push_str(&row.iter().map(|value| field(value)).collect::<Vec<_>>().join(","));
+        out.push_str(
+            &row.iter()
+                .map(|value| field(value))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
         out.push('\n');
     }
     out
@@ -1431,18 +1661,27 @@ mod tests {
     #[test]
     fn ratchet_fails_only_when_a_cause_grows() {
         let baseline = Baseline::from_report(
-            &report_with(&[(Cause::SourceTextureAbsent, 10), (Cause::SlotUnreferenced, 2)]),
+            &report_with(&[
+                (Cause::SourceTextureAbsent, 10),
+                (Cause::SlotUnreferenced, 2),
+            ]),
             "test",
         );
         assert!(
             compare_to_baseline(
-                &report_with(&[(Cause::SourceTextureAbsent, 9), (Cause::SlotUnreferenced, 2)]),
+                &report_with(&[
+                    (Cause::SourceTextureAbsent, 9),
+                    (Cause::SlotUnreferenced, 2)
+                ]),
                 &baseline
             )
             .is_empty()
         );
         let regressions = compare_to_baseline(
-            &report_with(&[(Cause::SourceTextureAbsent, 10), (Cause::PrimitiveWithoutUvs, 1)]),
+            &report_with(&[
+                (Cause::SourceTextureAbsent, 10),
+                (Cause::PrimitiveWithoutUvs, 1),
+            ]),
             &baseline,
         );
         assert_eq!(regressions.len(), 1);
@@ -1462,7 +1701,10 @@ mod tests {
 
     #[test]
     fn alternate_texture_entries_parse_and_truncated_bodies_do_not() {
-        let body = mods_body(&[("TundraStreamBend01:0", 0x0002_4E2F, 4), ("DirtDecal", 0x28, -1)]);
+        let body = mods_body(&[
+            ("TundraStreamBend01:0", 0x0002_4E2F, 4),
+            ("DirtDecal", 0x28, -1),
+        ]);
         let entries = parse_alternate_textures(&body).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].texture_set, 0x0002_4E2F);
@@ -1478,6 +1720,47 @@ mod tests {
         let lists = alternate_texture_subrecords(&payload);
         assert_eq!(lists.len(), 1);
         assert_eq!(lists[0].len(), 2);
+    }
+
+    #[test]
+    fn published_swaps_separate_retail_behaviour_from_misses() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY, diffuse_path TEXT, normal_path TEXT,
+                    glow_path TEXT, height_path TEXT, environment_path TEXT, mask_path TEXT,
+                    specular_path TEXT, detail_path TEXT);
+                 CREATE TABLE formid_map(form_id INTEGER PRIMARY KEY, plugin_name TEXT,
+                    internal_id INTEGER, record_type TEXT);
+                 CREATE TABLE base_texture_swaps(base_id INTEGER, position INTEGER, shape_name TEXT,
+                    shape_index INTEGER, texture_set_id INTEGER, disposition TEXT,
+                    PRIMARY KEY(base_id, position));
+                 INSERT INTO formid_map VALUES (1,'skyrim.esm',1,'STAT');
+                 INSERT INTO texture_sets(id, diffuse_path) VALUES (10, 'textures/a.dds');
+                 INSERT INTO texture_sets(id, diffuse_path, glow_path)
+                    VALUES (11, 'textures/b.dds', 'textures/b_g.dds');
+                 INSERT INTO texture_sets(id) VALUES (12);
+                 INSERT INTO base_texture_swaps VALUES
+                    (1,0,'a',0,10,'texture_set'),
+                    (1,1,'b',1,11,'texture_set'),
+                    (1,2,'c',2,12,'texture_set'),
+                    (1,3,'d',3,0,'null_texture_set'),
+                    (1,4,'e',4,99,'missing_texture_set'),
+                    (1,5,'f',-1,10,'texture_set');",
+            )
+            .unwrap();
+        let (audit, findings) = audit_overrides(&connection).unwrap();
+        assert!(audit.engine_applies_entries);
+        assert_eq!(audit.records_with_alternate_textures, 1);
+        assert_eq!(audit.entries, 6);
+        assert_eq!(audit.skipped_index_minus_one, 1);
+        assert_eq!(audit.hide_shape_entries, 1);
+        assert_eq!(audit.empty_texture_set_entries, 1);
+        assert_eq!(audit.entries_with_texture_paths, 2);
+        assert_eq!(audit.entries_with_unapplied_slots, 1);
+        assert_eq!(audit.unresolved_target_entries, 1);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].cause, Cause::OverrideTargetUnresolved);
     }
 
     #[test]

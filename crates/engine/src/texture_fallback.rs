@@ -112,8 +112,16 @@ mod tests {
         // Distinct names keep this independent of other tests sharing the process registry.
         let mesh = "meshes/texture_fallback_test_unique.glb";
         assert!(record(FallbackKind::UntexturedMaterial, mesh, "base_color"));
-        assert!(!record(FallbackKind::UntexturedMaterial, mesh, "base_color"));
-        assert!(record(FallbackKind::PrimitiveWithoutUvs, mesh, "base_color"));
+        assert!(!record(
+            FallbackKind::UntexturedMaterial,
+            mesh,
+            "base_color"
+        ));
+        assert!(record(
+            FallbackKind::PrimitiveWithoutUvs,
+            mesh,
+            "base_color"
+        ));
         assert!(record(FallbackKind::UntexturedMaterial, mesh, "normal"));
         let ours: Vec<_> = sites()
             .into_iter()

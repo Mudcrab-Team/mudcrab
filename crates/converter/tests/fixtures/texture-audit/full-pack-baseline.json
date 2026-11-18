@@ -9,5 +9,5 @@
     "land_texture_unresolved": 2,
     "override_target_unresolved": 0
   },
-  "note": "Measured on pack user-testing-main-b5259d33 with Skyrim SE 1.6 game data. primitive_without_uvs drops to 3 once the pack is rebuilt with the non-finite UV repair. Lower a value when a cause is fixed; never raise one."
+  "note": "Measured on the second v0.1.0 candidate pack and on the earlier user-testing pack (identical counts), with Skyrim SE 1.6 game data. primitive_without_uvs falls from 24 to 3 once the pack is rebuilt with the non-finite UV repair. Lower a value when a cause is fixed; never raise one."
 }
