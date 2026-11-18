@@ -486,6 +486,14 @@ mod tests {
     #[test]
     fn fitted_cascades_match_bevy_for_the_same_direction() {
         let (mut app, sun, camera) = fixture(EngineConfig::default());
+        // Supply the exact same quaternion to both builders. Bevy decomposes GlobalTransform,
+        // whose matrix round-trip can round differently from the original local quaternion.
+        let basis = app.world().get::<GlobalTransform>(sun).unwrap().rotation();
+        app.world_mut()
+            .get_mut::<SunShadowDirection>(sun)
+            .unwrap()
+            .rotation = basis;
+        advance(&mut app, 0.0);
         let expected = matrices(&app, sun, camera);
         // Removing the marker leaves Bevy as the sole cascade writer for this light.
         app.world_mut().entity_mut(sun).remove::<SunLight>();
