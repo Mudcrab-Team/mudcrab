@@ -290,7 +290,7 @@
     "crates/engine/src/emittance.rs": "5439216f43db6e9d76e123ba795a1af43d71eaff1c22a664aa91782108b3818b",
     "crates/engine/src/lights.rs": "7d20e4d2bb488c2faf6557ea4d08d7754d945ce06e1479fae56f9272b9685a96",
     "crates/engine/src/object_materials.rs": "55644badd747942a606e195bca8bea4cb7414ecaecde103e1efe34d0b3a74c6a",
-    "crates/engine/src/physics.rs": "052e730587a0bc0acb180c9098b95ce1a1d70643f829c7e1e555ed8cfd9652b7",
+    "crates/engine/src/physics.rs": "2421abe7d2606666f64d8d89f0c7cf415bd6749d6df225ba7da0aa65c1b937b4",
     "crates/engine/src/physics/carry.rs": "bcdf4496e8fe9d9c33030300b8edba358fc552e67a2c1949a44c3338c5029776",
     "crates/engine/src/room_culling.rs": "3dde125149eec693ed8ae1bb749561b33b4f05af980a991343ae44fbc494ba2c",
     "crates/engine/src/route.rs": "cdc3ddbb93ce2b350fef3479c941ba00d2b588113b8e365b7efdd48f40728c66",
