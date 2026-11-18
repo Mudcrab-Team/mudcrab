@@ -75,7 +75,8 @@ Bounds and assumptions:
   height × NPC height) and `reference_scale_uses_the_retail_grouping` (reference scale =
   stored scale × NPC scale). Do not merge them into one harness over the whole chain. That
   harness passed once, but it took 13 minutes, because the solver must show that two separate
-  multiplier circuits agree. Keep the expected value's operands shared with the code's operands.
+  multiplier circuits agree. Keep one multiplication on each side of a comparison. The split
+  harnesses take about 3 minutes and under 1 minute.
 - The product grouping `(f32(percent) × 0.01) × (race height × NPC height)` was confirmed
   statically from the retail machine code. A bitwise run of the retail code is still pending.
   A2 (missing `NAM6` = 1.0) and A3 (how `XSCL` becomes a whole percent) are listed at the top of
