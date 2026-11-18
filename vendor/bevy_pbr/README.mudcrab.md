@@ -1,0 +1,38 @@
+# Vendored `bevy_pbr` 0.19.0, with bevyengine/bevy#26504
+
+Source: the published [`bevy_pbr` 0.19.0 crate](https://crates.io/crates/bevy_pbr/0.19.0),
+SHA-256 `38ebc777de2d7f45888c68e8e04949bfb8a40aee62f700283fc340f525e67f52`. Upstream provenance is
+kept in `.cargo_vcs_info.json` (Bevy commit `c6f634ca9f406d68ba5109d921247b654cb42c10`,
+`crates/bevy_pbr`), and the unmodified published manifest is `Cargo.toml.orig`. The manifest, both
+license files (`MIT OR Apache-2.0`) and `README.md` are unchanged. The crate's own lockfile and its
+`.cargo-ok` marker are omitted, so Mudcrab's root `Cargo.lock` controls resolution.
+
+The first commit that added this directory is byte-identical to the published crate. Run
+`git diff 6335beeb HEAD -- vendor/bevy_pbr` (or compare with the crate) to see every change.
+The ledger of all carried Bevy changes is [`../BEVY_PATCHES.md`](../BEVY_PATCHES.md).
+
+## Why
+
+Mudcrab's NPC bodies have a morph target. A visible morphed mesh whose morph descriptor is not
+ready gets the missing-descriptor index `u32::MAX` in its GPU mesh uniform. The shader then reads
+`morph_descriptors[u32::MAX]` about 80 GiB past a 100-byte buffer. On Metal this is a `BIF0` GPU page
+fault (`bevyengine/bevy#25966`). The uniform is not rewritten while the instance does not change,
+so a still actor also keeps the base shape.
+
+## Carried changes
+
+| Change | Where it comes from | Files |
+|---|---|---|
+| Store the mesh asset id in `MorphWeightsInfo`; record entities whose descriptor is pending; make the mesh instance builder return `None` (so the instance is extracted again) until the descriptor exists | `bevyengine/bevy#26504`, applied unchanged to 0.19.0 | `src/render/morph.rs`, `src/render/mesh.rs` |
+| `layer_count` returns 0 for a descriptor index outside `morph_descriptors` | `bevyengine/bevy#26504`, ported by hand: the PR edits `morph.wesl` on Bevy `main`, and 0.19.0 has `morph.wgsl`. The comment carries a marker that Mudcrab's engine-side guard recognises. | `src/render/morph.wgsl` |
+| `prev_weight_at` falls back to the current weight when its offset or index is outside `prev_morph_weights` | **Mudcrab's own addition, not in the PR.** The no-previous-weights offset is `!0`; weight 0 would read index `u32::MAX`. Reached only with motion vectors. | `src/render/morph.wgsl`, comment in `src/render/morph.rs` |
+
+Every Mudcrab comment starts with `mudcrab:`, so `grep -rn "mudcrab:" src` lists the touched spots.
+
+## Updating or removing this copy
+
+Drop this directory and the `bevy_pbr` entry in the root `[patch.crates-io]` when a Bevy release
+that Mudcrab uses contains `bevyengine/bevy#26504` or an equivalent fix. If Bevy lands a different
+change, take Bevy's version. Keep the `prev_weight_at` bound only if Bevy does not fix that read.
+After any change run `cargo test --locked -p engine` and the Metal shader-validation run in
+`vendor/BEVY_PATCHES.md`, and confirm it reports 0 out-of-bounds reads.
