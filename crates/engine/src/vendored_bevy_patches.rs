@@ -8,7 +8,9 @@
 //! - bevyengine/bevy#26095: stale GPU bin-unpacking jobs and bind groups are cleared every frame;
 //! - bevyengine/bevy#26588: the GPU clustering staging-buffer leak.
 //!
-//! The morph shader bounds have their own test in `vendored_morph_shader`.
+//! Code checks run on source with whole-line `//` comments removed and whitespace collapsed, so
+//! code turned into a comment, or re-wrapped by `rustfmt`, is judged by what it really does. Marker
+//! checks read the raw text. The morph shader bounds have their own test in `vendored_morph_shader`.
 
 use crate::bevy_source::required_source;
 use std::path::{Path, PathBuf};
@@ -29,7 +31,21 @@ fn vendor(crate_name: &str) -> PathBuf {
         .join(crate_name)
 }
 
-/// The text of the top-level Rust function `name`, from `fn name(` to the closing `}` at column 0.
+/// `source` without whole-line `//` comments (including `///` and `//!`), with every run of
+/// whitespace collapsed to one space.
+fn code(source: &str) -> String {
+    source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The raw text of the top-level Rust function `name`, from `fn name(` to the closing `}` at
+/// column 0.
 fn function<'a>(source: &'a str, file: &str, name: &str) -> &'a str {
     let start = source
         .find(&format!("fn {name}("))
@@ -40,23 +56,81 @@ fn function<'a>(source: &'a str, file: &str, name: &str) -> &'a str {
     &source[start..start + end]
 }
 
+/// Whether `manifest` has the exact entry `name = { path = "vendor/name" }` as a whole,
+/// non-comment line inside the `[patch.crates-io]` table.
+fn patches_crate(manifest: &str, name: &str) -> bool {
+    let entry = format!("{name} = {{ path = \"vendor/{name}\" }}");
+    let mut in_patch = false;
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_patch = line == "[patch.crates-io]";
+        } else if in_patch && line == entry {
+            return true;
+        }
+    }
+    false
+}
+
 /// Every check on one pair of `bevy_pbr` and `bevy_render` directories. Nothing here skips: a
 /// missing file, marker or hunk panics.
 fn check_patches(pbr: &Path, render: &Path) {
-    // bevyengine/bevy#26504 (the shader half is in `vendored_morph_shader`).
+    // bevyengine/bevy#26504 (the shader half is in `vendored_morph_shader`). The wait only works
+    // if `prepare_morph_descriptors` records the pending entities: a re-vendor that restores
+    // 0.19.0's bare `continue;` leaves the set empty and brings the `u32::MAX` index back.
     let mesh = required_source(pbr, PBR_MESH);
     assert!(
-        mesh.contains(MARKER_26504)
-            && mesh.contains("morph_indices.morph_descriptor_pending(entity)"),
-        "{PBR_MESH} lost the bevy#26504 wait for a pending morph descriptor"
+        mesh.contains(MARKER_26504),
+        "{PBR_MESH} lost its `{MARKER_26504}` marker"
+    );
+    assert!(
+        code(&mesh).contains("if morph_indices.morph_descriptor_pending(entity) { return None; }"),
+        "{PBR_MESH} no longer returns None while the morph descriptor is pending (bevy#26504): \
+         an instance can get the missing descriptor index u32::MAX"
     );
     let morph = required_source(pbr, PBR_MORPH);
-    assert!(
-        morph.contains("pending_descriptors")
-            && morph.contains("fn morph_descriptor_pending(")
-            && morph.contains("mesh_id: AssetId<Mesh>"),
-        "{PBR_MORPH} lost the bevy#26504 pending morph descriptors"
+    let morph_code = code(&morph);
+    for needed in [
+        "mesh_id: AssetId<Mesh>,",
+        "pending_descriptors: MainEntityHashSet,",
+        "pending_descriptors.contains(&main_entity)",
+    ] {
+        assert!(
+            morph_code.contains(needed),
+            "{PBR_MORPH} lost `{needed}` (bevy#26504)"
+        );
+    }
+    let descriptors = code(function(&morph, PBR_MORPH, "prepare_morph_descriptors"));
+    assert_eq!(
+        descriptors.matches("pending_descriptors.clear();").count(),
+        1,
+        "prepare_morph_descriptors must clear pending_descriptors once per frame (bevy#26504)"
     );
+    let insert = "pending_descriptors.insert(morph_target_main_entity);";
+    assert_eq!(
+        descriptors.matches(insert).count(),
+        2,
+        "prepare_morph_descriptors must record a pending entity in both places where it skips \
+         one (bevy#26504): the set stays empty, the mesh.rs wait never fires, and the u32::MAX \
+         descriptor index, a Metal page fault, returns"
+    );
+    for (skip, needed) in [
+        (
+            "mesh missing",
+            format!("let Some(mesh) = meshes.get(mesh_id) else {{ {insert} continue; }};"),
+        ),
+        (
+            "morph slice missing",
+            format!(
+                "mesh_allocator.mesh_morph_target_slice(&mesh_id) else {{ \
+                 if mesh.has_morph_targets() {{ {insert} }} continue; }};"
+            ),
+        ),
+    ] {
+        assert!(
+            descriptors.contains(&needed),
+            "prepare_morph_descriptors lost the pending record when the {skip} (bevy#26504)"
+        );
+    }
 
     // bevyengine/bevy#26095, bevy_pbr half: bind groups are cleared every frame.
     let preprocess = required_source(pbr, PBR_PREPROCESS);
@@ -72,7 +146,7 @@ fn check_patches(pbr: &Path, render: &Path) {
     );
     assert!(
         bind_groups.contains(MARKER_26095)
-            && bind_groups.contains("bin_unpacking_bind_groups.clear();"),
+            && code(bind_groups).contains("bin_unpacking_bind_groups.clear();"),
         "prepare_preprocess_bind_groups no longer clears the bin-unpacking bind groups \
          (bevy#26095): stale jobs can bind other jobs' metadata"
     );
@@ -88,15 +162,19 @@ fn check_patches(pbr: &Path, render: &Path) {
         RENDER_PREPROCESSING,
         "clear_bin_unpacking_buffers",
     );
+    assert!(
+        clear.contains(MARKER_26095),
+        "clear_bin_unpacking_buffers lost its `{MARKER_26095}` marker"
+    );
+    let clear_code = code(clear);
     for needed in [
-        MARKER_26095,
         "bin_unpacking_buffers.bin_unpacking_metadata.clear();",
         "for view_phase_buffers in bin_unpacking_buffers.view_phase_buffers.values_mut() {",
         "view_phase_buffers.indexed_unpacking_jobs.clear();",
         "view_phase_buffers.non_indexed_unpacking_jobs.clear();",
     ] {
         assert!(
-            clear.contains(needed),
+            clear_code.contains(needed),
             "clear_bin_unpacking_buffers lost `{needed}` (bevy#26095): a skipped view keeps \
              last frame's unpacking jobs, which point at metadata that was rewritten:\n{clear}"
         );
@@ -109,7 +187,7 @@ fn check_patches(pbr: &Path, render: &Path) {
         "{PBR_CLUSTER} lost its `{MARKER_26588}` marker"
     );
     assert!(
-        !cluster.contains("metadata_staging_pending_buffers"),
+        !code(&cluster).contains("metadata_staging_pending_buffers"),
         "{PBR_CLUSTER} has the write-only metadata_staging_pending_buffers list again \
          (bevy#26588): GPU clustering leaks a buffer handle per view per frame"
     );
@@ -123,13 +201,55 @@ fn the_workspace_still_patches_both_bevy_crates() {
     );
     for crate_name in ["bevy_pbr", "bevy_render"] {
         assert!(
-            manifest.contains(&format!(
-                "{crate_name} = {{ path = \"vendor/{crate_name}\" }}"
-            )),
-            "the workspace no longer patches {crate_name} with vendor/{crate_name}, so the build \
-             lacks the carried Bevy fixes: restore the patch or move these checks"
+            patches_crate(&manifest, crate_name),
+            "[patch.crates-io] no longer has the line `{crate_name} = {{ path = \
+             \"vendor/{crate_name}\" }}`, so the build lacks the carried Bevy fixes: restore the \
+             patch or move these checks"
         );
     }
+}
+
+#[test]
+fn a_patch_entry_must_be_a_live_line_in_the_patch_table() {
+    let live = "[patch.crates-io]\nbevy_pbr = { path = \"vendor/bevy_pbr\" }\n";
+    assert!(patches_crate(live, "bevy_pbr"));
+    assert!(patches_crate(
+        &format!("[workspace]\n\n{live}\n[lints]\n"),
+        "bevy_pbr"
+    ));
+    assert!(!patches_crate(live, "bevy_render"), "another crate's line");
+    for (why, manifest) in [
+        (
+            "commented out",
+            "[patch.crates-io]\n# bevy_pbr = { path = \"vendor/bevy_pbr\" }\n",
+        ),
+        (
+            "commented out and indented",
+            "[patch.crates-io]\n  #bevy_pbr = { path = \"vendor/bevy_pbr\" }\n",
+        ),
+        (
+            "in another table",
+            "[workspace.dependencies]\nbevy_pbr = { path = \"vendor/bevy_pbr\" }\n[patch.crates-io]\n",
+        ),
+        (
+            "after the patch table ended",
+            "[patch.crates-io]\n[other]\nbevy_pbr = { path = \"vendor/bevy_pbr\" }\n",
+        ),
+        (
+            "a different path",
+            "[patch.crates-io]\nbevy_pbr = { path = \"elsewhere/bevy_pbr\" }\n",
+        ),
+    ] {
+        assert!(!patches_crate(manifest, "bevy_pbr"), "{why} must not count");
+    }
+}
+
+#[test]
+fn the_code_helper_drops_comment_lines_and_collapses_whitespace() {
+    assert_eq!(
+        code("    // a.clear();\n    /// b.clear();\n    c.clear(\n    );\n"),
+        "c.clear( );"
+    );
 }
 
 #[test]
@@ -188,10 +308,32 @@ fn dropping_one_job_list_clear_fails() {
 }
 
 #[test]
+#[should_panic(expected = "lost `view_phase_buffers.indexed_unpacking_jobs.clear();`")]
+fn turning_a_job_list_clear_into_a_comment_fails() {
+    check_copy(&vendored_copy(RENDER_PREPROCESSING, |text| {
+        text.replace(
+            "        view_phase_buffers.indexed_unpacking_jobs.clear();",
+            "        // view_phase_buffers.indexed_unpacking_jobs.clear();",
+        )
+    }));
+}
+
+#[test]
 #[should_panic(expected = "no longer clears the bin-unpacking bind groups")]
 fn dropping_the_bind_group_clear_fails() {
     check_copy(&vendored_copy(PBR_PREPROCESS, |text| {
         text.replace("bin_unpacking_bind_groups.clear();", "")
+    }));
+}
+
+#[test]
+#[should_panic(expected = "no longer clears the bin-unpacking bind groups")]
+fn turning_the_bind_group_clear_into_a_comment_fails() {
+    check_copy(&vendored_copy(PBR_PREPROCESS, |text| {
+        text.replace(
+            "    bin_unpacking_bind_groups.clear();",
+            "    // bin_unpacking_bind_groups.clear();",
+        )
     }));
 }
 
@@ -215,9 +357,60 @@ fn the_clustering_leak_coming_back_fails() {
 }
 
 #[test]
-#[should_panic(expected = "lost the bevy#26504 wait")]
+#[should_panic(expected = "no longer returns None while the morph descriptor is pending")]
 fn dropping_the_pending_descriptor_wait_fails() {
     check_copy(&vendored_copy(PBR_MESH, |text| {
         text.replace("morph_indices.morph_descriptor_pending(entity)", "false")
+    }));
+}
+
+#[test]
+#[should_panic(expected = "no longer returns None while the morph descriptor is pending")]
+fn turning_the_pending_descriptor_wait_into_a_comment_fails() {
+    check_copy(&vendored_copy(PBR_MESH, |text| {
+        text.replace(
+            "        if morph_indices.morph_descriptor_pending(entity) {\n            return None;\n        }",
+            "        // if morph_indices.morph_descriptor_pending(entity) {\n        //     return None;\n        // }",
+        )
+    }));
+}
+
+/// Bevy 0.19.0's `prepare_morph_descriptors`: a bare `continue;` where the patch records the
+/// entity. The field, the getter and `mesh_id` all still exist.
+#[test]
+#[should_panic(expected = "must record a pending entity in both places")]
+fn restoring_the_bare_continue_fails() {
+    check_copy(&vendored_copy(PBR_MORPH, |text| {
+        text.replace("pending_descriptors.insert(morph_target_main_entity);", "")
+    }));
+}
+
+#[test]
+#[should_panic(expected = "must record a pending entity in both places")]
+fn recording_only_the_missing_mesh_fails() {
+    check_copy(&vendored_copy(PBR_MORPH, |text| {
+        text.replace(
+            "            if mesh.has_morph_targets() {\n                pending_descriptors.insert(morph_target_main_entity);\n            }\n",
+            "",
+        )
+    }));
+}
+
+#[test]
+#[should_panic(expected = "must clear pending_descriptors once per frame")]
+fn never_clearing_the_pending_set_fails() {
+    check_copy(&vendored_copy(PBR_MORPH, |text| {
+        text.replace("    pending_descriptors.clear();\n", "")
+    }));
+}
+
+#[test]
+#[should_panic(expected = "must record a pending entity in both places")]
+fn commenting_out_a_pending_record_fails() {
+    check_copy(&vendored_copy(PBR_MORPH, |text| {
+        text.replace(
+            "            pending_descriptors.insert(morph_target_main_entity);\n            continue;",
+            "            // pending_descriptors.insert(morph_target_main_entity);\n            continue;",
+        )
     }));
 }

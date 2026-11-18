@@ -10,8 +10,10 @@ commit, add a `// mudcrab:` comment at each touched spot, and fill in a row belo
 
 ## Every carried patch and its commit
 
-The commits are the squash merges on `main`. Each pull request has the unchanged vendored crate as
-its first commit and the patch as the next.
+The commits are the squash merges on `main`, so each pull request is one commit there. In pull
+requests #801 and #802 the unchanged vendored crate was the first commit and the patch the next, so
+the pull request's own commit list shows the patch alone. Pull request #433 (`bevy_image`) added the
+crate and the `zstd` change in one commit: compare it with the published crate to see the change.
 
 | Patch | Crate | Pull request | Commit on `main` |
 |---|---|---|---|
