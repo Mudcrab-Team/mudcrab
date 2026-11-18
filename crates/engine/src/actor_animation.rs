@@ -1779,7 +1779,6 @@ mod tests {
         let catalog = ActorCatalog::open(&assets.join("skyrim_world.db"));
         let mut app = retail_app(&assets);
         app.insert_resource(catalog.clone());
-        let mut most_distinct = 0;
         // Base NPC_ FormIDs of a dog, a cow, a bear and a draugr; each is also its reference id.
         // The dog and the cow must get a sequence. The bear and the draugr are controls: they are
         // outside the verified families, so they must keep their one default clip.
@@ -1919,12 +1918,13 @@ mod tests {
                 longest_run <= 10,
                 "the {name} stood still for {longest_run} updates in a row"
             );
-            most_distinct = most_distinct.max(distinct.len());
+            // Each animal must vary on its own: one that shows variation cannot cover for another.
+            assert!(
+                distinct.len() >= 2,
+                "the {name} showed {} distinct clip(s) in {seconds} s",
+                distinct.len()
+            );
             app.world_mut().entity_mut(actor).despawn();
         }
-        assert!(
-            most_distinct >= 3,
-            "no creature showed three different idles in {seconds} s"
-        );
     }
 }
