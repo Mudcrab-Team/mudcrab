@@ -716,6 +716,15 @@ impl ArchiveExtractor {
         extract_reporting(archive_path, output_root, None, None)
     }
 
+    /// Extracts only the compiled Papyrus scripts (`.pex`), the same inputs a normal
+    /// conversion selects. A scripts-only rebuild uses it instead of a full extraction.
+    pub(crate) fn extract_script_inputs(
+        archive_path: &Path,
+        output_root: &Path,
+    ) -> Result<Vec<ExtractedFile>> {
+        extract_selected_reporting(archive_path, output_root, is_script_input, None, None)
+    }
+
     pub(crate) fn extract_lod_settings(
         archive_path: &Path,
         output_root: &Path,
@@ -985,6 +994,11 @@ fn selection_includes(selection: IngestionSelection, path: &Path) -> bool {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .is_some_and(|stem| stem.ends_with("_english"))
+}
+
+fn is_script_input(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pex"))
 }
 
 fn is_lod_setting(path: &Path) -> bool {

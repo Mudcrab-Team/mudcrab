@@ -335,7 +335,8 @@ text uses Windows-1252. Both record readers publish the same UTF-8 text:
   (`crates/converter/src/esm/legacy_text.rs`). That covers `FULL` on every record type, and
   `DESC`, `RNAM` and others where the subrecord is unambiguous. This changed the legacy
   projection; version 4 introduced language/encoding. Version 5 also publishes every schema-declared
-  projectile/hazard placement and its base model (#498). The in-house adapter is version 13.
+  projectile/hazard placement and its base model (#498). Version 6 adds the STAT MODS alternate-texture
+  table (`base_texture_swaps`). The in-house adapter is version 14.
   Version-3 retained proofs are accepted only for their historical English setting; all older
   metadata rebuilds use the configured language. Retained assets keep their independent proof.
 
@@ -542,8 +543,9 @@ Rules beyond the ones above:
 `world::environment::EnvironmentCatalog` (cell lighting, worldspace environment, lighting
 templates, weathers with their colours and directional ambient, image spaces, climate weather
 lists). A table that is missing or lacks a column the reader needs loads as empty, with one log
-line. Nothing renders from the catalog yet: the hard-coded `SkyrimClear` lighting in `sky.rs` is
-unchanged.
+line. The clock sun reads climate timing from it, and interiors in sky modes 1 and 2 take their
+key light, ambient and fog from `cell_lighting`, `lighting_templates`, `image_spaces` and
+`room_bounds` (`docs/specs/engine/interior-environment.md`).
 
 | Case | Converter writes | Engine |
 |---|---|---|
@@ -1007,10 +1009,20 @@ CREATE TABLE IF NOT EXISTS waters (
 `skyrim_world.db` built before they existed has a `waters` table without them, and
 `AssetCatalog::water_colors` (`crates/engine/src/world/database.rs`) returns `None` for every
 water against such a database rather than failing to open it. The engine falls back to Skyrim's
-DefaultWater values (`render::DEFAULT_WATER_FRESNEL` / `render::DEFAULT_WATER_REFLECTIVITY`, and
-`streaming.rs`'s deep-colour constant) until a reconversion populates them. Adding them did **not**
-bump `shared::WORLD_DATABASE_SCHEMA_VERSION`: nothing that already reads `waters` depends on their
-presence, and the fallback exists specifically so a reconversion is not required.
+DefaultWater values (`render::DEFAULT_WATER_FRESNEL`, `DEFAULT_WATER_REFLECTIVITY`,
+`DEFAULT_WATER_DEEP_COLOR`, `DEFAULT_WATER_SHALLOW_COLOR` and `DEFAULT_WATER_OPACITY`) until a
+reconversion populates them. Adding them did **not** bump
+`shared::WORLD_DATABASE_SCHEMA_VERSION`: nothing that already reads `waters` depends on their
+presence, and the fallback exists specifically so a reconversion is not required. `opacity` is
+not one of those additions: it has been in the table since the table was first created.
+
+The above-water fog (near and far distance, amount) has **no** column. The engine reads it per
+water from the `DNAM` subrecord inside `data` (`DNAM+32`, `DNAM+36` and `DNAM+132`, three
+little-endian `f32`s, see [water research](../../research/water.md)), so every existing database
+yields each water's own fog without a reconversion. A water whose `data` does not decode, whose
+`DNAM` is shorter than 136 bytes, or whose fog is not finite uses Skyrim's DefaultWater fog
+(near -10, far 150, amount 0.7; `WaterFog::default()` in `crates/engine/src/world/database.rs`)
+and keeps its colours.
 
 ---
 
@@ -1276,9 +1288,15 @@ The tables are derived data: a full load-order export clears and rebuilds them f
 records on every conversion, like the grass tables, and the subset export used by movement
 annotation leaves them alone. `create_tables` adds them to an older reused database.
 
-**These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`.** No engine code reads
-them yet; a reader must probe for them first, as the engine does for `lights` and the additive
-`waters` columns, so a database without them behaves as before.
+**These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`.** The engine reads
+them automatically and probes for them first, as it does for `lights` and the
+additive `waters` columns, so a database without them behaves as before.
+
+Placed references carrying the `Multibound` header flag (`0x80000000`) have an authored visibility
+policy, including `NONE`. Both pivot and bounds-overlap export omit their geometric memberships;
+integration also removes stale rows for these references. The engine reads the existing
+`references.header_flags` column and exempts flagged roots even when an older conversion still
+contains geometric room rows. Named overrides are conservatively kept visible too.
 
 | Case | Converter writes | Engine |
 |---|---|---|
@@ -1663,3 +1681,44 @@ omissions. A database without the tables reports none.
 **These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`**: they only
 add tables, `create_tables` adds them to an older reused database, and the engine does not read
 them.
+
+### 20. Per-Base Texture Assignments (`base_texture_swaps`)
+
+Optional STAT MODS (alternate texture) projection; world schema version is unchanged.
+
+```sql
+CREATE TABLE base_texture_swaps (
+    base_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    shape_name TEXT NOT NULL,
+    shape_index INTEGER NOT NULL,
+    texture_set_id INTEGER NOT NULL,
+    disposition TEXT NOT NULL,
+    PRIMARY KEY (base_id, position)
+);
+```
+
+IDs use the reader's resolved load-order numbering. Every MODS entry gets a row, in authored
+order (`position`); no entry is dropped or gated. `shape_index` is the signed 3D Index: retail
+keys entries by it, skips -1 and lets a later entry with the same index win (RF-TEX-001), and the
+index counts geometry leaves in a pre-order depth-first walk of the model (RF-TEX-002).
+`shape_name` is the 3D Name (with its `:N` suffix) as record data; the retail apply path does not
+read it. `disposition` is `texture_set` (a live TXST; the runtime reads its slots from
+`texture_sets`), `null_texture_set` (the target is FormID 0x28, the engine's NullTextureSet, which
+hides the shape; RF-TEX-005) or `missing_texture_set` (deleted, wrong type or absent). Owner updates clear the base's
+rows before inserting replacements; complete exports replace the table transactionally and
+archive-only exports leave it empty. Subset exporters must supply referenced TXST records
+alongside the bases whose appearance they update. All eight existing `texture_sets`
+columns retain their consumers. See [per-record object appearance](../engine/object-materials.md)
+for selection, instance isolation, retail coverage, diagnostics and the unimplemented MATO limits.
+
+## Optional terrain default metadata
+
+`terrain_default_texture` is generated after texture conversion for every pack. Its singleton
+row has `id = 0`, nullable `diffuse_path` and `normal_path` (canonical relative KTX2 paths),
+and nullable `source_diffuse` (the canonical DDS path used by the LOD bake). A null diffuse
+means white and has no normal or source. The engine probes for the table so old databases
+keep their white default. Invalid diffuse metadata warns and falls back to white without a
+normal. Invalid normal metadata warns and disables only the normal, keeping a valid diffuse.
+This additive metadata does not change LAND geometry, the cell-cache format, or texture
+producer versions.
