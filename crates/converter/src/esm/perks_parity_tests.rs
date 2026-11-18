@@ -547,6 +547,8 @@ fn undecoded_perk_entry_points_are_reported_in_projection_omissions() {
             Some(&0u32.to_le_bytes()),
             None,
         ));
+        // 10) EPFT=6 text payload on multiply_value (function=3)
+        bad.extend(perks::entry_effect(36, 3, 6, Some(b"not a float\0"), None));
         // Valid sibling effect must survive.
         bad.extend(perks::entry_effect(
             36,
@@ -568,7 +570,7 @@ fn undecoded_perk_entry_points_are_reported_in_projection_omissions() {
 
         let omissions = ProjectionOmissions::read(&conn).unwrap();
         let entry = &omissions.categories[OmissionCategory::PerkEffectUndecoded.name()];
-        assert_eq!(entry.count, 9, "{reader:?}: {entry:?}");
+        assert_eq!(entry.count, 10, "{reader:?}: {entry:?}");
         assert_eq!(entry.samples[0].form_id, perks::FIRST_ID);
 
         let surviving: Vec<(i64, i64, f64)> = conn
@@ -584,7 +586,117 @@ fn undecoded_perk_entry_points_are_reported_in_projection_omissions() {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(surviving, vec![(9, 36, 1.5)], "{reader:?}");
+        assert_eq!(surviving, vec![(10, 36, 1.5)], "{reader:?}");
+    }
+}
+
+#[test]
+fn rejected_perk_conditions_and_script_flags_report_omissions_without_stripping_conditions() {
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut skyrim = esm::plugin(&esm::Plugin {
+            author: layout::GENERATED_AUTHOR,
+            worldspace: layout::GENERATED_WORLDSPACE,
+            cells: &[esm::PRESET_EXTERIOR_CELL],
+            model_path: layout::GENERATED_MODEL_PATH,
+            diffuse: layout::GENERATED_DIFFUSE_PATH,
+            normal_texture: layout::GENERATED_NORMAL_PATH,
+        })
+        .unwrap();
+        skyrim.extend(perks::targets());
+        skyrim.extend(top(
+            b"KYWD",
+            &record_with_flags(
+                b"KYWD",
+                0x901,
+                0,
+                &sub(b"EDID", &perks::text("WeaponSword")),
+            ),
+        ));
+
+        let valid_ctda = cond::condition(0, 1.0f32.to_bits(), 560, 0x901, 0, 0, 0);
+        let short_ctda = valid_ctda[..31].to_vec();
+        let mut perk = perks::prefix(12);
+
+        // Effect 0: Ability with valid SPELL_ID and a single short 31-byte CTDA -> must not publish unconditional ability.
+        perk.extend(sub(b"PRKE", &[1, 0, 0]));
+        perk.extend(sub(b"DATA", &perks::SPELL_ID.to_le_bytes()));
+        perk.extend(sub(b"PRKC", &[0]));
+        perk.extend(sub(b"CTDA", &short_ctda));
+        perk.extend(sub(b"PRKF", &[]));
+
+        // Effect 1: Entry point (fn=3) with 1 valid CTDA + 1 short 31-byte CTDA -> must not publish weakened conditions.
+        perk.extend(sub(b"PRKE", &[2, 0, 1]));
+        perk.extend(sub(b"DATA", &[0, 3, 1]));
+        perk.extend(sub(b"PRKC", &[0]));
+        perk.extend(sub(b"CTDA", &valid_ctda));
+        perk.extend(sub(b"CTDA", &short_ctda));
+        perk.extend(sub(b"EPFT", &[1]));
+        perk.extend(sub(b"EPFD", &2.0f32.to_le_bytes()));
+        perk.extend(sub(b"PRKF", &[]));
+
+        // Effect 2: Activation choice with 3-byte EPF3 -> must record omission instead of publishing without script flags.
+        perk.extend(sub(b"PRKE", &[2, 0, 2]));
+        perk.extend(sub(b"DATA", &[14, 9, 1]));
+        perk.extend(sub(b"EPFT", &[4]));
+        perk.extend(sub(b"EPF2", &perks::text("Choice")));
+        perk.extend(sub(b"EPF3", &[1, 0, 2]));
+        perk.extend(sub(b"EPFD", &perks::SPELL_ID.to_le_bytes()));
+        perk.extend(sub(b"PRKF", &[]));
+
+        // Effect 3: Valid conditioned ability sibling must survive with its condition intact.
+        perk.extend(sub(b"PRKE", &[1, 0, 3]));
+        perk.extend(sub(b"DATA", &perks::SPELL_ID.to_le_bytes()));
+        perk.extend(sub(b"PRKC", &[0]));
+        perk.extend(sub(b"CTDA", &valid_ctda));
+        perk.extend(sub(b"PRKF", &[]));
+
+        skyrim.extend(top(
+            b"PERK",
+            &record_with_flags(b"PERK", perks::FIRST_ID, 0, &perk),
+        ));
+        let skyrim_path = dir.path().join("Skyrim.esm");
+        fs::write(&skyrim_path, skyrim).unwrap();
+        let db = dir.path().join("skyrim_world.db");
+
+        EsmParser::convert_plugins_with_reader(&[skyrim_path], &db, reader, dir.path()).unwrap();
+        let conn = Connection::open(db).unwrap();
+
+        let omissions = ProjectionOmissions::read(&conn).unwrap();
+        let entry = &omissions.categories[OmissionCategory::PerkEffectUndecoded.name()];
+        assert_eq!(entry.count, 3, "{reader:?}: {entry:?}");
+
+        let effects: Vec<(i64, i64)> = conn
+            .prepare("SELECT effect_index, ability_spell_id FROM perk_effects WHERE perk_id = ?1 ORDER BY effect_index")
+            .unwrap()
+            .query_map([perks::FIRST_ID], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(effects, vec![(3, i64::from(perks::SPELL_ID))], "{reader:?}");
+
+        let entry_points: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM perk_entry_points WHERE perk_id = ?1",
+                [perks::FIRST_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(entry_points, 0, "{reader:?}");
+
+        let conditions: Vec<(i64, Option<u32>)> = conn
+            .prepare(
+                "SELECT parent_index, param1_form_id
+                 FROM record_conditions
+                 WHERE owner_id = ?1 AND owner_kind = 'PERK_EFFECT'
+                 ORDER BY parent_index, position",
+            )
+            .unwrap()
+            .query_map([perks::FIRST_ID], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(conditions, vec![(3, Some(0x901))], "{reader:?}");
     }
 }
 

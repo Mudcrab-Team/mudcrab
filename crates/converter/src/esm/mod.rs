@@ -211,7 +211,8 @@ impl EsmParser {
         string_sources: inhouse::StringSources<'_>,
     ) -> Result<RecordConversion> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
-        let mut master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
+        let (mut master, perk_rejections) =
+            Self::merge_plugins_with_perk_rejections(plugin_paths, &order)?;
         let (unresolved, localization_warnings, localization_notices) =
             legacy_text::resolve_localized_fields(
                 &mut master.records,
@@ -221,7 +222,14 @@ impl EsmParser {
             );
         let conn = Connection::open(db_path)?;
         create_tables(&conn)?;
-        exporter::export_plugins_to_db(&conn, &master.records, &order, plugin_paths, &unresolved)?;
+        exporter::export_plugins_to_db(
+            &conn,
+            &master.records,
+            &order,
+            plugin_paths,
+            &unresolved,
+            &perk_rejections,
+        )?;
 
         for diagnostic in localization_warnings.iter().chain(&localization_notices) {
             eprintln!("{diagnostic}");
@@ -243,7 +251,15 @@ impl EsmParser {
         plugin_paths: &[PathBuf],
         order: &load_order::LoadOrder,
     ) -> Result<RecordConversion> {
+        Self::merge_plugins_with_perk_rejections(plugin_paths, order).map(|(conv, _)| conv)
+    }
+
+    fn merge_plugins_with_perk_rejections(
+        plugin_paths: &[PathBuf],
+        order: &load_order::LoadOrder,
+    ) -> Result<(RecordConversion, HashMap<u32, perks::PerkRejectedSections>)> {
         let mut merged = HashMap::new();
+        let mut perk_rejections = HashMap::new();
         let mut summaries = Vec::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
         // the first definition's key/owner while taking the last setting value.
@@ -261,6 +277,7 @@ impl EsmParser {
                 record.load_order = priority as u32;
                 let source_id = record.form_id;
                 let out_of_range = (source_id >> 24) as usize > masters.len();
+                let mut rejected = None;
                 let admission = remap_record_form_ids(
                     &mut record,
                     &order.names[priority],
@@ -269,7 +286,8 @@ impl EsmParser {
                     &order.light,
                     &warnings,
                 )
-                .and_then(|()| {
+                .and_then(|perk_rejected| {
+                    rejected = perk_rejected;
                     if !record.is_deleted() {
                         validate_inhouse_record(&record)?;
                         if record.record_type == *b"LAND" {
@@ -339,20 +357,29 @@ impl EsmParser {
                 }
                 sources.insert(remapped_source_id, (source_id, out_of_range));
                 if record.is_deleted() {
+                    perk_rejections.remove(&record.form_id);
                     merged.remove(&record.form_id);
                 } else {
+                    if let Some(rejected) = rejected {
+                        perk_rejections.insert(record.form_id, rejected);
+                    } else {
+                        perk_rejections.remove(&record.form_id);
+                    }
                     merged.insert(record.form_id, record);
                 }
             }
         }
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
-        Ok(RecordConversion {
-            records: merged,
-            warnings: summaries,
-            notices,
-            phases: std::collections::BTreeMap::new(),
-        })
+        Ok((
+            RecordConversion {
+                records: merged,
+                warnings: summaries,
+                notices,
+                phases: std::collections::BTreeMap::new(),
+            },
+            perk_rejections,
+        ))
     }
 }
 
@@ -656,7 +683,7 @@ fn remap_record_form_ids(
     normal_indices: &HashMap<String, u32>,
     light_indices: &HashMap<String, u32>,
     warnings: &RemapWarnings,
-) -> Result<()> {
+) -> Result<Option<perks::PerkRejectedSections>> {
     // Native record identities retain the documented legacy compatibility outside
     // these kinds, including shipped GMST IDs beyond the master table. All known
     // fixed optional links use strict ownership/width checks, while VMAD follows
@@ -711,7 +738,7 @@ fn remap_record_form_ids(
         // for deletion. Unused parent/body links cannot invalidate a tombstone.
         record.cell_form_id = None;
         record.worldspace_form_id = None;
-        return Ok(());
+        return Ok(None);
     }
     record.cell_form_id = record.cell_form_id.map(&remap_link).transpose()?;
     record.worldspace_form_id = record.worldspace_form_id.map(&remap_link).transpose()?;
@@ -949,6 +976,12 @@ fn remap_record_form_ids(
             );
         }
     }
+    let rejected = if !malformed_subrecords.is_empty() && record.record_type == *b"PERK" {
+        let sections = perks::legacy_rejected_sections(&record.subrecords, &malformed_subrecords);
+        (!sections.is_empty()).then_some(sections)
+    } else {
+        None
+    };
     if !malformed_subrecords.is_empty() {
         // Indices are sorted by traversal order. Remove only those occurrences, so a
         // repeated field such as XAPR keeps its valid siblings and their relative order.
@@ -959,7 +992,7 @@ fn remap_record_form_ids(
             keep
         });
     }
-    Ok(())
+    Ok(rejected)
 }
 
 #[cfg(test)]

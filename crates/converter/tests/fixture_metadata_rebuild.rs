@@ -2587,7 +2587,7 @@ async fn output_inside_another_pack_is_refused() {
 
 #[tokio::test]
 async fn metadata_rebuild_populates_perk_tables_while_reusing_assets() {
-    use dummy_content::inhouse_perks as perks;
+    use dummy_content::{inhouse_conditions as cond, inhouse_perks as perks};
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");
     let source = directory.path().join("source");
@@ -2597,14 +2597,23 @@ async fn metadata_rebuild_populates_perk_tables_while_reusing_assets() {
     let skyrim_path = data.join("Skyrim.esm");
     let mut skyrim = fs::read(&skyrim_path).unwrap();
     skyrim.extend(perks::targets());
-    let mut perk = perks::prefix(10);
-    perk.extend(perks::entry_effect(
+    skyrim.extend(perks::record(
+        b"KYWD",
+        0x901,
         0,
-        3,
-        1,
-        Some(&2.0f32.to_le_bytes()),
-        None,
+        &perks::subrecord(b"EDID", &perks::text("RebuildWeaponSword")),
     ));
+    let mut perk = perks::prefix(10);
+    perk.extend(perks::subrecord(b"PRKE", &[2, 0, 0]));
+    perk.extend(perks::subrecord(b"DATA", &[0, 3, 1]));
+    perk.extend(perks::subrecord(b"PRKC", &[0]));
+    perk.extend(perks::subrecord(
+        b"CTDA",
+        &cond::condition(0, 1.0f32.to_bits(), 560, 0x901, 0, 0, 0),
+    ));
+    perk.extend(perks::subrecord(b"EPFT", &[1]));
+    perk.extend(perks::subrecord(b"EPFD", &2.0f32.to_le_bytes()));
+    perk.extend(perks::subrecord(b"PRKF", &[]));
     skyrim.extend(perks::record(b"PERK", perks::FIRST_ID, 0, &perk));
     fs::write(&skyrim_path, skyrim).unwrap();
 
@@ -2634,12 +2643,19 @@ async fn metadata_rebuild_populates_perk_tables_while_reusing_assets() {
     assert!(report.complete, "{:?}", report.warnings);
 
     let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
-    let count: i64 = conn
+    let rebuilt: (i64, i64, f64, Option<u32>) = conn
         .query_row(
-            "SELECT COUNT(*) FROM perk_entry_points WHERE perk_id = ?1 AND entry_point = 0 AND function = 3",
+            "SELECT p.level, ep.effect_index, ep.value_float_1, rc.param1_form_id
+             FROM perks p
+             JOIN perk_entry_points ep ON ep.perk_id = p.id
+             JOIN record_conditions rc
+               ON rc.owner_id = ep.perk_id
+              AND rc.owner_kind = 'PERK_EFFECT'
+              AND rc.parent_index = ep.effect_index
+             WHERE p.id = ?1 AND ep.entry_point = 0 AND ep.function = 3",
             [perks::FIRST_ID],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .unwrap();
-    assert_eq!(count, 1);
+    assert_eq!(rebuilt, (10, 0, 2.0, Some(0x901)));
 }

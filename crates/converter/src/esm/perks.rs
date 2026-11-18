@@ -83,26 +83,39 @@ fn f32_at(bytes: &[u8], offset: usize) -> Option<f32> {
 type Subrecord = (Vec<u8>, Vec<u8>);
 type PerkSections<'a> = (&'a [Subrecord], Vec<&'a [Subrecord]>);
 
-/// Partition `subrecords` into top-level fields (before the first `PRKE`) and one slice per
+/// Reader-dropped fields within a winning `PERK` whose owning section cannot be projected whole.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct PerkRejectedSections {
+    /// True if top-level condition fields before the first `PRKE` were rejected.
+    pub(crate) top_level: bool,
+    /// `effect_index` values whose effect subrecords had a reader-level rejection.
+    pub(crate) effect_indices: std::collections::BTreeSet<usize>,
+}
+
+impl PerkRejectedSections {
+    pub(crate) fn is_empty(&self) -> bool {
+        !self.top_level && self.effect_indices.is_empty()
+    }
+}
+
+/// Partition `items` into top-level entries (before the first `PRKE`) and one slice per
 /// `PRKE`..`PRKF` effect block.
-fn split_perk_sections(subrecords: &[Subrecord]) -> PerkSections<'_> {
-    let first_prke = subrecords
-        .iter()
-        .position(|(tag, _)| tag.as_slice() == b"PRKE");
+fn split_sections<T>(items: &[T], tag_of: impl Fn(&T) -> &[u8]) -> (&[T], Vec<&[T]>) {
+    let first_prke = items.iter().position(|item| tag_of(item) == b"PRKE");
     let Some(start) = first_prke else {
-        return (subrecords, Vec::new());
+        return (items, Vec::new());
     };
-    let top = &subrecords[..start];
+    let top = &items[..start];
     let mut effects = Vec::new();
     let mut cursor = start;
-    while cursor < subrecords.len() {
-        if subrecords[cursor].0.as_slice() != b"PRKE" {
+    while cursor < items.len() {
+        if tag_of(&items[cursor]) != b"PRKE" {
             cursor += 1;
             continue;
         }
         let mut end = cursor + 1;
-        while end < subrecords.len() {
-            let tag = subrecords[end].0.as_slice();
+        while end < items.len() {
+            let tag = tag_of(&items[end]);
             if tag == b"PRKF" {
                 end += 1;
                 break;
@@ -112,10 +125,161 @@ fn split_perk_sections(subrecords: &[Subrecord]) -> PerkSections<'_> {
             }
             end += 1;
         }
-        effects.push(&subrecords[cursor..end]);
+        effects.push(&items[cursor..end]);
         cursor = end;
     }
     (top, effects)
+}
+
+fn split_perk_sections(subrecords: &[Subrecord]) -> PerkSections<'_> {
+    split_sections(subrecords, |(tag, _)| tag.as_slice())
+}
+
+/// Frame uncompressed `raw_payload` subrecord tags (`XXXX`-aware) up to any truncated tail.
+fn extract_raw_subrecord_tags(payload: &[u8]) -> (Vec<[u8; 4]>, bool) {
+    let mut pos = 0;
+    let mut tags = Vec::new();
+    let mut extended: Option<usize> = None;
+    let mut complete = true;
+    while pos < payload.len() {
+        if payload.len() - pos < 6 {
+            complete = false;
+            break;
+        }
+        let tag: [u8; 4] = payload[pos..pos + 4].try_into().expect("4-byte tag");
+        let short =
+            u16::from_le_bytes(payload[pos + 4..pos + 6].try_into().expect("2-byte len")) as usize;
+        pos += 6;
+        if tag == *b"XXXX" {
+            if short != 4 || payload.len() - pos < 4 || extended.is_some() {
+                complete = false;
+                break;
+            }
+            extended = Some(u32::from_le_bytes(
+                payload[pos..pos + 4].try_into().expect("4-byte XXXX"),
+            ) as usize);
+            pos += 4;
+            continue;
+        }
+        let size = extended.take().unwrap_or(short);
+        if payload.len() - pos < size {
+            complete = false;
+            break;
+        }
+        tags.push(tag);
+        pos += size;
+    }
+    if extended.is_some() {
+        complete = false;
+    }
+    (tags, complete)
+}
+
+fn count_raw_tag(tags: &[[u8; 4]], needle: &[u8; 4]) -> usize {
+    tags.iter().filter(|tag| *tag == needle).count()
+}
+
+fn count_subrecord_tag(subs: &[Subrecord], needle: &[u8; 4]) -> usize {
+    subs.iter()
+        .filter(|(tag, _)| tag.as_slice() == needle)
+        .count()
+}
+
+/// Map in-house `rejected_fields` (already stripped from `DecodedRecord::fields`) back to the
+/// `PERK` top-level conditions or `PRKE` effect indices that lost data.
+pub(crate) fn inhouse_rejected_sections(
+    raw_payload: &[u8],
+    canonical: &RawRecord,
+    rejected_fields: &[[u8; 4]],
+    payload_complete: bool,
+) -> PerkRejectedSections {
+    let mut sections = PerkRejectedSections::default();
+    if rejected_fields.is_empty() && payload_complete {
+        return sections;
+    }
+    let (raw_tags, raw_complete) = extract_raw_subrecord_tags(raw_payload);
+    let (raw_top, raw_blocks) = split_sections(&raw_tags, |tag| tag.as_slice());
+    let (canon_top, canon_blocks) = split_perk_sections(&canonical.subrecords);
+
+    sections.top_level = rejected_fields.iter().any(|tag| {
+        matches!(tag, b"CTDA" | b"CIS1" | b"CIS2")
+            && count_raw_tag(raw_top, tag) > count_subrecord_tag(canon_top, tag)
+    });
+    for (effect_index, raw_block) in raw_blocks.iter().enumerate() {
+        let canon_block = canon_blocks.get(effect_index).copied().unwrap_or(&[]);
+        if rejected_fields
+            .iter()
+            .any(|tag| count_raw_tag(raw_block, tag) > count_subrecord_tag(canon_block, tag))
+        {
+            sections.effect_indices.insert(effect_index);
+        }
+    }
+    for effect_index in raw_blocks.len()..canon_blocks.len() {
+        sections.effect_indices.insert(effect_index);
+    }
+    if (!payload_complete || !raw_complete)
+        && let Some(last_block) = raw_blocks.last()
+        && last_block.last() != Some(b"PRKF")
+    {
+        sections.effect_indices.insert(raw_blocks.len() - 1);
+    }
+    sections
+}
+
+/// Map legacy `malformed_subrecords` indices (removed before projection) to `PERK` sections.
+pub(crate) fn legacy_rejected_sections(
+    subrecords: &[Subrecord],
+    malformed_indices: &[usize],
+) -> PerkRejectedSections {
+    let mut sections = PerkRejectedSections::default();
+    if malformed_indices.is_empty() {
+        return sections;
+    }
+    let mut current_effect: Option<usize> = None;
+    let mut next_effect = 0usize;
+    for (index, (tag, _)) in subrecords.iter().enumerate() {
+        match tag.as_slice() {
+            b"PRKE" => {
+                current_effect = Some(next_effect);
+                next_effect += 1;
+            }
+            b"PRKF" => {
+                if let Some(effect_index) = current_effect.take()
+                    && malformed_indices.binary_search(&index).is_ok()
+                {
+                    sections.effect_indices.insert(effect_index);
+                }
+                continue;
+            }
+            _ => {}
+        }
+        if malformed_indices.binary_search(&index).is_ok() {
+            match current_effect {
+                Some(effect_index) => {
+                    sections.effect_indices.insert(effect_index);
+                }
+                None if matches!(tag.as_slice(), b"CTDA" | b"CIS1" | b"CIS2") => {
+                    sections.top_level = true;
+                }
+                None => {}
+            }
+        }
+    }
+    sections
+}
+
+fn function_allows_parameter_type(function: u8, parameter_type: Option<u8>) -> bool {
+    match function {
+        0 | 6 | 7 => matches!(parameter_type, None | Some(0)),
+        1..=3 => parameter_type == Some(1),
+        4 | 5 | 12..=14 => parameter_type == Some(2),
+        8 => parameter_type == Some(3),
+        9 => parameter_type == Some(4),
+        10 => parameter_type == Some(5),
+        11 => parameter_type == Some(6),
+        15 => parameter_type == Some(7),
+        _ => false,
+    }
 }
 
 /// Collect `CTDA` (+ `CIS1`/`CIS2`, and optional `PRKC` tab) entries from a subrecord slice.
@@ -182,6 +346,7 @@ pub(crate) fn insert_record(
     links: &Links<'_>,
     record: &RawRecord,
     canonical: &RawRecord,
+    rejected: Option<&PerkRejectedSections>,
     omissions: &mut ProjectionOmissions,
 ) -> Result<()> {
     let perk_id = record.form_id;
@@ -231,16 +396,24 @@ pub(crate) fn insert_record(
         next_perk_id,
     ])?;
 
-    match collect_conditions(top_subs) {
-        Ok(top_conditions) => {
-            insert_conditions(tx, links, perk_id, "PERK", 0, &top_conditions)?;
-        }
-        Err(reason) => {
-            omissions.record(
-                OmissionCategory::PerkEffectUndecoded,
-                perk_id,
-                format!("PERK {perk_id:08X} top-level conditions: {reason}"),
-            );
+    if rejected.is_some_and(|r| r.top_level) {
+        omissions.record(
+            OmissionCategory::PerkEffectUndecoded,
+            perk_id,
+            format!("PERK {perk_id:08X} top-level conditions: reader rejected subrecord"),
+        );
+    } else {
+        match collect_conditions(top_subs) {
+            Ok(top_conditions) => {
+                insert_conditions(tx, links, perk_id, "PERK", 0, &top_conditions)?;
+            }
+            Err(reason) => {
+                omissions.record(
+                    OmissionCategory::PerkEffectUndecoded,
+                    perk_id,
+                    format!("PERK {perk_id:08X} top-level conditions: {reason}"),
+                );
+            }
         }
     }
 
@@ -248,6 +421,14 @@ pub(crate) fn insert_record(
         let Some((_, prke)) = block.first().filter(|(tag, _)| tag.as_slice() == b"PRKE") else {
             continue;
         };
+        if rejected.is_some_and(|r| r.effect_indices.contains(&effect_index)) {
+            omissions.record(
+                OmissionCategory::PerkEffectUndecoded,
+                perk_id,
+                format!("PERK {perk_id:08X} effect {effect_index}: reader rejected subrecord"),
+            );
+            continue;
+        }
         if prke.len() != 3 {
             omissions.record(
                 OmissionCategory::PerkEffectUndecoded,
@@ -407,61 +588,64 @@ pub(crate) fn insert_record(
                 let canonical_epfd = canonical_blocks
                     .get(effect_index)
                     .and_then(|canonical_block| first_block_subrecord(canonical_block, b"EPFD"));
-                let decoded_ok = match (parameter_type, epfd) {
-                    (None, None) | (Some(0), _) => matches!(function, 0 | 6 | 7),
-                    // `add_activate_choice` (fn=9, EPFT=4) uses button label/flags in vanilla plugins with no spell (`None` or null FormID `0`).
-                    (Some(4), None) => activate_choice_spell_optional,
-                    // Intentionally unresolved EPFT=7 localized text is stripped by runtime_projection
-                    // while remaining non-empty on the canonical winning record.
-                    (Some(7), None) => canonical_epfd.is_some_and(|b| !b.is_empty()),
-                    (None, Some(_)) | (Some(1..=6), None) => false,
-                    (Some(1), Some(b)) => {
-                        if let Some(v) = (b.len() == 4).then(|| f32_at(b, 0)).flatten() {
-                            value_float_1 = Some(f64::from(v));
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    (Some(2), Some(b)) if b.len() == 8 => {
-                        if matches!(function, 5 | 12 | 13 | 14) {
-                            if let (Some(av), Some(mult)) = (u32_at(b, 0), f32_at(b, 4)) {
-                                actor_value = Some(i64::from(av));
-                                value_float_1 = Some(f64::from(mult));
+                let decoded_ok = function_allows_parameter_type(function, parameter_type)
+                    && match (parameter_type, epfd) {
+                        (None, None) | (Some(0), _) => true,
+                        // `add_activate_choice` (fn=9, EPFT=4) uses button label/flags in vanilla plugins with no spell (`None` or null FormID `0`).
+                        (Some(4), None) => activate_choice_spell_optional,
+                        // Intentionally unresolved EPFT=7 localized text is stripped by runtime_projection
+                        // while remaining non-empty on the canonical winning record.
+                        (Some(7), None) => canonical_epfd.is_some_and(|b| !b.is_empty()),
+                        (None, Some(_)) | (Some(1..=6), None) => false,
+                        (Some(1), Some(b)) => {
+                            if let Some(v) = (b.len() == 4).then(|| f32_at(b, 0)).flatten() {
+                                value_float_1 = Some(f64::from(v));
                                 true
                             } else {
                                 false
                             }
-                        } else if let (Some(first), Some(second)) = (f32_at(b, 0), f32_at(b, 4)) {
-                            value_float_1 = Some(f64::from(first));
-                            value_float_2 = Some(f64::from(second));
-                            true
-                        } else {
-                            false
                         }
-                    }
-                    (Some(2), Some(_)) => false,
-                    (Some(tag @ 3..=5), Some(b)) => {
-                        let expected: &[&[u8; 4]] = if tag == 3 { &[b"LVLI"] } else { &[b"SPEL"] };
-                        match (b.len() == 4).then(|| u32_at(b, 0)).flatten() {
-                            Some(0) => activate_choice_spell_optional,
-                            Some(id) => {
-                                target_form_id = links.resolve(Some(id), expected);
-                                target_form_id.is_some()
+                        (Some(2), Some(b)) if b.len() == 8 => {
+                            if matches!(function, 5 | 12 | 13 | 14) {
+                                if let (Some(av), Some(mult)) = (u32_at(b, 0), f32_at(b, 4)) {
+                                    actor_value = Some(i64::from(av));
+                                    value_float_1 = Some(f64::from(mult));
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else if let (Some(first), Some(second)) = (f32_at(b, 0), f32_at(b, 4))
+                            {
+                                value_float_1 = Some(f64::from(first));
+                                value_float_2 = Some(f64::from(second));
+                                true
+                            } else {
+                                false
                             }
-                            None => false,
                         }
-                    }
-                    (Some(6), Some(b)) => {
-                        value_text = Some(decode_subrecord_text(b));
-                        true
-                    }
-                    (Some(7), Some(b)) if !b.is_empty() => {
-                        value_text = Some(decode_subrecord_text(b));
-                        true
-                    }
-                    (Some(_), _) => false,
-                };
+                        (Some(2), Some(_)) => false,
+                        (Some(tag @ 3..=5), Some(b)) => {
+                            let expected: &[&[u8; 4]] =
+                                if tag == 3 { &[b"LVLI"] } else { &[b"SPEL"] };
+                            match (b.len() == 4).then(|| u32_at(b, 0)).flatten() {
+                                Some(0) => activate_choice_spell_optional,
+                                Some(id) => {
+                                    target_form_id = links.resolve(Some(id), expected);
+                                    target_form_id.is_some()
+                                }
+                                None => false,
+                            }
+                        }
+                        (Some(6), Some(b)) => {
+                            value_text = Some(decode_subrecord_text(b));
+                            true
+                        }
+                        (Some(7), Some(b)) if !b.is_empty() => {
+                            value_text = Some(decode_subrecord_text(b));
+                            true
+                        }
+                        (Some(_), _) => false,
+                    };
 
                 if !decoded_ok {
                     omissions.record(

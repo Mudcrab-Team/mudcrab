@@ -397,11 +397,13 @@ const LIGHT_DETAIL_COLUMNS: &[(&str, &str)] = &[
 type CellMetadata = (Option<i32>, Option<i32>, Option<u32>);
 
 /// Select runtime projections and script storage independently of snapshot ownership.
-struct ExportOptions {
+struct ExportOptions<'a> {
     /// Emit runtime views as well as the canonical record archive.
     runtime_views: bool,
     /// Replace in-house script snapshots using their normalized scalar layout.
     scalar_scripts: bool,
+    /// Reader-rejected sections on winning `PERK` records so omitted conditions/subrecords record `perk_effect_undecoded`.
+    perk_rejections: Option<&'a HashMap<u32, crate::esm::perks::PerkRejectedSections>>,
 }
 
 /// Export selected records without changing existing provenance. Grass records
@@ -419,6 +421,7 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
         ExportOptions {
             runtime_views: true,
             scalar_scripts: false,
+            perk_rejections: None,
         },
     )
 }
@@ -442,6 +445,7 @@ pub fn export_to_db_with_load_order(
         ExportOptions {
             runtime_views: true,
             scalar_scripts: false,
+            perk_rejections: None,
         },
     )
 }
@@ -455,6 +459,7 @@ pub(super) fn export_plugins_to_db(
     order: &LoadOrder,
     plugin_paths: &[PathBuf],
     unresolved_fields: &HashMap<u32, BTreeSet<usize>>,
+    perk_rejections: &HashMap<u32, crate::esm::perks::PerkRejectedSections>,
 ) -> Result<()> {
     export_records(
         conn,
@@ -466,6 +471,7 @@ pub(super) fn export_plugins_to_db(
         ExportOptions {
             runtime_views: true,
             scalar_scripts: false,
+            perk_rejections: Some(perk_rejections),
         },
     )
 }
@@ -478,6 +484,7 @@ pub(crate) fn export_inhouse_to_db(
     plugin_paths: &[PathBuf],
     unresolved_fields: &HashMap<u32, BTreeSet<usize>>,
     terrain_offsets: &HashMap<u32, u64>,
+    perk_rejections: &HashMap<u32, crate::esm::perks::PerkRejectedSections>,
 ) -> Result<()> {
     export_records(
         conn,
@@ -489,6 +496,7 @@ pub(crate) fn export_inhouse_to_db(
         ExportOptions {
             runtime_views: true,
             scalar_scripts: true,
+            perk_rejections: Some(perk_rejections),
         },
     )
 }
@@ -511,6 +519,7 @@ pub(crate) fn export_inhouse_record_archive_to_db(
         ExportOptions {
             runtime_views: false,
             scalar_scripts: true,
+            perk_rejections: None,
         },
     )
 }
@@ -638,11 +647,12 @@ fn export_records(
     plugin_paths: Option<&[PathBuf]>,
     unresolved_fields: Option<&HashMap<u32, BTreeSet<usize>>>,
     terrain_offsets: Option<&HashMap<u32, u64>>,
-    options: ExportOptions,
+    options: ExportOptions<'_>,
 ) -> Result<()> {
     let ExportOptions {
         runtime_views,
         scalar_scripts,
+        perk_rejections,
     } = options;
     conn.set_prepared_statement_cache_capacity(64);
     let tx = conn.unchecked_transaction()?;
@@ -807,6 +817,7 @@ fn export_records(
                     &crate::esm::gameplay_common::Links { master },
                     record,
                     canonical_record,
+                    perk_rejections.and_then(|map| map.get(&form_id)),
                     &mut omissions,
                 )?;
             }
@@ -3110,6 +3121,7 @@ mod tests {
             &paths,
             &HashMap::new(),
             &HashMap::new(),
+            &HashMap::new(),
         )
         .unwrap();
         let expected = rooms::RoomGraphReport::read(&conn).unwrap();
@@ -3148,6 +3160,7 @@ mod tests {
             &master,
             &order,
             &paths,
+            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
         )
@@ -3226,6 +3239,7 @@ mod tests {
                 &master,
                 &order,
                 &paths,
+                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
             )

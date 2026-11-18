@@ -972,6 +972,7 @@ fn convert_plugins_with_text_sources_report_impl(
     let projection_stage = records::profile::ProfileStage::start("typed_export_runtime_projection");
     let mut master = HashMap::with_capacity(decoded.records.len());
     let mut opaque_fields = HashMap::new();
+    let mut perk_rejections = HashMap::new();
     // Sort compact keys, leaving record payloads in place and streaming one JSON line at a time.
     // The same traversal fixes localized provenance rowids when no typed dump is requested.
     let mut record_keys = decoded
@@ -1122,6 +1123,17 @@ fn convert_plugins_with_text_sources_report_impl(
         for (index, text) in runtime_text_updates {
             raw.subrecords[index].1 = text;
         }
+        let perk_rejected = (raw.record_type == *b"PERK"
+            && (!record.rejected_fields.is_empty() || !record.payload_complete))
+            .then(|| {
+                super::perks::inhouse_rejected_sections(
+                    &record.raw_payload,
+                    &raw,
+                    &record.rejected_fields,
+                    record.payload_complete,
+                )
+            })
+            .filter(|rejected| !rejected.is_empty());
         let omitted = opaque_fields.get(&raw.form_id);
         // Admission already validated these shared text/opaque transformations.
         // This defensive guard is exceptional under the current validators; future
@@ -1142,6 +1154,11 @@ fn convert_plugins_with_text_sources_report_impl(
         }
         if !unresolved.is_empty() {
             unresolved_fields.insert(raw.form_id, unresolved);
+        }
+        if let Some(rejected) = perk_rejected
+            && !raw.is_deleted()
+        {
+            perk_rejections.insert(raw.form_id, rejected);
         }
         localized_fields.extend(localized);
         master.insert(raw.form_id, raw);
@@ -1182,6 +1199,7 @@ fn convert_plugins_with_text_sources_report_impl(
             plugin_paths,
             &unresolved_fields,
             &terrain_offsets,
+            &perk_rejections,
         )?;
     } else {
         export_inhouse_record_archive_to_db(&conn, &master, &order, plugin_paths)?;
