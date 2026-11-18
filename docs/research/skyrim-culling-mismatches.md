@@ -54,6 +54,11 @@ rejects this combination as proof of a fixed skin pose. Current conversion omits
 assignment sphere and keeps it conservatively drawn. A skipped collision layer must not conceal
 a moving bone body.
 
+Export preparation uses one immutable NIF byte snapshot for scene parsing, collision extraction,
+and the fixed-pose gate. Replacing a loose NIF after that read cannot authorize a sphere for
+different geometry. The gate rejects keyframed bodies independently of mass and quality. A
+mesh-output contract invalidates assignment metadata produced before these corrections.
+
 Nine skinned web references across the door and round-wall models match live native spheres
 within 0.000143 Creation units. The web-door model radius is 241.229568, including the native
 scale of each placement. Physics-deformed corpse models differ substantially from their source
