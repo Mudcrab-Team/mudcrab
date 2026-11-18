@@ -1731,6 +1731,8 @@ mod tests {
             .id();
         app.update();
         let first = app.world().get::<IdleSequence>(actor).unwrap().position();
+        // The generator state shows a draw even when it picks the same clip again.
+        let drawn_state = app.world().get::<IdleSequence>(actor).unwrap().state;
         let request = app.world().get::<AuthoredIdleRequest>(actor).unwrap();
         assert_eq!(
             request.source,
@@ -1747,6 +1749,10 @@ mod tests {
             app.update();
             let sequence = app.world().get::<IdleSequence>(actor).unwrap();
             assert_eq!(sequence.position(), first, "the sequence drew again");
+            assert_eq!(
+                sequence.state, drawn_state,
+                "the generator advanced while the replacement was pending"
+            );
             assert!(sequence.awaiting);
         }
     }
@@ -2038,6 +2044,12 @@ mod tests {
                 .map(|handle| handle.0.id());
             let (mut stalled, mut run, mut longest_run, mut switch_updates) =
                 (0_u32, 0_u32, 0_u32, 0_u32);
+            // Updates in a row that end with the same player still finished and nothing to wait
+            // for. A clip end leaves that state for one update, until the sequence replaces the
+            // player on the next one. A creature that stays finished is frozen.
+            let (mut frozen_run, mut longest_frozen) = (0_u32, 0_u32);
+            // The base clip is already installed and playing.
+            let mut installed: HashSet<String> = HashSet::from([played[0].1.clone()]);
             while elapsed < seconds {
                 assert!(
                     Instant::now() < deadline,
@@ -2058,12 +2070,33 @@ mod tests {
                     run += 1;
                     longest_run = longest_run.max(run);
                 }
+                let graph_before = app
+                    .world()
+                    .get::<AnimationGraphHandle>(actor)
+                    .map(|handle| handle.0.id());
                 app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(if ready {
                     step
                 } else {
                     Duration::ZERO
                 }));
                 app.update();
+                {
+                    let world = app.world();
+                    let finished_same = world
+                        .get::<AnimationPlayer>(actor)
+                        .is_some_and(|player| player.all_finished())
+                        && !world.get::<IdleSequence>(actor).unwrap().is_waiting()
+                        && world
+                            .get::<AnimationGraphHandle>(actor)
+                            .map(|handle| handle.0.id())
+                            == graph_before;
+                    if finished_same {
+                        frozen_run += 1;
+                        longest_frozen = longest_frozen.max(frozen_run);
+                    } else {
+                        frozen_run = 0;
+                    }
+                }
                 if ready {
                     elapsed += step.as_secs_f64();
                 }
@@ -2084,17 +2117,25 @@ mod tests {
                 if graph.is_some() && graph != last_graph {
                     switch_updates += 1;
                     last_graph = graph;
+                    // The clip of the pick that is current is the one this graph installs.
+                    installed.insert(current.to_owned());
                 }
             }
-            let distinct: HashSet<_> = played.iter().map(|(_, source)| source.as_str()).collect();
+            // Distinct clips count when their graph was installed, not when they were requested: a
+            // last request whose clip never started does not count.
+            let distinct = installed.clone();
             println!(
-                "IDLE_SEQUENCE {name}: {} clip picks, {} distinct clips in {elapsed:.0} s; {stalled} stalled updates (longest run {longest_run}), {switch_updates} graph replacements (one update each)",
+                "IDLE_SEQUENCE {name}: {} clip picks, {} distinct clips in {elapsed:.0} s; {stalled} stalled updates (longest run {longest_run}), {switch_updates} graph replacements (one update each), longest finished-player run {longest_frozen}",
                 played.len() - 1,
                 distinct.len()
             );
             assert!(
                 longest_run <= 10,
                 "the {name} stood still for {longest_run} updates in a row"
+            );
+            assert!(
+                longest_frozen <= 2,
+                "the {name} kept a finished player for {longest_frozen} updates in a row"
             );
             // Each animal must vary on its own: one that shows variation cannot cover for another.
             assert!(
