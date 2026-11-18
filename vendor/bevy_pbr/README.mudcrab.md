@@ -28,7 +28,6 @@ so a still actor also keeps the base shape.
 | Store the mesh asset id in `MorphWeightsInfo`; record entities whose descriptor is pending; make the mesh instance builder return `None` (so the instance is extracted again) until the descriptor exists | `bevyengine/bevy#26504`, applied unchanged to 0.19.0 | `src/render/morph.rs`, `src/render/mesh.rs` |
 | `layer_count` returns 0 for a descriptor index outside `morph_descriptors` | `bevyengine/bevy#26504`, ported by hand: the PR edits `morph.wesl` on Bevy `main`, and 0.19.0 has `morph.wgsl`. The comment carries a marker that Mudcrab's engine-side guard recognises. | `src/render/morph.wgsl` |
 | `prev_weight_at` falls back to the current weight when its offset or index is outside `prev_morph_weights` | **Mudcrab's own addition, not in the PR.** The no-previous-weights offset is `!0`; weight 0 would read index `u32::MAX`. Reached only with motion vectors. | `src/render/morph.wgsl`, comment in `src/render/morph.rs` |
-
 | Clear the bin-unpacking bind groups at the start of `prepare_preprocess_bind_groups` | `bevyengine/bevy#26095` (bevy_render half: see `../bevy_render/README.mudcrab.md`), ported by hand to 0.19.0's `BinUnpackingBindGroups` | `src/render/gpu_preprocess.rs` |
 | Remove the write-only `metadata_staging_pending_buffers` list (a GPU clustering leak) | `bevyengine/bevy#26588`, applied unchanged. Mudcrab turns GPU clustering off on Metal, so it matters on Vulkan and DX12 only | `src/cluster/gpu.rs` |
 
