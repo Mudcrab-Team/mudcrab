@@ -6,7 +6,7 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 
 ## Denominators
 
-- rusqlite_candidates: 88
+- rusqlite_candidates: 98
 - emitted_schema_columns: unknown
 - manually_traced_fields: 14
 - named_external_stores: 3
@@ -63,16 +63,16 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 
 | Candidate | Status |
 |---|---|
-| `crates/engine/src/app.rs:987` execute | literal |
-| `crates/engine/src/app.rs:988` execute | literal |
-| `crates/engine/src/app.rs:992` execute_batch | unknown |
-| `crates/engine/src/app.rs:1007` execute | literal |
-| `crates/engine/src/app.rs:1012` prepare | literal |
-| `crates/engine/src/app.rs:1016` execute | unknown |
-| `crates/engine/src/app.rs:1021` execute | literal |
-| `crates/engine/src/app.rs:1025` execute | literal |
-| `crates/engine/src/app.rs:2631` query_row | unknown |
-| `crates/engine/src/app.rs:2666` query_row | unknown |
+| `crates/engine/src/app.rs:990` execute | literal |
+| `crates/engine/src/app.rs:991` execute | literal |
+| `crates/engine/src/app.rs:995` execute_batch | unknown |
+| `crates/engine/src/app.rs:1010` execute | literal |
+| `crates/engine/src/app.rs:1015` prepare | literal |
+| `crates/engine/src/app.rs:1019` execute | unknown |
+| `crates/engine/src/app.rs:1024` execute | literal |
+| `crates/engine/src/app.rs:1028` execute | literal |
+| `crates/engine/src/app.rs:2634` query_row | unknown |
+| `crates/engine/src/app.rs:2669` query_row | unknown |
 | `crates/engine/src/bin/world-inspect.rs:323` query_row | literal |
 | `crates/engine/src/bin/world-inspect.rs:347` query_row | literal |
 | `crates/engine/src/bin/world-inspect.rs:498` query_row | literal |
@@ -91,6 +91,16 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 | `crates/engine/src/object_materials.rs:79` prepare | literal |
 | `crates/engine/src/object_materials.rs:97` prepare | literal |
 | `crates/engine/src/object_materials.rs:111` query_row | unknown |
+| `crates/engine/src/papyrus_host.rs:1112` prepare | literal |
+| `crates/engine/src/papyrus_host.rs:1127` prepare_cached | unknown |
+| `crates/engine/src/papyrus_host.rs:1129` query_row | unknown |
+| `crates/engine/src/papyrus_host.rs:1140` prepare_cached | literal |
+| `crates/engine/src/papyrus_host.rs:1152` prepare_cached | literal |
+| `crates/engine/src/papyrus_host.rs:1158` prepare_cached | literal |
+| `crates/engine/src/papyrus_host.rs:1221` prepare_cached | literal |
+| `crates/engine/src/papyrus_host.rs:1223` query_row | unknown |
+| `crates/engine/src/papyrus_host.rs:1229` prepare_cached | literal |
+| `crates/engine/src/papyrus_host.rs:1234` query_row | unknown |
 | `crates/engine/src/physics/carry.rs:223` prepare | literal |
 | `crates/engine/src/physics.rs:115` query_row | literal |
 | `crates/engine/src/physics.rs:123` query_row | literal |

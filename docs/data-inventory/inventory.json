@@ -3,7 +3,7 @@
     "emitted_schema_columns": null,
     "manually_traced_fields": 14,
     "named_external_stores": 3,
-    "rusqlite_candidates": 88
+    "rusqlite_candidates": 98
   },
   "fields": {
     "cells.data": {
@@ -568,7 +568,7 @@
     {
       "expression": "\"CREATE TABLE schema_info(version INTEGER NOT NULL)\"",
       "id": "crates/engine/src/app.rs::execute::0e596cae937542cb::1",
-      "line": 987,
+      "line": 990,
       "method": "execute",
       "path": "crates/engine/src/app.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -578,7 +578,7 @@
     {
       "expression": "\"INSERT INTO schema_info VALUES(?1)\"",
       "id": "crates/engine/src/app.rs::execute::ad1f6897f3c2009b::1",
-      "line": 988,
+      "line": 991,
       "method": "execute",
       "path": "crates/engine/src/app.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -588,7 +588,7 @@
     {
       "expression": "r#\"CREATE TABLE cells(id INTEGER PRIMARY KEY,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER,interior_name TEXT);\n            CREATE TABLE worldspaces(id INTEGER PRIMARY KEY,editor_id TEXT,parent_world INTEGER,flags INTEGER,lod_origin_x INTEGER,lod_origin_y INTEGER);\n            CREATE TABLE land(cell_id INTEGER PRIMARY KEY);\n            CREATE TABLE statics(id INTEGER PRIMARY KEY,model_path TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER NOT NULL,flags INTEGER NOT NULL DEFAULT 0);\n            CREATE TABLE \"references\"(id INTEGER PRIMARY KEY,cell_id INTEGER,base_form_id INTEGER,pos_x REAL,pos_y REAL,pos_z REAL,rot_x REAL,rot_y REAL,rot_z REAL,scale REAL);\n            CREATE VIRTUAL TABLE exterior_spatial USING rtree(id,minX,maxX,minY,maxY,minZ,maxZ,+cell_id,+worldspace_id);\n            CREATE TABLE lod_build(id INTEGER PRIMARY KEY CHECK (id=1),build_identity TEXT NOT NULL);\n            INSERT INTO lod_build VALUES(1,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');\n            CREATE TABLE lod_chunks(worldspace_id INTEGER,tier INTEGER,anchor_x INTEGER,anchor_y INTEGER,payload_path TEXT,content_hash TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,source_cells TEXT,PRIMARY KEY(worldspace_id,tier,anchor_x,anchor_y));\n            CREATE VIRTUAL TABLE lod_chunks_spatial USING rtree(id,minX,maxX,minY,maxY,+worldspace_id,+tier,+anchor_x,+anchor_y);\n            CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT);\n            CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);\n            CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);\"#",
       "id": "crates/engine/src/app.rs::execute_batch::eb880e269251e87a::1",
-      "line": 992,
+      "line": 995,
       "method": "execute_batch",
       "path": "crates/engine/src/app.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -598,7 +598,7 @@
     {
       "expression": "\"INSERT INTO worldspaces(id,editor_id,parent_world,flags,lod_origin_x,lod_origin_y) VALUES(?1,'Fixture',NULL,0,?2,?3)\"",
       "id": "crates/engine/src/app.rs::execute::c441cb998d3661d3::1",
-      "line": 1007,
+      "line": 1010,
       "method": "execute",
       "path": "crates/engine/src/app.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -608,7 +608,7 @@
     {
       "expression": "\"INSERT INTO cells(id,worldspace_id,grid_x,grid_y) VALUES(?1,?2,?3,?4)\"",
       "id": "crates/engine/src/app.rs::prepare::6a572987ac16b02a::1",
-      "line": 1012,
+      "line": 1015,
       "method": "prepare",
       "path": "crates/engine/src/app.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -618,7 +618,7 @@
     {
       "expression": "params![cell_id, worldspace_id, grid_x, grid_y]",
       "id": "crates/engine/src/app.rs::execute::67b9897643d9153f::1",
-      "line": 1016,
+      "line": 1019,
       "method": "execute",
       "path": "crates/engine/src/app.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -628,7 +628,7 @@
     {
       "expression": "\"INSERT INTO cells(id,worldspace_id,grid_x,grid_y,interior_name) VALUES(?1,NULL,NULL,NULL,'Fixture Hall')\"",
       "id": "crates/engine/src/app.rs::execute::b9d64ae69adbc5d8::1",
-      "line": 1021,
+      "line": 1024,
       "method": "execute",
       "path": "crates/engine/src/app.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -638,7 +638,7 @@
     {
       "expression": "\"INSERT INTO \\\"references\\\"(id,cell_id,base_form_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale)\n             VALUES(?1,?2,?3,256.0,0.0,192.0,0.0,0.0,0.0,1.0)\"",
       "id": "crates/engine/src/app.rs::execute::679515acc542451d::1",
-      "line": 1025,
+      "line": 1028,
       "method": "execute",
       "path": "crates/engine/src/app.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -648,7 +648,7 @@
     {
       "expression": "crate::world::database::EXTERIOR_CELL_ID_SQL",
       "id": "crates/engine/src/app.rs::query_row::c275c54bf961263d::1",
-      "line": 2631,
+      "line": 2634,
       "method": "query_row",
       "path": "crates/engine/src/app.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -658,7 +658,7 @@
     {
       "expression": "crate::world::database::EXTERIOR_CELL_ID_SQL",
       "id": "crates/engine/src/app.rs::query_row::c275c54bf961263d::2",
-      "line": 2666,
+      "line": 2669,
       "method": "query_row",
       "path": "crates/engine/src/app.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -841,6 +841,106 @@
       "line": 111,
       "method": "query_row",
       "path": "crates/engine/src/object_materials.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "\"SELECT DISTINCT form_id FROM scripts\"",
+      "id": "crates/engine/src/papyrus_host.rs::prepare::bf7a41145fa868a6::1",
+      "line": 1112,
+      "method": "prepare",
+      "path": "crates/engine/src/papyrus_host.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT DISTINCT form_id FROM scripts",
+      "status": "literal"
+    },
+    {
+      "expression": "sql",
+      "id": "crates/engine/src/papyrus_host.rs::prepare_cached::4ec7c53222c8a758::1",
+      "line": 1127,
+      "method": "prepare_cached",
+      "path": "crates/engine/src/papyrus_host.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "[id]",
+      "id": "crates/engine/src/papyrus_host.rs::query_row::85cc8afb107ea4ab::1",
+      "line": 1129,
+      "method": "query_row",
+      "path": "crates/engine/src/papyrus_host.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "\"SELECT script_name FROM scripts WHERE form_id = ?1 ORDER BY script_name\"",
+      "id": "crates/engine/src/papyrus_host.rs::prepare_cached::da7a097f00635fcd::1",
+      "line": 1140,
+      "method": "prepare_cached",
+      "path": "crates/engine/src/papyrus_host.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT script_name FROM scripts WHERE form_id = ?1 ORDER BY script_name",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT property_index, name, property_type FROM script_properties \\\n             WHERE form_id = ?1 AND script_name = ?2 ORDER BY property_index\"",
+      "id": "crates/engine/src/papyrus_host.rs::prepare_cached::040a7aa444032de8::1",
+      "line": 1152,
+      "method": "prepare_cached",
+      "path": "crates/engine/src/papyrus_host.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT property_index, name, property_type FROM script_properties WHERE form_id = ?1 AND script_name = ?2 ORDER BY property_index",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT object_form_id, alias_id, string_value, integer_value, float_bits, boolean_value \\\n             FROM script_property_values \\\n             WHERE form_id = ?1 AND script_name = ?2 AND property_index = ?3 ORDER BY value_index\"",
+      "id": "crates/engine/src/papyrus_host.rs::prepare_cached::0a17b64c376328f1::1",
+      "line": 1158,
+      "method": "prepare_cached",
+      "path": "crates/engine/src/papyrus_host.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT object_form_id, alias_id, string_value, integer_value, float_bits, boolean_value FROM script_property_values WHERE form_id = ?1 AND script_name = ?2 AND property_index = ?3 ORDER BY value_index",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT record_type FROM records WHERE form_id = ?1\"",
+      "id": "crates/engine/src/papyrus_host.rs::prepare_cached::00b2f0a3d212f5c3::1",
+      "line": 1221,
+      "method": "prepare_cached",
+      "path": "crates/engine/src/papyrus_host.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT record_type FROM records WHERE form_id = ?1",
+      "status": "literal"
+    },
+    {
+      "expression": "[form_id]",
+      "id": "crates/engine/src/papyrus_host.rs::query_row::a78ba7f8e7d6fccd::1",
+      "line": 1223,
+      "method": "query_row",
+      "path": "crates/engine/src/papyrus_host.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "\"SELECT linked_ref_id FROM reference_linked_refs \\\n                 WHERE reference_id = ?1 AND keyword_id IS ?2 ORDER BY position LIMIT 1\"",
+      "id": "crates/engine/src/papyrus_host.rs::prepare_cached::8f8ee33dbf63edaa::1",
+      "line": 1229,
+      "method": "prepare_cached",
+      "path": "crates/engine/src/papyrus_host.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT linked_ref_id FROM reference_linked_refs WHERE reference_id = ?1 AND keyword_id IS ?2 ORDER BY position LIMIT 1",
+      "status": "literal"
+    },
+    {
+      "expression": "rusqlite::params![reference, keyword]",
+      "id": "crates/engine/src/papyrus_host.rs::query_row::abad135e7067da54::1",
+      "line": 1234,
+      "method": "query_row",
+      "path": "crates/engine/src/papyrus_host.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
       "sql": null,
       "status": "unknown"
@@ -1447,7 +1547,7 @@
     }
   ],
   "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
-  "reviewed_source_guard_sha256": "5c00c868405471c27a55469f2f7c4b385c9f537315ccf86ee079e409263a2da1",
+  "reviewed_source_guard_sha256": "02c58fc5c3bc4c2354d5a86406899d5a09659c10a769b3a990aa655ae63a4da7",
   "schema_status": "not_extracted",
   "schemas": {},
   "stores": {
