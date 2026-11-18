@@ -43,6 +43,8 @@ Colours are RGBA8 bytes x 1/255. high.
 - Weather lightning flash adds fWeatherFlashDirectional (1.0) / fWeatherFlashAmbient (0.3) x flash amount in the exterior path (not interiors).
 - A "lighting template override" path (`0x140419b30`, `0x140419c80` -> `0x140415d50`, `0x140416fc0`, `0x140416240`) blends two templates over time. Its source (likely a cell/region or script override) was not traced.
 
+> Update (2026-11-18): the directional rotation order was later traced exactly (registry RF-LIGHT-CPU-012, published separately), and the shader-side combine is covered by separate shader notes. Treat the medium items above as superseded where those rows differ.
+
 ## Not traced (next steps)
 - How the lighting shader combines ambient cube, directional light (with or without shadow), specular and the cell image space (XCIM/IMGS HDR, eye adaptation). This needs the retail lighting DXBC or a CS reconstruction cross-check. For #480 ("very dark interiors"): retail ambient on a surface is the DALC cube value (mean plus half-differences), not the XCLL ambient colour; and the cell image space can raise exposure. Both are candidates; neither is proven as the cause.
 - Where Sky ambient `+0xCC` is consumed (sun NiLight ambient for grass and legacy paths is the likely target; unverified).

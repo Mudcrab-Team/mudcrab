@@ -52,6 +52,8 @@ No code from these projects was copied. Facts and formulas are cited where used.
 | [q8-mods.md](q8-mods.md) | Alternate textures (MODS) | #508 | matched by 3D Index (depth-first geometry count); whole texture set replaced |
 | [q9-leveled-lists.md](q9-leveled-lists.md) | Leveled lists (LVLI, LVLN) | #661, clothing | chance none per pick; highest level group <= level; time-seeded MT19937; when lists roll |
 | [q10-npc-templates.md](q10-npc-templates.md) | NPC templates | #661 | per-flag group copy; depth-first chain; per-reference leveled actors |
+| [q11-detection.md](q11-detection.md) | Stealth detection | B7 | base + sound + sight + skill; distance falloff; light against ambient |
+| [q12-combat-damage.md](q12-combat-damage.md) | Combat damage | C3, C2 | weapon damage, sneak and critical multipliers, armour cap, block, difficulty |
 | [registry.md](registry.md) | All facts by ID | | |
 
-This publication covers the areas WATER, GRASS, CARRY, SUN, LIGHT-CPU, CAM, PHYS, TEX, LVL and NPC. Other areas are researched separately and are not included here.
+This publication covers the areas WATER, GRASS, CARRY, SUN, LIGHT-CPU, CAM, PHYS, TEX, LVL, NPC, DETECT and COMBAT. Other areas are researched separately and are not included here.

@@ -24,6 +24,8 @@ Build: SkyrimSE.exe 1.7.104.0, SHA-256 846efccf…1402f. Static trace (Ghidra 12
 - Release: if a grab is active and this press did not start it, drop (`0x140751a30`). If no grab happened, the release activates normally (`0x140751580`).
 - So: tap = activate; hold 0.2 s = grab; the release that ends that hold does nothing; the next press-release drops. High.
 
+> Update (2026-11-18): the hold distance and the fZKeyHeavyWeight rule were refined after this note (registry RF-CARRY-008 and RF-CARRY-012, published separately): the hold distance is the eye-to-crosshair-hit distance shortened by an obstacle ray, minimum capsule radius x 69.99 + 5 units; holding more than 75 kg replaces run speeds with walk speeds.
+
 ## Grab start (`0x140751870` -> `0x140752630`)
 - Refused if the crosshair object's rigid-body mass > fGrabMaxWeightWalking (100, Havok kg) (`0x140751974`).
 - Hold distance: player state `+0x11C` = max(current, body radius term * 70 + 5 units) (`0x140752e63`..). Exact radius term unverified; spud reads it as 0.5*(half.x+half.y) + 5 units.
