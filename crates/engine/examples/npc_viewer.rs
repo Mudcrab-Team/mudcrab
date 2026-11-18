@@ -37,21 +37,22 @@ use bevy::{
     world_serialization::{WorldAsset, WorldAssetRoot},
 };
 use engine::{
-    actor_animation::{ActorAnimationPlugin, ActorClips, ActorIdleLibrary},
-    actor_body_weight::{ActorBodyWeight, ActorBodyWeightPlugin},
-    actor_drive::{ActorDrive, ActorDrivePlugin},
-    actor_head::ActorHeadPlugin,
-    actor_outfit::ActorOutfitPlugin,
+    actor_animation::ActorAnimationPlugin,
+    actor_body_weight::ActorBodyWeightPlugin,
+    actor_drive::ActorDrivePlugin,
+    actor_head::{ActorHeadInstance, ActorHeadPlugin},
+    actor_outfit::{ActorOutfitInstance, ActorOutfitPlugin},
     actor_skin_tone::ActorSkinTonePlugin,
     nif_material::{EffectPaletteMaterialPlugin, NifMaterialPlugin},
-    world::actor_catalog::{ActorCatalog, ActorSpawnPlan},
+    streaming::converted_model_path,
+    world::actor_catalog::{ActorAnimationSetup, ActorCatalog, ActorSpawnPlan},
 };
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
-use shared::actor_outfits::ActorOutfitCatalog;
+use shared::actor_outfits::OutfitPart;
 use std::{
     f32::consts::{FRAC_PI_2, PI},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -119,12 +120,19 @@ enum PartState {
     Dropped,
 }
 
+/// How a tracked part is found among the actor's instantiated scenes.
+enum Identity {
+    Head,
+    Outfit(OutfitPart),
+}
+
 struct Tracked {
     label: String,
     scene: String,
     handle: Handle<WorldAsset>,
     mask: u32,
-    instance_name: Option<String>,
+    /// Which instantiated scene belongs to this part: matched by the engine's own components.
+    identity: Identity,
     state: PartState,
     loaded_frames: u32,
 }
@@ -229,7 +237,6 @@ struct Viewer {
     list: Vec<Npc>,
     index: usize,
     shown: Option<Shown>,
-    outfits: ActorOutfitCatalog,
     yaw: f32,
     pitch: f32,
     distance: f32,
@@ -412,13 +419,18 @@ fn main() {
         }
         return;
     }
-    let outfits = std::fs::read(options.assets.join(shared::actor_outfits::PATH))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<ActorOutfitCatalog>(&bytes).ok())
-        .unwrap_or_default();
     let _pack_lock = shared::asset_lock::AssetLock::acquire_shared(&options.assets)
         .expect("the pack is busy (exclusive lock held)");
     let catalog = ActorCatalog::open(&options.assets.join("skyrim_world.db"));
+    // This is a clothing viewer: a pack with no readable outfit catalog would only show naked
+    // actors and blame the actors. Stop with the real prerequisite instead.
+    if catalog.outfit_count() == 0 {
+        eprintln!(
+            "npc_viewer: {} has no usable actor-outfits.json (missing, unreadable or rejected; the engine log above says which). Run `converter derive-outfits` on an APFS clone of the pack and pass the clone.",
+            options.assets.display()
+        );
+        std::process::exit(2);
+    }
     let (width, height) = options.size;
     let windowed = options.capture.is_none();
     let mut app = App::new();
@@ -508,7 +520,6 @@ fn main() {
         // A capture covers the whole list; `--npc` only picks where an interactive run starts.
         index: if capture.is_some() { 0 } else { start },
         shown: None,
-        outfits,
         yaw: 0.5,
         pitch: 0.1,
         distance: 300.0,
@@ -570,13 +581,13 @@ fn setup(mut commands: Commands, viewer: Res<Viewer>) {
     ));
 }
 
-fn track(server: &AssetServer, scene: &str, label: &str, mask: u32) -> Tracked {
+fn track(server: &AssetServer, scene: &str, label: &str, mask: u32, identity: Identity) -> Tracked {
     Tracked {
         label: label.to_owned(),
         scene: scene.to_owned(),
         handle: server.load(GltfAssetLabel::Scene(0).from_asset(scene.to_owned())),
         mask,
-        instance_name: None,
+        identity,
         state: PartState::Loading,
         loaded_frames: 0,
     }
@@ -590,12 +601,10 @@ fn spawn(world: &mut World, viewer: &mut Viewer) -> Shown {
         root: Entity::PLACEHOLDER,
         plan: None,
         skip: None,
-        outfit_id: viewer
-            .outfits
-            .outfits
-            .iter()
-            .find(|o| o.npc_id == npc.form_id)
-            .map(|o| o.outfit_id),
+        outfit_id: world
+            .resource::<ActorCatalog>()
+            .outfit_for(npc.form_id)
+            .map(|row| row.outfit_id),
         outfit_name: None,
         head: None,
         parts: Vec::new(),
@@ -625,99 +634,78 @@ fn spawn(world: &mut World, viewer: &mut Viewer) -> Shown {
         }
     };
     let server = world.resource::<AssetServer>().clone();
-    let (idle_scene, creature_idle) = {
-        let catalog = world.resource::<ActorCatalog>();
-        (
-            catalog.idle_scene(&plan).map(str::to_owned),
-            catalog.legacy_creature_idle_scene(&plan).map(str::to_owned),
-        )
-    };
     let scene = server.load(GltfAssetLabel::Scene(0).from_asset(plan.scene_path.clone()));
-    let mut entity = world.spawn((
-        Name::new(format!("Viewer NPC {:08X}", npc.form_id)),
-        WorldAssetRoot(scene),
-        plan.actor,
-        Transform::default(),
-        Visibility::Hidden,
-    ));
-    if !plan.parts.is_empty() {
-        entity.insert(plan.parts.clone());
-    }
-    if let Some(head) = &plan.head {
-        entity.insert(head.clone());
-    }
-    if let Some(outfit) = &plan.outfit {
-        entity.insert(outfit.clone());
-    }
-    if let Some(tone) = plan.skin_tone {
-        entity.insert(tone);
-    }
-    if let Some(weight) = plan.weight {
-        entity.insert(ActorBodyWeight((1.0 - weight / 100.0).clamp(0.0, 1.0)));
-    }
-    if plan.uses_composed_body() {
-        entity.insert((
-            ActorClips::load(&server, plan.actor.sex),
-            ActorDrive::default(),
-        ));
-        shown.idle_expected = true;
-    } else if let Some(scene) = idle_scene {
-        entity.insert((
-            ActorClips::load_idle(&server, &scene),
-            ActorIdleLibrary {
-                body_scene: plan.scene_path.clone(),
-            },
-        ));
-        shown.idle_expected = true;
-    } else if let Some(scene) = creature_idle {
-        entity.insert(ActorClips::load_idle(&server, &scene));
-        shown.idle_expected = true;
-    }
-    shown.root = entity.id();
+    let root = world
+        .spawn((
+            Name::new(format!("Viewer NPC {:08X}", npc.form_id)),
+            WorldAssetRoot(scene),
+            Transform::default(),
+            Visibility::Hidden,
+        ))
+        .id();
+    // The streamed world puts the same components on a placed actor through this method, so the
+    // viewer cannot drift from what the game draws. The NPC's own FormID stands in for the
+    // placed reference's, and a viewed NPC is never a corpse.
+    let setup = world.resource_scope(|world: &mut World, catalog: Mut<ActorCatalog>| {
+        let mut commands = world.commands();
+        let mut entity = commands.entity(root);
+        catalog.insert_actor_components(&mut entity, &plan, &server, npc.form_id, false)
+    });
+    world.flush();
+    shown.idle_expected = matches!(
+        setup,
+        ActorAnimationSetup::Gait
+            | ActorAnimationSetup::AuthoredIdle
+            | ActorAnimationSetup::CreatureIdle
+    );
+    shown.root = root;
     if let Some(head) = &plan.head
         && head.source == engine::actors::ActorHeadSource::Facegen
     {
-        let converted = converted_scene(&head.model_path);
-        shown.head = Some(track(&server, &converted, "head", 0));
-        shown.head.as_mut().unwrap().instance_name = Some(format!("Head {:08X}", npc.form_id));
+        // The engine's own path rule, with its folder guards: a head it would not load is not
+        // tracked as one.
+        if let Some(converted) = converted_model_path(head.model_path.clone()) {
+            shown.head = Some(track(&server, &converted, "head", 0, Identity::Head));
+        }
     }
     if let Some(outfit) = &plan.outfit {
         for part in &outfit.0 {
-            let mut tracked = track(&server, &part.scene, &short(&part.scene), part.biped_mask);
-            tracked.instance_name =
-                Some(format!("Outfit {:08X} {:08X}", npc.form_id, part.armo_id));
-            shown.parts.push(tracked);
+            shown.parts.push(track(
+                &server,
+                &part.scene,
+                &short(&part.scene),
+                part.biped_mask,
+                Identity::Outfit(part.clone()),
+            ));
         }
     }
     shown.plan = Some(plan);
     shown
 }
 
-/// The converted scene for a source model path, as `streaming::converted_model_path` names it.
-fn converted_scene(path: &str) -> String {
-    let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    let relative = normalized.strip_prefix("meshes/").unwrap_or(&normalized);
-    Path::new("meshes")
-        .join(relative)
-        .with_extension("glb")
-        .to_string_lossy()
-        .into_owned()
-}
-
 fn short(scene: &str) -> String {
     scene.strip_prefix("meshes/").unwrap_or(scene).to_owned()
 }
 
-fn named_child(world: &mut World, root: Entity, name: &str) -> Option<Entity> {
-    let mut query = world.query::<(Entity, &Name)>();
-    let candidates: Vec<Entity> = query
-        .iter(world)
-        .filter(|(_, n)| n.as_str() == name)
-        .map(|(e, _)| e)
-        .collect();
-    candidates
-        .into_iter()
-        .find(|entity| is_descendant(world, *entity, root))
+/// The instantiated scene the engine made for a tracked part of the actor `root`, if it still
+/// exists. It is matched by the engine's own components, not by entity name.
+fn instance_of(world: &mut World, root: Entity, identity: &Identity) -> Option<Entity> {
+    match identity {
+        Identity::Head => {
+            let mut query = world.query::<(Entity, &ActorHeadInstance)>();
+            query
+                .iter(world)
+                .find(|(_, instance)| instance.actor == root)
+                .map(|(entity, _)| entity)
+        }
+        Identity::Outfit(part) => {
+            let mut query = world.query::<(Entity, &ActorOutfitInstance)>();
+            query
+                .iter(world)
+                .find(|(_, instance)| instance.actor == root && instance.part == *part)
+                .map(|(entity, _)| entity)
+        }
+    }
 }
 
 fn is_descendant(world: &World, mut entity: Entity, root: Entity) -> bool {
@@ -763,8 +751,7 @@ fn refresh(world: &mut World, shown: &mut Shown) {
             LoadState::Failed(_) => tracked.state = PartState::LoadFailed,
             LoadState::Loaded => {
                 tracked.loaded_frames += 1;
-                let name = tracked.instance_name.clone().unwrap_or_default();
-                let instance = named_child(world, root, &name);
+                let instance = instance_of(world, root, &tracked.identity);
                 let attached = instance.is_some_and(|entity| has_mesh_below(world, entity));
                 tracked.state = if attached {
                     PartState::Attached
@@ -1349,18 +1336,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn converted_scene_follows_the_streamed_world_rule() {
+    fn a_facegen_head_path_converts_with_the_engines_rule() {
         for source in [
             "actors/character/facegendata/facegeom/skyrim.esm/00013669.nif",
             r"Actors\Character\FaceGenData\FaceGeom\Skyrim.esm\00013669.NIF",
             "Meshes/actors/character/facegendata/facegeom/skyrim.esm/00013669.nif",
         ] {
             assert_eq!(
-                converted_scene(source),
-                "meshes/actors/character/facegendata/facegeom/skyrim.esm/00013669.glb",
+                converted_model_path(source.to_owned()).as_deref(),
+                Some("meshes/actors/character/facegendata/facegeom/skyrim.esm/00013669.glb"),
                 "{source}"
             );
         }
+        assert!(converted_model_path("../escape.nif".to_owned()).is_none());
     }
 
     #[test]

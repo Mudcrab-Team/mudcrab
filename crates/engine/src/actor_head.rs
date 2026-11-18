@@ -41,11 +41,13 @@ struct ActorHeadSkeleton {
     bones: HashMap<String, Entity>,
 }
 
-/// One instantiated head scene waiting for its joints to be rehosted.
+/// One instantiated head scene. It exists from the moment the head's scene is instantiated until
+/// its joints are rehosted; a head that cannot be rehosted is despawned. Tools such as the
+/// `npc_viewer` example read it to tell an attached head from a dropped one.
 #[derive(Component, Debug, Clone, Copy)]
-struct ActorHeadInstance {
-    actor: Entity,
-    base_form_id: u32,
+pub struct ActorHeadInstance {
+    pub actor: Entity,
+    pub base_form_id: u32,
 }
 
 /// An actor whose head decision is final: attached, skipped, or failed.

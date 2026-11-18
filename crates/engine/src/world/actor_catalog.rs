@@ -158,6 +158,21 @@ pub struct IdlePoolClip {
     pub scene: String,
 }
 
+/// The animation set [`ActorCatalog::insert_actor_components`] gave an actor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActorAnimationSetup {
+    /// The shared composed body: gait clips and an `ActorDrive`.
+    Gait,
+    /// A placed corpse: no idle.
+    Corpse,
+    /// A creature with an authored idle from the idle catalog (it may vary it).
+    AuthoredIdle,
+    /// A creature with the legacy default idle clip.
+    CreatureIdle,
+    /// No supported gait or idle for this body.
+    None,
+}
+
 #[derive(Resource, Debug, Clone, Default)]
 pub struct ActorCatalog {
     models: HashMap<u32, ActorModel>,
@@ -511,6 +526,106 @@ impl ActorCatalog {
             }
         }
         pool
+    }
+
+    /// Puts every component a spawned actor needs on `entity`: the plan's parts, head, outfit,
+    /// skin tone and body weight, and the animation set that fits the body.
+    ///
+    /// This is the one place that decides it. The streamed world calls it for each placed
+    /// reference and the `npc_viewer` example calls it for each NPC it shows, so what the viewer
+    /// shows is what the game draws. `reference_form_id` is the placed reference's FormID; it seeds
+    /// the creature idle sequence. A corpse (`starts_dead`) gets no idle.
+    pub fn insert_actor_components(
+        &self,
+        entity: &mut EntityCommands,
+        plan: &ActorSpawnPlan,
+        asset_server: &AssetServer,
+        reference_form_id: u32,
+        starts_dead: bool,
+    ) -> ActorAnimationSetup {
+        entity.insert(plan.actor);
+        if !plan.parts.is_empty() {
+            entity.insert(plan.parts.clone());
+        }
+        if let Some(head) = &plan.head {
+            entity.insert(head.clone());
+        }
+        if let Some(outfit) = &plan.outfit {
+            entity.insert(outfit.clone());
+        }
+        if let Some(tone) = plan.skin_tone {
+            entity.insert(tone);
+        }
+        if let Some(weight) = plan.weight {
+            entity.insert(crate::actor_body_weight::ActorBodyWeight(
+                (1.0 - weight / 100.0).clamp(0.0, 1.0),
+            ));
+        }
+        if plan.uses_composed_body() {
+            entity.insert((
+                crate::actor_animation::ActorClips::load(asset_server, plan.actor.sex),
+                crate::actor_drive::ActorDrive::default(),
+            ));
+            ActorAnimationSetup::Gait
+        } else if starts_dead {
+            // No death pose or ragdoll exists yet. A placed corpse keeps its bind pose; a standing
+            // idle loop would make it look alive.
+            debug!(
+                reference_form_id = format_args!("{reference_form_id:08X}"),
+                base_form_id = format_args!("{:08X}", plan.actor.base_form_id),
+                body_model = %plan.scene_path,
+                reason = "starts_dead",
+                "actor spawned without idle playback"
+            );
+            ActorAnimationSetup::Corpse
+        } else if let Some(scene) = self.idle_scene(plan) {
+            entity.insert((
+                crate::actor_animation::ActorClips::load_idle(asset_server, scene),
+                crate::actor_animation::ActorIdleLibrary {
+                    body_scene: plan.scene_path.clone(),
+                },
+            ));
+            // Stand-in for the retail behaviour graph's idle variety; see `IdleSequence`.
+            if let Some(sequence) = crate::actor_animation::IdleSequence::new(
+                self.idle_sequence_pool(plan),
+                reference_form_id,
+            ) {
+                entity.insert(sequence.preload(asset_server));
+            }
+            ActorAnimationSetup::AuthoredIdle
+        } else if let Some(scene) = self.legacy_creature_idle_scene(plan) {
+            entity.insert(crate::actor_animation::ActorClips::load_idle(
+                asset_server,
+                scene,
+            ));
+            ActorAnimationSetup::CreatureIdle
+        } else {
+            debug!(
+                reference_form_id = format_args!("{reference_form_id:08X}"),
+                base_form_id = format_args!("{:08X}", plan.actor.base_form_id),
+                race_id = format_args!("{:08X}", plan.actor.race_id),
+                sex = plan.actor.sex.as_str(),
+                body_model = %plan.scene_path,
+                reason = "no_supported_gait_mapping",
+                "actor spawned without gait setup"
+            );
+            ActorAnimationSetup::None
+        }
+    }
+
+    /// The worn-outfit row for a base `NPC_` FormID, when the pack's `actor-outfits.json` has one.
+    /// A row can exist for an actor that does not wear it: only the shared composed body does.
+    pub fn outfit_for(&self, base_form_id: u32) -> Option<&shared::actor_outfits::ActorOutfit> {
+        self.outfits
+            .outfits
+            .iter()
+            .find(|row| row.npc_id == base_form_id)
+    }
+
+    /// How many worn-outfit rows the pack's `actor-outfits.json` gave. Zero means the file is
+    /// missing or was rejected (the reason is logged when the catalog opens).
+    pub fn outfit_count(&self) -> usize {
+        self.outfits.outfits.len()
     }
 
     /// The catalog row for a base `NPC_` FormID, if this world has one.

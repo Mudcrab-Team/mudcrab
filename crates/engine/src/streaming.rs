@@ -1908,69 +1908,14 @@ fn spawn_cell(
                 entity.insert(crate::room_culling::RoomCullExempt);
             }
             if let Some(plan) = &actor_plan {
-                entity.insert(plan.actor);
-                if !plan.parts.is_empty() {
-                    entity.insert(plan.parts.clone());
-                }
-                if let Some(head) = &plan.head {
-                    entity.insert(head.clone());
-                }
-                if let Some(outfit) = &plan.outfit {
-                    entity.insert(outfit.clone());
-                }
-                if let Some(tone) = plan.skin_tone {
-                    entity.insert(tone);
-                }
-                if let Some(weight) = plan.weight {
-                    entity.insert(crate::actor_body_weight::ActorBodyWeight(
-                        (1.0 - weight / 100.0).clamp(0.0, 1.0),
-                    ));
-                }
-                if plan.uses_composed_body() {
-                    entity.insert((
-                        crate::actor_animation::ActorClips::load(asset_server, plan.actor.sex),
-                        crate::actor_drive::ActorDrive::default(),
-                    ));
-                } else if reference.starts_dead {
-                    // No death pose or ragdoll exists yet. A placed corpse keeps its bind
-                    // pose; a standing idle loop would make it look alive.
-                    debug!(
-                        reference_form_id = format_args!("{:08X}", reference.form_id),
-                        base_form_id = format_args!("{:08X}", plan.actor.base_form_id),
-                        body_model = %plan.scene_path,
-                        reason = "starts_dead",
-                        "actor spawned without idle playback"
-                    );
-                } else if let Some(scene) = actor_catalog.idle_scene(plan) {
-                    entity.insert((
-                        crate::actor_animation::ActorClips::load_idle(asset_server, scene),
-                        crate::actor_animation::ActorIdleLibrary {
-                            body_scene: plan.scene_path.clone(),
-                        },
-                    ));
-                    // Stand-in for the retail behaviour graph's idle variety; see `IdleSequence`.
-                    if let Some(sequence) = crate::actor_animation::IdleSequence::new(
-                        actor_catalog.idle_sequence_pool(plan),
-                        reference.form_id,
-                    ) {
-                        entity.insert(sequence.preload(asset_server));
-                    }
-                } else if let Some(scene) = actor_catalog.legacy_creature_idle_scene(plan) {
-                    entity.insert(crate::actor_animation::ActorClips::load_idle(
-                        asset_server,
-                        scene,
-                    ));
-                } else {
-                    debug!(
-                        reference_form_id = format_args!("{:08X}", reference.form_id),
-                        base_form_id = format_args!("{:08X}", plan.actor.base_form_id),
-                        race_id = format_args!("{:08X}", plan.actor.race_id),
-                        sex = plan.actor.sex.as_str(),
-                        body_model = %plan.scene_path,
-                        reason = "no_supported_gait_mapping",
-                        "actor spawned without gait setup"
-                    );
-                }
+                // The viewer example spawns actors through the same method.
+                actor_catalog.insert_actor_components(
+                    &mut entity,
+                    plan,
+                    asset_server,
+                    reference.form_id,
+                    reference.starts_dead,
+                );
             }
             // The colour the reference's `XEMI` source lends its model's `External_Emittance`
             // surfaces once they are instantiated below it; see `crate::emittance`.
@@ -4705,7 +4650,7 @@ fn spawned_model_path(model_path: Option<String>, base_is_marker: bool) -> Optio
         .and_then(converted_model_path)
 }
 
-pub(crate) fn converted_model_path(path: String) -> Option<String> {
+pub fn converted_model_path(path: String) -> Option<String> {
     // Converted assets are published with lowercase canonical paths, so the
     // lookup must lowercase too (matching world-inspect's resolver).
     // The filename is no marker signal: forges and the Civil War map flags carry
