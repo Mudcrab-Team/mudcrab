@@ -1,0 +1,13 @@
+{
+  "max_by_cause": {
+    "source_texture_absent": 1,
+    "converted_texture_missing": 1,
+    "slot_unreferenced": 1,
+    "unparseable_path": 0,
+    "primitive_without_uvs": 1,
+    "texture_set_unresolved": 0,
+    "land_texture_unresolved": 0,
+    "override_target_unresolved": 0
+  },
+  "note": "Counts the synthetic fixture in tests/texture_audit.rs. Lower a value when a case is fixed; never raise one."
+}

@@ -1418,6 +1418,27 @@ fn normalize_vertex_influences(
     Ok((U8Vec4::from_array(joints), Vec4::from_array(weights)))
 }
 
+/// Replaces each non-finite UV component with zero and returns how many it replaced.
+///
+/// A few retail NIFs store a NaN or infinite half-float in one vertex. Dropping the whole UV
+/// attribute for that shape (the previous behaviour) leaves every vertex sampling one texel, so a
+/// textured wall renders as a flat colour. Zeroing only the bad components keeps the rest of the
+/// mapping; the affected triangles are as wrong as the game draws them.
+pub fn sanitize_non_finite_uvs(uvs: &mut [glam::Vec2]) -> usize {
+    let mut repaired = 0;
+    for uv in uvs {
+        if !uv.x.is_finite() {
+            uv.x = 0.0;
+            repaired += 1;
+        }
+        if !uv.y.is_finite() {
+            uv.y = 0.0;
+            repaired += 1;
+        }
+    }
+    repaired
+}
+
 pub fn tri_shape_to_mesh(tri_shape: &BSTriShape, name: Option<String>) -> StaticMesh {
     let mut mesh = StaticMesh::default();
 
@@ -1861,11 +1882,11 @@ fn push_modern_static_shape(
         ));
         return Ok(());
     }
-    if mesh.uvs.iter().any(|uv| !uv.is_finite()) {
+    let repaired_uvs = sanitize_non_finite_uvs(&mut mesh.uvs);
+    if repaired_uvs != 0 {
         warn!(
-            "geometry block {block_index} ({name:?}) contains non-finite UVs; omitting the UV attribute while preserving geometry"
+            "geometry block {block_index} ({name:?}) contains {repaired_uvs} non-finite UV components; zeroed them and kept the UV attribute"
         );
-        mesh.uvs.clear();
     }
     let discarded_triangles = sanitize_non_finite_positions(&mut mesh);
     if discarded_triangles != 0 {
@@ -1918,6 +1939,32 @@ fn sanitize_non_finite_positions(mesh: &mut StaticMesh) -> usize {
             .all(|index| !invalid.get(usize::from(index)).copied().unwrap_or(true))
     });
     before - mesh.triangles.len()
+}
+
+#[cfg(test)]
+mod uv_sanitization_tests {
+    use super::*;
+
+    #[test]
+    fn zeroes_only_the_non_finite_components_and_keeps_every_vertex() {
+        let mut uvs = vec![
+            glam::Vec2::new(0.25, 0.75),
+            glam::Vec2::new(f32::NAN, 0.5),
+            glam::Vec2::new(0.5, f32::INFINITY),
+            glam::Vec2::new(f32::NEG_INFINITY, f32::NAN),
+        ];
+        assert_eq!(sanitize_non_finite_uvs(&mut uvs), 4);
+        assert_eq!(
+            uvs,
+            vec![
+                glam::Vec2::new(0.25, 0.75),
+                glam::Vec2::new(0.0, 0.5),
+                glam::Vec2::new(0.5, 0.0),
+                glam::Vec2::ZERO,
+            ]
+        );
+        assert_eq!(sanitize_non_finite_uvs(&mut uvs), 0);
+    }
 }
 
 #[cfg(test)]
