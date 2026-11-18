@@ -64,6 +64,11 @@ bevy_image = { path = "vendor/bevy_image" }
 # Enable asynchronous pipeline compilation on Metal; see the vendor removal criteria.
 bevy_render = { path = "vendor/bevy_render-0.19.0" }
 
+# Every `unsafe` block, impl and fn body needs a `// SAFETY:` comment that states the invariant.
+# Each workspace crate opts in with `[lints] workspace = true`. Vendored crates keep their own.
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
 # Workspace profile optimization
 [profile.dev]
 opt-level = 1

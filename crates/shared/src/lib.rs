@@ -1,10 +1,12 @@
 //! Stable data contracts shared by the offline converter and the runtime.
 
 pub mod actor_idle_catalog;
+pub mod actor_outfits;
 pub mod asset_lock;
 pub mod collision;
 pub mod coordinates;
 pub mod creature_idle;
+pub mod extensions;
 pub mod lod;
 pub mod plugin_selection;
 pub mod records;
@@ -14,6 +16,22 @@ pub mod texture_aliases;
 pub mod world_assets;
 
 use rkyv::{Archive, Deserialize, Serialize};
+
+/// The line every Mudcrab binary prints for `--version`.
+pub const VERSION_LINE: &str = concat!("mudcrab ", env!("CARGO_PKG_VERSION"));
+
+/// True when the arguments ask for the version.
+///
+/// The engine parses this in its own option table; the other binaries call this
+/// before they touch the file system, so `--version` never needs game data.
+pub fn wants_version<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    args.into_iter()
+        .any(|argument| argument.as_ref() == "--version" || argument.as_ref() == "-V")
+}
 
 /// Current combined database contract: corrected TXST roles and one-byte XESP flags.
 pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 9;
@@ -126,6 +144,15 @@ impl Bounds3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_line_and_flags_are_stable() {
+        assert_eq!(VERSION_LINE, concat!("mudcrab ", env!("CARGO_PKG_VERSION")));
+        assert!(wants_version(["--version"]));
+        assert!(wants_version(["-V"]));
+        assert!(!wants_version(["--verbose"]));
+        assert!(!wants_version(["--help"]));
+    }
 
     #[test]
     fn runtime_world_database_schemas_run_from_the_oldest_to_the_current() {

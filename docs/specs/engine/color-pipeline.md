@@ -18,7 +18,7 @@ Code baseline: `a9f2310ccfc691eebb97fde18df1e8d334b7d744`; Bevy 0.19. The source
 | `shaders/terrain.wgsl` | Linear layer samples and normal data → weighted material response → PBR lighting | Authored normal conventions, layer semantics and specular response remain separate material probes. |
 | Bevy `pbr_functions.wgsl` | Lights + material → exposure-scaled linear RGB | `Exposure.ev100` uses Bevy's `2^-EV100 / 1.2`. Current 9.7 is pinned from the prior default, not a Skyrim value. Emission's exposure weight is material-owned; default emission is exposure-independent. |
 | `sky.rs`, `shaders/sky.wgsl` | Encoded weather-row mixing → one sRGB decode → linear palette brightness | Existing palette is a fixed clear-day approximation. Sky/fog palette values already occupy the composition domain; do not multiply them by camera exposure a second time. L2 owns authored state and its units. |
-| `DistanceFog` | Exposed surface RGB + linear fog palette → fogged linear RGB | Existing Bevy visibility-based atmospheric fog toward Fog Far stays explicit. Interior fog removal is current behavior, not complete Skyrim interior semantics. L2 owns the correction. |
+| `DistanceFog` | Exposed surface RGB + linear fog palette → fogged linear RGB | Existing Bevy visibility-based atmospheric fog toward Fog Far stays explicit. Interiors in sky modes 1 and 2 use the cell's own fog as a linear approximation (power and far colour are not applied, see `interior-environment.md`); other interiors have no fog. L2 owns the remaining correction. |
 | `render.rs` reflection camera | Scene at main-view exposure → `Rgba16Float`, tone mapping disabled | Floating linear target preserves values above 1. Reflection gate copies exposure even while inactive. Existing reflected layers and geometry selection remain unchanged. |
 | `shaders/water.wgsl` | Exposed water lighting + exposed linear reflection → blend → surface fog | Reflection receives neither a second lighting evaluation nor a display transform. Existing Fresnel/waves and reflection coverage are approximations. |
 | `color_pipeline.rs` / scene cameras | HDR composition → selected Bevy transform (Tony by default) or explicit retail curve → selected post-tonemap grade → display encoding | Runtime starts with Cool Gray sky and the Sleeping Giant sRGB snapshot described below. The settings menu can select a Bevy transform on the Tony path. Explicit retail-curve selection owns camera tonemapping and stays active across unrelated settings changes. The saved `full` grade uses Bevy linear `post_saturation`, followed by sRGB brightness/contrast/tint from reported `ISSkyrimClearDAY` (0x00012F88, `Update.esm` winner) CNAM 1.5/1.135/1.4 and TNAM 0.42 toward 0.894/0.839/0.773. Contrast uses an artistic pivot of 0.18. EV100 remains a pinned Bevy baseline unless changed in the interactive settings. `HNAM` stays unapplied on the Tony path. The separate retail-curve experiment below uses White only. L4 owns adaptation and effective native state. |
@@ -199,7 +199,9 @@ For a visible tuning session, `--start-shot <file>` seeds the world camera from 
 validated file containing one exterior pose. It sets the streaming cell, worldspace,
 rotation and horizontal FOV without selecting the automated shots runner. Add
 `--stdin-console` to control that process through its stdin using the same console
-commands as the backtick UI. This bridge is opt-in and has no network listener.
+commands as the backtick UI. Add `--always-active` when driving a visible session from
+a terminal so world simulation continues while the game window is unfocused. This bridge
+is opt-in and has no network listener.
 `SceneState` reports grading and streaming/upload readiness. `SceneShot <png-path>`
 captures the visible window only after readiness checks pass and writes a JSON
 state receipt alongside the image. It refuses existing output paths. The receipt
@@ -211,7 +213,10 @@ selects a stationary camera session.
 `--no-render-diagnostics` disables Bevy's GPU timing and pipeline-statistics queries
 for troubleshooting Metal counter-buffer allocation failures. It preserves the
 scene settings, CPU frame timing, streaming gauges, and capture-readiness checks.
-GPU timing evidence is unavailable in runs using this option.
+GPU timing evidence is unavailable in runs using this option. The engine applies the same
+rule by itself to hidden-window runs on macOS (`--hidden-window`), which never present and so
+leave Bevy's per-frame counter sample buffers unpaced. It logs `GPU render diagnostics are off`
+once at start.
 
 Two named visual presets preserve the approved look while allowing experiments:
 
@@ -269,6 +274,8 @@ fog, stream radius and poses. `--shots` pins water animation to 1.0 seconds; nor
 interactive runs and matched movement routes keep animated water. Capture receipts
 record grade selection and fixed water time. The script rejects failed runs,
 timeout captures, missing receipts and inconsistent poses before accepting a set.
+The script passes `--game-hour 12` because the native Riverwood reference was captured at noon;
+the engine default hour is the retail `GameHour` record (GLOB 0x38, 8.0).
 PNG files and logs stay outside the repository; this is Mudcrab A/B evidence,
 not matched retail Skyrim or a performance benchmark.
 

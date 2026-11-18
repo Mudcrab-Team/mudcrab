@@ -57,6 +57,19 @@ pub(crate) struct CaptureFrame {
     /// Absent only in harnesses that build a world without the engine's startup resources.
     pub visual_profile: Option<crate::visual_profile::VisualProfile>,
     pub grading: Option<CaptureGrade>,
+    /// The main view's mesh list before and after room culling. Absent in harnesses without it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub room_culling: Option<crate::room_culling::MainViewMeshes>,
+    /// Actual game clock and toward-sun direction sampled with the captured frame.
+    pub sun: Option<CaptureSun>,
+}
+
+/// Direction is engine +Y-up; absent only in worlds without the sun/clock resources.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct CaptureSun {
+    pub hour: f64,
+    pub timescale: f64,
+    pub toward_sun_runtime: [f32; 3],
 }
 
 /// Immutable grading evidence sampled with the rendered camera, before readback.
@@ -267,7 +280,10 @@ fn extract_capture_frames(
         Option<Res<SceneVisualPreset>>,
         Option<Res<SceneToneMapSource>>,
         Option<Res<SceneGradeOverrides>>,
+        Option<Res<crate::room_culling::RoomCullingState>>,
         Option<Res<crate::visual_profile::VisualProfile>>,
+        Option<Res<crate::sun::GameClock>>,
+        Query<&Transform, With<crate::sun::SunLight>>,
     )>,
 ) {
     let (frame, origin, camera, tickets, streaming, renderer, profiler, uploads) = &*frame_inputs;
@@ -280,7 +296,10 @@ fn extract_capture_frames(
         visual_preset,
         tone_source,
         grade_overrides,
+        room_culling,
         visual_profile,
+        clock,
+        sun,
     ) = &*scene_inputs;
     extracted.render_frame += 1;
     extracted.captures.clear();
@@ -307,8 +326,17 @@ fn extract_capture_frames(
             profiler,
             uploads,
             renderer.final_path_active(),
-        );
+        )
+        .with_room_graphs(room_culling.as_deref());
         let record = CaptureFrame {
+            sun: clock
+                .as_deref()
+                .zip(sun.single().ok())
+                .map(|(clock, sun)| CaptureSun {
+                    hour: clock.hour,
+                    timescale: clock.timescale,
+                    toward_sun_runtime: sun.back().to_array(),
+                }),
             main_frame: frame.0,
             render_frame: extracted.render_frame,
             camera_creation: pose,
@@ -334,6 +362,9 @@ fn extract_capture_frames(
                 grade_overrides.as_deref().copied().unwrap_or_default(),
             ),
             terrain_gauges: profiler.terrain_gauges(),
+            room_culling: room_culling
+                .as_deref()
+                .and_then(|state| state.main_view_meshes),
             terrain_coverage: surfaces
                 .iter()
                 .filter(|(_, visible)| visible.get())
@@ -478,6 +509,7 @@ mod tests {
         let mut grading = ColorGrading::default();
         grading.global.post_saturation = resolved.bevy_saturation;
         let record = CaptureFrame {
+            sun: None,
             main_frame: 3,
             render_frame: 2,
             camera_creation: [1.0; 3],
@@ -488,6 +520,7 @@ mod tests {
             work: default(),
             terrain_gauges: default(),
             terrain_coverage: default(),
+            room_culling: None,
             visual_profile: None,
             grading: capture_grade(
                 Some(&source),

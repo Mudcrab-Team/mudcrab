@@ -36,12 +36,16 @@ zip = { version = "9", default-features = false }
 # run concurrently, so use thread-local scopes on macOS.
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu = { version = "=29.0.4", default-features = false, features = ["std"] }
+objc2-app-kit = { version = "0.2.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSRunningApplication", "NSWindow", "NSWorkspace", "libc"] }
+objc2-foundation = { version = "0.2.2", default-features = false, features = ["std"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Com", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tempfile = "3.20"
+# Used only by examples/model_inspector_export (the inspector GIF encoder), not by the engine.
+gif = "=0.13.3"
 converter = { path = "../converter" }
 dummy-content = { path = "../dummy-content" }
 ddsfile = "0.5"
@@ -50,3 +54,6 @@ image_dds.workspace = true
 # No default features: the "glsl" one makes naga_oil write every imported header in GLSL as well,
 # which panics on Bevy's bindless material headers. Bevy turns on what it needs.
 naga_oil = { version = "0.22", default-features = false }
+
+[lints]
+workspace = true
