@@ -240,7 +240,9 @@ pub struct EngineConfig {
     pub start_grid: (i32, i32),
     pub stream_radius: i32,
     pub unload_radius: i32,
-    /// Optional upper bound for sun-shadow cascades from `[Display] fShadowDistance`.
+    /// Upper bound for the sun-shadow cascades, in Creation units: `[Display] fShadowDistance`.
+    /// The default is retail's [`RETAIL_SUN_SHADOW_DISTANCE`]; `None` fits the range to the drawn
+    /// grid instead (see `sun_shadow_cascades`), which only a test or a fixture asks for.
     pub sun_shadow_distance_limit: Option<f32>,
     /// Optional sun bearing clockwise from north and elevation above the horizon, in degrees.
     pub sun_position: Option<(f32, f32)>,
@@ -401,6 +403,23 @@ pub struct EngineConfig {
     pub physics_fixture: bool,
 }
 
+/// The default exterior sun-shadow distance, in Creation units: retail's `fShadowDistance:Display`.
+///
+/// The executable's own default is 8000 (record `0x1420d9450`, value `0x1420d9458`) and so is the
+/// install's `SkyrimPrefs.ini` and the High preset. Retail clamps nothing else: a larger value
+/// (the Ultra preset uses 10000, [`RETAIL_ULTRA_SUN_SHADOW_DISTANCE`]) is a user preference.
+/// Registry row `RF-LIGHT-GPU-017`, confidence high. The engine used to fit the range to the drawn
+/// grid (about 23,200 units at the default radius); that figure was this engine's own and not a
+/// retail value. A player raises the distance with `[Display] fShadowDistance` in the INI or with
+/// the "Sun shadow-distance multiplier" setting.
+pub const RETAIL_SUN_SHADOW_DISTANCE: f32 = 8_000.0;
+
+/// The retail Ultra preset's `fShadowDistance:Display` (`Ultra.ini`), in Creation units.
+///
+/// `RF-LIGHT-GPU-017`. It is [`RETAIL_SUN_SHADOW_DISTANCE`] times 1.25, a step of the "Sun
+/// shadow-distance multiplier" setting, so a player reaches it without editing an INI.
+pub const RETAIL_ULTRA_SUN_SHADOW_DISTANCE: f32 = 10_000.0;
+
 impl Default for EngineConfig {
     /// Start with the standard engine settings and optional profiling diagnostics disabled.
     fn default() -> Self {
@@ -413,7 +432,7 @@ impl Default for EngineConfig {
             // Skyrim's default `uGridsToLoad=5`.
             stream_radius: 2,
             unload_radius: 3,
-            sun_shadow_distance_limit: None,
+            sun_shadow_distance_limit: Some(RETAIL_SUN_SHADOW_DISTANCE),
             sun_position: None,
             game_hour: crate::sun::RETAIL_GAME_HOUR, // GLOB 0x38 `GameHour` = 8.0 in the pack
             timescale: 20.0,

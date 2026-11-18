@@ -62,9 +62,9 @@ world with, and `None` otherwise:
 - `color` is the record's colour, read as sRGB like every other colour of the game.
 - `intensity` comes from unit-fade backend conversion times evaluated FNAM plus XLIG fade (§4).
 - `shadow_maps_enabled` is **false** when the light spawns. The budget (§6) later gives a cube
-  shadow map to the nearest few lights when the Point-light shadows setting is on. This does not
-  implement Skyrim's authored shadow modes or attenuation. The record's own shadow flags
-  (`RF-LIGHT-GPU-009`) are not read yet.
+  shadow map to the nearest few lights whose record has a shadow flag (`DATA` flags & `0x1C00`,
+  `RF-LIGHT-GPU-015`) when the Point-light shadows setting is on. This does not implement Skyrim's
+  authored shadow cones or attenuation.
 - the area `radius` stays 0, so there is no oversized specular highlight.
 
 `streaming::spawn_cell` places the light as a **child of its reference**, which is what makes it sit
@@ -224,10 +224,21 @@ every frame.
 ### Shadows
 
 When the **Point-light shadows** setting is on, only the `MAX_SHADOW_CASTING_POINT_LIGHTS = 4`
-nearest of the enabled lights have `shadow_maps_enabled` set. Every other `SkyrimLight` has it off.
-The cap is retail's limit: the lighting pixel shader shadows the first `min(NumShadowLights, 4)`
-point lights (`RF-LIGHT-GPU-004`). The registry row does not give the order of "first", so the
-engine takes the nearest to the camera.
+nearest of the enabled lights **whose record has a shadow flag** have `shadow_maps_enabled` set.
+Every other `SkyrimLight` has it off.
+
+Two rules are retail's. Eligibility: retail builds a shadow light object only for a `LIGH` whose
+`DATA` flags & `0x1C00` (`LIGHT_FLAG_SHADOW_MODES`) is non-zero (`0x400` spotlight, `0x800`
+hemisphere, `0x1000` omni; `RF-LIGHT-GPU-015`), so a torch or sconce without those bits never casts
+a shadow. The limit: retail's shadow-light walk stops at 4 active lights (`RF-LIGHT-GPU-014`) and
+the lighting pixel shader shadows the first `min(NumShadowLights, 4)` point lights
+(`RF-LIGHT-GPU-004`).
+
+One rule is an approximation. Retail takes the first four eligible, visible lights in scene-attach
+order, with no distance ranking and no hysteresis (`RF-LIGHT-GPU-014`). The engine keeps no attach
+order, so it takes the four nearest the camera. Retail's frustum and shadow-distance tests for a
+shadow light are not applied. The "player plus 450 units" rule of retail is for actor focus
+shadows, which are sun shadow maps (`RF-LIGHT-GPU-011`), not for point lights.
 
 The cap is also a GPU limit. Bevy renders each cube face of a shadow-casting point light as its own
 view, and each view opens about five command encoders (an estimate read from the Bevy 0.19 code, not
@@ -238,9 +249,8 @@ limit.
 
 The shadow set is not cached with the 64-light choice. It is ranked again among the enabled lights
 after every camera move, with the entity as the tie-break, so the light the player walks up to takes
-a shadow at once and the light left behind gives it up. The set is never larger than the cap. The
-record's shadow flags (`RF-LIGHT-GPU-009`) are not read yet, so the nearest lights are shadowed
-whatever their flags.
+a shadow at once and the light left behind gives it up. The set is never larger than the cap and
+holds only flagged lights.
 
 ## 7. The `--lights` flag
 
@@ -258,6 +268,7 @@ Native attenuation/units, XLIG end-distance cap, shadow modes, cone/near clip, f
 colour/exposure handling remain open under #133/#264/#364. The legacy normalization is visible and
 bounded, not qualified as a native solution. Interior environment selection is separately owned.
 
-- **Shadow flags.** Only the nearest 4 enabled lights cast shadows, whatever the record's shadow
-  flags say (§6, `RF-LIGHT-GPU-009`). A light without a shadow map also lights the far side of the
-  wall it is mounted on.
+- **Retail's shadow-light order and tests.** The engine picks the nearest flagged lights, where
+  retail takes the first four in scene-attach order that pass a frustum and shadow-distance test
+  (§6, `RF-LIGHT-GPU-014`). A light without a shadow map also lights the far side of the wall it is
+  mounted on, as in retail.

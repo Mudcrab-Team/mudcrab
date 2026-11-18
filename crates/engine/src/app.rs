@@ -2386,14 +2386,18 @@ const SUN_SHADOW_MAX_GRID_CELLS: i32 = 256;
 /// requested radius. The camera stands somewhere inside its own cell, so that grid is at most
 /// `unload_radius + 1` cells from it to the edge and [sqrt(2)] times that to the far corner, and
 /// the range is the distance from the camera to that corner, the camera being [`camera_offset`]
-/// above the point it looks at. `[Display] fShadowDistance` may cap that range to match Skyrim's
-/// configured exterior shadow draw distance. Without that INI key it stops at the drawn grid:
-/// nothing is drawn past the corner, so a wider range would only spend the same shadow map on
-/// coarser cascades. Terrain standing above the ground plane at the corner is further from the
-/// camera than the corner and is not accounted for.
+/// above the point it looks at. The sun-shadow distance limit
+/// ([`EngineConfig::sun_shadow_distance_limit`]) caps that range. It defaults to retail's
+/// `fShadowDistance` of 8000 ([`RETAIL_SUN_SHADOW_DISTANCE`](crate::config::RETAIL_SUN_SHADOW_DISTANCE),
+/// `RF-LIGHT-GPU-017`) and `[Display] fShadowDistance` replaces it. With no limit (`None`, a
+/// test or fixture) the range stops at the drawn grid: nothing is drawn past the corner, so a wider
+/// range would only spend the same shadow map on coarser cascades. At the default `unload_radius`
+/// of 3 that grid fit is about 23,200 units. That figure is this engine's own and not a retail
+/// value: retail's default is 8000, so the outer rings of the drawn grid have no sun shadows, as
+/// in retail. Terrain standing above the ground plane at the corner is further from the camera
+/// than the corner and is not accounted for.
 /// [SUN_SHADOW_MAX_GRID_CELLS] caps the fit for radii the command line accepts but nothing could
-/// stream. At the default `unload_radius` of 3 the last bound is about 23,200 units, a third of a
-/// kilometre.
+/// stream.
 ///
 /// # The cost
 ///
@@ -4434,14 +4438,18 @@ mod tests {
             "later updates do not queue a second capture"
         );
     }
-    /// The sun's shadows reach the grid the streamer draws, whichever way the camera faces, and the
-    /// shader's view of them is usable: far bounds that increase (the shader takes the first bound a
+    /// With no distance limit the sun's shadows reach the grid the streamer draws, whichever way the
+    /// camera faces, and the shader's view of them is usable: far bounds that increase (the shader takes the first bound a
     /// fragment is inside, so a bound out of order hands everything beyond it to a cascade that
     /// cannot see it) and a near clamp below the first far bound. The two near distances are Bevy's
     /// defaults read in metres; the last is this engine's drawn grid.
     #[test]
     fn the_sun_shadows_cover_the_drawn_grid() {
-        let config = EngineConfig::default();
+        // No limit: the engine's own grid fit, not the retail default.
+        let config = EngineConfig {
+            sun_shadow_distance_limit: None,
+            ..EngineConfig::default()
+        };
         let cascades = sun_shadow_cascades(&config);
         let cell = crate::world::components::CELL_SIZE;
         assert_eq!(config.stream_radius, 2);
@@ -4510,6 +4518,32 @@ mod tests {
             cascades.bounds[0],
             metre_scale.bounds
         );
+    }
+
+    /// Retail's `fShadowDistance` is the default (`RF-LIGHT-GPU-017`): the default config's last
+    /// cascade ends at 8000, well inside the grid fit of about 23,200, and the Ultra value 10000 is
+    /// reachable with the existing 1.25 step of the shadow-distance multiplier.
+    #[test]
+    fn the_default_sun_shadow_distance_is_retails_8000() {
+        let config = EngineConfig::default();
+        assert_eq!(config.sun_shadow_distance_limit, Some(8_000.0));
+        assert_eq!(crate::config::RETAIL_SUN_SHADOW_DISTANCE, 8_000.0);
+        let cascades = sun_shadow_cascades(&config);
+        assert!((cascades.bounds[3] - 8_000.0).abs() < 0.01);
+        assert!(cascades.bounds.windows(2).all(|pair| pair[0] < pair[1]));
+
+        let grid_fit = sun_shadow_cascades(&EngineConfig {
+            sun_shadow_distance_limit: None,
+            ..EngineConfig::default()
+        });
+        assert!(
+            grid_fit.bounds[3] > 23_000.0,
+            "the old default was a grid fit"
+        );
+
+        // The setting multiplies the base (settings.rs): 1.25 is a step of its slider.
+        let ultra = cascades.bounds[3] * 1.25;
+        assert!((ultra - crate::config::RETAIL_ULTRA_SUN_SHADOW_DISTANCE).abs() < 0.1);
     }
 
     #[test]
@@ -4581,13 +4615,18 @@ mod tests {
     /// grid it looks at, and its shadows have to reach as far down and out as it looks.
     #[test]
     fn the_shadow_range_counts_the_camera_height() {
+        // No distance limit: this is the engine's grid fit, not the retail default.
+        let fitted = EngineConfig {
+            sun_shadow_distance_limit: None,
+            ..EngineConfig::default()
+        };
         let overhead = EngineConfig {
             acceptance_screenshot: Some(std::path::PathBuf::from("acceptance.png")),
-            ..EngineConfig::default()
+            ..fitted.clone()
         };
         let cell = crate::world::components::CELL_SIZE;
         let corner = cell * (overhead.unload_radius as f32 + 1.0) * std::f32::consts::SQRT_2;
-        let walk_around = corner.hypot(camera_offset(&EngineConfig::default()).y);
+        let walk_around = corner.hypot(camera_offset(&fitted).y);
         let above = corner.hypot(camera_offset(&overhead).y);
         assert!(above > walk_around, "the camera's height counts");
 
@@ -4598,7 +4637,7 @@ mod tests {
             cascades.bounds[3]
         );
 
-        let walk_around_cascades = sun_shadow_cascades(&EngineConfig::default());
+        let walk_around_cascades = sun_shadow_cascades(&fitted);
         assert!(
             (walk_around_cascades.bounds[3] - walk_around).abs() < 1.0,
             "and the walk-around camera's reaches its: {} against {walk_around}",
@@ -4616,11 +4655,13 @@ mod tests {
         for radius in [0, 1, 2, 4, 8, 16] {
             // `--stream-radius` takes one radius and keeps cells a ring wider than it.
             let args = ["--stream-radius".to_owned(), radius.to_string()];
-            let config = EngineConfig::run_from_args(args);
+            let mut config = EngineConfig::run_from_args(args);
             assert_eq!(
                 (config.stream_radius, config.unload_radius),
                 (radius, radius + 1)
             );
+            // No distance limit: the grid fit, not the retail default.
+            config.sun_shadow_distance_limit = None;
             let cascades = sun_shadow_cascades(&config);
             assert_eq!(cascades.bounds.len(), SUN_SHADOW_CASCADES);
             assert_eq!(
@@ -4663,6 +4704,7 @@ mod tests {
         let nothing = EngineConfig {
             stream_radius: -4,
             unload_radius: -3,
+            sun_shadow_distance_limit: None,
             ..EngineConfig::default()
         };
         let cascades = sun_shadow_cascades(&nothing);
@@ -4672,7 +4714,8 @@ mod tests {
         // A radius no engine could stream is capped rather than asked for: the range is fitted to
         // the widest grid `sun_shadow_cascades` will fit one to.
         let args = ["--stream-radius".to_owned(), "100000".to_owned()];
-        let gigametres = EngineConfig::run_from_args(args);
+        let mut gigametres = EngineConfig::run_from_args(args);
+        gigametres.sun_shadow_distance_limit = None;
         let widest = cell * SUN_SHADOW_MAX_GRID_CELLS as f32 * std::f32::consts::SQRT_2;
         let reach = widest.hypot(camera_offset(&gigametres).y);
         let cascades = sun_shadow_cascades(&gigametres);

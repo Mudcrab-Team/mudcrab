@@ -253,10 +253,14 @@ mod tests {
     }
 
     #[test]
-    fn malformed_or_unusable_shadow_distances_leave_the_limit_unset() {
+    fn malformed_or_unusable_shadow_distances_keep_the_retail_default() {
         for value in ["0", "699", "NaN", "inf", "far"] {
             let config = apply(&format!("[Display]\nfShadowDistance={value}\n"));
-            assert_eq!(config.sun_shadow_distance_limit, None, "{value}");
+            assert_eq!(
+                config.sun_shadow_distance_limit,
+                Some(crate::config::RETAIL_SUN_SHADOW_DISTANCE),
+                "{value}"
+            );
         }
     }
 }
