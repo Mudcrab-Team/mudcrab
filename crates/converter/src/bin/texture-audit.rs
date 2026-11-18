@@ -23,7 +23,7 @@ use color_eyre::{
     eyre::{WrapErr, bail, ensure},
 };
 use converter::texture_audit::{
-    AuditOptions, Baseline, SourceCatalog, audit_pack, compare_to_baseline, findings_csv,
+    AuditOptions, Baseline, Report, SourceCatalog, audit_pack, compare_to_baseline, findings_csv,
     improvements, lock_pack, plugin_names,
 };
 use std::{
@@ -212,6 +212,13 @@ fn main() -> Result<()> {
         }
     }
 
+    ensure_distinct_paths(&[
+        ("--json", args.json.as_deref()),
+        ("--csv", args.csv.as_deref()),
+        ("--baseline", args.baseline.as_deref()),
+        ("--write-baseline", args.write_baseline.as_deref()),
+    ])?;
+
     // Hold the pack from the first read (the plugin order) to the last (the database), so the
     // report describes one pack.
     let _lock = lock_pack(&pack)?;
@@ -259,42 +266,50 @@ fn main() -> Result<()> {
         eprintln!("INCOMPLETE {reason}");
     }
 
-    // Compare with the baseline before anything is written, so `--write-baseline` on the same
-    // file cannot replace the ceiling it is about to be checked against.
-    let mut failed = false;
-    if let Some(path) = &args.baseline {
+    apply_baselines(
+        &report,
+        args.baseline.as_deref(),
+        args.write_baseline.as_deref(),
+        args.strict,
+    )
+}
+
+/// Checks the report against `--baseline`, then writes `--write-baseline`.
+///
+/// The comparison comes first and a failed one ends the run before anything is written, so a
+/// stale ceiling that `--strict` rejects is not silently replaced and a regression never reaches
+/// the file. `--write-baseline` onto an existing file refuses to raise it.
+fn apply_baselines(
+    report: &Report,
+    baseline: Option<&Path>,
+    write: Option<&Path>,
+    strict: bool,
+) -> Result<()> {
+    if let Some(path) = baseline {
         let baseline = read_baseline(path)?;
-        let regressions = compare_to_baseline(&report, &baseline);
+        let regressions = compare_to_baseline(report, &baseline);
         for line in &regressions {
             eprintln!("REGRESSION {line}");
         }
-        failed |= !regressions.is_empty();
-        let lower = improvements(&report, &baseline);
+        let lower = improvements(report, &baseline);
         for line in &lower {
-            eprintln!(
-                "{} {line}",
-                if args.strict {
-                    "STALE BASELINE"
-                } else {
-                    "note:"
-                }
-            );
+            eprintln!("{} {line}", if strict { "STALE BASELINE" } else { "note:" });
         }
-        failed |= args.strict && !lower.is_empty();
-        if !failed {
-            eprintln!("texture audit is within its baseline");
+        if !regressions.is_empty() || (strict && !lower.is_empty()) {
+            bail!("texture audit failed its baseline check");
         }
+        eprintln!("texture audit is within its baseline");
     }
-    if let Some(path) = &args.write_baseline {
+    if let Some(path) = write {
         let mut next = Baseline::from_report(
-            &report,
+            report,
             "Written by texture-audit --write-baseline; lower a value when a cause is fixed",
         );
         if path.is_file() {
             // An existing baseline only goes down: refuse a write that would raise it or that
             // records an incomplete audit, and keep its note.
             let prior = read_baseline(path)?;
-            let regressions = compare_to_baseline(&report, &prior);
+            let regressions = compare_to_baseline(report, &prior);
             if !regressions.is_empty() {
                 for line in &regressions {
                     eprintln!("REGRESSION {line}");
@@ -306,7 +321,7 @@ fn main() -> Result<()> {
             }
             next.note = prior.note;
         } else {
-            let reasons = converter::texture_audit::incomplete(&report);
+            let reasons = converter::texture_audit::incomplete(report);
             ensure!(
                 reasons.is_empty(),
                 "refusing to write {}: the audit is incomplete: {}",
@@ -317,8 +332,29 @@ fn main() -> Result<()> {
         fs::write(path, serde_json::to_vec_pretty(&next)?)?;
         eprintln!("baseline written to {}", path.display());
     }
-    if failed {
-        bail!("texture audit failed its baseline check");
+    Ok(())
+}
+
+/// Refuses two outputs that name one file, and a report that names the baseline. `--baseline` and
+/// `--write-baseline` may name the same file (compare, then lower it). Paths resolve through
+/// symbolic links, so an alias cannot hide the overlap.
+fn ensure_distinct_paths(paths: &[(&str, Option<&Path>)]) -> Result<()> {
+    let mut seen: Vec<(&str, PathBuf)> = Vec::new();
+    for (label, path) in paths {
+        let Some(path) = path else { continue };
+        let resolved = resolve_for_write(path)?;
+        for (other, other_path) in &seen {
+            let baseline_pair = matches!(
+                (*other, *label),
+                ("--baseline", "--write-baseline") | ("--write-baseline", "--baseline")
+            );
+            ensure!(
+                *other_path != resolved || baseline_pair,
+                "{label} and {other} name the same file {}; give each output its own path",
+                path.display()
+            );
+        }
+        seen.push((label, resolved));
     }
     Ok(())
 }
@@ -331,6 +367,113 @@ fn read_baseline(path: &Path) -> Result<Baseline> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use converter::texture_audit::Cause;
+
+    /// A complete report with `count` unresolved slots of one cause.
+    fn report_with(count: u64) -> Report {
+        let mut report = Report::default();
+        report.summary.glb_files = 1;
+        report
+            .summary
+            .counts_by_cause
+            .insert(Cause::SourceTextureAbsent, count);
+        report
+    }
+
+    /// Writes a baseline whose only ceiling is `ceiling` slots of one cause.
+    fn write_ceiling(path: &Path, ceiling: u64) {
+        let baseline = Baseline::from_report(&report_with(ceiling), "kept note");
+        fs::write(path, serde_json::to_vec_pretty(&baseline).unwrap()).unwrap();
+    }
+
+    fn ceiling(path: &Path) -> u64 {
+        read_baseline(path).unwrap().max_by_cause[&Cause::SourceTextureAbsent]
+    }
+
+    #[test]
+    fn a_failed_comparison_returns_before_any_baseline_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let baseline = dir.path().join("baseline.json");
+        write_ceiling(&baseline, 5);
+
+        // `--strict` rejects a stale ceiling (3 < 5). Writing the same file must not lower it
+        // first and then fail.
+        let error =
+            apply_baselines(&report_with(3), Some(&baseline), Some(&baseline), true).unwrap_err();
+        assert!(format!("{error:#}").contains("failed its baseline check"));
+        assert_eq!(ceiling(&baseline), 5);
+
+        // A regression (7 > 5) writes nothing, not even a new file.
+        let fresh = dir.path().join("fresh.json");
+        assert!(apply_baselines(&report_with(7), Some(&baseline), Some(&fresh), false).is_err());
+        assert!(!fresh.exists());
+        assert!(apply_baselines(&report_with(7), Some(&baseline), Some(&baseline), false).is_err());
+        assert_eq!(ceiling(&baseline), 5);
+
+        // Without `--strict` a stale ceiling passes the check and the write lowers it, keeping
+        // the note.
+        apply_baselines(&report_with(3), Some(&baseline), Some(&baseline), false).unwrap();
+        assert_eq!(ceiling(&baseline), 3);
+        assert_eq!(read_baseline(&baseline).unwrap().note, "kept note");
+    }
+
+    #[test]
+    fn outputs_may_not_name_the_baseline_or_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let (json, csv, baseline) = (
+            base.join("report.json"),
+            base.join("report.csv"),
+            base.join("baseline.json"),
+        );
+        let paths = |json: &Path, csv: &Path, check: &Path, write: &Path| {
+            ensure_distinct_paths(&[
+                ("--json", Some(json)),
+                ("--csv", Some(csv)),
+                ("--baseline", Some(check)),
+                ("--write-baseline", Some(write)),
+            ])
+        };
+        // Distinct files, and `--baseline` with `--write-baseline` on one file, are fine.
+        paths(&json, &csv, &baseline, &baseline).unwrap();
+        // A report that names the baseline would overwrite it before it is read.
+        let error = paths(&baseline, &csv, &baseline, &baseline).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("--baseline and --json"),
+            "{error:#}"
+        );
+        let error = paths(&json, &baseline, &baseline, &base.join("next.json")).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("--baseline and --csv"),
+            "{error:#}"
+        );
+        // Two reports on one file, and `--write-baseline` on a report.
+        assert!(paths(&json, &json, &baseline, &baseline).is_err());
+        assert!(paths(&json, &csv, &baseline, &csv).is_err());
+        // A different spelling of the same file counts as the same file.
+        let spelled = base.join("sub/../baseline.json");
+        assert!(paths(&spelled, &csv, &baseline, &baseline).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_the_baseline_cannot_be_used_as_a_report_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let baseline = base.join("baseline.json");
+        let alias = base.join("report.json");
+        std::os::unix::fs::symlink(&baseline, &alias).unwrap();
+        let error = ensure_distinct_paths(&[
+            ("--json", Some(alias.as_path())),
+            ("--baseline", Some(baseline.as_path())),
+        ])
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("name the same file"),
+            "{error:#}"
+        );
+    }
 
     #[cfg(unix)]
     mod symlinks {

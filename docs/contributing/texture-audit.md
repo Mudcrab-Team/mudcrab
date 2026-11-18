@@ -38,7 +38,7 @@ The pack and the game data are only read. The pack is held under its shared asse
 
 An audit is incomplete when a mesh or archive could not be read, no NIF slot or texture set was read, or a record could not be decoded. Findings are missing then, so an incomplete audit never passes a baseline. `--mesh-filter` audits part of the pack and refuses `--baseline` and `--write-baseline`.
 
-The baseline is a ceiling that only goes down. A cause above its value fails. With `--strict`, and in the full-pack test, a cause below its value also fails and names the value to lower it to, so a later regression cannot hide under the old ceiling. `--write-baseline` refuses to write over an existing baseline when a count would rise.
+The baseline is a ceiling that only goes down. A cause above its value fails. With `--strict`, and in the full-pack test, a cause below its value also fails and names the value to lower it to, so a later regression cannot hide under the old ceiling. `--write-baseline` refuses to write over an existing baseline when a count would rise. A failed comparison ends the run before anything is written, and `--json` and `--csv` may not name the baseline or each other.
 
 The same checks run as tests. `crates/converter/tests/texture_audit.rs` audits a small synthetic pack and a small world database in CI, one case per cause. The ignored test `full_pack_stays_within_its_baseline` audits a real pack (`MUDCRAB_TEXTURE_AUDIT_PACK`, `MUDCRAB_GAME_DATA`). When a cause is fixed, lower its value in the baseline file; never raise one.
 
