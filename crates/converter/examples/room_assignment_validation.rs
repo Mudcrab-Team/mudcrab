@@ -2,6 +2,7 @@
 //!
 //! Each invocation replaces all room metadata with the selected cells. Use a fresh private copy
 //! for independent cell sets, or include every desired cell when reusing a copy.
+//! Requires Unix hard-link validation and exclusive access to the private asset copy.
 use color_eyre::{Result, eyre::ensure};
 use converter::{
     archive::ArchiveExtractor,
@@ -20,6 +21,10 @@ use std::{
 
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    run(&args)
+}
+
+fn run(args: &[String]) -> Result<()> {
     ensure!(
         args.len() == 3,
         "usage: room_assignment_validation <Skyrim Data> <private assets> <cell-id,cell-id,...>"
@@ -27,6 +32,7 @@ fn main() -> Result<()> {
     let data = Path::new(&args[0]);
     let assets = Path::new(&args[1]);
     validate_private_assets(assets)?;
+    let _asset_lock = shared::asset_lock::AssetLock::acquire_exclusive(assets)?;
     let report_path = assets
         .parent()
         .unwrap()
@@ -167,6 +173,10 @@ fn rebuild_room_graph(
 }
 
 fn validate_private_assets(assets: &Path) -> Result<()> {
+    ensure!(
+        cfg!(unix),
+        "private capture preparation requires Unix hard-link validation"
+    );
     let absolute = std::path::absolute(assets)?;
     for path in absolute.ancestors() {
         ensure!(
@@ -350,6 +360,68 @@ mod tests {
         assert_eq!(
             rules,
             vec![(71, "unknown".into(), None), (72, "auto".into(), None)]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capture_preparation_respects_readers_before_writing() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let assets = root.join("assets");
+        fs::create_dir(&assets).unwrap();
+        let database = assets.join("skyrim_world.db");
+        fs::write(&database, b"independent database").unwrap();
+        let report = root.join("room-assignment-preparation.json");
+        fs::write(&report, b"previous receipt").unwrap();
+        let reader = shared::asset_lock::AssetLock::acquire_shared(&assets).unwrap();
+        let args = vec![
+            root.join("Data").display().to_string(),
+            assets.display().to_string(),
+            "7".into(),
+        ];
+        let error = run(&args).unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<shared::asset_lock::AssetLockError>()
+                .is_some_and(|e| e.is_held()),
+            "{error:#}"
+        );
+        assert_eq!(fs::read(&database).unwrap(), b"independent database");
+        assert_eq!(fs::read(&report).unwrap(), b"previous receipt");
+        drop(reader);
+        assert!(run(&args).is_err());
+        assert!(
+            shared::asset_lock::AssetLock::acquire_exclusive(&assets).is_ok(),
+            "failed preparation must release its lock"
+        );
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn capture_preparation_refuses_unverified_database_independence() {
+        let root = tempfile::tempdir().unwrap();
+        let assets = root.path().join("assets");
+        fs::create_dir(&assets).unwrap();
+        let database = assets.join("skyrim_world.db");
+        fs::write(&database, b"independent database").unwrap();
+        let args = vec![
+            root.path().join("Data").display().to_string(),
+            assets.display().to_string(),
+            "7".into(),
+        ];
+        let error = run(&args).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("requires Unix hard-link validation")
+        );
+        assert_eq!(fs::read(&database).unwrap(), b"independent database");
+        assert!(
+            !root
+                .path()
+                .join("room-assignment-preparation.json")
+                .exists()
         );
     }
 
