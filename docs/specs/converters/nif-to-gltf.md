@@ -282,7 +282,8 @@ other unparsed block type still refuses the tag. Mesh contract
 
 A few retail shapes store a NaN or infinite half-float UV in one vertex (the Whiterun guard house wall
 `WRGuardHouse01:48` has one in 1,095 vertices). The reader used to remove the whole `TEXCOORD_0`
-attribute for such a shape, so every vertex sampled one texel and the surface drew as a flat colour.
+attribute for such a shape. Bevy 0.19 skips the base-colour sample of a mesh without UVs, so the
+surface drew its flat base colour.
 It now replaces each non-finite component with zero, keeps the attribute and logs the count.
 This is an engineering guard, not a retail rule: the retail look of the triangles around such a vertex
 was not traced (no row in the retail registry), and zero is only the neutral value. Those triangles can

@@ -1421,9 +1421,9 @@ fn normalize_vertex_influences(
 /// Replaces each non-finite UV component with zero and returns how many it replaced.
 ///
 /// A few retail NIFs store a NaN or infinite half-float in one vertex. Dropping the whole UV
-/// attribute for that shape (the previous behaviour) leaves every vertex sampling one texel, so a
-/// textured wall renders as a flat colour. Zeroing only the bad components keeps the rest of the
-/// mapping.
+/// attribute for that shape (the previous behaviour) leaves the mesh without UVs. Bevy 0.19 then
+/// skips the base-colour sample, so a textured wall draws its flat base colour. Zeroing only the
+/// bad components keeps the rest of the mapping.
 ///
 /// This is an engineering guard, not a retail rule: how the retail renderer draws a NaN texture
 /// coordinate was not traced (Direct3D 11 leaves the sampler result undefined), and zero is only
