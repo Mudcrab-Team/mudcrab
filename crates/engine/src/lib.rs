@@ -61,6 +61,7 @@ pub mod terrain_merge;
 pub mod terrain_upload;
 #[cfg(test)]
 mod test_support;
+pub mod texture_fallback;
 pub mod tone_mapping;
 mod underwater;
 mod underwater_pass;
