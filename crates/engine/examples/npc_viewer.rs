@@ -1298,3 +1298,43 @@ fn finish_npc(world: &mut World, viewer: &mut Viewer, capture: &mut Capture) {
 fn pack_dir(viewer: &Viewer) -> &Path {
     &viewer.assets
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn converted_scene_follows_the_streamed_world_rule() {
+        for source in [
+            "actors/character/facegendata/facegeom/skyrim.esm/00013669.nif",
+            r"Actors\Character\FaceGenData\FaceGeom\Skyrim.esm\00013669.NIF",
+            "Meshes/actors/character/facegendata/facegeom/skyrim.esm/00013669.nif",
+        ] {
+            assert_eq!(
+                converted_scene(source),
+                "meshes/actors/character/facegendata/facegeom/skyrim.esm/00013669.glb",
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn finds_an_npc_by_hex_form_id_or_editor_id() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE npcs(id INTEGER, editor_id TEXT, full_name TEXT, race_id INTEGER, class_id INTEGER, flags INTEGER);
+                 CREATE TABLE records(form_id INTEGER, data BLOB);
+                 INSERT INTO npcs VALUES (79977, 'CarriageDriverWhiterun', 'Bjorlam', 79686, 0, 0);
+                 INSERT INTO records VALUES (79686, X'4E6F7264526163650000');",
+            )
+            .unwrap();
+        for query in ["0x13869", "13869", "carriagedriverwhiterun"] {
+            let npc = find_npc(&connection, query).unwrap();
+            assert_eq!(npc.form_id, 79977, "{query}");
+            assert_eq!(npc.name, "Bjorlam");
+            assert_eq!(npc.race, "NordRace");
+        }
+        assert!(find_npc(&connection, "NoSuchNpc").is_err());
+    }
+}
