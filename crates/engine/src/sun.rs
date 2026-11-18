@@ -307,6 +307,9 @@ pub(crate) struct SunUpdateState {
     problem: Option<SunPathProblem>,
     previous: Option<SunFrame>,
     transition_reported: bool,
+    /// Counts discontinuities (time, world or path changes). Each sun records the count it last
+    /// applied, so a sun the interior lighting held during a change refreshes when it returns.
+    refreshes: u64,
 }
 
 /// Advance continuous illumination and the independent stepped shadow basis before rendering.
@@ -385,13 +388,18 @@ pub(crate) fn update_sun(
             || previous.shadow_settings.threshold_degrees != config.sun_shadow.threshold_degrees
             || previous.shadow_settings.max_hold_seconds != config.sun_shadow.max_hold_seconds
     }) || (time.delta_secs_f64() * clock.timescale).abs() >= 900.0;
+    if immediate {
+        state.refreshes = state.refreshes.wrapping_add(1);
+    }
     let moving_seconds = if before == clock.hour {
         0.0
     } else {
         time.delta_secs_f64()
     };
     for (mut transform, mut shadow) in &mut sun {
-        shadow.update(rotation, config.sun_shadow, moving_seconds, immediate);
+        let refresh = shadow.refreshes_applied != state.refreshes;
+        shadow.refreshes_applied = state.refreshes;
+        shadow.update(rotation, config.sun_shadow, moving_seconds, refresh);
         if transform.rotation != rotation {
             transform.rotation = rotation;
         }

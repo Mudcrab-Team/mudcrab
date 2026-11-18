@@ -40,6 +40,8 @@ pub(crate) struct SunShadowDirection {
     pub(crate) rotation: Quat,
     initialized: bool,
     seconds_held: f64,
+    /// The sun driver's discontinuity count this sun last applied.
+    pub(crate) refreshes_applied: u64,
 }
 
 impl SunShadowDirection {
@@ -375,6 +377,46 @@ mod tests {
         assert_eq!(
             shadow_rotation(&app, sun),
             app.world().get::<Transform>(sun).unwrap().rotation
+        );
+    }
+
+    /// An hour change while the interior lighting holds the sun still refreshes its shadows once
+    /// the sun returns, even with frozen time and a threshold that never triggers.
+    #[test]
+    fn a_change_while_the_sun_is_held_indoors_refreshes_on_return() {
+        use crate::world::environment::interior::ExteriorSunState;
+        let config = EngineConfig {
+            sun_shadow: SunShadowSettings {
+                threshold_degrees: 180.0,
+                max_hold_seconds: 1000.0,
+                ..default()
+            },
+            ..default()
+        };
+        let (mut app, sun, _) = fixture(config);
+        app.world_mut().resource_mut::<GameClock>().hour = 8.0;
+        advance(&mut app, 0.0);
+        let morning = shadow_rotation(&app, sun);
+
+        app.world_mut()
+            .entity_mut(sun)
+            .insert(ExteriorSunState::held_for_tests());
+        app.world_mut().resource_mut::<GameClock>().hour = 17.0;
+        advance(&mut app, 0.0);
+        assert_eq!(
+            shadow_rotation(&app, sun),
+            morning,
+            "a held sun keeps its basis"
+        );
+
+        app.world_mut().entity_mut(sun).remove::<ExteriorSunState>();
+        advance(&mut app, 0.0);
+        let evening = app.world().get::<Transform>(sun).unwrap().rotation;
+        assert_ne!(evening, morning);
+        assert_eq!(
+            shadow_rotation(&app, sun),
+            evening,
+            "the returning sun applies the change made while it was held",
         );
     }
 
