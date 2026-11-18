@@ -33,7 +33,8 @@ jobs:
   kani:
     name: Kani proofs (retail-rules)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The proofs took about 7 minutes before the whole-function harness, which adds an estimated 6.
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
