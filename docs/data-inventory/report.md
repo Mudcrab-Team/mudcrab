@@ -6,9 +6,9 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 
 ## Denominators
 
-- rusqlite_candidates: 88
+- rusqlite_candidates: 91
 - emitted_schema_columns: unknown
-- manually_traced_fields: 14
+- manually_traced_fields: 18
 - named_external_stores: 3
 
 ## Traced examples
@@ -20,13 +20,17 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 | `emittance.day_g` | source_decoded | source_preserved | source_projected | source_reference | source_mapping | source_sink | result: Day color maps through ReferenceEmittance to lit_by; other time slots are not implied. |
 | `emittance.day_r` | source_decoded | source_preserved | source_projected | source_reference | source_mapping | source_sink | result: Day color maps through ReferenceEmittance to lit_by; other time slots are not implied. |
 | `inhouse_source_records.payload` | unknown | source_preserved | source_projected | unknown | unknown | unknown | provenance: Opaque archive/payload disposition. Preservation does not establish interpretation of every subrecord. Current image-space reader decodes selected records.data; no blanket unused claim. |
-| `lights.falloff` | source_decoded | source_preserved | source_projected | unknown | unknown | unknown | result: Published LIGH falloff; no mapping in the audited ReferenceQuery light suffix. Other paths remain unknown. Active PR #488 adds a consumer; it is not part of this reviewed head. |
-| `lights.radius` | source_decoded | source_preserved | source_projected | source_reference | source_mapping | source_sink | result: Source path sets PointLight.range and intensity through radius_of; overrides and caps remain separate policy. No native parity claim. |
+| `lights.fade_status` | source_decoded | source_preserved | source_projected | unknown | unknown | source_sink | result: Status of the LIGH FNAM fade: 0 absent, 1 valid, 2 malformed or negative. evaluate_light treats status 2 as unit fade (#488). The SELECT mapping is not verified: the column is optional and added by a format! fragment. |
+| `lights.falloff` | source_decoded | source_preserved | source_projected | unknown | unknown | unknown | result: Published LIGH falloff. Since #488 it reaches LightRow.falloff and evaluate_light reads it only for lights whose flags carry a shadow mode (0x1C00); the renderer does not apply it (counted as unsupported_falloff). No mapping in the audited ReferenceQuery light suffix; other paths remain unknown. |
+| `lights.radius` | source_decoded | source_preserved | source_projected | source_reference | source_mapping | source_sink | result: Source path: evaluate_light adds the reference's signed XRDS offset to this radius (#488) and sets PointLight.range through backend_range; the 0.1 fallback, the 8192 cap and the intensity normalization remain separate backend policy. No native parity claim. |
 | `movement_types.forward_run` | source_decoded | source_preserved | source_projected | source_reference | source_mapping | source_sink | result: Selected NPC_Default_MT speed feeds directional target_speed. Selection and sprint multiplier remain #264 research gaps. |
 | `race_movement_links.run_movt_id` | source_decoded | source_preserved | source_projected | source_reference | source_mapping | source_sink | validation: Read to reject unsupported non-null race selection; not proof that the linked movement profile controls speed. Active PR #246 owns selection changes. |
 | `race_movement_links.walk_movt_id` | source_decoded | source_preserved | source_projected | source_reference | source_mapping | source_sink | validation: Read to reject unsupported non-null race selection; not proof that the linked movement profile controls speed. Active PR #246 owns selection changes. |
 | `records.data` | unknown | source_preserved | source_projected | unknown | unknown | unknown | provenance: Opaque archive/payload disposition. Preservation does not establish interpretation of every subrecord. Current image-space reader decodes selected records.data; no blanket unused claim. |
+| `reference_light_data.data_size` | source_decoded | source_preserved | source_projected | unknown | unknown | source_sink | result: Byte size of the XLIG subrecord. evaluate_light accepts only 16 or 20 bytes and counts any other size as malformed reference data (#488). |
+| `reference_light_data.fade_offset` | source_decoded | source_preserved | source_projected | unknown | unknown | source_sink | result: Second float of the REFR XLIG subrecord (xEdit name; not traced to a retail row beyond RF-LIGHT-GPU-007). evaluate_light adds it to the base fade (#488). A 16 or 20 byte XLIG is the only valid size. |
 | `references.data` | unknown | source_preserved | source_projected | unknown | unknown | unknown | provenance: Opaque archive/payload disposition. Preservation does not establish interpretation of every subrecord. Current image-space reader decodes selected records.data; no blanket unused claim. |
+| `references.radius_status` | source_decoded | source_preserved | source_projected | unknown | unknown | source_sink | result: Status of the reference XRDS radius offset: 0 absent, 1 valid, 2 malformed or not finite. evaluate_light rejects the radius when the status is 2 (#488). The SELECT mapping is not verified: the column is optional and added by a format! fragment. |
 | `waters.deep_color` | source_decoded | source_preserved | source_projected | source_reference | unknown | source_sink | filter, result: Value maps to WaterColors.deep and then, through render::water_deep_color, to the water material base colour. Opacity remains an approximation; native parity unproven. The SELECT mapping is no longer verified: the water-colors query is built with format! for its optional opacity and data columns, and the lexical scan resolves only plain literals and constants. |
 | `waters.shallow_color` | source_decoded | source_preserved | source_projected | source_reference | unknown | source_sink | filter, result: Non-NULL predicate gates eligibility; value maps to WaterColors.shallow. Since #299 the water material setup passes it to WaterExtension::with_body and the underwater pass reads it. The SELECT mapping is no longer verified: the water-colors query is built with format! for its optional opacity and data columns, and the lexical scan resolves only plain literals and constants. |
 
@@ -43,13 +47,17 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 - `emittance.day_g`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/emittance.rs](../../crates/engine/src/emittance.rs), [crates/engine/src/streaming.rs](../../crates/engine/src/streaming.rs), [crates/engine/src/world/database.rs](../../crates/engine/src/world/database.rs). Exact anchors in inventory.json.
 - `emittance.day_r`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/emittance.rs](../../crates/engine/src/emittance.rs), [crates/engine/src/streaming.rs](../../crates/engine/src/streaming.rs), [crates/engine/src/world/database.rs](../../crates/engine/src/world/database.rs). Exact anchors in inventory.json.
 - `inhouse_source_records.payload`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/world/imagespace.rs](../../crates/engine/src/world/imagespace.rs). Exact anchors in inventory.json.
+- `lights.fade_status`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/lights.rs](../../crates/engine/src/lights.rs), [crates/engine/src/world/database.rs](../../crates/engine/src/world/database.rs). Exact anchors in inventory.json.
 - `lights.falloff`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/world/database.rs](../../crates/engine/src/world/database.rs). Exact anchors in inventory.json.
 - `lights.radius`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/lights.rs](../../crates/engine/src/lights.rs), [crates/engine/src/world/database.rs](../../crates/engine/src/world/database.rs). Exact anchors in inventory.json.
 - `movement_types.forward_run`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/physics.rs](../../crates/engine/src/physics.rs). Exact anchors in inventory.json.
 - `race_movement_links.run_movt_id`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/physics.rs](../../crates/engine/src/physics.rs). Exact anchors in inventory.json.
 - `race_movement_links.walk_movt_id`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/physics.rs](../../crates/engine/src/physics.rs). Exact anchors in inventory.json.
 - `records.data`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/world/imagespace.rs](../../crates/engine/src/world/imagespace.rs). Exact anchors in inventory.json.
+- `reference_light_data.data_size`: [crates/converter/src/esm/reference_links.rs](../../crates/converter/src/esm/reference_links.rs), [crates/engine/src/lights.rs](../../crates/engine/src/lights.rs). Exact anchors in inventory.json.
+- `reference_light_data.fade_offset`: [crates/converter/src/esm/reference_links.rs](../../crates/converter/src/esm/reference_links.rs), [crates/engine/src/lights.rs](../../crates/engine/src/lights.rs). Exact anchors in inventory.json.
 - `references.data`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/world/imagespace.rs](../../crates/engine/src/world/imagespace.rs). Exact anchors in inventory.json.
+- `references.radius_status`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/lights.rs](../../crates/engine/src/lights.rs), [crates/engine/src/world/database.rs](../../crates/engine/src/world/database.rs). Exact anchors in inventory.json.
 - `waters.deep_color`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/streaming.rs](../../crates/engine/src/streaming.rs), [crates/engine/src/world/database.rs](../../crates/engine/src/world/database.rs). Exact anchors in inventory.json.
 - `waters.shallow_color`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/streaming.rs](../../crates/engine/src/streaming.rs), [crates/engine/src/world/database.rs](../../crates/engine/src/world/database.rs). Exact anchors in inventory.json.
 
@@ -111,39 +119,42 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 | `crates/engine/src/world/actor_catalog.rs:220` prepare | unknown |
 | `crates/engine/src/world/actor_catalog.rs:221` prepare | unknown |
 | `crates/engine/src/world/actor_catalog.rs:280` prepare | literal |
-| `crates/engine/src/world/database.rs:539` prepare | literal |
-| `crates/engine/src/world/database.rs:554` prepare | literal |
-| `crates/engine/src/world/database.rs:568` prepare | literal |
-| `crates/engine/src/world/database.rs:586` prepare | literal |
-| `crates/engine/src/world/database.rs:587` query_row | unknown |
-| `crates/engine/src/world/database.rs:603` prepare | unknown |
-| `crates/engine/src/world/database.rs:652` query_row | literal |
-| `crates/engine/src/world/database.rs:658` query_row | literal |
-| `crates/engine/src/world/database.rs:961` query_row | literal |
-| `crates/engine/src/world/database.rs:1107` query_row | literal |
-| `crates/engine/src/world/database.rs:1114` query_row | literal |
-| `crates/engine/src/world/database.rs:1126` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:1163` query_row | literal |
-| `crates/engine/src/world/database.rs:1186` query_row | literal |
-| `crates/engine/src/world/database.rs:1210` query_row | literal |
-| `crates/engine/src/world/database.rs:1218` query_row | literal |
-| `crates/engine/src/world/database.rs:1228` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:1270` query_row | literal |
-| `crates/engine/src/world/database.rs:1467` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:1468` query_row | unknown |
-| `crates/engine/src/world/database.rs:1476` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:1477` query_row | unknown |
-| `crates/engine/src/world/database.rs:1501` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:1527` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:1530` query_row | unknown |
-| `crates/engine/src/world/database.rs:1537` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:1541` query_row | unknown |
-| `crates/engine/src/world/database.rs:1614` query_row | literal |
-| `crates/engine/src/world/database.rs:1661` query_row | literal |
-| `crates/engine/src/world/database.rs:1678` prepare_cached | unknown |
-| `crates/engine/src/world/database.rs:1688` prepare_cached | unknown |
-| `crates/engine/src/world/database.rs:1699` prepare_cached | unknown |
-| `crates/engine/src/world/database.rs:1700` query_row | unknown |
+| `crates/engine/src/world/database.rs:559` prepare | literal |
+| `crates/engine/src/world/database.rs:574` prepare | literal |
+| `crates/engine/src/world/database.rs:588` prepare | literal |
+| `crates/engine/src/world/database.rs:606` prepare | literal |
+| `crates/engine/src/world/database.rs:607` query_row | unknown |
+| `crates/engine/src/world/database.rs:623` prepare | unknown |
+| `crates/engine/src/world/database.rs:672` query_row | literal |
+| `crates/engine/src/world/database.rs:678` query_row | literal |
+| `crates/engine/src/world/database.rs:981` query_row | literal |
+| `crates/engine/src/world/database.rs:1127` query_row | literal |
+| `crates/engine/src/world/database.rs:1134` query_row | literal |
+| `crates/engine/src/world/database.rs:1146` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1183` query_row | literal |
+| `crates/engine/src/world/database.rs:1206` query_row | literal |
+| `crates/engine/src/world/database.rs:1230` query_row | literal |
+| `crates/engine/src/world/database.rs:1238` query_row | literal |
+| `crates/engine/src/world/database.rs:1248` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1290` query_row | literal |
+| `crates/engine/src/world/database.rs:1487` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1488` query_row | unknown |
+| `crates/engine/src/world/database.rs:1496` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1497` query_row | unknown |
+| `crates/engine/src/world/database.rs:1521` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1547` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1550` query_row | unknown |
+| `crates/engine/src/world/database.rs:1557` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1561` query_row | unknown |
+| `crates/engine/src/world/database.rs:1634` query_row | literal |
+| `crates/engine/src/world/database.rs:1657` query_row | literal |
+| `crates/engine/src/world/database.rs:1668` query_row | literal |
+| `crates/engine/src/world/database.rs:1680` query_row | literal |
+| `crates/engine/src/world/database.rs:1716` query_row | literal |
+| `crates/engine/src/world/database.rs:1733` prepare_cached | unknown |
+| `crates/engine/src/world/database.rs:1743` prepare_cached | unknown |
+| `crates/engine/src/world/database.rs:1754` prepare_cached | unknown |
+| `crates/engine/src/world/database.rs:1755` query_row | unknown |
 | `crates/engine/src/world/environment.rs:606` prepare | literal |
 | `crates/engine/src/world/environment.rs:645` prepare | literal |
 | `crates/engine/src/world/environment.rs:739` prepare | literal |

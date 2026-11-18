@@ -91,6 +91,8 @@ const MAIN_CORE_TABLES: &[&str] = &[
     "records",
     "reference_activate_parents",
     "reference_details",
+    // #488: authored reference light data (XLIG), a core projection.
+    "reference_light_data",
     "reference_linked_refs",
     "reference_rooms",
     "references",
