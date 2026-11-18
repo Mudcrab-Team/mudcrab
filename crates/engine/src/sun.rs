@@ -293,6 +293,14 @@ struct SunFrame {
     shadow_settings: SunShadowSettings,
 }
 
+/// Suns the game clock turns. Sky modes 1 and 2 hold the sun with the cell key light
+/// (RF-LIGHT-CPU-011), so a sun with `ExteriorSunState` keeps its interior rotation
+/// (`world::environment::interior`).
+type ClockDrivenSun = (
+    With<SunLight>,
+    Without<crate::world::environment::interior::ExteriorSunState>,
+);
+
 /// Per-driver history and one-time diagnostics.
 #[derive(Default)]
 pub(crate) struct SunUpdateState {
@@ -314,15 +322,7 @@ pub(crate) fn update_sun(
     config: Res<EngineConfig>,
     catalog: Option<Res<EnvironmentCatalog>>,
     space: Option<Res<ActiveSpace>>,
-    // Sky modes 1 and 2 hold the sun with the cell key light (RF-LIGHT-CPU-011): the clock must
-    // not turn it (`world::environment::interior`).
-    mut sun: Query<
-        (&mut Transform, &mut SunShadowDirection),
-        (
-            With<SunLight>,
-            Without<crate::world::environment::interior::ExteriorSunState>,
-        ),
-    >,
+    mut sun: Query<(&mut Transform, &mut SunShadowDirection), ClockDrivenSun>,
     mut state: Local<SunUpdateState>,
 ) {
     let before = clock.hour;
