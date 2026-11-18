@@ -57,22 +57,27 @@ pub(crate) fn resolve_localized_fields(
             .is_some_and(|metadata| metadata.flags & LOCALIZED != 0);
         let mut perk_epft: Option<u8> = None;
         for (index, (tag, data)) in record.subrecords.iter_mut().enumerate() {
-            let is_perk_localized_epfd = if record.record_type == *b"PERK" {
+            if record.record_type == *b"PERK" {
                 match tag.as_slice() {
-                    b"PRKE" | b"PRKF" => {
-                        perk_epft = None;
-                        false
+                    b"PRKE" | b"PRKF" => perk_epft = None,
+                    b"EPFT" => perk_epft = (data.len() == 1).then(|| data[0]),
+                    _ if matches!(
+                        tag.as_slice(),
+                        b"EDID" | b"ICON" | b"MICO" | b"CIS1" | b"CIS2"
+                    ) || (tag.as_slice() == b"EPFD" && perk_epft == Some(6)) =>
+                    {
+                        let end = data
+                            .iter()
+                            .position(|&byte| byte == 0)
+                            .unwrap_or(data.len());
+                        *data = runtime_string(&records::decode_text(&data[..end]));
+                        continue;
                     }
-                    b"EPFT" => {
-                        perk_epft = (data.len() == 1).then(|| data[0]);
-                        false
-                    }
-                    b"EPFD" => perk_epft == Some(7),
-                    _ => false,
+                    _ => {}
                 }
-            } else {
-                false
-            };
+            }
+            let is_perk_localized_epfd =
+                record.record_type == *b"PERK" && tag.as_slice() == b"EPFD" && perk_epft == Some(7);
             let Some(bank) = records::localized_field_bank(&record.record_type, tag)
                 .or_else(|| is_perk_localized_epfd.then_some("strings"))
             else {

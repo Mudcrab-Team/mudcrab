@@ -771,26 +771,27 @@ fn remap_record_form_ids(
                     }
                     continue;
                 }
+                b"CTDA" if data.len() == 32 => {
+                    for offset in gameplay_common::condition_link_offsets(data) {
+                        let value =
+                            u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+                        let resolved = remap_with_validation(value, true).unwrap_or_else(|error| {
+                            warnings.skipped_optional(
+                                plugin_name,
+                                format!(
+                                    "{} record source {source_id:08X} (load-order {:08X}) CTDA reference {value:08X}: {error}",
+                                    String::from_utf8_lossy(&record_type),
+                                    record.form_id
+                                ),
+                            );
+                            0
+                        });
+                        data[offset..offset + 4].copy_from_slice(&resolved.to_le_bytes());
+                    }
+                    continue;
+                }
                 _ => {}
             }
-        }
-        if tag.as_slice() == b"CTDA" && data.len() == 32 {
-            for offset in gameplay_common::condition_link_offsets(data) {
-                let value = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
-                let resolved = remap_with_validation(value, true).unwrap_or_else(|error| {
-                    warnings.skipped_optional(
-                        plugin_name,
-                        format!(
-                            "{} record source {source_id:08X} (load-order {:08X}) CTDA reference {value:08X}: {error}",
-                            String::from_utf8_lossy(&record_type),
-                            record.form_id
-                        ),
-                    );
-                    0
-                });
-                data[offset..offset + 4].copy_from_slice(&resolved.to_le_bytes());
-            }
-            continue;
         }
         if record.record_type == *b"STAT" && tag.as_slice() == b"MODS" {
             let Some(offsets) = object_materials::form_offsets(data) else {

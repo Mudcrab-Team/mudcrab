@@ -259,7 +259,7 @@ pub(crate) fn insert_record(
         for (tag, payload) in &block[1..] {
             match tag.as_slice() {
                 b"DATA" if effect_data.is_none() => effect_data = Some(payload.as_slice()),
-                b"EPFT" if epft.is_none() => epft = Some(payload.as_slice()),
+                b"EPFT" if epfd.is_none() => epft = Some(payload.as_slice()),
                 b"EPF2" if epf2.is_none() => epf2 = Some(payload.as_slice()),
                 b"EPF3" if epf3.is_none() => epf3 = Some(payload.as_slice()),
                 b"EPFD" if epfd.is_none() => epfd = Some(payload.as_slice()),
@@ -268,22 +268,54 @@ pub(crate) fn insert_record(
         }
 
         match effect_type {
-            0 => {
-                let Some(bytes) = effect_data.filter(|b| b.len() == 8) else {
-                    omissions.record(
-                        OmissionCategory::PerkEffectUndecoded,
-                        perk_id,
-                        format!("PERK {perk_id:08X} effect {effect_index}: quest_stage missing 8-byte DATA"),
-                    );
-                    continue;
+            0 | 1 => {
+                let (quest_id, quest_stage, ability_spell_id) = if effect_type == 0 {
+                    let Some(bytes) = effect_data.filter(|b| b.len() == 8) else {
+                        omissions.record(
+                            OmissionCategory::PerkEffectUndecoded,
+                            perk_id,
+                            format!(
+                                "PERK {perk_id:08X} effect {effect_index}: quest_stage missing 8-byte DATA"
+                            ),
+                        );
+                        continue;
+                    };
+                    (
+                        links.resolve(u32_at(bytes, 0), &[b"QUST"]),
+                        Some(i64::from(bytes[4])),
+                        None,
+                    )
+                } else {
+                    let Some(bytes) = effect_data.filter(|b| b.len() == 4) else {
+                        omissions.record(
+                            OmissionCategory::PerkEffectUndecoded,
+                            perk_id,
+                            format!(
+                                "PERK {perk_id:08X} effect {effect_index}: ability missing 4-byte DATA"
+                            ),
+                        );
+                        continue;
+                    };
+                    (None, None, links.resolve(u32_at(bytes, 0), &[b"SPEL"]))
                 };
-                let quest_id = links.resolve(u32_at(bytes, 0), &[b"QUST"]);
-                let quest_stage = i64::from(bytes[4]);
+                let conditions = match collect_conditions(block) {
+                    Ok(conditions) => conditions,
+                    Err(reason) => {
+                        omissions.record(
+                            OmissionCategory::PerkEffectUndecoded,
+                            perk_id,
+                            format!(
+                                "PERK {perk_id:08X} effect {effect_index} conditions: {reason}"
+                            ),
+                        );
+                        continue;
+                    }
+                };
                 tx.prepare_cached(
                     "INSERT INTO perk_effects(
                         perk_id, effect_index, effect_type, rank, priority,
                         quest_id, quest_stage, ability_spell_id
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 )?
                 .execute(params![
                     perk_id,
@@ -293,34 +325,16 @@ pub(crate) fn insert_record(
                     i64::from(priority),
                     quest_id,
                     quest_stage,
-                ])?;
-            }
-            1 => {
-                let Some(bytes) = effect_data.filter(|b| b.len() == 4) else {
-                    omissions.record(
-                        OmissionCategory::PerkEffectUndecoded,
-                        perk_id,
-                        format!(
-                            "PERK {perk_id:08X} effect {effect_index}: ability missing 4-byte DATA"
-                        ),
-                    );
-                    continue;
-                };
-                let ability_spell_id = links.resolve(u32_at(bytes, 0), &[b"SPEL"]);
-                tx.prepare_cached(
-                    "INSERT INTO perk_effects(
-                        perk_id, effect_index, effect_type, rank, priority,
-                        quest_id, quest_stage, ability_spell_id
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6)",
-                )?
-                .execute(params![
-                    perk_id,
-                    effect_index as i64,
-                    i64::from(effect_type),
-                    i64::from(rank),
-                    i64::from(priority),
                     ability_spell_id,
                 ])?;
+                insert_conditions(
+                    tx,
+                    links,
+                    perk_id,
+                    "PERK_EFFECT",
+                    effect_index as i64,
+                    &conditions,
+                )?;
             }
             2 => {
                 let Some(bytes) = effect_data.filter(|b| b.len() == 3) else {
@@ -376,8 +390,12 @@ pub(crate) fn insert_record(
                 let mut value_text: Option<String> = None;
 
                 let decoded_ok = match (parameter_type, epfd) {
-                    (None, None) | (Some(0), _) | (Some(1..=7), None) => true,
-                    (None, Some(_)) => false,
+                    (None, None) | (Some(0), _) => true,
+                    // `add_activate_choice` (fn=9, EPFT=4) uses button label/flags in vanilla plugins without an activation spell.
+                    (Some(4), None) => function == 9 && (epf2.is_some() || epf3.is_some()),
+                    // Intentionally unresolved EPFT=7 localized text is stripped by runtime_projection.
+                    (Some(7), None) => true,
+                    (None, Some(_)) | (Some(1..=6), None) => false,
                     (Some(1), Some(b)) => {
                         if let Some(v) = (b.len() == 4).then(|| f32_at(b, 0)).flatten() {
                             value_float_1 = Some(f64::from(v));

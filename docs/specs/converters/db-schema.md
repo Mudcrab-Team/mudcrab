@@ -1792,9 +1792,12 @@ CREATE TABLE IF NOT EXISTS record_conditions (
 CREATE INDEX IF NOT EXISTS idx_record_conditions_owner ON record_conditions(owner_id, owner_kind);
 ```
 
-Effects (`PRKE`..`PRKF`) whose `PRKE`, effect `DATA`, `EPFT`, `EPF3`, `EPFD`, or `CTDA` payload
-cannot be decoded are counted in `projection_omission_stats` under `perk_effect_undecoded`
-(`severity = 'data_loss'`) with bounded FormID samples in `projection_omission_samples`.
+Top-level `PERK` `CTDA` conditions (even on perks with zero effects) and effects (`PRKE`..`PRKF`)
+whose `PRKE`, effect `DATA`, `EPFT`, `EPF3`, `EPFD`, or `CTDA` payload cannot be decoded (or whose
+required numeric/link/text `EPFD` parameter is missing/rejected) are counted in
+`projection_omission_stats` under `perk_effect_undecoded` (`severity = 'data_loss'`) with bounded
+FormID samples in `projection_omission_samples`. On `record_conditions`, unresolved or wrong-type
+`form_id`-typed `param1`/`param2` words are cleared to `0` (`param*_form_id = NULL`).
 
 For `parameter_type = 2` (`actor_value_multiplier` on entry-point functions `5`, `12`, `13`, `14`),
 retail Skyrim SE stores an IEEE-754 `f32` bit-pattern in the first four bytes of `EPFD` while

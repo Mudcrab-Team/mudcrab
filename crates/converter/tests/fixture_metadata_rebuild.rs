@@ -2609,6 +2609,18 @@ async fn metadata_rebuild_populates_perk_tables_while_reusing_assets() {
     fs::write(&skyrim_path, skyrim).unwrap();
 
     convert(&data, &source).await;
+    // Drop the optional #599 tables from `source` to simulate a pre-#599 pack so only a fresh
+    // rebuild projection can populate them in `output/skyrim_world.db`.
+    Connection::open(source.join("skyrim_world.db"))
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE perks;
+             DROP TABLE perk_effects;
+             DROP TABLE perk_entry_points;
+             DROP TABLE record_conditions;",
+        )
+        .unwrap();
+
     let report = rebuild(&data, &source, &output).await.unwrap();
     assert!(report.complete, "{:?}", report.warnings);
 

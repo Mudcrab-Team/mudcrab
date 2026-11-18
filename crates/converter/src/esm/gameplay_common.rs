@@ -200,6 +200,16 @@ pub(crate) struct ConditionEntry<'a> {
     pub(crate) param2_string: Option<String>,
 }
 
+fn resolve_condition_param(links: &Links<'_>, raw: u32, kind: &str) -> (u32, Option<u32>) {
+    match condition_param_targets(kind) {
+        Some(targets) => {
+            let resolved = links.resolve(Some(raw), targets);
+            (resolved.unwrap_or(0), resolved)
+        }
+        None => (raw, None),
+    }
+}
+
 /// Write a slice of decoded conditions into `record_conditions`.
 pub(crate) fn insert_conditions(
     tx: &Transaction<'_>,
@@ -238,13 +248,17 @@ pub(crate) fn insert_conditions(
             (value.is_finite().then_some(f64::from(value)), None)
         };
         let function_index = u16::from_le_bytes([ctda[8], ctda[9]]);
-        let param1_raw = u32::from_le_bytes([ctda[12], ctda[13], ctda[14], ctda[15]]);
-        let param2_raw = u32::from_le_bytes([ctda[16], ctda[17], ctda[18], ctda[19]]);
         let (first_kind, second_kind) = condition_param_kinds(ctda);
-        let param1_form_id = condition_param_targets(first_kind)
-            .and_then(|targets| links.resolve(Some(param1_raw), targets));
-        let param2_form_id = condition_param_targets(second_kind)
-            .and_then(|targets| links.resolve(Some(param2_raw), targets));
+        let (param1_raw, param1_form_id) = resolve_condition_param(
+            links,
+            u32::from_le_bytes([ctda[12], ctda[13], ctda[14], ctda[15]]),
+            first_kind,
+        );
+        let (param2_raw, param2_form_id) = resolve_condition_param(
+            links,
+            u32::from_le_bytes([ctda[16], ctda[17], ctda[18], ctda[19]]),
+            second_kind,
+        );
         let run_on = u32::from_le_bytes([ctda[20], ctda[21], ctda[22], ctda[23]]);
         let reference_raw = u32::from_le_bytes([ctda[24], ctda[25], ctda[26], ctda[27]]);
         let reference_id = if run_on == 2 {
