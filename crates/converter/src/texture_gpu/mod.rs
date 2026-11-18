@@ -383,8 +383,9 @@ pub(crate) fn takes(source: &Path, encoding: TextureEncoding) -> bool {
     read_header(&header[..read]).is_ok_and(|dds| gpu_faces(&dds, encoding).is_ok())
 }
 
-/// Parses the DDS header (and DX10 extension) without copying the pixel data.
-fn read_header(bytes: &[u8]) -> Result<Dds> {
+/// Parses the DDS header (and DX10 extension) without copying the pixel data. Also used by the
+/// retail LOD atlas reader (`lod::retail::atlas`).
+pub(crate) fn read_header(bytes: &[u8]) -> Result<Dds> {
     ensure!(
         bytes.len() >= 128 && bytes[..4] == *b"DDS ",
         "not a DDS file"

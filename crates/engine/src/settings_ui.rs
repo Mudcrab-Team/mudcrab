@@ -574,7 +574,7 @@ fn setting_row(
 fn group_note(group: &str) -> Option<&'static str> {
     match group {
         "Culling and drawing" => Some(
-            "Room culling: not available yet (#188). Occlusion culling needs depth prepass \
+            "Room culling applies to interiors. Occlusion culling needs depth prepass \
              and indirect drawing; enabling it enables both.",
         ),
         "Image" => Some(

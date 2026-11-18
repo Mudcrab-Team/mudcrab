@@ -543,8 +543,9 @@ Rules beyond the ones above:
 `world::environment::EnvironmentCatalog` (cell lighting, worldspace environment, lighting
 templates, weathers with their colours and directional ambient, image spaces, climate weather
 lists). A table that is missing or lacks a column the reader needs loads as empty, with one log
-line. Nothing renders from the catalog yet: the hard-coded `SkyrimClear` lighting in `sky.rs` is
-unchanged.
+line. The clock sun reads climate timing from it, and interiors in sky modes 1 and 2 take their
+key light, ambient and fog from `cell_lighting`, `lighting_templates`, `image_spaces` and
+`room_bounds` (`docs/specs/engine/interior-environment.md`).
 
 | Case | Converter writes | Engine |
 |---|---|---|
@@ -1008,10 +1009,20 @@ CREATE TABLE IF NOT EXISTS waters (
 `skyrim_world.db` built before they existed has a `waters` table without them, and
 `AssetCatalog::water_colors` (`crates/engine/src/world/database.rs`) returns `None` for every
 water against such a database rather than failing to open it. The engine falls back to Skyrim's
-DefaultWater values (`render::DEFAULT_WATER_FRESNEL` / `render::DEFAULT_WATER_REFLECTIVITY`, and
-`streaming.rs`'s deep-colour constant) until a reconversion populates them. Adding them did **not**
-bump `shared::WORLD_DATABASE_SCHEMA_VERSION`: nothing that already reads `waters` depends on their
-presence, and the fallback exists specifically so a reconversion is not required.
+DefaultWater values (`render::DEFAULT_WATER_FRESNEL`, `DEFAULT_WATER_REFLECTIVITY`,
+`DEFAULT_WATER_DEEP_COLOR`, `DEFAULT_WATER_SHALLOW_COLOR` and `DEFAULT_WATER_OPACITY`) until a
+reconversion populates them. Adding them did **not** bump
+`shared::WORLD_DATABASE_SCHEMA_VERSION`: nothing that already reads `waters` depends on their
+presence, and the fallback exists specifically so a reconversion is not required. `opacity` is
+not one of those additions: it has been in the table since the table was first created.
+
+The above-water fog (near and far distance, amount) has **no** column. The engine reads it per
+water from the `DNAM` subrecord inside `data` (`DNAM+32`, `DNAM+36` and `DNAM+132`, three
+little-endian `f32`s, see [water research](../../research/water.md)), so every existing database
+yields each water's own fog without a reconversion. A water whose `data` does not decode, whose
+`DNAM` is shorter than 136 bytes, or whose fog is not finite uses Skyrim's DefaultWater fog
+(near -10, far 150, amount 0.7; `WaterFog::default()` in `crates/engine/src/world/database.rs`)
+and keeps its colours.
 
 ---
 
@@ -1277,9 +1288,15 @@ The tables are derived data: a full load-order export clears and rebuilds them f
 records on every conversion, like the grass tables, and the subset export used by movement
 annotation leaves them alone. `create_tables` adds them to an older reused database.
 
-**These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`.** No engine code reads
-them yet; a reader must probe for them first, as the engine does for `lights` and the additive
-`waters` columns, so a database without them behaves as before.
+**These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`.** The engine reads
+them automatically and probes for them first, as it does for `lights` and the
+additive `waters` columns, so a database without them behaves as before.
+
+Placed references carrying the `Multibound` header flag (`0x80000000`) have an authored visibility
+policy, including `NONE`. Both pivot and bounds-overlap export omit their geometric memberships;
+integration also removes stale rows for these references. The engine reads the existing
+`references.header_flags` column and exempts flagged roots even when an older conversion still
+contains geometric room rows. Named overrides are conservatively kept visible too.
 
 | Case | Converter writes | Engine |
 |---|---|---|
