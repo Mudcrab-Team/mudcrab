@@ -670,11 +670,19 @@ pub fn carry_step_system(
         return;
     };
     let forward = camera.forward().as_vec3();
+    // The shown camera `Transform` is a presentation pose: it is blended between ticks
+    // (`WalkViewPose`) and carries the follow spring's lag. The hold point and the grab ray use
+    // the eye of the body at this tick, so they do not depend on the display's frame rate.
+    let eye = player
+        .single()
+        .map(|(_, body)| body.translation + Vec3::Y * movement.eye_height)
+        .unwrap_or(camera.translation);
     if held.held.is_none() {
         if request == Some(CarryRequest::Grab) {
             try_grab(
                 &context,
-                camera,
+                eye,
+                forward,
                 &tuning,
                 &movement,
                 &player,
@@ -699,9 +707,7 @@ pub fn carry_step_system(
         return;
     }
     let anchor = body.translation() + *body.rotation() * taken.anchor_local;
-    // The camera `Transform` is the pose of the last rendered frame. #619 makes it an interpolated
-    // view pose, so after it lands this must read the tick pose instead (#691).
-    let mut target = camera.translation + forward * taken.distance;
+    let mut target = eye + forward * taken.distance;
     if let Ok((_, body_pose)) = player.single() {
         target = clamp_target_outside_body(
             target,
@@ -742,7 +748,8 @@ pub fn carry_step_system(
 #[allow(clippy::too_many_arguments)]
 fn try_grab(
     context: &RapierContext,
-    camera: &Transform,
+    eye: Vec3,
+    forward: Vec3,
     tuning: &CarryTuning,
     movement: &MovementTuning,
     player: &Query<(Entity, &Transform), With<PlayerBody>>,
@@ -750,14 +757,12 @@ fn try_grab(
     held: &mut HeldObject,
     commands: &mut Commands,
 ) {
-    let forward = camera.forward().as_vec3();
     let filter = match player.single() {
         Ok((entity, _)) => QueryFilter::default().exclude_rigid_body(entity),
         Err(_) => QueryFilter::default(),
     };
     // The nearest thing on the line of sight decides: a wall in front hides an object behind it.
-    let Some((collider, distance)) =
-        context.cast_ray(camera.translation, forward, tuning.reach, true, filter)
+    let Some((collider, distance)) = context.cast_ray(eye, forward, tuning.reach, true, filter)
     else {
         held.last_refusal = Some(GrabRefusal::NotCarriable);
         return;
@@ -786,7 +791,7 @@ fn try_grab(
         );
         return;
     }
-    let point = camera.translation + forward * distance;
+    let point = eye + forward * distance;
     held.held = Some(Held {
         entity: owner,
         anchor_local: body.rotation().inverse() * (point - body.translation()),
