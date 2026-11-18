@@ -89,7 +89,7 @@ pub(super) fn count_walk_camera_trace_tick(mut trace: ResMut<WalkCameraTrace>) {
 }
 
 /// Writes one row after the camera follow system placed the view.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn write_walk_camera_trace_row(
     mut commands: Commands,
     mut trace: ResMut<WalkCameraTrace>,
