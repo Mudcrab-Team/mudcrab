@@ -35,6 +35,11 @@ fn layer_count(instance_index: u32) -> u32 {
     return u32(dimensions.z);
 #else   // SKINS_USE_UNIFORM_BUFFERS
     let morph_descriptor_index = mesh[instance_index].morph_descriptor_index;
+    // mudcrab: bounded morph descriptor read (bevyengine/bevy#25966, bevyengine/bevy#26504).
+    // An index past the array is Bevy's missing-descriptor value, u32::MAX: no morph this frame.
+    if (morph_descriptor_index >= arrayLength(&morph_descriptors)) {
+        return 0u;
+    }
     return morph_descriptors[morph_descriptor_index].weight_count;
 #endif  // SKINS_USE_UNIFORM_BUFFERS
 }
@@ -65,6 +70,13 @@ fn prev_weight_at(weight_index: u32, instance_index: u32) -> f32 {
 #else   // SKINS_USE_UNIFORM_BUFFERS
     let morph_descriptor_index = mesh[instance_index].morph_descriptor_index;
     let weights_offset = morph_descriptors[morph_descriptor_index].prev_weights_offset;
+    // mudcrab: bounded previous-weights read (Mudcrab's own addition, not in bevy#26504).
+    // An offset or index outside the previous weights buffer falls back to the current weight,
+    // which means no morph motion for this vertex.
+    let prev_weight_count = arrayLength(&prev_morph_weights);
+    if (weights_offset >= prev_weight_count || weight_index >= prev_weight_count - weights_offset) {
+        return weight_at(weight_index, instance_index);
+    }
     return prev_morph_weights[weights_offset + weight_index];
 #endif  // SKINS_USE_UNIFORM_BUFFERS
 }
