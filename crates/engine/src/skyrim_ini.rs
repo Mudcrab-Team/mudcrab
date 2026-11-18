@@ -15,6 +15,7 @@
 //! | `[Sky]` | `fSunXExtreme`, `fSunYExtreme`, `fSunZExtreme`, `fSunDirXExtreme`, `fSunAlphaTransTime` | explicit sun-path overrides over the pack's GMST (retail exe default for a missing GMST) |
 //! | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2` |
 //! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units |
+//! | `[Display]` | `bDrawLandShadows` | 1 makes terrain cast sun shadows; the default 0 is retail's (`RF-SHADER-011`) |
 //! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD split rule: a block of `level` cells splits into its four children under `fSplitDistanceMult` x `level` x 2,048 x sqrt(2) units (34,756 / 69,512 at levels 8 / 16 with 1.5) |
 //! | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists (not a retail terrain cut) |
 //! | `[TerrainManager]` | `fBlockLevel0Distance` | parsed and kept for the object LOD rule (level 8 hands over to level 4); does not affect terrain, so it changes nothing on screen until object LOD lands |
@@ -107,6 +108,13 @@ impl SkyrimIni {
                 _ => eprintln!(
                     "warning: ignoring fShadowDistance={raw:?}; expected at least {MIN_SUN_SHADOW_DISTANCE} Creation units"
                 ),
+            }
+        }
+        if let Some(raw) = self.get("Display", "bDrawLandShadows") {
+            match raw {
+                "0" => config.land_shadows = false,
+                "1" => config.land_shadows = true,
+                _ => eprintln!("warning: ignoring bDrawLandShadows={raw:?}; expected 0 or 1"),
             }
         }
         for (index, key) in crate::sun::SUN_KEYS.into_iter().enumerate() {
@@ -250,6 +258,17 @@ mod tests {
             assert_eq!(config.stream_radius, defaults.stream_radius, "{text}");
             assert_eq!(config.terrain_lod, defaults.terrain_lod, "{text}");
         }
+    }
+
+    /// Terrain casts no sun shadow by default (retail `bDrawLandShadows` = 0, `RF-SHADER-011`);
+    /// the ini can turn it on, and a bad value changes nothing.
+    #[test]
+    fn draw_land_shadows_reads_zero_or_one() {
+        assert!(!apply("").land_shadows);
+        assert!(apply("[Display]\nbDrawLandShadows=1\n").land_shadows);
+        assert!(!apply("[Display]\nbDrawLandShadows=0\n").land_shadows);
+        assert!(!apply("[Display]\nbDrawLandShadows=yes\n").land_shadows);
+        assert!(!apply("[Display]\nbDrawLandShadows=2\n").land_shadows);
     }
 
     #[test]

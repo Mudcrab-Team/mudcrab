@@ -242,6 +242,9 @@ pub struct EngineConfig {
     pub unload_radius: i32,
     /// Optional upper bound for sun-shadow cascades from `[Display] fShadowDistance`.
     pub sun_shadow_distance_limit: Option<f32>,
+    /// Whether terrain casts sun shadows: `[Display] bDrawLandShadows`. The default is retail's
+    /// [`RETAIL_DRAW_LAND_SHADOWS`] (off). Terrain receives shadows either way.
+    pub land_shadows: bool,
     /// Optional sun bearing clockwise from north and elevation above the horizon, in degrees.
     pub sun_position: Option<(f32, f32)>,
     /// Initial game hour; deterministic captures freeze at this hour. The default is the retail
@@ -401,6 +404,12 @@ pub struct EngineConfig {
     pub physics_fixture: bool,
 }
 
+/// `bDrawLandShadows:Display`: whether land casts sun shadows. Retail's default is 0
+/// (`RF-SHADER-011`: record `0x14207b838`, value `0x14207b840`, read at `0x1402b3625` and stored as
+/// land shader flag 9; flag 8, receiving, is always 1). Neither the install's `Skyrim.ini` nor
+/// `SkyrimPrefs.ini` is known to change it; `--ini` can set it to 1.
+pub const RETAIL_DRAW_LAND_SHADOWS: bool = false;
+
 impl Default for EngineConfig {
     /// Start with the standard engine settings and optional profiling diagnostics disabled.
     fn default() -> Self {
@@ -414,6 +423,7 @@ impl Default for EngineConfig {
             stream_radius: 2,
             unload_radius: 3,
             sun_shadow_distance_limit: None,
+            land_shadows: RETAIL_DRAW_LAND_SHADOWS,
             sun_position: None,
             game_hour: crate::sun::RETAIL_GAME_HOUR, // GLOB 0x38 `GameHour` = 8.0 in the pack
             timescale: 20.0,
