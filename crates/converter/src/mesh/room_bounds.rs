@@ -1,7 +1,7 @@
 //! Retain the source spheres used by native static-reference room assignment.
 
 use project_wormhole_nif::{nif_block::NifBlock, nif_file::NifFile};
-use project_wormhole_shared::glam::{Affine3A, Vec3};
+use project_wormhole_shared::glam::{Affine3A, Mat3, Vec3};
 use shared::room_assignment::ModelSphere;
 
 /// Unsupported node types stay unknown instead of becoming an AABB approximation.
@@ -14,12 +14,15 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
         path: &mut Vec<u32>,
         remaining: &mut usize,
     ) -> Option<ModelSphere> {
-        if path.contains(&index) || path.len() >= 256 {
+        if path.contains(&index) {
             return None;
         }
         *remaining = remaining.checked_sub(1)?;
-        path.push(index);
         let block = nif.blocks.get(index as usize)?;
+        if block.as_node().is_ok() && path.len() >= super::MAX_SCENE_DEPTH {
+            return None;
+        }
+        path.push(index);
         let (av, sphere, children) = match block {
             NifBlock::NiNode(node)
             | NifBlock::BSFadeNode(node)
@@ -74,8 +77,13 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
         let world = if index == super::NIF_ROOT_BLOCK {
             parent
         } else {
-            parent
-                * Affine3A::from_mat3_translation(av.rotation.0.0 * local_scale, av.translation.0.0)
+            let rotation = av.rotation.0.0;
+            if rotation.determinant() <= 0.0
+                || !(rotation.transpose() * rotation).abs_diff_eq(Mat3::IDENTITY, 1.0e-4)
+            {
+                return None;
+            }
+            parent * Affine3A::from_mat3_translation(rotation * local_scale, av.translation.0.0)
         };
         let scale = scale * local_scale;
         let mut result = if let Some(sphere) = sphere {

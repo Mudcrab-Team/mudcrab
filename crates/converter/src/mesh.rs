@@ -4974,6 +4974,7 @@ mod tests {
         };
         root.av.translation.0.0 = Vec3::splat(1000.0);
         root.av.scale.0 = 10.0;
+        root.av.rotation.0.0 = Mat3::from_diagonal(Vec3::new(-1.0, 1.0, 1.0));
         let NifBlock::BSTriShape(shape) = &mut nif.blocks[1] else {
             unreachable!()
         };
@@ -4989,6 +4990,25 @@ mod tests {
                 radius: 4.0,
             })
         );
+        for (rotation, scale, center) in [
+            (Mat3::IDENTITY, -2.0, [-17.0, -55.0, 36.0]),
+            (
+                Mat3::from_rotation_z(std::f32::consts::FRAC_PI_2),
+                2.0,
+                [-37.0, 65.0, -24.0],
+            ),
+        ] {
+            let NifBlock::BSTriShape(shape) = &mut nif.blocks[1] else {
+                unreachable!()
+            };
+            shape.av.rotation.0.0 = rotation;
+            shape.av.scale.0 = scale;
+            let sphere = room_bounds::source_sphere(&nif).unwrap();
+            assert_eq!(sphere.radius, 4.0);
+            for (actual, expected) in sphere.center.into_iter().zip(center) {
+                assert!((actual - expected).abs() < 1.0e-4);
+            }
+        }
         nif.blocks[1] = NifBlock::Unhandled;
         assert!(room_bounds::source_sphere(&nif).is_none());
     }
@@ -5143,6 +5163,28 @@ mod tests {
             room_bounds::source_sphere(&nif).is_none(),
             "nonempty damage ranges remain unsupported"
         );
+    }
+
+    #[test]
+    fn assignment_sphere_declines_reflected_or_sheared_child_rotations() {
+        use project_wormhole_shared::glam::{Mat3, Vec3};
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("rotation.nif");
+        fs::write(&input, static_nif()).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        for rotation in [
+            Mat3::from_diagonal(Vec3::new(-1.0, 1.0, 1.0)),
+            Mat3::from_cols(Vec3::X, Vec3::new(0.25, 1.0, 0.0), Vec3::Z),
+        ] {
+            let NifBlock::BSTriShape(shape) = &mut nif.blocks[1] else {
+                unreachable!()
+            };
+            shape.av.rotation.0.0 = rotation;
+            let model = project_wormhole_nif::nif_file::nif_to_static_model(&nif).unwrap();
+            assert_eq!(model.static_meshes.len(), 1);
+            assert!(model.to_glb("rotation".into()).is_ok());
+            assert!(room_bounds::source_sphere(&nif).is_none());
+        }
     }
 
     fn static_nif() -> Vec<u8> {
@@ -5323,7 +5365,18 @@ mod tests {
                     serde_json::from_slice(&glb[20..20 + json_len]).unwrap();
                 assert_eq!(json["nodes"].as_array().unwrap().len(), exported_nodes);
                 assert_eq!(json["meshes"].as_array().unwrap().len(), 1);
+                assert!(
+                    json["extras"]["mudcrabRoomSphere"]["radius"]
+                        .as_f64()
+                        .is_some_and(|radius| radius > 0.0),
+                    "{depth} supported scene nodes must retain the assignment sphere"
+                );
             }
+            let input = directory.path().join("chain-257.nif");
+            fs::write(&input, static_scene_chain_nif(257)).unwrap();
+            let (nif, diagnostics, _) = open_nif_resilient(&input).unwrap();
+            assert_eq!(diagnostics.max_scene_depth, 257);
+            assert!(room_bounds::source_sphere(&nif).is_none());
         })
         .join()
         .unwrap();
