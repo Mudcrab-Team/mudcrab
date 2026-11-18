@@ -39,9 +39,11 @@ jobs:
           set -euo pipefail
           changed_paths="$RUNNER_TEMP/changed-paths.z"
           if [ -n "${GITHUB_BASE_REF:-}" ]; then
-            git fetch origin "$GITHUB_BASE_REF" --depth=350
-            base="$(git merge-base "origin/${GITHUB_BASE_REF}" HEAD)"
-            git diff --no-renames --name-only -z "$base" "$GITHUB_SHA" > "$changed_paths"
+            if ! { git fetch origin "$GITHUB_BASE_REF" --depth=350 &&
+               base="$(git merge-base FETCH_HEAD "$GITHUB_SHA")" &&
+               git diff --no-renames --name-only -z "$base" "$GITHUB_SHA" > "$changed_paths"; }; then
+              git ls-files -z > "$changed_paths"
+            fi
           elif [[ "${PUSH_BEFORE:-}" =~ ^[0-9a-f]{40}$ && "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ]] &&
                { git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null || git fetch --depth=1 origin "$PUSH_BEFORE"; }; then
             git diff --no-renames --name-only -z "$PUSH_BEFORE" "$GITHUB_SHA" > "$changed_paths"

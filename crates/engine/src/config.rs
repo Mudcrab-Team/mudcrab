@@ -4047,21 +4047,39 @@ mod tests {
                 .any(|part| part.as_os_str().to_str() == Some("perf"))
     }
 
+    fn before_python_comment(line: &str) -> &str {
+        let mut quote = None;
+        let mut chars = line.char_indices();
+        while let Some((index, ch)) = chars.next() {
+            match (quote, ch) {
+                (None, '#') => return &line[..index],
+                (None, '\'' | '"') => quote = Some(ch),
+                (Some(_), '\\') => {
+                    chars.next();
+                }
+                (Some(open), close) if open == close => quote = None,
+                _ => {}
+            }
+        }
+        line
+    }
+
     /// Locate the command or parser declaration that owns this particular option literal.
     /// Argument lists in the native capture scripts continue on the next line after a comma.
     fn native_tool_owns_option(script: &str, flag: &str) -> bool {
         let offset = flag.as_ptr() as usize - script.as_ptr() as usize;
         let mut lines = script[..offset].rsplit('\n');
         let current = lines.next().unwrap_or_default();
-        if current.trim_start().starts_with('#') {
+        if before_python_comment(current).len() != current.len() {
             return true;
         }
         let mut start = current;
         for previous in lines {
-            if previous.trim().is_empty() || previous.trim_start().starts_with('#') {
+            let previous = before_python_comment(previous).trim_end();
+            if previous.is_empty() {
                 continue;
             }
-            if !previous.trim_end().ends_with([',', '[', '(']) {
+            if !previous.ends_with([',', '[', '(']) {
                 break;
             }
             start = previous;
@@ -4531,6 +4549,13 @@ mod tests {
         let native = std::path::Path::new("record_skyrim_motion.py");
         assert_eq!(
             checked_script_engine_flags(
+                "cmd = ['systemd-run',  # recorder scope\n    '--collect']",
+                native
+            ),
+            0
+        );
+        assert_eq!(
+            checked_script_engine_flags(
                 "run.add_argument(\n    # recorder CLI\n    '--session')",
                 native
             ),
@@ -4543,6 +4568,10 @@ mod tests {
                 native,
             ),
             ("cmd = ['engine',\n    '--session', 'fixture']", native),
+            (
+                "cmd = ['engine',  # ['systemd-run',\n    '--collect']",
+                native,
+            ),
             (
                 "engine --session fixture",
                 std::path::Path::new("launch.sh"),

@@ -56,7 +56,19 @@ class EvidenceJobSelectionTests(unittest.TestCase):
                     self.assertEqual(flags['check_scripts'], expected)
                     self.assertEqual(flags['check_rust'], expected)
 
-
+            git('branch', 'available-base', 'HEAD')
+            git('remote', 'add', 'origin', str(repo))
+            (repo / 'README').write_text('docs only')
+            git('commit', '-qam', 'update README')
+            for branch, expected in [('available-base', 'false'), ('missing-base', 'true')]:
+                with self.subTest(base=branch):
+                    output.write_text('')
+                    subprocess.run(['bash', '-c', script], cwd=repo, check=True, capture_output=True,
+                                   env=dict(os.environ, GITHUB_BASE_REF=branch, GITHUB_SHA=git('rev-parse', 'HEAD'),
+                                            RUNNER_TEMP=directory, GITHUB_OUTPUT=str(output)))
+                    flags = dict(line.split('=', 1) for line in output.read_text().splitlines())
+                    self.assertEqual(flags['check_scripts'], expected)
+                    self.assertEqual(flags['check_rust'], expected)
 
 if __name__ == '__main__':
     unittest.main()
