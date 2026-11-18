@@ -150,6 +150,9 @@ pub struct IdleSequence {
     current: usize,
     /// The pick that waits for its clip to finish loading.
     pending: Option<usize>,
+    /// A clip request is out. The sequence draws again only after the new player appears, so a
+    /// request that does not take effect cannot make it draw on every frame.
+    awaiting: bool,
     state: u64,
 }
 
@@ -172,6 +175,7 @@ impl IdleSequence {
             clips: Vec::new(),
             current: 0,
             pending: None,
+            awaiting: false,
             // A fixed salt keeps FormID 0 away from the generator's all-zero state.
             state: u64::from(reference_form_id) ^ 0x1D1E_5EED_0000_0000,
         })
@@ -252,19 +256,25 @@ impl IdleSequence {
 fn advance_idle_sequences(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    mut sequences: Query<
-        (Entity, &Actor, &mut IdleSequence, &AnimationPlayer),
-        Without<ActorClips>,
-    >,
+    catalog: Option<Res<crate::world::actor_catalog::ActorCatalog>>,
+    mut sequences: AdvancingIdleSequences,
 ) {
-    for (entity, actor, mut sequence, player) in &mut sequences {
+    for (entity, actor, library, mut sequence, player) in &mut sequences {
+        if sequence.awaiting {
+            // The request took effect when a new player appears. Until then the old, finished
+            // player is still here and nothing may be drawn again.
+            if !player.is_added() {
+                continue;
+            }
+            sequence.awaiting = false;
+        }
         if !player.all_finished() {
             continue;
         }
         let Some(next) = sequence.pending.or_else(|| sequence.choose()) else {
             warn!(
                 base_form_id = actor.base_form_id,
-                "idle sequence: no clip could be loaded; the actor keeps looping its last clip"
+                "idle sequence: no clip could be loaded; the actor holds its last pose"
             );
             commands.entity(entity).remove::<IdleSequence>();
             continue;
@@ -282,8 +292,25 @@ fn advance_idle_sequences(
             }
             ClipReadiness::Ready => {
                 sequence.pending = None;
-                sequence.current = next;
                 let source = sequence.pool[next].source.clone();
+                // The request is resolved against the catalog here, with the lookup the request
+                // system uses, so a pick that cannot start leaves the pool instead of being
+                // drawn again on every frame.
+                if let (Some(catalog), Some(library)) = (catalog.as_deref(), library)
+                    && catalog
+                        .authored_idle_scene(actor, &library.body_scene, &source)
+                        .is_none()
+                {
+                    warn!(
+                        base_form_id = actor.base_form_id,
+                        %source,
+                        "idle sequence: the catalog has no clip for this pick; it leaves the pool"
+                    );
+                    sequence.failed[next] = true;
+                    continue;
+                }
+                sequence.current = next;
+                sequence.awaiting = true;
                 debug!(
                     base_form_id = actor.base_form_id,
                     %source,
@@ -297,6 +324,20 @@ fn advance_idle_sequences(
         }
     }
 }
+
+/// Sequences with a player, as [`advance_idle_sequences`] reads them.
+type AdvancingIdleSequences<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static Actor,
+        Option<&'static ActorIdleLibrary>,
+        &'static mut IdleSequence,
+        Ref<'static, AnimationPlayer>,
+    ),
+    Without<ActorClips>,
+>;
 
 /// Sequences whose body is ready but that have neither a player nor a clip request pending.
 type StalledIdleSequences<'w, 's> = Query<
@@ -335,6 +376,7 @@ fn recover_idle_sequences(mut commands: Commands, mut sequences: StalledIdleSequ
             continue;
         };
         sequence.current = next;
+        sequence.awaiting = true;
         let source = sequence.pool[next].source.clone();
         commands.entity(entity).insert(AuthoredIdleRequest {
             source,
@@ -1688,14 +1730,111 @@ mod tests {
             ))
             .id();
         app.update();
-        let sequence = app.world().get::<IdleSequence>(actor).unwrap();
+        let first = app.world().get::<IdleSequence>(actor).unwrap().position();
         let request = app.world().get::<AuthoredIdleRequest>(actor).unwrap();
-        assert_eq!(request.source, sequence.current_source());
-        assert!(!request.repeat, "each clip plays to its end");
-        assert!(
-            !sequence.is_waiting(),
-            "a clip with no pending load starts at once"
+        assert_eq!(
+            request.source,
+            app.world()
+                .get::<IdleSequence>(actor)
+                .unwrap()
+                .current_source()
         );
+        assert!(!request.repeat, "each clip plays to its end");
+        assert!(app.world().get::<IdleSequence>(actor).unwrap().awaiting);
+        // The old player is still there and finished: nothing may be drawn again until a new
+        // player appears.
+        for _ in 0..5 {
+            app.update();
+            let sequence = app.world().get::<IdleSequence>(actor).unwrap();
+            assert_eq!(sequence.position(), first, "the sequence drew again");
+            assert!(sequence.awaiting);
+        }
+    }
+
+    #[test]
+    fn a_pick_the_catalog_cannot_resolve_leaves_the_pool_and_asks_for_nothing() {
+        let (_directory, mut app) = fixture_app();
+        // An empty catalog resolves no clip, as when a clip file is gone after the actor spawned.
+        app.insert_resource(crate::world::actor_catalog::ActorCatalog::default());
+        let actor = app
+            .world_mut()
+            .spawn((
+                Actor::new(
+                    0x23A92,
+                    0x131EE,
+                    ActorSex::Male,
+                    crate::actors::ActorResolution::Body,
+                ),
+                ActorIdleLibrary {
+                    body_scene: "meshes/actors/custom/body.glb".into(),
+                },
+                IdleSequence::new(pool(3), 0x23A92).unwrap(),
+                AnimationPlayer::default(),
+            ))
+            .id();
+        for _ in 0..4 {
+            app.update();
+            assert!(
+                app.world().get::<AuthoredIdleRequest>(actor).is_none(),
+                "a pick that cannot start must not be requested"
+            );
+        }
+        // One rejected pick per update uses up a pool of three in three updates. The fourth
+        // update finds no clip left.
+        assert!(
+            app.world().get::<IdleSequence>(actor).is_none(),
+            "every clip left the pool, so the component is removed"
+        );
+    }
+
+    #[test]
+    fn a_preloaded_clip_that_cannot_load_is_loading_then_failed() {
+        let (_directory, mut app) = fixture_app();
+        let server = app.world().resource::<AssetServer>().clone();
+        // The fixture has no glTF loader, so these scenes can never load: a synthetic failure.
+        let sequence = IdleSequence::new(pool(2), 1).unwrap().preload(&server);
+        assert_eq!(sequence.readiness(1, &server), ClipReadiness::Loading);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while sequence.readiness(1, &server) == ClipReadiness::Loading {
+            assert!(Instant::now() < deadline, "the load never finished");
+            app.update();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(sequence.readiness(1, &server), ClipReadiness::Failed);
+        // A sequence that was not preloaded has nothing to wait for.
+        let plain = IdleSequence::new(pool(2), 1).unwrap();
+        assert_eq!(plain.readiness(1, &server), ClipReadiness::Ready);
+    }
+
+    #[test]
+    fn clips_that_fail_to_load_leave_the_pool_without_a_request() {
+        let (_directory, mut app) = fixture_app();
+        let server = app.world().resource::<AssetServer>().clone();
+        let actor = app
+            .world_mut()
+            .spawn((
+                Actor::new(
+                    0x23A92,
+                    0x131EE,
+                    ActorSex::Male,
+                    crate::actors::ActorResolution::Body,
+                ),
+                IdleSequence::new(pool(2), 0x23A92)
+                    .unwrap()
+                    .preload(&server),
+                AnimationPlayer::default(),
+            ))
+            .id();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.world().get::<IdleSequence>(actor).is_some() {
+            assert!(Instant::now() < deadline, "the sequence never gave up");
+            app.update();
+            assert!(
+                app.world().get::<AuthoredIdleRequest>(actor).is_none(),
+                "a clip that cannot load must not be requested"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]
@@ -1949,7 +2088,7 @@ mod tests {
             }
             let distinct: HashSet<_> = played.iter().map(|(_, source)| source.as_str()).collect();
             println!(
-                "IDLE_SEQUENCE {name}: {} clip changes, {} distinct clips in {elapsed:.0} s; {stalled} stalled updates (longest run {longest_run}), {switch_updates} graph replacements (one update each)",
+                "IDLE_SEQUENCE {name}: {} clip picks, {} distinct clips in {elapsed:.0} s; {stalled} stalled updates (longest run {longest_run}), {switch_updates} graph replacements (one update each)",
                 played.len() - 1,
                 distinct.len()
             );
