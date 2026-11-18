@@ -14,6 +14,8 @@ pub(crate) fn record_ignored(counts: &mut BTreeMap<String, u64>, path: &Path) {
 /// Count a discovered loose input unless a pipeline stage accepts its kind.
 /// Reuse the archive superset policy; stages that publish additional paths must also
 /// update the counter's supported set and its regression test.
+/// Keep the metadata extensions in sync with `esm::plugins_txt::plugin_name`
+/// and archive discovery in `pipeline::AssetPipeline::run_into`.
 pub(crate) fn count_loose(counts: &mut BTreeMap<String, u64>, relative: &Path) {
     let lower = relative
         .to_string_lossy()
