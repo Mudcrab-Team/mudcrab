@@ -317,6 +317,9 @@ mod tests {
         let (mut app, sun, camera) = fixture(config);
         let before = matrices(&app, sun, camera);
         let held = shadow_rotation(&app, sun);
+        advance(&mut app, 0.1);
+        assert_eq!(shadow_rotation(&app, sun), held);
+        assert_eq!(matrices(&app, sun, camera), before);
         advance(&mut app, 4.0);
         assert_ne!(shadow_rotation(&app, sun), held);
         assert_ne!(matrices(&app, sun, camera), before);

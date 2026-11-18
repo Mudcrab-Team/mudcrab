@@ -374,7 +374,8 @@ pub(crate) fn update_sun(
         previous.hour != before
             || previous.worldspace != worldspace
             || previous.path != path
-            || previous.shadow_settings != config.sun_shadow
+            || previous.shadow_settings.threshold_degrees != config.sun_shadow.threshold_degrees
+            || previous.shadow_settings.max_hold_seconds != config.sun_shadow.max_hold_seconds
     }) || (time.delta_secs_f64() * clock.timescale).abs() >= 900.0;
     let moving_seconds = if before == clock.hour {
         0.0
