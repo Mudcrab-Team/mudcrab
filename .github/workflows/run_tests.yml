@@ -108,11 +108,17 @@ jobs:
         with:
           clean: false
 
+      - name: Test model inspector launcher
+        run: python3 -B -m unittest discover -s scripts/tests -p test_inspect_model.py -v
+
       - name: Test repeated terrain startup runner
         run: python3 -m unittest discover -s scripts/tests -p test_repeat_terrain_startup.py -v
 
       - name: Test Riverwood LOD capture gates
         run: python3 -m unittest discover -s scripts/tests -p test_capture_riverwood_lod.py -v
+
+      - name: Test room culling count reader
+        run: python3 -m unittest discover -s scripts/tests -p test_room_culling_counts.py -v
 
       - name: Test Skyrim capture, replay and comparison helpers
         run: python3 -B -m unittest discover -s scripts -p 'test_*.py' -v
@@ -137,11 +143,20 @@ jobs:
       - name: Test streaming comparison runner
         run: python3 -B -m unittest discover -s scripts/tests -p test_streaming_comparison_runner.py -v
 
+      - name: Test perf harness
+        run: python3 -B -m unittest discover -s scripts/tests -p test_perf_harness.py -v
+
       - name: Test recorded comparison value matching
         run: python3 -B -m unittest discover -s tools/record_comparison -p 'test_*.py' -v
 
+      - name: Test cluster bounds audit lockfile parsing
+        run: python3 -B -m unittest discover -s tools -p 'test_diagnose_cluster_bounds.py' -v
+
       - name: Test Windows installer checksum handling
         run: pwsh -NoProfile -File scripts/tests/test_install_checksum.ps1
+
+      - name: Test release payload binaries and notices
+        run: python3 -B -m unittest discover -s scripts/tests -p test_stage_release_payload.py -v
 
       - name: PowerShell scripts with non-ASCII text keep a UTF-8 BOM
         run: |
