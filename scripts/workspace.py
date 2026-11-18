@@ -20,7 +20,7 @@ GIB = 1024**3
 VERSION = 1
 SLOTS = 2
 RESERVE_GIB = 40
-BUILD_BUDGET_GIB = 96
+BUILD_BUDGET_GIB = 190  # raised 2026-11-15 by lead (slots regrow fast with many owners; RESERVE_GIB floor unchanged)
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
 # Automatic build cleanup. A bad or zero environment value turns that limit off.
 SLOT_INCREMENTAL_GIB = 8      # MUDCRAB_SLOT_INCREMENTAL_GIB: trim a slot's target/*/incremental above this size

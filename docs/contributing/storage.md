@@ -119,8 +119,8 @@ including temporary and nested agent checkouts. It scans metadata, skips symlink
 deduplicates hard links across roots. It does not hash files to find identical content.
 APFS clones, compression, and snapshots mean these totals do not predict reclaimed space.
 
-Build preflight defaults to 8 GiB estimated additional space, a 40 GiB free-space reserve (raised 2026-11-02; was 20),
-and a 96 GiB managed-build budget (raised 2026-11-02; was 60). Override the estimate with `cargo --needed-gib N ...`.
+Build preflight defaults to 8 GiB estimated additional space, a 40 GiB free-space reserve,
+and a 190 GiB managed-build budget. Override the estimate with `cargo --needed-gib N ...`.
 Set `MUDCRAB_RESERVE_GIB` or `MUDCRAB_BUILD_BUDGET_GIB` deliberately for a different host.
 Conversion preflight checks the destination filesystem and bypasses the unrelated build
 budget. Estimates are checks, not reservations or hard quotas; concurrent writers or a
