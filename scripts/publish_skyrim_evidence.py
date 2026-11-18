@@ -27,7 +27,7 @@ import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = 'docs/research/evidence/skyrim-physics-221/publication.json'
-HOME = re.compile(rb'/(?:home|Users)/[^/\s"\'`<>]+')
+HOME = re.compile(rb'(?:(?:[A-Za-z]:)?[/\\]+(?:home|Users)|(?:[A-Za-z]:)?\\+users|[A-Za-z]:/+users)[/\\]+[^/\\\s"\'`<>]+')
 SIGNATURE = re.compile(rb'("[a-z_]+_signature"\s*:\s*)"([0-9a-fA-F]+)"')
 STATIC = {'scripts/inspect_skyrim_physics.py', 'scripts/inspect_skyrim_jump_inputs.py'}
 DIRECT = (*STATIC, 'tools/skyrim-recorder/build.py', 'tools/skyrim-recorder/runtime.json',
@@ -131,7 +131,7 @@ def zip_extra_findings(name, data, entry):
 
 def transform(name, data, changes):
     original = data
-    if name.endswith('.zip'):
+    if name.lower().endswith('.zip'):
         output = io.BytesIO()
         with zipfile.ZipFile(io.BytesIO(data)) as source, zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as dest:
             if len(set(source.namelist())) != len(source.infolist()):
@@ -156,9 +156,9 @@ def transform(name, data, changes):
             data = candidate
         if not changes.get(name + '!members'):
             changes.pop(name + '!members', None)
-    elif name.endswith('.gz'):
+    elif name.lower().endswith('.gz'):
         raw, header_issues = read_gzip(name, data)
-        if name.endswith('.bin.gz'):
+        if name.lower().endswith('.bin.gz'):
             if header_issues:
                 raise ValueError('\n'.join(header_issues))
             return data
@@ -243,17 +243,23 @@ def candidates(root):
             files.update(evidence_files(path))
         else:
             files.add(path)
-    return sorted(files - {root / MANIFEST})
+    paths = sorted(files - {root / MANIFEST})
+    for path in paths:
+        name = str(path.relative_to(root))
+        issues = content_findings(name, os.fsencode('/' + name))
+        if issues:
+            raise SystemExit('Rename the evidence file before publication: ' + ', '.join(issues))
+    return paths
 
 
 def unsafe_member(name):
     normalized = name.replace('\\', '/')
-    return (HOME.search(name.encode()) or PurePosixPath(normalized).is_absolute() or
+    return (HOME.search(os.fsencode('/' + name)) or PurePosixPath(normalized).is_absolute() or
             '..' in PurePosixPath(normalized).parts or re.match(r'^[A-Za-z]:', normalized))
 
 
 def findings(name, data):
-    if name.endswith('.zip'):
+    if name.lower().endswith('.zip'):
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             issues = content_findings(name + '!archive comment', archive.comment)
             for entry in archive.infolist():
@@ -266,7 +272,7 @@ def findings(name, data):
             if len(set(archive.namelist())) != len(archive.infolist()):
                 issues.append(f'{name}: duplicate ZIP member name')
             return issues
-    if name.endswith('.gz'):
+    if name.lower().endswith('.gz'):
         raw, header_issues = read_gzip(name, data)
         return header_issues + findings(name[:-3], raw)
     return content_findings(name, data)
@@ -335,6 +341,12 @@ def check_recorded_files(root, recorded, pending):
             raise ValueError(f'Published artifact changed: {name}')
 
 
+def link_findings(path):
+    if path.is_symlink():
+        return content_findings(f'{path.name} link target', os.fsencode('/' + os.readlink(path)))
+    return []
+
+
 def sanitize(root, paths, manifest):
     changes = {}
     pending = {}
@@ -345,7 +357,7 @@ def sanitize(root, paths, manifest):
         issues = findings(name, published)
         if issues:
             raise SystemExit('\n'.join(issues))
-        if published != raw:
+        if published != raw or link_findings(path):
             pending[name] = published
     proposed = publication_record(changes)
     for path in [manifest, *(root / name for name in pending)]:
@@ -370,9 +382,11 @@ def sanitize(root, paths, manifest):
     for name, data in pending.items():
         path = root / name
         actual = sha(path.read_bytes())
-        if actual == changes[name]['published_sha256']:
+        if actual == sha(data):
+            if link_findings(path):
+                write_publication_file(path, data)
             continue
-        if actual != changes[name]['original_sha256']:
+        if name not in changes or actual != changes[name]['original_sha256']:
             raise ValueError(f'Acquisition changed during publication: {name}')
         write_publication_file(path, data)
 
@@ -385,12 +399,16 @@ def main():
     root = args.root.resolve()
     paths = candidates(root)
     manifest_path = root / MANIFEST
+    manifest_issues = link_findings(manifest_path)
+    if manifest_issues:
+        raise SystemExit('\n'.join(manifest_issues))
     if args.sanitize:
         sanitize(root, paths, manifest_path)
     recorded = checked_record(manifest_path.read_bytes())
     check_recorded_files(root, recorded, {})
     issues = []
     for path in paths:
+        issues.extend(link_findings(path))
         issues.extend(findings(str(path.relative_to(root)), path.read_bytes()))
         artifact_digest(path, root)
     if issues:

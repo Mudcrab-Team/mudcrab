@@ -116,6 +116,54 @@ class PublicationTests(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, 'operator home path'):
                     publication.main()
 
+    def test_both_modes_reject_private_names_even_with_clean_contents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / publication.MANIFEST
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text('{"changes": {}}')
+            private = manifest.parent / 'home/operator/run.log'
+            private.parent.mkdir(parents=True)
+            private.write_text('public')
+            for argv in (['audit', '--root', str(root)], ['audit', '--root', str(root), '--sanitize']):
+                with self.subTest(argv=argv), patch('sys.argv', argv):
+                    with self.assertRaisesRegex(SystemExit, 'Rename the evidence file'):
+                        publication.main()
+
+    def test_clean_payload_with_private_link_text_is_materialized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'checkout'
+            manifest = root / publication.MANIFEST
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text('{"changes": {}}')
+            external = Path(directory) / 'home/operator/original.log'
+            external.parent.mkdir(parents=True)
+            external.write_bytes(b'public data')
+            link = manifest.parent / 'capture.log'
+            link.symlink_to(external)
+            argv = ['audit', '--root', str(root)]
+            with patch('sys.argv', argv), self.assertRaisesRegex(SystemExit, 'link target: operator home path'):
+                publication.main()
+            with patch('sys.argv', argv + ['--sanitize']):
+                publication.main()
+            self.assertFalse(link.is_symlink())
+            self.assertEqual(link.read_bytes(), b'public data')
+            self.assertEqual(external.read_bytes(), b'public data')
+
+    def test_wine_home_prefixes_in_logs_and_serialized_paths(self):
+        name = 'failure.json'
+        wine = r'Z:\home\operator\trace.bin'
+        self.assertEqual(publication.public_value(wine), r'<operator-home>\trace.bin')
+        raw = json.dumps({'trace': wine}).encode()
+        self.assertTrue(publication.findings(name, raw))
+        redacted = publication.public_text(name, raw)
+        self.assertEqual(json.loads(redacted), {'trace': r'<operator-home>\trace.bin'})
+        self.assertFalse(publication.findings(name, redacted))
+        clean = rb'Z:\games\public\trace.bin'
+        self.assertEqual(publication.public_text('recorder.log', clean), clean)
+        prefix = b'compatdata/pfx/drive_c/users/steamuser/Documents'
+        self.assertFalse(publication.findings('recorder.py', prefix))
+
     def test_rejected_payload_or_proposed_mapping_preserves_all_originals(self):
         for finding in ('frozen trace', 'manifest path'):
             with self.subTest(finding=finding), tempfile.TemporaryDirectory() as directory:
@@ -253,32 +301,33 @@ class PublicationTests(unittest.TestCase):
                     publication.main()
 
     def test_nested_archives_remove_paths_and_signatures_and_keep_trace_bytes(self):
-        original = zipped({'inner.zip': zipped({
+        trace = gzip.compress(bytes(range(256)), mtime=12345)
+        original = zipped({'inner.ZIP': zipped({
             'runtime.json': b'{"camera_signature": "1122334455", "path": "/home/person/game"}',
-            'build.log.gz': gzip.compress(b'/Users/person/build\n'),
-            'trace.bin.gz': gzip.compress(bytes(range(256))),
+            'build.log.GZ': gzip.compress(b'/Users/person/build\n'),
+            'trace.BIN.GZ': trace,
         })})
-        self.assertTrue(publication.findings('outer.zip', original))
+        self.assertTrue(publication.findings('outer.ZiP', original))
         changes = {}
-        published = publication.transform('outer.zip', original, changes)
-        self.assertFalse(publication.findings('outer.zip', published))
-        self.assertEqual(changes['outer.zip']['original_sha256'], publication.sha(original))
+        published = publication.transform('outer.ZiP', original, changes)
+        self.assertFalse(publication.findings('outer.ZiP', published))
+        self.assertEqual(changes['outer.ZiP']['original_sha256'], publication.sha(original))
         with zipfile.ZipFile(io.BytesIO(published)) as outer:
-            with zipfile.ZipFile(io.BytesIO(outer.read('inner.zip'))) as inner:
+            with zipfile.ZipFile(io.BytesIO(outer.read('inner.ZIP'))) as inner:
                 profile = json.loads(inner.read('runtime.json'))
                 self.assertEqual(profile['camera_signature'], publication.range_identity(bytes(range(0x11, 0x56, 0x11))))
-                self.assertEqual(gzip.decompress(inner.read('trace.bin.gz')), bytes(range(256)))
+                self.assertEqual(inner.read('trace.BIN.GZ'), trace)
         second_changes = {}
-        self.assertEqual(publication.transform('outer.zip', published, second_changes), published)
+        self.assertEqual(publication.transform('outer.ZiP', published, second_changes), published)
         self.assertEqual(second_changes, {})
 
     def test_utf8_numeric_trace_is_never_rewritten_even_when_audit_reports_path(self):
         original = gzip.compress(b'UTF8-valid numeric trace payload /home/operator/observation')
         changes = {}
-        self.assertEqual(publication.transform('trace.bin.gz', original, changes), original)
+        self.assertEqual(publication.transform('trace.BIN.GZ', original, changes), original)
         self.assertEqual(changes, {})
-        self.assertTrue(publication.findings('trace.bin.gz', original))
-        archive = zipped({'trace.bin.gz': original})
+        self.assertTrue(publication.findings('trace.BIN.GZ', original))
+        archive = zipped({'trace.BIN.GZ': original})
         self.assertEqual(publication.transform('capture.zip', archive, changes), archive)
         self.assertEqual(changes, {})
 
