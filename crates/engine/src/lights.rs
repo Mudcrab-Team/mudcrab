@@ -125,7 +125,9 @@ impl LightEvaluation {
     }
 }
 
-/// Resolve supported inputs without modifying their stored values. XRDS is an additive signed
+/// Resolve supported inputs without modifying their stored values. Retail adds the reference's
+/// extra data to the record: radius is DATA plus XRDS, and fade is FNAM plus XLIG (registry row
+/// `RF-LIGHT-GPU-007`; colour times fade is `RF-LIGHT-GPU-008`). XRDS is an additive signed
 /// offset (xEdit wbREFRRadiusToStr). Invalid present offsets are rejected, not replaced by base
 /// radius. The native constructor replaces nonpositive sums with 0.1. XLIG fade is an additive
 /// offset. An `f32::MAX` fade, in FNAM or XLIG, is the native "no fade" sentinel: this backend

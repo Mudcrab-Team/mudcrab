@@ -106,11 +106,15 @@ absent, valid and invalid distinct. Native Skyrim SE 1.7.104.0 instructions esta
 
 ```text
 reference_fade = XLIG.fade (absent = 0)
+// Native instructions:
 authored_fade = reference_fade if reference_fade == f32::MAX else base_fade + reference_fade
-effective_fade = clamp(authored_fade, 0, f32::MAX)  // bounded Bevy adapter
+// This adapter (bounded Bevy backend; the f32::MAX sentinel is not applied):
+base_fade'      = 1 if FNAM is invalid or f32::MAX (read as absent), else base_fade
+reference_fade' = 0 if XLIG.fade is f32::MAX or invalid, else reference_fade
+effective_fade  = clamp(base_fade' + reference_fade', 0, f32::MAX)
 ```
 
-The native sentinel bypasses addition. This adapter reads `f32::MAX` as "no fade": the Bevy light
+The native sentinel bypasses addition, so the native result is `f32::MAX`. This adapter reads `f32::MAX` as "no fade": the Bevy light
 has no unbounded power, and a maximum-intensity light is not what the sentinel means. An `f32::MAX`
 in XLIG leaves the base fade as it is, and an `f32::MAX` in FNAM is read as an absent fade (unit
 power). Both are marked `fade_sentinel`, and neither counts as malformed or backend-limited. `Fade 1.35+/-` is an editor label, not an extra 1.35 in the

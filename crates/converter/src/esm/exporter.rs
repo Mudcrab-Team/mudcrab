@@ -1439,18 +1439,21 @@ fn insert_light(
     let radius = u32::from_le_bytes(data[4..8].try_into().expect("four-byte light radius")) as f32;
     let flags = u32::from_le_bytes(data[12..16].try_into().expect("four-byte light flags"));
     let falloff = f32::from_le_bytes(data[16..20].try_into().expect("four-byte light falloff"));
+    // Both readers share one rule for a repeated subrecord: the first well-formed (four-byte)
+    // FNAM is the fade, and a malformed one counts only when no well-formed one exists. The
+    // in-house decoder drops a malformed FNAM and flags it; the legacy reader skips it here.
     let fade = view
-        .find(b"FNAM")
-        .filter(|bytes| bytes.len() >= 4)
-        .map(|bytes| f32::from_le_bytes(bytes[..4].try_into().expect("four-byte light fade")));
+        .find_all(b"FNAM")
+        .find(|bytes| bytes.len() == 4)
+        .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+        .map(f32::from_le_bytes);
     // 0 absent, 1 valid finite nonnegative, 2 malformed/unsupported negative.
     // Do not merge valid zero, missing FNAM and malformed FNAM into one state.
-    let fade_status = match view.find(b"FNAM") {
-        // The in-house decoder rejected a malformed FNAM; the legacy reader would see it as 2.
-        None if fnam_rejected => 2,
-        None => 0,
-        Some(bytes) if bytes.len() == 4 && fade.is_some_and(|v| v.is_finite() && v >= 0.0) => 1,
+    let fade_status = match fade {
+        Some(value) if value.is_finite() && value >= 0.0 => 1,
         Some(_) => 2,
+        None if fnam_rejected || view.find(b"FNAM").is_some() => 2,
+        None => 0,
     };
     let fade = (fade_status == 1).then_some(fade).flatten();
     // The rest of the 48-byte DATA (xEdit 4.1.5f `wbDefinitionsTES5.pas`, LIGH): time, FOV, near
@@ -1568,16 +1571,17 @@ fn insert_reference_with_canonical_data(
     // XRDS is a signed f32 radius offset. xEdit cce1c424, wbDefinitionsCommon.pas
     // wbREFRRadiusToStr adds it to LIGH DATA radius when displaying/editing effective range.
     // Keep the raw offset; the runtime evaluates and bounds the sum separately.
+    // The same repeated-subrecord rule as FNAM: the first four-byte XRDS wins over a malformed one.
     let radius_override = view
-        .find(b"XRDS")
-        .filter(|bytes| bytes.len() >= 4)
-        .map(|bytes| f32::from_le_bytes(bytes[..4].try_into().expect("four-byte XRDS radius")));
-    let radius_status = match view.find(b"XRDS") {
-        // The in-house decoder rejected a malformed XRDS; the legacy reader would see it as 2.
-        None if xrds_rejected => 2,
-        None => 0,
-        Some(bytes) if bytes.len() == 4 && radius_override.is_some_and(f32::is_finite) => 1,
+        .find_all(b"XRDS")
+        .find(|bytes| bytes.len() == 4)
+        .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+        .map(f32::from_le_bytes);
+    let radius_status = match radius_override {
+        Some(value) if value.is_finite() => 1,
         Some(_) => 2,
+        None if xrds_rejected || view.find(b"XRDS").is_some() => 2,
+        None => 0,
     };
     let radius_override = (radius_status == 1).then_some(radius_override).flatten();
     let (enable_parent_id, enable_parent_flags) = view
@@ -2525,6 +2529,33 @@ mod tests {
             .subrecords
             .push((b"XRDS".to_vec(), 64.0f32.to_le_bytes().to_vec()));
         master.insert(0xB03, valid_ref);
+        // Legacy shape with a repeated subrecord: the first well-formed one wins, in either order.
+        let mut short_then_valid = light(0xA04, "ShortThenValid", data(), Some(2.5), None);
+        short_then_valid
+            .subrecords
+            .insert(0, (b"FNAM".to_vec(), vec![0xAE, 0x18]));
+        master.insert(0xA04, short_then_valid);
+        let mut valid_then_short = light(0xA05, "ValidThenShort", data(), Some(3.5), None);
+        valid_then_short
+            .subrecords
+            .push((b"FNAM".to_vec(), vec![0xAE, 0x18]));
+        master.insert(0xA05, valid_then_short);
+        let mut short_then_valid_ref = reference(0xB04, 0x100, 0xA04, [0.0; 3], [0.0; 3]);
+        short_then_valid_ref
+            .subrecords
+            .push((b"XRDS".to_vec(), vec![0xAE, 0x18]));
+        short_then_valid_ref
+            .subrecords
+            .push((b"XRDS".to_vec(), 32.0f32.to_le_bytes().to_vec()));
+        master.insert(0xB04, short_then_valid_ref);
+        let mut valid_then_short_ref = reference(0xB05, 0x100, 0xA05, [0.0; 3], [0.0; 3]);
+        valid_then_short_ref
+            .subrecords
+            .push((b"XRDS".to_vec(), 48.0f32.to_le_bytes().to_vec()));
+        valid_then_short_ref
+            .subrecords
+            .push((b"XRDS".to_vec(), vec![0xAE, 0x18]));
+        master.insert(0xB05, valid_then_short_ref);
 
         let mut rejected = RejectedLightFields::new();
         rejected.insert(
@@ -2594,6 +2625,26 @@ mod tests {
         assert_eq!(radius(0xB01), (None, 2), "rejected XRDS");
         assert_eq!(radius(0xB02), (None, 0), "absent XRDS");
         assert_eq!(radius(0xB03), (Some(64.0), 1), "valid XRDS beats the flag");
+        assert_eq!(
+            fade(0xA04),
+            (Some(2.5), 1),
+            "a short FNAM before a valid one"
+        );
+        assert_eq!(
+            fade(0xA05),
+            (Some(3.5), 1),
+            "a short FNAM after a valid one"
+        );
+        assert_eq!(
+            radius(0xB04),
+            (Some(32.0), 1),
+            "a short XRDS before a valid one"
+        );
+        assert_eq!(
+            radius(0xB05),
+            (Some(48.0), 1),
+            "a short XRDS after a valid one"
+        );
     }
 
     fn omission_ids(conn: &Connection) -> Vec<(String, u64, Vec<u32>)> {

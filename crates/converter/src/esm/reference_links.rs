@@ -131,7 +131,8 @@ pub(crate) fn insert(
         let real = |offset: usize| {
             sized(Some(bytes), &[16, 20])
                 .and_then(|bytes| bytes.get(offset..offset + 4))
-                .map(|bytes| f32::from_le_bytes(bytes.try_into().expect("XLIG float")))
+                .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+                .map(f32::from_le_bytes)
                 .filter(|value| value.is_finite())
         };
         tx.prepare_cached("INSERT INTO reference_light_data VALUES (?1,?2,?3,?4,?5,?6)")?
