@@ -684,6 +684,23 @@ fn export_records(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='script_properties')",
         [], |row| row.get::<_, bool>(0),
     )?;
+    let has_perk_tables = if order.is_some() {
+        true
+    } else {
+        crate::esm::perks::PERK_TABLES
+            .iter()
+            .chain(crate::esm::gameplay_common::GAMEPLAY_COMMON_TABLES.iter())
+            .try_fold(true, |all_present, name| -> Result<bool> {
+                if !all_present {
+                    return Ok(false);
+                }
+                tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [name],
+                    |row| row.get::<_, bool>(0),
+                )
+            })?
+    };
     if runtime_views {
         tx.prepare_cached("DELETE FROM movement_types")?
             .execute([])?;
@@ -817,7 +834,7 @@ fn export_records(
         }
 
         match type_str {
-            "PERK" => {
+            "PERK" if has_perk_tables => {
                 crate::esm::perks::insert_record(
                     &tx,
                     &crate::esm::gameplay_common::Links { master },

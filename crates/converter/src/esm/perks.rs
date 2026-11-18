@@ -277,11 +277,14 @@ pub(crate) fn inhouse_rejected_sections(
     for effect_index in raw_blocks.len()..canon_blocks.len() {
         sections.effect_indices.insert(effect_index);
     }
-    if (!payload_complete || !raw_complete || truncated_tag.is_some())
-        && let Some(last_block) = raw_blocks.last()
-        && last_block.last().map(|(tag, _)| tag) != Some(b"PRKF")
-    {
-        sections.effect_indices.insert(raw_blocks.len() - 1);
+    if !payload_complete || !raw_complete || truncated_tag.is_some() {
+        if truncated_tag == Some(*b"PRKE") {
+            sections.effect_indices.insert(raw_blocks.len());
+        } else if let Some(last_block) = raw_blocks.last()
+            && last_block.last().map(|(tag, _)| tag) != Some(b"PRKF")
+        {
+            sections.effect_indices.insert(raw_blocks.len() - 1);
+        }
     }
     sections
 }
@@ -666,12 +669,14 @@ pub(crate) fn insert_record(
                 let mut target_form_id: Option<u32> = None;
                 let mut value_text: Option<String> = None;
 
+                let canonical_block = canonical_blocks.get(effect_index).copied();
+                let canonical_epf2 =
+                    canonical_block.and_then(|block| first_block_subrecord(block, b"EPF2"));
+                let canonical_epfd =
+                    canonical_block.and_then(|block| first_block_subrecord(block, b"EPFD"));
                 let activate_choice_spell_optional = parameter_type == Some(4)
                     && function == 9
-                    && (epf2.is_some() || epf3.is_some());
-                let canonical_epfd = canonical_blocks
-                    .get(effect_index)
-                    .and_then(|canonical_block| first_block_subrecord(canonical_block, b"EPFD"));
+                    && (epf2.is_some() || canonical_epf2.is_some() || epf3.is_some());
                 let decoded_ok = function_allows_parameter_type(function, parameter_type)
                     && match (parameter_type, epfd) {
                         (None, None) | (Some(0), _) => true,
@@ -813,6 +818,19 @@ pub(crate) fn insert_record(
                     ),
                 );
             }
+        }
+    }
+    if let Some(rejected) = rejected {
+        for &effect_index in rejected
+            .effect_indices
+            .iter()
+            .filter(|&&index| index >= effect_blocks.len())
+        {
+            omissions.record(
+                OmissionCategory::PerkEffectUndecoded,
+                perk_id,
+                format!("PERK {perk_id:08X} effect {effect_index}: reader rejected subrecord"),
+            );
         }
     }
     Ok(())

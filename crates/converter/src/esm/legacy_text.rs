@@ -109,9 +109,10 @@ pub(crate) fn resolve_localized_fields(
                 Some(text) => *data = runtime_string(text),
                 None => {
                     let malformed = id.is_some_and(|id| {
-                        table
-                            .as_ref()
-                            .is_some_and(|table| table.malformed_ids.contains(&id))
+                        id != 0
+                            && table
+                                .as_ref()
+                                .is_some_and(|table| table.malformed_ids.contains(&id))
                     });
                     // A wrong-width localized PERK/EPFD or malformed bank entry cannot be
                     // projected as NULL; keep the warning below, clear its payload to empty

@@ -967,3 +967,200 @@ fn truncated_top_level_ctda_marks_top_level_rejected() {
     assert!(sections.top_level);
     assert!(sections.effect_indices.is_empty());
 }
+
+#[test]
+fn truncated_trailing_prke_records_omission_without_surviving_effect_block() {
+    let mut raw_payload = perks::prefix(5);
+    raw_payload.extend(perks::entry_effect(
+        36,
+        3,
+        1,
+        Some(&2.0f32.to_le_bytes()),
+        None,
+    ));
+    // Trailing PRKE claiming 3 bytes with only 2 present at EOF.
+    raw_payload.extend(b"PRKE");
+    raw_payload.extend(3u16.to_le_bytes());
+    raw_payload.extend([2, 0]);
+
+    let mut canon_subs = vec![
+        (b"EDID".to_vec(), perks::text("TruncatedPrke")),
+        (b"DATA".to_vec(), vec![0, 5, 1, 1, 0]),
+    ];
+    canon_subs.extend([
+        (b"PRKE".to_vec(), vec![2, 0, 0]),
+        (b"DATA".to_vec(), vec![36, 3, 0]),
+        (b"EPFT".to_vec(), vec![1]),
+        (b"EPFD".to_vec(), 2.0f32.to_le_bytes().to_vec()),
+        (b"PRKF".to_vec(), Vec::new()),
+    ]);
+    let canonical = super::records::RawRecord {
+        form_id: perks::FIRST_ID,
+        record_type: *b"PERK",
+        flags: 0,
+        subrecords: canon_subs,
+        cell_form_id: None,
+        worldspace_form_id: None,
+        load_order: 0,
+    };
+
+    let sections = super::perks::inhouse_rejected_sections(&raw_payload, &canonical, &[], false);
+    assert!(!sections.top_level);
+    assert!(sections.effect_indices.contains(&1));
+
+    let conn = Connection::open_in_memory().unwrap();
+    super::exporter::create_tables(&conn).unwrap();
+    let tx = conn.unchecked_transaction().unwrap();
+    let master = std::collections::HashMap::from([(canonical.form_id, canonical.clone())]);
+    let mut omissions = ProjectionOmissions::default();
+    super::perks::insert_record(
+        &tx,
+        &super::gameplay_common::Links { master: &master },
+        &canonical,
+        &canonical,
+        Some(&sections),
+        &mut omissions,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    omissions.write(&conn).unwrap();
+    let summary = ProjectionOmissions::read(&conn).unwrap();
+    assert_eq!(
+        summary.categories[OmissionCategory::PerkEffectUndecoded.name()].count,
+        1
+    );
+    let surviving: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM perk_entry_points WHERE perk_id = ?1 AND effect_index = 0",
+            [canonical.form_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(surviving, 1);
+}
+
+#[test]
+fn localized_key_zero_with_malformed_bank_zero_and_unresolved_epf2_stay_nullable() {
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut perk = sub(b"EDID", &perks::text("LocalizedNullZeroAndEpf2"));
+        perk.extend(sub(b"FULL", &101u32.to_le_bytes()));
+        perk.extend(sub(b"DESC", &202u32.to_le_bytes()));
+        perk.extend(sub(b"DATA", &[0, 10, 1, 1, 0]));
+        // Effect 0: key 0 under EPFT=7 even when bank has malformed directory entry 0 -> NULL, 0 omissions.
+        perk.extend(perks::entry_effect(
+            81,
+            15,
+            7,
+            Some(&0u32.to_le_bytes()),
+            None,
+        ));
+        // Effect 1: localized add_activate_choice with missing EPF2 label ID (999) and zero EPFD (no EPF3).
+        perk.extend(perks::entry_effect(
+            14,
+            9,
+            4,
+            Some(&0u32.to_le_bytes()),
+            Some(&999u32.to_le_bytes()),
+        ));
+        let skyrim = [
+            header(0x80, &[]),
+            top(
+                b"PERK",
+                &record_with_flags(b"PERK", perks::FIRST_ID, 0, &perk),
+            ),
+        ]
+        .concat();
+
+        // STRINGS table with malformed ID 0 (unterminated) and valid ID 101.
+        let mut dir_bytes = Vec::new();
+        let mut blob: Vec<u8> = Vec::new();
+        dir_bytes.extend(101u32.to_le_bytes());
+        dir_bytes.extend(0u32.to_le_bytes());
+        blob.extend_from_slice(b"Perk Name\0");
+        dir_bytes.extend(0u32.to_le_bytes());
+        dir_bytes.extend(u32::try_from(blob.len()).unwrap().to_le_bytes());
+        blob.extend_from_slice(b"BadZero");
+        let mut strings_bytes = Vec::new();
+        strings_bytes.extend(2u32.to_le_bytes());
+        strings_bytes.extend(u32::try_from(blob.len()).unwrap().to_le_bytes());
+        strings_bytes.extend(dir_bytes);
+        strings_bytes.extend(blob);
+        let strings_path = dir.path().join("Strings/Skyrim_English.STRINGS");
+        fs::create_dir_all(strings_path.parent().unwrap()).unwrap();
+        fs::write(&strings_path, strings_bytes).unwrap();
+        write_string_table(
+            &dir.path().join("Strings/Skyrim_English.DLSTRINGS"),
+            &[(202, "Perk Description")],
+            true,
+        );
+        let skyrim_path = dir.path().join("Skyrim.esm");
+        fs::write(&skyrim_path, skyrim).unwrap();
+        let db = dir.path().join("skyrim_world.db");
+
+        EsmParser::convert_plugins_with_reader(&[skyrim_path], &db, reader, dir.path()).unwrap();
+        let conn = Connection::open(db).unwrap();
+
+        let omissions = ProjectionOmissions::read(&conn).unwrap();
+        assert!(
+            !omissions
+                .categories
+                .contains_key(OmissionCategory::PerkEffectUndecoded.name()),
+            "{reader:?}: {omissions:?}"
+        );
+
+        type NullableChoiceRow = (i64, Option<String>, Option<String>, Option<u32>);
+        let rows: Vec<NullableChoiceRow> = conn
+            .prepare(
+                "SELECT effect_index, button_label, value_text, target_form_id
+                 FROM perk_entry_points WHERE perk_id = ?1 ORDER BY effect_index",
+            )
+            .unwrap()
+            .query_map([perks::FIRST_ID], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![(0, None, None, None), (1, None, None, None)],
+            "{reader:?}"
+        );
+    }
+}
+
+#[test]
+fn subset_export_skips_perk_projection_when_optional_perk_tables_are_absent() {
+    let conn = Connection::open_in_memory().unwrap();
+    super::exporter::create_tables(&conn).unwrap();
+    conn.execute_batch(
+        "DROP TABLE perks;
+         DROP TABLE perk_effects;
+         DROP TABLE perk_entry_points;
+         DROP TABLE record_conditions;",
+    )
+    .unwrap();
+    let perk = super::records::RawRecord {
+        form_id: perks::FIRST_ID,
+        record_type: *b"PERK",
+        flags: 0,
+        subrecords: vec![
+            (b"EDID".to_vec(), perks::text("SubsetPerk")),
+            (b"DATA".to_vec(), vec![0, 5, 1, 1, 0]),
+        ],
+        cell_form_id: None,
+        worldspace_form_id: None,
+        load_order: 0,
+    };
+    let subset = std::collections::HashMap::from([(perk.form_id, perk)]);
+    super::exporter::export_to_db(&conn, &subset).unwrap();
+    let canonical_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM records WHERE form_id = ?1 AND record_type = 'PERK'",
+            [perks::FIRST_ID],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(canonical_count, 1);
+}
