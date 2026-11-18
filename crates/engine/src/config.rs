@@ -340,6 +340,10 @@ pub struct EngineConfig {
     /// Off by default: the report's summary is what acceptance reads; the series is for choosing
     /// run lengths and spotting drift within a run.
     pub benchmark_frame_times: Option<PathBuf>,
+    /// `--walk-camera-trace <file>`: write one CSV row per rendered frame with the frame time,
+    /// the physics ticks run, the body, the blended spring input and the WALK camera position.
+    /// Off by default. A diagnostic for stair-climb jitter (#511, #619).
+    pub walk_camera_trace: Option<PathBuf>,
     /// `--run-label <text>`: names an automated run in its window title, e.g. a benchmark's
     /// variant and round ([`EngineConfig::window_title`]).
     pub run_label: Option<String>,
@@ -477,6 +481,7 @@ impl Default for EngineConfig {
             benchmark_jump: None,
             benchmark_output: PathBuf::from("benchmark-report.json"),
             benchmark_frame_times: None,
+            walk_camera_trace: None,
             run_label: None,
             accept_min_fps: 60.0,
             accept_p95_ms: 16.67,
@@ -581,6 +586,7 @@ Benchmark and profiling:
   --benchmark-output <file>             benchmark report path (default: benchmark-report.json)
   --frame-budget-ms <ms>                frame time the report counts frames over (default: 6.25, 160 fps)
   --benchmark-frame-times [<file>]      write every measured frame time to this CSV file
+  --walk-camera-trace <file>            write the WALK camera, body and frame time of every frame to this CSV file
   --run-label [<text>]                  name the run in the window title
   --synthetic-instances <count>         instances in the synthetic benchmark (default: 250000)
   --accept-min-fps <fps>                fail the run below this average frame rate (default: 60)
@@ -1105,6 +1111,13 @@ impl EngineConfig {
                         "a MiB size that fits bytes, 0 to disable",
                         args.next(),
                     )?;
+                }
+                "--walk-camera-trace" => {
+                    config.walk_camera_trace = Some(take_value(
+                        "--walk-camera-trace",
+                        "a file path for the per-frame WALK camera trace",
+                        args.next(),
+                    )?);
                 }
                 "--streaming-costs" => {
                     config.streaming_costs = Some(take_value(
@@ -3343,6 +3356,18 @@ mod tests {
         }
     }
 
+    /// The WALK camera trace is off by default and needs a file.
+    #[test]
+    fn the_walk_camera_trace_is_off_by_default_and_takes_a_file() {
+        assert_eq!(run_config(&[]).walk_camera_trace, None);
+        assert_eq!(
+            run_config(&["--walk-camera-trace", "stairs.csv"]).walk_camera_trace,
+            Some(PathBuf::from("stairs.csv"))
+        );
+        let error = parse_error(&["--walk-camera-trace", "--lights"]).to_string();
+        assert!(error.contains("--walk-camera-trace"), "{error}");
+    }
+
     /// A shots path left out does not swallow the next option, and it is an error rather than a
     /// silent fallback: continuing would run the engine interactively, a mode nobody asked for.
     #[test]
@@ -3920,6 +3945,7 @@ mod tests {
             "--max-upload-mib-per-frame",
             "--run-label",
             "--benchmark-frame-times",
+            "--walk-camera-trace",
             "--screenshot-camera-offset",
             "--lights",
             "--physics-fixture",
