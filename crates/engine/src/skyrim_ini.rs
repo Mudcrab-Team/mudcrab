@@ -28,6 +28,62 @@ use std::{collections::HashMap, path::Path};
 /// cascade builder's bounds invalid.
 const MIN_SUN_SHADOW_DISTANCE: f32 = 700.0;
 
+/// `0` or `1`.
+fn parse_flag(raw: &str) -> Option<bool> {
+    match raw {
+        "0" => Some(false),
+        "1" => Some(true),
+        _ => None,
+    }
+}
+
+/// An odd whole number of grids that the streamer accepts.
+fn parse_grids(raw: &str) -> Option<i32> {
+    raw.parse::<i32>()
+        .ok()
+        // Skyrim centres the grid on the player's cell, so only odd sizes are a grid.
+        .filter(|grids| *grids >= 1 && grids % 2 == 1 && (grids - 1) / 2 <= MAX_STREAM_RADIUS)
+}
+
+/// A shadow distance the cascade builder accepts.
+fn parse_shadow_distance(raw: &str) -> Option<f32> {
+    raw.parse::<f32>()
+        .ok()
+        .filter(|value| value.is_finite() && *value >= MIN_SUN_SHADOW_DISTANCE)
+}
+
+/// A finite number above zero.
+fn parse_positive(raw: &str) -> Option<f32> {
+    raw.parse::<f32>()
+        .ok()
+        .filter(|value| value.is_finite() && *value > 0.0)
+}
+
+/// Whether a value of a key `apply` validates is usable: `Some(true)` or `Some(false)`, or `None`
+/// for a key `apply` does not validate. `section` and `key` are lower case. The same functions
+/// that `apply` uses decide it, so the two cannot disagree.
+fn is_usable(section: &str, key: &str, raw: &str) -> Option<bool> {
+    match (section, key) {
+        ("general", "balwaysactive") | ("display", "bdrawlandshadows") => {
+            Some(parse_flag(raw).is_some())
+        }
+        ("general", "ugridstoload") => Some(parse_grids(raw).is_some()),
+        ("display", "fshadowdistance") => Some(parse_shadow_distance(raw).is_some()),
+        ("terrainmanager", "fblocklevel0distance")
+        | ("terrainmanager", "fblocklevel1distance")
+        | ("terrainmanager", "fblockmaximumdistance")
+        | ("terrainmanager", "fsplitdistancemult") => Some(parse_positive(raw).is_some()),
+        ("sky", _) => crate::sun::SUN_KEYS
+            .iter()
+            .position(|name| name.eq_ignore_ascii_case(key))
+            .map(|index| {
+                raw.parse::<f32>()
+                    .is_ok_and(|value| crate::sun::SunSettings::valid(index, value))
+            }),
+        _ => None,
+    }
+}
+
 /// Values from one or more INI files, keyed by lower-cased section and key.
 #[derive(Debug, Default)]
 pub struct SkyrimIni {
@@ -61,10 +117,20 @@ impl SkyrimIni {
             let (Some(section), Some((key, value))) = (&section, line.split_once('=')) else {
                 continue;
             };
-            self.values.insert(
-                (section.clone(), key.trim().to_ascii_lowercase()),
-                value.trim().to_owned(),
-            );
+            let key = key.trim().to_ascii_lowercase();
+            let value = value.trim();
+            let slot = (section.clone(), key);
+            // A later file's unusable value must not replace an earlier usable one: `apply` would
+            // reject it and the earlier value would be lost. Report it here and keep the old one.
+            if is_usable(&slot.0, &slot.1, value) == Some(false) && self.values.contains_key(&slot)
+            {
+                eprintln!(
+                    "warning: ignoring {}={value:?} in a later INI; keeping the earlier value",
+                    slot.1
+                );
+                continue;
+            }
+            self.values.insert(slot, value.to_owned());
         }
     }
 
@@ -78,43 +144,36 @@ impl SkyrimIni {
     /// leaves the setting as it was.
     pub fn apply(&self, config: &mut EngineConfig) {
         if let Some(raw) = self.get("General", "bAlwaysActive") {
-            match raw {
-                "0" => config.always_active = false,
-                "1" => config.always_active = true,
-                _ => eprintln!("warning: ignoring bAlwaysActive={raw:?}; expected 0 or 1"),
+            match parse_flag(raw) {
+                Some(value) => config.always_active = value,
+                None => eprintln!("warning: ignoring bAlwaysActive={raw:?}; expected 0 or 1"),
             }
         }
         if let Some(raw) = self.get("General", "uGridsToLoad") {
-            match raw.parse::<i32>() {
-                // Skyrim centres the grid on the player's cell, so only odd sizes are a grid.
-                Ok(grids)
-                    if grids >= 1 && grids % 2 == 1 && (grids - 1) / 2 <= MAX_STREAM_RADIUS =>
-                {
+            match parse_grids(raw) {
+                Some(grids) => {
                     config.stream_radius = (grids - 1) / 2;
                     config.unload_radius = config.stream_radius + 1;
                     config.settings_overrides.push("ini:stream-radius".into());
                 }
-                _ => eprintln!(
+                None => eprintln!(
                     "warning: ignoring uGridsToLoad={raw:?}; expected an odd whole number from 1 to {}",
                     MAX_STREAM_RADIUS * 2 + 1
                 ),
             }
         }
         if let Some(raw) = self.get("Display", "fShadowDistance") {
-            match raw.parse::<f32>() {
-                Ok(value) if value.is_finite() && value >= MIN_SUN_SHADOW_DISTANCE => {
-                    config.sun_shadow_distance_limit = Some(value);
-                }
-                _ => eprintln!(
+            match parse_shadow_distance(raw) {
+                Some(value) => config.sun_shadow_distance_limit = Some(value),
+                None => eprintln!(
                     "warning: ignoring fShadowDistance={raw:?}; expected at least {MIN_SUN_SHADOW_DISTANCE} Creation units"
                 ),
             }
         }
         if let Some(raw) = self.get("Display", "bDrawLandShadows") {
-            match raw {
-                "0" => config.land_shadows = false,
-                "1" => config.land_shadows = true,
-                _ => eprintln!("warning: ignoring bDrawLandShadows={raw:?}; expected 0 or 1"),
+            match parse_flag(raw) {
+                Some(value) => config.land_shadows = value,
+                None => eprintln!("warning: ignoring bDrawLandShadows={raw:?}; expected 0 or 1"),
             }
         }
         for (index, key) in crate::sun::SUN_KEYS.into_iter().enumerate() {
@@ -140,12 +199,12 @@ impl SkyrimIni {
             let Some(raw) = self.get("TerrainManager", key) else {
                 continue;
             };
-            match raw.parse::<f32>() {
-                Ok(value) if value.is_finite() && value > 0.0 => {
+            match parse_positive(raw) {
+                Some(value) => {
                     *setting = value;
                     config.settings_overrides.push(format!("ini:{key}"));
                 }
-                _ => eprintln!("warning: ignoring {key}={raw:?}; expected a positive number"),
+                None => eprintln!("warning: ignoring {key}={raw:?}; expected a positive number"),
             }
         }
     }
@@ -258,6 +317,82 @@ mod tests {
             assert_eq!(config.stream_radius, defaults.stream_radius, "{text}");
             assert_eq!(config.terrain_lod, defaults.terrain_lod, "{text}");
         }
+    }
+
+    /// Layered files: a later unusable value must not replace an earlier usable one, and a later
+    /// usable value (even 0) still overrides it.
+    #[test]
+    fn a_later_unusable_value_keeps_the_earlier_usable_one() {
+        let layered = |first: &str, second: &str| {
+            let mut ini = SkyrimIni::default();
+            ini.merge_str(first);
+            ini.merge_str(second);
+            let mut config = EngineConfig::default();
+            ini.apply(&mut config);
+            config
+        };
+        // bDrawLandShadows: an invalid 2 keeps the 1; a valid 0 overrides it.
+        let kept = layered(
+            "[Display]\nbDrawLandShadows=1\n",
+            "[Display]\nbDrawLandShadows=2\n",
+        );
+        assert!(kept.land_shadows);
+        let overridden = layered(
+            "[Display]\nbDrawLandShadows=1\n",
+            "[Display]\nbDrawLandShadows=0\n",
+        );
+        assert!(!overridden.land_shadows);
+        // fShadowDistance (below the cascade minimum and malformed keep 9000; 12000 overrides).
+        for bad in ["0", "699", "far", "NaN"] {
+            let config = layered(
+                "[Display]\nfShadowDistance=9000\n",
+                &format!("[Display]\nfShadowDistance={bad}\n"),
+            );
+            assert_eq!(config.sun_shadow_distance_limit, Some(9_000.0), "{bad}");
+        }
+        let config = layered(
+            "[Display]\nfShadowDistance=9000\n",
+            "[Display]\nfShadowDistance=12000\n",
+        );
+        assert_eq!(config.sun_shadow_distance_limit, Some(12_000.0));
+        // uGridsToLoad: an even grid count keeps 7 (radius 3); 9 overrides.
+        let config = layered("[General]\nuGridsToLoad=7\n", "[General]\nuGridsToLoad=6\n");
+        assert_eq!(config.stream_radius, 3);
+        let config = layered("[General]\nuGridsToLoad=7\n", "[General]\nuGridsToLoad=9\n");
+        assert_eq!(config.stream_radius, 4);
+        // bAlwaysActive.
+        assert!(
+            layered(
+                "[General]\nbAlwaysActive=1\n",
+                "[General]\nbAlwaysActive=x\n"
+            )
+            .always_active
+        );
+        assert!(
+            !layered(
+                "[General]\nbAlwaysActive=1\n",
+                "[General]\nbAlwaysActive=0\n"
+            )
+            .always_active
+        );
+        // A TerrainManager distance: a negative later value keeps 1.5; 2.0 overrides.
+        let config = layered(
+            "[TerrainManager]\nfSplitDistanceMult=1.5\n",
+            "[TerrainManager]\nfSplitDistanceMult=-1\n",
+        );
+        assert_eq!(config.terrain_lod.split_distance_mult, 1.5);
+        let config = layered(
+            "[TerrainManager]\nfSplitDistanceMult=1.5\n",
+            "[TerrainManager]\nfSplitDistanceMult=2.0\n",
+        );
+        assert_eq!(config.terrain_lod.split_distance_mult, 2.0);
+        // A Sky key: an unusable later value keeps the earlier one.
+        let key = crate::sun::SUN_KEYS[4];
+        let config = layered(&format!("[Sky]\n{key}=12\n"), &format!("[Sky]\n{key}=99\n"));
+        assert_eq!(config.sun_settings_overrides[4], Some(12.0));
+        // With no earlier value, an unusable one changes nothing.
+        let config = layered("", "[Display]\nbDrawLandShadows=2\n");
+        assert!(!config.land_shadows);
     }
 
     /// Terrain casts no sun shadow by default (retail `bDrawLandShadows` = 0, `RF-SHADER-011`);
