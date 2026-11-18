@@ -961,10 +961,10 @@ fn fit(viewer: &mut Viewer, bounds: (Vec3, Vec3)) {
 }
 
 fn unload(world: &mut World, viewer: &mut Viewer) {
-    if let Some(shown) = viewer.shown.take() {
-        if shown.root != Entity::PLACEHOLDER {
-            world.despawn(shown.root);
-        }
+    if let Some(shown) = viewer.shown.take()
+        && shown.root != Entity::PLACEHOLDER
+    {
+        world.despawn(shown.root);
     }
     viewer.bounds = None;
 }
@@ -1140,10 +1140,10 @@ fn update(world: &mut World) {
         }
         if shown.ready_since.is_some() && !shown.revealed {
             // Settled: show the actor and frame it once.
-            if shown.root != Entity::PLACEHOLDER {
-                if let Some(mut visibility) = world.get_mut::<Visibility>(shown.root) {
-                    *visibility = Visibility::Inherited;
-                }
+            if shown.root != Entity::PLACEHOLDER
+                && let Some(mut visibility) = world.get_mut::<Visibility>(shown.root)
+            {
+                *visibility = Visibility::Inherited;
             }
             shown.revealed = true;
         }
