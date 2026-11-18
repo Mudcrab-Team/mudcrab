@@ -124,10 +124,13 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    performance check; see `.github/workflows/run_tests.yml` for the exact commands.
 
    CI also counts `.unwrap()`, `.expect(` and `panic!(` in production code (not in `#[cfg(test)]`
-   code) and fails when a crate's count rises above `tools/unwrap_ratchet/baseline.json`. Run
-   `python3 tools/unwrap_ratchet/unwrap_ratchet.py` to check. Prefer returning an error with `?`.
-   If a new call is justified, run it with `--update` and explain the reason in the pull request.
-   When your change lowers a count, run `--update` so the baseline follows.
+   code, and not in `#[test]` functions). It fails when a crate's count is higher in your pull request
+   than at its base commit, so it judges only the sites you add and needs no upkeep. Prefer returning an
+   error with `?`. To check locally against `main`, add a worktree of it and run
+   `python3 tools/unwrap_ratchet/unwrap_ratchet.py --base-root <that worktree>`. If a new call is
+   justified, run `python3 tools/unwrap_ratchet/unwrap_ratchet.py --update`, commit the changed
+   `tools/unwrap_ratchet/baseline.json` entry, and explain the reason in the pull request. Only an entry
+   that your pull request changes raises the limit.
 5. **Submit a Pull Request:**
    - Target the `main` branch and fill in the PR template; [`docs/contributing/writing-prs.md`](docs/contributing/writing-prs.md) shows how to write it so it is quick to review.
    - Link the issue (`Closes #N`), apply the [labels](docs/contributing/labels.md) that fit (if a label there doesn't exist on the repository yet, use the closest one that does; without triage access, name them in the PR instead), and reference any relevant planning docs in `docs/specs/`.

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Ratchet the count of `.unwrap()`, `.expect(` and `panic!(` in production Rust code.
 
-The count may not rise above the committed baseline unless a reviewer changes the
-baseline file in the same pull request. It does not ask for zero: most existing sites
-guard their own input, and a bulk rewrite would be riskier than the sites it removes.
+The count may not rise. CI compares the pull request's tree with its base commit
+(`--base-root`), so a pull request is judged only by the sites it adds, and no committed
+number goes stale. A justified rise is accepted when the same pull request raises that
+crate's entry in `baseline.json` (`--update`). Without `--base-root` the check compares
+with `baseline.json` alone, for a quick local run. It does not ask for zero: most existing
+sites guard their own input, and a bulk rewrite would be riskier than the sites it removes.
 
 Production code means the modules reachable from `lib.rs`, `main.rs` and `src/bin/*.rs`
 of each `crates/<name>/src`, without `#[cfg(test)]` modules and items. `tests/`,
@@ -11,12 +14,13 @@ of each `crates/<name>/src`, without `#[cfg(test)]` modules and items. `tests/`,
 character literals are blanked before matching, so text inside them does not count.
 
 Usage:
-  python3 tools/unwrap_ratchet/unwrap_ratchet.py                 # check every crate against the baseline
-  python3 tools/unwrap_ratchet/unwrap_ratchet.py --crate engine  # check one crate
-  python3 tools/unwrap_ratchet/unwrap_ratchet.py --update        # write the measured counts to the baseline
+  python3 tools/unwrap_ratchet/unwrap_ratchet.py --base-root ../base   # what CI runs: compare with the base tree
+  python3 tools/unwrap_ratchet/unwrap_ratchet.py                       # check every crate against the baseline
+  python3 tools/unwrap_ratchet/unwrap_ratchet.py --crate engine        # check one crate
+  python3 tools/unwrap_ratchet/unwrap_ratchet.py --update              # write the measured counts to the baseline
 
-Exit codes: 0 = at or below the baseline, 1 = a count rose, 2 = usage or baseline error.
-A count below the baseline passes and prints a reminder to lower the baseline. Pass
+Exit codes: 0 = at or below the limit, 1 = a count rose, 2 = usage or baseline error.
+A count below the limit passes and prints a reminder (baseline mode only). Pass
 `--strict` to fail instead, for a branch that must keep the baseline tight.
 """
 
@@ -26,7 +30,14 @@ import re
 import sys
 from pathlib import Path
 
-PATTERN = re.compile(r"\.unwrap\(\)|\.expect\(|\bpanic!\(")
+# Rust allows whitespace (and, after masking, comments) between the tokens of a call.
+PATTERN = re.compile(r"\.\s*unwrap\s*\(\s*\)|\.\s*expect\s*\(|\bpanic\s*!\s*\(")
+# `#[test]`, `#[bench]` and runtime variants such as `#[tokio::test(...)]` compile only for tests.
+TEST_FUNCTION_ATTRIBUTE = re.compile(r"#\[\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*(?:test|bench)\s*[(\]]")
+# An inline module: attributes, optional visibility, `mod name {`.
+INLINE_MODULE = re.compile(
+    r"((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{"
+)
 # Out-of-line module declarations with the attributes in front of them.
 MOD_DECLARATION = re.compile(
     r"((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;"
@@ -184,52 +195,152 @@ def attributes_require_test(attributes):
     return False
 
 
+def enclosing_open(code, position):
+    """Index of the `{` that encloses `position`, or -1 at the top level."""
+    depth = 0
+    for index in range(position - 1, -1, -1):
+        char = code[index]
+        if char == "}":
+            depth += 1
+        elif char == "{":
+            if depth == 0:
+                return index
+            depth -= 1
+    return -1
+
+
+def in_type_body(code, open_brace):
+    """Whether the block opened at `open_brace` is the body of a struct, enum or union."""
+    boundary = max(code.rfind(";", 0, open_brace), code.rfind("{", 0, open_brace), code.rfind("}", 0, open_brace))
+    return re.search(r"\b(?:struct|enum|union)\b", code[boundary + 1 : open_brace]) is not None
+
+
+def skip_attributes(code, index):
+    """Index of the first item token after whitespace and further attributes."""
+    while True:
+        while index < len(code) and code[index].isspace():
+            index += 1
+        if code.startswith("#[", index):
+            index = matching_bracket(code, index + 1) + 1
+        else:
+            return index
+
+
+def field_end(code, index, limit):
+    """End of a struct field or enum variant that starts at `index`.
+
+    It stops at the comma that ends the field, or just before the closing brace `limit`
+    of the type. Angle brackets nest, so `HashMap<K, V>` does not end the field.
+    """
+    depth = 0
+    while index < limit:
+        char = code[index]
+        if char in "([{<":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == ">" and code[index - 1 : index] != "-":
+            depth -= 1
+        elif char == "," and depth <= 0:
+            return index
+        index += 1
+    return limit - 1
+
+
+ITEM_START = re.compile(
+    r"(?:(?:pub|fn|mod|use|const|static|struct|enum|union|impl|trait|type|extern|unsafe|async|macro_rules|let)\b"
+    r"|[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*\s*!)"  # a macro invocation such as `thread_local! { ... }`
+)
+
+
+def item_end(code, index, attribute_start):
+    """Last character of the item, field, argument or statement that an attribute applies to.
+
+    An item ends at its block or at its `;`. A `let` statement ends at its `;`, whatever
+    blocks it holds. A field, variant, argument or other expression ends at the next
+    comma or `;` outside brackets, or just before the bracket that closes its parent.
+    """
+    index = skip_attributes(code, index)
+    opening = enclosing_open(code, attribute_start)
+    if opening >= 0 and in_type_body(code, opening):
+        return field_end(code, index, matching_bracket(code, opening))
+    starts = ITEM_START.match(code, index)
+    statement = starts is not None and starts.group(0) == "let"
+    expression = starts is None
+    depth = 0
+    while index < len(code):
+        char = code[index]
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+        elif char == "{":
+            if depth == 0 and not statement and not expression:
+                return matching_bracket(code, index)
+            depth += 1
+        elif char == "}":
+            depth -= 1
+        elif char == ";" and depth == 0:
+            return index
+        elif char == "," and depth == 0 and expression:
+            return index
+        if depth < 0:  # the bracket that closes the parent
+            return index - 1
+        index += 1
+    return len(code) - 1
+
+
 def cfg_test_spans(code):
-    """Character spans of items under a test-only `#[cfg(...)]` in masked `code`."""
+    """Character spans of code that exists only in a test build, in masked `code`.
+
+    That is every item, field or statement under a test-only `#[cfg(...)]`, every
+    `#[test]` function, and every block that starts with a test-only inner attribute.
+    """
     spans = []
     for match in re.finditer(r"#\[\s*cfg\s*\(", code):
         close = matching_bracket(code, code.index("[", match.start()))
+        if attributes_require_test(code[match.start() : close + 1]):
+            spans.append((match.start(), item_end(code, close + 1, match.start())))
+    for match in TEST_FUNCTION_ATTRIBUTE.finditer(code):
+        close = matching_bracket(code, code.index("[", match.start()))
+        spans.append((match.start(), item_end(code, close + 1, match.start())))
+    for match in re.finditer(r"#!\[\s*cfg\s*\(", code):
+        close = matching_bracket(code, code.index("[", match.start()))
         if not attributes_require_test(code[match.start() : close + 1]):
             continue
-        index = close + 1
-        while True:  # skip whitespace and further attributes on the same item
-            while index < len(code) and code[index].isspace():
-                index += 1
-            if code.startswith("#[", index):
-                index = matching_bracket(code, index + 1) + 1
-            else:
-                break
-        depth = 0
-        end = len(code) - 1
-        while index < len(code):
-            char = code[index]
-            if char in "([":
-                depth += 1
-            elif char in ")]":
-                depth -= 1
-            elif char == "{" and depth == 0:
-                end = matching_bracket(code, index)
-                break
-            elif char == ";" and depth == 0:
-                end = index
-                break
-            index += 1
-        spans.append((match.start(), end))
+        opening = enclosing_open(code, match.start())
+        if opening < 0:
+            spans.append((0, len(code) - 1))  # a file-level attribute
+        else:
+            spans.append((opening, matching_bracket(code, opening)))
     return spans
 
 
 def is_test_file(crate_dir, path):
     """A file under `tests/` or `benches/`, or one named `tests.rs`, holds test code."""
-    relative = path.relative_to(crate_dir.resolve()).parts
+    try:
+        relative = path.relative_to(crate_dir.resolve()).parts
+    except ValueError:  # a `#[path]` that points outside the crate
+        return False
     return bool(TEST_DIRECTORIES.intersection(relative[:-1])) or relative[-1] == "tests.rs"
 
 
 def inner_cfg_requires_test(code):
-    """Whether the file starts with a test-only inner attribute such as `#![cfg(test)]`."""
-    return any(
-        attributes_require_test(match.group(0))
-        for match in re.finditer(r"#!\[\s*cfg\s*\([^\]]*\]", code)
-    )
+    """Whether the file starts with a test-only inner attribute such as `#![cfg(test)]`.
+
+    Only the inner attributes at the top of the file apply to the whole file. One inside an
+    inline module applies to that module, and `cfg_test_spans` handles it.
+    """
+    index = 0
+    while True:
+        while index < len(code) and code[index].isspace():
+            index += 1
+        if not code.startswith("#![", index):
+            return False
+        close = matching_bracket(code, index + 2)
+        if attributes_require_test(code[index : close + 1]):
+            return True
+        index = close + 1
 
 
 def child_directory(path, root_files):
@@ -262,17 +373,27 @@ def production_files(crate_dir):
             continue
         seen.add(path)
         base = path.parent if path in resolved_roots else child_directory(path, root_files)
+        test_spans = cfg_test_spans(code)
+        inline = []
+        for module in INLINE_MODULE.finditer(code):
+            opening = module.end() - 1
+            custom = re.search(r'#\[\s*path\s*=\s*"([^"]+)"\s*\]', text[module.start(1) : module.end(1)])
+            inline.append((opening, matching_bracket(code, opening), custom.group(1) if custom else module.group(2)))
         for declaration in MOD_DECLARATION.finditer(code):
+            # A declaration inside a test-only item, module or block is test code too.
+            if any(start <= declaration.start() <= end for start, end in test_spans):
+                continue
             # Positions match between `code` and `text`; only `text` still has strings.
             attributes = text[declaration.start(1) : declaration.end(1)]
-            if attributes_require_test(code[declaration.start(1) : declaration.end(1)]):
-                continue
+            # Out-of-line modules inside inline modules live in the inline modules' directories.
+            parts = [name for opening, closing, name in inline if opening < declaration.start() < closing]
             custom = re.search(r'#\[\s*path\s*=\s*"([^"]+)"\s*\]', attributes)
             if custom:
-                candidates = [path.parent / custom.group(1)]
+                candidates = [path.parent.joinpath(*parts) / custom.group(1)]
             else:
                 name = declaration.group(2)
-                candidates = [base / f"{name}.rs", base / name / "mod.rs"]
+                directory = base.joinpath(*parts)
+                candidates = [directory / f"{name}.rs", directory / name / "mod.rs"]
             stack.extend(candidate for candidate in candidates if candidate.is_file())
     return sorted(seen)
 
@@ -298,11 +419,55 @@ def crate_names(root):
     )
 
 
+def read_baseline(path):
+    """The `counts` of a baseline file as a dict. Raises OSError, ValueError or KeyError."""
+    return json.loads(path.read_text(encoding="utf-8"))["counts"]
+
+
+def write_baseline(path, counts):
+    """Write LF newlines on every host, so `--update` on Windows does not rewrite the file."""
+    text = json.dumps({"counts": dict(sorted(counts.items()))}, indent=2) + "\n"
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+
+
+def limits_from_base(root, base_root, names):
+    """Per crate, the count a pull request may not exceed: the count at its base commit.
+
+    A crate that the base lacks has no limit and is reported as new. A pull request that
+    accepts more sites changes that crate's `baseline.json` entry, and the changed entry
+    raises the limit for that crate. An entry that the pull request left alone never does,
+    so a stale baseline cannot hide a rise or cause a false failure.
+    """
+    try:
+        head = read_baseline(root / DEFAULT_BASELINE)
+    except (OSError, ValueError, KeyError):
+        head = {}
+    try:
+        base = read_baseline(base_root / DEFAULT_BASELINE)
+    except (OSError, ValueError, KeyError):
+        base = {}
+    limits = {}
+    for name in names:
+        if not (base_root / "crates" / name / "src").is_dir():
+            continue
+        limit = count_crate(base_root, name)
+        if name in head and head[name] != base.get(name):
+            limit = max(limit, head[name])
+        limits[name] = limit
+    return limits
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--crate", help="check one crate; the default is every crate")
     parser.add_argument("--baseline", type=Path, help=f"default: {DEFAULT_BASELINE}")
     parser.add_argument("--root", type=Path, default=Path("."), help="repository root")
+    parser.add_argument(
+        "--base-root",
+        type=Path,
+        help="a checkout of the base commit; a count may not rise above its count there",
+    )
     parser.add_argument("--update", action="store_true", help="write the measured counts")
     parser.add_argument("--strict", action="store_true", help="also fail when a count fell")
     args = parser.parse_args(argv)
@@ -318,27 +483,32 @@ def main(argv=None):
 
     if args.update:
         try:
-            counts = json.loads(baseline_path.read_text())["counts"]
+            counts = read_baseline(baseline_path)
         except (OSError, ValueError, KeyError):
             counts = {}
         counts.update(measured)
-        baseline_path.write_text(
-            json.dumps({"counts": dict(sorted(counts.items()))}, indent=2) + "\n"
-        )
+        write_baseline(baseline_path, counts)
         print(f"ratchet: wrote {baseline_path}")
         return 0
 
-    try:
-        allowed = json.loads(baseline_path.read_text())["counts"]
-    except (OSError, ValueError, KeyError) as error:
-        print(f"ratchet: cannot read baseline {baseline_path}: {error}", file=sys.stderr)
-        return 2
+    if args.base_root:
+        base_root = args.base_root.resolve()
+        if not (base_root / "crates").is_dir():
+            print(f"ratchet: no crates directory in {base_root}", file=sys.stderr)
+            return 2
+        allowed = limits_from_base(root, base_root, names)
+    else:
+        try:
+            allowed = read_baseline(baseline_path)
+        except (OSError, ValueError, KeyError) as error:
+            print(f"ratchet: cannot read baseline {baseline_path}: {error}", file=sys.stderr)
+            return 2
 
     raised, lowered, unrecorded = [], [], []
     for name in names:
         limit = allowed.get(name)
         if limit is None:
-            print(f"{name:16} {measured[name]:5} / {'-':>5}  new crate, no baseline entry")
+            print(f"{name:16} {measured[name]:5} / {'-':>5}  new crate, no limit")
             unrecorded.append(name)
             continue
         state = "ok"
@@ -346,14 +516,14 @@ def main(argv=None):
             state = "RAISED"
             raised.append(name)
         elif measured[name] < limit:
-            state = "below baseline"
+            state = "below base" if args.base_root else "below baseline"
             lowered.append(name)
         print(f"{name:16} {measured[name]:5} / {limit:5}  {state}")
     if unrecorded:
         print(
-            "ratchet: no baseline entry for "
+            "ratchet: no limit for "
             + ", ".join(unrecorded)
-            + ". The count is shown above and passes. Record it with "
+            + " (a new crate, or no baseline entry). The count is shown above and passes. Record it with "
             "`python3 tools/unwrap_ratchet/unwrap_ratchet.py --update`.",
             file=sys.stderr,
         )
@@ -361,13 +531,14 @@ def main(argv=None):
         print(
             "ratchet: a production unwrap, expect or panic! count rose in "
             + ", ".join(raised)
+            + (" above its base" if args.base_root else " above the baseline")
             + ". Return the error with `?` instead. If the new call is justified, "
-            "raise the baseline with `python3 tools/unwrap_ratchet/unwrap_ratchet.py --update` "
-            "and explain it in the pull request.",
+            "accept it with `python3 tools/unwrap_ratchet/unwrap_ratchet.py --update` "
+            "(it raises that crate's entry in `baseline.json`) and explain it in the pull request.",
             file=sys.stderr,
         )
         return 1
-    if lowered:
+    if lowered and not args.base_root:
         message = (
             "ratchet: the count fell in "
             + ", ".join(lowered)

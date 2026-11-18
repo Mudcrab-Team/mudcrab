@@ -21,7 +21,7 @@ def count(source):
     """Production count of one source text."""
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "lib.rs"
-        path.write_text(textwrap.dedent(source))
+        path.write_text(textwrap.dedent(source), encoding="utf-8")
         return ratchet.count_file(path)
 
 
@@ -125,6 +125,113 @@ class CountTests(unittest.TestCase):
             3,  # c (it also builds without `test`), d and e
         )
 
+    def test_counts_calls_with_whitespace_or_a_comment_inside(self):
+        self.assertEqual(
+            count(
+                """
+                fn f(x: Option<u8>) {
+                    x.unwrap(/* checked */);
+                    x . unwrap ( );
+                    x
+                        .expect ("why");
+                    panic ! ("no");
+                }
+                """
+            ),
+            4,
+        )
+
+    def test_skips_test_functions(self):
+        self.assertEqual(
+            count(
+                """
+                fn f(x: Option<u8>) { x.unwrap(); }
+                #[test]
+                fn a(x: Option<u8>) { x.unwrap(); }
+                #[tokio::test(flavor = "current_thread")]
+                async fn b(x: Option<u8>) { x.unwrap(); }
+                #[test]
+                #[should_panic]
+                fn c() { panic!("expected"); }
+                #[bench]
+                fn d(x: Option<u8>) { x.unwrap(); }
+                """
+            ),
+            1,
+        )
+
+    def test_a_cfg_test_field_or_variant_does_not_hide_the_next_item(self):
+        self.assertEqual(
+            count(
+                """
+                struct S {
+                    #[cfg(test)]
+                    marker: std::collections::HashMap<u8, u8>,
+                    kept: u8,
+                }
+                enum E {
+                    #[cfg(test)]
+                    Probe(u8, u8),
+                    Real,
+                }
+                fn f(x: Option<u8>) { x.unwrap(); }
+                """
+            ),
+            1,
+        )
+
+    def test_a_cfg_test_statement_ends_at_its_semicolon(self):
+        self.assertEqual(
+            count(
+                """
+                fn f(a: bool, b: Option<u8>, c: Option<u8>) {
+                    #[cfg(test)]
+                    let x = if a { b.unwrap() } else { c.unwrap() };
+                    b.unwrap();
+                }
+                """
+            ),
+            1,
+        )
+
+    def test_a_cfg_test_macro_item_and_argument_end_where_they_end(self):
+        self.assertEqual(
+            count(
+                """
+                #[cfg(test)]
+                thread_local! { static X: u8 = Some(1).unwrap(); }
+                fn f(x: Option<u8>) { x.unwrap(); }
+                fn g(x: Option<u8>) {
+                    call(
+                        #[cfg(test)]
+                        probe,
+                        x.unwrap(),
+                    );
+                }
+                """
+            ),
+            2,
+        )
+
+    def test_a_nested_inner_cfg_test_attribute_hides_only_its_module(self):
+        source = """
+            fn f(x: Option<u8>) { x.unwrap(); }
+            mod checks {
+                #![cfg(test)]
+                fn t(x: Option<u8>) { x.unwrap(); }
+            }
+            fn g(x: Option<u8>) { x.unwrap(); }
+            """
+        self.assertEqual(count(source), 2)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "lib.rs"
+            path.write_text(textwrap.dedent(source), encoding="utf-8")
+            code = ratchet.mask(path.read_text(encoding="utf-8"))
+            self.assertFalse(ratchet.inner_cfg_requires_test(code))
+
+    def test_a_file_level_inner_cfg_test_attribute_hides_the_file(self):
+        self.assertEqual(count("#![cfg(test)]\nfn t(x: Option<u8>) { x.unwrap(); }\n"), 0)
+
 
 class RequiresTestTests(unittest.TestCase):
     def test_predicates(self):
@@ -211,6 +318,36 @@ class CrateWalkTests(unittest.TestCase):
         self.assertEqual(ratchet.count_crate(self.root, "demo"), 1)
 
 
+    def test_children_of_inline_modules_live_in_the_module_directories(self):
+        self.write("crates/demo/src/lib.rs", "mod outer { mod mid { mod leaf; } mod side; }\nfn a(x: Option<u8>) { x.unwrap(); }\n")
+        self.write("crates/demo/src/outer/mid/leaf.rs", "fn b(x: Option<u8>) { x.unwrap(); }\n")
+        self.write("crates/demo/src/outer/side.rs", "fn c(x: Option<u8>) { x.unwrap(); }\n")
+        # A file at the crate level with the child's name is not the child.
+        self.write("crates/demo/src/leaf.rs", "fn d(x: Option<u8>) { x.unwrap(); x.unwrap(); x.unwrap(); x.unwrap(); }\n")
+        self.assertEqual(ratchet.count_crate(self.root, "demo"), 3)
+
+    def test_an_inline_module_path_attribute_names_the_directory(self):
+        self.write("crates/demo/src/lib.rs", '#[path = "elsewhere"]\nmod outer { mod inner; }\n')
+        self.write("crates/demo/src/elsewhere/inner.rs", "fn a(x: Option<u8>) { x.unwrap(); }\n")
+        self.assertEqual(ratchet.count_crate(self.root, "demo"), 1)
+
+    def test_modules_declared_inside_a_test_only_module_are_skipped(self):
+        self.write("crates/demo/src/lib.rs", "#[cfg(test)]\n#[path = \".\"]\nmod support { mod helper; }\nmod real;\n")
+        self.write("crates/demo/src/helper.rs", "fn t(x: Option<u8>) { x.unwrap(); }\n")
+        self.write("crates/demo/src/real.rs", "fn a(x: Option<u8>) { x.unwrap(); }\n")
+        self.assertEqual(ratchet.count_crate(self.root, "demo"), 1)
+
+    def test_a_nested_inner_cfg_test_attribute_keeps_the_file_and_its_children(self):
+        self.write("crates/demo/src/lib.rs", "mod real;\nfn a(x: Option<u8>) { x.unwrap(); }\nmod checks { #![cfg(test)] fn t(x: Option<u8>) { x.unwrap(); } }\n")
+        self.write("crates/demo/src/real.rs", "fn b(x: Option<u8>) { x.unwrap(); }\n")
+        self.assertEqual(ratchet.count_crate(self.root, "demo"), 2)
+
+    def test_a_path_outside_the_crate_does_not_stop_the_run(self):
+        self.write("crates/demo/src/lib.rs", '#[path = "../../outside/shared.rs"]\nmod shared;\n')
+        self.write("crates/outside/shared.rs", "fn a(x: Option<u8>) { x.unwrap(); }\n")
+        self.assertEqual(ratchet.count_crate(self.root, "demo"), 1)
+
+
 class CommandTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -279,6 +416,86 @@ class CommandTests(unittest.TestCase):
 
     def test_an_unknown_crate_is_a_usage_error(self):
         self.assertEqual(self.run_ratchet("--crate", "nope")[0], 2)
+
+    def test_update_writes_lf_newlines(self):
+        self.assertEqual(self.run_ratchet("--update")[0], 0)
+        self.assertNotIn(b"\r", (self.root / "tools/unwrap_ratchet/baseline.json").read_bytes())
+
+
+class BaseCompareTests(unittest.TestCase):
+    """`--base-root`: a pull request may not raise a count above the base commit's."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name) / "head"
+        self.base = Path(self.directory.name) / "base"
+        for tree in (self.root, self.base):
+            (tree / "crates/demo/src").mkdir(parents=True)
+            (tree / "crates/demo/src/lib.rs").write_text("fn f(x: Option<u8>) { x.unwrap(); }\n", encoding="utf-8")
+            (tree / "tools/unwrap_ratchet").mkdir(parents=True)
+        self.set_baseline(self.root, 1)
+        self.set_baseline(self.base, 1)
+
+    def set_baseline(self, tree, value):
+        (tree / "tools/unwrap_ratchet/baseline.json").write_text(json.dumps({"counts": {"demo": value}}), encoding="utf-8")
+
+    def run_ratchet(self, *extra):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = ratchet.main(["--root", str(self.root), "--base-root", str(self.base), *extra])
+        return code, out.getvalue() + err.getvalue()
+
+    def add_unwrap(self):
+        source = self.root / "crates/demo/src/lib.rs"
+        source.write_text(source.read_text(encoding="utf-8") + "fn g(x: Option<u8>) { x.unwrap(); }\n", encoding="utf-8")
+
+    def test_the_same_tree_passes(self):
+        self.assertEqual(self.run_ratchet()[0], 0)
+
+    def test_an_added_unwrap_fails_against_the_base(self):
+        self.add_unwrap()
+        code, output = self.run_ratchet()
+        self.assertEqual(code, 1)
+        self.assertIn("RAISED", output)
+        self.assertIn("above its base", output)
+
+    def test_a_stale_baseline_neither_hides_a_rise_nor_fails_an_unrelated_pull_request(self):
+        # Both trees carry a baseline that is far too high, and a far too low one.
+        self.set_baseline(self.root, 99)
+        self.set_baseline(self.base, 99)
+        self.add_unwrap()
+        self.assertEqual(self.run_ratchet()[0], 1)
+        self.set_baseline(self.root, 0)
+        self.set_baseline(self.base, 0)
+        (self.root / "crates/demo/src/lib.rs").write_text("fn f(x: Option<u8>) { x.unwrap(); }\n", encoding="utf-8")
+        self.assertEqual(self.run_ratchet()[0], 0)
+
+    def test_a_changed_baseline_entry_accepts_the_added_sites(self):
+        self.add_unwrap()
+        self.assertEqual(
+            ratchet.main(["--root", str(self.root), "--update"]),
+            0,
+        )
+        self.assertEqual(self.run_ratchet()[0], 0)
+
+    def test_a_lower_count_passes_without_a_reminder(self):
+        (self.root / "crates/demo/src/lib.rs").write_text("fn f() {}\n", encoding="utf-8")
+        code, output = self.run_ratchet()
+        self.assertEqual(code, 0)
+        self.assertIn("below base", output)
+        self.assertNotIn("Lower the baseline", output)
+
+    def test_a_crate_the_base_lacks_passes_with_a_notice(self):
+        (self.root / "crates/fresh/src").mkdir(parents=True)
+        (self.root / "crates/fresh/src/lib.rs").write_text("fn f(x: Option<u8>) { x.unwrap(); }\n", encoding="utf-8")
+        code, output = self.run_ratchet()
+        self.assertEqual(code, 0)
+        self.assertIn("new crate", output)
+
+    def test_a_base_root_without_crates_is_a_usage_error(self):
+        self.base = Path(self.directory.name) / "missing"
+        self.assertEqual(self.run_ratchet()[0], 2)
 
 
 if __name__ == "__main__":

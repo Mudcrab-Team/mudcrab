@@ -281,6 +281,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          # The base commit is needed: the check compares with it, not with a committed number.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
@@ -291,8 +293,25 @@ jobs:
       - name: Test the ratchet script
         run: python3 -B -m unittest discover -s tools/unwrap_ratchet -p 'test_*.py' -v
 
-      - name: Production unwrap, expect and panic! count stays at or below the baseline
-        run: python3 -B tools/unwrap_ratchet/unwrap_ratchet.py
+      - name: Production unwrap, expect and panic! count does not rise above the base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          # A pull request runs on the merge commit, whose first parent is the base it merges into,
+          # so the comparison covers exactly the sites the pull request adds. A push compares with
+          # the previous tip of the branch. Other runs have no base and only run the script's tests.
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$(git rev-parse HEAD^1)"
+          else
+            base="$PUSH_BEFORE"
+          fi
+          if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "::notice::No base commit to compare with; the count comparison is skipped."
+            exit 0
+          fi
+          git worktree add --detach "$RUNNER_TEMP/unwrap-ratchet-base" "$base"
+          python3 -B tools/unwrap_ratchet/unwrap_ratchet.py --base-root "$RUNNER_TEMP/unwrap-ratchet-base"
 
   clippy:
     needs: [orchestrate]
