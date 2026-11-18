@@ -998,7 +998,7 @@
     {
       "expression": "\"SELECT race_id,sex,skeleton_nif,project_hkx FROM race_animation_sources\"",
       "id": "crates/engine/src/world/actor_catalog.rs::prepare::db741a616bcea57b::1",
-      "line": 234,
+      "line": 249,
       "method": "prepare",
       "path": "crates/engine/src/world/actor_catalog.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1008,7 +1008,7 @@
     {
       "expression": "\"SELECT EXISTS(SELECT 1 FROM pragma_table_info('actor_models') WHERE name='weight')\"",
       "id": "crates/engine/src/world/actor_catalog.rs::query_row::82e20e9fd11f6a91::1",
-      "line": 258,
+      "line": 273,
       "method": "query_row",
       "path": "crates/engine/src/world/actor_catalog.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1018,7 +1018,7 @@
     {
       "expression": "&toned",
       "id": "crates/engine/src/world/actor_catalog.rs::prepare::b7739f53c1246c7c::1",
-      "line": 278,
+      "line": 293,
       "method": "prepare",
       "path": "crates/engine/src/world/actor_catalog.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1028,7 +1028,7 @@
     {
       "expression": "&untoned",
       "id": "crates/engine/src/world/actor_catalog.rs::prepare::9e247fd08ccc965c::1",
-      "line": 279,
+      "line": 294,
       "method": "prepare",
       "path": "crates/engine/src/world/actor_catalog.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1038,7 +1038,7 @@
     {
       "expression": "\"SELECT npc_id, slot, model_path FROM actor_model_parts\"",
       "id": "crates/engine/src/world/actor_catalog.rs::prepare::211e31dd551ea0f3::1",
-      "line": 338,
+      "line": 353,
       "method": "prepare",
       "path": "crates/engine/src/world/actor_catalog.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1447,7 +1447,7 @@
     }
   ],
   "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
-  "reviewed_source_guard_sha256": "56137571a640e4bfe59754e96337ce4b14b872e773b4856f08587e5cebdec636",
+  "reviewed_source_guard_sha256": "f5dbf93bad0f990c339e118509486cf9ca320b7576263ec9e3a19b4ebb57c715",
   "schema_status": "not_extracted",
   "schemas": {},
   "stores": {
