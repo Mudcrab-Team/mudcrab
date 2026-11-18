@@ -6,7 +6,7 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 
 ## Denominators
 
-- rusqlite_candidates: 88
+- rusqlite_candidates: 95
 - emitted_schema_columns: unknown
 - manually_traced_fields: 14
 - named_external_stores: 3
@@ -97,12 +97,19 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 | `crates/engine/src/physics.rs:126` query_row | literal |
 | `crates/engine/src/physics.rs:137` query_row | literal |
 | `crates/engine/src/physics.rs:150` query_row | literal |
-| `crates/engine/src/room_culling.rs:655` prepare_cached | literal |
-| `crates/engine/src/room_culling.rs:657` query_row | unknown |
-| `crates/engine/src/room_culling.rs:670` prepare_cached | literal |
-| `crates/engine/src/room_culling.rs:692` prepare_cached | literal |
-| `crates/engine/src/room_culling.rs:715` prepare_cached | literal |
-| `crates/engine/src/room_culling.rs:754` prepare_cached | literal |
+| `crates/engine/src/room_culling.rs:610` prepare_cached | literal |
+| `crates/engine/src/room_culling.rs:612` query_row | unknown |
+| `crates/engine/src/room_culling.rs:625` prepare_cached | literal |
+| `crates/engine/src/room_culling.rs:646` query_row | literal |
+| `crates/engine/src/room_culling.rs:652` query_row | literal |
+| `crates/engine/src/room_culling.rs:667` query_row | literal |
+| `crates/engine/src/room_culling.rs:669` query_row | literal |
+| `crates/engine/src/room_culling.rs:674` query_row | literal |
+| `crates/engine/src/room_culling.rs:682` prepare_cached | unknown |
+| `crates/engine/src/room_culling.rs:716` prepare_cached | literal |
+| `crates/engine/src/room_culling.rs:755` prepare_cached | literal |
+| `crates/engine/src/room_culling.rs:781` query_row | literal |
+| `crates/engine/src/room_culling.rs:788` prepare_cached | literal |
 | `crates/engine/src/route.rs:350` query_row | unknown |
 | `crates/engine/src/streaming/collision_placement_probe.rs:52` query_row | literal |
 | `crates/engine/src/streaming/lod.rs:935` prepare | unknown |
