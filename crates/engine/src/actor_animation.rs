@@ -1644,6 +1644,25 @@ mod tests {
         );
     }
 
+    /// The animation clip of the node the actor's player is playing now.
+    fn installed_clip(world: &World, actor: Entity) -> Option<AssetId<AnimationClip>> {
+        let player = world.get::<AnimationPlayer>(actor)?;
+        let (node, _) = player.playing_animations().next()?;
+        let graph = world
+            .resource::<Assets<AnimationGraph>>()
+            .get(&world.get::<AnimationGraphHandle>(actor)?.0)?;
+        match &graph.graph[*node].node_type {
+            bevy::animation::graph::AnimationNodeType::Clip(handle) => Some(handle.id()),
+            _ => None,
+        }
+    }
+
+    /// The animation clip a loaded clip scene holds, as the player installs it.
+    fn expected_clip(world: &World, scene: &Handle<Gltf>) -> Option<AssetId<AnimationClip>> {
+        let gltf = world.resource::<Assets<Gltf>>().get(scene)?;
+        clip_animation(Some(gltf), Gait::Idle).map(|handle| handle.id())
+    }
+
     fn pool(count: usize) -> Vec<IdlePoolClip> {
         (0..count)
             .map(|index| IdlePoolClip {
@@ -2112,7 +2131,14 @@ mod tests {
                 if graph.is_some() && graph != last_graph {
                     switch_updates += 1;
                     last_graph = graph;
-                    // The clip of the pick that is current is the one this graph installs.
+                    // The new graph must hold the clip of the pick that is current, not just any
+                    // clip: compare the active node's clip with the pool clip's own animation.
+                    let sequence = app.world().get::<IdleSequence>(actor).unwrap();
+                    assert_eq!(
+                        installed_clip(app.world(), actor),
+                        expected_clip(app.world(), &sequence.clips[sequence.current]),
+                        "the {name} installed the wrong clip for {current}"
+                    );
                     installed.insert(current.to_owned());
                 }
             }
