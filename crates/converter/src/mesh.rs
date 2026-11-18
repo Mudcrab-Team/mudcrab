@@ -5023,37 +5023,37 @@ mod tests {
     }
 
     #[test]
-    fn ordered_node_uses_fixed_sort_bound_only_when_both_flags_enable_it() {
+    fn ordered_node_derives_fixed_bound_from_static_byte_and_radius() {
         use nom_derive::Parse;
         use project_wormhole_nif::nif_block::{BSOrderedNode, NiAVObjectFlags};
         let directory = tempfile::tempdir().unwrap();
         let input = directory.path().join("source.nif");
         fs::write(&input, static_nif()).unwrap();
         let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
-        let expected = room_bounds::source_sphere(&nif).unwrap();
+        let child_bound = room_bounds::source_sphere(&nif).unwrap();
         let root = nif.blocks[0].as_node().unwrap().clone();
-        nif.blocks[0] = NifBlock::BSOrderedNode(BSOrderedNode {
-            node: root,
-            alpha_sort_bound: [1000.0, 2000.0, 3000.0, 4000.0],
-            static_bound: 1,
+        let sort_bound = shared::room_assignment::ModelSphere {
+            center: [1000.0, 3000.0, -2000.0],
+            radius: 4000.0,
+        };
+        let cases = [
+            (0u32, 2, 4000.0, sort_bound),
+            (0x2000, 1, 0.0, child_bound),
+            (0x2000, 1, -0.0, child_bound),
+            (0x2000, 1, f32::NAN, child_bound),
+            (0x2000, 0, 4000.0, child_bound),
+        ];
+        let actual = cases.map(|(flags, static_bound, radius, _)| {
+            let mut node = root.clone();
+            node.av.flags = NiAVObjectFlags::parse(&flags.to_le_bytes()).unwrap().1;
+            nif.blocks[0] = NifBlock::BSOrderedNode(BSOrderedNode {
+                node,
+                alpha_sort_bound: [1000.0, 2000.0, 3000.0, radius],
+                static_bound,
+            });
+            room_bounds::source_sphere(&nif)
         });
-        assert_eq!(room_bounds::source_sphere(&nif), Some(expected));
-        let NifBlock::BSOrderedNode(node) = &mut nif.blocks[0] else {
-            unreachable!()
-        };
-        node.node.av.flags = NiAVObjectFlags::parse(&0x2000u32.to_le_bytes()).unwrap().1;
-        assert_eq!(
-            room_bounds::source_sphere(&nif),
-            Some(shared::room_assignment::ModelSphere {
-                center: [1000.0, 3000.0, -2000.0],
-                radius: 4000.0,
-            })
-        );
-        let NifBlock::BSOrderedNode(node) = &mut nif.blocks[0] else {
-            unreachable!()
-        };
-        node.static_bound = 0;
-        assert_eq!(room_bounds::source_sphere(&nif), Some(expected));
+        assert_eq!(actual, cases.map(|(_, _, _, expected)| Some(expected)));
     }
 
     #[test]
