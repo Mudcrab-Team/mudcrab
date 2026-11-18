@@ -1984,11 +1984,6 @@ mod tests {
         ("install.sh", "--progress-bar"), // curl
         ("stage-release.sh", "--dest"),
         ("stage-release.sh", "--target"),
-        ("publish_skyrim_evidence.py", "--sanitize"),
-        ("publish_skyrim_evidence.py", "--root"),
-        ("test_publish_skyrim_evidence.py", "--root"),
-        ("publish_skyrim_evidence.py", "--start-address"),
-        ("publish_skyrim_evidence.py", "--stop-address"),
         // footprint_guard.py owns its own CLI and its test drives that CLI. The
         // guard watches a process the caller started and is not an engine
         // launcher. `--pid` is already in NON_ENGINE_FLAGS.
@@ -4063,6 +4058,9 @@ mod tests {
         }
         let mut start = current;
         for previous in lines {
+            if previous.trim().is_empty() || previous.trim_start().starts_with('#') {
+                continue;
+            }
             if !previous.trim_end().ends_with([',', '[', '(']) {
                 break;
             }
@@ -4195,9 +4193,28 @@ mod tests {
                     .iter()
                     .any(|&(script, scoped)| name == script && flag == scoped)
             });
-            let publication_test_option = path.ends_with("test_publish_skyrim_evidence.py")
-                && flag == "--sanitize"
-                && native_tool_owns_option(scanned, flag);
+            let publication_option = if path.ends_with("publish_skyrim_evidence.py")
+                || path.ends_with("test_publish_skyrim_evidence.py")
+            {
+                let offset = flag.as_ptr() as usize - scanned.as_ptr() as usize;
+                let command = scanned[..offset]
+                    .rsplit(['\n', ';'])
+                    .next()
+                    .unwrap_or_default()
+                    .trim_start();
+                match flag {
+                    "--start-address" | "--stop-address" => command.starts_with("llvm-objdump "),
+                    "--sanitize" | "--root" => {
+                        command.ends_with(".add_argument('")
+                            || (flag == "--sanitize" && command == "Reproduce with ")
+                            || command.contains("['audit',")
+                            || command.contains("patch('sys.argv', argv + [")
+                    }
+                    _ => false,
+                }
+            } else {
+                false
+            };
             let native_jump_option =
                 path.file_name()
                     .and_then(|name| name.to_str())
@@ -4263,7 +4280,7 @@ mod tests {
                 || harness_option
                 || inspector_option
                 || release_option
-                || publication_test_option
+                || publication_option
                 || native_jump_option
             {
                 continue;
@@ -4495,10 +4512,28 @@ mod tests {
     }
 
     #[test]
+    fn publication_options_are_checked_per_occurrence() {
+        let path = std::path::Path::new("publish_skyrim_evidence.py");
+        let example = "llvm-objdump -d --start-address=2 --stop-address=4 binary";
+        let parser = "parser.add_argument('--root')";
+        assert_eq!(checked_script_engine_flags(example, path), 0);
+        assert_eq!(checked_script_engine_flags(parser, path), 0);
+        for flag in ["--root", "--sanitize", "--start-address", "--stop-address"] {
+            let script = format!("{example}\n{parser}; engine {flag}");
+            assert!(
+                std::panic::catch_unwind(|| checked_script_engine_flags(&script, path)).is_err()
+            );
+        }
+    }
+
+    #[test]
     fn native_jump_tool_options_do_not_become_engine_options() {
         let native = std::path::Path::new("record_skyrim_motion.py");
         assert_eq!(
-            checked_script_engine_flags("run.add_argument('--session')", native),
+            checked_script_engine_flags(
+                "run.add_argument(\n    # recorder CLI\n    '--session')",
+                native
+            ),
             0
         );
         for (text, path) in [

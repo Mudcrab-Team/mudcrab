@@ -37,23 +37,24 @@ jobs:
           PUSH_BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
+          changed_paths="$RUNNER_TEMP/changed-paths.z"
           if [ -n "${GITHUB_BASE_REF:-}" ]; then
             git fetch origin "$GITHUB_BASE_REF" --depth=350
             base="$(git merge-base "origin/${GITHUB_BASE_REF}" HEAD)"
-            CHANGED_FILES="$(git diff --name-only "$base" "$GITHUB_SHA")"
+            git diff --no-renames --name-only -z "$base" "$GITHUB_SHA" > "$changed_paths"
           elif [[ "${PUSH_BEFORE:-}" =~ ^[0-9a-f]{40}$ && "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ]] &&
                { git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null || git fetch --depth=1 origin "$PUSH_BEFORE"; }; then
-            CHANGED_FILES="$(git diff --name-only "$PUSH_BEFORE" "$GITHUB_SHA")"
+            git diff --no-renames --name-only -z "$PUSH_BEFORE" "$GITHUB_SHA" > "$changed_paths"
           else
             # New branches, manual dispatch, or unavailable history require all current checks.
-            CHANGED_FILES="$(git ls-files)"
+            git ls-files -z > "$changed_paths"
           fi
 
           check_pattern() {
             local output_name="$1"
             local pattern="$2"
 
-            if grep -qE "$pattern" <<< "$CHANGED_FILES"; then
+            if LC_ALL=C grep -zqE "$pattern" "$changed_paths"; then
               echo "${output_name}=true" >> "$GITHUB_OUTPUT"
             else
               echo "${output_name}=false" >> "$GITHUB_OUTPUT"
