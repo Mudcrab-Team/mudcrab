@@ -1,6 +1,6 @@
 # World-data inventory
 
-Schema status: **not_extracted**. Reviewed source: `64108a1c38b0a854d4f82d7031ea50b57c336a5a`.
+Schema status: **not_extracted**. Reviewed source: `b6e20c6f046a45bdf5d0e5ad9c8d1a4d72a736bd`.
 
 Prepare dependencies are not executed rows, mapped rows, semantic use, population, or retail parity.
 

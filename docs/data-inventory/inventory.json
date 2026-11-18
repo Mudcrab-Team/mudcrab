@@ -1450,8 +1450,8 @@
       "status": "literal"
     }
   ],
-  "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
-  "reviewed_source_guard_sha256": "92086dfe4541ce012f1982f75455ed1e3b44a6adbd50e82415eaf00d14f56f2c",
+  "reviewed_at_commit": "b6e20c6f046a45bdf5d0e5ad9c8d1a4d72a736bd",
+  "reviewed_source_guard_sha256": "c7f82e1f21a19566e161391b2a7b5ecbb8064f2719a492275a37f5d685c9c569",
   "schema_status": "not_extracted",
   "schemas": {},
   "stores": {
