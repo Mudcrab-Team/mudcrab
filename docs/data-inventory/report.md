@@ -6,7 +6,7 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 
 ## Denominators
 
-- rusqlite_candidates: 88
+- rusqlite_candidates: 102
 - emitted_schema_columns: unknown
 - manually_traced_fields: 14
 - named_external_stores: 3
@@ -97,12 +97,26 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 | `crates/engine/src/physics.rs:126` query_row | literal |
 | `crates/engine/src/physics.rs:137` query_row | literal |
 | `crates/engine/src/physics.rs:150` query_row | literal |
-| `crates/engine/src/room_culling.rs:655` prepare_cached | literal |
-| `crates/engine/src/room_culling.rs:657` query_row | unknown |
-| `crates/engine/src/room_culling.rs:670` prepare_cached | literal |
-| `crates/engine/src/room_culling.rs:692` prepare_cached | literal |
-| `crates/engine/src/room_culling.rs:715` prepare_cached | literal |
-| `crates/engine/src/room_culling.rs:754` prepare_cached | literal |
+| `crates/engine/src/room_culling/assignment.rs:224` query_row | literal |
+| `crates/engine/src/room_culling/assignment.rs:231` query_row | literal |
+| `crates/engine/src/room_culling/assignment.rs:239` query_row | literal |
+| `crates/engine/src/room_culling/assignment.rs:244` prepare_cached | literal |
+| `crates/engine/src/room_culling/assignment.rs:247` prepare_cached | literal |
+| `crates/engine/src/room_culling/assignment.rs:251` query_row | unknown |
+| `crates/engine/src/room_culling/assignment.rs:289` prepare_cached | literal |
+| `crates/engine/src/room_culling.rs:659` prepare_cached | literal |
+| `crates/engine/src/room_culling.rs:661` query_row | unknown |
+| `crates/engine/src/room_culling.rs:674` prepare_cached | literal |
+| `crates/engine/src/room_culling.rs:695` query_row | literal |
+| `crates/engine/src/room_culling.rs:701` query_row | literal |
+| `crates/engine/src/room_culling.rs:716` query_row | literal |
+| `crates/engine/src/room_culling.rs:718` query_row | literal |
+| `crates/engine/src/room_culling.rs:723` query_row | literal |
+| `crates/engine/src/room_culling.rs:731` prepare_cached | unknown |
+| `crates/engine/src/room_culling.rs:765` prepare_cached | literal |
+| `crates/engine/src/room_culling.rs:815` prepare_cached | literal |
+| `crates/engine/src/room_culling.rs:841` query_row | literal |
+| `crates/engine/src/room_culling.rs:848` prepare_cached | literal |
 | `crates/engine/src/route.rs:350` query_row | unknown |
 | `crates/engine/src/streaming/collision_placement_probe.rs:52` query_row | literal |
 | `crates/engine/src/streaming/lod.rs:935` prepare | unknown |
