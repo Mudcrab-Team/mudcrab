@@ -104,6 +104,26 @@ For writable variants, APFS clones can initially share blocks while keeping writ
 Hard links share writes and must only be used under an enforced immutable-file contract.
 Never hard-link mutable build directories or databases as a general deduplication scheme.
 
+## Reference library
+
+`<storage>/reference/` is a local, read-only library of third-party modding references for
+retail-parity research. Git does not track it. Start at `reference/INDEX.md`.
+
+- `<name>@<commit>/src` holds a shallow git clone. `<name>@<version>/files` holds an
+  unpacked archive. Archive copies are in `reference/downloads/`.
+- Each item has a `REFERENCE.md` card: source URL, licence file, commit or SHA-256,
+  retrieval date, tier and use. Adding an item means writing its card and an `INDEX.md` line.
+- `local-pointers/` holds notes that point to installs or other projects. They are never copies.
+- `derived/` holds private outputs built from the references, each with a `RECEIPT.md`.
+- Clones and unpacked files are `chmod a-w`. Never write into them.
+- Read and cite by default. Never copy code from `reference/` into the repo. Never
+  redistribute the archives or any data files they contain. Outputs derived from copyleft
+  or decompiled code stay private. They never go into a PR, issue or GitHub text.
+- Downloads are untrusted. Do not run their build scripts or binaries. Run Python that
+  parses them with `-I`.
+- `prune` and `settle` delete only inside `builds/`, so they never remove `reference/`. Delete an
+  item only after you check its consumers and its card.
+
 ## Budgets and cleanup
 
 ```sh
