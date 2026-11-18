@@ -907,6 +907,16 @@
       "owner": "Mudcrab maintainers (#298; room culling #188)",
       "reason": "Authored room-assignment projection. Field-level semantic tracing is deferred; prepared query dependencies remain separate."
     },
+    "room_occluder_links": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; room culling #188)",
+      "reason": "Authored room-occluder projection. Field-level semantic tracing is deferred; prepared query dependencies remain separate."
+    },
+    "room_occluders": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; room culling #188)",
+      "reason": "Authored room-occluder projection. Field-level semantic tracing is deferred; prepared query dependencies remain separate."
+    },
     "room_portals": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",

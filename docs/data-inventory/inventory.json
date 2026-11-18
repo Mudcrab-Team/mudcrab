@@ -3,7 +3,7 @@
     "emitted_schema_columns": null,
     "manually_traced_fields": 14,
     "named_external_stores": 3,
-    "rusqlite_candidates": 102
+    "rusqlite_candidates": 108
   },
   "fields": {
     "cells.data": {
@@ -976,9 +976,69 @@
       "status": "literal"
     },
     {
+      "expression": "\"SELECT count(*)=4 FROM sqlite_master WHERE type='table' AND name IN \\\n         ('room_occluders','room_occluder_links','room_graph_stats','room_graph_cells')\"",
+      "id": "crates/engine/src/room_culling/occluder_data.rs::query_row::22af47a0879b9632::1",
+      "line": 8,
+      "method": "query_row",
+      "path": "crates/engine/src/room_culling/occluder_data.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT count(*)=4 FROM sqlite_master WHERE type='table' AND name IN ('room_occluders','room_occluder_links','room_graph_stats','room_graph_cells')",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='occlusion_version' AND value=1)\"",
+      "id": "crates/engine/src/room_culling/occluder_data.rs::query_row::5e10d0e1803db526::1",
+      "line": 17,
+      "method": "query_row",
+      "path": "crates/engine/src/room_culling/occluder_data.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='occlusion_version' AND value=1)",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT EXISTS(SELECT 1 FROM room_occluders WHERE cell_id=?1)\"",
+      "id": "crates/engine/src/room_culling/occluder_data.rs::query_row::ce67c9ff17ec473a::1",
+      "line": 29,
+      "method": "query_row",
+      "path": "crates/engine/src/room_culling/occluder_data.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT EXISTS(SELECT 1 FROM room_occluders WHERE cell_id=?1)",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT EXISTS(SELECT 1 FROM room_occluders o WHERE o.cell_id=?1 AND o.has_links<>0 \\\n         AND NOT EXISTS(SELECT 1 FROM room_occluder_links l WHERE l.ref_id=o.ref_id))\"",
+      "id": "crates/engine/src/room_culling/occluder_data.rs::query_row::17e470f020150ec5::1",
+      "line": 47,
+      "method": "query_row",
+      "path": "crates/engine/src/room_culling/occluder_data.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT EXISTS(SELECT 1 FROM room_occluders o WHERE o.cell_id=?1 AND o.has_links<>0 AND NOT EXISTS(SELECT 1 FROM room_occluder_links l WHERE l.ref_id=o.ref_id))",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT ref_id,linked_ref FROM room_occluder_links\"",
+      "id": "crates/engine/src/room_culling/occluder_data.rs::prepare_cached::9c2374ea3f7773aa::1",
+      "line": 57,
+      "method": "prepare_cached",
+      "path": "crates/engine/src/room_culling/occluder_data.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT ref_id,linked_ref FROM room_occluder_links",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT ref_id,shape,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_y,half_z,scale,\\\n         header_flags,has_enable_parent,has_links,target_ref \\\n         FROM room_occluders WHERE cell_id=?1 ORDER BY ref_id\"",
+      "id": "crates/engine/src/room_culling/occluder_data.rs::prepare_cached::9d695e5f63a085d9::1",
+      "line": 63,
+      "method": "prepare_cached",
+      "path": "crates/engine/src/room_culling/occluder_data.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT ref_id,shape,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_y,half_z,scale,header_flags,has_enable_parent,has_links,target_ref FROM room_occluders WHERE cell_id=?1 ORDER BY ref_id",
+      "status": "literal"
+    },
+    {
       "expression": "\"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1\"",
       "id": "crates/engine/src/room_culling.rs::prepare_cached::9757406b35cd8788::1",
-      "line": 659,
+      "line": 680,
       "method": "prepare_cached",
       "path": "crates/engine/src/room_culling.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -988,7 +1048,7 @@
     {
       "expression": "[table]",
       "id": "crates/engine/src/room_culling.rs::query_row::04726063e94de7ab::1",
-      "line": 661,
+      "line": 682,
       "method": "query_row",
       "path": "crates/engine/src/room_culling.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -998,7 +1058,7 @@
     {
       "expression": "\"SELECT ref_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_y,half_z \\\n             FROM room_bounds WHERE cell_id=?1 ORDER BY ref_id\"",
       "id": "crates/engine/src/room_culling.rs::prepare_cached::0b531fa70767d2ed::1",
-      "line": 674,
+      "line": 695,
       "method": "prepare_cached",
       "path": "crates/engine/src/room_culling.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1008,7 +1068,7 @@
     {
       "expression": "\"SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='room_graph_cells')\"",
       "id": "crates/engine/src/room_culling.rs::query_row::ec1698651b7962c0::1",
-      "line": 695,
+      "line": 716,
       "method": "query_row",
       "path": "crates/engine/src/room_culling.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1018,7 +1078,7 @@
     {
       "expression": "\"SELECT (SELECT complete FROM room_graph_cells WHERE cell_id=?1)\"",
       "id": "crates/engine/src/room_culling.rs::query_row::5f332cf692f1f5d4::1",
-      "line": 701,
+      "line": 722,
       "method": "query_row",
       "path": "crates/engine/src/room_culling.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1028,7 +1088,7 @@
     {
       "expression": "\"SELECT count(*)=2 FROM pragma_table_info('room_portals') WHERE name IN ('unbounded_a','unbounded_b')\"",
       "id": "crates/engine/src/room_culling.rs::query_row::18cf971d6f790001::1",
-      "line": 716,
+      "line": 737,
       "method": "query_row",
       "path": "crates/engine/src/room_culling.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1038,7 +1098,7 @@
     {
       "expression": "\"SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='room_graph_stats')\"",
       "id": "crates/engine/src/room_culling.rs::query_row::300672a33acb2f6a::1",
-      "line": 718,
+      "line": 739,
       "method": "query_row",
       "path": "crates/engine/src/room_culling.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1048,7 +1108,7 @@
     {
       "expression": "\"SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='visibility_version' AND value=2)\"",
       "id": "crates/engine/src/room_culling.rs::query_row::f258b9fc8d56fd66::1",
-      "line": 723,
+      "line": 744,
       "method": "query_row",
       "path": "crates/engine/src/room_culling.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1058,7 +1118,7 @@
     {
       "expression": "&format!(\n            \"SELECT ref_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_z,room_a,room_b,{provenance} FROM room_portals WHERE cell_id=?1 ORDER BY ref_id\")",
       "id": "crates/engine/src/room_culling.rs::prepare_cached::970a28d6b0e32af9::1",
-      "line": 731,
+      "line": 752,
       "method": "prepare_cached",
       "path": "crates/engine/src/room_culling.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1068,7 +1128,7 @@
     {
       "expression": "\"SELECT l.room_ref,l.linked_ref FROM room_links l \\\n             JOIN room_bounds b ON b.ref_id=l.room_ref WHERE b.cell_id=?1 \\\n             ORDER BY l.room_ref,l.linked_ref\"",
       "id": "crates/engine/src/room_culling.rs::prepare_cached::a44b4aed69f78bfb::1",
-      "line": 765,
+      "line": 786,
       "method": "prepare_cached",
       "path": "crates/engine/src/room_culling.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1078,7 +1138,7 @@
     {
       "expression": "\"SELECT m.reference_id,m.room_ref,m.contained FROM reference_rooms m \\\n             JOIN room_bounds b ON b.ref_id=m.room_ref WHERE b.cell_id=?1 \\\n             ORDER BY m.reference_id,m.room_ref\"",
       "id": "crates/engine/src/room_culling.rs::prepare_cached::f441cdbbba602945::1",
-      "line": 815,
+      "line": 836,
       "method": "prepare_cached",
       "path": "crates/engine/src/room_culling.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1088,7 +1148,7 @@
     {
       "expression": "\"SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='references')\"",
       "id": "crates/engine/src/room_culling.rs::query_row::be6ee0b12e93c443::1",
-      "line": 841,
+      "line": 862,
       "method": "query_row",
       "path": "crates/engine/src/room_culling.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1098,7 +1158,7 @@
     {
       "expression": "\"SELECT id FROM \\\"references\\\" WHERE cell_id=?1\"",
       "id": "crates/engine/src/room_culling.rs::prepare_cached::516a2ac70ff6457f::1",
-      "line": 848,
+      "line": 869,
       "method": "prepare_cached",
       "path": "crates/engine/src/room_culling.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1587,7 +1647,7 @@
     }
   ],
   "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
-  "reviewed_source_guard_sha256": "32c213868af2fc482ee8f94ade35628f7b537bf3b563667487f01b1a0dd48492",
+  "reviewed_source_guard_sha256": "9f6646d15a30cc9ced20239f9fbc5bc1732a09cb55291326dd8232e25e1fd6ea",
   "schema_status": "not_extracted",
   "schemas": {},
   "stores": {
