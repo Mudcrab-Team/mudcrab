@@ -423,12 +423,12 @@
           "path": "crates/converter/src/esm/exporter.rs"
         },
         {
-          "anchor": "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
-          "path": "crates/engine/src/world/imagespace.rs"
+          "anchor": "let blob = serialize_subrecords(canonical_subrecords);",
+          "path": "crates/converter/src/esm/exporter.rs"
         }
       ],
       "owner": "Mudcrab maintainers (#298)",
-      "reason": "Opaque archive/payload disposition. Preservation does not establish interpretation of every subrecord. Current image-space reader decodes selected records.data; no blanket unused claim.",
+      "reason": "Opaque canonical subrecord mirror on a published placement. Missing or short DATA omits this placement and mirror. The canonical record remains in records, and source bytes rejected by the in-house reader remain in inhouse_source_records.",
       "roles": [
         "provenance"
       ],
@@ -439,7 +439,17 @@
         "projected": "source_projected",
         "query_dependent": "unknown",
         "semantic_use": "unknown"
-      }
+      },
+      "tests": [
+        {
+          "anchor": "async fn short_fields_publish_usable_neighbors_and_report_each_omission()",
+          "path": "crates/converter/tests/fixture_short_runtime_fields.rs"
+        },
+        {
+          "anchor": "fn short_reference_subset_update_removes_the_old_dependent_rows()",
+          "path": "crates/converter/tests/fixture_short_runtime_fields.rs"
+        }
+      ]
     },
     "waters.deep_color": {
       "evidence": [
@@ -1447,7 +1457,7 @@
     }
   ],
   "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
-  "reviewed_source_guard_sha256": "a56b70818f0b669586d6636a68bb3f732a362939910e9950ce24107084c60391",
+  "reviewed_source_guard_sha256": "24ee063f1020dd4b638327d958d4dc5b82bf5e74ec5cb517caa6227c6a7812a8",
   "schema_status": "not_extracted",
   "schemas": {},
   "stores": {

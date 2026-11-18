@@ -422,12 +422,12 @@
           "path": "crates/converter/src/esm/exporter.rs"
         },
         {
-          "anchor": "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
-          "path": "crates/engine/src/world/imagespace.rs"
+          "anchor": "let blob = serialize_subrecords(canonical_subrecords);",
+          "path": "crates/converter/src/esm/exporter.rs"
         }
       ],
       "owner": "Mudcrab maintainers (#298)",
-      "reason": "Opaque archive/payload disposition. Preservation does not establish interpretation of every subrecord. Current image-space reader decodes selected records.data; no blanket unused claim.",
+      "reason": "Opaque canonical subrecord mirror on a published placement. Missing or short DATA omits this placement and mirror. The canonical record remains in records, and source bytes rejected by the in-house reader remain in inhouse_source_records.",
       "roles": [
         "provenance"
       ],
@@ -438,7 +438,17 @@
         "projected": "source_projected",
         "query_dependent": "unknown",
         "semantic_use": "unknown"
-      }
+      },
+      "tests": [
+        {
+          "anchor": "async fn short_fields_publish_usable_neighbors_and_report_each_omission()",
+          "path": "crates/converter/tests/fixture_short_runtime_fields.rs"
+        },
+        {
+          "anchor": "fn short_reference_subset_update_removes_the_old_dependent_rows()",
+          "path": "crates/converter/tests/fixture_short_runtime_fields.rs"
+        }
+      ]
     },
     "waters.deep_color": {
       "evidence": [
@@ -690,7 +700,7 @@
     "door_links": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "A subset update with unusable placement DATA removes stale links to or from that reference. Field-level semantics remain deferred."
     },
     "emittance": {
       "classification": "deferred",
@@ -700,7 +710,7 @@
     "exterior_spatial": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "Missing or short placement DATA omits the exterior spatial row and removes any stale row for that ID. Field-level semantics remain deferred."
     },
     "formid_map": {
       "classification": "provenance",
@@ -710,7 +720,7 @@
     "grass_types": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "GRAS identity and model remain available with missing or short DATA. Complete scalars in a safely framed prefix are projected and unavailable scalars remain NULL. Field-level semantics remain deferred."
     },
     "image_spaces": {
       "classification": "deferred",
@@ -770,7 +780,7 @@
     "lighting_templates": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "Missing or unsupported LGTM DATA leaves DATA-derived lighting columns NULL while other fields can still publish. Field-level semantics remain deferred."
     },
     "lights": {
       "classification": "deferred",
@@ -820,12 +830,12 @@
     "projection_omission_samples": {
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+      "reason": "Bounded diagnostic examples include unusable GRAS DATA, placed-reference transforms and LGTM DATA."
     },
     "projection_omission_stats": {
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+      "reason": "Diagnostic counts include unusable GRAS DATA, placed-reference transforms and LGTM DATA. Full conversion reports these categories as data-loss warnings."
     },
     "race_animation_sources": {
       "classification": "deferred",
@@ -855,27 +865,27 @@
     "reference_activate_parents": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "Unusable placement DATA omits activate-parent rows owned by that reference. Field-level semantics remain deferred."
     },
     "reference_details": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "Unusable placement DATA omits detail rows owned by that reference. Field-level semantics remain deferred."
     },
     "reference_linked_refs": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "Unusable placement DATA omits linked-reference rows owned by that reference. A usable record may still retain an authored link to the canonical record. Field-level semantics remain deferred."
     },
     "reference_rooms": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "The room graph excludes placements with unusable DATA. A subset update clears memberships owned by or pointing to the removed placement. Field-level semantics remain deferred."
     },
     "references": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "A runtime placement requires a DATA prefix with all six transform floats. Missing or short DATA omits the runtime row while retaining the canonical record in a full export. Field-level semantics remain deferred."
     },
     "region_weathers": {
       "classification": "deferred",
@@ -885,7 +895,7 @@
     "room_bounds": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "Placements with missing or short DATA cannot become room bounds. A subset update clears stale bounds for that reference. Field-level semantics remain deferred."
     },
     "room_graph_stats": {
       "classification": "deferred",
@@ -895,12 +905,12 @@
     "room_links": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "A subset update with unusable placement DATA removes stale links involving that reference. Field-level semantics remain deferred."
     },
     "room_portals": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "Placements with missing or short DATA cannot become portals. A subset update removes a stale portal for the reference and clears links to its removed room bounds. Field-level semantics remain deferred."
     },
     "schema_info": {
       "classification": "provenance",
