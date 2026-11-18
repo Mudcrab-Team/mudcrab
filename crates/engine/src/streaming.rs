@@ -3864,6 +3864,9 @@ type UncastingTerrain = (
     Without<NotShadowCaster>,
 );
 
+/// A mesh spawned this frame that has no [`NotShadowCaster`].
+type NewUncastingMesh = (Added<Mesh3d>, Without<NotShadowCaster>);
+
 /// Retail land does not cast sun shadows unless `bDrawLandShadows` is 1 (`RF-SHADER-011`,
 /// `0x1402b3380`: land shader flag 9 = the setting, default 0; flag 8, receiving, is always 1).
 /// Every terrain mesh - the merged cell, the quadrant patches, the LOD terrain sources and their
@@ -3871,11 +3874,19 @@ type UncastingTerrain = (
 /// not touched. A mesh that already has the marker keeps it.
 ///
 /// Terrain is found through [`TerrainPatch`], [`TerrainCoverage`] and
-/// [`lod::terrain_batching::LandMesh`]. The query skips an entity that already has the marker, so a
-/// frame with no new terrain visits nothing.
+/// [`lod::terrain_batching::LandMesh`] on the mesh itself, and through the mesh children of a
+/// [`TerrainCoverage`] node: a LOD chunk's quadrant node carries the coverage and its single
+/// primitive child carries the mesh, and that child draws until the chunk is batched. Either order
+/// of arrival is handled (the node gaining coverage after its child exists, or the child spawning
+/// under a node that has it). The queries skip an entity that already has the marker, so a frame
+/// with no new terrain visits nothing.
 fn apply_land_shadow_policy(
     config: Option<Res<crate::config::EngineConfig>>,
     terrain: Query<Entity, UncastingTerrain>,
+    covered_nodes: Query<&Children, Added<TerrainCoverage>>,
+    new_meshes: Query<(Entity, &ChildOf), NewUncastingMesh>,
+    coverage: Query<(), With<TerrainCoverage>>,
+    uncasting_meshes: Query<(), (With<Mesh3d>, Without<NotShadowCaster>)>,
     mut commands: Commands,
 ) {
     if config.is_some_and(|config| config.land_shadows) {
@@ -3883,6 +3894,18 @@ fn apply_land_shadow_policy(
     }
     for entity in &terrain {
         commands.entity(entity).insert(NotShadowCaster);
+    }
+    for children in &covered_nodes {
+        for child in children.iter() {
+            if uncasting_meshes.contains(child) {
+                commands.entity(child).insert(NotShadowCaster);
+            }
+        }
+    }
+    for (entity, parent) in &new_meshes {
+        if coverage.contains(parent.parent()) {
+            commands.entity(entity).insert(NotShadowCaster);
+        }
     }
 }
 
@@ -11919,6 +11942,45 @@ mod land_shadow_tests {
                 .contains::<NotShadowReceiver>(),
             "a marker that was there stays"
         );
+    }
+
+    /// A LOD chunk's quadrant node carries the coverage and its primitive child carries the mesh,
+    /// and that child draws until the chunk is batched. It must not cast, whichever of the two
+    /// appears first.
+    #[test]
+    fn the_mesh_child_of_a_lod_quadrant_node_does_not_cast() {
+        let (mut app, _) = app(crate::config::EngineConfig::default());
+        // The mesh first, the coverage later.
+        let node = app.world_mut().spawn_empty().id();
+        let child = app
+            .world_mut()
+            .spawn((Mesh3d(Handle::default()), ChildOf(node)))
+            .id();
+        app.update();
+        assert!(
+            casts(&app, child),
+            "no terrain node yet, so it is not terrain"
+        );
+        app.world_mut().entity_mut(node).insert(coverage());
+        app.update();
+        assert!(!casts(&app, child), "coverage arrived after the mesh");
+        // The coverage first, the mesh later.
+        let node = app.world_mut().spawn(coverage()).id();
+        app.update();
+        let child = app
+            .world_mut()
+            .spawn((Mesh3d(Handle::default()), ChildOf(node)))
+            .id();
+        app.update();
+        assert!(!casts(&app, child), "mesh arrived under a covered node");
+        // A building under an ordinary node still casts.
+        let building_node = app.world_mut().spawn_empty().id();
+        let building = app
+            .world_mut()
+            .spawn((Mesh3d(Handle::default()), ChildOf(building_node)))
+            .id();
+        app.update();
+        assert!(casts(&app, building));
     }
 
     /// Terrain that arrives later is handled in the frame it appears.
