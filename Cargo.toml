@@ -6,6 +6,7 @@ members = [
     "crates/engine",
     "crates/launcher",
     "crates/mo2",
+    "crates/retail-rules",
     "crates/shared",
 ]
 
