@@ -7,8 +7,10 @@ kept in `.cargo_vcs_info.json` (Bevy commit `c6f634ca9f406d68ba5109d921247b654cb
 license files (`MIT OR Apache-2.0`) and `README.md` are unchanged. The crate's own lockfile and its
 `.cargo-ok` marker are omitted, so Mudcrab's root `Cargo.lock` controls resolution.
 
-The commit that added this directory is byte-identical to the published crate. Run
-`git log --oneline -- vendor/bevy_render` and diff the first commit against `HEAD` to see every change.
+The first commit that added this directory is identical to the published crate, except that it
+omits the crate's own `Cargo.lock` and `.cargo-ok` marker. To see every Mudcrab change, download the
+published crate (`https://static.crates.io/crates/bevy_render/bevy_render-0.19.0.crate`), unpack it and run
+`diff -r` against this directory. `grep -rn "mudcrab:" src` lists the touched spots.
 The ledger of all carried Bevy changes is [`../BEVY_PATCHES.md`](../BEVY_PATCHES.md).
 
 ## Why

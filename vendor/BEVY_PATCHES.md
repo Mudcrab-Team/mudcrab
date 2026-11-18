@@ -20,8 +20,26 @@ Upstream states below are as of the date in the table.
 ## Checking a morph change
 
 The out-of-bounds read does not fault on every run, so a plain run proves nothing. Use Metal
-shader validation in a hidden window (the commands and the investigation are in the PR that added
-this file), and count `Invalid Metal usage` lines. Bevy 0.19.0 gave 20 in 5 minutes. The target is 0.
+shader validation in a hidden window and count `Invalid Metal usage` lines. Bevy 0.19.0 without
+the morph fix gave 20 in 5 minutes on a release build. The target is 0. Needs a converted pack with
+streamed actors, and a closed-loop route JSON around the start cell.
+
+```sh
+MTL_SHADER_VALIDATION=1 MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1 MTL_SHADER_VALIDATION_FAIL_MODE=allow \
+RUST_LOG=info,wgpu_hal=warn,wgpu_core=warn,naga=warn \
+  python3 scripts/workspace.py cargo run --locked --bin engine -- \
+  --assets <pack with actors> --worldspace 60 --grid-x 6 --grid-y -12 --stream-radius 2 \
+  --always-active --hidden-window --no-render-diagnostics --route <closed-loop route.json> \
+  --benchmark-duration 300 --benchmark-vsync --benchmark-output <bench.json> > <run.log> 2>&1
+grep -c "Invalid Metal usage" <run.log>
+```
+
+Add `--release` for a faithful comparison. Do not set `MTL_DEBUG_LAYER=1`: it writes about 700 MB
+of warnings per minute. The engine reads Point-light shadows from `settings.json`, not from a flag.
+For the flicker class (bevy#26095), run the same command with `--lights` and a `settings.json`
+that has `"point_lights": true` and `"point_light_shadows": true`, kept in a scratch `HOME`
+so a personal settings file stays untouched. A run with no error lines is evidence, not proof:
+a hidden run without validation did not fault even before the fix.
 
 ## Not carried yet
 
