@@ -183,9 +183,14 @@ Never deleted, whatever the rule: a build that is leased, has an open file or ru
 (`lsof +D`; a missing or failing `lsof` keeps the build), is pinned, is on the keep list, is named in
 a pending receipt, contains a symlink, contains a mount point or any entry on another device
 (`st_dev`), is itself a mount point, lacks a valid `build.json` (including a finite `last_used`),
-or sits outside `<storage>/builds`. The same checks run for `prune --apply`, the trim and the crash
-recovery. Whole slots are only removed by `prune` with an age (7 days by default), never by the
-automatic rules. The tool never deletes anything in `packs/`, `scratch/` or `evidence/`. It only adds receipts to `evidence/`.
+or sits outside `<storage>/builds`. `prune --apply` and `settle --apply` run all of these checks.
+The trim and the crash recovery run only the lease, open-file, symlink and device checks. The trim
+touches only the regenerable `incremental` directory. Recovery treats a leftover as the tool's own
+only if it holds a `build.json` or a receipt in `evidence/` names it, because it only finishes a
+removal that the tool already approved. Whole slots are only removed by `prune` with an age
+(7 days by default), never by the automatic rules. The tool never deletes anything in `packs/` or
+`scratch/`. In `evidence/` it only adds receipts. It removes a receipt only when it wrote that
+receipt moments before and the removal then failed to start.
 
 A pending receipt is any `<storage>/evidence/<task>/build-receipt.json` with
 `{"state": "pending", "builds": ["isolated-..."]}` (any state other than `"final"` counts).
@@ -195,10 +200,11 @@ warning that names the file.
 
 Deletion is crash-safe: the directory is first renamed to `.retiring-<build>-<ns>` (or
 `.trim-incremental-<ns>` for slot state), then deleted. A crash leaves the renamed directory.
-The next `cargo`, `exec` or `prune --apply` finishes it after the same checks. Cleanup errors
+The next `cargo`, `exec` or `prune --apply` finishes it after the checks above. Cleanup errors
 print `workspace: cleanup skipped` and never change the exit status of your command.
-Every deletion needs a receipt first. If the evidence volume is full or read-only, nothing is
-deleted. Free space by hand in that case: remove an idle `builds/isolated-*` directory you own
+A new deletion needs its receipt first. Crash recovery finishes a deletion that already had one,
+and it records its own receipt line afterwards. If the evidence volume is full or read-only, no
+new deletion starts. Free space by hand in that case: remove an idle `builds/isolated-*` directory you own
 after the same checks (no lease, `lsof +D` empty, not pinned), then write a note under `evidence/`.
 
 | Setting | Default | Meaning |

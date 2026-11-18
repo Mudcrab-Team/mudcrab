@@ -434,6 +434,8 @@ class CrashDuringDelete(CleanupCase):
         nested = self.builds / f".retiring-isolated-{self.ws.owner}-d-aaaaaaaaaaaa-4"
         nested.mkdir()
         (nested / "link").symlink_to(external, target_is_directory=True)
+        for proven in (held, opened, nested):
+            workspace.write_json(proven / "build.json", {"version": 1})
         with workspace.lease(self.store / "locks" / f"{held.name}.lock"):
             def run(command, **kwargs):
                 return subprocess.CompletedProcess(command, 0 if str(opened) in command else 1, "open" if str(opened) in command else "", "")
@@ -446,10 +448,44 @@ class CrashDuringDelete(CleanupCase):
             self.assertTrue(path.exists())
         self.assertTrue(linked.is_symlink() and external.is_dir())
         self.assertNotIn(".retiring-not-ours", statuses)
+        self.assertEqual(statuses[held.name], "held: active lease")
+        self.assertIn("open", statuses[opened.name])
+        self.assertEqual(statuses[nested.name], "held: scan errors or symlinks")
+
+    def test_recovery_needs_a_build_marker_or_a_receipt_for_a_leftover(self):
+        lookalike = self.builds / f".retiring-isolated-{self.ws.owner}-a-aaaaaaaaaaaa-1"
+        lookalike.mkdir()
+        (lookalike / "data").write_text("a person made this")
+        with patch.object(workspace.shutil, "which", return_value="lsof"), \
+                patch.object(workspace.subprocess, "run", return_value=IDLE):
+            rows = self.ws.recover_interrupted()
+            self.assertEqual([row["status"] for row in rows],
+                             ["held: no build.json or receipt shows that the tool made it"])
+            self.assertTrue((lookalike / "data").exists())
+            # A receipt for the same build name proves a partly deleted leftover is the tool's.
+            workspace.write_json(self.store / "evidence" / f"retired-isolated-{self.ws.owner}-a-aaaaaaaaaaaa-99.json", {})
+            rows = self.ws.recover_interrupted()
+        self.assertEqual([row["status"] for row in rows], ["removed"])
+        self.assertFalse(lookalike.exists())
+
+    def test_recovery_leaves_a_trim_leftover_without_a_receipt(self):
+        slot = self.make_build("slot-0")
+        leftover = slot / "target" / "debug" / ".trim-incremental-5"
+        leftover.mkdir(parents=True)
+        (leftover / "data").write_text("x")
+        with patch.object(workspace.shutil, "which", return_value="lsof"), \
+                patch.object(workspace.subprocess, "run", return_value=IDLE):
+            rows = self.ws.recover_interrupted()
+            self.assertEqual([row["status"] for row in rows],
+                             ["held: no build.json or receipt shows that the tool made it"])
+            workspace.write_json(self.store / "evidence" / "trimmed-slot-0-7.json", {})
+            rows = self.ws.recover_interrupted()
+        self.assertEqual([row["status"] for row in rows], ["removed"])
 
     def test_recovery_runs_before_a_prune_and_before_a_build(self):
         leftover = self.builds / f".retiring-isolated-{self.ws.owner}-a-aaaaaaaaaaaa-1"
         leftover.mkdir()
+        workspace.write_json(leftover / "build.json", {"version": 1})
         (leftover / "artifact").write_text("x")
         self.run_cargo(("build",), "review")
         self.assertFalse(leftover.exists())
@@ -897,6 +933,7 @@ class DeviceBoundaries(CleanupCase):
             self.assertEqual(self.trim(slot)["status"], "held: contains another filesystem")
         leftover = self.builds / f".retiring-isolated-{self.ws.owner}-a-aaaaaaaaaaaa-1"
         (leftover / "mounted").mkdir(parents=True)
+        workspace.write_json(leftover / "build.json", {"version": 1})
         (leftover / "mounted" / "precious.txt").write_text("other volume")
         with self.other_device(), patch.object(workspace.shutil, "which", return_value="lsof"), \
                 patch.object(workspace.subprocess, "run", return_value=IDLE):

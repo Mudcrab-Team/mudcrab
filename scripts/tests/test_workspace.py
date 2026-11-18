@@ -376,6 +376,25 @@ with module.lease(pathlib.Path(sys.argv[2])):
         result, _ = self.run_build("fresh")
         self.assertEqual(result, 0)
 
+    def test_write_json_removes_its_temporary_file_when_the_disk_fills(self):
+        target = self.base / "data.json"
+        def full(self_path, *args, **kwargs):
+            self_path.touch()
+            raise OSError(28, "No space left on device")
+        with patch.object(Path, "write_text", full):
+            with self.assertRaises(OSError):
+                workspace.write_json(target, {"a": 1})
+        self.assertEqual([p.name for p in self.base.glob("data.json*")], [])
+
+    def test_a_disk_full_first_marker_write_leaves_no_directory(self):
+        def full(self_path, *args, **kwargs):
+            self_path.touch()
+            raise OSError(28, "No space left on device")
+        with patch.object(Path, "write_text", full):
+            with self.assertRaises(OSError):
+                self.run_build("fresh")
+        self.assertEqual([p.name for p in (self.store / "builds").iterdir()], [])
+
     def test_a_failed_final_marker_update_keeps_the_exit_status(self):
         original = workspace.write_json
         calls = []
