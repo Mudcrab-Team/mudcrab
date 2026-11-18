@@ -6,7 +6,6 @@ import json
 import shutil
 from pathlib import Path
 import tempfile
-from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
 import zipfile
@@ -148,7 +147,7 @@ class CaptureResumeTests(unittest.TestCase):
         plan = capture.ROOT / 'tools/skyrim-recorder/fixtures/jump-inputs-v4.json'
         declaration = json.loads(plan.read_text())
         baseline = gzip.decompress((reference / observed['runs'][0]['path']).read_bytes())
-        run_recorder = capture.subprocess.run
+        run_recorder = capture.run_recorder
         overflow = bytearray(baseline)
         for offset in range(0, len(overflow), RECORD.size):
             if RECORD.unpack_from(overflow, offset)[4] == 10:
@@ -198,12 +197,12 @@ class CaptureResumeTests(unittest.TestCase):
                             if mode == 'runner':
                                 (output / 'trace.bin').write_bytes(raw)
                             capture.write(output / 'failure.json', dict(phase='fixture-readiness', error='test interruption'))
-                            return SimpleNamespace(returncode=1)
+                            return 1
                     (output / 'trace.bin').write_bytes(raw)
                     capture.write(output / 'proof.json', proof)
-                    return SimpleNamespace(returncode=0)
+                    return 0
 
-                with patch('sys.argv', argv), patch.object(capture.subprocess, 'run', record), contextlib.redirect_stdout(io.StringIO()):
+                with patch('sys.argv', argv), patch.object(capture, 'run_recorder', record), contextlib.redirect_stdout(io.StringIO()):
                     with self.assertRaises((ValueError, RuntimeError, FileNotFoundError, OverflowError, KeyError)):
                         capture.main()
                     manifest = json.loads((corpus / 'manifest.json').read_text())

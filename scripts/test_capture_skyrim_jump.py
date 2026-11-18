@@ -34,7 +34,7 @@ class CampaignProfileTests(unittest.TestCase):
             error = io.StringIO()
             with patch('sys.argv', argv), contextlib.redirect_stderr(error), \
                     contextlib.redirect_stdout(io.StringIO()), \
-                    patch.object(capture.subprocess, 'run', side_effect=RuntimeError('recorder started')) as run:
+                    patch.object(capture, 'run_recorder', side_effect=RuntimeError('recorder started')) as run:
                 if profile is not None:
                     with self.assertRaises(SystemExit) as stopped:
                         capture.main()

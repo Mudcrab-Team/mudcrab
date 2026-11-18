@@ -5,9 +5,8 @@ import gzip
 import hashlib
 import json
 from pathlib import Path
-import subprocess
 import sys
-from skyrim_capture_attempts import corpus_lock, record_attempt, recover_attempts, save_manifest
+from skyrim_capture_attempts import corpus_lock, record_attempt, recover_attempts, run_recorder, save_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -76,10 +75,10 @@ def main():
                 with record_attempt(manifest_path, manifest, name, attempt, output) as attempt_row:
                     print(f'Recording {name}, attempt {attempt}', flush=True)
                     with Path(str(output) + '.log').open('x') as log:
-                        result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
-                    attempt_row['exit_code'] = result.returncode
+                        exit_code = run_recorder(command, stdout=log, attempt=attempt_row)
+                    attempt_row['exit_code'] = exit_code
                     save_manifest(manifest_path, manifest)
-                    if result.returncode:
+                    if exit_code:
                         raise RuntimeError(f'Capture failed; preserved {output} and log. Resume explicitly.')
                     proof = json.loads((output / 'proof.json').read_text())
                     raw = (output / 'trace.bin').read_bytes()

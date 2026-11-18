@@ -5,7 +5,6 @@ import gzip
 import hashlib
 import json
 from pathlib import Path
-import subprocess
 import sys
 import zipfile
 from functools import partial
@@ -13,7 +12,7 @@ from functools import partial
 from analyze_skyrim_jump_inputs import analyze_rows, decode, f32
 from publish_skyrim_evidence import public_value
 from record_skyrim_motion import verify_trace
-from skyrim_capture_attempts import corpus_lock, record_attempt, recover_attempts, save_manifest
+from skyrim_capture_attempts import corpus_lock, record_attempt, recover_attempts, run_recorder, save_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ['scripts/publish_skyrim_evidence.py', 'scripts/record_skyrim_motion.py', 'scripts/capture_skyrim_jump_inputs.py',
@@ -155,7 +154,7 @@ def main():
                 exit_code = 0
                 if not adopted:
                     with Path(str(output) + '.log').open('x') as log:
-                        exit_code = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT).returncode
+                        exit_code = run_recorder(command, stdout=log, attempt=attempt_row)
                 attempt_row['exit_code'] = exit_code
                 save_manifest(manifest_path, manifest)
                 if exit_code:

@@ -7,8 +7,11 @@ import io
 import json
 from pathlib import Path
 import shutil
+import signal
+import subprocess
+import sys
 import tempfile
-from types import SimpleNamespace
+import textwrap
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -44,6 +47,52 @@ def campaign(module, root, frame_cap=None):
 
 
 class CaptureAttemptTests(unittest.TestCase):
+    def test_wrapper_signal_waits_for_recorder_before_releasing_corpus(self):
+        fake_recorder = """import fcntl, os, signal, sys
+from pathlib import Path
+root = Path.cwd()
+signum = int((root / 'signal').read_text())
+def cancel(sig, frame):
+    with (root / 'corpus/.capture.lock').open('a') as contender:
+        try:
+            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            (root / 'stopped-under-lock').write_text(str(sig))
+    raise SystemExit(128 + sig)
+signal.signal(signum, cancel)
+signal.alarm(3)
+with (root / 'session/.recording.lock').open('a') as session:
+    fcntl.flock(session, fcntl.LOCK_EX)
+    os.kill(os.getppid(), signum)
+    signal.pause()
+"""
+        for module in (v3, v4):
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                with self.subTest(module=module.__name__, signal=sig), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    argv, _ = campaign(module, root)
+                    (root / 'signal').write_text(str(int(sig)))
+                    (root / 'tools').symlink_to(module.ROOT / 'tools')
+                    scripts = root / 'scripts'
+                    scripts.mkdir()
+                    for name in set(v4.SOURCES) | {'scripts/capture_skyrim_jump.py'}:
+                        if name.startswith('scripts/'):
+                            shutil.copyfile(module.ROOT / name, root / name)
+                    recorder = scripts / 'record_skyrim_motion.py'
+                    recorder.rename(scripts / 'real_recorder.py')
+                    recorder.write_text("if __name__ == '__main__':\n" + textwrap.indent(fake_recorder, '    ') +
+                                        "else:\n    from real_recorder import *\n")
+                    wrapper = scripts / Path(module.__file__).name
+                    result = subprocess.run([sys.executable, '-B', str(wrapper), *argv[1:]],
+                                            cwd=root, capture_output=True, text=True, timeout=8)
+                    self.assertEqual(result.returncode, 128 + sig, result.stderr)
+                    self.assertEqual((root / 'stopped-under-lock').read_text(), str(int(sig)))
+                    attempt, = json.loads((root / 'corpus/manifest.json').read_text())['attempts']
+                    self.assertEqual(attempt['recorder_exit_code'], 128 + sig)
+                    self.assertEqual(attempt['failure']['phase'], 'interrupted')
+                    with (root / 'session/.recording.lock').open('a') as session:
+                        fcntl.flock(session, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
     def test_failed_classification_preserves_the_last_pending_checkpoint(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -76,7 +125,7 @@ class CaptureAttemptTests(unittest.TestCase):
             argv, session = campaign(v3, root)
             session['build']['source_sha256'] = '0' * 64
             (root / 'session/session.json').write_text(json.dumps(session))
-            with patch('sys.argv', argv), patch.object(v3.subprocess, 'run',
+            with patch('sys.argv', argv), patch.object(v3, 'run_recorder',
                                                      side_effect=AssertionError('recorder started')) as recorder, \
                     contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaisesRegex(SystemExit, '2'):
@@ -124,8 +173,8 @@ class CaptureAttemptTests(unittest.TestCase):
                 corpus.mkdir()
                 with (corpus / '.capture.lock').open('a') as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    with patch('sys.argv', argv), patch.object(module.subprocess, 'run',
-                                                               return_value=SimpleNamespace(returncode=1)) as recorder:
+                    with patch('sys.argv', argv), patch.object(module, 'run_recorder',
+                                                               return_value=1) as recorder:
                         with self.assertRaises(BlockingIOError):
                             module.main()
                         recorder.assert_not_called()
@@ -189,7 +238,7 @@ class CaptureAttemptTests(unittest.TestCase):
                             runtime_sha256=plan['runtime_sha256'], runs=[baseline], attempts=[])
             (corpus / 'manifest.json').write_text(json.dumps(manifest))
             argv[argv.index('--condition') + 1] = 'reference-125'
-            with patch('sys.argv', argv), patch.object(v4.subprocess, 'run',
+            with patch('sys.argv', argv), patch.object(v4, 'run_recorder',
                                                      side_effect=AssertionError('recording began out of order')) as recorder, \
                     contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaisesRegex(SystemExit, '2'):
@@ -285,7 +334,7 @@ class CaptureAttemptTests(unittest.TestCase):
                     first['output'] = output
                     raise KeyboardInterrupt()
 
-                with patch('sys.argv', argv), patch.object(module.subprocess, 'run', interrupted), \
+                with patch('sys.argv', argv), patch.object(module, 'run_recorder', interrupted), \
                         contextlib.redirect_stdout(io.StringIO()):
                     with self.assertRaises(KeyboardInterrupt):
                         module.main()
@@ -300,9 +349,9 @@ class CaptureAttemptTests(unittest.TestCase):
                     self.assertTrue(str(output).endswith('-attempt-2'))
                     output.mkdir()
                     kwargs['stdout'].write('new attempt log\n')
-                    return SimpleNamespace(returncode=1)
+                    return 1
 
-                with patch('sys.argv', argv), patch.object(module.subprocess, 'run', retry), \
+                with patch('sys.argv', argv), patch.object(module, 'run_recorder', retry), \
                         contextlib.redirect_stdout(io.StringIO()):
                     with self.assertRaises(RuntimeError):
                         module.main()
@@ -337,7 +386,7 @@ class CaptureAttemptTests(unittest.TestCase):
                         (json.dumps(proof['fixture'], indent=2) + '\n').encode()).hexdigest()
                 (output / 'proof.json').write_text(json.dumps(proof))
                 argv += ['--adopt-baseline', str(output)]
-                with patch('sys.argv', argv), patch.object(v4.subprocess, 'run') as recorder, \
+                with patch('sys.argv', argv), patch.object(v4, 'run_recorder') as recorder, \
                         contextlib.redirect_stdout(io.StringIO()):
                     with self.assertRaisesRegex(ValueError, 'proof|cadence|fixture'):
                         v4.main()

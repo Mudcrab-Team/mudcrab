@@ -4,6 +4,8 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import signal
+import subprocess
 import tempfile
 
 
@@ -12,6 +14,42 @@ def corpus_lock(corpus):
     with (corpus / '.capture.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         yield
+
+
+def run_recorder(command, *, stdout, attempt):
+    """Forward campaign cancellation and reap the recorder while the corpus is locked."""
+    cancellation = None
+    waiting = False
+
+    def cancel(signum, _frame):
+        nonlocal cancellation
+        if cancellation is None:
+            cancellation = signum
+            if waiting:
+                raise SystemExit(128 + signum)
+
+    previous = {}
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            if sig == signal.SIGINT and signal.getsignal(sig) == signal.SIG_IGN:
+                continue
+            previous[sig] = signal.signal(sig, cancel)
+        with subprocess.Popen(command, stdout=stdout, stderr=subprocess.STDOUT, start_new_session=True) as child:
+            try:
+                waiting = True
+                if cancellation is None:
+                    child.wait()
+            finally:
+                waiting = False
+                if child.returncode is None:
+                    child.send_signal(cancellation or signal.SIGTERM)
+                attempt['exit_code'] = child.wait()
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        if cancellation is not None:
+            raise SystemExit(128 + cancellation)
+    return attempt['exit_code']
 
 
 def save_manifest(path, manifest):
