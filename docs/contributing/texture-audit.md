@@ -34,7 +34,7 @@ python3 scripts/workspace.py cargo run --locked --profile quick -p converter --b
   --baseline crates/converter/tests/fixtures/texture-audit/full-pack-baseline.json --strict
 ```
 
-The pack and the game data are only read. The pack is held under its shared asset lock from the first read to the last, and `--scratch`, `--json`, `--csv` and `--write-baseline` must lie outside the pack and the game data. Source NIFs are extracted to `--scratch`. Each finding has the mesh, the shape, the slot, the authored path, where it came from, whether the source holds it, and the cells that place the mesh.
+The pack and the game data are only read. The pack is held under its shared asset lock from the first read to the last. The lock does not block: a conversion that wants the same output fails at once while the audit runs, and the audit fails at once when a conversion holds the pack. The lock file is `<pack>.lock` beside the pack, so the folder that holds the pack must be writable. `--scratch`, `--json`, `--csv` and `--write-baseline` must lie outside the pack and the game data. Source NIFs are extracted to `--scratch`. Each finding has the mesh, the shape, the slot, the authored path, where it came from, whether the source holds it, and the cells that place the mesh.
 
 An audit is incomplete when a mesh or archive could not be read, no NIF slot or texture set was read, or a record could not be decoded. Findings are missing then, so an incomplete audit never passes a baseline. `--mesh-filter` audits part of the pack and refuses `--baseline` and `--write-baseline`.
 

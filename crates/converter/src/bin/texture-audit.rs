@@ -7,8 +7,10 @@
 //! ```
 //!
 //! The pack and the game data are never written: every output path and `--scratch` must lie
-//! outside both, and the pack is held under its shared asset lock from the first read to the
-//! last, so a conversion cannot replace it midway. Source NIFs are extracted to `--scratch`.
+//! outside both. The pack is held under its shared asset lock from the first read to the last.
+//! The lock does not block: a conversion that wants the same output fails at once while the audit
+//! runs, and the audit fails at once when a conversion holds the pack. The lock file sits beside
+//! the pack (`<pack>.lock`). Source NIFs are extracted to `--scratch`.
 //!
 //! With `--baseline` the run exits non-zero when any cause has more unresolved slots than the
 //! baseline allows or the audit is incomplete (an unreadable mesh or archive). `--strict` also
@@ -149,6 +151,13 @@ fn main() -> Result<()> {
     let _lock = lock_pack(&pack)?;
     let database = pack.join("skyrim_world.db");
     let database = database.is_file().then_some(database);
+    // Without the database the plugin order is unknown, so the converter's archive selection
+    // would leave out the base game archives and most textures would look absent.
+    ensure!(
+        database.is_some() || (args.baseline.is_none() && args.write_baseline.is_none()),
+        "{} has no skyrim_world.db; a baseline check or write needs the plugin order it holds",
+        pack.display()
+    );
     let plugin_names = match &database {
         Some(path) => plugin_names(path)?,
         None => Vec::new(),
@@ -178,6 +187,11 @@ fn main() -> Result<()> {
             .wrap_err_with(|| format!("failed to write {}", path.display()))?;
     }
     println!("{}", serde_json::to_string_pretty(&report.summary)?);
+    // An incomplete audit is shown even without a baseline, so a missing finding is not mistaken
+    // for a clean pack.
+    for reason in converter::texture_audit::incomplete(&report) {
+        eprintln!("INCOMPLETE {reason}");
+    }
 
     // Compare with the baseline before anything is written, so `--write-baseline` on the same
     // file cannot replace the ceiling it is about to be checked against.

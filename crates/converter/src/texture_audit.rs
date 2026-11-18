@@ -310,9 +310,12 @@ pub fn plugin_names(database: &Path) -> Result<Vec<String>> {
     Ok(names)
 }
 
-/// Takes the shared asset lock of a pack, as the engine does. A conversion that would replace
-/// the pack waits for it, so the plugin order, the GLBs and the database the audit reads belong
-/// to one pack. Hold the returned lock from the first read to the last.
+/// Takes the shared asset lock of a pack, as the engine does. The lock does not block: while the
+/// audit holds it, a conversion that wants the exclusive lock for the same output fails at once
+/// with an error, and the audit itself fails at once when a conversion already holds the pack.
+/// So the plugin order, the GLBs and the database the audit reads belong to one pack. Hold the
+/// returned lock from the first read to the last. Taking it creates `<pack>.lock` beside the pack
+/// when that file is missing, so the folder that holds the pack must be writable.
 pub fn lock_pack(pack: &Path) -> Result<shared::asset_lock::AssetLock> {
     shared::asset_lock::AssetLock::acquire_shared(pack)
         .map_err(|error| color_eyre::eyre::eyre!("cannot lock {}: {error}", pack.display()))
