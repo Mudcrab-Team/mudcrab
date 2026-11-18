@@ -17,6 +17,8 @@ pub enum Format {
     X8R8G8B8,
     /// BC1 block-compressed color data.
     Bc1Unorm,
+    /// BC3 block-compressed colour and alpha data. Retail packs store normal maps in this format.
+    Bc3Unorm,
     /// BC5 block-compressed two-channel data.
     Bc5Unorm,
     /// BC7 block-compressed color data.
@@ -161,6 +163,7 @@ fn validate(spec: &Spec) -> Result<()> {
 fn dxgi_format(format: Format) -> Result<DxgiFormat> {
     Ok(match format {
         Format::Bc1Unorm => DxgiFormat::BC1_UNorm,
+        Format::Bc3Unorm => DxgiFormat::BC3_UNorm,
         Format::Bc5Unorm => DxgiFormat::BC5_UNorm,
         Format::Bc7Unorm => DxgiFormat::BC7_UNorm,
         Format::X8R8G8B8 => bail!("X8R8G8B8 does not use a DXGI format"),
@@ -181,6 +184,16 @@ mod tests {
         assert_eq!(dds.get_num_mipmap_levels(), 4);
         assert_eq!(dds.get_dxgi_format(), Some(DxgiFormat::BC1_UNorm));
         assert_eq!(dds.data.len(), 56);
+    }
+
+    #[test]
+    fn generates_bc3_texture() {
+        let spec = Spec::new(Format::Bc3Unorm, 8, 4);
+        let bytes = generate(&spec, &mut Rng::new(8)).unwrap();
+        let dds = Dds::read(bytes.as_slice()).unwrap();
+        assert_eq!(dds.get_dxgi_format(), Some(DxgiFormat::BC3_UNorm));
+        // Two 4x4 blocks of 16 bytes each.
+        assert_eq!(dds.data.len(), 32);
     }
 
     /// Verifies generated DX10 cubemaps contain six faces while declaring one cube in the array header.

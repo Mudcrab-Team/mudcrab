@@ -176,9 +176,12 @@ tolerance:
 
 ```bash
 engine --assets <pack> --worldspace 0x3c --visual-profile <profile> \
-  --shots crates/engine/tests/fixtures/visual-profile-v1-shots.json --shots-out <dir>
+  --game-hour 12 --shots crates/engine/tests/fixtures/visual-profile-v1-shots.json --shots-out <dir>
 scripts/compare_stage_receipts.py <reference>.stages.json <candidate>.stages.json
 ```
+
+`--game-hour 12` pins the sun for the lighting stages: the default hour is the retail `GameHour`
+record (GLOB 0x38, 8.0), and the native Riverwood reference captures use noon. Both receipts must use the same hour.
 
 The script exits 1 when a stage measured on both sides is out of tolerance, when only one side
 measured it, when the poses differ, when a probe's `world_position` or `patch_px` differs (a

@@ -1,0 +1,82 @@
+name: windows
+
+# Windows-only breakage (a Unix-only test import, a file name Windows forbids)
+# passes the Linux PR checks. This workflow builds and tests main on Windows
+# once a night instead of on every PR: a cold Windows run takes 1.5 to 2 hours
+# on GitHub's free runner, which is too long to make every PR wait for. A
+# failed run is fixed with a small follow-up PR. Run it by hand from the
+# Actions tab to check a branch before merging.
+#
+# Standard GitHub-hosted runners are free for public repositories.
+
+on:
+  schedule:
+    # 07:00 UTC daily.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clippy:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+          components: clippy
+
+      - name: Setup kache compiler cache
+        uses: kunobi-ninja/kache-action@v1
+        with:
+          cache-dir: ${{ runner.temp }}/kache
+          cache-key-prefix: kache-windows-clippy
+          # Save only from main. Linux PR caches already fill the repository's
+          # 10 GB, so Windows entries from other branches would evict them.
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Clippy check
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    runs-on: windows-latest
+    # Cold build ~46 min plus ~45 min of tests on the 4-core runner.
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+
+      - name: Setup kache compiler cache
+        uses: kunobi-ninja/kache-action@v1
+        with:
+          cache-dir: ${{ runner.temp }}/kache
+          # Keep test artifacts separate from Clippy's cache entry.
+          cache-key-prefix: kache-windows-test
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Run unit & integration tests
+        # Same command as the Linux PR job. GPU-only tests stay ignored by
+        # default. The hardware repair test
+        # `converter repair::tests::hardware_repair_labels_gpu_output_but_not_native_blocks`
+        # still runs, but returns early with a SKIP line when the runner has no GPU.
+        run: cargo nextest run --workspace --lib --bins --tests --examples --no-fail-fast --no-tests=warn
+        env:
+          NEXTEST_NO_TESTS: warn
