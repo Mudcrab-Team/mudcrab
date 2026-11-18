@@ -46,28 +46,65 @@ def campaign(module, root, frame_cap=None):
     return argv, session
 
 
+def install_fake_recorder(module, root, fake_recorder):
+    (root / 'tools').symlink_to(module.ROOT / 'tools')
+    scripts = root / 'scripts'
+    scripts.mkdir()
+    for name in set(v4.SOURCES) | {'scripts/capture_skyrim_jump.py', 'scripts/evaluate_skyrim_jump.py'}:
+        if name.startswith('scripts/'):
+            shutil.copyfile(module.ROOT / name, root / name)
+    recorder = scripts / 'record_skyrim_motion.py'
+    recorder.rename(scripts / 'real_recorder.py')
+    recorder.write_text("if __name__ == '__main__':\n" + textwrap.indent(fake_recorder, '    ') +
+                        "else:\n    from real_recorder import *\n")
+    return scripts / Path(module.__file__).name
+
+
 class CaptureAttemptTests(unittest.TestCase):
-    def test_orphaned_recorder_holds_corpus_until_it_exits(self):
-        # The child acknowledges readiness, then waits on stdin until recovery has been tried.
-        child = "import sys; print('ready', flush=True); sys.stdin.buffer.read()"
-        wrapper = """import sys
+    def test_recovery_waits_for_orphaned_recorder_to_finish_its_trace(self):
+        fake_recorder = """import os, signal, sys
 from pathlib import Path
-from skyrim_capture_attempts import corpus_lock, run_recorder
-with corpus_lock(Path(sys.argv[1])) as lock_fd:
-    run_recorder([sys.executable, '-c', sys.argv[2]], stdout=sys.stdout, attempt={}, lock_fd=lock_fd)
+output = Path(sys.argv[sys.argv.index('--output') + 1])
+output.mkdir()
+if output.name != 'baseline-attempt-1':
+    sys.exit(42)
+signal.alarm(15)
+with (output / 'trace.bin').open('wb') as trace:
+    trace.write(b'first chunk')
+    trace.flush()
+    os.kill(os.getppid(), signal.SIGKILL)
+    sys.stdin.buffer.read()
+    trace.write(b' and last chunk')
 """
         with tempfile.TemporaryDirectory() as directory:
-            with subprocess.Popen([sys.executable, '-B', '-c', wrapper, directory, child],
-                                  cwd=Path(__file__).parent, stdin=subprocess.PIPE, stdout=subprocess.PIPE) as process:
-                self.assertEqual(process.stdout.readline(), b'ready\n')
-                process.kill()
-                process.wait(timeout=5)
-                with (Path(directory) / '.capture.lock').open('a') as contender:
-                    with self.assertRaises(BlockingIOError):
-                        fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    process.stdin.close()
-                    self.assertEqual(process.stdout.read(), b'')
-                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            root = Path(directory)
+            argv, _ = campaign(v4, root)
+            wrapper = install_fake_recorder(v4, root, fake_recorder)
+            command = [sys.executable, '-B', str(wrapper), *argv[1:]]
+            corpus = root / 'corpus'
+            manifest = corpus / 'manifest.json'
+            with subprocess.Popen(command, cwd=root, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL) as process:
+                self.assertEqual(process.wait(timeout=8), -signal.SIGKILL)
+                checkpoint = manifest.read_bytes()
+                attempt, = json.loads(checkpoint)['attempts']
+                self.assertEqual(attempt['status'], 'pending')
+                self.assertEqual((Path(attempt['private_output']) / 'trace.bin').read_bytes(), b'first chunk')
+                blocked = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=8)
+                self.assertNotEqual(blocked.returncode, 0)
+                self.assertIn('BlockingIOError', blocked.stderr)
+                self.assertEqual(manifest.read_bytes(), checkpoint)
+                self.assertEqual(list((corpus / 'traces').iterdir()), [])
+                process.stdin.close()
+                # Synchronize with the orphan's exit before issuing another campaign command.
+                with (corpus / '.capture.lock').open('a') as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+            retried = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=8)
+            self.assertNotEqual(retried.returncode, 0)
+            recovered, retry = json.loads(manifest.read_bytes())['attempts']
+            self.assertNotIn('status', recovered)
+            self.assertEqual(recovered['failure']['phase'], 'interrupted')
+            self.assertEqual(gzip.decompress((corpus / recovered['path']).read_bytes()), b'first chunk and last chunk')
+            self.assertEqual((retry['attempt'], retry['exit_code']), (2, 42))
 
     def test_wrapper_signal_waits_for_recorder_before_releasing_corpus(self):
         fake_recorder = """import fcntl, os, signal, sys
@@ -94,17 +131,7 @@ with (root / 'session/.recording.lock').open('a') as session:
                     root = Path(directory)
                     argv, _ = campaign(module, root)
                     (root / 'signal').write_text(str(int(sig)))
-                    (root / 'tools').symlink_to(module.ROOT / 'tools')
-                    scripts = root / 'scripts'
-                    scripts.mkdir()
-                    for name in set(v4.SOURCES) | {'scripts/capture_skyrim_jump.py', 'scripts/evaluate_skyrim_jump.py'}:
-                        if name.startswith('scripts/'):
-                            shutil.copyfile(module.ROOT / name, root / name)
-                    recorder = scripts / 'record_skyrim_motion.py'
-                    recorder.rename(scripts / 'real_recorder.py')
-                    recorder.write_text("if __name__ == '__main__':\n" + textwrap.indent(fake_recorder, '    ') +
-                                        "else:\n    from real_recorder import *\n")
-                    wrapper = scripts / Path(module.__file__).name
+                    wrapper = install_fake_recorder(module, root, fake_recorder)
                     result = subprocess.run([sys.executable, '-B', str(wrapper), *argv[1:]],
                                             cwd=root, capture_output=True, text=True, timeout=8)
                     self.assertEqual(result.returncode, 128 + sig, result.stderr)
