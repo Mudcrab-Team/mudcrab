@@ -1503,6 +1503,7 @@ pub fn insert_reference(
 
 /// Removes one unusable placement and every owned or spatially dependent runtime row.
 /// Incoming authored links may still name the canonical record; usable neighbors stay intact.
+/// Extend the table list when adding a placement table keyed on `reference_id`.
 fn clear_reference_placement(tx: &Transaction<'_>, form_id: u32) -> Result<()> {
     for table in super::reference_links::REFERENCE_LINK_TABLES {
         tx.prepare_cached(&format!("DELETE FROM {table} WHERE reference_id=?1"))?
