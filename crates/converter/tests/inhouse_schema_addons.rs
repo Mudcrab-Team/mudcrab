@@ -830,6 +830,8 @@ async fn short_light_fade_and_radius_publish_the_same_status_for_both_readers() 
         bytes
     };
     let (short_fade_light, valid_fade_light) = (0x1A00u32, 0x1A01u32);
+    // Repeated FNAM: the first occurrence decides in both readers. Repeated XRDS: the first four-byte one wins in both.
+    let (short_then_valid_light, valid_then_short_light) = (0x1A02u32, 0x1A03u32);
     append(
         &plugin,
         &[
@@ -851,6 +853,26 @@ async fn short_light_fade_and_radius_publish_the_same_status_for_both_readers() 
                     (*b"FNAM", 1.0f32.to_le_bytes().to_vec()),
                 ],
             ),
+            record(
+                b"LIGH",
+                short_then_valid_light,
+                &[
+                    (*b"EDID", b"ShortThenValidLight\0".to_vec()),
+                    (*b"DATA", light_data(256)),
+                    (*b"FNAM", vec![0xAE, 0x18]),
+                    (*b"FNAM", 2.5f32.to_le_bytes().to_vec()),
+                ],
+            ),
+            record(
+                b"LIGH",
+                valid_then_short_light,
+                &[
+                    (*b"EDID", b"ValidThenShortLight\0".to_vec()),
+                    (*b"DATA", light_data(256)),
+                    (*b"FNAM", 3.5f32.to_le_bytes().to_vec()),
+                    (*b"FNAM", vec![0xAE, 0x18]),
+                ],
+            ),
         ]
         .concat(),
     );
@@ -858,7 +880,7 @@ async fn short_light_fade_and_radius_publish_the_same_status_for_both_readers() 
         .into_iter()
         .flat_map(f32::to_le_bytes)
         .collect();
-    // (reference id, base light, XRDS bytes)
+    // (reference id, base light, XRDS bytes). The last two references repeat XRDS.
     let references = [
         (0x1A10u32, short_fade_light, Some(vec![0xAE, 0x18])),
         (0x1A11, valid_fade_light, None),
@@ -868,6 +890,17 @@ async fn short_light_fade_and_radius_publish_the_same_status_for_both_readers() 
             Some(25.0f32.to_le_bytes().to_vec()),
         ),
     ];
+    // (reference id, XRDS occurrences in file order)
+    let repeated_references = [
+        (
+            0x1A13u32,
+            vec![vec![0xAE, 0x18], 32.0f32.to_le_bytes().to_vec()],
+        ),
+        (
+            0x1A14,
+            vec![48.0f32.to_le_bytes().to_vec(), vec![0xAE, 0x18]],
+        ),
+    ];
     let cell_id = 0x1A20u32;
     let mut cell_children = Vec::new();
     for (id, base, radius) in &references {
@@ -875,6 +908,12 @@ async fn short_light_fade_and_radius_publish_the_same_status_for_both_readers() 
         if let Some(radius) = radius {
             fields.push((*b"XRDS", radius.clone()));
         }
+        fields.push((*b"DATA", transform.clone()));
+        cell_children.extend(record(b"REFR", *id, &fields));
+    }
+    for (id, occurrences) in &repeated_references {
+        let mut fields = vec![(*b"NAME", valid_fade_light.to_le_bytes().to_vec())];
+        fields.extend(occurrences.iter().map(|bytes| (*b"XRDS", bytes.clone())));
         fields.push((*b"DATA", transform.clone()));
         cell_children.extend(record(b"REFR", *id, &fields));
     }
@@ -921,6 +960,26 @@ async fn short_light_fade_and_radius_publish_the_same_status_for_both_readers() 
         assert_eq!(radius(0x1A10), (None, 2), "{reader:?} short XRDS");
         assert_eq!(radius(0x1A11), (None, 0), "{reader:?} absent XRDS");
         assert_eq!(radius(0x1A12), (Some(25.0), 1), "{reader:?} valid XRDS");
+        assert_eq!(
+            fade(short_then_valid_light),
+            (None, 2),
+            "{reader:?} FNAM short, then valid"
+        );
+        assert_eq!(
+            fade(valid_then_short_light),
+            (Some(3.5), 1),
+            "{reader:?} FNAM valid, then short"
+        );
+        assert_eq!(
+            radius(0x1A13),
+            (Some(32.0), 1),
+            "{reader:?} XRDS short, then valid"
+        );
+        assert_eq!(
+            radius(0x1A14),
+            (Some(48.0), 1),
+            "{reader:?} XRDS valid, then short"
+        );
     }
 }
 

@@ -1719,6 +1719,9 @@ Optional additions preserve compatibility with schema 3–9 packages. `lights.fa
 1 valid (including zero; signed XRDS is legal), 2 malformed/non-finite (negative FNAM unsupported).
 For a valid LIGH reference the effective radius is base DATA radius plus raw XRDS, not replacement.
 Invalid inputs retain their original bytes in the existing canonical record archive.
+Repeated subrecords read the same way in the legacy and the in-house reader. A repeated `LIGH`
+`FNAM`: the first occurrence decides, so a short one followed by a valid one gives status 2. A repeated
+`REFR` `XRDS`: the first four-byte one wins, and a malformed one counts only when none is well-formed.
 
 `reference_light_data(reference_id INTEGER PRIMARY KEY, data_size INTEGER NOT NULL, fov_offset REAL,
 fade_offset REAL, end_distance_cap REAL, shadow_depth_bias REAL)` projects REFR XLIG without
