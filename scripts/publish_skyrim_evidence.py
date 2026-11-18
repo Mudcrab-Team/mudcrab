@@ -222,8 +222,6 @@ def public_value(value):
 
 def evidence_files(directory):
     for path in directory.iterdir():
-        if path.name == '__pycache__':
-            continue
         mode = path.stat().st_mode
         if stat.S_ISREG(mode):
             yield path

@@ -91,7 +91,7 @@ class PublicationTests(unittest.TestCase):
             with self.assertRaises(NotADirectoryError):
                 publication.candidates(root)
             tree.unlink()
-            hidden = tree / 'inaccessible'
+            hidden = tree / '__pycache__'
             hidden.mkdir(parents=True)
             iterdir = Path.iterdir
 
@@ -102,6 +102,19 @@ class PublicationTests(unittest.TestCase):
 
             with patch.object(Path, 'iterdir', read_dir), self.assertRaises(PermissionError):
                 publication.candidates(root)
+
+    def test_unlisted_payload_under_pycache_is_audited(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / publication.MANIFEST
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({'changes': {}}))
+            cache = manifest.parent / '__pycache__'
+            cache.mkdir()
+            (cache / 'capture.log').write_text('/home/alice/capture')
+            with patch('sys.argv', ['audit', '--root', str(root)]):
+                with self.assertRaisesRegex(SystemExit, 'operator home path'):
+                    publication.main()
 
     def test_rejected_payload_or_proposed_mapping_preserves_all_originals(self):
         for finding in ('frozen trace', 'manifest path'):
