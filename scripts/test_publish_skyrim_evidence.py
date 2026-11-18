@@ -352,6 +352,26 @@ class PublicationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Published artifact changed'):
                 publication.source_digest(archive, name, member, root)
 
+    def test_cli_checks_nested_member_hashes_in_verified_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / publication.MANIFEST
+            manifest.parent.mkdir(parents=True)
+            path = manifest.parent / 'outer.zip'
+            name = str(path.relative_to(root))
+            original = zipped({'inner.zip': zipped({'capture.log': b'/home/operator/data'})})
+            changes = {}
+            path.write_bytes(publication.transform(name, original, changes))
+            nested = changes[name + '!members']['inner.zip!members']['capture.log']
+            nested['original_sha256'] = '0' * 64
+            manifest.write_text(json.dumps(publication.publication_record(changes)))
+            with patch('sys.argv', ['audit', '--root', str(root)]):
+                publication.main()
+                nested['published_sha256'] = '0' * 64
+                manifest.write_text(json.dumps(publication.publication_record(changes)))
+                with self.assertRaisesRegex(ValueError, r'Published artifact changed: .*outer\.zip!inner\.zip!capture\.log'):
+                    publication.main()
+
     def test_live_sources_can_evolve_but_remain_leak_audited(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -370,8 +390,11 @@ class PublicationTests(unittest.TestCase):
             evolved = transformed + b'\n'
             live.write_bytes(evolved)
             self.assertEqual(publication.artifact_digest(live, root), publication.sha(evolved))
-            self.assertFalse(publication.findings(name, evolved))
-            self.assertTrue(publication.findings(name, original))
+            with patch('sys.argv', ['audit', '--root', str(root)]):
+                publication.main()
+                live.write_bytes(original)
+                with self.assertRaisesRegex(SystemExit, 'literal executable signature'):
+                    publication.main()
 
     def test_runtime_signature_spellings_describe_the_same_bytes(self):
         name = 'tools/skyrim-recorder/runtime.json'

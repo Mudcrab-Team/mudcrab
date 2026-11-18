@@ -329,16 +329,28 @@ def checked_record(data):
     return json.loads(data)
 
 
-def check_recorded_files(root, recorded, pending):
-    for name, identity in recorded['changes'].items():
+def check_recorded_hashes(records, read, prefix=''):
+    for name, identity in records.items():
         if name.endswith('!members'):
+            if name.removesuffix('!members') not in records:
+                raise ValueError(f'Member hashes lack an archive identity: {prefix}{name}')
             continue
-        path = root / name
-        if not path.is_file():
-            raise ValueError(f'Recorded publication artifact missing: {name}')
-        data = pending[name] if name in pending else path.read_bytes()
+        try:
+            data = read(name)
+        except (FileNotFoundError, KeyError) as error:
+            raise ValueError(f'Recorded publication artifact missing: {prefix}{name}') from error
         if sha(data) != identity['published_sha256']:
-            raise ValueError(f'Published artifact changed: {name}')
+            raise ValueError(f'Published artifact changed: {prefix}{name}')
+        if name + '!members' in records:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                check_recorded_hashes(records[name + '!members'], archive.read, prefix + name + '!')
+
+
+def check_recorded_files(root, recorded, pending):
+    def read(name):
+        return pending[name] if name in pending else (root / name).read_bytes()
+
+    check_recorded_hashes(recorded['changes'], read)
 
 
 def link_findings(path):
