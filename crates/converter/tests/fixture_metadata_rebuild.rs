@@ -2584,3 +2584,41 @@ async fn output_inside_another_pack_is_refused() {
         .collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
+
+#[tokio::test]
+async fn metadata_rebuild_populates_perk_tables_while_reusing_assets() {
+    use dummy_content::inhouse_perks as perks;
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+
+    let skyrim_path = data.join("Skyrim.esm");
+    let mut skyrim = fs::read(&skyrim_path).unwrap();
+    skyrim.extend(perks::targets());
+    let mut perk = perks::prefix(10);
+    perk.extend(perks::entry_effect(
+        0,
+        3,
+        1,
+        Some(&2.0f32.to_le_bytes()),
+        None,
+    ));
+    skyrim.extend(perks::record(b"PERK", perks::FIRST_ID, 0, &perk));
+    fs::write(&skyrim_path, skyrim).unwrap();
+
+    convert(&data, &source).await;
+    let report = rebuild(&data, &source, &output).await.unwrap();
+    assert!(report.complete, "{:?}", report.warnings);
+
+    let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM perk_entry_points WHERE perk_id = ?1 AND entry_point = 0 AND function = 3",
+            [perks::FIRST_ID],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}

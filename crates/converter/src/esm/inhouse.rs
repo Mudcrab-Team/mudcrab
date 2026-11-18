@@ -131,6 +131,10 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "reference_details",
     "door_links",
     "emittance",
+    "perks",
+    "perk_effects",
+    "perk_entry_points",
+    "record_conditions",
 ];
 
 /// Diagnostic timings do not participate in producer identity or asset reuse.

@@ -323,6 +323,9 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     // Optional reference link and detail tables (db-schema.md, #269 gap 3).
     conn.execute_batch(crate::esm::reference_links::REFERENCE_LINK_TABLES_SQL)?;
     super::object_materials::create_tables(conn)?;
+    // Optional perk and condition tables (db-schema.md section 21, #599).
+    conn.execute_batch(crate::esm::gameplay_common::GAMEPLAY_COMMON_TABLES_SQL)?;
+    conn.execute_batch(crate::esm::perks::PERK_TABLES_SQL)?;
     // `CREATE TABLE IF NOT EXISTS` leaves a reused older table as it was; give it the columns
     // later exports added, so a subset export can still insert into it.
     add_missing_columns(conn, "lights", LIGHT_DETAIL_COLUMNS)?;
@@ -557,6 +560,8 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
     for table in crate::esm::environment::ENVIRONMENT_TABLES
         .iter()
         .chain(crate::esm::reference_links::REFERENCE_LINK_TABLES.iter())
+        .chain(crate::esm::gameplay_common::GAMEPLAY_COMMON_TABLES.iter())
+        .chain(crate::esm::perks::PERK_TABLES.iter())
         .chain(std::iter::once(&super::object_materials::TABLE))
     {
         tx.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))?;
@@ -796,6 +801,14 @@ fn export_records(
         }
 
         match type_str {
+            "PERK" => {
+                crate::esm::perks::insert_record(
+                    &tx,
+                    &crate::esm::gameplay_common::Links { master },
+                    record,
+                    &mut omissions,
+                )?;
+            }
             "LGTM" | "WTHR" | "CLMT" | "REGN" | "IMGS" => {
                 crate::esm::environment::insert_record(
                     &tx,
@@ -1630,6 +1643,10 @@ mod tests {
             "INSERT INTO cell_environment(cell_id) VALUES (1);
             INSERT INTO reference_details(reference_id) VALUES (2);
             INSERT INTO door_links(ref_id,destination_ref_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,destination_cell_id) VALUES (2,3,1,2,3,0,0,0,4);
+            INSERT INTO perks(id) VALUES (5);
+            INSERT INTO perk_effects(perk_id,effect_index,effect_type,rank,priority) VALUES (5,0,2,0,0);
+            INSERT INTO perk_entry_points(perk_id,effect_index,entry_point,function,condition_tab_count) VALUES (5,0,0,3,0);
+            INSERT INTO record_conditions(owner_id,owner_kind,parent_index,position,operator,flags,function_index,param1_raw,param2_raw,run_on,param3) VALUES (5,'PERK',0,0,0,0,0,0,0,0,0);
             CREATE TABLE caller_owned(value INTEGER);
             INSERT INTO caller_owned VALUES (3);",
         )
@@ -1639,6 +1656,8 @@ mod tests {
         for table in crate::esm::environment::ENVIRONMENT_TABLES
             .iter()
             .chain(crate::esm::reference_links::REFERENCE_LINK_TABLES.iter())
+            .chain(crate::esm::gameplay_common::GAMEPLAY_COMMON_TABLES.iter())
+            .chain(crate::esm::perks::PERK_TABLES.iter())
             .chain(["door_links"].iter())
         {
             let count: i64 = tx
@@ -1651,6 +1670,10 @@ mod tests {
             "cell_environment",
             "reference_details",
             "door_links",
+            "perks",
+            "perk_effects",
+            "perk_entry_points",
+            "record_conditions",
             "caller_owned",
         ] {
             let count: i64 = conn

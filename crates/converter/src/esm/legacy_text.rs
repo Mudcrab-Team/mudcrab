@@ -55,8 +55,27 @@ pub(crate) fn resolve_localized_fields(
             .metadata
             .get(priority)
             .is_some_and(|metadata| metadata.flags & LOCALIZED != 0);
+        let mut perk_epft: Option<u8> = None;
         for (index, (tag, data)) in record.subrecords.iter_mut().enumerate() {
-            let Some(bank) = records::localized_field_bank(&record.record_type, tag) else {
+            let is_perk_localized_epfd = if record.record_type == *b"PERK" {
+                match tag.as_slice() {
+                    b"PRKE" | b"PRKF" => {
+                        perk_epft = None;
+                        false
+                    }
+                    b"EPFT" => {
+                        perk_epft = (data.len() == 1).then(|| data[0]);
+                        false
+                    }
+                    b"EPFD" => perk_epft == Some(7),
+                    _ => false,
+                }
+            } else {
+                false
+            };
+            let Some(bank) = records::localized_field_bank(&record.record_type, tag)
+                .or_else(|| is_perk_localized_epfd.then_some("strings"))
+            else {
                 continue;
             };
             if !localized {

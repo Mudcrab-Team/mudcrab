@@ -41,6 +41,8 @@ pub enum OmissionCategory {
     EmittanceWeatherNoLighting,
     /// An `XEMI` target that is neither a `LIGH` nor a `REGN`.
     EmittanceTargetWrongType,
+    /// A `PERK` effect (`PRKE`..`PRKF`) whose payload or entry-point parameters could not be decoded.
+    PerkEffectUndecoded,
 }
 
 impl OmissionCategory {
@@ -53,6 +55,7 @@ impl OmissionCategory {
             Self::EmittanceRegionNoWeather => "emittance_region_no_weather",
             Self::EmittanceWeatherNoLighting => "emittance_weather_no_lighting",
             Self::EmittanceTargetWrongType => "emittance_target_wrong_type",
+            Self::PerkEffectUndecoded => "perk_effect_undecoded",
         }
     }
 
@@ -60,7 +63,9 @@ impl OmissionCategory {
     /// emittance target keeps the model's own emission, the documented fallback.
     pub fn severity(self) -> Severity {
         match self {
-            Self::LightMissingData | Self::LightShortData => Severity::DataLoss,
+            Self::LightMissingData | Self::LightShortData | Self::PerkEffectUndecoded => {
+                Severity::DataLoss
+            }
             Self::EmittanceTargetAbsent
             | Self::EmittanceLightUnusableData
             | Self::EmittanceRegionNoWeather

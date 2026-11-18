@@ -1712,6 +1712,95 @@ alongside the bases whose appearance they update. All eight existing `texture_se
 columns retain their consumers. See [per-record object appearance](../engine/object-materials.md)
 for selection, instance isolation, retail coverage, diagnostics and the unimplemented MATO limits.
 
+---
+
+### 21. Perks, Entry Points, and Decoded Conditions (`perks`, `perk_effects`, `perk_entry_points`, `record_conditions`)
+
+Optional perk and condition projections (`#599`), projected from canonical winning `PERK`
+records without changing `records/schema.json` or `shared::WORLD_DATABASE_SCHEMA_VERSION` (`9`).
+
+```sql
+CREATE TABLE IF NOT EXISTS perks (
+    id INTEGER PRIMARY KEY,
+    editor_id TEXT,
+    full_name TEXT,
+    description TEXT,
+    large_icon TEXT,
+    small_icon TEXT,
+    is_trait INTEGER,
+    level INTEGER,
+    rank_count INTEGER,
+    playable INTEGER,
+    hidden INTEGER,
+    next_perk_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_perks_editor_id ON perks(editor_id);
+
+CREATE TABLE IF NOT EXISTS perk_effects (
+    perk_id INTEGER NOT NULL,
+    effect_index INTEGER NOT NULL,
+    effect_type INTEGER NOT NULL,  -- 0=quest_stage, 1=ability, 2=entry_point
+    rank INTEGER NOT NULL,
+    priority INTEGER NOT NULL,
+    quest_id INTEGER,
+    quest_stage INTEGER,
+    ability_spell_id INTEGER,
+    PRIMARY KEY (perk_id, effect_index)
+);
+
+CREATE TABLE IF NOT EXISTS perk_entry_points (
+    perk_id INTEGER NOT NULL,
+    effect_index INTEGER NOT NULL,
+    entry_point INTEGER NOT NULL,
+    function INTEGER NOT NULL,
+    condition_tab_count INTEGER NOT NULL,
+    parameter_type INTEGER,        -- EPFT (0..7)
+    button_label TEXT,             -- EPF2 (localized)
+    script_flags INTEGER,          -- EPF3[0..2]
+    fragment_index INTEGER,        -- EPF3[2..4]
+    value_float_1 REAL,
+    value_float_2 REAL,
+    actor_value INTEGER,
+    target_form_id INTEGER,
+    value_text TEXT,
+    PRIMARY KEY (perk_id, effect_index)
+);
+CREATE INDEX IF NOT EXISTS idx_perk_entry_points_entry_point ON perk_entry_points(entry_point);
+
+CREATE TABLE IF NOT EXISTS record_conditions (
+    owner_id INTEGER NOT NULL,
+    owner_kind TEXT NOT NULL,      -- 'PERK' | 'PERK_EFFECT'
+    parent_index INTEGER NOT NULL, -- 0 for 'PERK', effect_index for 'PERK_EFFECT'
+    condition_tab INTEGER NOT NULL DEFAULT 0,
+    position INTEGER NOT NULL,
+    operator INTEGER NOT NULL,
+    flags INTEGER NOT NULL,
+    comparison_value REAL,
+    comparison_global_id INTEGER,
+    function_index INTEGER NOT NULL,
+    param1_raw INTEGER NOT NULL,
+    param1_form_id INTEGER,
+    param2_raw INTEGER NOT NULL,
+    param2_form_id INTEGER,
+    run_on INTEGER NOT NULL,
+    reference_id INTEGER,
+    param3 INTEGER NOT NULL,
+    param1_string TEXT,
+    param2_string TEXT,
+    PRIMARY KEY (owner_id, owner_kind, parent_index, position)
+);
+CREATE INDEX IF NOT EXISTS idx_record_conditions_owner ON record_conditions(owner_id, owner_kind);
+```
+
+Effects (`PRKE`..`PRKF`) whose `PRKE`, effect `DATA`, `EPFT`, `EPF3`, `EPFD`, or `CTDA` payload
+cannot be decoded are counted in `projection_omission_stats` under `perk_effect_undecoded`
+(`severity = 'data_loss'`) with bounded FormID samples in `projection_omission_samples`.
+
+For `parameter_type = 2` (`actor_value_multiplier` on entry-point functions `5`, `12`, `13`, `14`),
+retail Skyrim SE stores an IEEE-754 `f32` bit-pattern in the first four bytes of `EPFD` while
+`crates/converter/src/records/families/perks.json` types `actor_value` as `u32`; `perk_entry_points.actor_value`
+preserves that decoded `u32` verbatim.
+
 ## Optional terrain default metadata
 
 `terrain_default_texture` is generated after texture conversion for every pack. Its singleton

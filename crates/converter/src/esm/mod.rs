@@ -20,6 +20,7 @@ pub mod emittance;
 mod environment;
 pub mod exporter;
 pub mod extractors;
+mod gameplay_common;
 pub mod inhouse;
 mod inhouse_script_properties;
 mod inhouse_terrain_diagnostics;
@@ -28,6 +29,7 @@ pub mod load_order;
 pub mod lodsettings;
 pub mod mmap_reader;
 mod object_materials;
+mod perks;
 pub mod plugins_txt;
 pub mod projection_omissions;
 pub mod records;
@@ -48,6 +50,8 @@ mod emittance_parity_tests;
 mod environment_parity_tests;
 #[cfg(test)]
 mod light_details_parity_tests;
+#[cfg(test)]
+mod perks_parity_tests;
 #[cfg(test)]
 mod plugin_table_tests;
 #[cfg(test)]
@@ -637,6 +641,8 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         b"IMSP" | b"HNAM" if record_type == b"WTHR" => Fixed(&[(16, &[0, 4, 8, 12])]),
         // Each sound is its own subrecord: descriptor, then a u32 kind.
         b"SNAM" if record_type == b"WTHR" => Fixed(&[(8, &[0])]),
+        // A perk's next-rank link.
+        b"NNAM" if record_type == b"PERK" => Fixed(SINGLE),
         _ => return None,
     })
 }
@@ -710,7 +716,82 @@ fn remap_record_form_ids(
     record.cell_form_id = record.cell_form_id.map(&remap_link).transpose()?;
     record.worldspace_form_id = record.worldspace_form_id.map(&remap_link).transpose()?;
     let mut malformed_subrecords = Vec::new();
+    let mut perk_effect_type: Option<u8> = None;
+    let mut perk_epft: Option<u8> = None;
     for (index, (tag, data)) in record.subrecords.iter_mut().enumerate() {
+        if record_type == *b"PERK" {
+            match tag.as_slice() {
+                b"PRKE" => {
+                    perk_effect_type = (data.len() == 3).then(|| data[0]);
+                    perk_epft = None;
+                    continue;
+                }
+                b"PRKF" => {
+                    perk_effect_type = None;
+                    perk_epft = None;
+                    continue;
+                }
+                b"EPFT" => {
+                    perk_epft = (data.len() == 1).then(|| data[0]);
+                    continue;
+                }
+                b"DATA" if perk_effect_type.is_some() => {
+                    let has_link =
+                        matches!((perk_effect_type, data.len()), (Some(0), 8) | (Some(1), 4));
+                    if has_link {
+                        let value = u32::from_le_bytes(data[..4].try_into().unwrap());
+                        let resolved = remap_with_validation(value, true).unwrap_or_else(|error| {
+                            warnings.skipped_optional(
+                                plugin_name,
+                                format!("PERK source {source_id:08X} (load-order {:08X}) effect DATA reference {value:08X}: {error}", record.form_id),
+                            );
+                            0
+                        });
+                        data[..4].copy_from_slice(&resolved.to_le_bytes());
+                    }
+                    continue;
+                }
+                b"EPFD" if perk_effect_type == Some(2) && matches!(perk_epft, Some(3..=5)) => {
+                    if data.len() == 4 {
+                        let value = u32::from_le_bytes(data[..4].try_into().unwrap());
+                        let resolved = remap_with_validation(value, true).unwrap_or_else(|error| {
+                            warnings.skipped_optional(
+                                plugin_name,
+                                format!("PERK source {source_id:08X} (load-order {:08X}) EPFD reference {value:08X}: {error}", record.form_id),
+                            );
+                            0
+                        });
+                        data[..4].copy_from_slice(&resolved.to_le_bytes());
+                    } else {
+                        warnings.skipped_optional(
+                            plugin_name,
+                            format!("PERK source {source_id:08X} (load-order {:08X}) EPFD must be 4 bytes, found {}", record.form_id, data.len()),
+                        );
+                        malformed_subrecords.push(index);
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        if tag.as_slice() == b"CTDA" && data.len() == 32 {
+            for offset in gameplay_common::condition_link_offsets(data) {
+                let value = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+                let resolved = remap_with_validation(value, true).unwrap_or_else(|error| {
+                    warnings.skipped_optional(
+                        plugin_name,
+                        format!(
+                            "{} record source {source_id:08X} (load-order {:08X}) CTDA reference {value:08X}: {error}",
+                            String::from_utf8_lossy(&record_type),
+                            record.form_id
+                        ),
+                    );
+                    0
+                });
+                data[offset..offset + 4].copy_from_slice(&resolved.to_le_bytes());
+            }
+            continue;
+        }
         if record.record_type == *b"STAT" && tag.as_slice() == b"MODS" {
             let Some(offsets) = object_materials::form_offsets(data) else {
                 warnings
