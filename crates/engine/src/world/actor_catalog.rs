@@ -1427,7 +1427,7 @@ mod tests {
             ("meshes/custom/mtidle.hkx", 30, true),
             ("meshes/custom/dog_idle_spice_head1.hkx", 30, true),
             ("meshes/custom/idle_lookleft.hkx", 30, true),
-            ("meshes/custom/IDLE_Shake.hkx", 30, true),
+            ("meshes/custom/idle_shake.hkx", 30, true),
             ("meshes/custom/attack1.hkx", 30, true),
             ("meshes/custom/deathpose.hkx", 30, true),
             ("meshes/custom/combatidle.hkx", 30, true),
@@ -1444,7 +1444,7 @@ mod tests {
         assert_eq!(
             rest,
             std::collections::BTreeSet::from([
-                "meshes/custom/IDLE_Shake.hkx",
+                "meshes/custom/idle_shake.hkx",
                 "meshes/custom/dog_idle_spice_head1.hkx",
                 "meshes/custom/idle_lookleft.hkx",
             ])
