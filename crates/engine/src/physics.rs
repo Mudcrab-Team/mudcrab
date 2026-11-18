@@ -2221,7 +2221,15 @@ fn walk_camera_follow_system(
         return;
     };
     pose.rebase(current_origin);
-    if !pose.follows(body.translation) {
+    // A reset frame (below) shows the body itself, so the pose is snapped to it: a tick that moved
+    // the body while it settles must not leave the view up to one tick behind. Ordinary frames keep
+    // the blend.
+    let placing = hold.as_ref().is_some_and(|hold| hold.is_active())
+        || crossing
+            .as_ref()
+            .is_some_and(|crossing| crossing.is_active());
+    let reset = teleported || space_changed || placing;
+    if reset || !pose.follows(body.translation) {
         pose.snap(body.translation);
     }
     let feet = pose.shown(fixed.overstep_fraction());
@@ -2241,11 +2249,6 @@ fn walk_camera_follow_system(
     // plumbing for Mudcrab-only mechanisms that retail does not have, so the view follows the
     // body directly until they end. The spring weight carries over. Entering WALK needs no reset:
     // the spring is `None` outside WALK and starts at rest on the feet.
-    let placing = hold.as_ref().is_some_and(|hold| hold.is_active())
-        || crossing
-            .as_ref()
-            .is_some_and(|crossing| crossing.is_active());
-    let reset = teleported || space_changed || placing;
     let mut previous = follow
         .spring
         .unwrap_or(camera_follow::FollowSpring::at_rest(feet, 0.0));

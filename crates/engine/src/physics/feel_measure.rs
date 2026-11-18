@@ -25,13 +25,25 @@ fn row(scenario: &str, metric: &str, value: f64, unit: &str) {
     assert!(value.is_finite(), "{scenario}/{metric} is not finite");
     let line = format!("FEEL | {scenario} | {metric} | {value:.4} | {unit}");
     eprintln!("{line}");
-    if let Some(path) = std::env::var_os("MUDCRAB_FEEL_OUT")
-        && let Ok(mut file) = std::fs::OpenOptions::new()
+    // With the variable set, the file is the requested output: report a failure with the path
+    // instead of passing with a missing or partial file. Without it the output is stderr only.
+    if let Some(path) = std::env::var_os("MUDCRAB_FEEL_OUT") {
+        let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(path)
-    {
-        let _ = writeln!(file, "{line}");
+            .open(&path)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "MUDCRAB_FEEL_OUT {}: cannot open: {error}",
+                    path.to_string_lossy()
+                )
+            });
+        writeln!(file, "{line}").unwrap_or_else(|error| {
+            panic!(
+                "MUDCRAB_FEEL_OUT {}: cannot write: {error}",
+                path.to_string_lossy()
+            )
+        });
     }
 }
 
@@ -443,7 +455,11 @@ fn measure_jump_and_landing() {
             let frame = snapshot(&mut app);
             frames.push(frame);
             let log = &app.world().resource::<TickLog>().0;
-            if log.len() > 12
+            // A landing counts only after the body has left the floor: a jump that is ignored
+            // must not be reported as an airborne interval.
+            let took_off = log.iter().any(|t| t.body.y > rest.y + 0.5);
+            if took_off
+                && log.len() > 12
                 && log.last().is_some_and(|t| t.supported && !t.jump_active)
                 && frame.body.y < rest.y + 1.0
             {
@@ -451,7 +467,13 @@ fn measure_jump_and_landing() {
                 break;
             }
         }
-        assert!(landed, "{name}: the player never landed");
+        assert!(
+            landed,
+            "{name}: the player never took off and landed (the jump request was ignored?)"
+        );
+        // The touchdown position: the 40 updates after it feed `post_landing_rise` and the camera
+        // measures, but they are not air distance.
+        let landing_x = frames.last().unwrap().body.x;
         for _ in 0..40 {
             app.update();
             frames.push(snapshot(&mut app));
@@ -461,7 +483,7 @@ fn measure_jump_and_landing() {
         let takeoff = log
             .iter()
             .position(|t| t.body.y > rest.y + 0.5)
-            .unwrap_or(0);
+            .unwrap_or_else(|| panic!("{name}: the player never took off"));
         let touchdown = log
             .iter()
             .enumerate()
@@ -513,8 +535,8 @@ fn measure_jump_and_landing() {
         row(
             &name,
             "air_distance_x",
-            (frames.last().unwrap().body.x - launch_x) as f64,
-            "units (whole scenario)",
+            (landing_x - launch_x) as f64,
+            "units (launch to touchdown)",
         );
     }
 }

@@ -606,7 +606,7 @@ fn constant_speed_reference(frames: &[ClimbFrame]) -> Vec<ClimbFrame> {
 /// other smoothing (RF-CAM-005), so a correct camera keeps this ripple and no more. Because the
 /// retail lift shape is not settled, the bound is the larger of the whole-step and the continuous
 /// lift. The view may exceed it only by f32 rounding: the engine runs in f32 and the reference in
-/// f64, so the tolerance is 1e-4 relative.
+/// f64, so the tolerance is 0.1 percent (1e-3 relative, `F32_ROUNDING` below).
 ///
 /// The printed table also shows how much ripple a per-frame controller at a constant speed would
 /// leave (the part of the ripple that the fixed-tick step-up adds belongs to #590), the camera of
@@ -807,7 +807,17 @@ fn measure_steep_ramp_speed_along_the_surface() {
                 }
                 previous = pose;
             }
-            let mean = |values: &[f32]| values.iter().sum::<f32>() / values.len().max(1) as f32;
+            // A walk that stalls before the ramp window has no samples: say so, instead of printing
+            // zero speeds that were never measured. A zero speed of a body that did enter the
+            // window is a real result and is printed.
+            if surface.is_empty() {
+                println!(
+                    "{} {label}: wish {speed:.0} u/s: NOT MEASURED, the player never reached the ramp window",
+                    if descend { "descent" } else { "climb" }
+                );
+                continue;
+            }
+            let mean = |values: &[f32]| values.iter().sum::<f32>() / values.len() as f32;
             println!(
                 "{} {label}: wish {speed:.0} u/s, on the ramp: horizontal {:.0}, vertical {:.0}, along the surface {:.0} u/s; {grounded} grounded and {airborne} airborne ticks",
                 if descend { "descent" } else { "climb" },

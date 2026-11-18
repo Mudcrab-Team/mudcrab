@@ -202,3 +202,63 @@ fn the_view_pose_blends_the_last_two_ticks() {
     assert!(pose.follows(Vec3::new(1.0, 2.0, 3.0)));
     assert!(!pose.follows(Vec3::new(1.0, 2.0, 3.5)));
 }
+
+/// A reset frame (a door crossing or the placement hold is active) shows the body itself, not the
+/// blend: a tick that moved the body while it settles must not leave the view one tick behind. An
+/// ordinary frame is unchanged and keeps the blend (the view between the last two ticks).
+#[test]
+fn placement_reset_frames_show_the_body_and_ordinary_frames_keep_the_blend() {
+    let eye = Vec3::Y * MovementTuning::default().eye_height;
+    for placing in [false, true] {
+        let mut app = headless::fixture_app();
+        let (body, camera) = {
+            let mut bodies = app.world_mut().query_filtered::<Entity, With<PlayerBody>>();
+            let body = bodies.single(app.world()).unwrap();
+            let mut cameras = app
+                .world_mut()
+                .query_filtered::<Entity, With<StreamingCamera>>();
+            (body, cameras.single(app.world()).unwrap())
+        };
+        app.insert_resource(MoveMode::Walk);
+        app.insert_resource(crate::streaming::RenderOrigin(IVec2::ZERO));
+        app.world_mut().run_schedule(Update);
+        let at = Vec3::new(100.0, 300.0, -50.0);
+        app.world_mut()
+            .get_mut::<Transform>(body)
+            .unwrap()
+            .translation = at;
+        // The pose is one tick behind the body, half way through the next tick.
+        {
+            let mut pose = app.world_mut().resource_mut::<WalkViewPose>();
+            pose.previous = at - Vec3::new(0.0, 0.0, 10.0);
+            pose.latest = at;
+            pose.valid = true;
+            pose.origin = Some(IVec2::ZERO);
+        }
+        {
+            let mut fixed = app.world_mut().resource_mut::<Time<Fixed>>();
+            let leftover = fixed.overstep();
+            fixed.discard_overstep(leftover);
+            fixed.accumulate_overstep(std::time::Duration::from_secs_f32(PHYSICS_TIMESTEP * 0.5));
+        }
+        let blended = at - Vec3::new(0.0, 0.0, 5.0);
+        {
+            let mut follow = app.world_mut().resource_mut::<WalkCameraFollowState>();
+            follow.initialized = true;
+            follow.spring = Some(camera_follow::FollowSpring::at_rest(blended, 1.0));
+        }
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs_f32(PHYSICS_TIMESTEP));
+        if placing {
+            app.world_mut().resource_mut::<WalkSpawnHold>().active = true;
+        }
+        app.world_mut().run_schedule(Update);
+        let view = app.world().get::<Transform>(camera).unwrap().translation;
+        let expected = if placing { at } else { blended } + eye;
+        assert!(
+            (view - expected).length() < 1.0e-3,
+            "placing={placing}: view {view:?}, expected {expected:?}"
+        );
+    }
+}

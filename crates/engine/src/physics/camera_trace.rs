@@ -6,6 +6,12 @@
 //! diagnostic for a real stair climb: the headless stair-jitter test in `stair_tests.rs` measures
 //! the same quantities on a fixture flight. Positions are in render space (game units, Y up), so
 //! the floating origin is written too.
+//!
+//! `frame_dt_s` is the virtual (simulation) delta that the follow spring uses, which is 0 while the
+//! game is paused. `real_dt_s`, the last column but one, is the wall-clock frame time, so a stall
+//! or a paused frame still shows its real gap. `spring_sampled` is 1 when the camera follow system
+//! ran this frame; on a frame where it returned early (a paused door crossing, no spring yet) the
+//! `feet_*` and `lag_y` columns come from cached state and are not a spring sample.
 
 use super::{
     LookIntent, MoveMode, MovementTuning, PlayerBody, WalkCameraFollowState, WalkState,
@@ -19,7 +25,7 @@ use std::{
 };
 
 const HEADER: &str = "frame,elapsed_s,frame_dt_s,ticks,overstep,mode,origin_x,origin_y,\
-body_x,body_y,body_z,feet_x,feet_y,feet_z,camera_x,camera_y,camera_z,lag_y,weight,spring_speed,pitch,grounded,vertical_velocity";
+body_x,body_y,body_z,feet_x,feet_y,feet_z,camera_x,camera_y,camera_z,lag_y,weight,spring_speed,pitch,grounded,vertical_velocity,real_dt_s,spring_sampled";
 
 /// Flush the file after this many rows, so a run that is killed keeps most of its rows.
 const FLUSH_EVERY_FRAMES: u64 = 60;
@@ -30,6 +36,24 @@ pub(super) struct WalkCameraTrace {
     out: BufWriter<File>,
     frame: u64,
     ticks: u32,
+    /// A write already failed and was reported; the trace has stopped.
+    failed: bool,
+}
+
+impl Drop for WalkCameraTrace {
+    /// `BufWriter` ignores a failed flush on drop. Flush on a normal exit and report the failure
+    /// through the same warning path as a failed write.
+    fn drop(&mut self) {
+        if self.failed {
+            return;
+        }
+        if let Err(error) = self.out.flush() {
+            warn!(
+                "walk camera trace: the final flush failed after {} frames: {error}; the last rows may be missing",
+                self.frame
+            );
+        }
+    }
 }
 
 /// Opens the trace file when `--walk-camera-trace` names one.
@@ -49,6 +73,7 @@ pub(super) fn start_walk_camera_trace(config: Option<Res<EngineConfig>>, mut com
                 out,
                 frame: 0,
                 ticks: 0,
+                failed: false,
             });
         }
         Err(error) => warn!(
@@ -69,6 +94,11 @@ pub(super) fn write_walk_camera_trace_row(
     mut commands: Commands,
     mut trace: ResMut<WalkCameraTrace>,
     time: Res<Time>,
+    (real, virtual_time, crossing): (
+        Res<Time<Real>>,
+        Res<Time<Virtual>>,
+        Option<Res<crate::door_crossing::DoorCrossing>>,
+    ),
     fixed: Res<Time<Fixed>>,
     mode: Res<MoveMode>,
     tuning: Res<MovementTuning>,
@@ -104,6 +134,14 @@ pub(super) fn write_walk_camera_trace_row(
             spring.velocity.length(),
         )
     });
+    // The follow system returns early while a crossing holds the paused game, outside WALK, and
+    // on its first frame (no spring yet); those rows carry cached values, not a spring sample.
+    let sampled = *mode == MoveMode::Walk
+        && follow.spring.is_some()
+        && !(virtual_time.is_paused()
+            && crossing
+                .as_ref()
+                .is_some_and(|crossing| crossing.is_active()));
     let mode = match *mode {
         MoveMode::Walk => "walk",
         MoveMode::Noclip => "noclip",
@@ -117,7 +155,8 @@ pub(super) fn write_walk_camera_trace_row(
     let written = writeln!(
         trace.out,
         "{},{:.6},{:.6},{ticks},{overstep:.4},{mode},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
-         {:.3},{:.3},{:.3},{lag_y:.4},{weight:.4},{speed:.2},{:.5},{grounded},{vertical_velocity:.2}",
+         {:.3},{:.3},{:.3},{lag_y:.4},{weight:.4},{speed:.2},{:.5},{grounded},{vertical_velocity:.2},\
+         {:.6},{}",
         trace.frame,
         time.elapsed_secs_f64(),
         time.delta_secs(),
@@ -133,6 +172,8 @@ pub(super) fn write_walk_camera_trace_row(
         c.y,
         c.z,
         look.pitch,
+        real.delta_secs(),
+        u8::from(sampled),
     );
     trace.frame += 1;
     let flushed = if written.is_err() || trace.frame.is_multiple_of(FLUSH_EVERY_FRAMES) {
@@ -146,6 +187,7 @@ pub(super) fn write_walk_camera_trace_row(
             "walk camera trace: cannot write the trace after {} frames: {error}; the trace stops here",
             trace.frame
         );
+        trace.failed = true;
         commands.remove_resource::<WalkCameraTrace>();
     }
 }
@@ -193,6 +235,8 @@ mod tests {
             "camera_y",
             "lag_y",
             "weight",
+            "real_dt_s",
+            "spring_sampled",
         ] {
             assert!(
                 header.contains(&column),
@@ -200,11 +244,6 @@ mod tests {
             );
         }
         let rows: Vec<Vec<&str>> = lines.map(|line| line.split(',').collect()).collect();
-        assert!(
-            rows.len() >= 100,
-            "{} rows for about 150 frames",
-            rows.len()
-        );
         assert!(
             rows.iter().all(|row| row.len() == header.len()),
             "ragged rows"
@@ -214,7 +253,19 @@ mod tests {
             .iter()
             .filter(|row| row[column("mode")] == "walk")
             .collect();
-        assert!(walking.len() > 50, "{} WALK rows", walking.len());
+        // The fixture's own startup frame is a NOCLIP row; every update after `place_player` is
+        // one WALK row, none dropped.
+        assert_eq!(
+            rows.len() - walking.len(),
+            1,
+            "one startup row before WALK, got {} other rows",
+            rows.len() - walking.len()
+        );
+        assert_eq!(
+            walking.len(),
+            150,
+            "one WALK row for each of the 90 + 60 updates after place_player"
+        );
         // The rows follow the body the player moves: it walked about 200 units forward in the
         // test, and the camera moves with it. A trace of an idle body would show one position.
         let range = |name: &str| {
@@ -233,6 +284,8 @@ mod tests {
         let last = walking[walking.len() - 1];
         assert!(last[column("frame_dt_s")].parse::<f32>().unwrap() > 0.0);
         assert!(last[column("ticks")].parse::<u32>().is_ok());
+        assert!(last[column("real_dt_s")].parse::<f32>().is_ok());
+        assert_eq!(last[column("spring_sampled")], "1", "the follow system ran");
         assert_eq!(
             last[column("grounded")],
             "1",
