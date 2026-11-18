@@ -6,7 +6,7 @@ distant webs and ferns while retaining them in matched close-up controls.
 
 The [machine-readable report](room-culling-mismatches-20261115.json) records native bounds,
 reference identities, source fingerprints, repeated render receipts, and checks. The local evidence
-directory is `/home/aivv/.t3/artifacts/skyrim-culling-mismatches-20261115`. It contains native
+bundle is named `skyrim-culling-mismatches-20261115`. It contains native
 reference probes, screenshots, capture logs, the contact sheet, and the comparison viewer.
 No proprietary assets or native instructions are included in the repository.
 
@@ -18,14 +18,17 @@ ferns therefore used the conservative draw-always policy. `BSOrderedNode` parent
 
 The converter now parses leaf nodes as node hierarchies, merges ordered-node child spheres, and
 accepts zero-sphere empty blast nodes. Nonempty damage ranges remain unsupported. An ordered
-node's explicit sort bound replaces its child bound only when both its static-bound byte and
-fixed-bound flag enable that native behavior.
+node's loader derives its runtime fixed-bound flag from its static-bound byte and sort-bound
+radius. A nonzero byte and nonzero radius enable the override, independently of the serialized
+flag. Zero or unordered radius comparisons clear the flag. Source-sphere validation still
+rejects invalid bounds.
 
 The format definitions are in [NifTools' schema](https://github.com/niftools/nifxml/blob/develop/nif.xml).
 Exact-build RTTI and vtable inspection independently confirmed that `NiNode`, `BSLeafAnimNode`,
 and `BSOrderedNode` use bound-update RVA `0xee2920`. Ordered downward update RVA `0x1570720`
-then applies the explicit-bound override under the two conditions above. Serialized node layouts
-alone would not establish those runtime rules.
+then applies the explicit-bound override using that derived state. Loader RVA `0x15702b0`
+establishes how the runtime flag differs from the serialized bit. Serialized node layouts alone
+would not establish those runtime rules.
 
 Live probes of fern references `00042152`, `00042179`, `00042184`, and `00042185` found them
 under native `BSMultiBoundRoom` nodes. Their converted spheres, transformed by the live native
@@ -44,10 +47,11 @@ raw physics data is fixed. External or unresolved rigs, simulated/keyframed skin
 constraints, unknown bound hierarchies, and independently moving children keep the conservative
 fallback. Actors and animated doors retain their separate exemptions.
 
-The physics check reads original rigid-body fields independently of collision export. The web
-door has motion system 5, quality 0, and mass 0, classified as fixed; its collision layer 20 is
-not exported by the physics reader. Treating every collision-export omission as an unknown pose
-would unnecessarily discard its sphere. Conversely, a skipped collision layer must not conceal
+The physics check reads original rigid-body fields independently of collision export. At capture
+time, the web door's motion system 5, quality 0, and mass 0 were classified as fixed. Its collision
+layer 20 is not exported by the physics reader. The later automatic-quality guard at `62abaf8f`
+rejects this combination as proof of a fixed skin pose. Current conversion omits this model's
+assignment sphere and keeps it conservatively drawn. A skipped collision layer must not conceal
 a moving bone body.
 
 Nine skinned web references across the door and round-wall models match live native spheres
@@ -57,7 +61,7 @@ poses and deliberately receive no source-sphere assignment metadata.
 
 ## Rendered verification
 
-The private fixture reconverted 989 models without conversion failures. Source bounds increased
+The original private comparison reconverted 989 models without conversion failures. Source bounds increased
 from 2,799 to 2,842 base records. A named mesh-output contract invalidates earlier cached GLBs;
 normal asset reconversion is required to recover the new bounds. The installed asset pack was
 not modified.
@@ -80,15 +84,41 @@ These counts compare Mudcrab images across all nine repetition pairs at a per-ch
 of 8. They do not measure speed or RGB equality with Skyrim. The full-render control changed
 by one persistent pixel in the Bleak shell view and zero in the other three historical views.
 The visible geometry removals therefore come from culling, rather than changing the mesh pack's
-rendered content. All 989 final mesh hashes were rechecked after tightening rig eligibility;
-none changed from the captured pack.
+rendered content. The historical 989-model hash recheck after tightening rig eligibility found
+no changes from the captured pack. That check predates the leaf scene-node export fix at
+`f6b9b196` and does not verify later converter heads. A fresh comparison must distinguish
+container metadata changes from geometry and drawable-transform changes.
 
-Regression coverage checks leaf geometry and exported bounds, both ordered-bound flags, empty
+Regression coverage checks leaf geometry and exported bounds, ordered-node loader state, empty
 versus nonempty damage stages, fixed versus moving bodies on unexported collision layers,
 external versus self-contained skins, and moving activator assignment. Validation passed:
 1,453 engine tests, 1,206 converter tests, 14 skin-export tests, seven archive tests, and four
 snapshots. Forty-three tests remain ignored. Formatting and Clippy for engine/converter, all
 targets and features with warnings denied, passed.
+
+## Later converter recheck
+
+A fresh conversion of all 989 captured source NIFs succeeds after the leaf-export and
+ordered-node loader fixes. The comparison uses the exact extracted source bytes and verifies
+the captured GLB hashes before conversion. It finds 631 changed GLB hashes. Every model retains
+identical vertex and index binary data, primitive geometry, drawable transform paths, and
+drawable instance, primitive, and triangle counts.
+
+The byte differences have three causes, with overlap between the first two groups:
+
+- 617 models gain `mudcrabGeometryIndex` in primitive extras. All other mesh fields match.
+- 16 leaf-root models gain an identity scene wrapper. None gains rendered geometry. They are
+  `meshes/landscape/plants/pineshrub01snow.nif`, `reachfern02.nif`, `reachfern03.nif`,
+  `swordfern01.nif`, `swordfern05.nif`, `swordferncluster01.nif` through `swordferncluster06.nif`,
+  `thicket01.nif`, and `vinemaple01.nif` under that same directory, plus
+  `meshes/plants/florahangingmoss01.nif` through `florahangingmoss03.nif`.
+- `meshes/furniture/fxspiderwebkitdoorspecial.nif` loses its assignment sphere because of the
+  automatic-quality guard described above. Its ten drawable meshes and 1,588 triangles match.
+
+The 16 leaf models retain 7,903 triangles in total. A nested-leaf regression verifies child
+transforms and geometry, but this corpus contains only leaf roots. The fresh model comparison
+does not rerun the historical images or establish current web-door culling behavior. Native
+classification of its animated pose remains unresolved.
 
 ## Remaining differences
 

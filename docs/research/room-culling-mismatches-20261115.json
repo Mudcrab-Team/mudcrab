@@ -923,7 +923,7 @@
     "External/unresolved rigs, moving skin bodies, nonempty damage ranges, unknown source nodes retain the conservative fallback.",
     "Different lighting, fog, water and materials; no cross-renderer RGB equality claim."
   ],
-  "evidence_directory": "/home/aivv/.t3/artifacts/skyrim-culling-mismatches-20261115",
+  "evidence_directory": "skyrim-culling-mismatches-20261115",
   "image_sha256": {
     "before/on-1/BleakFallsBarrow01-joined-slave-walk.png": "98272101a0deac9802e0a3bb65bf7408a986256b39e8783eb265d774990dd040",
     "before/on-1/BleakFallsBarrow01-room1-c.png": "e5c4ca801b86cd17f69889e0e46575bd2f9970fa9328894250fa971bc7df62d6",

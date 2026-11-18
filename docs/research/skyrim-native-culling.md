@@ -52,8 +52,8 @@ Names alone were therefore insufficient evidence.
 Local evidence is under the research environment's `.devenv/state/skyrim-culling/` directory.
 The saved batches are `initial-decomp.json`, `walk-decomp.json`, `traversal-decomp.json`,
 `plane-helpers.json`, `assignment-decomp.json`, and `assignment-helpers.json`.
-The checked-in `research/culling-seeds.json` and `scripts/culling_trace.py` in
-`/home/aivv/Projects/skyrim-research-tools` regenerate a combined `native-decomp.json` from the
+The checked-in `research/culling-seeds.json` and `scripts/culling_trace.py` in the local
+`skyrim-research-tools` checkout regenerate a combined `native-decomp.json` from the
 owned executable. Generated projects, game binaries, and raw decompilation remain local.
 
 ## How it works
