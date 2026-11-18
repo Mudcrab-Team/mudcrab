@@ -114,6 +114,169 @@ fn narrow_stair_flights_walk_run_oblique_and_descend() {
     }
 }
 
+/// Run one rendered frame and check the view against the retail follow spring evaluated with the
+/// same inputs. Returns the body position and the vertical lag of the view.
+fn rendered_frame_follows_the_spring(
+    app: &mut App,
+    body: Entity,
+    camera: Entity,
+    delta_secs: f32,
+) -> (Vec3, f32) {
+    let eye_height = app.world().resource::<MovementTuning>().eye_height;
+    let previous = app
+        .world()
+        .resource::<WalkCameraFollowState>()
+        .spring
+        .expect("the spring is seeded in WALK");
+    app.update();
+    let feet = app.world().get::<Transform>(body).unwrap().translation;
+    let expected = camera_follow::follow_spring_step(
+        previous,
+        camera_follow::FollowInput {
+            feet,
+            delta_secs,
+            controls_driven: true,
+            is_on_mount: false,
+            view: camera_follow::FollowView::FirstPerson,
+        },
+    );
+    let view = app.world().get::<Transform>(camera).unwrap().translation;
+    let eye = feet + Vec3::Y * eye_height;
+    assert!(
+        view.distance(eye + expected.lag) < 1.0e-3,
+        "the view is not the eye node plus the spring lag: view={view:?} eye={eye:?} lag={:?}",
+        expected.lag
+    );
+    assert_eq!(
+        app.world().resource::<WalkCameraFollowState>().spring,
+        Some(expected.state)
+    );
+    (feet, view.y - eye.y)
+}
+
+/// The WALK view is the eye node plus the retail follow spring's lag (RF-CAM-001 to RF-CAM-007),
+/// evaluated once per rendered frame with the frame delta, at 60 and at 20 frames per second.
+#[test]
+fn camera_follows_the_retail_spring_on_a_production_stair_flight() {
+    let mut app = headless::fixture_app();
+    for index in 0..32 {
+        let top = (index + 1) as f32 * 12.0;
+        fixed_box(
+            &mut app,
+            Vec3::new(index as f32 * 24.0 + 12.0, top * 0.5, 850.0),
+            Vec3::new(12.0, top * 0.5, 700.0),
+        );
+    }
+    fixed_box(
+        &mut app,
+        Vec3::new(1026.0, 192.0, 850.0),
+        Vec3::new(258.0, 192.0, 700.0),
+    );
+    app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+        std::time::Duration::from_secs_f32(1.0 / 60.0),
+    ));
+    let start = settle(&mut app, Vec3::new(-100.0, 200.0, 850.0));
+    let eye_height = MovementTuning::default().eye_height;
+    let body = {
+        let mut query = app.world_mut().query_filtered::<Entity, With<PlayerBody>>();
+        query.single(app.world()).unwrap()
+    };
+    let camera = {
+        let mut query = app
+            .world_mut()
+            .query_filtered::<Entity, With<StreamingCamera>>();
+        query.single(app.world()).unwrap()
+    };
+    app.world_mut()
+        .get_mut::<Transform>(camera)
+        .unwrap()
+        .translation = start + Vec3::Y * eye_height;
+    app.update();
+
+    app.insert_resource(WalkIntent {
+        wish_dir: Vec3::X,
+        target_speed: 370.0,
+        jump_pressed: false,
+    });
+    let mut previous_body_y = start.y;
+    let mut previous_camera_y = start.y + eye_height;
+    let mut largest_rise = 0.0_f32;
+    let mut deepest_lag = 0.0_f32;
+    for _ in 0..900 {
+        let (feet, lag) = rendered_frame_follows_the_spring(&mut app, body, camera, 1.0 / 60.0);
+        let camera_y = feet.y + eye_height + lag;
+        let rise = feet.y - previous_body_y;
+        if rise > 10.0 {
+            largest_rise = largest_rise.max(rise);
+            assert!(
+                camera_y - previous_camera_y < rise,
+                "camera followed a physical stair rise instantly: body rise={rise}"
+            );
+        }
+        deepest_lag = deepest_lag.min(lag);
+        previous_body_y = feet.y;
+        previous_camera_y = camera_y;
+        if feet.x >= 820.0 {
+            break;
+        }
+    }
+    assert!(
+        largest_rise > 1.0,
+        "production controller produced no stair rises"
+    );
+    assert!(
+        deepest_lag < -1.0,
+        "the view never lagged below its eye target: {deepest_lag}"
+    );
+    app.insert_resource(WalkIntent::default());
+    for _ in 0..60 {
+        rendered_frame_follows_the_spring(&mut app, body, camera, 1.0 / 60.0);
+    }
+    let top = app.world().get::<Transform>(body).unwrap().translation;
+    assert!(
+        (top.y - start.y - 384.0).abs() < 3.0,
+        "camera work changed the physical stair endpoint: {start:?} -> {top:?}"
+    );
+    let (_, settled_lag) = rendered_frame_follows_the_spring(&mut app, body, camera, 1.0 / 60.0);
+    assert!(
+        settled_lag.abs() < 0.5,
+        "the view did not settle onto the eye target: {settled_lag}"
+    );
+
+    // Three fixed ticks per rendered frame: the spring still runs once per rendered frame.
+    app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+        std::time::Duration::from_secs_f32(1.0 / 20.0),
+    ));
+    app.insert_resource(WalkIntent {
+        wish_dir: -Vec3::X,
+        target_speed: 370.0,
+        jump_pressed: false,
+    });
+    let mut descended = false;
+    let mut previous_body_y = top.y;
+    for _ in 0..300 {
+        let (feet, _) = rendered_frame_follows_the_spring(&mut app, body, camera, 1.0 / 20.0);
+        descended |= feet.y < previous_body_y - 6.0;
+        previous_body_y = feet.y;
+        if feet.x <= -100.0 {
+            break;
+        }
+    }
+    assert!(
+        descended,
+        "production controller produced no supported stair descent"
+    );
+    app.insert_resource(WalkIntent::default());
+    for _ in 0..30 {
+        rendered_frame_follows_the_spring(&mut app, body, camera, 1.0 / 20.0);
+    }
+    let bottom = app.world().get::<Transform>(body).unwrap().translation;
+    assert!(
+        (bottom.y - start.y).abs() < 3.0,
+        "camera work changed the physical return endpoint: {start:?} -> {bottom:?}"
+    );
+}
+
 #[test]
 fn stairs_keep_rise_and_overhead_clearance_limits() {
     for (rise, ceiling) in [(48.0, false), (24.0, true)] {
