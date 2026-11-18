@@ -43,18 +43,24 @@ If someone is assigned to an issue, has claimed it in a comment, or has an open 
 - CodeRabbit reviews every non-draft PR automatically. Answer each of its comments: fix it, or say why not, then resolve the thread. Unresolved threads block the merge.
 - Get an **Approve** review from another human collaborator listed in [CODEOWNERS](../../.github/CODEOWNERS). CodeRabbit's review and passing CI do not replace this approval. A comment or a resolved thread does not count as approval.
 - Answer human reviewers point by point, in their order: **Fixed** (with the commit), **No change** (with the reason), or **Unresolved**.
-- If `main` moves while your PR is open, merge `main` into your branch (or use the "Update branch" button). Don't rebase or force-push a branch that is under review.
-- Changes pushed after approval need another review: stale approvals are dismissed, and someone other than the last person to push must approve the latest push.
+- If `main` moves while your PR is open, you do not have to update your branch: the ruleset does not require it to be up to date. Merge `main` into it (or use the "Update branch" button) only to resolve a real conflict or to get something your change depends on. Don't rebase or force-push a branch that is under review.
+- Changes pushed after approval need another review: stale approvals are dismissed. The ruleset does not require someone other than the last person to push to approve the latest push, so a code owner who pushed can approve the result.
 
 ## 6. Merge (maintainers)
 
-The `main_protection` ruleset requires at least one approving review, approval from a human code owner, passing `tests_pass` and `CodeRabbit` checks from their respective GitHub Apps, an up-to-date branch, and every review thread resolved. It dismisses stale approvals and requires approval of the latest push by someone other than the person who pushed it. There are no bypass actors, and these requirements apply to administrators too. `main` accepts squash or rebase merges; there is no merge queue.
+The `main_protection` ruleset requires at least one approving review, approval from a human code owner, passing `tests_pass` and `CodeRabbit` checks from their respective GitHub Apps, and every review thread resolved. It dismisses stale approvals when new commits are pushed. Three things are *not* enforced, and an earlier version of this page said they were:
+
+- **An up-to-date branch is not required.** Strict status checks are off, so a PR that is behind `main` can still merge, and a merge to `main` does not force any other PR to be updated or re-approved.
+- **Approval of the latest push by someone other than the pusher is not required.** A code owner who pushed to a PR can approve it.
+- **The rules have one bypass actor.** Organization administrators (`OrganizationAdmin`, always) can bypass the ruleset. The requirements above apply to everyone else.
+
+`main` accepts squash or rebase merges in the ruleset, and the repository setting allows only squash. There is no merge queue and auto-merge is off.
 
 The PR author may merge after another human collaborator approves and all checks pass. Keep [CODEOWNERS](../../.github/CODEOWNERS) in sync when collaborators gain or lose write access. Its catch-all rule also covers changes to CODEOWNERS itself. Administrators can still edit repository settings, so changing or disabling these requirements is a separate policy change.
 
 - Use **Squash and merge**. Keep the PR title as the commit title.
 - Description: the PR's one-sentence summary, an empty line, then one trailer line per co-author or assistant of the PR's commits (`Co-authored-by:` or `Assisted-by:`, see [AI_POLICY.md](../AI_POLICY.md)). Drop the "Merge branch main" lines and the list of commit titles.
-- After a merge, the other open PRs are behind `main` and need it merged in again before they can merge.
+- After a merge, the other open PRs are behind `main` but can still merge without being updated. Update a branch only when it conflicts or needs something that just landed.
 
 ## AI agents
 

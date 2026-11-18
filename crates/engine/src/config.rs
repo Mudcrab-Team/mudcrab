@@ -6,7 +6,7 @@ use crate::{
     world::components::CELL_SIZE,
     world::imagespace::{ImageSpaceSelection, ImageSpaceSlot},
 };
-use bevy::prelude::{Msaa, Resource};
+use bevy::prelude::{IVec2, Msaa, Resource};
 use shared::lod::LodTier;
 use std::{fmt, path::PathBuf};
 
@@ -19,25 +19,39 @@ pub(crate) const MAX_IO_THREADS: usize = 64;
 /// What `--io-threads` takes, with [`MAX_IO_THREADS`] spelled out; a test holds the two equal.
 const IO_THREADS_EXPECTED: &str = "a thread count from 0 to 64";
 
-/// How far each terrain LOD tier draws, in Skyrim's `[TerrainManager]` terms:
-/// a tier reaches its block distance times `fSplitDistanceMult`, in Creation
-/// units from the camera. `--ini` reads these from a `SkyrimPrefs.ini`.
+/// Skyrim's `[TerrainManager]` LOD distances, in Creation units.
+///
+/// Retail uses two rules (RF-LOD-003, RF-LOD-004). Terrain (`.btr`) hands a block over to its four
+/// children when the block's box distance is under `fSplitDistanceMult` x level x 2,048 x sqrt(2)
+/// ([`Self::terrain_split_distance`]). Objects (`.bto`) use `fBlockLevel0Distance` and
+/// `fBlockLevel1Distance`, scaled by the worldspace NAMA value, and drop beyond
+/// `fBlockMaximumDistance`. The object rule has no consumer yet: no object LOD is drawn.
+///
+/// What each key does today: `fSplitDistanceMult` and `fBlockMaximumDistance` drive terrain (the
+/// split rule, and the outer reach of tier 16 as an engineering guard, see
+/// [`Self::terrain_tier`]). `fBlockLevel0Distance` and `fBlockLevel1Distance` are parsed and kept
+/// for the object LOD rule but do not affect terrain, so changing them changes nothing on screen
+/// until the object LOD importer lands.
+///
+/// `--ini` reads these from a `SkyrimPrefs.ini`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerrainLodDistances {
-    /// `fBlockLevel0Distance`: level-4 tier.
+    /// `fBlockLevel0Distance`: object LOD, level 8 hands over to level 4. Unused until object LOD
+    /// lands (terrain does not read it).
     pub block_level0_distance: f32,
-    /// `fBlockLevel1Distance`: level-8 tier.
+    /// `fBlockLevel1Distance`: object LOD, level 16 hands over to level 8. Unused until object LOD
+    /// lands (terrain does not read it).
     pub block_level1_distance: f32,
-    /// `fBlockMaximumDistance`: level-16 tier.
+    /// `fBlockMaximumDistance`: object LOD drops beyond it (RF-LOD-004). Terrain has no such cut
+    /// in retail. Mudcrab keeps it, times `fSplitDistanceMult`, as the outer reach of tier 16
+    /// until a level-32 terrain tier exists (engineering guard, see [`Self::terrain_tier`]).
     pub block_maximum_distance: f32,
-    /// `fSplitDistanceMult`: terrain multiplier on the three block distances.
+    /// `fSplitDistanceMult`: the terrain split multiplier (RF-LOD-003).
     pub split_distance_mult: f32,
 }
 
 impl Default for TerrainLodDistances {
-    /// Skyrim Special Edition's `SkyrimPrefs.ini` defaults, so an install without
-    /// an INI draws as far as the game does: about 12, 25 and 91 cells for
-    /// tiers 4, 8 and 16.
+    /// Skyrim Special Edition's `SkyrimPrefs.ini` defaults (High preset, RF-LOD-002).
     fn default() -> Self {
         Self {
             block_level0_distance: 35_000.0,
@@ -48,17 +62,151 @@ impl Default for TerrainLodDistances {
     }
 }
 
+/// The block levels the terrain rule tests, coarse to fine, with the tier that draws when a block
+/// of that level is not split. Level 32 is absent: no level-32 tier is compiled.
+const TERRAIN_LEVELS: [(i32, LodTier); 2] = [(16, LodTier::Tier16), (8, LodTier::Tier8)];
+
 impl TerrainLodDistances {
-    /// The Chebyshev cell distance from the camera's cell out to which `tier` draws.
-    pub fn reach_cells(&self, tier: LodTier) -> i32 {
-        let block = match tier {
-            LodTier::Tier4 => self.block_level0_distance,
-            LodTier::Tier8 => self.block_level1_distance,
-            LodTier::Tier16 => self.block_maximum_distance,
+    /// RF-LOD-003: a terrain block of `level` cells is replaced by its four children while the
+    /// distance to its box is under `fSplitDistanceMult` x level x 2,048 x sqrt(2) units. That
+    /// is the multiplier times the block's own half-diagonal: a block of `level` cells has a side
+    /// of `level` x 4,096 units, so its half-diagonal is `level` x 2,048 x sqrt(2).
+    pub fn terrain_split_distance(&self, level: i32) -> f32 {
+        (f64::from(self.split_distance_mult)
+            * f64::from(level)
+            * f64::from(CELL_SIZE / 2.0)
+            * std::f64::consts::SQRT_2) as f32
+    }
+
+    /// RF-LOD-001: the planar distance (Z ignored) from the centre of the camera's cell to the
+    /// box of the aligned `level`-cell block that holds `cell`; zero inside the box. Blocks start
+    /// at the worldspace LOD origin (RF-LOD-001, block coordinate formula).
+    ///
+    /// Engineering guard: retail measures from the camera position. Mudcrab refreshes the LOD
+    /// selection when the camera crosses a cell, so it uses the cell centre. The camera can be up
+    /// to 2,048 units from the centre on each axis, so the position error in the plane is up to
+    /// 2,048 x sqrt(2) = 2,896 units, which is 8.3% of the smallest default split distance
+    /// (34,756).
+    pub fn terrain_block_distance(camera: IVec2, cell: IVec2, origin: IVec2, level: i32) -> f32 {
+        let cell_size = f64::from(CELL_SIZE);
+        let level = f64::from(level.max(1));
+        // f64 holds every i32 exactly, so extreme cells cannot overflow.
+        let axis = |camera: i32, cell: i32, origin: i32| {
+            let origin = f64::from(origin);
+            let start = origin + ((f64::from(cell) - origin) / level).floor() * level;
+            let point = (f64::from(camera) + 0.5) * cell_size;
+            let low = start * cell_size;
+            let high = (start + level) * cell_size;
+            (low - point).max(point - high).max(0.0)
         };
-        // `as` saturates, so an enormous configured distance means "everything".
-        (f64::from(block) * f64::from(self.split_distance_mult) / f64::from(CELL_SIZE)).floor()
-            as i32
+        let dx = axis(camera.x, cell.x, origin.x);
+        let dy = axis(camera.y, cell.y, origin.y);
+        dx.hypot(dy) as f32
+    }
+
+    /// The tier retail's terrain rule draws for `cell`, or `None` beyond the outer reach.
+    ///
+    /// Retail walks the block tree from level 32 down (RF-LOD-003, RF-LOD-011): a block draws its
+    /// own mesh unless its box distance is under its split distance, then its four children are
+    /// tested. A block of level 16 that is not split draws tier 16. A block of level 8 that is
+    /// not split draws tier 8. Otherwise tier 4 draws. The edges are block-aligned steps, not
+    /// circles, so where a tier ends depends on where the camera cell sits in its block.
+    ///
+    /// Not implemented: retail flag 0x8000 (RF-LOD-006), which forces level 4 in every block that
+    /// touches the `uLargeRefLODGridSize` square. At the default High preset it changes nothing,
+    /// because such a block is always under the smallest split distance (34,756). At Low
+    /// (`fSplitDistanceMult` 0.5, split distance 11,585) retail would force level 4 out to about
+    /// 18,000 units and this function does not. Only a Low-preset `--ini` shows the difference.
+    ///
+    /// Engineering guard: Mudcrab compiles no level-32 tier, so the level-32 step is skipped and
+    /// tier 16 draws wherever retail would draw level 16 or 32. The outer reach is
+    /// `fBlockMaximumDistance` x `fSplitDistanceMult` from the cell's own box (the previous
+    /// reach of tier 16), because retail's far plane (353,840, RF-FOG-003) is not applied yet.
+    pub fn terrain_tier(&self, camera: IVec2, cell: IVec2, origin: IVec2) -> Option<LodTier> {
+        let outer = f64::from(self.block_maximum_distance) * f64::from(self.split_distance_mult);
+        if f64::from(Self::terrain_block_distance(camera, cell, origin, 1)) >= outer {
+            return None;
+        }
+        for (level, tier) in TERRAIN_LEVELS {
+            if Self::terrain_block_distance(camera, cell, origin, level)
+                >= self.terrain_split_distance(level)
+            {
+                return Some(tier);
+            }
+        }
+        Some(LodTier::Tier4)
+    }
+
+    /// The object LOD (`.bto`) tier retail draws for `cell`, or `None` when the block is dropped
+    /// (RF-LOD-004, RF-LOD-005 in `registry.md`; the verified REA report).
+    ///
+    /// Retail walks the block tree from level 32, and at every node it visits it first applies the
+    /// outer gate: a node whose box distance is at or beyond `fBlockMaximumDistance` releases its
+    /// data, and `nama` does not scale that gate. A node that passes then splits into its four
+    /// children while its box distance is under its split distance: level 32 always splits (it
+    /// holds no object mesh), level 16 under `fBlockLevel1Distance` x sqrt(`nama`) and level 8
+    /// under `fBlockLevel0Distance` x sqrt(`nama`) (retail compares the squared distance with the
+    /// squared setting times `nama`). Level 4 never splits. A child is checked only after its
+    /// parent splits, so the gate is applied to the level-16 block, to its level-8 child and to the
+    /// level-4 block in turn. `nama` is the worldspace multiplier: 1.0 for Tamriel, 0.25 for
+    /// Whiterun, Markarth, Windhelm and Alftand. With a large `nama` a split distance can exceed
+    /// the outer gate, which is why the gate must be checked for each visited block.
+    ///
+    /// Terrain uses a different rule ([`Self::terrain_tier`]); the two share only the block box.
+    /// The same engineering guard applies: the camera position is the centre of its cell. Retail
+    /// flag 0x8000 (blocks touching the large-reference square always split, RF-LOD-006) is not
+    /// implemented.
+    pub fn object_tier(
+        &self,
+        camera: IVec2,
+        cell: IVec2,
+        origin: IVec2,
+        nama: f32,
+    ) -> Option<LodTier> {
+        let scale = f64::from(nama.max(0.0)).sqrt();
+        let split = |distance: f32| f64::from(distance) * scale;
+        let maximum = f64::from(self.block_maximum_distance);
+        let distance = |level| f64::from(Self::terrain_block_distance(camera, cell, origin, level));
+        if distance(16) >= maximum {
+            return None;
+        }
+        if distance(16) >= split(self.block_level1_distance) {
+            return Some(LodTier::Tier16);
+        }
+        // The level-16 block splits: its level-8 child is visited next.
+        if distance(8) >= maximum {
+            return None;
+        }
+        if distance(8) >= split(self.block_level0_distance) {
+            return Some(LodTier::Tier8);
+        }
+        // The level-8 block splits: the level-4 block is a leaf and still passes the gate.
+        if distance(4) >= maximum {
+            return None;
+        }
+        Some(LodTier::Tier4)
+    }
+
+    /// The Chebyshev cell radius around the camera's cell within which `tier` chunks can be
+    /// drawn, used to query, keep and drop chunks. Tier 4 draws in blocks of level 8 that are
+    /// split, so it reaches the level-8 split distance plus the 8 cells of the block. Tier 8
+    /// reaches the level-16 split distance plus 16 cells. Tier 16 reaches the outer reach of
+    /// [`Self::terrain_tier`].
+    pub fn reach_cells(&self, tier: LodTier) -> i32 {
+        let cells = |units: f64| (units / f64::from(CELL_SIZE)).ceil() as i32;
+        match tier {
+            LodTier::Tier4 => cells(f64::from(self.terrain_split_distance(8))).saturating_add(8),
+            LodTier::Tier8 => cells(f64::from(self.terrain_split_distance(16))).saturating_add(16),
+            // A cell `n` cells away has its box `n - 0.5` cells from the camera cell's centre, so
+            // it is inside the outer reach while `n < outer / cell + 0.5`.
+            LodTier::Tier16 => {
+                ((f64::from(self.block_maximum_distance) * f64::from(self.split_distance_mult)
+                    / f64::from(CELL_SIZE)
+                    + 0.5)
+                    .ceil()
+                    - 1.0) as i32
+            }
+        }
     }
 
     /// The farthest reach of any tier.
@@ -69,6 +217,16 @@ impl TerrainLodDistances {
             .max()
             .unwrap_or(0)
     }
+}
+
+/// Where the water surface reads the depth of the bed behind it (`--water-depth`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WaterDepthSource {
+    /// Snapshot the main opaque pass depth before the transparent pass draws water.
+    #[default]
+    Snapshot,
+    /// Draw water as its deep colour at its ANAM opacity, as if no depth were available.
+    Constant,
 }
 
 #[derive(Debug, Clone, Resource)]
@@ -86,6 +244,15 @@ pub struct EngineConfig {
     pub sun_shadow_distance_limit: Option<f32>,
     /// Optional sun bearing clockwise from north and elevation above the horizon, in degrees.
     pub sun_position: Option<(f32, f32)>,
+    /// Initial game hour; deterministic captures freeze at this hour. The default is the retail
+    /// `GameHour` global (8.0 in the pack data). A capture that needs another hour, such as noon
+    /// for the native Riverwood comparison, passes `--game-hour` explicitly.
+    pub game_hour: f64,
+    /// Game seconds per real second during ordinary play; zero freezes the clock. The default 20
+    /// is the retail `TimeScale` (GLOB record, form id 0x3A, editor id `TimeScale`): 20.0 in the pack.
+    pub timescale: f64,
+    /// Explicit `[Sky]` overrides in `sun::SUN_KEYS` order; absent keys retain winning GMST values.
+    pub sun_settings_overrides: [Option<f32>; 5],
     pub terrain_lod: TerrainLodDistances,
     pub max_cell_commits_per_frame: usize,
     pub max_commit_micros_per_frame: u64,
@@ -123,6 +290,8 @@ pub struct EngineConfig {
     pub headless: bool,
     /// Keep a renderable window hidden for automated screenshot capture.
     pub hidden_window: bool,
+    /// Open the window below other windows and leave focus where it was.
+    pub background_window: bool,
     /// Whole color pipeline; fixed for the run because stages never mix across profiles.
     pub visual_profile: VisualProfile,
     /// Select the cinematic A/B experiment without changing scene lighting.
@@ -141,6 +310,8 @@ pub struct EngineConfig {
     pub start_shot: Option<PathBuf>,
     /// Accept developer console commands on this process's stdin.
     pub stdin_console: bool,
+    /// Continue world simulation out of focus (Skyrim General.bAlwaysActive).
+    pub always_active: bool,
     /// Disable Bevy's GPU timing and pipeline-statistics query collection.
     pub no_render_diagnostics: bool,
     pub benchmark_only: bool,
@@ -175,6 +346,10 @@ pub struct EngineConfig {
     pub accept_min_fps: f64,
     pub accept_p95_ms: f64,
     pub accept_max_memory_growth_gib: f64,
+    /// `--accept-frame-pass-bar`: fail a benchmark run whose frame-budget window misses the pass
+    /// bar (at least 99.9% of frames within `--frame-budget-ms`, none over twice it). Off by
+    /// default: the bar was reported before it could fail a run.
+    pub accept_frame_pass_bar: bool,
     pub auto_fly_speed: f32,
     /// `--route <file>`: the camera follows a route file's waypoints at its speed (see
     /// [`crate::route`]). It owns the camera, like `--auto-fly-speed`.
@@ -193,6 +368,14 @@ pub struct EngineConfig {
     pub profile_hardware: String,
     pub acceptance_screenshot: Option<PathBuf>,
     pub screenshot_camera_offset: Option<(f32, f32, f32)>,
+    /// `--water-time <seconds>`: pins the water's wave phase at this time, so two capture runs at
+    /// the same pose draw the same waves. `None` lets the waves run on the clock, or on the
+    /// terrain/water fixture's fixed phase.
+    pub water_time: Option<f32>,
+    /// `--water-depth <snapshot|constant>`: how water learns the depth of the bed behind it.
+    /// `constant` exists to measure and diagnose the fallback, which a snapshot-less run would
+    /// otherwise reach silently.
+    pub water_depth: WaterDepthSource,
     /// `--shots <file>`: render the camera poses in a shots file, one PNG each, and exit instead of
     /// running interactively. See [`crate::shots`].
     pub shots: Option<PathBuf>,
@@ -232,6 +415,9 @@ impl Default for EngineConfig {
             unload_radius: 3,
             sun_shadow_distance_limit: None,
             sun_position: None,
+            game_hour: crate::sun::RETAIL_GAME_HOUR, // GLOB 0x38 `GameHour` = 8.0 in the pack
+            timescale: 20.0,
+            sun_settings_overrides: [None; 5],
             terrain_lod: TerrainLodDistances::default(),
             max_cell_commits_per_frame: 1,
             max_commit_micros_per_frame: 16_670,
@@ -261,6 +447,7 @@ impl Default for EngineConfig {
             max_upload_mib_per_frame: 16,
             headless: false,
             hidden_window: false,
+            background_window: false,
             visual_profile: VisualProfile::Mudcrab,
             color_grade: SceneGradeMode::SnapshotSrgb,
             visual_preset: SceneVisualPreset::CoolGray,
@@ -272,6 +459,7 @@ impl Default for EngineConfig {
             image_space_slot: None,
             start_shot: None,
             stdin_console: false,
+            always_active: false,
             no_render_diagnostics: false,
             benchmark_only: false,
             benchmark_frames: None,
@@ -293,6 +481,7 @@ impl Default for EngineConfig {
             accept_min_fps: 60.0,
             accept_p95_ms: 16.67,
             accept_max_memory_growth_gib: 0.5,
+            accept_frame_pass_bar: false,
             auto_fly_speed: 0.0,
             route: None,
             frame_budget_ms: crate::frame_budget::DEFAULT_FRAME_BUDGET_MS,
@@ -307,6 +496,8 @@ impl Default for EngineConfig {
             profile_hardware: "unspecified".into(),
             acceptance_screenshot: None,
             screenshot_camera_offset: None,
+            water_time: None,
+            water_depth: WaterDepthSource::Snapshot,
             shots: None,
             matched_route: None,
             shots_out: None,
@@ -343,11 +534,13 @@ Assets and start position:
   --grid-x <cell>                       starting cell x (default: 0)
   --grid-y <cell>                       starting cell y (default: 0)
   --start-shot <file>                  start the live camera at one exterior shot pose
+  --always-active                     keep simulating when the primary window loses focus
   --stdin-console                     accept developer console commands on stdin
   --no-render-diagnostics             disable GPU timing and pipeline-statistics queries
   --allow-incomplete-assets             run despite a failed manifest or integration-report gate
   --headless                            run without opening a window
   --hidden-window                       render screenshots without showing a window
+  --background-window                   open the window behind other windows without taking focus
   --lights                              place a point light for each streamed LIGH reference
 
 Streaming:
@@ -393,6 +586,8 @@ Benchmark and profiling:
   --accept-min-fps <fps>                fail the run below this average frame rate (default: 60)
   --accept-p95-ms <ms>                  fail the run above this p95 frame time (default: 16.67)
   --accept-max-memory-growth-gib <gib>  fail the run above this memory growth (default: 0.5)
+  --accept-frame-pass-bar               fail the run when the frame-budget window misses the bar
+                                     (99.9% within budget, none over twice it; default: off)
   --acceptance-screenshot <file>        write a screenshot when the run ends
   --screenshot-camera-offset <x,y,z>    camera offset for the acceptance screenshot
   --matched-route <file>                execute exact route steps with transition and settled checkpoints
@@ -405,10 +600,14 @@ Benchmark and profiling:
   --image-space-weather <FormID>       select an authored WTHR image-space slot, not live weather
   --image-space-slot <slot>            sunrise|day|sunset|night; requires --image-space-weather
   --visual-preset <vivid|cool-gray>      select sky and grading look (default: cool-gray)
+  --game-hour <hour>                   initial hour, 0 <= hour < 24 (default 8; captures freeze)
+  --timescale <scale>                  game seconds per real second (default 20; 0 freezes)
   --sun-position <azimuth,elevation>     sun bearing clockwise from north and elevation above horizon, degrees
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
   --shots-settle-timeout <seconds>      maximum settling time per shot (default: 30, maximum: 600)
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
+  --water-time <seconds>                pin the water's wave phase so captures match
+  --water-depth <snapshot|constant>     how water reads the bed depth (default: snapshot)
   --profile-output <dir>                profile bundle directory (default: no bundle)
   --profile-gpu-inventory               expensive GPU inventory diagnostic; requires --profile-output
   --profile-scenario <name>             scenario name recorded in the profile (default: adhoc)
@@ -430,6 +629,7 @@ Diagnostics:
 
 Help:
   -h, --help                            print this message and exit
+  -V, --version                         print the Mudcrab version and exit
 
 Exit codes:
   0  success
@@ -448,6 +648,8 @@ pub enum ConfigAction {
     Run(Box<EngineConfig>),
     /// Print [`HELP_TEXT`] and exit successfully.
     Help,
+    /// Print the Mudcrab version and exit successfully.
+    Version,
 }
 
 /// A command line the engine cannot use.
@@ -762,6 +964,11 @@ impl EngineConfig {
         {
             return Ok(ConfigAction::Help);
         }
+        // Version is checked before the option walk for the same reason as
+        // help: `--version` must answer even when the rest is wrong.
+        if shared::wants_version(args.iter().map(String::as_str)) {
+            return Ok(ConfigAction::Version);
+        }
         let mut config = Self::default();
         let mut ini = SkyrimIni::default();
         for pair in args.windows(2) {
@@ -789,6 +996,8 @@ impl EngineConfig {
                 // option list the help-drift tests read complete.
                 "-h" => return Ok(ConfigAction::Help),
                 "--help" => return Ok(ConfigAction::Help),
+                "-V" => return Ok(ConfigAction::Version),
+                "--version" => return Ok(ConfigAction::Version),
                 // A bare `--` is the conventional end-of-options marker. The
                 // engine takes no positional arguments, so it has nothing to
                 // end, and main ignored it: keep ignoring it.
@@ -856,6 +1065,7 @@ impl EngineConfig {
                 }
                 "--headless" => config.headless = true,
                 "--hidden-window" => config.hidden_window = true,
+                "--background-window" => config.background_window = true,
                 "--max-unloads-per-frame" => {
                     config.max_cell_unloads_per_frame = take_value(
                         "--max-unloads-per-frame",
@@ -1092,6 +1302,7 @@ impl EngineConfig {
                         args.next(),
                     )?;
                 }
+                "--accept-frame-pass-bar" => config.accept_frame_pass_bar = true,
                 "--auto-fly-speed" => {
                     config.auto_fly_speed = take_number(
                         "--auto-fly-speed",
@@ -1253,6 +1464,12 @@ impl EngineConfig {
                         )
                     })?;
                 }
+                "--game-hour" => {
+                    config.game_hour = take_clock_value("--game-hour", args.next())?;
+                }
+                "--timescale" => {
+                    config.timescale = take_clock_value("--timescale", args.next())?;
+                }
                 "--sun-position" => {
                     let raw = take_raw("--sun-position", SUN_POSITION_EXPECTED, args.next())?;
                     config.sun_position = Some(parse_sun_position(&raw).ok_or_else(|| {
@@ -1273,6 +1490,7 @@ impl EngineConfig {
                         args.next(),
                     )?);
                 }
+                "--always-active" => config.always_active = true,
                 "--stdin-console" => config.stdin_console = true,
                 "--no-render-diagnostics" => config.no_render_diagnostics = true,
                 "--shots-settle-timeout" => {
@@ -1296,6 +1514,29 @@ impl EngineConfig {
                         "a directory for the shots' images and log",
                         args.next(),
                     )?);
+                }
+                "--water-time" => {
+                    config.water_time = Some(take_number(
+                        "--water-time",
+                        "a finite number of seconds, 0 or more",
+                        Bound::NonNegative,
+                        args.next(),
+                    )?);
+                }
+                "--water-depth" => {
+                    const EXPECTED: &str = "\"snapshot\" or \"constant\"";
+                    let raw = take_raw("--water-depth", EXPECTED, args.next())?;
+                    config.water_depth = if raw == "snapshot" {
+                        WaterDepthSource::Snapshot
+                    } else if raw == "constant" {
+                        WaterDepthSource::Constant
+                    } else {
+                        return Err(ConfigError::invalid_value(
+                            "--water-depth",
+                            Some(raw),
+                            EXPECTED,
+                        ));
+                    };
                 }
                 "--diagnostic-asset-fallbacks" => config.diagnostic_asset_fallbacks = true,
                 "--material-fixture" => config.material_fixture = true,
@@ -1597,6 +1838,29 @@ where
     accepted.ok_or_else(|| ConfigError::invalid_value(option, Some(raw), expected))
 }
 
+/// Parse the two clock controls with finite ranges while keeping each CLI match arm discoverable.
+fn take_clock_value(option: &'static str, value: Option<String>) -> Result<f64, ConfigError> {
+    let raw = take_raw(option, "a finite nonnegative number", value)?;
+    raw.parse::<f64>()
+        .ok()
+        .filter(|v| {
+            v.is_finite()
+                && *v >= 0.0
+                && if option == "--game-hour" {
+                    *v < 24.0
+                } else {
+                    *v <= 1_000_000.0
+                }
+        })
+        .ok_or_else(|| {
+            ConfigError::invalid_value(
+                option,
+                Some(raw),
+                "hour in [0,24), or timescale in [0,1000000]",
+            )
+        })
+}
+
 /// The option `argument` most likely meant, if it is within two edits of one.
 /// Ties go to the first option the help text lists.
 ///
@@ -1683,6 +1947,23 @@ mod tests {
     /// it instead of keeping a second list of option names in step by hand.
     const CONFIG_SOURCE: &str = include_str!("config.rs");
 
+    /// Options the perf harness passes to the programs it drives (git, cargo and
+    /// samply). Scoped to its directory so an engine launcher passing one still
+    /// fails the audit.
+    const PERF_HARNESS_TOOL_FLAGS: &[&str] = &[
+        "--detach",                  // git worktree add
+        "--force",                   // git worktree remove
+        "--show-toplevel",           // git rev-parse
+        "--verify",                  // git rev-parse
+        "--git-common-dir",          // git rev-parse
+        "--repo",                    // workspace.py
+        "--isolated",                // workspace.py cargo
+        "--needed-gib",              // workspace.py cargo
+        "--rate",                    // samply record
+        "--save-only",               // samply record
+        "--unstable-presymbolicate", // samply record
+    ];
+
     /// Flags owned by one release script: (file name, flag). Scoped like the
     /// observation tool's `--verify`, so any other script passing one of them
     /// to the engine still fails the audit.
@@ -1690,6 +1971,16 @@ mod tests {
         ("install.sh", "--progress-bar"), // curl
         ("stage-release.sh", "--dest"),
         ("stage-release.sh", "--target"),
+        // footprint_guard.py owns its own CLI and its test drives that CLI. The
+        // guard watches a process the caller started and is not an engine
+        // launcher. `--pid` is already in NON_ENGINE_FLAGS.
+        ("footprint_guard.py", "--limit-gib"),
+        ("footprint_guard.py", "--interval-ms"),
+        ("footprint_guard.py", "--deadline-s"),
+        ("footprint_guard.py", "--no-children"),
+        ("footprint_guard.py", "--log"),
+        ("test_footprint_guard.py", "--limit-gib"),
+        ("test_footprint_guard.py", "--log"),
     ];
 
     /// Flags consumed by Cargo, Git, `world-inspect`, the dynamic loader,
@@ -1708,6 +1999,7 @@ mod tests {
         "--short",               // git rev-parse
         "--output", // world-inspect, profiling, startup runner, repeat-terrain-startup.py
         "--pairs-output", // correlate_drawables.py
+        "--cell",   // world-inspect
         "--radius", // world-inspect
         "--library-path", // ld-linux
         "--meshes", // audit-collision.py
@@ -1769,6 +2061,7 @@ mod tests {
         "--name",   // xdotool
         "--sync",   // xdotool
         "--psm",    // tesseract
+        "--cell",   // world-inspect
         "--radius", // world-inspect
         "--library-path", // ld-linux
         "--meshes", // audit-collision.py
@@ -1833,6 +2126,7 @@ mod tests {
         "--shader-id", // sample_skyrim_tonemap_gpu.py
         "--source-shader", // sample_skyrim_tonemap_gpu.py
         "--stage3-relative", // compare_stage_receipts.py
+        "--stage3-absolute", // compare_stage_receipts.py
         "--stage4-bytes", // compare_stage_receipts.py
     ];
 
@@ -1865,6 +2159,25 @@ mod tests {
         Some((option, rest))
     }
 
+    /// Clock options validate finite ranges rather than admitting nonfinite runtime state.
+    #[test]
+    fn sun_clock_options_validate_hour_and_timescale() {
+        // The default start hour is the retail `GameHour` record (GLOB 0x38); noon must be requested.
+        assert_eq!(run_config(&[]).game_hour, 8.0);
+        assert_eq!(run_config(&["--game-hour", "12"]).game_hour, 12.0);
+        let config = run_config(&["--game-hour", "9.25", "--timescale", "0"]);
+        assert_eq!((config.game_hour, config.timescale), (9.25, 0.0));
+        for (key, value) in [
+            ("--game-hour", "24"),
+            ("--game-hour", "-1"),
+            ("--game-hour", "NaN"),
+            ("--timescale", "inf"),
+            ("--timescale", "-1"),
+        ] {
+            assert!(EngineConfig::from_args([key.to_string(), value.to_string()]).is_err());
+        }
+    }
+
     #[test]
     fn defaults_to_one_cell_commit_within_a_sixty_fps_frame() {
         let config = EngineConfig::default();
@@ -1873,6 +2186,19 @@ mod tests {
         assert_eq!(config.max_cell_unloads_per_frame, 2);
         assert_eq!(config.max_model_spawns_per_frame, 32);
         assert_eq!(config.io_threads, 0);
+    }
+
+    /// The frame-budget pass bar is advisory unless the flag is given. Existing runs keep their
+    /// verdicts; an acceptance caller opts in.
+    #[test]
+    fn the_frame_pass_bar_gate_is_off_by_default_and_parsed_as_a_switch() {
+        assert!(!EngineConfig::default().accept_frame_pass_bar);
+        assert!(!run_config(&[]).accept_frame_pass_bar);
+        assert!(run_config(&["--accept-frame-pass-bar"]).accept_frame_pass_bar);
+        // A switch takes no value, so a following option is not swallowed.
+        let config = run_config(&["--accept-frame-pass-bar", "--benchmark-frames", "10"]);
+        assert!(config.accept_frame_pass_bar);
+        assert_eq!(config.benchmark_frames, Some(10));
     }
 
     /// Verify GPU inventory is opt-in and requires a profile output directory.
@@ -2207,6 +2533,26 @@ mod tests {
         assert!(line.ends_with(&format!("(default: {default})")), "{line}");
     }
 
+    /// INI focus policy is default-off, layered, and explicitly overridable by CLI.
+    #[test]
+    fn pause704_always_active_setting_uses_ini_and_cli_precedence() {
+        assert!(!EngineConfig::default().always_active);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("focus.ini");
+        for (raw, expected) in [("1", true), ("0", false), ("oops", false), ("2", false)] {
+            std::fs::write(&path, format!("[General]\nbAlwaysActive={raw}\n")).unwrap();
+            let args = vec!["--ini".to_owned(), path.to_str().unwrap().to_owned()];
+            assert_eq!(
+                EngineConfig::run_from_args(args.clone()).always_active,
+                expected
+            );
+            assert!(
+                EngineConfig::run_from_args(args.into_iter().chain(["--always-active".into()]))
+                    .always_active
+            );
+        }
+    }
+
     #[test]
     fn parses_live_start_camera_and_opt_in_stdin_console() {
         let config = run_config(&[
@@ -2401,6 +2747,20 @@ mod tests {
                 .to_string()
                 .contains("--color-grade")
         );
+    }
+
+    /// A background capture keeps its window visible; only its stacking and focus change.
+    #[test]
+    fn parses_background_window_capture_mode() {
+        assert!(!EngineConfig::default().background_window);
+        let config = run_config(&[
+            "--background-window",
+            "--acceptance-screenshot",
+            "capture.png",
+        ]);
+        assert!(config.background_window);
+        assert!(!config.hidden_window);
+        assert!(!config.headless);
     }
 
     /// Hidden capture selects rendering without enabling interactive mouse ownership.
@@ -2768,6 +3128,49 @@ mod tests {
         let config = run_config(&["--screenshot-camera-offset", "-10, 2.5 ,0"]);
         assert_eq!(config.screenshot_camera_offset, Some((-10.0, 2.5, 0.0)));
         assert_eq!(EngineConfig::default().screenshot_camera_offset, None);
+    }
+
+    #[test]
+    fn parses_a_pinned_water_time() {
+        assert_eq!(run_config(&["--water-time", "1.5"]).water_time, Some(1.5));
+        assert_eq!(run_config(&["--water-time", "0"]).water_time, Some(0.0));
+        assert_eq!(EngineConfig::default().water_time, None);
+    }
+
+    #[test]
+    fn a_negative_or_non_finite_water_time_is_refused() {
+        for value in ["-1", "NaN", "inf"] {
+            assert!(
+                matches!(
+                    parse_error(&["--water-time", value]),
+                    ConfigError::InvalidValue { .. }
+                ),
+                "{value} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_the_water_depth_source() {
+        assert_eq!(
+            run_config(&["--water-depth", "constant"]).water_depth,
+            WaterDepthSource::Constant
+        );
+        assert_eq!(
+            run_config(&["--water-depth", "snapshot"]).water_depth,
+            WaterDepthSource::Snapshot
+        );
+        assert_eq!(
+            EngineConfig::default().water_depth,
+            WaterDepthSource::Snapshot
+        );
+        assert!(matches!(
+            parse_error(&["--water-depth", "deep"]),
+            ConfigError::InvalidValue {
+                option: "--water-depth",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -3148,6 +3551,28 @@ mod tests {
         ] {
             assert!(!config.interactive_world_physics());
         }
+    }
+
+    #[test]
+    fn version_is_requested_by_either_spelling() {
+        for spelling in ["--version", "-V"] {
+            let action = EngineConfig::from_args([spelling.to_owned()])
+                .expect("the version flags are accepted options");
+            assert!(
+                matches!(action, ConfigAction::Version),
+                "{spelling} did not ask for the version"
+            );
+        }
+    }
+
+    #[test]
+    fn version_survives_a_wrong_command_line_and_help_still_wins() {
+        let action = EngineConfig::from_args(["--typo".to_owned(), "--version".to_owned()])
+            .expect("version answers before the unknown option is reported");
+        assert!(matches!(action, ConfigAction::Version));
+        let action = EngineConfig::from_args(["--version".to_owned(), "--help".to_owned()])
+            .expect("both flags are accepted");
+        assert!(matches!(action, ConfigAction::Help));
     }
 
     #[test]
@@ -3565,6 +3990,13 @@ mod tests {
         paths
     }
 
+    fn is_perf_harness(path: &std::path::Path) -> bool {
+        path.extension().is_some_and(|extension| extension == "py")
+            && path
+                .components()
+                .any(|part| part.as_os_str().to_str() == Some("perf"))
+    }
+
     fn checked_script_engine_flags(script: &str, path: &std::path::Path) -> usize {
         let options = parser_options();
         let mut checked = 0;
@@ -3577,8 +4009,15 @@ mod tests {
                 Some("lod-performance" | "lod-experiment")
             )
         });
+        // The perf harness has a command line of its own (`--window`, `--pairs`)
+        // beside the engine arguments it builds. Only complete option literals
+        // outside its parser declarations are engine arguments.
+        let harness_tool = is_perf_harness(path);
         let engine_lines: String;
-        let scanned = if converter_tool {
+        let scanned = if harness_tool {
+            engine_lines = emitted_python_options(script);
+            engine_lines.as_str()
+        } else if converter_tool {
             engine_lines = script
                 .lines()
                 .filter(|line| {
@@ -3597,12 +4036,73 @@ mod tests {
             let observation_option = path.file_name().is_some_and(|name| {
                 name == "reference-enable-observations.py" && flag == "--verify"
             });
+            // The receipt utility owns these argparse/Git options. Do not add them to
+            // the global exclusions: engine lines, including this file's, reject them.
+            let material_oracle_option = path
+                .file_name()
+                .is_some_and(|name| name == "object_materials_oracle.py")
+                && [
+                    "--packet",
+                    "--cargo-log",
+                    "--receipt",
+                    "--native-grant",
+                    "--name-only",
+                    "--others",
+                    "--exclude-standard",
+                ]
+                .contains(&flag)
+                // Every line that names the flag must be an argparse declaration or a Git
+                // command line. A flag on any other line, such as a continuation line of a
+                // multi-line engine command, is audited like any engine option.
+                && script
+                    .lines()
+                    .filter(|line| script_cli_options(line).contains(&flag))
+                    .all(|line| {
+                        line.contains("add_argument(")
+                            || (line.contains("\"git\"")
+                                && (line.contains("ls-files") || line.contains("\"diff\"")))
+                    });
+            let harness_option = harness_tool && PERF_HARNESS_TOOL_FLAGS.contains(&flag);
+            // This standalone example owns these arguments; do not admit them for engine.
+            let inspector_option = path.ends_with("scripts/model_inspector/runtime.py")
+                && [
+                    "--model",
+                    "--record",
+                    "--catalog",
+                    "--build-only",
+                    "--needed-gib",
+                    "--isolated",
+                    "--inside",
+                    "--run-dir",
+                    "--profile",
+                    "--example",
+                    "--message-format",
+                    "--path-format",
+                    "--git-common-dir",
+                    "--export-",
+                    "--export-frames",
+                    "--export-gif",
+                    "--export-video",
+                    "--seconds",
+                    "--fps",
+                    "--size",
+                    "--orbit",
+                    "--background",
+                    "--video-format",
+                ]
+                .contains(&flag);
             let release_option = path.file_name().is_some_and(|name| {
                 SCRIPT_SCOPED_FLAGS
                     .iter()
                     .any(|&(script, scoped)| name == script && flag == scoped)
             });
-            if NON_ENGINE_FLAGS.contains(&flag) || observation_option || release_option {
+            if NON_ENGINE_FLAGS.contains(&flag)
+                || observation_option
+                || material_oracle_option
+                || harness_option
+                || release_option
+                || inspector_option
+            {
                 continue;
             }
             assert!(
@@ -3613,6 +4113,176 @@ mod tests {
             checked += 1;
         }
         checked
+    }
+
+    /// The option literals a Python harness can pass on to another program:
+    /// string literals that are exactly one `--option`, outside `add_argument(...)`
+    /// declarations (the harness's own parser), comments and prose strings.
+    fn emitted_python_options(script: &str) -> String {
+        let bytes = script.as_bytes();
+        let mut emitted = Vec::new();
+        let mut index = 0;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'#' => {
+                    while index < bytes.len() && bytes[index] != b'\n' {
+                        index += 1;
+                    }
+                }
+                quote @ (b'"' | b'\'') => {
+                    let triple = bytes[index..].starts_with(&[quote; 3]);
+                    let start = index + if triple { 3 } else { 1 };
+                    let mut end = start;
+                    while end < bytes.len() {
+                        if bytes[end] == b'\\' {
+                            end += 2;
+                        } else if (triple && bytes[end..].starts_with(&[quote; 3]))
+                            || (!triple && (bytes[end] == quote || bytes[end] == b'\n'))
+                        {
+                            break;
+                        } else {
+                            end += 1;
+                        }
+                    }
+                    let end = end.min(bytes.len());
+                    let literal = &script[start..end];
+                    let preceded_by_prefix = start >= 2 && !triple && {
+                        // An f-string or raw string is prose or a pattern, not an option.
+                        matches!(bytes[start - 2], b'f' | b'r' | b'F' | b'R')
+                    };
+                    if !triple
+                        && !preceded_by_prefix
+                        && literal.starts_with("--")
+                        && option_tokens(literal).first() == Some(&literal)
+                    {
+                        emitted.push(literal);
+                    }
+                    index = (end + if triple { 3 } else { 1 }).min(bytes.len());
+                    continue;
+                }
+                b'a' if script[index..].starts_with("add_argument(") => {
+                    // Skip the whole call; the parentheses inside its help text balance.
+                    let mut depth = 0usize;
+                    let mut quote = None;
+                    while index < bytes.len() {
+                        let byte = bytes[index];
+                        match quote {
+                            Some(_) if byte == b'\\' => index += 1,
+                            Some(open) if byte == open => quote = None,
+                            Some(_) => {}
+                            None if byte == b'"' || byte == b'\'' => quote = Some(byte),
+                            None if byte == b'(' => depth += 1,
+                            None if byte == b')' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            None => {}
+                        }
+                        index += 1;
+                    }
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        emitted.join(" ")
+    }
+
+    #[test]
+    fn the_perf_harness_audit_reads_emitted_engine_options_only() {
+        let harness = std::path::Path::new("perf/perf.py");
+        let script = r#"
+            # --not-an-option in a comment
+            p.add_argument("--window", choices=W, help="auto (use --other, else visible)")
+            raise Error("use --window visible")
+            args = ["--headless", "--assets", str(a)]
+        "#;
+        assert_eq!(emitted_python_options(script), "--headless --assets");
+        assert_eq!(checked_script_engine_flags(script, harness), 2);
+        // The same declaration is still an engine argument anywhere else.
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags(script, std::path::Path::new("tool/other.py"))
+            })
+            .is_err()
+        );
+        // Tool options scoped to the harness stay refused in an engine launcher.
+        let tool = r#"cmd = ["git", "worktree", "remove", "--force"]"#;
+        assert_eq!(checked_script_engine_flags(tool, harness), 0);
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags(tool, std::path::Path::new("tool/other.py"))
+            })
+            .is_err()
+        );
+        // An unknown flag the harness passes on is refused.
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags(r#"args = ["--no-such-engine-flag"]"#, harness)
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn the_script_audit_scopes_material_oracle_options_and_keeps_engine_checks() {
+        let oracle = std::path::Path::new("object_materials_oracle.py");
+        for flag in [
+            "--packet",
+            "--cargo-log",
+            "--receipt",
+            "--native-grant",
+            "--name-only",
+            "--others",
+            "--exclude-standard",
+        ] {
+            let declaration = format!(
+                "parser.add_argument(\"{flag}\")\ncommand([\"git\", \"ls-files\", \"{flag}\"])"
+            );
+            assert_eq!(checked_script_engine_flags(&declaration, oracle), 0);
+            assert!(
+                std::panic::catch_unwind(|| checked_script_engine_flags(flag, oracle)).is_err(),
+                "{flag} on a bare line is not a declaration"
+            );
+            assert!(
+                std::panic::catch_unwind(|| {
+                    checked_script_engine_flags(&format!("engine {flag}"), oracle)
+                })
+                .is_err(),
+                "{flag} must still fail on an engine line in the oracle"
+            );
+            assert!(
+                std::panic::catch_unwind(|| {
+                    checked_script_engine_flags(flag, std::path::Path::new("launch.sh"))
+                })
+                .is_err(),
+                "{flag} must not become a global non-engine option"
+            );
+        }
+        // The real declarations stay exempt.
+        let declarations = "check.add_argument(\"--packet\", type=Path)\n\
+            command([\"git\", \"ls-files\", \"--others\", \"--exclude-standard\"])\n\
+            command([\"git\", \"diff\", \"--name-only\", \"HEAD\"])";
+        assert_eq!(checked_script_engine_flags(declarations, oracle), 0);
+        // A multi-line engine command puts its flags on lines without the word `engine`.
+        // Those lines are neither declarations nor Git commands, so the audit must reject them.
+        for flag in ["--packet", "--receipt", "--name-only"] {
+            let multiline = format!("cmd = [\"engine\",\n    \"{flag}\", \"value\"]");
+            assert!(
+                std::panic::catch_unwind(|| checked_script_engine_flags(&multiline, oracle))
+                    .is_err(),
+                "a multi-line engine command with {flag} must fail the audit"
+            );
+        }
+        assert_eq!(checked_script_engine_flags("engine --headless", oracle), 1);
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags("engine --unknown-engine-option", oracle)
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -3659,6 +4329,51 @@ mod tests {
                 "{flag} must still be rejected in other scripts"
             );
         }
+    }
+
+    /// Standalone inspector flags must not become general engine CLI options.
+    #[test]
+    fn inspector_options_are_scoped_to_the_standalone_example_launcher() {
+        let tool = std::path::Path::new("scripts/model_inspector/runtime.py");
+        assert_eq!(
+            checked_script_engine_flags("--record 1 --model meshes/a.glb --build-only", tool),
+            0
+        );
+        for flag in [
+            "--export-",
+            "--export-frames",
+            "--export-gif",
+            "--export-video",
+            "--seconds",
+            "--fps",
+            "--size",
+            "--orbit",
+            "--background",
+            "--video-format",
+        ] {
+            assert_eq!(checked_script_engine_flags(flag, tool), 0, "{flag}");
+            assert!(
+                std::panic::catch_unwind(|| {
+                    checked_script_engine_flags(flag, std::path::Path::new("scripts/other.py"))
+                })
+                .is_err(),
+                "{flag} was accepted for an ordinary engine launcher"
+            );
+        }
+        assert!(
+            std::panic::catch_unwind(|| checked_script_engine_flags(
+                "--record 1",
+                std::path::Path::new("scripts/other.py")
+            ))
+            .is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(|| checked_script_engine_flags(
+                "--unknown-inspector-option",
+                tool
+            ))
+            .is_err()
+        );
     }
 
     /// Every utility `.ps1`, `.sh` and `.py` file in `scripts/`, subdirectories
@@ -3882,5 +4597,181 @@ mod tests {
     /// True when a script spells out a finite number.
     fn is_number_literal(value: &str) -> bool {
         value.parse::<f64>().is_ok_and(f64::is_finite)
+    }
+
+    /// RF-LOD-003 and the verified REA report: the split distances of the three retail presets
+    /// that differ in `fSplitDistanceMult` (Low 0.5, Medium 1.1, High 1.5). The report rounds
+    /// each value to whole units (its 69,512 is 69,511.4 and its 101,949 is 101,950.1 exactly), so the check allows two units.
+    #[test]
+    fn terrain_split_distance_follows_the_retail_half_diagonal_rule() {
+        let with_mult = |mult: f32| TerrainLodDistances {
+            split_distance_mult: mult,
+            ..TerrainLodDistances::default()
+        };
+        let close = |actual: [f32; 3], expected: [f32; 3]| {
+            for (actual, expected) in actual.into_iter().zip(expected) {
+                assert!((actual - expected).abs() <= 2.0, "{actual} vs {expected}");
+            }
+        };
+        let levels = |distances: TerrainLodDistances| {
+            [8, 16, 32].map(|level| distances.terrain_split_distance(level))
+        };
+        close(levels(with_mult(1.5)), [34_756.0, 69_512.0, 139_023.0]);
+        close(levels(with_mult(0.5)), [11_585.0, 23_170.0, 46_341.0]);
+        close(levels(with_mult(1.1)), [25_487.0, 50_975.0, 101_949.0]);
+    }
+
+    #[test]
+    fn terrain_block_distance_is_planar_to_the_aligned_block_box() {
+        let cell = f64::from(CELL_SIZE);
+        // Inside the block: zero. The camera is the centre of cell (0, 0).
+        assert_eq!(
+            TerrainLodDistances::terrain_block_distance(
+                IVec2::ZERO,
+                IVec2::new(3, 2),
+                IVec2::ZERO,
+                8
+            ),
+            0.0
+        );
+        // The block [8, 16) starts at x = 8 cells; the camera is at x = 0.5 cells.
+        let east = TerrainLodDistances::terrain_block_distance(
+            IVec2::ZERO,
+            IVec2::new(12, 0),
+            IVec2::ZERO,
+            8,
+        );
+        assert_eq!(f64::from(east), 7.5 * cell);
+        // A block off both axes: the distance is the hypotenuse to the nearest corner.
+        let corner = TerrainLodDistances::terrain_block_distance(
+            IVec2::ZERO,
+            IVec2::new(9, 9),
+            IVec2::ZERO,
+            8,
+        );
+        assert!((f64::from(corner) - (7.5 * cell).hypot(7.5 * cell)).abs() < 1.0);
+        // West and south of the origin: floor alignment keeps cell -1 in block [-8, 0).
+        let west = TerrainLodDistances::terrain_block_distance(
+            IVec2::new(7, 0),
+            IVec2::new(-1, 0),
+            IVec2::ZERO,
+            8,
+        );
+        assert_eq!(f64::from(west), 7.5 * cell);
+        // Blocks start at the worldspace LOD origin, not at zero.
+        let shifted = TerrainLodDistances::terrain_block_distance(
+            IVec2::new(0, 0),
+            IVec2::new(12, 0),
+            IVec2::new(-3, 0),
+            8,
+        );
+        // Origin -3: blocks start at -3, 5, 13. Cell 12 is in [5, 13).
+        assert_eq!(f64::from(shifted), 4.5 * cell);
+    }
+
+    /// The tier follows the nested split rule, and a camera inside a block always sees tier 4 for
+    /// the cells of its level-8 block.
+    #[test]
+    fn terrain_tier_walks_the_retail_block_tree() {
+        let high = TerrainLodDistances::default();
+        let tier = |x: i32| high.terrain_tier(IVec2::ZERO, IVec2::new(x, 0), IVec2::ZERO);
+        // Block [0, 8) holds the camera.
+        assert_eq!(tier(7), Some(LodTier::Tier4));
+        // Block [8, 16) is 30,720 units away: under 34,756, split.
+        assert_eq!(tier(12), Some(LodTier::Tier4));
+        // Block [16, 24) is 63,488 away: level 8 is not split. Block [16, 32) is under 69,512.
+        assert_eq!(tier(20), Some(LodTier::Tier8));
+        // Block [32, 48) is 129,024 away: level 16 is not split.
+        assert_eq!(tier(40), Some(LodTier::Tier16));
+        // Outer reach: 250,000 x 1.5 = 375,000 units from the cell's own box.
+        assert_eq!(tier(92), Some(LodTier::Tier16));
+        assert_eq!(tier(93), None);
+    }
+
+    /// RF-LOD-004 for Tamriel (NAMA 1.0) with the High defaults: objects split at 35,000 and
+    /// 70,000 units and are dropped at 250,000. Camera cell 0, origin 0, cells to the east.
+    #[test]
+    fn object_tier_follows_the_retail_object_distances() {
+        let high = TerrainLodDistances::default();
+        let tier =
+            |x: i32, nama: f32| high.object_tier(IVec2::ZERO, IVec2::new(x, 0), IVec2::ZERO, nama);
+        // Block [0, 8) holds the camera: level 4.
+        assert_eq!(tier(7, 1.0), Some(LodTier::Tier4));
+        // Block [8, 16) is 30,720 away, under 35,000: still level 4.
+        assert_eq!(tier(12, 1.0), Some(LodTier::Tier4));
+        // Block [16, 24) is 63,488 away: past 35,000 so level 8, under 70,000 so not level 16.
+        assert_eq!(tier(20, 1.0), Some(LodTier::Tier8));
+        // Block [32, 48) is 129,024 away: past 70,000, so level 16 draws.
+        assert_eq!(tier(40, 1.0), Some(LodTier::Tier16));
+        // The level-16 block [96, 112) is 391,168 away: dropped beyond 250,000.
+        assert_eq!(tier(100, 1.0), None);
+        // The last level-16 block under 250,000: [48, 64) is 194,560 away, kept; [64, 80) is
+        // 260,096 away, dropped.
+        assert_eq!(tier(60, 1.0), Some(LodTier::Tier16));
+        assert_eq!(tier(70, 1.0), None);
+        // NAMA 0.25 (Whiterun) halves the split distances to 17,500 and 35,000 and leaves the
+        // outer cut alone: block [16, 24) is now past 35,000, so level 16 draws.
+        assert_eq!(tier(20, 0.25), Some(LodTier::Tier16));
+        assert_eq!(tier(70, 0.25), None);
+    }
+
+    /// RF-LOD-004: the outer gate applies to every visited block, not only the level-16 one, and
+    /// `nama` never scales it.
+    #[test]
+    fn object_tier_applies_the_outer_cut_to_each_visited_block() {
+        let high = TerrainLodDistances::default();
+        // NAMA 16 scales the split distances by 4: level 16 splits under 280,000 and level 8 under
+        // 140,000. Cell (63, 47) from camera cell (0, 0): its level-16 block is 233,453 units away
+        // (under 280,000, so it splits), its level-8 child 279,025 away (past 250,000). The child
+        // is dropped; before the per-block gate it drew as tier 8.
+        let far = high.object_tier(IVec2::ZERO, IVec2::new(63, 47), IVec2::ZERO, 16.0);
+        assert_eq!(far, None);
+        // With NAMA 1.0 the level-16 block (233,453 away, inside 250,000) does not split, so it
+        // draws as tier 16: only the larger NAMA reaches the level-8 child.
+        assert_eq!(
+            high.object_tier(IVec2::ZERO, IVec2::new(63, 47), IVec2::ZERO, 1.0),
+            Some(LodTier::Tier16)
+        );
+
+        // The level-4 leaf is gated too. With NAMA 100 both blocks above it split (levels 16 and 8
+        // split under 700,000 and 350,000). LOD origin -3 puts the level-8 block at [61, 69) and
+        // the level-4 blocks at [61, 65) and [65, 69): from camera cell 0 the level-16 and level-8
+        // blocks are 247,808 units away (inside 250,000) and the level-4 block holding cell 66 is
+        // 264,192 away (outside).
+        let origin = IVec2::new(-3, 0);
+        let tier = |x: i32, distances: &TerrainLodDistances| {
+            distances.object_tier(IVec2::ZERO, IVec2::new(x, 0), origin, 100.0)
+        };
+        assert_eq!(tier(62, &high), Some(LodTier::Tier4));
+        assert_eq!(tier(66, &high), None);
+
+        // The cut is "at or beyond": a block exactly 247,808 units away is dropped, one unit more
+        // reach keeps it. NAMA does not move it.
+        let at = TerrainLodDistances {
+            block_maximum_distance: 247_808.0,
+            ..high
+        };
+        assert_eq!(tier(62, &at), None);
+        let past = TerrainLodDistances {
+            block_maximum_distance: 247_809.0,
+            ..high
+        };
+        assert_eq!(tier(62, &past), Some(LodTier::Tier4));
+    }
+
+    /// Tiers 4 and 8 no longer reach 1.5 times too far: the old rule gave cells 12 and 25 for the
+    /// block distances times `fSplitDistanceMult`; retail splits at the block half-diagonal.
+    #[test]
+    fn terrain_tier_boundaries_sit_at_the_split_distances() {
+        let high = TerrainLodDistances::default();
+        // Camera cell 0; the level-8 block [8, 16) is split while 7.5 cells (30,720) < 34,756 and
+        // the block [16, 24) is not (15.5 cells = 63,488 > 34,756). So, east of the camera and with the camera cell at the start of its block, tier 4 stops at cell 15.
+        let tier = |x: i32| high.terrain_tier(IVec2::ZERO, IVec2::new(x, 0), IVec2::ZERO);
+        assert_eq!(tier(15), Some(LodTier::Tier4));
+        assert_eq!(tier(16), Some(LodTier::Tier8));
+        // Tier 8 stops where block [32, 48) (31.5 cells = 129,024) is past 69,512 but the level-16
+        // block [16, 32) (15.5 cells = 63,488) is inside it: cell 31 is tier 8, cell 32 is tier 16.
+        assert_eq!(tier(31), Some(LodTier::Tier8));
+        assert_eq!(tier(32), Some(LodTier::Tier16));
     }
 }

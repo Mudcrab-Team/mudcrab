@@ -2,9 +2,18 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, bail},
 };
-use converter::{cache::hash_file, mesh::MeshConverter};
+use converter::{
+    cache::hash_file,
+    mesh::{MeshConverter, NifUnparsedRegion},
+};
 use serde::Serialize;
-use std::{collections::BTreeMap, ffi::OsString, fs, path::PathBuf, time::Instant};
+use std::{
+    collections::BTreeMap,
+    ffi::OsString,
+    fs,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 use walkdir::WalkDir;
 
 #[derive(Debug, Serialize)]
@@ -25,6 +34,11 @@ struct AuditFile {
     validated_material_shape_count: usize,
     excluded_material_shape_count: usize,
     material_exclusions: BTreeMap<String, usize>,
+    conversion_refusals: Vec<String>,
+    unparsed_regions: usize,
+    unparsed_bytes: usize,
+    unparsed_by_reason: BTreeMap<String, usize>,
+    unparsed_samples: Vec<NifUnparsedRegion>,
     parse_error: Option<String>,
     conversion_error: Option<String>,
 }
@@ -32,8 +46,13 @@ struct AuditFile {
 #[derive(Debug, Default, Serialize)]
 struct AuditSummary {
     total_files: usize,
+    total_file_bytes: u64,
+    skipped_non_regular_entries: usize,
+    skipped_non_regular_samples: Vec<String>,
+    unaccounted_file_bytes: u64,
     parsed_files: usize,
     structural_failures: usize,
+    refused_files: usize,
     material_failures: usize,
     renderable_candidates: usize,
     unsupported_geometry_files: usize,
@@ -50,6 +69,9 @@ struct AuditSummary {
     validated_material_shapes: usize,
     excluded_material_shapes: usize,
     material_exclusions: BTreeMap<String, usize>,
+    unparsed_regions: usize,
+    unparsed_bytes: usize,
+    unparsed_by_reason: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -61,31 +83,73 @@ struct AuditReport {
     files: Vec<AuditFile>,
 }
 
+/// Audits loose NIFs while retaining measurements and per-file conversion refusals.
 fn main() -> Result<()> {
     color_eyre::install()?;
     let (root, report_path, convert_output) = parse_args(std::env::args_os().skip(1).collect())?;
-    let started = Instant::now();
-    let mut paths: Vec<_> = WalkDir::new(&root)
+    let report = audit(root, convert_output)?;
+    if let Some(parent) = report_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&report_path, serde_json::to_vec_pretty(&report)?)
+        .wrap_err_with(|| format!("failed to write {}", report_path.display()))?;
+    println!("NIF audit written to {}", report_path.display());
+    Ok(())
+}
+
+fn collect_nif_paths(root: &Path, summary: &mut AuditSummary) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for entry in WalkDir::new(root)
         .follow_links(false)
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_type().is_file())
-        .map(|entry| entry.into_path())
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("nif"))
-        })
-        .collect();
-    paths.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
-    let mut summary = AuditSummary {
-        total_files: paths.len(),
-        ..Default::default()
-    };
+        .follow_root_links(true)
+        .sort_by_file_name()
+    {
+        let entry = entry?;
+        let kind = entry.file_type();
+        // walkdir traverses a linked root but still reports that entry as a symlink.
+        if kind.is_dir() || (entry.depth() == 0 && kind.is_symlink()) {
+            continue;
+        }
+        if !kind.is_file() {
+            summary.skipped_non_regular_entries += 1;
+            if summary.skipped_non_regular_samples.len() < 8 {
+                summary.skipped_non_regular_samples.push(
+                    entry
+                        .path()
+                        .strip_prefix(root)
+                        .unwrap_or(entry.path())
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+            continue;
+        }
+        if entry
+            .path()
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("nif"))
+        {
+            paths.push(entry.into_path());
+        }
+    }
+    paths.sort_by_cached_key(|path| (path.to_string_lossy().to_ascii_lowercase(), path.clone()));
+    Ok(paths)
+}
+
+fn audit(root: PathBuf, convert_output: Option<PathBuf>) -> Result<AuditReport> {
+    let started = Instant::now();
+    let mut summary = AuditSummary::default();
+    let paths = collect_nif_paths(&root, &mut summary)?;
+    summary.total_files = paths.len();
     let mut files = Vec::with_capacity(paths.len());
     for (index, path) in paths.iter().enumerate() {
         let relative = path.strip_prefix(&root).unwrap_or(path);
         let relative_string = relative.to_string_lossy().replace('\\', "/");
         let size = fs::metadata(path)?.len();
+        summary.total_file_bytes = summary
+            .total_file_bytes
+            .checked_add(size)
+            .ok_or_else(|| color_eyre::eyre::eyre!("NIF input byte total overflow"))?;
         let sha256 = hash_file(path)?;
         let inspected = MeshConverter::inspect_nif(path);
         let mut file = match inspected {
@@ -100,6 +164,12 @@ fn main() -> Result<()> {
                 summary.material_shapes += diagnostics.material_shape_count;
                 summary.validated_material_shapes += diagnostics.validated_material_shape_count;
                 summary.excluded_material_shapes += diagnostics.excluded_material_shape_count;
+                summary.unparsed_regions += diagnostics.unparsed_regions;
+                summary.unparsed_bytes += diagnostics.unparsed_bytes;
+                merge_counts(
+                    &mut summary.unparsed_by_reason,
+                    &diagnostics.unparsed_by_reason,
+                );
                 if !diagnostics.fallback_blocks.is_empty() {
                     summary.files_with_fallbacks += 1;
                 }
@@ -111,7 +181,10 @@ fn main() -> Result<()> {
                     .filter(|(block_type, _)| is_geometry_block_type(block_type))
                     .map(|(_, count)| *count)
                     .sum::<usize>();
-                let classification = if diagnostics.geometry_block_count > 0 {
+                let classification = if !diagnostics.conversion_refusals.is_empty() {
+                    summary.refused_files += 1;
+                    "refused"
+                } else if diagnostics.geometry_block_count > 0 {
                     summary.renderable_candidates += 1;
                     "renderable"
                 } else if declared_geometry_count > 0 {
@@ -138,11 +211,22 @@ fn main() -> Result<()> {
                     validated_material_shape_count: diagnostics.validated_material_shape_count,
                     excluded_material_shape_count: diagnostics.excluded_material_shape_count,
                     material_exclusions: diagnostics.material_exclusions,
+                    conversion_refusals: diagnostics.conversion_refusals,
+                    unparsed_regions: diagnostics.unparsed_regions,
+                    unparsed_bytes: diagnostics.unparsed_bytes,
+                    unparsed_by_reason: diagnostics.unparsed_by_reason,
+                    unparsed_samples: diagnostics.unparsed_samples,
                     parse_error: None,
                     conversion_error: None,
                 }
             }
             Err(error) => {
+                summary.unaccounted_file_bytes = summary
+                    .unaccounted_file_bytes
+                    .checked_add(size)
+                    .ok_or_else(|| {
+                    color_eyre::eyre::eyre!("unaccounted NIF byte total overflow")
+                })?;
                 let error = format!("{error:#}");
                 let material_failure = error.contains("invalid NIF material");
                 if material_failure {
@@ -171,6 +255,11 @@ fn main() -> Result<()> {
                     validated_material_shape_count: 0,
                     excluded_material_shape_count: 0,
                     material_exclusions: BTreeMap::new(),
+                    conversion_refusals: Vec::new(),
+                    unparsed_regions: 0,
+                    unparsed_bytes: 0,
+                    unparsed_by_reason: BTreeMap::new(),
+                    unparsed_samples: Vec::new(),
                     parse_error: Some(error),
                     conversion_error: None,
                 }
@@ -194,20 +283,13 @@ fn main() -> Result<()> {
             eprintln!("Audited {}/{} NIF files", index + 1, paths.len());
         }
     }
-    let report = AuditReport {
-        format_version: 2,
+    Ok(AuditReport {
+        format_version: 5,
         root,
         elapsed_ms: started.elapsed().as_millis(),
         summary,
         files,
-    };
-    if let Some(parent) = report_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&report_path, serde_json::to_vec_pretty(&report)?)
-        .wrap_err_with(|| format!("failed to write {}", report_path.display()))?;
-    println!("NIF audit written to {}", report_path.display());
-    Ok(())
+    })
 }
 
 fn is_geometry_block_type(block_type: &str) -> bool {
@@ -241,4 +323,91 @@ fn parse_args(args: Vec<OsString>) -> Result<(PathBuf, PathBuf, Option<PathBuf>)
     let report = PathBuf::from(args.next().unwrap());
     let converted = args.next().map(PathBuf::from);
     Ok((root, report, converted))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_files_keep_their_whole_byte_denominator() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("broken.nif"), b"invalid NIF").unwrap();
+        fs::write(root.path().join("empty.NIF"), []).unwrap();
+        fs::write(
+            root.path().join("ignored.txt"),
+            b"outside the NIF denominator",
+        )
+        .unwrap();
+        let report = audit(root.path().to_owned(), None).unwrap();
+        assert_eq!(report.format_version, 5);
+        assert_eq!(report.summary.total_files, 2);
+        assert_eq!(report.summary.parsed_files, 0);
+        assert_eq!(report.summary.total_file_bytes, 11);
+        assert_eq!(report.summary.unaccounted_file_bytes, 11);
+        assert_eq!(report.summary.unparsed_bytes, 0);
+        assert!(report.files.iter().all(|file| file.parse_error.is_some()));
+        assert_eq!(
+            report.summary.unaccounted_file_bytes,
+            report
+                .files
+                .iter()
+                .filter(|file| file.parse_error.is_some())
+                .map(|file| file.size)
+                .sum::<u64>()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_root_is_audited_while_descendant_symlinks_stay_counted_and_unfollowed() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("kept.nif"), b"source").unwrap();
+        fs::write(outside.path().join("hidden.nif"), b"not traversed").unwrap();
+        symlink(
+            outside.path().join("hidden.nif"),
+            outside.path().join("skipped-descendant.nif"),
+        )
+        .unwrap();
+        symlink(outside.path(), root.path().join("linked-directory")).unwrap();
+        for index in 0..10 {
+            symlink(
+                outside.path().join("hidden.nif"),
+                root.path().join(format!("link-{index}.nif")),
+            )
+            .unwrap();
+        }
+        let mut summary = AuditSummary::default();
+        let paths = collect_nif_paths(root.path(), &mut summary).unwrap();
+        assert_eq!(paths, [root.path().join("kept.nif")]);
+        assert_eq!(summary.skipped_non_regular_entries, 11);
+        assert_eq!(summary.skipped_non_regular_samples.len(), 8);
+        let mut linked_root = AuditSummary::default();
+        assert_eq!(
+            collect_nif_paths(&root.path().join("linked-directory"), &mut linked_root).unwrap(),
+            [root.path().join("linked-directory/hidden.nif")]
+        );
+        assert_eq!(linked_root.skipped_non_regular_entries, 1);
+        assert_eq!(
+            linked_root.skipped_non_regular_samples,
+            ["skipped-descendant.nif"]
+        );
+        let report = audit(root.path().join("linked-directory"), None).unwrap();
+        assert_eq!(report.summary.total_files, 1);
+        assert_eq!(report.summary.total_file_bytes, 13);
+        assert_eq!(report.summary.unaccounted_file_bytes, 13);
+        assert_eq!(report.summary.skipped_non_regular_entries, 1);
+        assert_eq!(report.files[0].path, "hidden.nif");
+    }
+
+    #[test]
+    fn traversal_errors_cannot_shrink_the_denominator_silently() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(
+            collect_nif_paths(&root.path().join("missing"), &mut AuditSummary::default()).is_err()
+        );
+    }
 }

@@ -2844,13 +2844,17 @@ dependencies = [
  "crossbeam-channel",
  "ddsfile",
  "dummy-content",
+ "gif",
  "gltf",
  "image 0.25.10",
+ "image_dds 0.7.2",
  "ktx2",
  "libc",
  "memmap2",
  "mlua",
  "naga_oil",
+ "objc2-app-kit",
+ "objc2-foundation 0.2.2",
  "regex",
  "rkyv",
  "rusqlite",
@@ -6361,6 +6365,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

@@ -66,6 +66,11 @@ expression: manifest
           "hash": "[hash]",
           "path": "textures/landscape/dirt02.dds",
           "size": 2892
+        },
+        {
+          "hash": "[hash]",
+          "path": "textures/landscape/dirt02_n.dds",
+          "size": 5636
         }
       ],
       "recipe": "runtime-english-v4",
@@ -75,16 +80,16 @@ expression: manifest
   },
   "asset_configuration_hashes": {
     "dds": "1495cf3ec0f02a297c0bf31210e650b2c41df7f8b5e2bdda71f0a65f84b9db65",
-    "nif": "8026bcfca3b98e134750136b0c1ad65180b8e1a0ffb1e0cd70daeab7b63198b1",
+    "nif": "bb07b368d792b341b743e03954a56f4c2c7d69f8d1c9afbe27b6bc8073d2b349",
     "pex": "36a71880028a9c1d6bcd8b3c1cf149805dbe384a48a765bab57df47a3cbea565"
   },
   "complete": true,
-  "configuration_hash": "5cd7fb95121ac29921c99a78e58e82e4a6be49cec902804799a55c9af261eb12",
+  "configuration_hash": "101deff2afbfbcd4112e9f85a46e67f3c48f40f45740f3d35761c2776b94d180",
   "entries": {
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",
       "output_hash": "[output_hash]",
-      "output_size": 2320,
+      "output_size": 2356,
       "source_hash": "[source_hash]"
     },
     "scripts/generated.pex": {
@@ -134,11 +139,17 @@ expression: manifest
       "output_hash": "[output_hash]",
       "output_size": 3099,
       "source_hash": "[source_hash]"
+    },
+    "textures/landscape/dirt02_n.dds": {
+      "output": "textures/landscape/dirt02_n.ktx2",
+      "output_hash": "[output_hash]",
+      "output_size": 5859,
+      "source_hash": "[source_hash]"
     }
   },
   "failures": {},
   "inputs_by_kind": {
-    "dds": 6,
+    "dds": 7,
     "nif": 1,
     "pex": 2
   },

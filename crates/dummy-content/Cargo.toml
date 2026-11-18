@@ -19,3 +19,6 @@ tempfile = "3.20"
 [[bench]]
 name = "writers"
 harness = false
+
+[lints]
+workspace = true

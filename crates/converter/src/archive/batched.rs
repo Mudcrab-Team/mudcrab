@@ -278,7 +278,9 @@ pub(super) fn extract_with_session(
     check_stop(stop)?;
     let hash_started = std::time::Instant::now();
     let file = File::open(archive_path)?;
-    // The archive is immutable input for this scoped extraction.
+    // SAFETY: read-only mapping of archive input that this process only reads, for this scoped
+    // extraction. An outside truncation or in-place rewrite would fault reads of the map; that
+    // risk is accepted here (#633).
     let bytes = unsafe { Mmap::map(&file) }?;
     // Hash the exact inode decoded below; a path can be replaced between opens.
     let source_hash = hash_bytes(&bytes);
@@ -1069,6 +1071,9 @@ fn read_pack(
         (16..=(MAX_FILE_BYTES + MAX_INDEX_BYTES + 16) as u64).contains(&file_len),
         "archive pack size exceeds limit"
     );
+    // SAFETY: read-only mapping of a pack file this process does not write while it is mapped.
+    // An outside truncation or in-place rewrite would fault reads of the map; that
+    // risk is accepted here (#633).
     let bytes = unsafe { Mmap::map(&file) }?;
     ensure!(
         bytes.len() <= MAX_FILE_BYTES + MAX_INDEX_BYTES + 16,
@@ -1195,6 +1200,9 @@ fn pack_reader_version(path: &Path, source_hash: &str, recipe: &str) -> Option<u
     if !(16..=(MAX_FILE_BYTES + MAX_INDEX_BYTES + 16) as u64).contains(&file_len) {
         return None;
     }
+    // SAFETY: read-only mapping of a pack file this process does not write while it is mapped.
+    // An outside truncation or in-place rewrite would fault reads of the map; that
+    // risk is accepted here (#633).
     let bytes = unsafe { Mmap::map(&file) }.ok()?;
     if bytes.len() < 16
         || bytes.len() > MAX_FILE_BYTES + MAX_INDEX_BYTES + 16
@@ -2837,6 +2845,8 @@ mod tests {
         fs::create_dir_all(&base).unwrap();
         let directory = tempfile::tempdir_in(&base).unwrap();
         let source_file = File::open(&source).unwrap();
+        // SAFETY: read-only mapping of a benchmark source that this test does not write while it
+        // is mapped.
         let source_bytes = unsafe { Mmap::map(&source_file) }.unwrap();
         let raw = bsa::iter_raw_entries(&source_bytes).unwrap();
         let sample: Vec<_> = raw

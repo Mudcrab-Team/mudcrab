@@ -1,11 +1,12 @@
 # Interior room graph: converter design (#188, converter half)
 
 Status: implemented in the converter (2026-10-06); this note is the design it follows. The engine
-half (culling) is a later PR and is only sketched here where the table shape depends on it.
+reads these tables automatically. See [the runtime research](skyrim-room-culling.md) for evidence
+and conservative fallbacks.
 
 ## Summary
 
-The converter decodes Skyrim's room markers and portal markers into four small optional tables
+The converter decodes Skyrim's room markers and portal markers into five small optional tables
 in `skyrim_world.db`, and assigns every placed object in a roomed interior to the rooms whose box
 contains its pivot. The tables only record facts. Which objects to draw is the engine's policy:
 objects in no room or in several rooms stay drawn. A database without the tables behaves as today,
@@ -47,11 +48,15 @@ Checked against bytes:
   only 25 join rooms that already share a portal. So a link joins rooms that have **no portal
   between them** but must be seen together (the Creation Kit's "linked rooms"). The engine should
   treat a link as an open edge: if one room is visible, so is the other, with no narrowing.
-- Room membership is not stored on objects. The Creation Kit wiki gives the rule as the bound
-  "in which its pivot point is contained" (ck.uesp.net, Room Bounds and Portal Basics; seen only
-  through a search snippet, as the page refused automated fetching). An earlier byte scan of
-  Skyrim.esm measured that rule: in Ansilvund01 and KilkreathRuins03, 90.6% and 99.8% of
-  references fall in at least one room, and 13.2% and 1.2% in more than one.
+- Default room membership uses the object's pivot. The user-supplied saved HTML of Bethesda's
+  [Skyrim optimization tutorial, revision 7673](https://ck.uesp.net/w/index.php?title=Bethesda_Tutorial_Optimization&oldid=7673)
+  verifies this rule and says a reference belongs to one room by default. It also documents an
+  authored `NONE` multibound override for cross-room visibility. References carrying the Multibound
+  header flag are excluded from geometric membership in both export passes. See
+  [runtime research](skyrim-room-culling.md) for the encoding evidence and conservative policy.
+  An earlier byte scan of Skyrim.esm measured geometric membership: in Ansilvund01 and
+  KilkreathRuins03, 90.6% and 99.8% of references fall in at least one room, and 13.2% and 1.2%
+  in more than one. Those counts do not establish Skyrim's assignment when boxes overlap.
 - `XPRM` holds half-extents. A portal's `XPRM.y` is always 1.0 (a thickness placeholder), and its
   doorway is the marker's local X-Z rectangle (normal along local +Y), from the same
   earlier byte scan.
@@ -152,7 +157,7 @@ membership pass (inside, outside, two rooms, rotated room); `plugin_references.r
 
 ## Fallbacks (conservative)
 
-| Case | Converter writes | Engine (the engine half, a later PR) |
+| Case | Converter writes | Engine |
 |---|---|---|
 | Interior without room markers | no rows | draw everything, as today |
 | Old database, tables absent | n/a | feature off, no error |
@@ -179,12 +184,16 @@ require them, and would then go in the same change that raises the engine's maxi
 
 ## Open questions
 
-1. The pivot rule's source is a search snippet; the page itself should be read before the engine
-   half relies on it. The measured coverage supports it either way.
+1. The pivot rule is verified in the supplied Skyrim tutorial. References carrying the Multibound
+   header flag now bypass geometric membership, preserving `NONE` and conservatively drawing named
+   overrides. Exact named-target culling remains unimplemented. The supplied [Skyrim room-basics page, revision 15028](https://ck.uesp.net/w/index.php?title=Room_Bounds_and_Portal_Basics&oldid=15028)
+   also verifies that views from outside room bounds require portals, and warns about pivot-edge,
+   dropped-object and room-gap rendering failures. Our outside-room draw-all fallback is therefore
+   a deliberately more permissive engine policy.
 2. (Answered: the `contained = 0` overlap rows, written after integration from `statics.bounds_*`.)
    Large objects whose pivot sits in one room but whose mesh reaches into another can vanish too
-   early. Skyrim has the same behaviour. A guard (always draw objects whose bounds are larger than
-   their room) is possible later, using `statics.bounds_*`, which exist after integration.
+   early. The tutorial's authored `NONE` override addresses references that need cross-room
+   visibility; our bounds-overlap rows are an additional geometric policy, not that override.
 3. The `XRMR` `u16` and the unknown `XPRM` float stay unexplained; both are kept raw or ignored.
-4. Rooms hide their lights when culled. That matches Skyrim, but it is a visible behaviour change
-   and belongs to the engine half's image-comparison test.
+4. Whether Skyrim culls lights with rooms remains unverified by these sources. The engine keeps
+   lights and shadow visibility independent of room-mesh culling.

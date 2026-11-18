@@ -152,7 +152,7 @@ impl GamePathConfig {
 pub struct CurrentConversion(pub ConversionState);
 
 /// Whether the Output folder holds a complete conversion the engine can start on (see
-/// [`output_is_complete`]). Play is enabled only while this is true and no run is going.
+/// [`output_state`]). Play is enabled only while this is true and no run is going.
 #[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct OutputReady(pub bool);
 
@@ -240,6 +240,7 @@ impl Plugin for ConversionPanelPlugin {
         app.add_plugins(ConversionLogicPlugin)
             .init_resource::<OutputReady>()
             .init_resource::<OutputHasManifest>()
+            .init_resource::<panel::PendingDamagedOutput>()
             .add_systems(Startup, panel::detect_skyrim_at_start)
             .add_systems(
                 Update,
@@ -430,6 +431,48 @@ pub fn output_is_safe_target(output: &Path) -> Result<(), String> {
     })
 }
 
+/// What the launcher's output check found. A damaged manifest is not an empty
+/// folder: the first is a bug report, the second is the normal first run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputState {
+    /// A complete conversion the engine can start on.
+    Complete,
+    /// No conversion, or one that does not satisfy the runtime contract.
+    Incomplete,
+    /// A conversion file exists but cannot be read or parsed.
+    Corrupt { path: PathBuf, reason: String },
+}
+
+impl OutputState {
+    pub fn is_complete(&self) -> bool {
+        matches!(self, Self::Complete)
+    }
+
+    /// One line for the panel. Names the unreadable file and why.
+    pub fn message(&self, output: &Path) -> String {
+        match self {
+            Self::Complete => format!(
+                "{} holds a complete conversion: Play is ready.",
+                output.display()
+            ),
+            Self::Incomplete => format!(
+                "No complete conversion in {} yet: Start converts one.",
+                output.display()
+            ),
+            Self::Corrupt { path, reason } => {
+                let name = path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                );
+                format!(
+                    "{} is damaged: {name} cannot be read ({reason}). Run the converter again on the same Data folder and this output.",
+                    output.display()
+                )
+            }
+        }
+    }
+}
+
 /// Whether `output` holds a complete conversion the engine can start on: a manifest that says it is
 /// complete at a converter schema the engine loads (from [`shared::MIN_RUNTIME_CONVERTER_SCHEMA_VERSION`]
 /// through this converter's), the world database and cell cache beside it, and an integration
@@ -443,35 +486,87 @@ pub fn output_is_safe_target(output: &Path) -> Result<(), String> {
 /// Database schema and advertised LOD identity are checked by the runtime's shared read-only
 /// validator, and the database schema must match the integration report. Check and Full check
 /// additionally verify individual artifact bytes.
-pub fn output_is_complete(output: &Path) -> bool {
-    std::fs::read(output.join(MANIFEST_FILE))
-        .ok()
-        .and_then(|bytes| {
-            serde_json::from_slice::<converter::cache::ConversionManifest>(&bytes).ok()
-        })
-        .is_some_and(|manifest| {
-            manifest.complete
-                && manifest.failures.is_empty()
-                && (shared::MIN_RUNTIME_CONVERTER_SCHEMA_VERSION
-                    ..=converter::cache::CONVERTER_SCHEMA_VERSION)
-                    .contains(&manifest.schema_version)
-                && output.join("cell_cache.rkyv").is_file()
-                && std::fs::read(output.join("integration-report.json"))
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                    .is_some_and(|report| {
-                        report.get("passed").and_then(serde_json::Value::as_bool) == Some(true)
-                            && report
-                                .get("schema_version")
-                                .and_then(serde_json::Value::as_u64)
-                                .and_then(|version| u32::try_from(version).ok())
-                                .is_some_and(|schema| {
-                                    shared::world_assets::validate_lod_build_contract(
-                                        output,
-                                        shared::LOD_CONVERTER_SCHEMA_VERSION,
-                                    )
-                                    .is_ok_and(|actual| actual == schema)
-                                })
+///
+/// Reads the manifest and the integration report once and reports why the output
+/// is not usable. A read or parse failure is [`OutputState::Corrupt`]; a readable
+/// output that fails the runtime contract is [`OutputState::Incomplete`].
+pub fn output_state(output: &Path) -> OutputState {
+    let manifest_path = output.join(MANIFEST_FILE);
+    let manifest_bytes = match std::fs::read(&manifest_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return OutputState::Incomplete;
+        }
+        Err(error) => {
+            return OutputState::Corrupt {
+                path: manifest_path,
+                reason: error.to_string(),
+            };
+        }
+    };
+    let manifest: converter::cache::ConversionManifest =
+        match serde_json::from_slice(&manifest_bytes) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                return OutputState::Corrupt {
+                    path: manifest_path,
+                    reason: error.to_string(),
+                };
+            }
+        };
+    let report_path = output.join("integration-report.json");
+    let report_bytes = match std::fs::read(&report_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return OutputState::Corrupt {
+                path: report_path,
+                reason: error.to_string(),
+            };
+        }
+    };
+    let report = match report_bytes {
+        Some(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(report) => Some(report),
+            Err(error) => {
+                return OutputState::Corrupt {
+                    path: report_path,
+                    reason: error.to_string(),
+                };
+            }
+        },
+        None => None,
+    };
+    if manifest_is_complete(output, &manifest, report.as_ref()) {
+        OutputState::Complete
+    } else {
+        OutputState::Incomplete
+    }
+}
+
+fn manifest_is_complete(
+    output: &Path,
+    manifest: &converter::cache::ConversionManifest,
+    report: Option<&serde_json::Value>,
+) -> bool {
+    manifest.complete
+        && manifest.failures.is_empty()
+        && (shared::MIN_RUNTIME_CONVERTER_SCHEMA_VERSION
+            ..=converter::cache::CONVERTER_SCHEMA_VERSION)
+            .contains(&manifest.schema_version)
+        && output.join("cell_cache.rkyv").is_file()
+        && report.is_some_and(|report| {
+            report.get("passed").and_then(serde_json::Value::as_bool) == Some(true)
+                && report
+                    .get("schema_version")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|version| u32::try_from(version).ok())
+                    .is_some_and(|schema| {
+                        shared::world_assets::validate_lod_build_contract(
+                            output,
+                            shared::LOD_CONVERTER_SCHEMA_VERSION,
+                        )
+                        .is_ok_and(|actual| actual == schema)
                     })
         })
 }
@@ -509,7 +604,12 @@ pub fn refresh_output_ready(
     if has_manifest.0 != manifest {
         has_manifest.0 = manifest;
     }
-    let complete = chosen && output_is_complete(output);
+    let manifest_state = if chosen {
+        output_state(output)
+    } else {
+        OutputState::Incomplete
+    };
+    let complete = manifest_state.is_complete();
     if ready.0 != complete {
         ready.0 = complete;
     }
@@ -520,19 +620,20 @@ pub fn refresh_output_ready(
         return;
     }
     if complete {
-        status.push_notice(&format!(
-            "{} holds a complete conversion: Play is ready.",
-            output.display()
-        ));
+        status.push_notice(&manifest_state.message(output));
     } else if run_ended {
-        status.push_notice(
-            "The run finished, but the output does not pass the launcher's check (manifest, world database, cell cache and a passed integration report), so Play stays off.",
-        );
+        if let OutputState::Corrupt { .. } = &manifest_state {
+            // A damaged output is not an empty one: say which file is unreadable.
+            status.push_notice(&manifest_state.message(output));
+        } else {
+            status.push_notice(
+                "The run finished, but the output does not pass the launcher's check (manifest, world database, cell cache and a passed integration report), so Play stays off.",
+            );
+        }
     } else if chosen && !offer_leftover_staging(&mut state.0, &mut status, output) {
-        status.push_notice(&format!(
-            "No complete conversion in {} yet: Start converts one.",
-            output.display()
-        ));
+        // A leftover staging folder is offered for Resume first, whether the output is empty or
+        // damaged. Only when nothing is offered does the pane say what is wrong with the output.
+        status.push_notice(&manifest_state.message(output));
     }
 }
 
@@ -1132,19 +1233,19 @@ pub(crate) mod tests {
         for version in [3, 4, 5] {
             set_schemas(&output, converter::cache::CONVERTER_SCHEMA_VERSION, version);
             assert!(
-                output_is_complete(&output),
+                output_state(&output).is_complete(),
                 "legacy {version} needs no LOD tables"
             );
         }
         set_schemas(&output, converter::cache::CONVERTER_SCHEMA_VERSION, 5);
         write_integration_report(&output, true); // Reports the current schema; actual DB is 5.
         assert!(
-            !output_is_complete(&output),
+            !output_state(&output).is_complete(),
             "integration report must match actual schema"
         );
         std::fs::write(output.join("skyrim_world.db"), b"corrupt SQLite bytes").unwrap();
         assert!(
-            !output_is_complete(&output),
+            !output_state(&output).is_complete(),
             "corrupt database cannot enable Play"
         );
         set_schemas(
@@ -1168,11 +1269,14 @@ pub(crate) mod tests {
         });
         let path = output.join("lod-manifest.json");
         std::fs::write(&path, serde_json::to_vec(&lod).unwrap()).unwrap();
-        assert!(output_is_complete(&output), "matching current LOD contract");
+        assert!(
+            output_state(&output).is_complete(),
+            "matching current LOD contract"
+        );
         lod["build_identity"] = serde_json::json!("b".repeat(64));
         std::fs::write(&path, serde_json::to_vec(&lod).unwrap()).unwrap();
         assert!(
-            !output_is_complete(&output),
+            !output_state(&output).is_complete(),
             "mixed build identity cannot enable Play"
         );
         lod["build_identity"] = serde_json::json!(identity);
@@ -1180,7 +1284,7 @@ pub(crate) mod tests {
             lod["converter_schema"] = serde_json::json!(stale_producer);
             std::fs::write(&path, serde_json::to_vec(&lod).unwrap()).unwrap();
             assert!(
-                !output_is_complete(&output),
+                !output_state(&output).is_complete(),
                 "stale LOD producer {stale_producer} cannot enable Play"
             );
         }
@@ -1189,7 +1293,7 @@ pub(crate) mod tests {
             .execute("INSERT INTO lod_chunks(id) VALUES(0)", [])
             .unwrap();
         assert!(
-            !output_is_complete(&output),
+            !output_state(&output).is_complete(),
             "populated LOD needs its manifest"
         );
         drop(database);
@@ -1201,7 +1305,7 @@ pub(crate) mod tests {
         let output = complete_output("empty-db-regression");
         std::fs::write(output.join("skyrim_world.db"), []).unwrap();
         assert!(
-            !output_is_complete(&output),
+            !output_state(&output).is_complete(),
             "empty database cannot enable Play"
         );
         std::fs::remove_dir_all(output).unwrap();
@@ -1217,17 +1321,17 @@ pub(crate) mod tests {
         // The oldest output the engine still starts on (converter 15 + database 3 when this was
         // written, from before the merge that brought converter 16 and database 4).
         set_schemas(&output, oldest_converter, oldest_database);
-        assert!(output_is_complete(&output), "the oldest schemas");
+        assert!(output_state(&output).is_complete(), "the oldest schemas");
 
         set_schemas(&output, oldest_converter - 1, oldest_database);
         assert!(
-            !output_is_complete(&output),
+            !output_state(&output).is_complete(),
             "a converter older than the oldest"
         );
 
         set_schemas(&output, oldest_converter, oldest_database - 1);
         assert!(
-            !output_is_complete(&output),
+            !output_state(&output).is_complete(),
             "a database older than the oldest"
         );
 
@@ -1236,21 +1340,21 @@ pub(crate) mod tests {
             converter::cache::CONVERTER_SCHEMA_VERSION,
             shared::WORLD_DATABASE_SCHEMA_VERSION,
         );
-        assert!(output_is_complete(&output), "the current schemas");
+        assert!(output_state(&output).is_complete(), "the current schemas");
 
         set_schemas(
             &output,
             converter::cache::CONVERTER_SCHEMA_VERSION + 1,
             shared::WORLD_DATABASE_SCHEMA_VERSION,
         );
-        assert!(!output_is_complete(&output), "a newer converter");
+        assert!(!output_state(&output).is_complete(), "a newer converter");
 
         set_schemas(
             &output,
             converter::cache::CONVERTER_SCHEMA_VERSION,
             shared::WORLD_DATABASE_SCHEMA_VERSION + 1,
         );
-        assert!(!output_is_complete(&output), "a newer database");
+        assert!(!output_state(&output).is_complete(), "a newer database");
 
         // A report schema that does not fit in a u32 is not ready, and does not panic.
         std::fs::write(
@@ -1258,7 +1362,10 @@ pub(crate) mod tests {
             r#"{"passed": true, "schema_version": 4294967299}"#,
         )
         .unwrap();
-        assert!(!output_is_complete(&output), "a report schema past u32");
+        assert!(
+            !output_state(&output).is_complete(),
+            "a report schema past u32"
+        );
 
         std::fs::remove_dir_all(&output).unwrap();
     }
@@ -1266,28 +1373,28 @@ pub(crate) mod tests {
     #[test]
     fn an_output_is_complete_only_with_everything_the_engine_needs() {
         let output = complete_output("complete");
-        assert!(output_is_complete(&output));
+        assert!(output_state(&output).is_complete());
 
         write_integration_report(&output, false);
         assert!(
-            !output_is_complete(&output),
+            !output_state(&output).is_complete(),
             "a failed integration report is not complete"
         );
         write_integration_report(&output, true);
 
         std::fs::remove_file(output.join("cell_cache.rkyv")).unwrap();
-        assert!(!output_is_complete(&output), "no cell cache");
+        assert!(!output_state(&output).is_complete(), "no cell cache");
         std::fs::write(output.join("cell_cache.rkyv"), b"").unwrap();
 
         std::fs::remove_file(output.join("conversion-manifest.json")).unwrap();
-        assert!(!output_is_complete(&output), "no manifest");
+        assert!(!output_state(&output).is_complete(), "no manifest");
 
         let tiny = tiny_output("no-report", false);
         assert!(
-            !output_is_complete(&tiny),
+            !output_state(&tiny).is_complete(),
             "no integration report and no cell cache"
         );
-        assert!(!output_is_complete(&temp_dir("not-there")));
+        assert!(!output_state(&temp_dir("not-there")).is_complete());
 
         std::fs::remove_dir_all(&output).unwrap();
         std::fs::remove_dir_all(&tiny).unwrap();
@@ -1300,7 +1407,7 @@ pub(crate) mod tests {
             for world_schema in 2..=shared::WORLD_DATABASE_SCHEMA_VERSION + 1 {
                 set_schemas(&output, converter_schema, world_schema);
                 assert_eq!(
-                    output_is_complete(&output),
+                    output_state(&output).is_complete(),
                     (shared::MIN_RUNTIME_CONVERTER_SCHEMA_VERSION
                         ..=converter::cache::CONVERTER_SCHEMA_VERSION)
                         .contains(&converter_schema)
@@ -1818,6 +1925,61 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// A damaged manifest beside a leftover staging folder still offers Resume: the damage does
+    /// not hide the offer an incomplete output got before the output state existed.
+    #[test]
+    fn a_damaged_manifest_beside_a_leftover_staging_folder_still_offers_resume() {
+        let output = complete_output("leftover-corrupt");
+        let manifest = output.join(MANIFEST_FILE);
+        let bytes = std::fs::read(&manifest).unwrap();
+        std::fs::write(&manifest, &bytes[..bytes.len() / 2]).unwrap();
+        assert!(matches!(output_state(&output), OutputState::Corrupt { .. }));
+        let staging = leftover_staging(&output, "1-1");
+        let mut app = refresh_app(&output);
+        app.update();
+
+        let state = app.world().resource::<CurrentConversion>().0.clone();
+        assert_eq!(
+            state,
+            ConversionState::Stopped {
+                staging: Some(staging.clone()),
+                cancelled: false,
+            }
+        );
+        assert!(state::controls(&state).resume, "Resume is offered");
+        assert_eq!(*app.world().resource::<OutputReady>(), OutputReady(false));
+        let pane = app.world().resource::<ConversionStatus>().notice_text();
+        assert!(
+            pane.contains("An unfinished conversion was found"),
+            "{pane:?}"
+        );
+        std::fs::remove_dir_all(&output).unwrap();
+        std::fs::remove_dir_all(&staging).unwrap();
+    }
+
+    /// With no staging folder to offer, a damaged manifest is named in the pane and Play stays off.
+    #[test]
+    fn a_damaged_manifest_without_staging_is_named_in_the_pane() {
+        let output = complete_output("corrupt-pane");
+        let manifest = output.join(MANIFEST_FILE);
+        let bytes = std::fs::read(&manifest).unwrap();
+        std::fs::write(&manifest, &bytes[..bytes.len() / 2]).unwrap();
+        let mut app = refresh_app(&output);
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<CurrentConversion>().0,
+            ConversionState::Idle
+        );
+        assert_eq!(*app.world().resource::<OutputReady>(), OutputReady(false));
+        let pane = app.world().resource::<ConversionStatus>().notice_text();
+        assert!(
+            pane.contains("is damaged") && pane.contains(MANIFEST_FILE),
+            "{pane:?}"
+        );
+        std::fs::remove_dir_all(&output).unwrap();
+    }
+
     /// A complete output is ready to play; a staging folder beside it is not offered.
     #[test]
     fn a_leftover_staging_folder_beside_a_complete_output_is_not_offered() {
@@ -1899,6 +2061,68 @@ pub(crate) mod tests {
         assert!(pane.contains("  missing: meshes/b.glb"), "{pane:?}");
         assert!(pane.contains("Run the converter again"), "{pane:?}");
         assert_eq!(status.overall_percent(), 100.0);
+        std::fs::remove_dir_all(&output).unwrap();
+    }
+
+    /// A damaged manifest is worse than an empty folder: it must be named, not
+    /// offered as "convert again" beside a fresh output.
+    #[test]
+    fn a_truncated_manifest_is_corrupt_not_incomplete() {
+        let output = complete_output("corrupt-manifest");
+        assert_eq!(output_state(&output), OutputState::Complete);
+
+        let path = output.join(MANIFEST_FILE);
+        let bytes = std::fs::read(&path).unwrap();
+        // A real manifest is tens of megabytes; the fixture is small. Keep a
+        // 512-byte prefix of a real one, and drop the closing brace of a small one.
+        let keep = bytes.len().min(512).saturating_sub(1);
+        std::fs::write(&path, &bytes[..keep]).unwrap();
+
+        let state = output_state(&output);
+        assert!(
+            matches!(&state, OutputState::Corrupt { path, .. }
+                if path.file_name().is_some_and(|name| name.to_string_lossy() == MANIFEST_FILE)),
+            "{state:?}"
+        );
+        assert!(
+            state.message(&output).contains(MANIFEST_FILE),
+            "names the file"
+        );
+        // The advice is the converter's own (`check.rs`): run it again on the same output.
+        assert!(
+            state
+                .message(&output)
+                .contains("Run the converter again on the same Data folder and this output."),
+            "advice matches the converter check"
+        );
+        assert!(!output_state(&output).is_complete(), "Play stays off");
+        std::fs::remove_dir_all(&output).unwrap();
+    }
+
+    #[test]
+    fn a_missing_output_is_incomplete_and_a_valid_one_is_complete() {
+        let directory = tempfile::tempdir().unwrap();
+        let empty = directory.path().join("never-converted");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert_eq!(output_state(&empty), OutputState::Incomplete);
+
+        let output = complete_output("tri-state-valid");
+        assert_eq!(output_state(&output), OutputState::Complete);
+        assert!(output_state(&output).is_complete());
+    }
+
+    #[test]
+    fn a_damaged_integration_report_is_corrupt() {
+        let output = complete_output("corrupt-report");
+        let path = output.join("integration-report.json");
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+        let state = output_state(&output);
+        assert!(
+            matches!(&state, OutputState::Corrupt { path, .. }
+                if path.file_name().is_some_and(|name| name.to_string_lossy() == "integration-report.json")),
+            "{state:?}"
+        );
         std::fs::remove_dir_all(&output).unwrap();
     }
 }
