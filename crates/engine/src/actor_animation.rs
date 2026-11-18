@@ -2048,6 +2048,8 @@ mod tests {
             // for. A clip end leaves that state for one update, until the sequence replaces the
             // player on the next one. A creature that stays finished is frozen.
             let (mut frozen_run, mut longest_frozen) = (0_u32, 0_u32);
+            // The base clip is already installed and playing.
+            let mut installed: HashSet<String> = HashSet::from([played[0].1.clone()]);
             while elapsed < seconds {
                 assert!(
                     Instant::now() < deadline,
@@ -2115,9 +2117,13 @@ mod tests {
                 if graph.is_some() && graph != last_graph {
                     switch_updates += 1;
                     last_graph = graph;
+                    // The clip of the pick that is current is the one this graph installs.
+                    installed.insert(current.to_owned());
                 }
             }
-            let distinct: HashSet<_> = played.iter().map(|(_, source)| source.as_str()).collect();
+            // Distinct clips count when their graph was installed, not when they were requested: a
+            // last request whose clip never started does not count.
+            let distinct = installed.clone();
             println!(
                 "IDLE_SEQUENCE {name}: {} clip picks, {} distinct clips in {elapsed:.0} s; {stalled} stalled updates (longest run {longest_run}), {switch_updates} graph replacements (one update each), longest finished-player run {longest_frozen}",
                 played.len() - 1,
