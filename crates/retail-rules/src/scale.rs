@@ -153,7 +153,8 @@ pub fn base_form_scale_factor(base_form_type: u8, npc: NpcHeights) -> Option<f32
 
 /// The scale of a placed reference from its base form type (RF-REFR-002 with RF-NPC-004).
 /// `base_scale` is the reference's own scale. Only the base form type decides whether the NPC
-/// scale applies; the reference's own form type does not.
+/// scale applies; the reference's own form type does not. A reference with no base form has no
+/// base form type: pass any value other than [`NPC_FORM_TYPE`].
 ///
 /// Callers should use this function rather than combine the parts themselves, so that the three
 /// factors keep the retail grouping `base scale × (race height × NPC height)`.
@@ -262,6 +263,15 @@ mod tests {
         let height = f32::from_bits(0x3f59_999a); // 0.85
         let npc = npc_scale(Some(race), SEX_INDEX_MALE, Some(height));
         assert_eq!(retail_reference_scale(37, Some(npc)).to_bits(), 0x3eb1_205d);
+        let heights = NpcHeights {
+            race: Some(race),
+            sex_index: SEX_INDEX_MALE,
+            npc_height: Some(height),
+        };
+        assert_eq!(
+            retail_placed_reference_scale(NPC_FORM_TYPE, 37, heights).to_bits(),
+            0x3eb1_205d
+        );
         let other = (stored_reference_scale(37) * race.male) * height;
         assert_eq!(other.to_bits(), 0x3eb1_205c);
     }
@@ -510,8 +520,8 @@ mod proofs {
     }
 
     /// RF-REFR-002: only an NPC base form (type 0x2B) adds a factor, and that factor is the NPC
-    /// scale, bit for bit. Together with `reference_scale_uses_the_retail_grouping`, which holds
-    /// for every factor, this covers `placed_reference_scale` for an NPC base.
+    /// scale, bit for bit. `placed_npc_reference_scale_keeps_the_retail_grouping` proves the whole
+    /// function for an NPC base.
     #[kani::proof]
     fn only_an_npc_base_adds_the_npc_scale() {
         let base_form_type: u8 = kani::any();
@@ -532,6 +542,50 @@ mod proofs {
             }
             None => assert_ne!(base_form_type, NPC_FORM_TYPE),
         }
+    }
+
+    /// RF-REFR-002 with RF-NPC-004, the whole function: for an NPC base and every stored whole
+    /// percent, `retail_placed_reference_scale` (and so `placed_reference_scale`) is
+    /// `stored scale × (race height × NPC height)`, bit for bit, with the retail grouping. The
+    /// expected value is written out here, apart from the code. The proof excludes only zero times
+    /// an infinity in either product, and NaN payloads, as everywhere.
+    ///
+    /// This is the only harness that sees a regrouping inside `placed_reference_scale` (mutation
+    /// M13). It takes the base scale from the retail domain, a stored `u16` percent: the same proof
+    /// over every `f32` base scale also passes, but it took about 8 minutes, against about 2.5.
+    #[kani::proof]
+    fn placed_npc_reference_scale_keeps_the_retail_grouping() {
+        let percent: u16 = kani::any();
+        let race = any_race();
+        let sex: i32 = kani::any();
+        let npc_height: Option<f32> = if kani::any() { Some(kani::any()) } else { None };
+        let selected = match race {
+            None => 1.0,
+            Some(heights) if sex == 0 => heights.male,
+            Some(heights) if sex == 1 => heights.female,
+            Some(_) => 0.0,
+        };
+        let height = match npc_height {
+            Some(height) => height,
+            None => 1.0,
+        };
+        let base = f32::from(percent) * f32::from_bits(0x3c23_d70a);
+        kani::assume(not_zero_times_infinity(selected, height));
+        kani::assume(not_zero_times_infinity(base, selected * height));
+        kani::cover!(
+            race.is_some() && npc_height.is_some(),
+            "a race and NAM6 are reached"
+        );
+        kani::cover!(race.is_none(), "no race is reached");
+        let npc = NpcHeights {
+            race,
+            sex_index: sex,
+            npc_height,
+        };
+        assert!(same(
+            retail_placed_reference_scale(NPC_FORM_TYPE, percent, npc),
+            base * (selected * height)
+        ));
     }
 
     /// RF-REFR-002: a reference whose base form type is not 0x2B keeps exactly its own scale,

@@ -64,8 +64,10 @@ not lower the reserve. Follow the machine's build gates in `AGENTS.md`, such as 
 
 Without shared storage (for example in CI), run `cargo kani -p retail-rules` and
 `cargo test -p retail-rules --no-fail-fast`. To run only some harnesses, add `--harness <name>`
-once for each. A full Kani run takes about 2 to 5 minutes; `reference_scale_uses_the_retail_grouping`
-is most of it.
+once for each. A full Kani run takes about 5 minutes on a quiet laptop. Three harnesses take most
+of it: `placed_npc_reference_scale_keeps_the_retail_grouping`,
+`reference_scale_uses_the_retail_grouping` and `sex_index_selects_the_race_height`. Do not use
+`--jobs`: Kani then needs terse output, which has no per-check lines for `check-kani-log.sh`.
 
 Kani output is long. Read the result with:
 
@@ -77,10 +79,19 @@ grep -B1 -A2 "Status: FAILURE" "$LOG"
 A good run prints `VERIFICATION:- SUCCESSFUL` for every harness and ends with
 `Complete - N successfully verified harnesses, 0 failures, N total.`, and `check-kani-log.sh`
 exits 0. Always run that check. Kani 0.68.0 also reports SUCCESSFUL and exits 0 when a
-`kani::cover!` is `UNSATISFIABLE` or when an assertion is `UNREACHABLE` (for example after a
-contradictory `kani::assume`), and such a proof proves nothing. The script fails on both, for
-checks located in this crate. CI runs the same script. Every harness with a `kani::assume` has
-`kani::cover!` lines that show its cases are reachable; add one when you add an assume.
+`kani::cover!` is `UNSATISFIABLE`, when an assertion is `UNREACHABLE` (for example after a
+contradictory `kani::assume`), or when fewer harnesses ran than the crate has. Such a run proves
+nothing. The script fails closed on all three:
+
+- The summary must count every `#[kani::proof]` in `crates/retail-rules/src`, with 0 failures.
+  For a run with `--harness`, pass the number of harnesses as the second argument.
+- Any `UNREACHABLE` check fails unless its location is in the Rust or Kani library
+  (`library/core`, `alloc`, `std`, `kani_core` or `kani`). A check with no location fails.
+- Any `UNSATISFIABLE` cover fails.
+
+CI runs the same script. Every harness with a `kani::assume` has `kani::cover!` lines that show
+its cases are reachable; add one when you add an assume. A legal unreachable check in this crate
+also fails the script; fix the code or the harness, not the script.
 
 ## 3. Coverage record
 
@@ -89,7 +100,7 @@ checks located in this crate. CI runs the same script. Every harness with a `kan
 | `crates/retail-rules/src/scale.rs` | `sex_index`, `sex_index_of_form_type`, `npc_sex_index` | RF-NPC-005 | `sex_index_is_acbs_bit_zero`, `a_female_npc_gets_the_female_height` | `sex_index_reads_acbs_bit_zero_for_an_npc_only`; `rf_npc_005_sex_index_matches_every_retail_row` (24 rows, `tests/data/RF-NPC-005.tsv`) |
 | `crates/retail-rules/src/scale.rs` | `race_height`, `npc_scale` | RF-NPC-004 | `missing_race_gives_the_npc_height`, `missing_npc_height_gives_the_race_height`, `missing_race_and_npc_height_give_one`, `sex_index_selects_the_race_height`, `finite_inputs_in_range_give_a_finite_scale`, `large_finite_heights_can_overflow` (cover) | `npc_scale_table` |
 | `crates/retail-rules/src/scale.rs` | `stored_reference_scale`, `reference_scale`, `retail_reference_scale` | RF-REFR-002, RF-CC-004 (same product) | `reference_scale_uses_the_retail_grouping`, `grouping_changes_the_last_bit` (cover), `a_reference_without_an_npc_base_keeps_its_scale`, `stored_scale_is_monotonic`, `one_hundred_percent_is_exactly_one`, `finite_inputs_in_range_give_a_finite_scale` | `stored_percent_table`, `every_stored_percent_is_close_to_its_exact_value_and_monotonic`, `reference_scale_keeps_the_retail_grouping`, `reference_scale_multiplies_only_for_an_npc_base` |
-| `crates/retail-rules/src/scale.rs` | `base_form_scale_factor`, `placed_reference_scale`, `retail_placed_reference_scale` | RF-REFR-002 with RF-NPC-004 (form type 0x2B) | `only_an_npc_base_adds_the_npc_scale`, `a_placed_reference_without_an_npc_base_keeps_its_scale`; for an NPC base, by composition with `reference_scale_uses_the_retail_grouping` | `only_an_npc_base_form_adds_the_npc_scale` |
+| `crates/retail-rules/src/scale.rs` | `base_form_scale_factor`, `placed_reference_scale`, `retail_placed_reference_scale` | RF-REFR-002 with RF-NPC-004 (form type 0x2B) | `only_an_npc_base_adds_the_npc_scale`, `a_placed_reference_without_an_npc_base_keeps_its_scale`, `placed_npc_reference_scale_keeps_the_retail_grouping` (the whole function for an NPC base, every stored percent) | `only_an_npc_base_form_adds_the_npc_scale`, `reference_scale_keeps_the_retail_grouping` |
 | `crates/retail-rules/src/placement.rs` | `reference_rotation`, `placed_reference_rotation` | RF-REFR-001 (form type 0x3E) | `the_heading_is_always_kept`, `an_actor_reference_drops_x_and_y`, `any_other_reference_keeps_every_angle`, `only_an_achr_drops_x_and_y` | `an_actor_reference_keeps_only_its_heading`, `only_the_achr_form_type_drops_x_and_y`, `any_other_reference_keeps_all_three_angles` |
 
 Bounds and assumptions:
@@ -98,15 +109,19 @@ Bounds and assumptions:
   values), with two exceptions. `finite_inputs_in_range_give_a_finite_scale` limits heights to
   finite values of magnitude 1.0e6 or less; `large_finite_heights_can_overflow` shows that the
   limit is needed. `sex_index_selects_the_race_height`,
-  `reference_scale_uses_the_retail_grouping` and `only_an_npc_base_adds_the_npc_scale` exclude zero times an infinity, and nothing else.
+  `reference_scale_uses_the_retail_grouping`, `only_an_npc_base_adds_the_npc_scale` and
+  `placed_npc_reference_scale_keeps_the_retail_grouping` exclude zero times an infinity, and
+  nothing else.
   That product is NaN in IEEE arithmetic and in retail, but Kani reports any NaN that a
   multiplication makes from non-NaN inputs as a failure (`NaN on multiplication`).
-- The grouping is proved in two steps: `sex_index_selects_the_race_height` (NPC scale = race
-  height × NPC height) and `reference_scale_uses_the_retail_grouping` (reference scale =
-  stored scale × NPC scale). Do not merge them into one harness over the whole chain. That
-  harness passed once, but it took 13 minutes, because the solver must show that two separate
-  multiplier circuits agree. Keep one multiplication on each side of a comparison. The split
-  harnesses take about 3 minutes and under 1 minute.
+- The grouping is proved in steps and as a whole. `sex_index_selects_the_race_height` (NPC
+  scale = race height × NPC height) and `reference_scale_uses_the_retail_grouping` (reference
+  scale = stored scale × NPC scale) prove the parts for every `f32`.
+  `placed_npc_reference_scale_keeps_the_retail_grouping` proves the whole composed function, with
+  the base scale taken from every stored `u16` percent (the retail domain). The same whole proof
+  over every `f32` base scale passed once in about 8 minutes, so it is not in CI. Two separate
+  chains of two multiplications are slow for the solver; keep a harness to one multiplication on
+  each side when you can.
 - The product grouping `(f32(percent) × 0.01) × (race height × NPC height)` was confirmed
   statically from the retail machine code. A bitwise run of the retail code is still pending.
   A2 (missing `NAM6` = 1.0) and A3 (how `XSCL` becomes a whole percent) are listed at the top of
@@ -148,6 +163,11 @@ A proof that was never seen to fail proves nothing. After any change to a harnes
 mutation that targets it on a scratch commit, run section 2, and confirm the named harness fails
 with a counterexample. Then revert and confirm that every harness passes again.
 
+Give each mutant its own build. Use a new `--isolated` label for each mutant (for example
+`verify-retail-rules-m13`), or add `--force-build` to `cargo kani`. Then check that the log has
+`Compiling retail-rules`. An independent review of #804 shared one label across scratch
+workspaces; cargo reused a stale build, and mutants that should fail passed.
+
 | ID | Mutation | Harnesses that must fail |
 |---|---|---|
 | M1 | In `race_height`, swap `heights.male` and `heights.female` | `sex_index_selects_the_race_height`, `a_female_npc_gets_the_female_height` |
@@ -162,21 +182,24 @@ with a counterexample. Then revert and confirm that every harness passes again.
 | M10 | In `sex_index`, read `ACBS` bit 1 instead of bit 0 | `sex_index_is_acbs_bit_zero`, `a_female_npc_gets_the_female_height`, the unit test and the retail rows |
 | M11 | In `base_form_scale_factor` or `placed_reference_rotation`, test another form type | `only_an_npc_base_adds_the_npc_scale`, `a_placed_reference_without_an_npc_base_keeps_its_scale`, `only_an_achr_drops_x_and_y` |
 | M12 | Add a contradictory `kani::assume` (for example `x > 1.0 && x < 0.0`) to any harness | `check-kani-log.sh` (Kani itself still reports SUCCESSFUL) |
+| M13 | In `placed_reference_scale`, compute `(base × race height) × NAM6` for an NPC base | `placed_npc_reference_scale_keeps_the_retail_grouping`, the unit test `reference_scale_keeps_the_retail_grouping` |
 
-The pilot ran M1 to M4, M11 and M12. The independent review of #804 ran M6 to M10. M5 is not
-yet run. One limit: computing a single product of two `f32` values in `f64` and rounding once
+Who ran each mutation: the pilot ran M1 to M4, M11, M12 and M13. The first review of #804 ran M6
+to M9. The cold-run agent found M10. The delta review of #804 ran M5, ran M11 again, and found
+M13, which no harness caught until `placed_npc_reference_scale_keeps_the_retail_grouping` was
+added. One limit: computing a single product of two `f32` values in `f64` and rounding once
 gives the same bits as `f32`. Such a change is not a mutation: no proof detects it, and it is
 not a bug. M8 differs, because it rounds once over two products.
 
-The API passes the NPC scale to `reference_scale` as one value, so the crate itself cannot
-regroup the three factors. A caller that multiplies them in another order is caught only by a
-test at the call site, such as the unit test `reference_scale_keeps_the_retail_grouping`, which
+A caller that multiplies the three factors itself, in another order, is outside these proofs.
+Callers should use `placed_reference_scale`. The unit test `reference_scale_keeps_the_retail_grouping`
 pins one input whose two groupings differ in the last bit.
 
 ## 6. Sync and maintenance
 
-**Sync commit:** the merge commit of #804, the pull request that added this skill (checked on
-2026-11-18, on top of `main` `47c234a1`).
+**Sync commit:** the merge commit of the follow-up to #804 that added
+`placed_npc_reference_scale_keeps_the_retail_grouping` (checked on 2026-11-18, on top of `main`
+`c895d12d`, the merge of #804).
 
 Move the sync commit forward only after you run section 2 and the mutations for every changed
 harness, and confirm that the proofs still describe the code at the new commit. Then:
