@@ -3,7 +3,9 @@ use bevy::prelude::Resource;
 use color_eyre::{Result, eyre::WrapErr};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use shared::lod::{ChunkAnchor, ChunkKey, LodOrigin, LodTier, chunk_payload_path};
+use shared::lod::{
+    ChunkAnchor, ChunkKey, LodOrigin, LodTier, chunk_payload_path, object_chunk_payload_path,
+};
 use std::{
     collections::{BTreeSet, HashSet},
     path::Path,
@@ -125,6 +127,12 @@ pub enum DatabaseRequest {
         query: LodChunkQuery,
         queued_at: Instant,
     },
+    /// All object LOD chunks of a worldspace (the additive `lod_object_chunks` table).
+    LoadLodObjectChunks {
+        generation: u64,
+        worldspace_id: u32,
+        queued_at: Instant,
+    },
     Shutdown,
 }
 
@@ -182,6 +190,15 @@ pub struct LodChunkResponse {
     pub chunk_count: usize,
 }
 
+/// Generation-tagged result of loading a worldspace's object LOD chunks. It has its own channel,
+/// so terrain LOD intake never sees an object response.
+#[derive(Debug)]
+pub struct LodObjectResponse {
+    pub generation: u64,
+    pub worldspace_id: u32,
+    pub result: std::result::Result<Vec<LodChunkMetadata>, LodQueryFailure>,
+}
+
 /// Whether an asynchronous query failed temporarily or rejected invalid metadata.
 #[derive(Debug)]
 pub struct LodQueryFailure {
@@ -233,6 +250,7 @@ pub struct WorldDatabase {
     requests: Sender<DatabaseRequest>,
     responses: Receiver<DatabaseResponse>,
     lod_responses: Receiver<LodChunkResponse>,
+    lod_object_responses: Receiver<LodObjectResponse>,
     worker: Option<thread::JoinHandle<()>>,
     worker_stopped: Arc<AtomicBool>,
 }
@@ -743,22 +761,7 @@ fn record_texture_path(path: String) -> Option<String> {
 /// `..` or `.` segment, an absolute or drive-prefixed path, an empty segment, or a `:` (a Windows
 /// drive or stream, or an asset source such as `embedded://`) - is refused rather than loaded.
 pub(crate) fn converted_texture_path(path: String) -> Option<String> {
-    // Converted assets are published with lowercase canonical paths, so the
-    // lookup must lowercase too (matching world-inspect's resolver).
-    let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    let without_prefix = normalized.strip_prefix("textures/").unwrap_or(&normalized);
-    if without_prefix.is_empty()
-        || !is_safe_relative_asset_path(without_prefix)
-        || without_prefix.contains(':')
-        || without_prefix
-            .split('/')
-            .any(|segment| matches!(segment, "" | "." | ".."))
-    {
-        return None;
-    }
-    let mut converted = std::path::PathBuf::from("textures").join(without_prefix);
-    converted.set_extension("ktx2");
-    Some(converted.to_string_lossy().replace('\\', "/"))
+    shared::texture_aliases::converted_record_texture_path(&path)
 }
 
 /// Rejects a database-supplied relative path that could escape the assets
@@ -781,16 +784,42 @@ impl WorldDatabase {
         let (requests, request_rx) = bounded(capacity);
         let (response_tx, responses) = unbounded();
         let (_lod_tx, lod_responses) = unbounded();
+        let (_lod_object_tx, lod_object_responses) = unbounded();
         (
             Self {
                 requests,
                 responses,
                 lod_responses,
+                lod_object_responses,
                 worker: None,
                 worker_stopped: Arc::new(AtomicBool::new(true)),
             },
             request_rx,
             response_tx,
+        )
+    }
+
+    /// [`Self::channel_fixture`] that keeps the object LOD response sender, so a test can answer
+    /// an object chunk request itself.
+    #[cfg(test)]
+    pub(crate) fn channel_fixture_with_lod_objects(
+        capacity: usize,
+    ) -> (Self, Receiver<DatabaseRequest>, Sender<LodObjectResponse>) {
+        let (requests, request_rx) = bounded(capacity);
+        let (_response_tx, responses) = unbounded();
+        let (_lod_tx, lod_responses) = unbounded();
+        let (lod_object_tx, lod_object_responses) = unbounded();
+        (
+            Self {
+                requests,
+                responses,
+                lod_responses,
+                lod_object_responses,
+                worker: None,
+                worker_stopped: Arc::new(AtomicBool::new(true)),
+            },
+            request_rx,
+            lod_object_tx,
         )
     }
 
@@ -816,12 +845,20 @@ impl WorldDatabase {
         // Responses must not block shutdown if the main world stops polling.
         let (response_tx, response_rx) = unbounded();
         let (lod_response_tx, lod_response_rx) = unbounded();
+        let (lod_object_tx, lod_object_rx) = unbounded();
         let worker_stopped = Arc::new(AtomicBool::new(false));
         let stopped = worker_stopped.clone();
         let worker = thread::Builder::new()
             .name("mudcrab-world-db".into())
             .spawn(move || {
-                worker(path, features, request_rx, response_tx, lod_response_tx);
+                worker(
+                    path,
+                    features,
+                    request_rx,
+                    response_tx,
+                    lod_response_tx,
+                    lod_object_tx,
+                );
                 stopped.store(true, Ordering::Release);
             })
             .wrap_err("failed to start world database worker")?;
@@ -829,6 +866,7 @@ impl WorldDatabase {
             requests: request_tx,
             responses: response_rx,
             lod_responses: lod_response_rx,
+            lod_object_responses: lod_object_rx,
             worker: Some(worker),
             worker_stopped,
         })
@@ -862,6 +900,23 @@ impl WorldDatabase {
     /// Read the next LOD response without consuming ordinary cell responses.
     pub fn try_lod_response(&self) -> Option<LodChunkResponse> {
         self.lod_responses.try_recv().ok()
+    }
+
+    /// Queue a load of every object LOD chunk of `worldspace_id` on the existing worker.
+    pub fn request_lod_object_chunks(&self, generation: u64, worldspace_id: u32) -> Result<()> {
+        enqueue_request(
+            &self.requests,
+            DatabaseRequest::LoadLodObjectChunks {
+                generation,
+                worldspace_id,
+                queued_at: Instant::now(),
+            },
+        )
+    }
+
+    /// Read the next object LOD response.
+    pub fn try_lod_object_response(&self) -> Option<LodObjectResponse> {
+        self.lod_object_responses.try_recv().ok()
     }
 }
 
@@ -929,6 +984,7 @@ fn worker(
     requests: Receiver<DatabaseRequest>,
     responses: Sender<DatabaseResponse>,
     lod_responses: Sender<LodChunkResponse>,
+    lod_object_responses: Sender<LodObjectResponse>,
 ) {
     // Which optional tables and columns this database has does not change while it is open, so
     // the reference query is built once for the connection. If the database cannot be opened or
@@ -1011,6 +1067,30 @@ fn worker(
                     break;
                 }
             }
+            DatabaseRequest::LoadLodObjectChunks {
+                generation,
+                worldspace_id,
+                queued_at: _,
+            } => {
+                let result = match &setup {
+                    Ok((connection, _)) => load_lod_object_chunks(connection, worldspace_id)
+                        .map_err(LodQueryFailure::from_error),
+                    Err(error) => Err(LodQueryFailure {
+                        transient: false,
+                        reason: error.clone(),
+                    }),
+                };
+                if lod_object_responses
+                    .send(LodObjectResponse {
+                        generation,
+                        worldspace_id,
+                        result,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
         }
     }
 }
@@ -1040,44 +1120,8 @@ fn load_lod_chunks(connection: &Connection, query: LodChunkQuery) -> Result<Vec<
         return Ok(Vec::new());
     }
 
-    let (origin_x, origin_y): (Option<i32>, Option<i32>) = connection
-        .query_row(
-            "SELECT lod_origin_x,lod_origin_y FROM worldspaces WHERE id=?1",
-            [query.worldspace_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .wrap_err_with(|| {
-            format!(
-                "LOD worldspace {} is missing from worldspaces or has invalid origin columns",
-                query.worldspace_id
-            )
-        })?;
-    let origin = LodOrigin::new(
-        origin_x.ok_or_else(|| {
-            color_eyre::eyre::eyre!(
-                "LOD worldspace {} has no valid X origin",
-                query.worldspace_id
-            )
-        })?,
-        origin_y.ok_or_else(|| {
-            color_eyre::eyre::eyre!(
-                "LOD worldspace {} has no valid Y origin",
-                query.worldspace_id
-            )
-        })?,
-    );
-
-    let build_identity: String = connection
-        .query_row(
-            "SELECT build_identity FROM lod_build WHERE id=1",
-            [],
-            |row| row.get(0),
-        )
-        .wrap_err("LOD build identity is missing from lod_build")?;
-    color_eyre::eyre::ensure!(
-        is_canonical_sha256(&build_identity),
-        "LOD build identity is not a lowercase SHA-256 digest"
-    );
+    let origin = lod_worldspace_origin(connection, query.worldspace_id)?;
+    let build_identity = lod_build_identity(connection)?;
 
     let mut statement = connection.prepare_cached(
         "SELECT DISTINCT c.worldspace_id,c.tier,c.anchor_x,c.anchor_y,c.payload_path,c.content_hash,\
@@ -1102,9 +1146,124 @@ fn load_lod_chunks(connection: &Connection, query: LodChunkQuery) -> Result<Vec<
 
     rows.map(|row| {
         let raw = row?;
-        validate_lod_chunk(raw, query.worldspace_id, origin, &build_identity)
+        validate_lod_chunk(
+            raw,
+            query.worldspace_id,
+            origin,
+            &build_identity,
+            chunk_payload_path,
+        )
     })
     .collect()
+}
+
+/// The LOD grid origin of a worldspace, from its `worldspaces` row.
+fn lod_worldspace_origin(connection: &Connection, worldspace_id: u32) -> Result<LodOrigin> {
+    let (origin_x, origin_y): (Option<i32>, Option<i32>) = connection
+        .query_row(
+            "SELECT lod_origin_x,lod_origin_y FROM worldspaces WHERE id=?1",
+            [worldspace_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .wrap_err_with(|| {
+            format!(
+                "LOD worldspace {worldspace_id} is missing from worldspaces or has invalid origin columns"
+            )
+        })?;
+    Ok(LodOrigin::new(
+        origin_x.ok_or_else(|| {
+            color_eyre::eyre::eyre!("LOD worldspace {worldspace_id} has no valid X origin")
+        })?,
+        origin_y.ok_or_else(|| {
+            color_eyre::eyre::eyre!("LOD worldspace {worldspace_id} has no valid Y origin")
+        })?,
+    ))
+}
+
+/// The pack's LOD build identity (`lod_build`), which every chunk row is checked against.
+fn lod_build_identity(connection: &Connection) -> Result<String> {
+    let build_identity: String = connection
+        .query_row(
+            "SELECT build_identity FROM lod_build WHERE id=1",
+            [],
+            |row| row.get(0),
+        )
+        .wrap_err("LOD build identity is missing from lod_build")?;
+    color_eyre::eyre::ensure!(
+        is_canonical_sha256(&build_identity),
+        "LOD build identity is not a lowercase SHA-256 digest"
+    );
+    Ok(build_identity)
+}
+
+/// Object LOD chunks of a worldspace, from the additive `lod_object_chunks` table.
+///
+/// Returns no chunks for a pack without that table, so a pack converted before object LOD loads
+/// exactly as before. A pack that has the table is held to the terrain contract: a row with a
+/// non-canonical payload path, a bad hash, bad bounds or an identity that does not match
+/// `lod_build` is an error, never a skipped row. Use [`verify_lod_object_payloads`] to check that
+/// every listed file exists and matches its hash.
+pub fn load_lod_object_chunks(
+    connection: &Connection,
+    worldspace_id: u32,
+) -> Result<Vec<LodChunkMetadata>> {
+    let has_table: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lod_object_chunks')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_table {
+        return Ok(Vec::new());
+    }
+    let has_chunks: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM lod_object_chunks WHERE worldspace_id=?1)",
+        [worldspace_id],
+        |row| row.get(0),
+    )?;
+    if !has_chunks {
+        return Ok(Vec::new());
+    }
+    let origin = lod_worldspace_origin(connection, worldspace_id)?;
+    let build_identity = lod_build_identity(connection)?;
+    let mut statement = connection.prepare_cached(
+        "SELECT worldspace_id,tier,anchor_x,anchor_y,payload_path,content_hash,\
+         bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,\
+         source_cells FROM lod_object_chunks WHERE worldspace_id=?1 \
+         ORDER BY tier,anchor_x,anchor_y",
+    )?;
+    let rows = statement.query_map([worldspace_id], RawLodChunk::from_row)?;
+    rows.map(|row| {
+        validate_lod_chunk(
+            row?,
+            worldspace_id,
+            origin,
+            &build_identity,
+            object_chunk_payload_path,
+        )
+    })
+    .collect()
+}
+
+/// Checks that every object LOD chunk's file exists under `assets` and matches its recorded
+/// SHA-256. A listed chunk whose file is missing or damaged is an error that names the chunk: the
+/// pack fails closed instead of drawing without it.
+pub fn verify_lod_object_payloads(assets: &Path, chunks: &[LodChunkMetadata]) -> Result<()> {
+    for chunk in chunks {
+        // The terrain loader's own check: it reads the file, hashes it and reports a missing
+        // file or a different SHA-256 as an error.
+        crate::streaming::lod::verify_payload_hash(
+            assets.join(&chunk.payload_path),
+            chunk.content_hash.clone(),
+        )
+        .map_err(|failure| {
+            color_eyre::eyre::eyre!(
+                "object LOD chunk {:?} failed its integrity check: {}",
+                chunk.key,
+                failure.reason()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn has_lod_table(connection: &Connection) -> Result<bool> {
@@ -1161,6 +1320,7 @@ fn validate_lod_chunk(
     requested_worldspace: u32,
     origin: LodOrigin,
     build_identity: &str,
+    canonical_payload_path: fn(ChunkKey) -> String,
 ) -> Result<LodChunkMetadata> {
     let worldspace_id = u32::try_from(raw.worldspace_id)
         .wrap_err_with(|| format!("LOD chunk has invalid worldspace id {}", raw.worldspace_id))?;
@@ -1175,7 +1335,7 @@ fn validate_lod_chunk(
         .wrap_err_with(|| format!("LOD chunk has invalid anchor Y {}", raw.anchor_y))?;
     let key = ChunkKey::new(worldspace_id, tier, ChunkAnchor::new(anchor_x, anchor_y));
 
-    let canonical_path = chunk_payload_path(key);
+    let canonical_path = canonical_payload_path(key);
     color_eyre::eyre::ensure!(
         is_safe_relative_asset_path(&raw.payload_path) && raw.payload_path == canonical_path,
         "LOD chunk {key:?} has unsafe or non-canonical payload path {:?}; expected {canonical_path:?}",
@@ -1395,6 +1555,21 @@ struct ReferenceQuery {
 }
 
 impl ReferenceQuery {
+    fn exterior_sql(&self) -> String {
+        let columns = &self.columns;
+        let joins = &self.joins;
+        format!(
+            "SELECT {columns} FROM exterior_spatial x JOIN \"references\" r ON r.id=x.id{joins} \
+             WHERE x.worldspace_id=?1 AND x.minX>=?2 AND x.minX<?3 AND x.minY>=?4 AND x.minY<?5"
+        )
+    }
+
+    fn interior_sql(&self) -> String {
+        let columns = &self.columns;
+        let joins = &self.joins;
+        format!("SELECT {columns} FROM \"references\" r{joins} WHERE r.cell_id=?1")
+    }
+
     fn for_connection(connection: &Connection, features: WorldDatabaseFeatures) -> Result<Self> {
         let has_records = has_records(connection)?;
         let record_column = if has_records { "b.record_type" } else { "NULL" };
@@ -1490,18 +1665,13 @@ fn load_cell(
         )?,
         CellKey::Interior(cell_id) => cell_id,
     };
-    let columns = &query.columns;
-    let joins = &query.joins;
     let rows = match key {
         CellKey::Exterior {
             worldspace_id,
             grid_x,
             grid_y,
         } => {
-            let sql = format!(
-                "SELECT {columns} FROM exterior_spatial x JOIN \"references\" r ON r.id=x.id{joins} \
-                 WHERE x.worldspace_id=?1 AND x.minX>=?2 AND x.minX<?3 AND x.minY>=?4 AND x.minY<?5"
-            );
+            let sql = query.exterior_sql();
             let min_x = grid_x as f32 * 4096.0;
             let min_y = grid_y as f32 * 4096.0;
             connection
@@ -1513,7 +1683,7 @@ fn load_cell(
                 .collect::<rusqlite::Result<Vec<_>>>()?
         }
         CellKey::Interior(_) => {
-            let sql = format!("SELECT {columns} FROM \"references\" r{joins} WHERE r.cell_id=?1");
+            let sql = query.interior_sql();
             connection
                 .prepare_cached(&sql)?
                 .query_map([cell_id], map_reference)?
@@ -1753,6 +1923,10 @@ pub(crate) mod water_fixtures {
             .to_vec()
     }
 }
+
+#[cfg(test)]
+#[path = "inventory_tests.rs"]
+mod inventory_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2219,6 +2393,134 @@ mod tests {
                 [identity],
             )
             .unwrap();
+    }
+
+    const OBJECT_PATH: &str = "lod/0000003c/16/objects_0_0.glb";
+
+    /// The additive object LOD table, with one level-16 chunk for worldspace 60 whose file is
+    /// the bytes `payload` (its hash is computed from them).
+    fn object_chunk_fixture(connection: &Connection, path: &str, payload: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        connection
+            .execute_batch(
+                "CREATE TABLE lod_object_chunks(
+                    worldspace_id INTEGER NOT NULL,tier INTEGER NOT NULL,anchor_x INTEGER NOT NULL,anchor_y INTEGER NOT NULL,
+                    payload_path TEXT NOT NULL,content_hash TEXT NOT NULL,
+                    bounds_min_x REAL NOT NULL,bounds_min_y REAL NOT NULL,bounds_min_z REAL NOT NULL,
+                    bounds_max_x REAL NOT NULL,bounds_max_y REAL NOT NULL,bounds_max_z REAL NOT NULL,
+                    source_cells TEXT NOT NULL,PRIMARY KEY(worldspace_id,tier,anchor_x,anchor_y));",
+            )
+            .unwrap();
+        let hash: String = Sha256::digest(payload)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        connection
+            .execute(
+                "INSERT INTO lod_object_chunks VALUES(60,16,0,0,?1,?2,\
+                 0.0,0.0,0.0,65536.0,65536.0,500.0,'-8,12;-7,12')",
+                [path, hash.as_str()],
+            )
+            .unwrap();
+        hash
+    }
+
+    #[test]
+    fn a_pack_without_the_object_lod_table_loads_no_object_chunks() {
+        let connection = Connection::open_in_memory().unwrap();
+        lod_fixture(&connection);
+        assert!(load_lod_object_chunks(&connection, 60).unwrap().is_empty());
+        // The terrain loader is unaffected by the object table's absence.
+        assert_eq!(
+            load_lod_chunks(
+                &connection,
+                lod_query([-50_000.0, 0.0], [50_000.0, 60_000.0])
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn object_chunks_load_under_the_terrain_contract_and_leave_terrain_alone() {
+        let connection = Connection::open_in_memory().unwrap();
+        lod_fixture(&connection);
+        let hash = object_chunk_fixture(&connection, OBJECT_PATH, b"glb");
+        let chunks = load_lod_object_chunks(&connection, 60).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].key.tier, LodTier::Tier16);
+        assert_eq!(chunks[0].payload_path, OBJECT_PATH);
+        assert_eq!(chunks[0].content_hash, hash);
+        assert_eq!(chunks[0].build_identity, "a".repeat(64));
+        assert_eq!(chunks[0].origin, LodOrigin::new(-8, 12));
+        // Another worldspace has none, and the terrain rows are the same as without the table.
+        assert!(load_lod_object_chunks(&connection, 61).unwrap().is_empty());
+        assert_eq!(
+            load_lod_chunks(
+                &connection,
+                lod_query([-50_000.0, 0.0], [50_000.0, 60_000.0])
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_damaged_object_row_fails_closed_instead_of_being_skipped() {
+        // A terrain-style path, a bad hash and an unsafe path are errors, not skipped rows.
+        for (path, hash_sql) in [
+            ("lod/0000003c/16/cell_0_0.glb", None),
+            (
+                OBJECT_PATH,
+                Some("UPDATE lod_object_chunks SET content_hash='xyz'"),
+            ),
+            ("../objects_0_0.glb", None),
+        ] {
+            let connection = Connection::open_in_memory().unwrap();
+            lod_fixture(&connection);
+            object_chunk_fixture(&connection, path, b"glb");
+            if let Some(sql) = hash_sql {
+                connection.execute_batch(sql).unwrap();
+            }
+            assert!(
+                load_lod_object_chunks(&connection, 60).is_err(),
+                "{path} {hash_sql:?}"
+            );
+        }
+        // An identity that is not a SHA-256 digest fails the whole load.
+        let connection = Connection::open_in_memory().unwrap();
+        lod_fixture(&connection);
+        object_chunk_fixture(&connection, OBJECT_PATH, b"glb");
+        connection
+            .execute_batch("UPDATE lod_build SET build_identity='bad'")
+            .unwrap();
+        assert!(load_lod_object_chunks(&connection, 60).is_err());
+    }
+
+    #[test]
+    fn a_missing_or_damaged_object_payload_fails_closed() {
+        let connection = Connection::open_in_memory().unwrap();
+        lod_fixture(&connection);
+        object_chunk_fixture(&connection, OBJECT_PATH, b"glb");
+        let chunks = load_lod_object_chunks(&connection, 60).unwrap();
+        let assets = tempfile::tempdir().unwrap();
+
+        let missing = verify_lod_object_payloads(assets.path(), &chunks).unwrap_err();
+        assert!(
+            format!("{missing:#}").contains("failed to read LOD payload"),
+            "{missing:#}"
+        );
+
+        let file = assets.path().join(OBJECT_PATH);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"damaged").unwrap();
+        let damaged = verify_lod_object_payloads(assets.path(), &chunks).unwrap_err();
+        assert!(format!("{damaged:#}").contains("expected"), "{damaged:#}");
+
+        std::fs::write(&file, b"glb").unwrap();
+        verify_lod_object_payloads(assets.path(), &chunks).unwrap();
     }
 
     #[test]
@@ -3239,6 +3541,7 @@ mod tests {
             request_rx,
             response_tx,
             lod_response_tx,
+            unbounded().0,
         );
 
         let responses: Vec<DatabaseResponse> = response_rx.try_iter().collect();
@@ -3277,12 +3580,57 @@ mod tests {
             request_rx,
             cell_response_tx,
             lod_response_tx,
+            unbounded().0,
         );
 
         let response = lod_response_rx.try_recv().unwrap();
         assert_eq!(response.generation, 7);
         assert_eq!(response.chunk_count, 1);
         assert_eq!(response.result.unwrap().len(), 1);
+        assert!(cell_response_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn the_worker_answers_object_chunk_requests_on_their_own_channel() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        let connection = Connection::open(&path).unwrap();
+        lod_fixture(&connection);
+        object_chunk_fixture(&connection, OBJECT_PATH, b"glb");
+        drop(connection);
+
+        let (request_tx, request_rx) = bounded(3);
+        let (cell_response_tx, cell_response_rx) = unbounded();
+        let (lod_response_tx, lod_response_rx) = unbounded();
+        let (object_tx, object_rx) = unbounded();
+        for worldspace_id in [60, 61] {
+            request_tx
+                .send(DatabaseRequest::LoadLodObjectChunks {
+                    generation: 9,
+                    worldspace_id,
+                    queued_at: Instant::now(),
+                })
+                .unwrap();
+        }
+        request_tx.send(DatabaseRequest::Shutdown).unwrap();
+
+        worker(
+            path,
+            WorldDatabaseFeatures::default(),
+            request_rx,
+            cell_response_tx,
+            lod_response_tx,
+            object_tx,
+        );
+
+        let with_chunks = object_rx.try_recv().unwrap();
+        assert_eq!((with_chunks.generation, with_chunks.worldspace_id), (9, 60));
+        assert_eq!(with_chunks.result.unwrap().len(), 1);
+        let empty = object_rx.try_recv().unwrap();
+        assert_eq!(empty.worldspace_id, 61);
+        assert!(empty.result.unwrap().is_empty());
+        // Terrain intake never sees an object response.
+        assert!(lod_response_rx.try_recv().is_err());
         assert!(cell_response_rx.try_recv().is_err());
     }
 
