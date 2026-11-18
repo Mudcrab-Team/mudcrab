@@ -3,7 +3,7 @@
     "emitted_schema_columns": null,
     "manually_traced_fields": 14,
     "named_external_stores": 3,
-    "rusqlite_candidates": 90
+    "rusqlite_candidates": 88
   },
   "fields": {
     "cells.data": {
@@ -806,26 +806,6 @@
       "status": "unknown"
     },
     {
-      "expression": "\"SELECT specular_path FROM texture_sets WHERE id=101\"",
-      "id": "crates/engine/src/object_materials/tests.rs::query_row::927f3c3c927dc6d1::1",
-      "line": 1015,
-      "method": "query_row",
-      "path": "crates/engine/src/object_materials/tests.rs",
-      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
-      "sql": "SELECT specular_path FROM texture_sets WHERE id=101",
-      "status": "literal"
-    },
-    {
-      "expression": "\"DROP TABLE base_texture_swaps\"",
-      "id": "crates/engine/src/object_materials/tests.rs::execute_batch::7acea8c63b6cc844::1",
-      "line": 1034,
-      "method": "execute_batch",
-      "path": "crates/engine/src/object_materials/tests.rs",
-      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
-      "sql": "DROP TABLE base_texture_swaps",
-      "status": "unknown"
-    },
-    {
       "expression": "\"SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)\"",
       "id": "crates/engine/src/object_materials.rs::query_row::0117638460bd2ff7::1",
       "line": 69,
@@ -1467,7 +1447,7 @@
     }
   ],
   "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
-  "reviewed_source_guard_sha256": "48dd509fc0c9af2bfdb344fbcccadea770989bb9336fb2f8606b047b59e801fd",
+  "reviewed_source_guard_sha256": "5c00c868405471c27a55469f2f7c4b385c9f537315ccf86ee079e409263a2da1",
   "schema_status": "not_extracted",
   "schemas": {},
   "stores": {

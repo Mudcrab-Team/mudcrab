@@ -316,7 +316,8 @@ jobs:
 
   test:
     needs: [orchestrate]
-    if: needs.orchestrate.outputs.check_rust == 'true'
+    # A change that only touches the world-data inventory still needs the extraction-backed check.
+    if: needs.orchestrate.outputs.check_rust == 'true' || needs.orchestrate.outputs.check_world_data == 'true'
     runs-on: ubuntu-latest
     # Cold test builds can take 26 minutes; leave time for the full suite.
     timeout-minutes: 45

@@ -6,7 +6,7 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 
 ## Denominators
 
-- rusqlite_candidates: 90
+- rusqlite_candidates: 88
 - emitted_schema_columns: unknown
 - manually_traced_fields: 14
 - named_external_stores: 3
@@ -87,8 +87,6 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 | `crates/engine/src/bug_report/snapshot.rs:706` query_row | literal |
 | `crates/engine/src/cell_commands.rs:108` query_row | literal |
 | `crates/engine/src/cell_commands.rs:136` query_row | unknown |
-| `crates/engine/src/object_materials/tests.rs:1015` query_row | literal |
-| `crates/engine/src/object_materials/tests.rs:1034` execute_batch | unknown |
 | `crates/engine/src/object_materials.rs:69` query_row | literal |
 | `crates/engine/src/object_materials.rs:79` prepare | literal |
 | `crates/engine/src/object_materials.rs:97` prepare | literal |

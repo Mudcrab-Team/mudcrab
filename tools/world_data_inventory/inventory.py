@@ -134,12 +134,18 @@ def production_tokens(source):
     return result
 
 
+def write_text(path, text):
+    """Write UTF-8 with LF newlines on every host, so reports and fingerprints do not depend on the OS."""
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+
+
 def scan_queries(root):
     queries = []
     for path in sorted((root / "crates/engine/src").rglob("*.rs")):
-        if path.stem.endswith("_tests") or "tests" in path.parts:
+        if path.stem == "tests" or path.stem.endswith("_tests") or "tests" in path.parts:
             continue
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         tokens = production_tokens(source)
         constants = {}
         for i, token in enumerate(tokens):
@@ -266,13 +272,13 @@ def source_files(root):
     for directory in ("crates/converter/src", "crates/converter/records", "crates/shared/src"):
         paths.update(p for p in (root / directory).rglob("*") if p.suffix in (".rs", ".json"))
     paths.update(root / p for p in ("crates/converter/src/pipeline.rs", "crates/converter/src/cache.rs", "crates/converter/build.rs"))
-    return {p.relative_to(root).as_posix(): digest(p.read_text()) for p in sorted(paths) if p.is_file()}
+    return {p.relative_to(root).as_posix(): digest(p.read_text(encoding="utf-8")) for p in sorted(paths) if p.is_file()}
 
 
 def validate_refs(root, evidence):
     for ref in evidence:
         path = root / ref["path"]
-        if not path.is_file() or ref["anchor"] not in path.read_text():
+        if not path.is_file() or ref["anchor"] not in path.read_text(encoding="utf-8"):
             raise ValueError(f"broken evidence reference: {ref}")
 
 
@@ -460,9 +466,9 @@ def source_guard(root, queries, manual):
                       for group in ("evidence", "sink", "tests") for ref in field.get(group, [])}
     evidence_paths.update(ref["path"] for store in manual["stores"].values() for ref in store["evidence"])
     return {"projection_sources": source_files(root), "query_candidates": [q["id"] for q in queries],
-            "reader_sources": {p: digest((root / p).read_text())
+            "reader_sources": {p: digest((root / p).read_text(encoding="utf-8"))
                                for p in sorted({q["path"] for q in queries} | evidence_paths)},
-            "tooling_sources": {p: digest((root / p).read_text()) for p in (
+            "tooling_sources": {p: digest((root / p).read_text(encoding="utf-8")) for p in (
                 "tools/world_data_inventory/inventory.py", "tools/world_data_inventory/dispositions.json",
                 "tools/world_data_inventory/dispositions.schema.json",
                 "crates/engine/src/world/inventory_tests.rs") if (root / p).is_file()}}
@@ -478,16 +484,16 @@ def main():
     args = parser.parse_args()
     if args.source_identity and (args.extraction or args.review_sources or args.check):
         parser.error("--source-identity cannot be combined with generation/check options")
-    manual = json.loads((HERE / "dispositions.json").read_text())
-    extraction = json.loads(args.extraction.read_text()) if args.extraction else None
+    manual = json.loads((HERE / "dispositions.json").read_text(encoding="utf-8"))
+    extraction = json.loads(args.extraction.read_text(encoding="utf-8")) if args.extraction else None
     validate_manual(ROOT, manual)
     queries = scan_queries(ROOT)
     guard = source_guard(ROOT, queries, manual)
     if args.review_sources:
         if args.check:
             parser.error("--check cannot update reviewed sources")
-        (HERE / "reviewed-sources.json").write_text(canonical(guard))
-    expected = json.loads((HERE / "reviewed-sources.json").read_text())
+        write_text(HERE / "reviewed-sources.json", canonical(guard))
+    expected = json.loads((HERE / "reviewed-sources.json").read_text(encoding="utf-8"))
     if guard != expected:
         raise ValueError("unreviewed projection source/query drift; review dispositions and reviewed-sources.json")
     fingerprint = digest(canonical(guard))
@@ -501,12 +507,12 @@ def main():
     outputs = {"inventory.json": canonical(result), "report.md": report(result)}
     if args.check:
         for name, content in outputs.items():
-            if not (args.output / name).is_file() or (args.output / name).read_text() != content:
+            if not (args.output / name).is_file() or (args.output / name).read_text(encoding="utf-8") != content:
                 raise ValueError(f"inventory drift: {name}; regenerate after review")
     else:
         args.output.mkdir(parents=True, exist_ok=True)
         for name, content in outputs.items():
-            (args.output / name).write_text(content)
+            write_text(args.output / name, content)
     print(f"inventory: {result['schema_status']}; {len(result['queries'])} candidates; {len(result['variants'])} composed variants")
 
 

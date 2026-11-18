@@ -59,9 +59,16 @@ since the first review, so the source guard fired. The refresh changed only clas
   its new sink. Their `SELECT` mapping is no longer verified: the water-colors query is now
   built with `format!`, and the lexical scan resolves only plain literals and constants.
   Both fields keep their sink and test references, and their `mapped` state is `unknown`.
-- Reviewed source fingerprint after the refresh: `48dd509fc0c9af2bfdb344fbcccadea770989bb9336fb2f8606b047b59e801fd`.
+- Reviewed source fingerprint after the refresh: `5c00c868405471c27a55469f2f7c4b385c9f537315ccf86ee079e409263a2da1`.
 - Passed locally: the 16 Python controls, `inventory.py --check`, the Rust extraction test
   (`world::database::inventory_tests`, one test) and `config::tests` (103 tests).
 - The refresh did not trace the 29 new query candidates or the other new tables from main
   one by one. They remain `unknown` or `deferred`.
+
+## Review fixes — 2026-11-18
+
+- The tool now reads and writes every file as UTF-8 with LF newlines. A source file under `crates/converter/src/records/` holds a byte that the Windows cp1252 codec rejects, so a host default read failed there.
+- Plain `tests.rs` files are no longer scanned. A test-only query left the committed inventory (90 candidates became 88).
+- The CI `test` job also runs when only the inventory files change (`check_world_data`), so the extraction-backed mapping check runs on a baseline refresh.
+- Passed locally: 18 Python tests, `inventory.py --check`, the Rust extraction test and `config::tests` (104 tests together). The `.github/` edit made the flag audit mandatory.
 

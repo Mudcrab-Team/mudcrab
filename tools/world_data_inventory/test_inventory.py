@@ -138,6 +138,29 @@ class SourceAndDrift(unittest.TestCase):
             self.assertEqual(queries[1]["sql"], "SELECT id,radius FROM lights")
             self.assertFalse(any("phantom" in q["expression"] or "test_only" in q["expression"] for q in queries))
 
+    def test_a_tests_rs_file_is_not_a_production_reader(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / "crates/engine/src/feature"
+            folder.mkdir(parents=True)
+            (folder / "tests.rs").write_text('fn t(db: &Connection) { db.prepare("SELECT only_test FROM lights"); }', encoding="utf-8")
+            (folder / "mod.rs").write_text('fn p(db: &Connection) { db.prepare("SELECT radius FROM lights"); }', encoding="utf-8")
+            queries = inv.scan_queries(root)
+            self.assertEqual([q["path"] for q in queries], ["crates/engine/src/feature/mod.rs"])
+
+    def test_sources_are_read_as_utf8_whatever_the_host_locale(self):
+        # U+009D encodes as 0xC2 0x9D. The Windows cp1252 codec rejects the byte 0x9D, so a read with the
+        # host default encoding would raise here on such a host; an explicit UTF-8 read must not.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "crates/engine/src/wide.rs"
+            path.parent.mkdir(parents=True)
+            path.write_bytes('// \u009d \u00e9\nfn p(db: &Connection) { db.prepare("SELECT radius FROM lights"); }\n'.encode("utf-8"))
+            self.assertEqual(len(inv.scan_queries(root)), 1)
+            written = root / "out.json"
+            inv.write_text(written, "line one\nline two\n")
+            self.assertEqual(written.read_bytes(), b"line one\nline two\n")
+
     def test_broken_anchor_and_invalid_state_fail(self):
         data = manual()
         data["fields"]["lights.radius"] = {"owner": "fixture", "reason": "trace", "roles": ["result"],
@@ -189,7 +212,7 @@ class SourceAndDrift(unittest.TestCase):
             inv.build(inv.ROOT, data, extraction)
 
     def test_fixture_report_matches_disposable_schema(self):
-        self.assertEqual((inv.ROOT / "docs/data-inventory/fixture-report.md").read_text(), fixture_report())
+        self.assertEqual((inv.ROOT / "docs/data-inventory/fixture-report.md").read_text(encoding="utf-8"), fixture_report())
 
     def test_dependency_evidence_does_not_transfer_between_schema_shapes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -207,7 +230,7 @@ class SourceAndDrift(unittest.TestCase):
             self.assertFalse(any(c["prepare_dependencies"] for c in changed_lights["columns"]))
 
     def test_committed_manual_anchors(self):
-        inv.validate_manual(inv.ROOT, json.loads((inv.HERE / "dispositions.json").read_text()))
+        inv.validate_manual(inv.ROOT, json.loads((inv.HERE / "dispositions.json").read_text(encoding="utf-8")))
 
     def test_cli_rejects_stale_extraction_before_replay(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -214,8 +214,6 @@
     "crates/engine/src/bug_report/snapshot.rs::query_row::4409d4d50e0c4487::1",
     "crates/engine/src/cell_commands.rs::query_row::d380da8bd4274c2f::1",
     "crates/engine/src/cell_commands.rs::query_row::c275c54bf961263d::1",
-    "crates/engine/src/object_materials/tests.rs::query_row::927f3c3c927dc6d1::1",
-    "crates/engine/src/object_materials/tests.rs::execute_batch::7acea8c63b6cc844::1",
     "crates/engine/src/object_materials.rs::query_row::0117638460bd2ff7::1",
     "crates/engine/src/object_materials.rs::prepare::c74d4d43affb6228::1",
     "crates/engine/src/object_materials.rs::prepare::1fbb03c179b6e4da::1",
@@ -290,7 +288,6 @@
     "crates/engine/src/emittance.rs": "5439216f43db6e9d76e123ba795a1af43d71eaff1c22a664aa91782108b3818b",
     "crates/engine/src/lights.rs": "7d20e4d2bb488c2faf6557ea4d08d7754d945ce06e1479fae56f9272b9685a96",
     "crates/engine/src/object_materials.rs": "55644badd747942a606e195bca8bea4cb7414ecaecde103e1efe34d0b3a74c6a",
-    "crates/engine/src/object_materials/tests.rs": "66cd0443248da4235d873c9dbad214c7888ee07d90cecd7b1fcb9680dde1cbac",
     "crates/engine/src/physics.rs": "cc3f7ca4d2593f1a8bc0196f492a0bd70b9518781432d312a10ac56798457715",
     "crates/engine/src/physics/carry.rs": "48473aecc3c93fe896ac7f7ee95327cafa9bb66f979a87233f78f5ddcd53126b",
     "crates/engine/src/room_culling.rs": "3dde125149eec693ed8ae1bb749561b33b4f05af980a991343ae44fbc494ba2c",
@@ -310,6 +307,6 @@
     "crates/engine/src/world/inventory_tests.rs": "ab21f2aa58e71bfab6c3b86c2730f0fdec71fe9be8e10aa3e391ce50151be94e",
     "tools/world_data_inventory/dispositions.json": "0edd3baed3208e4488eebf6353e77f87eccf006c45a5b8107311fcf5d8bead53",
     "tools/world_data_inventory/dispositions.schema.json": "23e3b0df8b2fbcb6c55af460b35345162df8acbabc97bdf01025119c4b692061",
-    "tools/world_data_inventory/inventory.py": "250048f5fa6846cb935af0dc88184294f4779be6f8e0402526aeb035444ddb11"
+    "tools/world_data_inventory/inventory.py": "2b97b002c92edd0c571d8a703b7f3e020d764cb0387b6a03d9d960c33f1c77db"
   }
 }
