@@ -262,20 +262,20 @@ struct UnderwaterPipelineIds {
     format: TextureFormat,
 }
 
+/// Views that still hold underwater state after the extracted effect has left them.
+type InactiveUnderwaterView = (
+    Without<UnderwaterPass>,
+    Or<(
+        With<UnderwaterTextures>,
+        With<UnderwaterPipelineIds>,
+        With<DynamicUniformIndex<UnderwaterPass>>,
+    )>,
+);
+
 /// Releases per-view state as soon as the extracted effect leaves the view.
 fn clear_inactive_underwater_views(
     mut commands: Commands,
-    views: Query<
-        Entity,
-        (
-            Without<UnderwaterPass>,
-            Or<(
-                With<UnderwaterTextures>,
-                With<UnderwaterPipelineIds>,
-                With<DynamicUniformIndex<UnderwaterPass>>,
-            )>,
-        ),
-    >,
+    views: Query<Entity, InactiveUnderwaterView>,
 ) {
     for entity in &views {
         commands.entity(entity).remove::<(
