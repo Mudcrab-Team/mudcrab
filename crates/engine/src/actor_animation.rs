@@ -1863,8 +1863,14 @@ mod tests {
             let deadline = Instant::now() + Duration::from_secs(120);
             // Updates in which the creature had no running player or waited for a clip to load,
             // and the longest run of them. A clip change must not freeze the creature.
-            // A clip change installs a new player. Bevy threads the new graph on the next update,
-            // so the pose is not evaluated for one update: that is counted separately.
+            // A clip change installs a new player and graph. Bevy threads the new graph on the next
+            // update, so the pose is not evaluated for one update: that is counted separately. A
+            // repeated pick (the same clip again) replaces the graph too, so replacements are
+            // counted by the graph handle, not by a change of clip.
+            let mut last_graph = app
+                .world()
+                .get::<AnimationGraphHandle>(actor)
+                .map(|handle| handle.0.id());
             let (mut stalled, mut run, mut longest_run, mut switch_updates) =
                 (0_u32, 0_u32, 0_u32, 0_u32);
             while elapsed < seconds {
@@ -1905,12 +1911,19 @@ mod tests {
                 if played.last().is_some_and(|(_, last)| last != current) {
                     println!("IDLE_SEQUENCE {name} t={elapsed:.2} {current}");
                     played.push((elapsed, current.to_owned()));
+                }
+                let graph = app
+                    .world()
+                    .get::<AnimationGraphHandle>(actor)
+                    .map(|handle| handle.0.id());
+                if graph.is_some() && graph != last_graph {
                     switch_updates += 1;
+                    last_graph = graph;
                 }
             }
             let distinct: HashSet<_> = played.iter().map(|(_, source)| source.as_str()).collect();
             println!(
-                "IDLE_SEQUENCE {name}: {} clip changes, {} distinct clips in {elapsed:.0} s; {stalled} stalled updates (longest run {longest_run}), {switch_updates} one-update graph threadings",
+                "IDLE_SEQUENCE {name}: {} clip changes, {} distinct clips in {elapsed:.0} s; {stalled} stalled updates (longest run {longest_run}), {switch_updates} graph replacements (one update each)",
                 played.len() - 1,
                 distinct.len()
             );
