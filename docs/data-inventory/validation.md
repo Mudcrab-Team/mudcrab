@@ -78,6 +78,7 @@ since the first review, so the source guard fired. The refresh changed only clas
 
 - The `lights.radius` sink and test anchors now name `backend_range` and the additive-offset test. `lights.falloff` records that the engine reads it only for shadow-mode lights and does not apply it.
 - New dispositions: table `reference_light_data` (`deferred`), fields `lights.fade_status`, `references.radius_status`, `reference_light_data.fade_offset` and `reference_light_data.data_size`, each with a source sink and a test. Their `SELECT` mapping is `unknown` (optional columns added by `format!` fragments).
-- Reviewed source fingerprint: `a4f3d78273b8330fcf266fad983f3f742a9d700cd2d26a0ba86de75724e30346`.
+- Reviewed source fingerprint: `4df4d35be6bd713ff9b116c26f5261aaf2ada8699d8a3ec97036aae9c637ad3a`.
 - Passed locally: 18 Python tests, `inventory.py --check`, the Rust extraction test and `config::tests` (104 tests together, on the merge head before the reader edit; the extraction test is re-run below).
+- Main moved (#783 texture audit, refreshed on `main` by #790). The baseline here was regenerated after merging it, with no disposition change. The fingerprint above is the current one.
 
