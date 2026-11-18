@@ -1781,11 +1781,13 @@ mod tests {
         app.insert_resource(catalog.clone());
         let mut most_distinct = 0;
         // Base NPC_ FormIDs of a dog, a cow, a bear and a draugr; each is also its reference id.
-        for (name, form_id) in [
-            ("dog", 0x23A92_u32),
-            ("cow", 0x23A90),
-            ("bear", 0x23A8A),
-            ("draugr", 0x1FB8F),
+        // The dog and the cow must get a sequence. The bear and the draugr are controls: they are
+        // outside the verified families, so they must keep their one default clip.
+        for (name, form_id, expect_sequence) in [
+            ("dog", 0x23A92_u32, true),
+            ("cow", 0x23A90, true),
+            ("bear", 0x23A8A, false),
+            ("draugr", 0x1FB8F, false),
         ] {
             let plan = catalog
                 .spawn_plan(
@@ -1798,12 +1800,26 @@ mod tests {
             let Some(sequence) = IdleSequence::new(pool.clone(), form_id)
                 .map(|sequence| sequence.preload(app.world().resource::<AssetServer>()))
             else {
+                assert!(
+                    !expect_sequence,
+                    "the {name} must get an idle sequence, but its pool has {} clip(s)",
+                    pool.len()
+                );
+                assert_eq!(
+                    pool.len(),
+                    1,
+                    "the {name} control keeps only its default clip"
+                );
                 println!(
-                    "IDLE_SEQUENCE {name}: pool of {} clip(s), nothing to vary",
+                    "IDLE_SEQUENCE {name}: pool of {} clip(s), nothing to vary (control)",
                     pool.len()
                 );
                 continue;
             };
+            assert!(
+                expect_sequence,
+                "the {name} is outside the verified families but got a sequence"
+            );
             let scene = catalog
                 .idle_scene(&plan)
                 .expect("the default clip exists")
@@ -1848,7 +1864,10 @@ mod tests {
             let deadline = Instant::now() + Duration::from_secs(120);
             // Updates in which the creature had no running player or waited for a clip to load,
             // and the longest run of them. A clip change must not freeze the creature.
-            let (mut stalled, mut run, mut longest_run) = (0_u32, 0_u32, 0_u32);
+            // A clip change installs a new player. Bevy threads the new graph on the next update,
+            // so the pose is not evaluated for one update: that is counted separately.
+            let (mut stalled, mut run, mut longest_run, mut switch_updates) =
+                (0_u32, 0_u32, 0_u32, 0_u32);
             while elapsed < seconds {
                 assert!(
                     Instant::now() < deadline,
@@ -1887,11 +1906,12 @@ mod tests {
                 if played.last().is_some_and(|(_, last)| last != current) {
                     println!("IDLE_SEQUENCE {name} t={elapsed:.2} {current}");
                     played.push((elapsed, current.to_owned()));
+                    switch_updates += 1;
                 }
             }
             let distinct: HashSet<_> = played.iter().map(|(_, source)| source.as_str()).collect();
             println!(
-                "IDLE_SEQUENCE {name}: {} clip changes, {} distinct clips in {elapsed:.0} s; {stalled} stalled updates, longest run {longest_run}",
+                "IDLE_SEQUENCE {name}: {} clip changes, {} distinct clips in {elapsed:.0} s; {stalled} stalled updates (longest run {longest_run}), {switch_updates} one-update graph threadings",
                 played.len() - 1,
                 distinct.len()
             );
