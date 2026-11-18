@@ -6,10 +6,11 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import tempfile
 import zipfile
 from functools import partial
 
-from analyze_skyrim_jump_inputs import analyze_rows, decode, f32
+from analyze_skyrim_jump_inputs import analyze_rows, decode_bytes, f32
 from publish_skyrim_evidence import public_value
 from record_skyrim_motion import verify_trace
 from skyrim_capture_attempts import corpus_lock, record_attempt, recover_attempts, run_recorder, save_manifest
@@ -85,8 +86,12 @@ def main():
     parser.add_argument('--adopt-baseline', type=Path,
                         help='Import an already completed baseline from the same prepared v4 session')
     args = parser.parse_args()
-    plan = json.loads(args.plan.read_text())
-    session = json.loads((args.session / 'session.json').read_text())
+    plan_bytes = args.plan.read_bytes()
+    plan_hash = hashlib.sha256(plan_bytes).hexdigest()
+    plan = json.loads(plan_bytes)
+    session_dir = args.session.resolve()
+    session_bytes = (session_dir / 'session.json').read_bytes()
+    session = json.loads(session_bytes)
     if (session.get('profile_name') != 'inputs-v4' or session['exe_sha256'] != plan['runtime_sha256'] or
             session['source_save_sha256'] != plan['source_save_sha256']):
         parser.error('Session differs from declared v4 runtime/save/profile')
@@ -96,13 +101,13 @@ def main():
         parser.error('Prepared extension source differs')
     args.private_output.mkdir(parents=True, exist_ok=True)
     args.corpus.mkdir(parents=True, exist_ok=True)
-    with corpus_lock(args.corpus):
+    with corpus_lock(args.corpus) as lock_fd:
         (args.corpus / 'traces').mkdir(exist_ok=True)
         manifest_path = args.corpus / 'manifest.json'
         manifest = (json.loads(manifest_path.read_text()) if manifest_path.exists() else
-                    {'schema': 1, 'profile': 'jump-inputs-v4', 'plan_sha256': digest(args.plan),
+                    {'schema': 1, 'profile': 'jump-inputs-v4', 'plan_sha256': plan_hash,
                      'runtime_sha256': plan['runtime_sha256'], 'runs': [], 'attempts': []})
-        if manifest['plan_sha256'] != digest(args.plan):
+        if manifest['plan_sha256'] != plan_hash:
             parser.error('Declared plan changed; use a new corpus')
         source_bytes = {name: (ROOT / name).read_bytes() for name in SOURCES}
         archive_path = args.corpus / 'capture-source.zip'
@@ -114,9 +119,12 @@ def main():
         else:
             if manifest['attempts']:
                 parser.error('Existing attempts lack a source archive; use a new corpus')
-            with zipfile.ZipFile(archive_path, 'x', compression=zipfile.ZIP_DEFLATED) as archive:
-                for name, data in source_bytes.items():
-                    archive.writestr(name, data)
+            with tempfile.TemporaryDirectory(dir=args.corpus) as staging:
+                staged = Path(staging) / archive_path.name
+                with zipfile.ZipFile(staged, 'x', compression=zipfile.ZIP_DEFLATED) as archive:
+                    for name, data in source_bytes.items():
+                        archive.writestr(name, data)
+                staged.replace(archive_path)
         sources = {name: hashlib.sha256(data).hexdigest() for name, data in source_bytes.items()}
         recover_attempts(manifest_path, manifest, args.private_output, partial(retain_failure, args.corpus))
         for condition in plan['conditions']:
@@ -143,10 +151,10 @@ def main():
                 prediction = control_prediction(baseline['result'], condition)
                 write(args.private_output / (name + '-prediction.json'), prediction)
             command = [sys.executable, str(ROOT / 'scripts/record_skyrim_motion.py'), 'run',
-                       '--session', str(args.session.resolve()), '--output', str(output.resolve()),
+                       '--session', str(session_dir), '--output', str(output.resolve()),
                        '--fixture', str(fixture_path.resolve()), '--frame-cap', str(plan['frame_cap']),
                        '--ocr-prefix', str(args.ocr_prefix.resolve())]
-            receipt = {'session_sha256': digest(args.session / 'session.json'), 'sources': sources,
+            receipt = {'session_sha256': hashlib.sha256(session_bytes).hexdigest(), 'sources': sources,
                        'command': command, 'prediction_before_capture': prediction, 'adopted': bool(adopted)}
             with record_attempt(manifest_path, manifest, name, attempt, output, partial(retain_failure, args.corpus)) as attempt_row:
                 write(args.private_output / f'{name}-attempt-{attempt}-receipt.json', receipt)
@@ -154,7 +162,7 @@ def main():
                 exit_code = 0
                 if not adopted:
                     with Path(str(output) + '.log').open('x') as log:
-                        exit_code = run_recorder(command, stdout=log, attempt=attempt_row)
+                        exit_code = run_recorder(command, stdout=log, attempt=attempt_row, lock_fd=lock_fd)
                 attempt_row['exit_code'] = exit_code
                 save_manifest(manifest_path, manifest)
                 if exit_code:
@@ -169,7 +177,8 @@ def main():
                     raise RuntimeError(f'Capture failed; preserved {output}')
                 try:
                     proof = json.loads((output / 'proof.json').read_text())
-                    rows, raw_digest = decode(output / 'trace.bin')
+                    raw = (output / 'trace.bin').read_bytes()
+                    rows, raw_digest = decode_bytes(raw)
                     if any(run['sha256'] == raw_digest for run in manifest['runs']):
                         raise ValueError('Native trace reused across conditions')
                     cadence = validate_capture_proof(rows, proof, plan['frame_cap'], fixture)
@@ -186,6 +195,8 @@ def main():
                             if prediction[key] != result[key]:
                                 raise ValueError('Pre-capture field-product prediction failed')
                         original = baseline['result']['inputs']
+                        if name == 'repeat-baseline' and result['inputs'] != original:
+                            raise ValueError('Repeat baseline inputs differ from the original baseline')
                         for key in ('npc_type', 'sex_index', 'npc_height', 'race_heights', 'npc_form_id', 'race_form_id'):
                             if original[key] != result['inputs'][key]:
                                 raise ValueError('Control changed an unrequested base factor')
@@ -201,7 +212,7 @@ def main():
                     save_manifest(manifest_path, manifest)
                     raise
                 destination = args.corpus / 'traces' / (name + '.bin.gz')
-                destination.write_bytes(gzip.compress((output / 'trace.bin').read_bytes(), mtime=0))
+                destination.write_bytes(gzip.compress(raw, mtime=0))
                 manifest['runs'].append({'id': name, 'path': str(destination.relative_to(args.corpus)),
                                          'sha256': raw_digest, 'fixture': fixture, 'proof': public_proof,
                                          'receipt': public_value(receipt), 'result': result})

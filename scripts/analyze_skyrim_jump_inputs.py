@@ -26,6 +26,10 @@ def require(ok, reason):
 
 def decode(path):
     raw = gzip.decompress(path.read_bytes()) if path.suffix == '.gz' else path.read_bytes()
+    return decode_bytes(raw)
+
+
+def decode_bytes(raw):
     require(raw and len(raw) % RECORD.size == 0, 'Truncated v4 trace')
     rows = []
     for v in RECORD.iter_unpack(raw):

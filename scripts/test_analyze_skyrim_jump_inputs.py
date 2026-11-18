@@ -17,6 +17,7 @@ from capture_skyrim_jump_inputs import control_prediction
 from verify_skyrim_jump_inputs import verify
 from record_skyrim_motion import RECORD, read_fixture
 from test_record_skyrim_motion import recording
+from test_capture_skyrim_attempts import campaign
 
 
 def input_rows():
@@ -124,6 +125,63 @@ class JumpInputsProofTests(unittest.TestCase):
 
 
 class CaptureResumeTests(unittest.TestCase):
+    def test_capture_retries_partial_archive_and_keeps_only_verified_trace_snapshots(self):
+        reference = capture.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
+        evidence = {run['id']: run for run in json.loads((reference / 'manifest.json').read_bytes())['runs']}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            argv, session = campaign(capture, root)
+            argv = argv[:-2]  # collect every declared condition
+            corpus = root / 'corpus'
+            private_trace = None
+            drift = True
+            decode_snapshot = capture.decode_bytes
+
+            def record(command, **kwargs):
+                nonlocal private_trace
+                name = Path(command[command.index('--fixture') + 1]).stem
+                run = evidence[name]
+                raw = gzip.decompress((reference / run['path']).read_bytes())
+                if drift and name == 'repeat-baseline':
+                    rows = []
+                    for values in RECORD.iter_unpack(raw):
+                        row = list(values)
+                        if row[4] == 10:
+                            row[8 + 13] += 1  # observed swim setting at setter and launch
+                        rows.append(RECORD.pack(*row))
+                    raw = b''.join(rows)
+                output = Path(command[command.index('--output') + 1])
+                output.mkdir()
+                private_trace = output / 'trace.bin'
+                private_trace.write_bytes(raw)
+                capture.write(output / 'proof.json', dict(run['proof'], session=session,
+                              trace_sha256=hashlib.sha256(raw).hexdigest(),
+                              runner_sha256=capture.digest(capture.ROOT / 'scripts/record_skyrim_motion.py')))
+                return 0
+
+            def replace_after_read(raw):
+                if private_trace.parent.name == 'baseline-attempt-1':
+                    private_trace.write_bytes(b'changed by another process')
+                return decode_snapshot(raw)
+
+            with patch('sys.argv', argv), patch.object(capture, 'run_recorder', side_effect=record) as recorder, \
+                    patch.object(capture, 'decode_bytes', side_effect=replace_after_read):
+                with patch.object(zipfile.ZipFile, 'writestr', side_effect=KeyboardInterrupt), \
+                        self.assertRaises(KeyboardInterrupt):
+                    capture.main()
+                self.assertFalse((corpus / 'capture-source.zip').exists())
+                recorder.assert_not_called()
+                with self.assertRaisesRegex(ValueError, 'Repeat baseline inputs'):
+                    capture.main()
+                manifest = json.loads((corpus / 'manifest.json').read_bytes())
+                self.assertEqual([r['id'] for r in manifest['runs']], ['baseline', 'setting-64', 'reference-125'])
+                baseline = manifest['runs'][0]
+                self.assertEqual(gzip.decompress((corpus / baseline['path']).read_bytes()),
+                                 gzip.decompress((reference / evidence['baseline']['path']).read_bytes()))
+                drift = False
+                capture.main()
+            self.assertEqual(verify(corpus, Path(argv[argv.index('--plan') + 1]))['status'], 'passed')
+
     def test_public_failure_redacts_home_path_and_preserves_trace(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

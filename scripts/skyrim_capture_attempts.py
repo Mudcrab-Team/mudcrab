@@ -13,10 +13,10 @@ import tempfile
 def corpus_lock(corpus):
     with (corpus / '.capture.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        yield
+        yield lock.fileno()
 
 
-def run_recorder(command, *, stdout, attempt):
+def run_recorder(command, *, stdout, attempt, lock_fd):
     """Forward campaign cancellation and reap the recorder while the corpus is locked."""
     cancellation = None
     waiting = False
@@ -34,7 +34,8 @@ def run_recorder(command, *, stdout, attempt):
             if sig == signal.SIGINT and signal.getsignal(sig) == signal.SIG_IGN:
                 continue
             previous[sig] = signal.signal(sig, cancel)
-        with subprocess.Popen(command, stdout=stdout, stderr=subprocess.STDOUT, start_new_session=True) as child:
+        with subprocess.Popen(command, stdout=stdout, stderr=subprocess.STDOUT,
+                              start_new_session=True, pass_fds=(lock_fd,)) as child:
             try:
                 waiting = True
                 if cancellation is None:

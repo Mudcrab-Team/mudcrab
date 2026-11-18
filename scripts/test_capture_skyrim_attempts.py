@@ -47,6 +47,28 @@ def campaign(module, root, frame_cap=None):
 
 
 class CaptureAttemptTests(unittest.TestCase):
+    def test_orphaned_recorder_holds_corpus_until_it_exits(self):
+        # The child acknowledges readiness, then waits on stdin until recovery has been tried.
+        child = "import sys; print('ready', flush=True); sys.stdin.buffer.read()"
+        wrapper = """import sys
+from pathlib import Path
+from skyrim_capture_attempts import corpus_lock, run_recorder
+with corpus_lock(Path(sys.argv[1])) as lock_fd:
+    run_recorder([sys.executable, '-c', sys.argv[2]], stdout=sys.stdout, attempt={}, lock_fd=lock_fd)
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            with subprocess.Popen([sys.executable, '-B', '-c', wrapper, directory, child],
+                                  cwd=Path(__file__).parent, stdin=subprocess.PIPE, stdout=subprocess.PIPE) as process:
+                self.assertEqual(process.stdout.readline(), b'ready\n')
+                process.kill()
+                process.wait(timeout=5)
+                with (Path(directory) / '.capture.lock').open('a') as contender:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    process.stdin.close()
+                    self.assertEqual(process.stdout.read(), b'')
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
     def test_wrapper_signal_waits_for_recorder_before_releasing_corpus(self):
         fake_recorder = """import fcntl, os, signal, sys
 from pathlib import Path
@@ -75,7 +97,7 @@ with (root / 'session/.recording.lock').open('a') as session:
                     (root / 'tools').symlink_to(module.ROOT / 'tools')
                     scripts = root / 'scripts'
                     scripts.mkdir()
-                    for name in set(v4.SOURCES) | {'scripts/capture_skyrim_jump.py'}:
+                    for name in set(v4.SOURCES) | {'scripts/capture_skyrim_jump.py', 'scripts/evaluate_skyrim_jump.py'}:
                         if name.startswith('scripts/'):
                             shutil.copyfile(module.ROOT / name, root / name)
                     recorder = scripts / 'record_skyrim_motion.py'
