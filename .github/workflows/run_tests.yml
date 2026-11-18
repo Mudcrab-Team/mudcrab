@@ -69,6 +69,7 @@ jobs:
           check_pattern "check_z_fighting_audit" '^(scripts/audit-z-fighting\.py|scripts/tests/test_audit_z_fighting\.py|\.github/workflows/run_tests\.yml)$'
           check_pattern "check_enable_observations" '^(scripts/reference-enable-observations\.py|scripts/tests/test_reference_enable_observations\.py|\.github/workflows/run_tests\.yml)$'
           check_pattern "check_schema_validation" '^(tools/schema_validation/|\.github/workflows/run_tests\.yml$)'
+          check_pattern "check_unwrap_ratchet" '^(crates/.*\.rs|tools/unwrap_ratchet/.*|\.github/workflows/run_tests\.yml)$'
     outputs:
       check_rust: ${{ steps.filter.outputs.check_rust }}
       check_scripts: ${{ steps.filter.outputs.check_scripts }}
@@ -78,6 +79,7 @@ jobs:
       check_z_fighting_audit: ${{ steps.filter.outputs.check_z_fighting_audit }}
       check_enable_observations: ${{ steps.filter.outputs.check_enable_observations }}
       check_schema_validation: ${{ steps.filter.outputs.check_schema_validation }}
+      check_unwrap_ratchet: ${{ steps.filter.outputs.check_unwrap_ratchet }}
 
   format:
     needs: [orchestrate]
@@ -278,6 +280,47 @@ jobs:
       - name: Test standalone schema evidence tools
         run: python -B -m unittest discover -s tools/schema_validation -p 'test_*.py' -v
 
+  unwrap_ratchet:
+    needs: [orchestrate]
+    if: needs.orchestrate.outputs.check_unwrap_ratchet == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # The base commit is needed: the check compares with it, not with a committed number.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Test the ratchet script
+        run: python3 -B -m unittest discover -s tools/unwrap_ratchet -p 'test_*.py' -v
+
+      - name: Production unwrap, expect and panic! count does not rise above the base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          # A pull request runs on the merge commit, whose first parent is the base it merges into,
+          # so the comparison covers exactly the sites the pull request adds. A push compares with
+          # the previous tip of the branch. Other runs have no base and only run the script's tests.
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$(git rev-parse HEAD^1)"
+          else
+            base="$PUSH_BEFORE"
+          fi
+          if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "::notice::No base commit to compare with; the count comparison is skipped."
+            exit 0
+          fi
+          git worktree add --detach "$RUNNER_TEMP/unwrap-ratchet-base" "$base"
+          python3 -B tools/unwrap_ratchet/unwrap_ratchet.py --base-root "$RUNNER_TEMP/unwrap-ratchet-base"
+
   clippy:
     needs: [orchestrate]
     if: needs.orchestrate.outputs.check_rust == 'true'
@@ -432,6 +475,7 @@ jobs:
       - z_fighting_audit
       - enable_observations
       - schema_validation
+      - unwrap_ratchet
       - clippy
       - test
       - security
@@ -459,6 +503,7 @@ jobs:
           check_result "z_fighting_audit" "$RESULT_Z_FIGHTING_AUDIT"
           check_result "enable_observations" "$RESULT_ENABLE_OBSERVATIONS"
           check_result "schema_validation" "$RESULT_SCHEMA_VALIDATION"
+          check_result "unwrap_ratchet" "$RESULT_UNWRAP_RATCHET"
           check_result "clippy" "$RESULT_CLIPPY"
           check_result "test" "$RESULT_TEST"
           check_result "security" "$RESULT_SECURITY"
@@ -473,6 +518,7 @@ jobs:
           RESULT_Z_FIGHTING_AUDIT: ${{ needs.z_fighting_audit.result }}
           RESULT_ENABLE_OBSERVATIONS: ${{ needs.enable_observations.result }}
           RESULT_SCHEMA_VALIDATION: ${{ needs.schema_validation.result }}
+          RESULT_UNWRAP_RATCHET: ${{ needs.unwrap_ratchet.result }}
           RESULT_CLIPPY: ${{ needs.clippy.result }}
           RESULT_TEST: ${{ needs.test.result }}
           RESULT_SECURITY: ${{ needs.security.result }}
