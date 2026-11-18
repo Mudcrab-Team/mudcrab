@@ -22,12 +22,14 @@ Set `BASE` to the commit you compare with. For a pull request, that is its merge
 ```sh
 BASE="$(git merge-base origin/main HEAD)"   # or the sync commit
 git diff --name-only "$BASE"...HEAD -- crates/retail-rules .agents/skills/verify-retail-rules
-git grep -n "retail_rules::" -- crates/engine crates/converter
+git grep -n "retail_rules::" "$BASE" -- crates/engine crates/converter
+git grep -n "retail_rules::" HEAD -- crates/engine crates/converter
 ```
 
 The skill applies when the first command lists a file, or when a change edits a call site that
-the second command lists. A call site that stops calling the crate and computes a rule itself is
-a coverage loss. Report it. Read the diff, then use section 3 to find the harnesses and unit
+the second or third command lists. Compare the two call-site lists. A call site that is in the
+`$BASE` list but not in the `HEAD` list stopped calling the crate; if it now computes a rule
+itself, that is a coverage loss. Report it. Read the diff, then use section 3 to find the harnesses and unit
 tests for each changed function.
 
 ## 2. Commands
@@ -155,7 +157,7 @@ with a counterexample. Then revert and confirm that every harness passes again.
 | M5 | In `reference_rotation`, keep X for an actor reference | `an_actor_reference_drops_x_and_y` |
 | M6 | In `race_height`, return 1.0 instead of 0.0 for an index of 2 or more | `sex_index_selects_the_race_height` |
 | M7 | In `retail_reference_scale`, multiply the percent by the NPC factor before × 0.01: `(f32(p) × npc) × 0.01` | `reference_scale_uses_the_retail_grouping` |
-| M8 | Compute the outer product of `retail_reference_scale` in `f64` and round once | `reference_scale_uses_the_retail_grouping` |
+| M8 | Compute both products of `retail_reference_scale` (percent × 0.01, then × the NPC scale) in `f64` and round once at the end | `reference_scale_uses_the_retail_grouping` |
 | M9 | In `reference_rotation`, drop Z for an actor reference | `the_heading_is_always_kept`, `only_an_achr_drops_x_and_y` |
 | M10 | In `sex_index`, read `ACBS` bit 1 instead of bit 0 | `sex_index_is_acbs_bit_zero`, `a_female_npc_gets_the_female_height`, the unit test and the retail rows |
 | M11 | In `base_form_scale_factor` or `placed_reference_rotation`, test another form type | `only_an_npc_base_adds_the_npc_scale`, `a_placed_reference_without_an_npc_base_keeps_its_scale`, `only_an_achr_drops_x_and_y` |
@@ -163,7 +165,8 @@ with a counterexample. Then revert and confirm that every harness passes again.
 
 The pilot ran M1 to M4, M11 and M12. The independent review of #804 ran M6 to M10. M5 is not
 yet run. One limit: computing a single product of two `f32` values in `f64` and rounding once
-gives the same bits as `f32`, so no proof detects it, and it is not a bug.
+gives the same bits as `f32`. Such a change is not a mutation: no proof detects it, and it is
+not a bug. M8 differs, because it rounds once over two products.
 
 The API passes the NPC scale to `reference_scale` as one value, so the crate itself cannot
 regroup the three factors. A caller that multiplies them in another order is caught only by a
