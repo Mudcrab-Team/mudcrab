@@ -5,6 +5,7 @@ import gzip
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import signal
@@ -18,6 +19,7 @@ import zipfile
 
 import capture_skyrim_jump as v3
 import capture_skyrim_jump_inputs as v4
+import skyrim_capture_attempts as attempts
 from verify_skyrim_jump_inputs import verify
 from skyrim_capture_attempts import record_attempt, recover_attempts, save_manifest
 
@@ -61,6 +63,117 @@ def install_fake_recorder(module, root, fake_recorder):
 
 
 class CaptureAttemptTests(unittest.TestCase):
+    def test_failure_waits_for_independent_native_writer_and_retries_unknown_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'traces').mkdir()
+            output = root / 'private'
+            output.mkdir()
+            session = root / 'session'
+            session.mkdir()
+            game_unit = 'mudcrab-record-game-' + hashlib.sha256(str(session).encode()).hexdigest()[:24]
+            (output / 'trace-writer.json').write_text(json.dumps(dict(game_unit=game_unit, session=str(session))))
+            writer_code = """import sys
+with open(sys.argv[1], 'wb') as trace:
+    trace.write(b'first')
+    trace.flush()
+    print('writing', flush=True)
+    sys.stdin.readline()
+    trace.write(b' last')
+"""
+            path = root / 'manifest.json'
+            retain = partial(v4.retain_failure, root)
+            manifest = dict(runs=[], attempts=[])
+            with subprocess.Popen([sys.executable, '-c', writer_code, str(output / 'trace.bin')],
+                                  start_new_session=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE) as writer:
+                try:
+                    self.assertEqual(writer.stdout.readline().strip(), b'writing')
+                    def stopped(unit):
+                        self.assertEqual(unit, game_unit)
+                        return writer.poll() is not None
+                    with patch.object(v4, 'unit_stopped', stopped):
+                        with self.assertRaisesRegex(RuntimeError, 'writer .* still active'):
+                            with record_attempt(path, manifest, 'baseline', 1, output, retain, private_session=session):
+                                raise RuntimeError('recorder died')
+                    saved = path.read_bytes()
+                    self.assertEqual(json.loads(saved)['attempts'][0]['status'], 'pending')
+                    with patch.object(v4, 'unit_stopped', side_effect=OSError('manager unreachable')):
+                        with self.assertRaisesRegex(OSError, 'manager unreachable'):
+                            recover_attempts(path, json.loads(saved), root, retain)
+                    with (session / '.recording.lock').open('a') as busy:
+                        fcntl.flock(busy, fcntl.LOCK_EX)
+                        with self.assertRaises(BlockingIOError):
+                            recover_attempts(path, json.loads(saved), root, retain)
+                    self.assertEqual(list((root / 'traces').iterdir()), [])
+                    self.assertEqual(path.read_bytes(), saved)
+                finally:
+                    writer.stdin.close()
+                    writer.wait(timeout=3)
+            with patch.object(v4, 'unit_stopped', stopped):
+                recover_attempts(path, json.loads(saved), root, retain)
+            row, = json.loads(path.read_text())['attempts']
+            self.assertNotIn('status', row)
+            self.assertNotIn('private_session', row)
+            self.assertEqual(gzip.decompress((root / row['path']).read_bytes()), b'first last')
+
+    def test_completed_proof_allows_retention_after_session_removal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'traces').mkdir()
+            raw = b'finished trace'
+            (root / 'trace.bin').write_bytes(raw)
+            proof = dict(services_stopped=True, status='passed', trace_sha256=hashlib.sha256(raw).hexdigest(),
+                         runner_sha256=v4.digest(v4.ROOT / 'scripts/record_skyrim_motion.py'))
+            v4.write(root / 'proof.json', proof)
+            manifest = dict(runs=[], attempts=[])
+            with self.assertRaises(KeyboardInterrupt):
+                with record_attempt(root / 'manifest', manifest, 'baseline', 1, root, partial(v4.retain_failure, root),
+                                    private_session=root / 'removed'):
+                    raise KeyboardInterrupt()
+            row, = json.loads((root / 'manifest').read_text())['attempts']
+            self.assertNotIn('status', row)
+            self.assertEqual(gzip.decompress((root / row['path']).read_bytes()), raw)
+
+    def test_cancellation_kills_stopped_recorder_process_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            child_code = """import os, signal, sys
+from pathlib import Path
+signal.signal(signal.SIGTERM, lambda *_: None)
+pid = os.fork()
+if pid == 0:
+    signal.pause()
+else:
+    Path(sys.argv[1]).write_text(f'{pid} {os.getpgrp()}')
+    os.kill(os.getppid(), signal.SIGTERM)
+    os.kill(os.getpid(), signal.SIGSTOP)
+"""
+            wrapper_code = """import sys
+from pathlib import Path
+import skyrim_capture_attempts as a
+root = Path(sys.argv[1])
+a.RECORDER_SHUTDOWN_TIMEOUT = 0.2
+with a.corpus_lock(root) as lock, (root / 'recorder.log').open('w') as log:
+    a.run_recorder([sys.executable, '-c', sys.argv[2], str(root / 'descendant')], stdout=log, attempt={}, lock_fd=lock)
+"""
+            try:
+                proc = subprocess.run([sys.executable, '-B', '-c', wrapper_code, str(root), child_code],
+                                      cwd=Path(attempts.__file__).parent, capture_output=True, timeout=5)
+                self.assertEqual(proc.returncode, 128 + signal.SIGTERM, proc.stderr)
+                pid, _ = (root / 'descendant').read_text().split()
+                try:
+                    state = (Path('/proc') / pid / 'stat').read_text().split()[2]
+                except FileNotFoundError:
+                    state = None
+                self.assertIn(state, (None, 'Z'))
+            finally:
+                if (root / 'descendant').exists():
+                    _, group = (root / 'descendant').read_text().split()
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(int(group), signal.SIGKILL)
+            with attempts.corpus_lock(root):
+                pass
+
     def test_recovery_waits_for_orphaned_recorder_to_finish_its_trace(self):
         fake_recorder = """import os, signal, sys
 from pathlib import Path
@@ -133,7 +246,8 @@ with (root / 'session/.recording.lock').open('a') as session:
                     (root / 'signal').write_text(str(int(sig)))
                     wrapper = install_fake_recorder(module, root, fake_recorder)
                     result = subprocess.run([sys.executable, '-B', str(wrapper), *argv[1:]],
-                                            cwd=root, capture_output=True, text=True, timeout=8)
+                                            cwd=root, capture_output=True, text=True, timeout=8,
+                                            preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
                     self.assertEqual(result.returncode, 128 + sig, result.stderr)
                     self.assertEqual((root / 'stopped-under-lock').read_text(), str(int(sig)))
                     attempt, = json.loads((root / 'corpus/manifest.json').read_text())['attempts']
@@ -154,7 +268,7 @@ with (root / 'session/.recording.lock').open('a') as session:
             retain = partial(v4.retain_failure, root)
             with patch.object(Path, 'read_text', side_effect=OSError('temporary manifest read error')):
                 with self.assertRaises(OSError):
-                    with record_attempt(path, manifest, 'baseline', 1, output, retain) as attempt:
+                    with record_attempt(path, manifest, 'baseline', 1, output, retain, private_session=root) as attempt:
                         attempt['exit_code'] = 0
                         manifest['runs'].append(dict(id='baseline'))
                         raise KeyboardInterrupt()
@@ -195,7 +309,7 @@ with (root / 'session/.recording.lock').open('a') as session:
                 path = root / 'manifest.json'
                 retain = partial(v4.retain_failure, root)
                 with self.assertRaises(error):
-                    with record_attempt(path, manifest, 'baseline', 1, output, retain) as attempt:
+                    with record_attempt(path, manifest, 'baseline', 1, output, retain, private_session=root) as attempt:
                         attempt['exit_code'] = 0
                         manifest['runs'].append(dict(id='baseline'))
                         with patch('skyrim_capture_attempts.os.replace', side_effect=error):
@@ -205,7 +319,7 @@ with (root / 'session/.recording.lock').open('a') as session:
                 failed = saved['attempts'][-1]
                 self.assertNotEqual(failed['exit_code'], 0)
                 self.assertEqual(gzip.decompress((root / failed['path']).read_bytes()), b'captured trace')
-                with record_attempt(path, saved, 'baseline', 2, output, retain) as attempt:
+                with record_attempt(path, saved, 'baseline', 2, output, retain, private_session=root) as attempt:
                     attempt['exit_code'] = 0
                     saved['runs'].append(dict(id='baseline'))
                     save_manifest(path, saved)
@@ -242,7 +356,7 @@ with (root / 'session/.recording.lock').open('a') as session:
             retain = partial(v4.retain_failure, root)
             with patch.object(Path, 'write_bytes', side_effect=OSError('storage full')):
                 with self.assertRaises(OSError):
-                    with record_attempt(path, manifest, 'baseline', 1, output, retain) as attempt:
+                    with record_attempt(path, manifest, 'baseline', 1, output, retain, private_session=root) as attempt:
                         attempt['exit_code'] = 1
                         retain(output, attempt, dict(phase='recorder', error='capture failed'))
             saved = json.loads(path.read_text())
@@ -282,6 +396,7 @@ with (root / 'session/.recording.lock').open('a') as session:
             corpus = root / 'corpus'
             corpus.mkdir()
             reference = v4.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4/manifest.json'
+            (corpus / 'traces').symlink_to(reference.parent / 'traces')
             baseline = json.loads(reference.read_text())['runs'][0]
             baseline['receipt']['session_sha256'] = v4.digest(root / 'session/session.json')
             baseline['proof'].update(dll_sha256=session['build']['dll_sha256'], input_sha256=session['input_sha256'],
@@ -317,7 +432,7 @@ with (root / 'session/.recording.lock').open('a') as session:
                 with self.assertRaises(FileNotFoundError):
                     v4.main()
                 (imported / 'trace.bin').write_bytes(raw)
-                proof = dict(observed['proof'], session=session,
+                proof = dict(observed['proof'], session=session, services_stopped=True,
                              trace_sha256=hashlib.sha256(raw).hexdigest(),
                              runner_sha256=v4.digest(v4.ROOT / 'scripts/record_skyrim_motion.py'))
                 (imported / 'proof.json').write_text(json.dumps(proof))
@@ -418,16 +533,18 @@ with (root / 'session/.recording.lock').open('a') as session:
         reference = v4.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
         observed = json.loads((reference / 'manifest.json').read_text())['runs'][0]
         raw = gzip.decompress((reference / observed['path']).read_bytes())
-        for mode in ('failed', 'cadence', 'fixture', 'changed-save'):
+        for mode in ('failed', 'cadence', 'fixture', 'changed-save', 'cleanup-failed'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 argv, session = campaign(v4, root, frame_cap=120 if mode == 'cadence' else None)
                 output = root / 'adopted'
                 output.mkdir()
                 (output / 'trace.bin').write_bytes(raw)
-                proof = dict(observed['proof'], session=session,
+                proof = dict(observed['proof'], session=session, services_stopped=True,
                              trace_sha256=hashlib.sha256(raw).hexdigest(),
                              runner_sha256=v4.digest(v4.ROOT / 'scripts/record_skyrim_motion.py'))
+                if mode == 'cleanup-failed':
+                    proof.pop('services_stopped')
                 proof['status'] = 'failed' if mode == 'failed' else 'passed'
                 proof['frame_cap_request'] = 120 if mode == 'cadence' else 60
                 if mode == 'changed-save':

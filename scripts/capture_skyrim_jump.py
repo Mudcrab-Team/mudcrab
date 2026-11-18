@@ -6,10 +6,10 @@ import hashlib
 import json
 from pathlib import Path
 import sys
-import zlib
 
 import evaluate_skyrim_jump as evaluator
-from skyrim_capture_attempts import corpus_lock, record_attempt, recover_attempts, run_recorder, save_manifest
+from skyrim_capture_attempts import (corpus_lock, record_attempt, recover_attempts, run_recorder,
+                                     save_manifest, verify_retained_trace)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -19,7 +19,9 @@ def digest(path):
 
 
 def write(path, value):
-    path.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
+    data = (json.dumps(value, indent=2, allow_nan=False) + '\n').encode()
+    path.write_bytes(data)
+    return evaluator.digest(data)
 
 
 def provenance(session):
@@ -92,19 +94,13 @@ def main():
                 name = f"{args.split}-{condition['frame_cap']}hz-{condition['time_multiplier']:g}x-{repeat}"
                 accepted = next((run for run in manifest['runs'] if run['id'] == name), None)
                 if accepted is not None:
-                    retained = args.corpus / accepted['path']
-                    try:
-                        raw = gzip.decompress(retained.read_bytes())
-                    except (OSError, EOFError, zlib.error) as error:
-                        raise ValueError(f'Cannot read retained trace {retained}: {error}') from error
-                    if evaluator.digest(raw) != accepted['sha256']:
-                        raise ValueError(f'Retained trace hash mismatch: {retained}')
+                    verify_retained_trace(args.corpus, accepted)
                     continue
                 attempt = 1 + sum(row['id'] == name for row in manifest['attempts'])
                 output = args.private_output / f'{name}-attempt-{attempt}'
                 fixture = dict(plan['fixture'], time_multiplier=condition['time_multiplier'])
                 fixture_path = args.private_output / (name + '.json')
-                write(fixture_path, fixture)
+                expected_fixture = write(fixture_path, fixture)
                 command = [sys.executable, str(ROOT / 'scripts/record_skyrim_motion.py'), 'run',
                            '--session', str(session_dir), '--output', str(output.resolve()),
                            '--fixture', str(fixture_path.resolve()), '--frame-cap', str(condition['frame_cap']),
@@ -120,6 +116,8 @@ def main():
                     proof = json.loads((output / 'proof.json').read_text())
                     if proof['session'] != session:
                         raise ValueError('recorded session differs from capture receipt')
+                    if proof['fixture_sha256'] != expected_fixture:
+                        raise ValueError('recorded fixture differs from planned fixture')
                     trace = output / 'trace.bin'
                     evaluator.qualify(trace, {'sha256': proof['trace_sha256']})
                     raw = trace.read_bytes()

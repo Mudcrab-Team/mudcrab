@@ -37,8 +37,8 @@ def input_rows():
     return [dict(kind=10, text='setter', code=SETTER_REQUIRED, state=0x6752ba,
                  values=v, qpc=1, sample=1),
             dict(kind=8, code=3, values=a, qpc=2, sample=1),
-            dict(kind=9, values=launch, qpc=3, sample=1),
-            dict(kind=10, text='launch', code=LAUNCH_REQUIRED, values=w, qpc=4, sample=1)]
+            dict(kind=9, code=3, values=launch, qpc=3, sample=1, sequence=3, thread=7),
+            dict(kind=10, text='launch', code=LAUNCH_REQUIRED, values=w, qpc=4, sample=1, sequence=4, thread=7)]
 
 
 class JumpInputsProofTests(unittest.TestCase):
@@ -48,6 +48,29 @@ class JumpInputsProofTests(unittest.TestCase):
         self.assertEqual(result['inputs']['race_form_id'], '00013746')
         self.assertEqual(result['inputs']['npc_form_id'], '00000007')
         self.assertEqual(result['setter_call_rva'], '0x6752ba')
+
+    def test_float32_product_rounds_nonunit_factors_and_selects_the_female_race_height(self):
+        rows = input_rows()
+        setter, air, launch, snapshot = (r['values'] for r in rows)
+        setter[1], setter[3], setter[4] = 99, 1, f32(1.06)
+        setter[5:7] = [f32(1.13), f32(.97)]
+        # Native float32 products round after each operation. A single final rounding gives 77.361763.
+        setter[7] = 77.36177062988281
+        setter[9] = f32(setter[7] * setter[11])
+        snapshot[:] = setter
+        air[11] = launch[11] = snapshot[8] = setter[9]
+        air[6] = f32((f32(f32(abs(air[39]) * setter[9]) * 2.0)) ** .5)
+        self.assertEqual(analyze_rows(rows)['setter_argument'], 77.36177062988281)
+
+    def test_launch_snapshot_must_immediately_follow_its_own_valid_callback(self):
+        for index, field, value, reason in ((3, 'sample', 2, 'snapshot'), (3, 'sequence', 5, 'snapshot'),
+                                            (3, 'thread', 6, 'snapshot'), (3, 'qpc', 2, 'snapshot'),
+                                            (2, 'code', 1, 'launch callback'), (0, 'state', 0, 'setter path')):
+            with self.subTest(field=field):
+                rows = input_rows()
+                rows[index][field] = value
+                with self.assertRaisesRegex(ValueError, reason):
+                    analyze_rows(rows)
 
     def test_invalid_read_does_not_become_a_zero_measurement(self):
         rows = input_rows()
@@ -104,6 +127,10 @@ class JumpInputsProofTests(unittest.TestCase):
             path.write_bytes(gzip.compress(raw))
             decoded, _ = decode(path)
             self.assertEqual(decoded[0]['text'], HEADER)
+            for record in (raw[:RECORD.size], raw[-RECORD.size:]):
+                path.write_bytes(gzip.compress(raw[:RECORD.size] + record + raw[RECORD.size:]))
+                with self.assertRaisesRegex(ValueError, 'Duplicate header or footer'):
+                    decode(path)
             path.write_bytes(gzip.compress(raw[:-1]))
             with self.assertRaisesRegex(ValueError, 'Truncated v4'):
                 decode(path)
@@ -178,9 +205,76 @@ class CaptureResumeTests(unittest.TestCase):
                 baseline = manifest['runs'][0]
                 self.assertEqual(gzip.decompress((corpus / baseline['path']).read_bytes()),
                                  gzip.decompress((reference / evidence['baseline']['path']).read_bytes()))
+                trace = corpus / baseline['path']
+                retained = trace.read_bytes()
+                trace.unlink()
+                for source in (None, gzip.compress(b'wrong bytes')):
+                    if source is not None:
+                        trace.write_bytes(source)
+                    with patch('sys.argv', argv + ['--condition', 'repeat-baseline']), \
+                            self.assertRaisesRegex(ValueError, 'baseline.bin.gz'):
+                        capture.main()
+                    self.assertEqual(recorder.call_count, 4)
+                trace.write_bytes(retained)
                 drift = False
                 capture.main()
-            self.assertEqual(verify(corpus, Path(argv[argv.index('--plan') + 1]))['status'], 'passed')
+            plan_path = Path(argv[argv.index('--plan') + 1])
+            self.assertEqual(verify(corpus, plan_path)['status'], 'passed')
+            manifest_path = corpus / 'manifest.json'
+            manifest = json.loads(manifest_path.read_bytes())
+            del manifest['runs'][0]['proof']['camera_cadence']
+            capture.write(manifest_path, manifest)
+            with self.assertRaisesRegex(ValueError, 'Stored camera cadence'):
+                verify(corpus, plan_path)
+
+    def test_two_condition_plan_verifies_snapshot_identities_and_rejects_false_cadence(self):
+        reference = capture.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
+        plan = json.loads((capture.ROOT / 'tools/skyrim-recorder/fixtures/jump-inputs-v4.json').read_bytes())
+        plan['conditions'] = plan['conditions'][:2]
+        with tempfile.TemporaryDirectory() as directory:
+            corpus = Path(directory)
+            for name in ('traces', 'capture-source.zip'):
+                (corpus / name).symlink_to(reference / name)
+            plan_path, path = corpus / 'plan.json', corpus / 'manifest.json'
+            capture.write(plan_path, plan)
+            expected_plan = capture.digest(plan_path)
+            manifest = json.loads((reference / 'manifest.json').read_bytes())
+            manifest['runs'] = manifest['runs'][:2]
+            ids = {run['id'] for run in manifest['runs']}
+            manifest['attempts'] = [a for a in manifest['attempts'] if a['id'] in ids]
+            manifest['plan_sha256'] = expected_plan
+            capture.write(path, manifest)
+            expected_manifest = capture.digest(path)
+
+            def replace_inputs(archive):
+                path.write_text('{}')
+                plan_path.write_text('{}')
+                return capture.read_capture_sources(archive)
+
+            with patch('verify_skyrim_jump_inputs.read_capture_sources', side_effect=replace_inputs):
+                result = verify(corpus, plan_path)
+            self.assertEqual([r['id'] for r in result['runs']], ['baseline', 'setting-64'])
+            self.assertEqual(result['manifest_sha256'], expected_manifest)
+            self.assertEqual(result['plan_sha256'], expected_plan)
+            manifest['runs'][0]['proof']['camera_cadence'] = {'achieved_fps': 30}
+            capture.write(plan_path, plan)
+            capture.write(path, manifest)
+            with self.assertRaisesRegex(ValueError, 'Stored camera cadence'):
+                verify(corpus, plan_path)
+
+    def test_ambiguous_source_archive_fails_verification(self):
+        reference = capture.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
+        plan = capture.ROOT / 'tools/skyrim-recorder/fixtures/jump-inputs-v4.json'
+        with tempfile.TemporaryDirectory() as directory:
+            corpus = Path(directory)
+            for name in ('manifest.json', 'capture-source.zip'):
+                shutil.copyfile(reference / name, corpus / name)
+            with zipfile.ZipFile(corpus / 'capture-source.zip', 'a') as archive:
+                name = archive.namelist()[0]
+                with self.assertWarns(UserWarning):
+                    archive.writestr(name, archive.read(name))
+            with self.assertRaisesRegex(ValueError, 'Duplicate source archive member'):
+                verify(corpus, plan)
 
     def test_public_failure_redacts_home_path_and_preserves_trace(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -190,7 +284,7 @@ class CaptureResumeTests(unittest.TestCase):
             (output / 'trace.bin').write_bytes(b'partial numeric trace')
             corpus = root / 'corpus'
             (corpus / 'traces').mkdir(parents=True)
-            attempt = {'id': 'baseline', 'attempt': 1, 'exit_code': 1}
+            attempt = {'id': 'baseline', 'attempt': 1, 'exit_code': 1, 'private_session': str(root)}
             failure = {'phase': 'recorder', 'error': '/home/private-operator/game/proof.json missing'}
             capture.retain_failure(corpus, output, attempt, failure)
             self.assertNotIn('/home/private-operator', json.dumps(attempt))
@@ -244,6 +338,7 @@ class CaptureResumeTests(unittest.TestCase):
                             raw = raw[:-1]
                         elif mode == 'overflow':
                             raw = bytes(overflow)
+                            proof['trace_sha256'] = hashlib.sha256(raw).hexdigest()
                         elif mode == 'proof-key':
                             del proof['trace_sha256']
                         elif mode == 'public-proof-key':
@@ -320,7 +415,7 @@ class CaptureResumeTests(unittest.TestCase):
             adopted.mkdir()
             raw = gzip.decompress((reference / baseline['path']).read_bytes())
             (adopted / 'trace.bin').write_bytes(raw)
-            capture.write(adopted / 'proof.json', dict(baseline['proof'], session=session,
+            capture.write(adopted / 'proof.json', dict(baseline['proof'], session=session, services_stopped=True,
                           trace_sha256=hashlib.sha256(raw).hexdigest(),
                           runner_sha256=capture.digest(capture.ROOT / 'scripts/record_skyrim_motion.py')))
             with patch('sys.argv', argv + ['--adopt-baseline', str(adopted)]):

@@ -22,6 +22,8 @@ import tempfile
 import traceback
 import uuid
 
+from skyrim_capture_attempts import save_manifest
+
 
 MIN_DURING_FRAMES = 5
 RECORD = struct.Struct('<4Q4I40f48s')
@@ -189,6 +191,11 @@ def fixture_receipt(path):
     return {'fixture': fixture, 'fixture_sha256': hashlib.sha256(data).hexdigest()}
 
 
+def session_units(session):
+    token = hashlib.sha256(str(session.resolve()).encode()).hexdigest()[:24]
+    return [f'mudcrab-record-{role}-{token}' for role in ('display', 'prefix', 'game')]
+
+
 def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
     if frame_cap not in (30, 60, 120):
         raise ValueError('Experimental frame cap must be 30, 60, or 120')
@@ -213,13 +220,13 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
         raise ValueError('Source save changed since preparation')
     if subprocess.run(['pgrep', '-x', 'steam'], capture_output=True).returncode:
         raise RuntimeError('Steam must be running and signed in before recording')
-    token = hashlib.sha256(str(session.resolve()).encode()).hexdigest()[:24]
-    display_unit, prefix_unit, game_unit = [f'mudcrab-record-{role}-{token}' for role in ('display', 'prefix', 'game')]
+    display_unit, prefix_unit, game_unit = session_units(session)
     # The user manager retains these session-specific names across output directories and process death.
     for unit in (display_unit, prefix_unit, game_unit):
         if not unit_stopped(unit):
             raise RuntimeError(f'Cannot reuse the session while {unit} is still active')
     output.mkdir(parents=True, exist_ok=False)
+    save_manifest(output / 'trace-writer.json', {'session': str(session.resolve()), 'game_unit': game_unit})
     environment_file = output / 'display.json'
     ready_script = output / 'display_ready.py'
     ready_script.write_text('import os,json,time\nfrom pathlib import Path\n'
@@ -447,11 +454,11 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
         proof['ini'] = {name: {'sha256': sha256(documents / name), 'text': (documents / name).read_text()}
                         for name in ('Skyrim.ini', 'SkyrimPrefs.ini')}
         proof.update(receipt)
-        (output / 'proof.json').write_text(json.dumps(proof, indent=2) + '\n')
         (output / 'trace.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in rows))
-        print(json.dumps(proof, indent=2))
         phase = 'achieved-cadence'
         if proof['status'] != 'passed':
+            save_manifest(output / 'proof.json', proof)
+            print(json.dumps(proof, indent=2))
             raise ValueError('Camera cadence did not meet the requested frame cap; retained proof and trace')
     except BaseException as error:
         with suppress(OSError):
@@ -477,13 +484,18 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
                     signal.signal(sig, handler)
                 if termination_signal is not None:
                     raise SystemExit(128 + termination_signal)
+    if sha256(output / 'trace.bin') != proof['trace_sha256']:
+        raise ValueError('Native trace changed during recorder shutdown')
+    proof['services_stopped'] = True
+    print(json.dumps(proof, indent=2), flush=True)
+    save_manifest(output / 'proof.json', proof)
 
 
 def unit_stopped(unit):
     # --collect can unload the unit between stopping it and this query. systemctl
     # show reports ActiveState=inactive for an unknown unit.
     state = subprocess.run(['systemctl', '--user', 'show', unit, '-p', 'ActiveState', '--value'],
-                           capture_output=True, text=True, timeout=10, check=True)
+                           capture_output=True, text=True, timeout=10, check=True, start_new_session=True)
     return state.stdout.strip() == 'inactive'
 
 

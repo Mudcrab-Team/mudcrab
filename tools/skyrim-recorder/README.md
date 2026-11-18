@@ -36,7 +36,7 @@ python3 scripts/evaluate_skyrim_jump.py freeze \
 
 ## Capture a new campaign
 
-Install LLVM with `clang-cl`, `lld-link` and `llvm-dlltool`, a C compiler, libei development files, Gamescope with `gamescopectl`, `xdotool` and Tesseract with English data. Start authenticated Steam. Use the exact runtime in [runtime.json](runtime.json) and an installed Proton distribution.
+Install LLVM with `clang-cl`, `lld-link` and `llvm-dlltool`, a C compiler, libei development files, Gamescope with `gamescopectl`, `xdotool` and Tesseract with English data. Run the capture in a session with a working systemd user manager and authenticated Steam. Use the exact runtime in [runtime.json](runtime.json) and an installed Proton distribution.
 
 The published acquisition plan pins a particular Whiterun save by hash. Another save requires a separately surveyed plan. Supply the original save, not a numerical artifact from this repository.
 
@@ -69,6 +69,8 @@ The original campaign used the removed `DXVK_FRAME_RATE` environment variable an
 A publication derivative of the original acquisition source, with the unchanged frozen evaluator, is in [captured-source.zip](../../docs/research/evidence/skyrim-physics-221/captured-source.zip). [cadence-source.zip](../../docs/research/evidence/skyrim-physics-221/cadence-source.zip) overlays only the two changed acquisition scripts and the new plan. The [publication record](../../docs/research/evidence/skyrim-physics-221/publication.json) identifies removed personal paths and executable byte strings with original and published hashes. These derivatives are not claimed to be byte-identical acquisition sources. The overlay also fixes a stdout log-name collision for fractional timescale names. Raw trace and proof directories were always unique. Source receipts bind each campaign to its own source and plan, with explicit publication hash mappings; do not resume the original campaign with current acquisition source.
 
 The runner sets the fixture pose, waits for stationary first-person observations, and sends a 500 ms W+Space chord. Native handlers record delivered input; the player trajectory and native launch callback prove that a jump occurred. Recording ends two wall seconds after native W release. The sealed scoring window is 1.15 game seconds so the half-speed condition has full coverage. Captures retain logs and screenshots privately. Failed attempts remain in the manifest and can be resumed with the same command. The frozen artifact is hashed before held-out acquisition starts.
+
+If a capture stops unexpectedly, check the unit named in the error with `systemctl --user status UNIT`. The private output's `trace-writer.json` identifies the game unit and prepared session. Confirm that it belongs to the interrupted capture, then run `systemctl --user stop UNIT` and check `systemctl --user show UNIT -p ActiveState --value` for `inactive`. Repeat for any display or prefix unit reported by the recorder before resuming the original campaign command. Recovery keeps a v4 attempt pending while it cannot confirm that the native writer has stopped. Adoption requires the private proof published after successful recorder shutdown.
 
 The private game directory links source assets but copies mutable files. The original executable and save are hashed. Do not run parallel captures against one prefix or display. Preparation builds a private `dinput8.dll` which forwards DirectInput and installs only pinned instrumentation hooks.
 

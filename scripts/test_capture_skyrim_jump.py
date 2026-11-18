@@ -130,16 +130,22 @@ class CampaignEvidenceTests(unittest.TestCase):
             argv[argv.index('--session') + 1] = str(session_link)
             proof_session = dict(session, proton_sha256='other')
             raw = synthetic(no_jump=True)
+            change_fixture = False
 
             def record(command, **kwargs):
                 self.assertEqual(Path(command[command.index('--session') + 1]), root / 'session')
                 output = Path(command[command.index('--output') + 1])
                 output.mkdir()
                 (output / 'trace.bin').write_bytes(raw)
+                fixture = Path(command[command.index('--fixture') + 1])
+                if change_fixture:
+                    changed = json.loads(fixture.read_bytes())
+                    changed['hold_ms'] = 600
+                    capture.write(fixture, changed)
                 capture.write(output / 'proof.json', dict(session=proof_session,
                               trace_sha256=capture.evaluator.digest(raw), status='passed', received_down_up=True,
                               forward_input_accepted=True, source_save_unchanged=True, frame_cap_request=60,
-                              dxvk_config={}, ini={}, fixture_sha256=capture.digest(Path(command[command.index('--fixture') + 1]))))
+                              dxvk_config={}, ini={}, fixture_sha256=capture.digest(fixture)))
                 return 0
 
             with patch('sys.argv', argv), patch.object(capture, 'run_recorder', side_effect=record) as recorder:
@@ -152,6 +158,11 @@ class CampaignEvidenceTests(unittest.TestCase):
                 self.assertEqual(json.loads(manifest.read_bytes())['runs'], [])
                 self.assertTrue((root / 'private/train-60hz-1x-1-attempt-2/trace.bin').is_file())
                 raw = synthetic()
+                change_fixture = True
+                with self.assertRaisesRegex(ValueError, 'planned fixture'):
+                    capture.main()
+                self.assertEqual(json.loads(manifest.read_bytes())['runs'], [])
+                change_fixture = False
                 capture.main()
                 receipt = root / 'corpus/train-capture.json'
                 receipt_stat = receipt.stat()
@@ -166,7 +177,7 @@ class CampaignEvidenceTests(unittest.TestCase):
                 trace.unlink()
                 with self.assertRaisesRegex(ValueError, 'Cannot read retained trace'):
                     capture.main()
-                self.assertEqual(recorder.call_count, 3)
+                self.assertEqual(recorder.call_count, 4)
 
 
 if __name__ == '__main__':

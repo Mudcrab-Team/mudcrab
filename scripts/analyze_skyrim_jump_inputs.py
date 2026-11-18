@@ -38,6 +38,8 @@ def decode_bytes(raw):
                          values=list(v[8:48]), text=v[48].split(b'\0')[0].decode('ascii')))
     require(rows[0]['kind'] == 1 and rows[0]['code'] == 4 and rows[0]['text'] == HEADER,
             'Requires separate v4 input header')
+    require(sum(r['kind'] == 1 for r in rows) == sum(r['kind'] == 5 for r in rows) == 1,
+            'Duplicate header or footer')
     verify_trace(rows)
     require(all(r['kind'] in range(1, 11) for r in rows), 'Unknown v4 record kind')
     return rows, hashlib.sha256(raw).hexdigest()
@@ -59,6 +61,11 @@ def analyze_rows(rows):
     require(len(setters) == len(snapshots) == len(launches) == 1,
             'Requires exactly one setter and launch pair')
     setter, snapshot, launch = setters[0], snapshots[0], launches[0]
+    require(launch['code'] == 3, 'Invalid native launch callback')
+    require(snapshot['sequence'] == launch['sequence'] + 1 and snapshot['sample'] == launch['sample'] and
+            snapshot['thread'] == launch['thread'] and snapshot['qpc'] >= launch['qpc'],
+            'Loaded-input snapshot does not belong to the launch callback')
+    require(setter['state'] in (0x6752ba, 0x7cf269), 'Unknown native setter path')
     require(setter['code'] & SETTER_REQUIRED == SETTER_REQUIRED, 'Invalid setter input fields')
     require(snapshot['code'] & LAUNCH_REQUIRED == LAUNCH_REQUIRED, 'Invalid launch input fields')
     v, w = setter['values'], snapshot['values']

@@ -5,11 +5,10 @@ import gzip
 import hashlib
 import json
 from pathlib import Path
-import zipfile
 
 from analyze_skyrim_jump_inputs import analyze_rows, decode, require
 from publish_skyrim_evidence import source_digest
-from capture_skyrim_jump_inputs import (ROOT, SOURCES, control_prediction, digest, validate_campaign_session,
+from capture_skyrim_jump_inputs import (ROOT, SOURCES, control_prediction, read_capture_sources, validate_campaign_session,
                                         validate_capture_proof)
 
 LEGACY_CAPTURE_SHA256 = '6e85fa44b471005a5179a88fb220d4a1c12e8ab6341cadc640250d93ebc8d9ad'
@@ -17,10 +16,13 @@ LEGACY_SOURCES = set(SOURCES) - {'scripts/publish_skyrim_evidence.py', 'scripts/
 
 
 def verify(corpus, plan_path):
-    manifest = json.loads((corpus / 'manifest.json').read_text())
-    plan = json.loads(plan_path.read_text())
+    manifest_bytes = (corpus / 'manifest.json').read_bytes()
+    manifest = json.loads(manifest_bytes)
+    plan_bytes = plan_path.read_bytes()
+    plan = json.loads(plan_bytes)
+    plan_sha256 = hashlib.sha256(plan_bytes).hexdigest()
     require(manifest['schema'] == 1 and manifest['profile'] == 'jump-inputs-v4', 'Wrong corpus profile')
-    require(manifest['plan_sha256'] == digest(plan_path), 'Declared plan differs')
+    require(manifest['plan_sha256'] == plan_sha256, 'Declared plan differs')
     require(manifest['runtime_sha256'] == plan['runtime_sha256'], 'Corpus runtime differs')
     conditions = plan['conditions']
     require([r['id'] for r in manifest['runs']] == [c['id'] for c in conditions],
@@ -41,8 +43,7 @@ def verify(corpus, plan_path):
     baseline_run = manifest['runs'][0]
     validate_campaign_session(manifest['runs'], baseline_run['receipt']['session_sha256'], baseline_run['proof'])
     baseline = baseline_run['result']
-    with zipfile.ZipFile(corpus / 'capture-source.zip') as archive:
-        captured_sources = {name: archive.read(name) for name in archive.namelist()}
+    captured_sources = read_capture_sources(corpus / 'capture-source.zip')
     capture = 'scripts/capture_skyrim_jump_inputs.py'
     require(capture in captured_sources, 'Missing capture source')
     acquisition = source_digest(corpus / 'capture-source.zip', capture, captured_sources[capture])
@@ -56,15 +57,14 @@ def verify(corpus, plan_path):
         path = Path(run['path'])
         require(not path.is_absolute() and '..' not in path.parts, 'Trace escapes corpus')
         rows, raw_digest = decode(corpus / path)
-        validate_capture_proof(rows, run['proof'], plan['frame_cap'], fixture)
-        require(sum(r['kind'] == 1 for r in rows) == sum(r['kind'] == 5 for r in rows) == 1,
-                'Duplicate header or footer')
+        cadence = validate_capture_proof(rows, run['proof'], plan['frame_cap'], fixture)
+        if acquisition != LEGACY_CAPTURE_SHA256 or 'camera_cadence' in run['proof']:
+            require(run['proof'].get('camera_cadence') == cadence, 'Stored camera cadence differs from trace')
         require(run['sha256'] == raw_digest, 'Numeric trace identity differs')
         require(raw_digest not in trace_hashes, 'Native trace reused across conditions')
         trace_hashes.add(raw_digest)
         result = analyze_rows(rows)
         require(result == run['result'], 'Stored input result differs from recomputation')
-        require(result['setter_call_rva'] in ('0x6752ba', '0x7cf269'), 'Unknown native setter path')
         require(run['proof']['exe_sha256'] == plan['runtime_sha256'], 'Recorded runtime differs')
         require(run['proof']['source_save_sha256'] == plan['source_save_sha256'], 'Recorded save differs')
         require(run['proof']['source_save_unchanged'], 'Source save was modified')
@@ -82,6 +82,8 @@ def verify(corpus, plan_path):
             require(all(result['inputs'][k] == baseline['inputs'][k] for k in
                         ('npc_type', 'sex_index', 'npc_height', 'race_heights', 'npc_form_id', 'race_form_id')),
                     'Unrequested base factors changed')
+        if run['id'] == 'repeat-baseline':
+            require(result['inputs'] == baseline['inputs'], 'Repeat baseline inputs differ')
         results.append({'id': run['id'], 'trace_sha256': raw_digest,
                         'setting': result['inputs']['jump_height_min'],
                         'reference_u16': result['inputs']['reference_u16'],
@@ -89,7 +91,6 @@ def verify(corpus, plan_path):
                         'controller_height': result['controller_height'],
                         'launch_havok_velocity': result['launch_havok_velocity'],
                         'launch_prediction_error': result['launch_havok_velocity'] - result['predicted_launch_havok_velocity']})
-    require(manifest['runs'][-1]['result']['inputs'] == baseline['inputs'], 'Repeat baseline inputs differ')
     for attempt in manifest['attempts']:
         if 'failure' not in attempt:
             continue
@@ -104,7 +105,7 @@ def verify(corpus, plan_path):
     return {'status': 'passed', 'fit_performed': False, 'runs': results,
             'attempts': len(manifest['attempts']),
             'failed_attempts': [a for a in manifest['attempts'] if 'failure' in a],
-            'plan_sha256': digest(plan_path), 'manifest_sha256': digest(corpus / 'manifest.json')}
+            'plan_sha256': plan_sha256, 'manifest_sha256': hashlib.sha256(manifest_bytes).hexdigest()}
 
 
 def main():

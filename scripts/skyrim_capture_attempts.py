@@ -1,12 +1,18 @@
 """Persist capture ownership before collection and recover unfinished attempts."""
 from contextlib import contextmanager
 import fcntl
+import gzip
+import hashlib
 import json
 import os
 from pathlib import Path
 import signal
 import subprocess
 import tempfile
+import zlib
+
+
+RECORDER_SHUTDOWN_TIMEOUT = 120
 
 
 @contextmanager
@@ -44,6 +50,13 @@ def run_recorder(command, *, stdout, attempt, lock_fd):
                 waiting = False
                 if child.returncode is None:
                     child.send_signal(cancellation or signal.SIGTERM)
+                    try:
+                        child.wait(timeout=RECORDER_SHUTDOWN_TIMEOUT)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            os.killpg(child.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
                 attempt['exit_code'] = child.wait()
     finally:
         for sig, handler in previous.items():
@@ -51,6 +64,19 @@ def run_recorder(command, *, stdout, attempt, lock_fd):
         if cancellation is not None:
             raise SystemExit(128 + cancellation)
     return attempt['exit_code']
+
+
+def verify_retained_trace(corpus, run):
+    path = Path(run['path'])
+    if path.is_absolute() or '..' in path.parts:
+        raise ValueError(f'Retained trace escapes corpus: {path}')
+    retained = corpus / path
+    try:
+        raw = gzip.decompress(retained.read_bytes())
+    except (OSError, EOFError, zlib.error) as error:
+        raise ValueError(f'Cannot read retained trace {retained}: {error}') from error
+    if hashlib.sha256(raw).hexdigest() != run['sha256']:
+        raise ValueError(f'Retained trace hash mismatch: {retained}')
 
 
 def save_manifest(path, manifest):
@@ -87,14 +113,17 @@ def recover_attempts(path, manifest, private_output, retain=None):
             fail_attempt(row, output, failure, retain)
         row.pop('status')
         row.pop('private_output', None)
+        row.pop('private_session', None)
     if pending:
         save_manifest(path, manifest)
 
 
 @contextmanager
-def record_attempt(path, manifest, name, number, output, retain=None):
+def record_attempt(path, manifest, name, number, output, retain=None, *, private_session=None):
     row = dict(id=name, attempt=number, exit_code=None, status='pending',
                private_output=str(output.resolve()))
+    if private_session is not None:
+        row['private_session'] = str(private_session.resolve())
     manifest['attempts'].append(row)
     save_manifest(path, manifest)
     durable = None
@@ -122,5 +151,6 @@ def record_attempt(path, manifest, name, number, output, retain=None):
         if finalized:
             row.pop('status')
             row.pop('private_output', None)
+            row.pop('private_session', None)
         if finalized or durable is not None:
             save_manifest(path, manifest)

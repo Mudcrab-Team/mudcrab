@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Capture the declared v4 input controls with immutable per-run numeric receipts."""
 import argparse
+from contextlib import ExitStack
+import fcntl
 import gzip
 import hashlib
 import json
@@ -12,8 +14,9 @@ from functools import partial
 
 from analyze_skyrim_jump_inputs import analyze_rows, decode_bytes, f32
 from publish_skyrim_evidence import public_value
-from record_skyrim_motion import verify_trace
-from skyrim_capture_attempts import corpus_lock, record_attempt, recover_attempts, run_recorder, save_manifest
+from record_skyrim_motion import session_units, unit_stopped, verify_trace
+from skyrim_capture_attempts import (corpus_lock, record_attempt, recover_attempts, run_recorder,
+                                     save_manifest, verify_retained_trace)
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ['scripts/publish_skyrim_evidence.py', 'scripts/record_skyrim_motion.py', 'scripts/capture_skyrim_jump_inputs.py',
@@ -30,6 +33,14 @@ def digest(path):
 
 def write(path, value):
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
+
+
+def read_capture_sources(path):
+    with zipfile.ZipFile(path) as archive:
+        members = archive.infolist()
+        if len({member.filename for member in members}) != len(members):
+            raise ValueError(f'Duplicate source archive member in {path}')
+        return {member.filename: archive.read(member) for member in members}
 
 
 def validate_campaign_session(runs, session_sha256, expected_proof):
@@ -70,12 +81,65 @@ def validate_capture_proof(rows, proof, frame_cap, fixture):
     return measured['camera_cadence']
 
 
+def stopped_trace(output, attempt):
+    """Read a finished private trace or confirm the service can no longer write it."""
+    trace = output / 'trace.bin'
+    try:
+        proof = json.loads((output / 'proof.json').read_bytes())
+    except (FileNotFoundError, ValueError):
+        proof = {}
+    if (proof.get('status') == 'passed' and proof.get('services_stopped') is True and
+            proof.get('runner_sha256') == digest(ROOT / 'scripts/record_skyrim_motion.py')):
+        raw = trace.read_bytes()
+        if hashlib.sha256(raw).hexdigest() == proof['trace_sha256']:
+            return raw
+
+    with ExitStack() as locks:
+        sessions = set()
+
+        def lock_session(session, mode):
+            if session not in sessions:
+                lock = locks.enter_context((session / '.recording.lock').open(mode))
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                sessions.add(session)
+
+        if 'private_session' in attempt:
+            lock_session(Path(attempt['private_session']), 'a')
+        try:
+            owner = json.loads((output / 'trace-writer.json').read_bytes())
+        except FileNotFoundError:
+            if not sessions:
+                raise RuntimeError(f'Unknown native trace writer for {output}; attempt remains pending')
+            # Before writer receipts, every recorder confirmed its display before
+            # launching Skyrim. Check both historical unit naming schemes.
+            try:
+                (output / 'display.json').stat()
+            except FileNotFoundError:
+                units = []
+            else:
+                session, = sessions
+                token = hashlib.sha256(str(output.resolve()).encode()).hexdigest()[:10]
+                units = [session_units(session)[2], 'mudcrab-record-game-' + token]
+        else:
+            session = Path(owner['session'])
+            if not session.is_absolute() or owner['game_unit'] != session_units(session)[2]:
+                raise ValueError(f'Invalid native trace writer receipt in {output}; attempt remains pending')
+            lock_session(session, 'r')
+            units = [owner['game_unit']]
+        for unit in units:
+            if not unit_stopped(unit):
+                raise RuntimeError(f'Native writer {unit} is still active; attempt remains pending')
+        try:
+            return trace.read_bytes()
+        except FileNotFoundError:
+            return None
+
+
 def retain_failure(corpus, output, attempt, failure):
     """Keep available failed bytes, or explicitly record that capture never created them."""
     attempt['failure'] = public_value(failure)
-    trace = output / 'trace.bin'
-    if trace.is_file():
-        raw = trace.read_bytes()
+    raw = stopped_trace(output, attempt)
+    if raw is not None:
         kept = corpus / 'traces' / f"failed-{attempt['id']}-attempt-{attempt['attempt']}.bin.gz"
         kept.write_bytes(gzip.compress(raw, mtime=0))
         attempt.update(path=str(kept.relative_to(corpus)), trace_sha256=hashlib.sha256(raw).hexdigest())
@@ -121,12 +185,12 @@ def main():
         tools = {'dll_sha256': session['build']['dll_sha256'], 'input_sha256': session['input_sha256'],
                  'proton_sha256': session['proton_sha256']}
         validate_campaign_session(manifest['runs'], session_sha256, tools)
+        for run in manifest['runs']:
+            verify_retained_trace(args.corpus, run)
         source_bytes = {name: (ROOT / name).read_bytes() for name in SOURCES}
         archive_path = args.corpus / 'capture-source.zip'
         if archive_path.exists():
-            with zipfile.ZipFile(archive_path) as archive:
-                archived = {name: archive.read(name) for name in archive.namelist()}
-            if archived != source_bytes:
+            if read_capture_sources(archive_path) != source_bytes:
                 parser.error('Capture sources changed; use a new corpus')
         else:
             if manifest['attempts']:
@@ -168,7 +232,8 @@ def main():
                        '--ocr-prefix', str(args.ocr_prefix.resolve())]
             receipt = {'session_sha256': session_sha256, 'sources': sources,
                        'command': command, 'prediction_before_capture': prediction, 'adopted': bool(adopted)}
-            with record_attempt(manifest_path, manifest, name, attempt, output, partial(retain_failure, args.corpus)) as attempt_row:
+            with record_attempt(manifest_path, manifest, name, attempt, output, partial(retain_failure, args.corpus),
+                                private_session=session_dir) as attempt_row:
                 write(args.private_output / f'{name}-attempt-{attempt}-receipt.json', receipt)
                 print(f'Recording {name}, attempt {attempt}', flush=True)
                 exit_code = 0
@@ -189,6 +254,10 @@ def main():
                     raise RuntimeError(f'Capture failed; preserved {output}')
                 try:
                     proof = json.loads((output / 'proof.json').read_text())
+                    if adopted and proof.get('services_stopped') is not True:
+                        raise ValueError('Adopted proof lacks successful recorder shutdown')
+                    if proof['runner_sha256'] != sources['scripts/record_skyrim_motion.py']:
+                        raise ValueError('Recorder source changed during capture')
                     raw = (output / 'trace.bin').read_bytes()
                     rows, raw_digest = decode_bytes(raw)
                     if any(run['sha256'] == raw_digest for run in manifest['runs']):
@@ -197,8 +266,6 @@ def main():
                     result = analyze_rows(rows)
                     if raw_digest != proof['trace_sha256'] or proof['session'] != session:
                         raise ValueError('Recorded session or native trace differs')
-                    if proof['runner_sha256'] != sources['scripts/record_skyrim_motion.py']:
-                        raise ValueError('Recorder source changed during capture')
                     if prediction:
                         for key in ('jump_height_min', 'reference_u16'):
                             if prediction[key] != result['inputs'][key]:
