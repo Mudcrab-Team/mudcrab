@@ -68,6 +68,8 @@ pub mod tone_mapping;
 mod underwater;
 mod underwater_pass;
 #[cfg(test)]
+mod vendored_bevy_patches;
+#[cfg(test)]
 mod vendored_morph_shader;
 pub mod visibility_optimization;
 pub mod visual_profile;

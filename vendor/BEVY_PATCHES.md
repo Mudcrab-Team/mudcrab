@@ -8,6 +8,19 @@ releases one. Each vendored crate has a `README.mudcrab.md` with its source hash
 To add an entry: vendor each published crate unchanged in one commit, apply the change in the next
 commit, add a `// mudcrab:` comment at each touched spot, and fill in a row below.
 
+## Every carried patch and its commit
+
+The commits are the squash merges on `main`. Each pull request has the unchanged vendored crate as
+its first commit and the patch as the next.
+
+| Patch | Crate | Pull request | Commit on `main` |
+|---|---|---|---|
+| bevy#26504, morph descriptor wait and `layer_count` bound | `bevy_pbr` | #801 | `40e0dd22` |
+| Mudcrab's own `prev_weight_at` bound (not in bevy#26504) | `bevy_pbr` | #801 | `40e0dd22` |
+| bevy#26095, stale GPU bin-unpacking jobs and bind groups | `bevy_pbr`, `bevy_render` | #802 | `d0d908d3` |
+| bevy#26588, GPU clustering staging-buffer leak | `bevy_pbr` | #802 | `d0d908d3` |
+| `zstd` requirement widened to `0.14.3` (Mudcrab-only) | `bevy_image` | #433 | `67e75c65` |
+
 Upstream states below are as of the date in the table.
 
 | Crate | Change | Upstream | Upstream state | Applied | Files | Mudcrab additions | Removal rule |
@@ -17,7 +30,12 @@ Upstream states below are as of the date in the table.
 | `bevy_pbr` | Remove a write-only list that leaked one staging buffer handle per view per frame with GPU clustering on | [bevy#26588](https://github.com/bevyengine/bevy/pull/26588), fixes [bevy#26283](https://github.com/bevyengine/bevy/issues/26283) | **Open**, not merged, 2026-11-18 | PR head `88ce16beee7c77fa3d340809bfb34bceffecea70`; the hunk applies unchanged to 0.19.0 | `bevy_pbr/src/cluster/gpu.rs` | A `mudcrab:` marker comment. Mudcrab turns GPU clustering off on Metal (`crates/engine/src/renderer_init.rs`) and keeps Bevy's default (on) on other backends, so this fix matters on Vulkan and DX12 only. Not exercised by the macOS validation run | Drop the patch when a Bevy release contains #26588 or an equivalent. |
 | `bevy_image` | Widen the `zstd` requirement to `0.14.3` for four RustSec advisories | none (Mudcrab-only manifest change) | n/a | see [`bevy_image/README.mudcrab.md`](bevy_image/README.mudcrab.md) | `Cargo.toml` | the whole change | Drop it when the Bevy image release Mudcrab uses accepts the fixed Zstd dependencies. |
 
-## Checking a morph change
+## Checking a carried change
+
+Two failure classes have a runtime check: the morph page fault (bevy#26504) and the flicker with
+shadow-casting point lights (bevy#26095). `crates/engine/src/vendored_morph_shader.rs` and
+`crates/engine/src/vendored_bevy_patches.rs` fail CI if a re-vendor drops a hunk. They do not
+replace the runtime check below.
 
 The out-of-bounds read does not fault on every run, so a plain run proves nothing. Use Metal
 shader validation in a hidden window and count `Invalid Metal usage` lines. Bevy 0.19.0 without
