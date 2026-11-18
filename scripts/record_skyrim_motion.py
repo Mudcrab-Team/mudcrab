@@ -249,13 +249,13 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
     owned = []
     keyboard = None
 
-    termination_requested = False
+    termination_signal = None
     interruptible = True
 
     def terminate(signum, _frame):
-        nonlocal termination_requested
-        if not termination_requested:
-            termination_requested = True
+        nonlocal termination_signal
+        if termination_signal is None:
+            termination_signal = signum
             if interruptible:
                 raise SystemExit(128 + signum)
 
@@ -267,18 +267,22 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
             command += ['--setenv=' + k + '=' + v for k, v in environment.items()]
         if cwd:
             command += ['--working-directory=' + str(cwd)]
-        # Finish the launch handshake so cleanup knows exactly which units we own.
+        # A terminal interrupt must spare the client until it confirms unit ownership.
         interruptible = False
         try:
-            subprocess.run(command + argv, check=True, capture_output=True)
+            subprocess.run(command + argv, check=True, capture_output=True, start_new_session=True)
             owned.append(unit)
         finally:
             interruptible = True
-        if termination_requested:
-            raise SystemExit(128 + signal.SIGTERM)
+        if termination_signal is not None:
+            raise SystemExit(128 + termination_signal)
 
-    previous_handler = signal.signal(signal.SIGTERM, terminate)
+    previous_handlers = {}
     try:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            if sig == signal.SIGINT and signal.getsignal(sig) == signal.SIG_IGN:
+                continue
+            previous_handlers[sig] = signal.signal(sig, terminate)
         start(display_unit, ['gamescope', '--backend', 'headless', '-W', '1280', '-H', '720',
                              '-w', '1280', '-h', '720', '-r', str(frame_cap), '--keep-alive', '--',
                              sys.executable, str(ready_script)])
@@ -480,20 +484,22 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
             try:
                 stop_owned_services(owned, output)
             finally:
-                signal.signal(signal.SIGTERM, previous_handler)
-                if termination_requested:
-                    raise SystemExit(128 + signal.SIGTERM)
+                for sig, handler in previous_handlers.items():
+                    signal.signal(sig, handler)
+                if termination_signal is not None:
+                    raise SystemExit(128 + termination_signal)
 
 
 def stop_owned_services(owned, output):
     cleanup_errors = []
     for unit in reversed(owned):
         try:
-            subprocess.run(['systemctl', '--user', 'stop', unit], timeout=20, capture_output=True, check=True)
+            subprocess.run(['systemctl', '--user', 'stop', unit], timeout=20, capture_output=True,
+                           check=True, start_new_session=True)
         except (OSError, subprocess.SubprocessError) as stop_error:
             try:
                 subprocess.run(['systemctl', '--user', 'kill', '--signal=KILL', unit],
-                               timeout=10, capture_output=True, check=True)
+                               timeout=10, capture_output=True, check=True, start_new_session=True)
             except (OSError, subprocess.SubprocessError) as kill_error:
                 cleanup_errors.append(f'{unit}: stop: {stop_error}, kill: {kill_error}')
     if cleanup_errors:

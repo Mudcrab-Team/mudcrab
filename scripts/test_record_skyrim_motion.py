@@ -6,6 +6,7 @@ import signal
 import os
 import runpy
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
@@ -80,6 +81,13 @@ class ScreenshotOwnershipTests(unittest.TestCase):
 
 class RecordingLifecycleTests(unittest.TestCase):
     def test_sigterm_stops_owned_units_before_unlocking(self):
+        self.check_capture_cancellation(signal.SIGTERM)
+
+    def test_ctrl_c_stops_owned_units_before_unlocking(self):
+        self.check_capture_cancellation(signal.SIGINT)
+
+    def check_capture_cancellation(self, signum):
+        real_run = subprocess.run
         for when in ('launch', 'capture', 'cleanup'):
             with self.subTest(when=when), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -90,8 +98,13 @@ class RecordingLifecycleTests(unittest.TestCase):
                               source_save='/save', source_game='/games/steam/common/skyrim')
                 (root / 'session.json').write_text(json.dumps(config))
 
-                def terminate():
-                    os.kill(os.getpid(), signal.SIGTERM)
+                def signal_from_service_client(kwargs):
+                    # Model a terminal signal while the service manager's client awaits its reply.
+                    script = ('import os, signal, sys\n'
+                              'sig = int(sys.argv[2])\n'
+                              'signal.signal(sig, signal.SIG_DFL)\n'
+                              'os.killpg(int(sys.argv[1]), sig)\n')
+                    real_run([sys.executable, '-c', script, str(os.getpgrp()), str(int(signum))], **kwargs)
 
                 def run(argv, **kwargs):
                     if argv[0] == 'systemd-run':
@@ -100,21 +113,23 @@ class RecordingLifecycleTests(unittest.TestCase):
                                            GAMESCOPE_WAYLAND_DISPLAY='wayland')
                             (output / 'display.json').write_text(json.dumps(display))
                         elif when == 'launch':
-                            terminate()
+                            signal_from_service_client(kwargs)
                     elif argv[:3] == ['systemctl', '--user', 'stop']:
                         with lock.open('a') as contender, self.assertRaises(BlockingIOError):
                             fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        terminate()
+                        signal_from_service_client(kwargs)
                         with (root / 'stops').open('a') as log:
                             print(argv[-1], file=log)
                     return subprocess.CompletedProcess(argv, 0, stdout='', stderr='')
 
                 def game_window(display):
                     if when == 'capture':
-                        terminate()
+                        os.killpg(os.getpgrp(), signum)
                     raise RuntimeError('end simulated recording')
 
                 def record():
+                    os.setsid()
+                    signal.signal(signal.SIGINT, signal.default_int_handler)
                     signal.signal(signal.SIGTERM, signal.SIG_DFL)
                     args = ['record', 'run', '--session', directory, '--output', str(output), '--ocr-prefix', directory]
                     with patch('sys.argv', args), patch.dict(os.environ, XDG_RUNTIME_DIR=directory), \
@@ -128,7 +143,7 @@ class RecordingLifecycleTests(unittest.TestCase):
                 child.start()
                 try:
                     child.join(5)
-                    self.assertEqual(child.exitcode, 128 + signal.SIGTERM)
+                    self.assertEqual(child.exitcode, 128 + signum)
                 finally:
                     if child.is_alive():
                         child.kill()
