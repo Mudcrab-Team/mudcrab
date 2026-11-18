@@ -1,7 +1,5 @@
 use crate::esm::{
-    binary::parse_plugin_file_with_warnings,
-    exporter::{create_tables, validate_inhouse_record},
-    records::RawRecord,
+    binary::parse_plugin_file_with_warnings, exporter::validate_inhouse_record, records::RawRecord,
 };
 use color_eyre::{Result, eyre::WrapErr};
 use rusqlite::{Connection, params};
@@ -221,7 +219,6 @@ impl EsmParser {
                 string_sources,
             );
         let conn = Connection::open(db_path)?;
-        create_tables(&conn)?;
         exporter::export_plugins_to_db(
             &conn,
             &master.records,
@@ -743,17 +740,23 @@ fn remap_record_form_ids(
     record.cell_form_id = record.cell_form_id.map(&remap_link).transpose()?;
     record.worldspace_form_id = record.worldspace_form_id.map(&remap_link).transpose()?;
     let mut malformed_subrecords = Vec::new();
+    let mut rejected_perk_effects = std::collections::BTreeSet::new();
+    let mut perk_effect_index: Option<usize> = None;
+    let mut next_perk_effect = 0usize;
     let mut perk_effect_type: Option<u8> = None;
     let mut perk_epft: Option<u8> = None;
     for (index, (tag, data)) in record.subrecords.iter_mut().enumerate() {
         if record_type == *b"PERK" {
             match tag.as_slice() {
                 b"PRKE" => {
+                    perk_effect_index = Some(next_perk_effect);
+                    next_perk_effect += 1;
                     perk_effect_type = (data.len() == 3).then(|| data[0]);
                     perk_epft = None;
                     continue;
                 }
                 b"PRKF" => {
+                    perk_effect_index = None;
                     perk_effect_type = None;
                     perk_epft = None;
                     continue;
@@ -766,7 +769,7 @@ fn remap_record_form_ids(
                     let has_link =
                         matches!((perk_effect_type, data.len()), (Some(0), 8) | (Some(1), 4));
                     if has_link {
-                        let value = u32::from_le_bytes(data[..4].try_into().unwrap());
+                        let value = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
                         let resolved = remap_with_validation(value, true).unwrap_or_else(|error| {
                             warnings.skipped_optional(
                                 plugin_name,
@@ -780,12 +783,17 @@ fn remap_record_form_ids(
                 }
                 b"EPFD" if perk_effect_type == Some(2) && matches!(perk_epft, Some(3..=5)) => {
                     if data.len() == 4 {
-                        let value = u32::from_le_bytes(data[..4].try_into().unwrap());
+                        let value = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
                         let resolved = remap_with_validation(value, true).unwrap_or_else(|error| {
                             warnings.skipped_optional(
                                 plugin_name,
                                 format!("PERK source {source_id:08X} (load-order {:08X}) EPFD reference {value:08X}: {error}", record.form_id),
                             );
+                            if value != 0
+                                && let Some(effect_index) = perk_effect_index
+                            {
+                                rejected_perk_effects.insert(effect_index);
+                            }
                             0
                         });
                         data[..4].copy_from_slice(&resolved.to_le_bytes());
@@ -800,8 +808,12 @@ fn remap_record_form_ids(
                 }
                 b"CTDA" if data.len() == 32 => {
                     for offset in gameplay_common::condition_link_offsets(data) {
-                        let value =
-                            u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+                        let value = u32::from_le_bytes([
+                            data[offset],
+                            data[offset + 1],
+                            data[offset + 2],
+                            data[offset + 3],
+                        ]);
                         let resolved = remap_with_validation(value, true).unwrap_or_else(|error| {
                             warnings.skipped_optional(
                                 plugin_name,
@@ -976,8 +988,14 @@ fn remap_record_form_ids(
             );
         }
     }
-    let rejected = if !malformed_subrecords.is_empty() && record.record_type == *b"PERK" {
-        let sections = perks::legacy_rejected_sections(&record.subrecords, &malformed_subrecords);
+    let rejected = if (!malformed_subrecords.is_empty() || !rejected_perk_effects.is_empty())
+        && record.record_type == *b"PERK"
+    {
+        let sections = perks::legacy_rejected_sections(
+            &record.subrecords,
+            &malformed_subrecords,
+            &rejected_perk_effects,
+        );
         (!sections.is_empty()).then_some(sections)
     } else {
         None

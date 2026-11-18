@@ -759,3 +759,211 @@ fn localized_malformed_epfd_triggers_omission_while_null_key_stays_nullable() {
         assert_eq!(rows, vec![(0, None)], "{reader:?}");
     }
 }
+
+#[test]
+fn non_finite_ctda_nonempty_prkf_and_rejected_epfd_link_trigger_omissions() {
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut skyrim = esm::plugin(&esm::Plugin {
+            author: layout::GENERATED_AUTHOR,
+            worldspace: layout::GENERATED_WORLDSPACE,
+            cells: &[esm::PRESET_EXTERIOR_CELL],
+            model_path: layout::GENERATED_MODEL_PATH,
+            diffuse: layout::GENERATED_DIFFUSE_PATH,
+            normal_texture: layout::GENERATED_NORMAL_PATH,
+        })
+        .unwrap();
+        skyrim.extend(perks::targets());
+        skyrim.extend(top(
+            b"KYWD",
+            &record_with_flags(
+                b"KYWD",
+                0x901,
+                0,
+                &sub(b"EDID", &perks::text("WeaponSword")),
+            ),
+        ));
+
+        let mut perk = perks::prefix(14);
+
+        // Effect 0: Ability with non-finite (NaN) literal CTDA comparison -> perk_effect_undecoded.
+        perk.extend(sub(b"PRKE", &[1, 0, 0]));
+        perk.extend(sub(b"DATA", &perks::SPELL_ID.to_le_bytes()));
+        perk.extend(sub(b"PRKC", &[0]));
+        perk.extend(sub(
+            b"CTDA",
+            &cond::condition(0, f32::NAN.to_bits(), 560, 0x901, 0, 0, 0),
+        ));
+        perk.extend(sub(b"PRKF", &[]));
+
+        // Effect 1: Entry point (fn=3) whose PRKF terminator is non-empty -> perk_effect_undecoded.
+        perk.extend(sub(b"PRKE", &[2, 0, 1]));
+        perk.extend(sub(b"DATA", &[0, 3, 0]));
+        perk.extend(sub(b"EPFT", &[1]));
+        perk.extend(sub(b"EPFD", &2.5f32.to_le_bytes()));
+        perk.extend(sub(b"PRKF", &[1]));
+
+        // Effect 2: Labeled activation choice with out-of-range non-zero spell FormID (0x01000900)
+        // cleared by remapping -> must omit rather than treating the cleared zero as authored null.
+        perk.extend(perks::entry_effect(
+            14,
+            9,
+            4,
+            Some(&0x0100_0900u32.to_le_bytes()),
+            Some(&perks::text("Choice")),
+        ));
+
+        // Effect 3: Valid sibling after rejected effects must survive at effect_index 3.
+        perk.extend(perks::entry_effect(
+            36,
+            3,
+            1,
+            Some(&1.75f32.to_le_bytes()),
+            None,
+        ));
+
+        skyrim.extend(top(
+            b"PERK",
+            &record_with_flags(b"PERK", perks::FIRST_ID, 0, &perk),
+        ));
+        let skyrim_path = dir.path().join("Skyrim.esm");
+        fs::write(&skyrim_path, skyrim).unwrap();
+        let db = dir.path().join("skyrim_world.db");
+
+        EsmParser::convert_plugins_with_reader(&[skyrim_path], &db, reader, dir.path()).unwrap();
+        let conn = Connection::open(db).unwrap();
+
+        let omissions = ProjectionOmissions::read(&conn).unwrap();
+        let entry = &omissions.categories[OmissionCategory::PerkEffectUndecoded.name()];
+        assert_eq!(entry.count, 3, "{reader:?}: {entry:?}");
+
+        let ability_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM perk_effects WHERE perk_id = ?1 AND effect_type = 1",
+                [perks::FIRST_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ability_count, 0, "{reader:?}");
+
+        let surviving: Vec<(i64, i64, f64)> = conn
+            .prepare(
+                "SELECT effect_index, function, value_float_1
+                 FROM perk_entry_points WHERE perk_id = ?1 ORDER BY effect_index",
+            )
+            .unwrap()
+            .query_map([perks::FIRST_ID], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(surviving, vec![(3, 3, 1.75)], "{reader:?}");
+    }
+}
+
+#[test]
+fn localized_unterminated_epfd_bank_entry_triggers_omission_while_absent_id_stays_nullable() {
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut perk = sub(b"EDID", &perks::text("LocalizedMalformedEntry"));
+        perk.extend(sub(b"FULL", &101u32.to_le_bytes()));
+        perk.extend(sub(b"DESC", &202u32.to_le_bytes()));
+        perk.extend(sub(b"DATA", &[0, 10, 1, 1, 0]));
+        // Effect 0: absent string ID 999 in a readable bank -> NULL value_text, 0 omissions.
+        perk.extend(perks::entry_effect(
+            81,
+            15,
+            7,
+            Some(&999u32.to_le_bytes()),
+            None,
+        ));
+        // Effect 1: string ID 404 referencing an unterminated bank entry -> perk_effect_undecoded.
+        perk.extend(perks::entry_effect(
+            81,
+            15,
+            7,
+            Some(&404u32.to_le_bytes()),
+            None,
+        ));
+        let skyrim = [
+            header(0x80, &[]),
+            top(
+                b"PERK",
+                &record_with_flags(b"PERK", perks::FIRST_ID, 0, &perk),
+            ),
+        ]
+        .concat();
+
+        // Build STRINGS manually so entry 404 points to bytes with no trailing NUL.
+        let mut dir_bytes = Vec::new();
+        let mut blob: Vec<u8> = Vec::new();
+        dir_bytes.extend(101u32.to_le_bytes());
+        dir_bytes.extend(0u32.to_le_bytes());
+        blob.extend(b"Perk Name\0");
+        dir_bytes.extend(404u32.to_le_bytes());
+        dir_bytes.extend(u32::try_from(blob.len()).unwrap().to_le_bytes());
+        blob.extend(b"NoNul");
+        let mut strings_bytes = Vec::new();
+        strings_bytes.extend(2u32.to_le_bytes());
+        strings_bytes.extend(u32::try_from(blob.len()).unwrap().to_le_bytes());
+        strings_bytes.extend(dir_bytes);
+        strings_bytes.extend(blob);
+        let strings_path = dir.path().join("Strings/Skyrim_English.STRINGS");
+        fs::create_dir_all(strings_path.parent().unwrap()).unwrap();
+        fs::write(&strings_path, strings_bytes).unwrap();
+        write_string_table(
+            &dir.path().join("Strings/Skyrim_English.DLSTRINGS"),
+            &[(202, "Perk Description")],
+            true,
+        );
+        let skyrim_path = dir.path().join("Skyrim.esm");
+        fs::write(&skyrim_path, skyrim).unwrap();
+        let db = dir.path().join("skyrim_world.db");
+
+        EsmParser::convert_plugins_with_reader(&[skyrim_path], &db, reader, dir.path()).unwrap();
+        let conn = Connection::open(db).unwrap();
+
+        let omissions = ProjectionOmissions::read(&conn).unwrap();
+        let entry = &omissions.categories[OmissionCategory::PerkEffectUndecoded.name()];
+        assert_eq!(entry.count, 1, "{reader:?}: {entry:?}");
+
+        let rows: Vec<(i64, Option<String>)> = conn
+            .prepare(
+                "SELECT effect_index, value_text FROM perk_entry_points WHERE perk_id = ?1 ORDER BY effect_index",
+            )
+            .unwrap()
+            .query_map([perks::FIRST_ID], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![(0, None)], "{reader:?}");
+    }
+}
+
+#[test]
+fn truncated_top_level_ctda_marks_top_level_rejected() {
+    let mut raw_payload = sub(b"EDID", &perks::text("TruncatedTopCtda"));
+    raw_payload.extend(sub(b"DATA", &[0, 1, 1, 1, 0]));
+    // Declared 32-byte CTDA whose payload stops after 31 bytes at EOF.
+    raw_payload.extend(b"CTDA");
+    raw_payload.extend(32u16.to_le_bytes());
+    raw_payload.extend([0u8; 31]);
+
+    let canonical = super::records::RawRecord {
+        form_id: perks::FIRST_ID,
+        record_type: *b"PERK",
+        flags: 0,
+        subrecords: vec![
+            (b"EDID".to_vec(), perks::text("TruncatedTopCtda")),
+            (b"DATA".to_vec(), vec![0, 1, 1, 1, 0]),
+        ],
+        cell_form_id: None,
+        worldspace_form_id: None,
+        load_order: 0,
+    };
+
+    let sections = super::perks::inhouse_rejected_sections(&raw_payload, &canonical, &[], false);
+    assert!(sections.top_level);
+    assert!(sections.effect_indices.is_empty());
+}

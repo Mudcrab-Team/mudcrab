@@ -1,7 +1,7 @@
 //! RV-A real-transform invariants and private synthetic-schema publication recovery.
 use super::*;
 use crate::{
-    esm::{extractors::SubrecordView, types::ArchivedRecordData},
+    esm::{exporter::create_tables, extractors::SubrecordView, types::ArchivedRecordData},
     records::{DecodedRecord, ReadResult, schema_format::Schema},
 };
 use serde_json::Value as Json;

@@ -430,6 +430,9 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
 /// Plugin metadata remains caller-managed; subset exports retain unrelated rows.
 /// Record stable owning-plugin/local-ID pairs separately from the winning
 /// override priority in records.load_order.
+///
+/// Standalone callers supply raw `RawRecord`s without reader-level `PerkRejectedSections`; use
+/// `EsmParser::convert_plugins*` to retain reader-rejected `PERK` omission diagnostics.
 pub fn export_to_db_with_load_order(
     conn: &Connection,
     master: &HashMap<u32, RawRecord>,
@@ -655,6 +658,9 @@ fn export_records(
         perk_rejections,
     } = options;
     conn.set_prepared_statement_cache_capacity(64);
+    if conn.is_autocommit() {
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+    }
     let tx = conn.unchecked_transaction()?;
     // Only a full load-order export writes these; a subset export keeps the stored ones.
     let mut omissions = ProjectionOmissions::default();

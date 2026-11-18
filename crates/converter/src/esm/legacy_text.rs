@@ -108,20 +108,21 @@ pub(crate) fn resolve_localized_fields(
             match id.and_then(|id| localized_text(id, &table.as_ref()?.values)) {
                 Some(text) => *data = runtime_string(text),
                 None => {
-                    // A wrong-width localized PERK/EPFD cannot be projected as NULL; keep the
-                    // warning below, clear its payload to empty bytes, and keep it out of
-                    // `unresolved` so runtime_projection forwards it to `perk_effect_undecoded`.
-                    let malformed_perk_epfd = is_perk_localized_epfd && id.is_none();
+                    let malformed = id.is_some_and(|id| {
+                        table
+                            .as_ref()
+                            .is_some_and(|table| table.malformed_ids.contains(&id))
+                    });
+                    // A wrong-width localized PERK/EPFD or malformed bank entry cannot be
+                    // projected as NULL; keep the warning below, clear its payload to empty
+                    // bytes, and keep it out of `unresolved` so runtime_projection forwards it to
+                    // `perk_effect_undecoded`.
+                    let malformed_perk_epfd = is_perk_localized_epfd && (id.is_none() || malformed);
                     if !malformed_perk_epfd {
                         unresolved.entry(record.form_id).or_default().insert(index);
                     }
                     // Zero is the reader's null-key sentinel, not a failed lookup.
                     if id != Some(0) {
-                        let malformed = id.is_some_and(|id| {
-                            table
-                                .as_ref()
-                                .is_some_and(|table| table.malformed_ids.contains(&id))
-                        });
                         let reason = match id {
                             None => format!("{} bytes, not a four-byte ID", data.len()),
                             Some(id) if table.is_none() => format!(

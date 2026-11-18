@@ -135,48 +135,60 @@ fn split_perk_sections(subrecords: &[Subrecord]) -> PerkSections<'_> {
     split_sections(subrecords, |(tag, _)| tag.as_slice())
 }
 
-/// Frame uncompressed `raw_payload` subrecord tags (`XXXX`-aware) up to any truncated tail.
-fn extract_raw_subrecord_tags(payload: &[u8]) -> (Vec<[u8; 4]>, bool) {
+type RawSubrecord<'a> = ([u8; 4], &'a [u8]);
+
+/// Frame uncompressed `raw_payload` subrecord `(tag, bytes)` slices (`XXXX`-aware) plus any
+/// truncated trailing tag whose declared payload ran past `payload.len()`.
+fn extract_raw_subrecords(payload: &[u8]) -> (Vec<RawSubrecord<'_>>, Option<[u8; 4]>, bool) {
     let mut pos = 0;
-    let mut tags = Vec::new();
+    let mut subrecords = Vec::new();
     let mut extended: Option<usize> = None;
+    let mut truncated_tag: Option<[u8; 4]> = None;
     let mut complete = true;
     while pos < payload.len() {
         if payload.len() - pos < 6 {
             complete = false;
             break;
         }
-        let tag: [u8; 4] = payload[pos..pos + 4].try_into().expect("4-byte tag");
-        let short =
-            u16::from_le_bytes(payload[pos + 4..pos + 6].try_into().expect("2-byte len")) as usize;
+        let tag = [
+            payload[pos],
+            payload[pos + 1],
+            payload[pos + 2],
+            payload[pos + 3],
+        ];
+        let short = u16::from_le_bytes([payload[pos + 4], payload[pos + 5]]) as usize;
         pos += 6;
         if tag == *b"XXXX" {
             if short != 4 || payload.len() - pos < 4 || extended.is_some() {
                 complete = false;
                 break;
             }
-            extended = Some(u32::from_le_bytes(
-                payload[pos..pos + 4].try_into().expect("4-byte XXXX"),
-            ) as usize);
+            extended = Some(u32::from_le_bytes([
+                payload[pos],
+                payload[pos + 1],
+                payload[pos + 2],
+                payload[pos + 3],
+            ]) as usize);
             pos += 4;
             continue;
         }
         let size = extended.take().unwrap_or(short);
         if payload.len() - pos < size {
+            truncated_tag = Some(tag);
             complete = false;
             break;
         }
-        tags.push(tag);
+        subrecords.push((tag, &payload[pos..pos + size]));
         pos += size;
     }
     if extended.is_some() {
         complete = false;
     }
-    (tags, complete)
+    (subrecords, truncated_tag, complete)
 }
 
-fn count_raw_tag(tags: &[[u8; 4]], needle: &[u8; 4]) -> usize {
-    tags.iter().filter(|tag| *tag == needle).count()
+fn count_raw_tag(subs: &[RawSubrecord<'_>], needle: &[u8; 4]) -> usize {
+    subs.iter().filter(|(tag, _)| tag == needle).count()
 }
 
 fn count_subrecord_tag(subs: &[Subrecord], needle: &[u8; 4]) -> usize {
@@ -185,8 +197,35 @@ fn count_subrecord_tag(subs: &[Subrecord], needle: &[u8; 4]) -> usize {
         .count()
 }
 
-/// Map in-house `rejected_fields` (already stripped from `DecodedRecord::fields`) back to the
-/// `PERK` top-level conditions or `PRKE` effect indices that lost data.
+fn block_epft_epfd<'a, T>(
+    block: &'a [T],
+    tag_of: impl Fn(&T) -> &[u8],
+    data_of: impl Fn(&'a T) -> &'a [u8],
+) -> (Option<&'a [u8]>, Option<&'a [u8]>) {
+    let mut epft = None;
+    let mut epfd = None;
+    for item in block.get(1..).unwrap_or(&[]) {
+        let tag = tag_of(item);
+        if tag == b"EPFT" && epfd.is_none() {
+            epft = Some(data_of(item));
+        } else if tag == b"EPFD" && epfd.is_none() {
+            epfd = Some(data_of(item));
+        }
+    }
+    (epft, epfd)
+}
+
+/// Returns true if any entry-point effect holds a four-byte zero `EPFD` under a link-valued `EPFT`.
+pub(crate) fn has_zero_link_epfd(canonical: &RawRecord) -> bool {
+    let (_, blocks) = split_perk_sections(&canonical.subrecords);
+    blocks.into_iter().any(|block| {
+        let (epft, epfd) = block_epft_epfd(block, |(tag, _)| tag.as_slice(), |(_, b)| b.as_slice());
+        matches!(epft, Some([3..=5])) && epfd == Some([0, 0, 0, 0].as_slice())
+    })
+}
+
+/// Map in-house `rejected_fields` (already stripped from `DecodedRecord::fields`), truncated
+/// payloads, and link-cleared `EPFD` references back to `PERK` sections.
 pub(crate) fn inhouse_rejected_sections(
     raw_payload: &[u8],
     canonical: &RawRecord,
@@ -194,17 +233,19 @@ pub(crate) fn inhouse_rejected_sections(
     payload_complete: bool,
 ) -> PerkRejectedSections {
     let mut sections = PerkRejectedSections::default();
-    if rejected_fields.is_empty() && payload_complete {
+    let has_zero_epfd = has_zero_link_epfd(canonical);
+    if rejected_fields.is_empty() && payload_complete && !has_zero_epfd {
         return sections;
     }
-    let (raw_tags, raw_complete) = extract_raw_subrecord_tags(raw_payload);
-    let (raw_top, raw_blocks) = split_sections(&raw_tags, |tag| tag.as_slice());
+    let (raw_subs, truncated_tag, raw_complete) = extract_raw_subrecords(raw_payload);
+    let (raw_top, raw_blocks) = split_sections(&raw_subs, |(tag, _)| tag.as_slice());
     let (canon_top, canon_blocks) = split_perk_sections(&canonical.subrecords);
 
     sections.top_level = rejected_fields.iter().any(|tag| {
         matches!(tag, b"CTDA" | b"CIS1" | b"CIS2")
             && count_raw_tag(raw_top, tag) > count_subrecord_tag(canon_top, tag)
-    });
+    }) || (raw_blocks.is_empty()
+        && matches!(truncated_tag, Some(tag) if matches!(&tag, b"CTDA" | b"CIS1" | b"CIS2")));
     for (effect_index, raw_block) in raw_blocks.iter().enumerate() {
         let canon_block = canon_blocks.get(effect_index).copied().unwrap_or(&[]);
         if rejected_fields
@@ -212,26 +253,49 @@ pub(crate) fn inhouse_rejected_sections(
             .any(|tag| count_raw_tag(raw_block, tag) > count_subrecord_tag(canon_block, tag))
         {
             sections.effect_indices.insert(effect_index);
+            continue;
+        }
+        if has_zero_epfd {
+            let (raw_epft, raw_epfd) =
+                block_epft_epfd(raw_block, |(tag, _)| tag.as_slice(), |(_, b)| *b);
+            let (canon_epft, canon_epfd) = block_epft_epfd(
+                canon_block,
+                |(tag, _)| tag.as_slice(),
+                |(_, b)| b.as_slice(),
+            );
+            if matches!(raw_epft, Some([3..=5]))
+                && matches!(canon_epft, Some([3..=5]))
+                && let (Some(raw_b), Some(canon_b)) = (raw_epfd, canon_epfd)
+                && raw_b.len() == 4
+                && u32_at(raw_b, 0).is_some_and(|id| id != 0)
+                && canon_b == [0, 0, 0, 0]
+            {
+                sections.effect_indices.insert(effect_index);
+            }
         }
     }
     for effect_index in raw_blocks.len()..canon_blocks.len() {
         sections.effect_indices.insert(effect_index);
     }
-    if (!payload_complete || !raw_complete)
+    if (!payload_complete || !raw_complete || truncated_tag.is_some())
         && let Some(last_block) = raw_blocks.last()
-        && last_block.last() != Some(b"PRKF")
+        && last_block.last().map(|(tag, _)| tag) != Some(b"PRKF")
     {
         sections.effect_indices.insert(raw_blocks.len() - 1);
     }
     sections
 }
 
-/// Map legacy `malformed_subrecords` indices (removed before projection) to `PERK` sections.
+/// Map legacy `malformed_subrecords` indices and link-rejected effects to `PERK` sections.
 pub(crate) fn legacy_rejected_sections(
     subrecords: &[Subrecord],
     malformed_indices: &[usize],
+    rejected_link_effects: &std::collections::BTreeSet<usize>,
 ) -> PerkRejectedSections {
     let mut sections = PerkRejectedSections::default();
+    sections
+        .effect_indices
+        .extend(rejected_link_effects.iter().copied());
     if malformed_indices.is_empty() {
         return sections;
     }
@@ -302,6 +366,12 @@ fn collect_conditions<'a>(
             b"CTDA" => {
                 if data.len() != 32 {
                     return Err(format!("CTDA has {} bytes, expected 32", data.len()));
+                }
+                if data[0] & 0x04 == 0
+                    && !f32::from_bits(u32::from_le_bytes([data[4], data[5], data[6], data[7]]))
+                        .is_finite()
+                {
+                    return Err("CTDA has non-finite literal comparison".into());
                 }
                 entries.push(ConditionEntry {
                     condition_tab: current_tab,
@@ -449,6 +519,7 @@ pub(crate) fn insert_record(
         let mut epf2: Option<&[u8]> = None;
         let mut epf3: Option<&[u8]> = None;
         let mut epfd: Option<&[u8]> = None;
+        let mut bad_prkf: Option<usize> = None;
         for (tag, payload) in &block[1..] {
             match tag.as_slice() {
                 b"DATA" if effect_data.is_none() => effect_data = Some(payload.as_slice()),
@@ -456,8 +527,21 @@ pub(crate) fn insert_record(
                 b"EPF2" if epf2.is_none() => epf2 = Some(payload.as_slice()),
                 b"EPF3" if epf3.is_none() => epf3 = Some(payload.as_slice()),
                 b"EPFD" if epfd.is_none() => epfd = Some(payload.as_slice()),
+                b"PRKF" if !payload.is_empty() && bad_prkf.is_none() => {
+                    bad_prkf = Some(payload.len());
+                }
                 _ => {}
             }
+        }
+        if let Some(len) = bad_prkf {
+            omissions.record(
+                OmissionCategory::PerkEffectUndecoded,
+                perk_id,
+                format!(
+                    "PERK {perk_id:08X} effect {effect_index}: PRKF is {len} bytes, expected 0"
+                ),
+            );
+            continue;
         }
 
         match effect_type {
