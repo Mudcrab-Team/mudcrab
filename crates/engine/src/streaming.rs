@@ -22,7 +22,10 @@ use crate::{
             MeshHandle, StreamedCellRoot, StreamingCamera, TerrainPatch, WaterSurface,
             WorldPosition, WorldTransform,
         },
-        database::{AssetCatalog, CellKey, CellPayload, DatabaseRequest, WorldDatabase},
+        database::{
+            AssetCatalog, CellKey, CellPayload, DatabaseRequest, WaterColors, WaterNoise,
+            WorldDatabase,
+        },
         water::{FlatWater, FlatWaterBody},
     },
 };
@@ -55,6 +58,7 @@ use std::time::Instant;
 pub(crate) mod admission;
 pub(crate) mod control;
 pub(crate) mod lod;
+pub mod lod_objects;
 #[cfg(test)]
 mod merged_tests;
 mod priority;
@@ -138,6 +142,7 @@ impl Plugin for StreamingPlugin {
             .init_resource::<StreamingMetrics>()
             .init_resource::<StreamingCommitBudget>()
             .init_resource::<lod::LodStreaming>()
+            .init_resource::<lod_objects::LodObjects>()
             .init_resource::<DiagnosticFallbackAssets>()
             .init_resource::<TerrainContinuity>()
             .init_resource::<SceneSpawnBatch>()
@@ -150,6 +155,15 @@ impl Plugin for StreamingPlugin {
             .init_resource::<crate::pacing::PacingTracker>()
             .add_observer(mark_world_instance_ready)
             .add_observer(lod::mark_lod_world_instance_ready)
+            .add_systems(
+                Update,
+                lod_objects::update_lod_objects
+                    .after(lod::plan_lod_chunks)
+                    .after(collect_cells)
+                    .after(lod::collect_lod_chunks)
+                    .before(finish_streaming_commit_budget)
+                    .before(update_render_origin),
+            )
             .add_systems(
                 Update,
                 (
@@ -825,8 +839,8 @@ pub struct RenderOrigin(pub IVec2);
 
 /// The space the player is in. The planner streams only this space: the active interior when
 /// there is one, otherwise the exterior cells around the camera in the active worldspace. A load
-/// door crossing (`crate::door_crossing`) changes it; nothing else does, so the default (no
-/// interior, the configured worldspace) is the behaviour before doors existed.
+/// door crossing (`crate::door_crossing`) or a screenshot pose changes it. The default is the
+/// configured exterior worldspace.
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ActiveSpace {
     /// `None` means the worldspace the engine was configured with.
@@ -1752,43 +1766,54 @@ fn spawn_cell(
                             })
                             .load(path.to_owned())
                     });
-                // Skyrim's DefaultWater deep colour after Update.esm, used when this water has no
-                // decoded colours yet (a database converted before the WATR colour export). Skyrim
-                // thins water to show the bed where it is shallow; without depth fog a 60% cover
-                // keeps river beds visible.
-                let base_color = water_colors.map_or(Color::srgba_u8(5, 14, 18, 153), |colors| {
-                    let [r, g, b] = colors.deep;
-                    Color::srgba_u8(r, g, b, 153)
-                });
-                let (fresnel, reflectivity) = water_colors.map_or(
-                    (
-                        crate::render::DEFAULT_WATER_FRESNEL,
-                        crate::render::DEFAULT_WATER_REFLECTIVITY,
-                    ),
-                    |colors| (colors.fresnel, colors.reflectivity),
-                );
-                let water_material = water_materials.add(WaterMaterial {
-                    base: StandardMaterial {
-                        base_color,
-                        metallic: 0.15,
-                        perceptual_roughness: 0.06,
-                        reflectance: 0.9,
-                        alpha_mode: AlphaMode::Blend,
-                        ..default()
-                    },
-                    extension: WaterExtension::with_reflection_and_factors(
-                        reflection.0.clone(),
-                        flow_normal.clone(),
-                        fresnel,
-                        reflectivity,
-                    )
-                    .with_reflection_color(
-                        water_colors
-                            .map_or(crate::render::DEFAULT_WATER_REFLECTION_COLOR, |colors| {
-                                colors.reflection
-                            }),
-                    ),
-                });
+                // The three noise normal maps of the water's record, read from its record bytes.
+                let noise = surface
+                    .water_type_form_id
+                    .and_then(|form_id| catalog.water_noise(form_id));
+                let noise_textures: [Option<Handle<Image>>; 3] = noise
+                    .map(|noise| {
+                        noise.textures.each_ref().map(|path| {
+                            path.as_ref().map(|path| {
+                                asset_server
+                                    .load_builder()
+                                    .with_settings(|settings: &mut ImageLoaderSettings| {
+                                        settings.is_srgb = false;
+                                    })
+                                    .load(path.to_owned())
+                            })
+                        })
+                    })
+                    .unwrap_or_default();
+                // The cell's flow map, for a water whose FNAM asks for retail's flow-map program
+                // when the pack has the cell's map (RF-WATER-036) and the water has its flow
+                // normal texture (NAM5).
+                let flow = match payload.key {
+                    CellKey::Exterior { grid_x, grid_y, .. }
+                        if flow_normal.is_some()
+                            && water_colors.is_some_and(|colors| colors.uses_flow_map()) =>
+                    {
+                        catalog.water_flow_map(grid_x, grid_y).map(|path| {
+                            (
+                                IVec2::new(grid_x, grid_y),
+                                asset_server
+                                    .load_builder()
+                                    .with_settings(|settings: &mut ImageLoaderSettings| {
+                                        settings.is_srgb = false;
+                                    })
+                                    .load::<Image>(path),
+                            )
+                        })
+                    }
+                    _ => None,
+                };
+                let water_material = water_materials.add(water_material(
+                    water_colors,
+                    reflection.0.clone(),
+                    flow_normal.clone(),
+                    flow.clone(),
+                    noise.map(|noise| (noise, noise_textures.clone())),
+                    matches!(payload.key, CellKey::Interior(_)),
+                ));
                 let mut water = parent.spawn((
                     Name::new("Water"),
                     Mesh3d(water_mesh),
@@ -1803,6 +1828,8 @@ fn spawn_cell(
                     PendingWaterProfile {
                         cell_id: terrain.cell_id,
                         flow_normal,
+                        flow,
+                        noise: noise_textures.into_iter().flatten().collect(),
                     },
                     RenderLayers::layer(WATER_LAYER),
                 ));
@@ -1873,6 +1900,12 @@ fn spawn_cell(
             ));
             if let Some(bounds) = bounds.zip(model_bounds) {
                 entity.insert(bounds);
+            }
+            // Authored multibound policies and movable references override stored room membership.
+            if reference.has_multibound_override
+                || crate::room_culling::exempt_record_type(reference.base_record_type.as_deref())
+            {
+                entity.insert(crate::room_culling::RoomCullExempt);
             }
             if let Some(plan) = &actor_plan {
                 entity.insert(plan.actor);
@@ -2893,6 +2926,12 @@ struct PendingTerrainProfile {
 struct PendingWaterProfile {
     cell_id: u32,
     flow_normal: Option<Handle<Image>>,
+    /// The cell's grid coordinates and flow map. It is optional: one that fails to load leaves the
+    /// water on its noise layers instead of hiding it.
+    flow: Option<(IVec2, Handle<Image>)>,
+    /// The noise normal maps. They are optional detail: one that fails to load leaves the water
+    /// flat instead of hiding it.
+    noise: Vec<Handle<Image>>,
 }
 
 /// Counts the streamer's unfinished-work markers under one cell root: a model not yet armed or
@@ -3840,8 +3879,9 @@ fn track_surface_readiness(
         &PendingTerrainProfile,
         Option<&MeshMaterial3d<TerrainMaterial>>,
     )>,
-    water: Query<(Entity, &PendingWaterProfile)>,
+    water: Query<(Entity, &PendingWaterProfile, &MeshMaterial3d<WaterMaterial>)>,
     mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
+    mut water_materials: ResMut<Assets<WaterMaterial>>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
 ) {
@@ -3940,8 +3980,59 @@ fn track_surface_readiness(
             }
         }
     }
-    for (entity, pending) in &water {
+    for (entity, pending, material) in &water {
         let handles: Vec<_> = pending.flow_normal.iter().cloned().collect();
+        // The cell's flow map is optional too: while it loads the water waits, and one that fails
+        // leaves the water on its noise layers.
+        if let Some((grid, flow_map)) = &pending.flow {
+            match validate_surface_dependencies(
+                &asset_server,
+                &images,
+                std::slice::from_ref(flow_map),
+                SurfaceImageKind::Water,
+                profile.decodes_colour_srgb(),
+            ) {
+                SurfaceDependencyState::Pending => continue,
+                SurfaceDependencyState::Failed(reason) => {
+                    warn!(
+                        cell = format_args!("{:08X}", pending.cell_id),
+                        %reason,
+                        "water flow map failed; drawing the water without its flow"
+                    );
+                    if let Some(mut material) = water_materials.get_mut(&material.0) {
+                        material.extension = material.extension.clone().with_flow(*grid, None);
+                    }
+                    profiler.increment("water/flow_fallbacks", 1);
+                }
+                SurfaceDependencyState::Ready => {}
+            }
+        }
+        // The noise normal maps are optional detail: while they load the water waits, and one that
+        // fails leaves the water flat instead of hiding it.
+        match validate_surface_dependencies(
+            &asset_server,
+            &images,
+            &pending.noise,
+            SurfaceImageKind::Water,
+            profile.decodes_colour_srgb(),
+        ) {
+            SurfaceDependencyState::Pending => continue,
+            SurfaceDependencyState::Failed(reason) => {
+                warn!(
+                    cell = format_args!("{:08X}", pending.cell_id),
+                    %reason,
+                    "water noise normal map failed; drawing the water flat"
+                );
+                if let Some(mut material) = water_materials.get_mut(&material.0) {
+                    material.extension = material
+                        .extension
+                        .clone()
+                        .with_noise([None, None, None], crate::render::WaterNoiseValues::flat());
+                }
+                profiler.increment("water/noise_fallbacks", 1);
+            }
+            SurfaceDependencyState::Ready => {}
+        }
         match validate_surface_dependencies(
             &asset_server,
             &images,
@@ -4766,6 +4857,11 @@ fn validate_terrain_snapshot(
                     texture_form_id = layer.texture_form_id,
                     "LAND texture has no converted diffuse image; retaining its layer and weights with a missing-image fallback"
                 );
+                crate::texture_fallback::record(
+                    crate::texture_fallback::FallbackKind::LandTextureWithoutImage,
+                    &format!("LTEX {:08X}", layer.texture_form_id),
+                    "diffuse",
+                );
             }
         }
     }
@@ -5394,6 +5490,100 @@ impl TerrainCoverage {
     }
 }
 
+/// The material for a cell's water from its catalog row: the record's colours, reflectivity factors,
+/// opacity and above-water fog, with Skyrim's DefaultWater for whatever the database does not carry.
+fn water_material(
+    colors: Option<WaterColors>,
+    reflection: Handle<Image>,
+    flow_normal: Option<Handle<Image>>,
+    flow: Option<(IVec2, Handle<Image>)>,
+    noise: Option<(&WaterNoise, [Option<Handle<Image>>; 3])>,
+    interior: bool,
+) -> WaterMaterial {
+    // Skyrim's DefaultWater deep colour after Update.esm, used when this water has no
+    // decoded colours yet (a database converted before the WATR colour export). The
+    // shader mixes the shallow colour in and writes the body alpha itself from the
+    // water's opacity and the depth behind it, so the material alpha stays opaque.
+    let [r, g, b] = colors.map_or(crate::render::DEFAULT_WATER_DEEP_COLOR, |colors| {
+        colors.deep
+    });
+    let multiplier = crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER;
+    let base_color = crate::render::water_deep_color([r, g, b], multiplier);
+    let (fresnel, reflectivity) = colors.map_or(
+        (
+            crate::render::DEFAULT_WATER_FRESNEL,
+            crate::render::DEFAULT_WATER_REFLECTIVITY,
+        ),
+        |colors| (colors.fresnel, colors.reflectivity),
+    );
+    // The Water Multiplier is applied first: the colour setters that follow read it.
+    let mut extension =
+        WaterExtension::with_reflection_and_factors(reflection, flow_normal, fresnel, reflectivity)
+            .with_water_multiplier(multiplier)
+            .with_sky(
+                (!interior)
+                    .then(|| crate::sky::SkyUniform::new(&crate::sky::SkyPalette::default()))
+                    .as_ref(),
+            )
+            .with_interior(interior)
+            .with_sun_color(crate::sky::WeatherLighting::SKYRIM_CLEAR_DAY.sunlight)
+            .with_reflection_magnitude(
+                colors
+                    .and_then(|colors| colors.reflection_magnitude)
+                    .unwrap_or(crate::world::database::DEFAULT_WATER_REFLECTION_MAGNITUDE),
+            )
+            .with_reflection_color(
+                colors.map_or(crate::render::DEFAULT_WATER_REFLECTION_COLOR, |colors| {
+                    colors.reflection
+                }),
+            )
+            .with_body(
+                colors.map_or(crate::render::DEFAULT_WATER_SHALLOW_COLOR, |colors| {
+                    colors.shallow
+                }),
+                colors.map_or(crate::render::DEFAULT_WATER_OPACITY, |colors| {
+                    colors.opacity
+                }),
+                colors.and_then(|colors| colors.fog).unwrap_or_default(),
+            );
+    if let Some((grid, flow_map)) = flow {
+        extension = extension.with_flow(grid, Some(flow_map));
+    }
+    // A water whose record bytes give no noise layers stays flat.
+    if let Some((noise, textures)) = noise {
+        extension = extension.with_noise(
+            textures,
+            crate::render::WaterNoiseValues {
+                uv_scale: noise.uv_scale,
+                amplitude: noise.amplitude,
+                depth_properties: noise.depth_properties,
+                wind_direction: noise.wind_direction,
+                wind_speed: noise.wind_speed,
+                noise_falloff: noise.noise_falloff,
+                sun: noise.sun,
+                refraction_magnitude: noise.refraction_magnitude,
+            },
+        );
+    }
+    WaterMaterial {
+        base: StandardMaterial {
+            base_color,
+            metallic: 0.15,
+            perceptual_roughness: 0.06,
+            reflectance: 0.9,
+            // The water is drawn in Bevy's transmissive phase, which hands it a copy of the scene
+            // colour to refract (RF-WATER-049): `reads_view_transmission_texture` is true for a
+            // StandardMaterial with `specular_transmission > 0`, and the phase is chosen for the
+            // non-blended alpha modes. Neither value reaches the shader, which writes the whole
+            // colour itself and reads only the scene copy.
+            alpha_mode: AlphaMode::Opaque,
+            specular_transmission: crate::render::WATER_TRANSMISSION_FLAG,
+            ..default()
+        },
+        extension,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5449,6 +5639,125 @@ mod tests {
             json["asset_failures"].as_array().unwrap().len(),
             MAX_ASSET_FAILURES
         );
+    }
+
+    #[test]
+    fn a_waters_catalog_fog_reaches_its_material() {
+        use crate::world::database::{WaterFog, water_fixtures::water_record_with_fog};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT); \
+                 CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER); \
+                 CREATE TABLE waters(id INTEGER PRIMARY KEY,opacity INTEGER,shallow_color INTEGER,deep_color INTEGER,reflection_color INTEGER,fresnel REAL,reflectivity REAL,flow_normal_path TEXT,data BLOB NOT NULL);",
+            )
+            .unwrap();
+        let clear = WaterFog {
+            near: 0.0,
+            far: 10.0,
+            amount: 0.0,
+        };
+        let frostreach = WaterFog {
+            near: -290.0,
+            far: 720.0,
+            amount: 0.7,
+        };
+        for (id, opacity, record) in [
+            (1u32, 40u32, water_record_with_fog(228, clear)),
+            (2, 60, water_record_with_fog(232, frostreach)),
+            // A record whose DNAM stops short of the fog amount.
+            (3, 50, water_record_with_fog(100, frostreach)),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO waters VALUES (?1,?2,1,2,3,0.1,0.8,NULL,?3)",
+                    rusqlite::params![id, opacity, record],
+                )
+                .unwrap();
+        }
+        drop(connection);
+        let catalog = AssetCatalog::open(&path).unwrap();
+        let body = |form_id| {
+            water_material(
+                catalog.water_colors(form_id),
+                Handle::default(),
+                None,
+                None,
+                None,
+                false,
+            )
+            .extension
+            .body()
+        };
+
+        // The retail copy writes (opacity, far - near, max(far, 1), max(4 * amount, 1)). A puddle
+        // (far 10, no amount): range 10, and the exponent floors at 1.
+        assert_eq!(body(1), Vec4::new(0.4, 10.0, 10.0, 1.0));
+        // A far distance other than DefaultWater's 150: range 1010, exponent 2.8.
+        assert_eq!(body(2), Vec4::new(0.6, 1010.0, 720.0, 2.8));
+        // A DNAM with no readable fog, and no row at all: DefaultWater's fog.
+        let fallback = WaterFog::default();
+        let (range, exponent) = (fallback.far - fallback.near, 4.0 * fallback.amount);
+        assert_eq!(body(3), Vec4::new(0.5, range, fallback.far, exponent));
+        assert_eq!(
+            body(99),
+            Vec4::new(
+                f32::from(crate::render::DEFAULT_WATER_OPACITY) / 100.0,
+                range,
+                fallback.far,
+                exponent
+            )
+        );
+    }
+
+    #[test]
+    fn a_waters_colours_carry_the_weathers_multiplier_the_sun_colour_and_the_interior_flag() {
+        // RF-SHADER-007: Shallow, Deep and Reflection colours times the Water Multiplier, applied
+        // to all three (the deep one as the base colour).
+        let colors = WaterColors {
+            shallow: [200, 100, 50],
+            deep: [100, 200, 40],
+            reflection: [50, 60, 70],
+            fresnel: 0.1,
+            reflectivity: 0.8,
+            opacity: 50,
+            fog: None,
+            reflection_magnitude: None,
+            fnam: None,
+            underwater_fog: None,
+        };
+        let multiplier = crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER;
+        let material = water_material(Some(colors), Handle::default(), None, None, None, false);
+        // The water is drawn in Bevy's transmissive phase so it can refract the scene copy
+        // (RF-WATER-049): an opaque alpha mode and a material that reads the transmission texture.
+        assert_eq!(material.base.alpha_mode, AlphaMode::Opaque);
+        assert!(bevy::pbr::Material::reads_view_transmission_texture(
+            &material
+        ));
+        let scaled = |rgb: [u8; 3]| {
+            Color::srgb(
+                f32::from(rgb[0]) / 255.0 * f32::from(multiplier[0]) / 255.0,
+                f32::from(rgb[1]) / 255.0 * f32::from(multiplier[1]) / 255.0,
+                f32::from(rgb[2]) / 255.0 * f32::from(multiplier[2]) / 255.0,
+            )
+            .to_linear()
+        };
+        let (shallow, reflection, sun, interior) = material.extension.colours();
+        assert!((shallow.x - scaled(colors.shallow).red).abs() < 1.0e-6);
+        assert!((reflection.y - scaled(colors.reflection).green).abs() < 1.0e-6);
+        let deep = material.base.base_color.to_linear();
+        assert!((deep.blue - scaled(colors.deep).blue).abs() < 1.0e-6);
+        // The sun colour is the weather's sunlight, and an exterior is not an interior.
+        let sunlight = crate::sky::WeatherLighting::SKYRIM_CLEAR_DAY
+            .sunlight
+            .to_linear();
+        assert!((sun.x - sunlight.red).abs() < 1.0e-6);
+        assert_eq!(interior, 0.0);
+        let indoors = water_material(Some(colors), Handle::default(), None, None, None, true);
+        assert_eq!(indoors.extension.colours().3, 1.0);
     }
 
     #[test]
@@ -7263,6 +7572,32 @@ mod tests {
         assert_eq!(overflowed.streaming_invariant_failures, 0);
     }
 
+    /// The object LOD system takes the commit budget, so it must sit inside the commit window:
+    /// after the cell and terrain LOD collectors, before the budget is closed, and before the
+    /// render-origin rebase. A schedule graph of the whole plugin is not cheap to build in a unit
+    /// test, so this reads the registration in this file (whitespace removed). The expected text
+    /// is assembled from parts, so the test's own source never contains it.
+    #[test]
+    fn the_object_lod_system_is_registered_inside_the_commit_window() {
+        let source: String = include_str!("streaming.rs")
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+        let registration = [
+            "lod_objects::update_lod_objects",
+            ".after(lod::plan_lod_chunks)",
+            ".after(collect_cells)",
+            ".after(lod::collect_lod_chunks)",
+            ".before(finish_streaming_commit_budget)",
+            ".before(update_render_origin)",
+        ]
+        .concat();
+        assert!(
+            source.contains(&registration),
+            "update_lod_objects must keep its five ordering edges in the plugin"
+        );
+    }
+
     #[test]
     fn repeated_rebasing_preserves_camera_and_cell_root_locality() {
         let mut app = App::new();
@@ -8612,6 +8947,7 @@ mod tests {
                 references: vec![ReferenceRow {
                     form_id: 0x00F9907,
                     initially_enabled: true,
+                    has_multibound_override: false,
                     starts_dead: false,
                     cell_id: 0x02D4E0,
                     base_form_id: 0x00EF957,
@@ -9655,6 +9991,7 @@ mod tests {
         ReferenceRow {
             form_id,
             initially_enabled: true,
+            has_multibound_override: false,
             starts_dead: false,
             cell_id: 99,
             base_form_id: 0x200 + form_id,
@@ -10594,6 +10931,92 @@ mod tests {
                     .is_some_and(|id| id.0 == form_id)
             })
             .expect("the reference spawned")
+    }
+
+    #[test]
+    fn authored_multibound_override_keeps_a_streamed_static_visible_with_stale_membership() {
+        use crate::room_culling::{
+            Membership, Portal, Room, RoomCullingPlugin, RoomCullingState, cull_room_views,
+        };
+        use bevy::camera::visibility::VisibleEntities;
+        use std::any::TypeId;
+
+        let mut unrestricted = lit_reference(1, None, None);
+        unrestricted.base_record_type = Some("STAT".into());
+        unrestricted.model_path = Some("architecture/wall.nif".into());
+        unrestricted.has_multibound_override = true;
+        unrestricted.bounds_valid = true;
+        unrestricted.bounds_min = [-1.0; 3];
+        unrestricted.bounds_max = [1.0; 3];
+        let mut automatic = unrestricted.clone();
+        automatic.form_id = 2;
+        automatic.has_multibound_override = false;
+        let mut unknown_bounds = automatic.clone();
+        unknown_bounds.form_id = 3;
+        unknown_bounds.bounds_valid = false;
+        let mut app =
+            spawn_reference_cell_app(vec![unrestricted, automatic, unknown_bounds], false);
+        app.add_plugins(RoomCullingPlugin::from_config(&EngineConfig::default()));
+        let root = app.world().resource::<SpawnedCellRoot>().0.unwrap();
+        let meshes = [1, 2, 3].map(|id| {
+            let reference = reference_entity(&app, id);
+            app.world_mut().spawn(ChildOf(reference)).id()
+        });
+        let room = |ref_id, center| Room {
+            ref_id,
+            center,
+            half: Vec3::splat(4.0),
+            rotation: Quat::IDENTITY,
+        };
+        let graph = crate::room_culling::RoomGraph {
+            rooms: vec![room(10, Vec3::ZERO), room(11, Vec3::new(0.0, 0.0, 20.0))],
+            portals: vec![Portal {
+                ref_id: 12,
+                corners: [
+                    Vec3::new(-1.0, -1.0, 10.0),
+                    Vec3::new(1.0, -1.0, 10.0),
+                    Vec3::new(1.0, 1.0, 10.0),
+                    Vec3::new(-1.0, 1.0, 10.0),
+                ],
+                rooms: [Some(0), Some(1)],
+            }],
+            membership: [1, 2, 3]
+                .into_iter()
+                .map(|id| {
+                    (
+                        id,
+                        Membership {
+                            contained: vec![1],
+                            overlapping: vec![],
+                        },
+                    )
+                })
+                .collect(),
+            ..default()
+        };
+        app.world_mut()
+            .resource_mut::<RoomCullingState>()
+            .insert_graph(99, root, graph);
+        let mut visible = VisibleEntities::default();
+        visible.get_mut(TypeId::of::<Mesh3d>()).extend(meshes);
+        let camera = app
+            .world_mut()
+            .spawn((
+                StreamingCamera,
+                GlobalTransform::IDENTITY,
+                Projection::Perspective(PerspectiveProjection::default()),
+                visible,
+            ))
+            .id();
+        app.world_mut().run_system_once(cull_room_views).unwrap();
+        assert_eq!(
+            app.world()
+                .get::<VisibleEntities>(camera)
+                .unwrap()
+                .get(TypeId::of::<Mesh3d>()),
+            &vec![meshes[0], meshes[2]],
+            "NONE and unknown bounds stay visible while the bounded automatic static is culled"
+        );
     }
 
     #[test]

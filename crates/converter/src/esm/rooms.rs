@@ -583,7 +583,10 @@ pub fn export_room_graph(
         )?;
         for &(&form_id, record) in &ordered {
             let base = base_of(record);
-            if base == ROOM_MARKER_BASE || base == PORTAL_MARKER_BASE {
+            if base == ROOM_MARKER_BASE
+                || base == PORTAL_MARKER_BASE
+                || record.flags & shared::records::MULTIBOUND_REFERENCE_FLAG != 0
+            {
                 continue;
             }
             let Some(rooms) = record
@@ -643,12 +646,27 @@ pub fn add_overlap_rows(conn: &mut Connection) -> Result<u64> {
         [],
         |row| row.get(0),
     )?;
+    let has_header_flags: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('references') WHERE name='header_flags')",
+        [],
+        |row| row.get(0),
+    )?;
+    let tx = conn.transaction()?;
+    if has_header_flags {
+        // Repair geometric memberships left by previous conversions as well as new output.
+        tx.execute(
+            "DELETE FROM reference_rooms WHERE reference_id IN (
+                SELECT id FROM \"references\" WHERE (header_flags & ?1) != 0)",
+            [shared::records::MULTIBOUND_REFERENCE_FLAG],
+        )?;
+    }
     if !has_rooms || !has_bounds {
+        tx.commit()?;
         return Ok(0);
     }
     let mut rooms_by_cell: BTreeMap<u32, Vec<Room>> = BTreeMap::new();
     {
-        let mut statement = conn.prepare(
+        let mut statement = tx.prepare(
             "SELECT ref_id, cell_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, half_x, half_y, half_z FROM room_bounds ORDER BY ref_id",
         )?;
         let rows = statement.query_map([], |row| {
@@ -669,22 +687,31 @@ pub fn add_overlap_rows(conn: &mut Connection) -> Result<u64> {
             });
         }
     }
-    let tx = conn.transaction()?;
     tx.execute("DELETE FROM reference_rooms WHERE contained = 0", [])?;
     let mut written = 0u64;
     {
-        let mut select = tx.prepare(
+        let header_flags = if has_header_flags {
+            "r.header_flags"
+        } else {
+            "0"
+        };
+        let mut select = tx.prepare(&format!(
             "SELECT r.id, r.cell_id, r.pos_x, r.pos_y, r.pos_z, r.rot_x, r.rot_y, r.rot_z, r.scale,
                     s.bounds_min_x, s.bounds_min_y, s.bounds_min_z, s.bounds_max_x, s.bounds_max_y, s.bounds_max_z
              FROM \"references\" r JOIN statics s ON s.id = r.base_form_id
              WHERE s.bounds_valid = 1 AND r.base_form_id NOT IN (?1, ?2)
                AND r.cell_id IN (SELECT cell_id FROM room_bounds)
+               AND ({header_flags} & ?3) = 0
              ORDER BY r.id",
-        )?;
+        ))?;
         let mut insert = tx.prepare(
             "INSERT OR IGNORE INTO reference_rooms(reference_id, room_ref, contained) VALUES (?1, ?2, 0)",
         )?;
-        let mut rows = select.query(params![ROOM_MARKER_BASE, PORTAL_MARKER_BASE])?;
+        let mut rows = select.query(params![
+            ROOM_MARKER_BASE,
+            PORTAL_MARKER_BASE,
+            shared::records::MULTIBOUND_REFERENCE_FLAG
+        ])?;
         while let Some(row) = rows.next()? {
             let f = |index: usize| row.get::<_, f32>(index);
             let id: u32 = row.get(0)?;
@@ -719,6 +746,38 @@ pub fn add_overlap_rows(conn: &mut Connection) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authored_multibound_overrides_survive_overlap_integration_of_an_existing_database() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::esm::exporter::create_tables(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO statics(id,model_path,flags,bounds_valid,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z)
+             VALUES(500,'wall.nif',0,1,-50,-10,-10,50,10,10);
+             INSERT INTO room_bounds(ref_id,cell_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_y,half_z)
+             VALUES(1,7,0,0,0,0,0,0,100,100,100);
+             INSERT INTO \"references\"(id,cell_id,base_form_id,is_exterior,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,header_flags)
+             VALUES(100,7,500,0,0,0,0,0,0,0,2147483648),
+                   (101,7,500,0,140,0,0,0,0,0,2147483648),
+                   (102,7,500,0,140,0,0,0,0,0,0);
+             INSERT INTO reference_rooms VALUES(100,1,1),(101,1,0);"
+        ).unwrap();
+        for _ in 0..2 {
+            add_overlap_rows(&mut conn).unwrap();
+            let rows = conn
+                .prepare("SELECT reference_id,contained FROM reference_rooms ORDER BY reference_id")
+                .unwrap()
+                .query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, i64>(1)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>>>()
+                .unwrap();
+            assert_eq!(
+                rows,
+                vec![(102, 0)],
+                "stale authored memberships are removed and integration cannot recreate them"
+            );
+        }
+    }
 
     fn rotate_runtime(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
         // v' = v + 2w(u x v) + 2 u x (u x v)
