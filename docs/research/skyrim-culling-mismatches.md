@@ -47,10 +47,11 @@ raw physics data is fixed. External or unresolved rigs, simulated/keyframed skin
 constraints, unknown bound hierarchies, and independently moving children keep the conservative
 fallback. Actors and animated doors retain their separate exemptions.
 
-The physics check reads original rigid-body fields independently of collision export. The web
-door has motion system 5, quality 0, and mass 0, classified as fixed; its collision layer 20 is
-not exported by the physics reader. Treating every collision-export omission as an unknown pose
-would unnecessarily discard its sphere. Conversely, a skipped collision layer must not conceal
+The physics check reads original rigid-body fields independently of collision export. At capture
+time, the web door's motion system 5, quality 0, and mass 0 were classified as fixed. Its collision
+layer 20 is not exported by the physics reader. The later automatic-quality guard at `62abaf8f`
+rejects this combination as proof of a fixed skin pose. Current conversion omits this model's
+assignment sphere and keeps it conservatively drawn. A skipped collision layer must not conceal
 a moving bone body.
 
 Nine skinned web references across the door and round-wall models match live native spheres
@@ -94,6 +95,30 @@ external versus self-contained skins, and moving activator assignment. Validatio
 1,453 engine tests, 1,206 converter tests, 14 skin-export tests, seven archive tests, and four
 snapshots. Forty-three tests remain ignored. Formatting and Clippy for engine/converter, all
 targets and features with warnings denied, passed.
+
+## Later converter recheck
+
+A fresh conversion of all 989 captured source NIFs succeeds after the leaf-export and
+ordered-node loader fixes. The comparison uses the exact extracted source bytes and verifies
+the captured GLB hashes before conversion. It finds 631 changed GLB hashes. Every model retains
+identical vertex and index binary data, primitive geometry, drawable transform paths, and
+drawable instance, primitive, and triangle counts.
+
+The byte differences have three causes, with overlap between the first two groups:
+
+- 617 models gain `mudcrabGeometryIndex` in primitive extras. All other mesh fields match.
+- 16 leaf-root models gain an identity scene wrapper. None gains rendered geometry. They are
+  `meshes/landscape/plants/pineshrub01snow.nif`, `reachfern02.nif`, `reachfern03.nif`,
+  `swordfern01.nif`, `swordfern05.nif`, `swordferncluster01.nif` through `swordferncluster06.nif`,
+  `thicket01.nif`, and `vinemaple01.nif` under that same directory, plus
+  `meshes/plants/florahangingmoss01.nif` through `florahangingmoss03.nif`.
+- `meshes/furniture/fxspiderwebkitdoorspecial.nif` loses its assignment sphere because of the
+  automatic-quality guard described above. Its ten drawable meshes and 1,588 triangles match.
+
+The 16 leaf models retain 7,903 triangles in total. A nested-leaf regression verifies child
+transforms and geometry, but this corpus contains only leaf roots. The fresh model comparison
+does not rerun the historical images or establish current web-door culling behavior. Native
+classification of its animated pose remains unresolved.
 
 ## Remaining differences
 
