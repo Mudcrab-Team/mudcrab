@@ -41,9 +41,9 @@ struct ActorHeadSkeleton {
     bones: HashMap<String, Entity>,
 }
 
-/// One instantiated head scene. It exists from the moment the head's scene is instantiated until
-/// its joints are rehosted; a head that cannot be rehosted is despawned. Tools such as the
-/// `npc_viewer` example read it to tell an attached head from a dropped one.
+/// One instantiated head scene. It exists from the moment the head's scene is instantiated and
+/// stays on that entity after a successful rehost. A head that cannot be rehosted is despawned with
+/// it. Tools such as the `npc_viewer` example read it to tell an attached head from a dropped one.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ActorHeadInstance {
     pub actor: Entity,

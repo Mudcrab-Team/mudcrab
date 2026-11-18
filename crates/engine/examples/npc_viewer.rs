@@ -120,6 +120,15 @@ enum PartState {
     Dropped,
 }
 
+/// The problem recorded for an NPC whose body scene never produced geometry.
+const NO_GEOMETRY: &str = "no geometry: the body scene did not load";
+
+/// True when an NPC's recorded problems make the whole capture run fail: a body that never loaded.
+/// A failed PNG or report write sets the failure where it happens.
+fn batch_fails(problems: &[String]) -> bool {
+    problems.iter().any(|problem| problem == NO_GEOMETRY)
+}
+
 /// How a tracked part is found among the actor's instantiated scenes.
 enum Identity {
     Head,
@@ -368,12 +377,10 @@ fn parse_args() -> Options {
 
 fn main() {
     let options = parse_args();
+    // A plain path, not a `file:` URI: a pack path with `#`, `?` or `%` would break a URI.
     let connection = Connection::open_with_flags(
-        format!(
-            "file:{}?mode=ro",
-            options.assets.join("skyrim_world.db").display()
-        ),
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        options.assets.join("skyrim_world.db"),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .expect("open skyrim_world.db read-only");
     let mut list: Vec<Npc> = if options.only {
@@ -1008,7 +1015,7 @@ fn record(viewer: &Viewer, shown: &Shown, images: Vec<String>, failures: &[Strin
         problems.push("timed out waiting for assets".into());
     }
     if shown.skip.is_none() && viewer.bounds.is_none() {
-        problems.push("no geometry: the body scene did not load".into());
+        problems.push(NO_GEOMETRY.into());
     }
     problems.extend(failures.iter().cloned());
     NpcRecord {
@@ -1305,6 +1312,7 @@ fn finish_npc(world: &mut World, viewer: &mut Viewer, capture: &mut Capture) {
         rec.parts.iter().map(|p| p.state).collect::<Vec<_>>(),
         rec.hidden_body_meshes
     );
+    capture.failed |= batch_fails(&rec.problems);
     capture.records.push(rec);
     viewer.shown = Some(shown);
     capture.shot = 0;
@@ -1349,6 +1357,16 @@ mod tests {
             );
         }
         assert!(converted_model_path("../escape.nif".to_owned()).is_none());
+    }
+
+    #[test]
+    fn a_body_that_never_loaded_fails_the_batch_and_other_problems_do_not() {
+        assert!(batch_fails(&["a part".into(), NO_GEOMETRY.into()]));
+        assert!(!batch_fails(&[
+            "outfit in sidecar but not worn".into(),
+            "no idle playing (bind pose)".into(),
+        ]));
+        assert!(!batch_fails(&[]));
     }
 
     #[test]

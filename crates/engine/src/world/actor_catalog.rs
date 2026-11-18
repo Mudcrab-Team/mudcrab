@@ -534,7 +534,11 @@ impl ActorCatalog {
     /// This is the one place that decides it. The streamed world calls it for each placed
     /// reference and the `npc_viewer` example calls it for each NPC it shows, so what the viewer
     /// shows is what the game draws. `reference_form_id` is the placed reference's FormID; it seeds
-    /// the creature idle sequence. A corpse (`starts_dead`) gets no idle.
+    /// the creature idle sequence.
+    ///
+    /// The branches run in this order: the shared composed body (gait clips and a drive) first,
+    /// even for a corpse, then `starts_dead` (no idle), then an authored idle, a legacy creature
+    /// idle, and nothing.
     pub fn insert_actor_components(
         &self,
         entity: &mut EntityCommands,
@@ -616,10 +620,8 @@ impl ActorCatalog {
     /// The worn-outfit row for a base `NPC_` FormID, when the pack's `actor-outfits.json` has one.
     /// A row can exist for an actor that does not wear it: only the shared composed body does.
     pub fn outfit_for(&self, base_form_id: u32) -> Option<&shared::actor_outfits::ActorOutfit> {
-        self.outfits
-            .outfits
-            .iter()
-            .find(|row| row.npc_id == base_form_id)
+        // The lookup `spawn_plan` uses, so the viewer never shows a row the spawn did not.
+        self.outfits.find(base_form_id)
     }
 
     /// How many worn-outfit rows the pack's `actor-outfits.json` gave. Zero means the file is
@@ -1668,5 +1670,149 @@ mod tests {
         };
         assert_eq!(play(0x000A_91A0), play(0x000A_91A0));
         assert_ne!(play(0x000A_91A0), play(0x000A_91A1));
+    }
+
+    /// Puts the components of `plan` on a fresh entity, as the streamed world and the viewer do.
+    fn spawn_components(
+        catalog: &ActorCatalog,
+        plan: &ActorSpawnPlan,
+        starts_dead: bool,
+    ) -> (tempfile::TempDir, App, Entity, ActorAnimationSetup) {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin {
+                file_path: directory.path().to_string_lossy().into_owned(),
+                ..default()
+            },
+        ))
+        .init_asset::<bevy::gltf::Gltf>();
+        let server = app.world().resource::<AssetServer>().clone();
+        let entity = app.world_mut().spawn_empty().id();
+        let setup = {
+            let mut commands = app.world_mut().commands();
+            let mut entity_commands = commands.entity(entity);
+            catalog.insert_actor_components(
+                &mut entity_commands,
+                plan,
+                &server,
+                0x23A92,
+                starts_dead,
+            )
+        };
+        app.world_mut().flush();
+        (directory, app, entity, setup)
+    }
+
+    fn has<T: Component>(app: &App, entity: Entity) -> bool {
+        app.world().get::<T>(entity).is_some()
+    }
+
+    fn plan_on(scene_path: &str) -> ActorSpawnPlan {
+        ActorSpawnPlan {
+            actor: Actor::new(0x13475, 79686, ActorSex::Male, ActorResolution::Body),
+            parts: ActorParts::default(),
+            head: None,
+            skin_tone: ActorSkinTone::new([0.5, 0.4, 0.3]),
+            weight: Some(50.0),
+            scene_path: scene_path.into(),
+            outfit: None,
+        }
+    }
+
+    #[test]
+    fn a_human_gets_its_appearance_gait_clips_and_a_drive() {
+        let plan = plan_on(composed_body_scene(ActorSex::Male));
+        let (_directory, app, entity, setup) =
+            spawn_components(&ActorCatalog::default(), &plan, false);
+        assert_eq!(setup, ActorAnimationSetup::Gait);
+        assert!(has::<Actor>(&app, entity));
+        assert!(has::<ActorSkinTone>(&app, entity));
+        assert_eq!(
+            app.world()
+                .get::<crate::actor_body_weight::ActorBodyWeight>(entity)
+                .map(|weight| weight.0),
+            Some(0.5),
+            "weight 50 maps to a morph of 0.5"
+        );
+        assert!(has::<crate::actor_animation::ActorClips>(&app, entity));
+        assert!(has::<crate::actor_drive::ActorDrive>(&app, entity));
+        assert!(!has::<crate::actor_animation::ActorIdleLibrary>(
+            &app, entity
+        ));
+        assert!(!has::<crate::actor_animation::IdleSequence>(&app, entity));
+    }
+
+    #[test]
+    fn a_composed_body_corpse_still_gets_the_gait_set() {
+        // The composed-body branch runs before `starts_dead`, as in the old spawn path.
+        let plan = plan_on(composed_body_scene(ActorSex::Male));
+        let (_directory, app, entity, setup) =
+            spawn_components(&ActorCatalog::default(), &plan, true);
+        assert_eq!(setup, ActorAnimationSetup::Gait);
+        assert!(has::<crate::actor_animation::ActorClips>(&app, entity));
+        assert!(has::<crate::actor_drive::ActorDrive>(&app, entity));
+    }
+
+    #[test]
+    fn a_creature_corpse_gets_no_idle_at_all() {
+        let (_directory, catalog, plan) = creature_catalog(&[
+            ("meshes/actors/canine/animations/mt_idle.hkx", 30, true),
+            (
+                "meshes/actors/canine/animations/dog_idle_spice_head1.hkx",
+                30,
+                true,
+            ),
+        ]);
+        let (_directory2, app, entity, setup) = spawn_components(&catalog, &plan, true);
+        assert_eq!(setup, ActorAnimationSetup::Corpse);
+        assert!(has::<Actor>(&app, entity));
+        assert!(!has::<crate::actor_animation::ActorClips>(&app, entity));
+        assert!(!has::<crate::actor_animation::ActorIdleLibrary>(
+            &app, entity
+        ));
+        assert!(!has::<crate::actor_animation::IdleSequence>(&app, entity));
+        assert!(!has::<crate::actor_drive::ActorDrive>(&app, entity));
+    }
+
+    #[test]
+    fn a_dog_with_an_authored_idle_gets_clips_a_library_and_a_sequence() {
+        let (_directory, catalog, plan) = creature_catalog(&[
+            ("meshes/actors/canine/animations/mt_idle.hkx", 30, true),
+            (
+                "meshes/actors/canine/animations/dog_idle_spice_head1.hkx",
+                30,
+                true,
+            ),
+            (
+                "meshes/actors/canine/animations/dog_idle_spice_tail1.hkx",
+                30,
+                true,
+            ),
+        ]);
+        let (_directory2, app, entity, setup) = spawn_components(&catalog, &plan, false);
+        assert_eq!(setup, ActorAnimationSetup::AuthoredIdle);
+        assert!(has::<crate::actor_animation::ActorClips>(&app, entity));
+        assert_eq!(
+            app.world()
+                .get::<crate::actor_animation::ActorIdleLibrary>(entity)
+                .map(|library| library.body_scene.as_str()),
+            Some(plan.scene_path.as_str())
+        );
+        assert!(has::<crate::actor_animation::IdleSequence>(&app, entity));
+        assert!(!has::<crate::actor_drive::ActorDrive>(&app, entity));
+    }
+
+    #[test]
+    fn a_body_with_no_gait_or_idle_mapping_gets_only_its_appearance() {
+        let plan = plan_on("meshes/actors/custom/body.glb");
+        let (_directory, app, entity, setup) =
+            spawn_components(&ActorCatalog::default(), &plan, false);
+        assert_eq!(setup, ActorAnimationSetup::None);
+        assert!(has::<Actor>(&app, entity));
+        assert!(has::<ActorSkinTone>(&app, entity));
+        assert!(!has::<crate::actor_animation::ActorClips>(&app, entity));
+        assert!(!has::<crate::actor_drive::ActorDrive>(&app, entity));
     }
 }

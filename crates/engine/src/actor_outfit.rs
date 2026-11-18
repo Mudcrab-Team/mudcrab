@@ -76,9 +76,9 @@ struct ActorOutfitSkeleton {
     body_meshes: Vec<(BodyRegion, Entity)>,
 }
 
-/// One instantiated outfit scene. It exists from the moment the part's scene is instantiated until
-/// its joints are rehosted; a part that cannot be rehosted is despawned. Tools such as the
-/// `npc_viewer` example read it to tell an attached part from a dropped one.
+/// One instantiated outfit scene. It exists from the moment the part's scene is instantiated and
+/// stays on that entity after a successful rehost. A part that cannot be rehosted is despawned with
+/// it. Tools such as the `npc_viewer` example read it to tell an attached part from a dropped one.
 #[derive(Component, Debug, Clone)]
 pub struct ActorOutfitInstance {
     pub actor: Entity,
