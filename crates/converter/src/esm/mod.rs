@@ -197,13 +197,16 @@ impl EsmParser {
         reader: crate::config::RecordReader,
         strings_root: &Path,
     ) -> Result<HashMap<u32, RawRecord>> {
-        Self::convert_plugins_with_reader_and_schemas(
+        let order = load_order::LoadOrder::read(plugin_paths)?;
+        Self::convert_plugins_with_admitted_order_and_string_sources(
             plugin_paths,
             db_path,
             reader,
-            strings_root,
-            crate::config::DEFAULT_LANGUAGE,
+            inhouse::StringSources::default_language(inhouse::StringRoots::PluginLooseFirst(
+                strings_root,
+            )),
             None,
+            order,
         )
         .map(|conversion| conversion.records)
     }
