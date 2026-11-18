@@ -129,6 +129,43 @@ pub fn retail_reference_scale(percent: u16, npc_scale: Option<f32>) -> f32 {
     reference_scale(stored_reference_scale(percent), npc_scale)
 }
 
+/// The inputs of the NPC scale (RF-NPC-004) of one base form. The default is no race, sex index
+/// 0 and no `NAM6`; pass it for a base form that is not an NPC.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NpcHeights {
+    /// The race heights, or `None` when the NPC has no race.
+    pub race: Option<RaceHeights>,
+    /// The sex index (RF-NPC-005).
+    pub sex_index: i32,
+    /// `NAM6`, or `None` when the record has none (assumption A2).
+    pub npc_height: Option<f32>,
+}
+
+/// The factor that a base form adds to the scale of its references (RF-REFR-002): the
+/// [`npc_scale`] when the base form type is [`NPC_FORM_TYPE`], and `None` for any other type.
+pub fn base_form_scale_factor(base_form_type: u8, npc: NpcHeights) -> Option<f32> {
+    if base_form_type == NPC_FORM_TYPE {
+        Some(npc_scale(npc.race, npc.sex_index, npc.npc_height))
+    } else {
+        None
+    }
+}
+
+/// The scale of a placed reference from its base form type (RF-REFR-002 with RF-NPC-004).
+/// `base_scale` is the reference's own scale. Only the base form type decides whether the NPC
+/// scale applies; the reference's own form type does not.
+///
+/// Callers should use this function rather than combine the parts themselves, so that the three
+/// factors keep the retail grouping `base scale × (race height × NPC height)`.
+pub fn placed_reference_scale(base_form_type: u8, base_scale: f32, npc: NpcHeights) -> f32 {
+    reference_scale(base_scale, base_form_scale_factor(base_form_type, npc))
+}
+
+/// [`placed_reference_scale`] from the stored whole percent.
+pub fn retail_placed_reference_scale(base_form_type: u8, percent: u16, npc: NpcHeights) -> f32 {
+    placed_reference_scale(base_form_type, stored_reference_scale(percent), npc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +276,24 @@ mod tests {
             5.0
         );
     }
+
+    #[test]
+    fn only_an_npc_base_form_adds_the_npc_scale() {
+        let npc = NpcHeights {
+            race: Some(RACE),
+            sex_index: SEX_INDEX_FEMALE,
+            npc_height: Some(2.0),
+        };
+        assert_eq!(base_form_scale_factor(NPC_FORM_TYPE, npc), Some(1.5));
+        assert_eq!(base_form_scale_factor(0x3E, npc), None);
+        assert_eq!(placed_reference_scale(NPC_FORM_TYPE, 2.0, npc), 3.0);
+        assert_eq!(placed_reference_scale(0x24, 2.0, npc), 2.0);
+        assert_eq!(retail_placed_reference_scale(NPC_FORM_TYPE, 200, npc), 3.0);
+        assert_eq!(
+            placed_reference_scale(0x24, 2.0, NpcHeights::default()),
+            2.0
+        );
+    }
 }
 
 /// Kani proofs. Each harness states its range. "Same value" means the same bits, or both NaN.
@@ -330,6 +385,9 @@ mod proofs {
             0.0
         };
         kani::assume(not_zero_times_infinity(selected, height));
+        kani::cover!(sex == 0, "index 0 is reached");
+        kani::cover!(sex == 1, "index 1 is reached");
+        kani::cover!(sex != 0 && sex != 1, "another index is reached");
         assert!(same(
             npc_scale(Some(race), sex, Some(height)),
             selected * height
@@ -372,6 +430,11 @@ mod proofs {
         let npc = npc_scale(race, sex, height);
         assert!(npc.is_finite());
         let npc_base: Option<f32> = if kani::any() { Some(npc) } else { None };
+        kani::cover!(
+            race.is_some() && npc_base.is_some(),
+            "an NPC base with a race is reached"
+        );
+        kani::cover!(race.is_none(), "an NPC without a race is reached");
         assert!(retail_reference_scale(percent, npc_base).is_finite());
     }
 
@@ -402,8 +465,11 @@ mod proofs {
     fn reference_scale_uses_the_retail_grouping() {
         let percent: u16 = kani::any();
         let npc: f32 = kani::any();
-        let stored = f32::from(percent) * 0.01;
+        // The retail constant, written as its bits, apart from `PERCENT_TO_SCALE`.
+        let stored = f32::from(percent) * f32::from_bits(0x3c23_d70a);
         kani::assume(not_zero_times_infinity(stored, npc));
+        kani::cover!(percent == 0, "percent 0 is reached");
+        kani::cover!(npc.is_infinite(), "an infinite NPC scale is reached");
         assert!(same(
             retail_reference_scale(percent, Some(npc)),
             stored * npc
@@ -439,7 +505,55 @@ mod proofs {
         let a: u16 = kani::any();
         let b: u16 = kani::any();
         kani::assume(a <= b);
+        kani::cover!(a < b, "two different percents are reached");
         assert!(stored_reference_scale(a) <= stored_reference_scale(b));
+    }
+
+    /// RF-REFR-002: only an NPC base form (type 0x2B) adds a factor, and that factor is the NPC
+    /// scale, bit for bit. Together with `reference_scale_uses_the_retail_grouping`, which holds
+    /// for every factor, this covers `placed_reference_scale` for an NPC base.
+    #[kani::proof]
+    fn only_an_npc_base_adds_the_npc_scale() {
+        let base_form_type: u8 = kani::any();
+        let npc = NpcHeights {
+            race: any_race(),
+            sex_index: kani::any(),
+            npc_height: if kani::any() { Some(kani::any()) } else { None },
+        };
+        let race = race_height(npc.race, npc.sex_index);
+        let height = npc.npc_height.unwrap_or(DEFAULT_NPC_HEIGHT);
+        kani::assume(not_zero_times_infinity(race, height));
+        kani::cover!(base_form_type == NPC_FORM_TYPE, "an NPC base is reached");
+        kani::cover!(base_form_type != NPC_FORM_TYPE, "another base is reached");
+        match base_form_scale_factor(base_form_type, npc) {
+            Some(factor) => {
+                assert_eq!(base_form_type, NPC_FORM_TYPE);
+                assert!(same(factor, race * height));
+            }
+            None => assert_ne!(base_form_type, NPC_FORM_TYPE),
+        }
+    }
+
+    /// RF-REFR-002: a reference whose base form type is not 0x2B keeps exactly its own scale,
+    /// whatever NPC inputs the caller passes.
+    #[kani::proof]
+    fn a_placed_reference_without_an_npc_base_keeps_its_scale() {
+        let base_form_type: u8 = kani::any();
+        kani::assume(base_form_type != NPC_FORM_TYPE);
+        let base: f32 = kani::any();
+        let npc = NpcHeights {
+            race: any_race(),
+            sex_index: kani::any(),
+            npc_height: if kani::any() { Some(kani::any()) } else { None },
+        };
+        kani::cover!(
+            base_form_type == 0x3E,
+            "the ACHR form type as a base is reached"
+        );
+        assert!(same(
+            placed_reference_scale(base_form_type, base, npc),
+            base
+        ));
     }
 
     /// RF-REFR-002: 100 percent is exactly 1.0, although 0.01 is not exact in `f32`.

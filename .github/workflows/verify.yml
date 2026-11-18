@@ -51,4 +51,10 @@ jobs:
           cargo kani setup
 
       - name: Prove the retail rules
-        run: cargo kani -p retail-rules
+        run: |
+          set -o pipefail
+          cargo kani -p retail-rules 2>&1 | tee "$RUNNER_TEMP/kani.log"
+
+      # Kani exits 0 for an impossible cover or an unreachable assertion, which prove nothing.
+      - name: Reject vacuous proofs
+        run: crates/retail-rules/check-kani-log.sh "$RUNNER_TEMP/kani.log"
