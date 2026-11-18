@@ -2038,6 +2038,10 @@ mod tests {
                 .map(|handle| handle.0.id());
             let (mut stalled, mut run, mut longest_run, mut switch_updates) =
                 (0_u32, 0_u32, 0_u32, 0_u32);
+            // Updates in a row that end with the same player still finished and nothing to wait
+            // for. A clip end leaves that state for one update, until the sequence replaces the
+            // player on the next one. A creature that stays finished is frozen.
+            let (mut frozen_run, mut longest_frozen) = (0_u32, 0_u32);
             while elapsed < seconds {
                 assert!(
                     Instant::now() < deadline,
@@ -2058,12 +2062,33 @@ mod tests {
                     run += 1;
                     longest_run = longest_run.max(run);
                 }
+                let graph_before = app
+                    .world()
+                    .get::<AnimationGraphHandle>(actor)
+                    .map(|handle| handle.0.id());
                 app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(if ready {
                     step
                 } else {
                     Duration::ZERO
                 }));
                 app.update();
+                {
+                    let world = app.world();
+                    let finished_same = world
+                        .get::<AnimationPlayer>(actor)
+                        .is_some_and(|player| player.all_finished())
+                        && !world.get::<IdleSequence>(actor).unwrap().is_waiting()
+                        && world
+                            .get::<AnimationGraphHandle>(actor)
+                            .map(|handle| handle.0.id())
+                            == graph_before;
+                    if finished_same {
+                        frozen_run += 1;
+                        longest_frozen = longest_frozen.max(frozen_run);
+                    } else {
+                        frozen_run = 0;
+                    }
+                }
                 if ready {
                     elapsed += step.as_secs_f64();
                 }
@@ -2088,13 +2113,17 @@ mod tests {
             }
             let distinct: HashSet<_> = played.iter().map(|(_, source)| source.as_str()).collect();
             println!(
-                "IDLE_SEQUENCE {name}: {} clip picks, {} distinct clips in {elapsed:.0} s; {stalled} stalled updates (longest run {longest_run}), {switch_updates} graph replacements (one update each)",
+                "IDLE_SEQUENCE {name}: {} clip picks, {} distinct clips in {elapsed:.0} s; {stalled} stalled updates (longest run {longest_run}), {switch_updates} graph replacements (one update each), longest finished-player run {longest_frozen}",
                 played.len() - 1,
                 distinct.len()
             );
             assert!(
                 longest_run <= 10,
                 "the {name} stood still for {longest_run} updates in a row"
+            );
+            assert!(
+                longest_frozen <= 2,
+                "the {name} kept a finished player for {longest_frozen} updates in a row"
             );
             // Each animal must vary on its own: one that shows variation cannot cover for another.
             assert!(
