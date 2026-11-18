@@ -1,0 +1,54 @@
+name: verify
+
+# Kani proofs of the pure retail rules in crates/retail-rules. The unit tests of the same crate
+# run in the `test` job of run_tests.yml. This job runs only when the crate, its skill or this
+# file changes, so it does not add time to other pull requests.
+
+on:
+  pull_request:
+    branches: [ main, develop, 'release/**' ]
+    paths:
+      - 'crates/retail-rules/**'
+      - '.agents/skills/verify-retail-rules/**'
+      - '.github/workflows/verify.yml'
+  push:
+    branches: [ main ]
+    paths:
+      - 'crates/retail-rules/**'
+      - '.github/workflows/verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  # Upgrade deliberately, together with the version in the verify-retail-rules skill.
+  KANI_VERSION: '0.68.0'
+
+jobs:
+  kani:
+    name: Kani proofs (retail-rules)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+
+      - name: Install Kani ${{ env.KANI_VERSION }}
+        run: |
+          cargo install --locked kani-verifier --version "$KANI_VERSION"
+          cargo kani setup
+
+      - name: Prove the retail rules
+        run: cargo kani -p retail-rules
