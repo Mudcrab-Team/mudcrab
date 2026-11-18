@@ -119,6 +119,12 @@ proofs preserve unrelated eligible mesh and texture outputs. Mesh/texture schema
 versions are unchanged. Converted packs need reconversion; rebuilding only the
 engine cannot update identifier helpers in old emitted modules.
 
+ABI 4 changes no emitted script. It marks the shared `papyrus_runtime.luau` that gained
+inherited-native lookup, fault-and-continue, a scheduler and execution budgets (#703). A pack at
+ABI 3 still loads in the engine, which never reads a pack's ABI or its runtime copy; with
+`--papyrus-scripts` it runs the pack's scripts on the engine's built-in runtime. `--reuse-assets`
+on an ABI 3 pack rebuilds the scripts only (no mesh or texture work) and rewrites the runtime copy.
+
 ## Future work
 
 World event delivery, game native bindings, latent continuation scheduling,

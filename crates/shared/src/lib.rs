@@ -37,7 +37,15 @@ where
 pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 9;
 
 /// Current Papyrus script emission ABI: case-insensitive identifiers and permissive initial states.
-pub const PAPYRUS_SCRIPT_ABI_VERSION: u32 = 3;
+///
+/// 4: the shared `papyrus_runtime.luau` gained inherited-native lookup, fault-and-continue, a
+/// scheduler and per-frame budgets (#703). Emitted scripts are unchanged; the runtime is part of
+/// the ABI because the converter copies it into each pack and hashes it. Raising the number makes
+/// `--reuse-assets` rebuild only the scripts and rewrite the runtime copy.
+///
+/// Existing packs (ABI 3) still load: the engine never reads a pack's ABI or its runtime copy. It
+/// runs scripts only with `--papyrus-scripts`, and then uses its built-in runtime.
+pub const PAPYRUS_SCRIPT_ABI_VERSION: u32 = 4;
 /// Latest producer required when a package advertises the combined LOD contract.
 /// 27: collision coverage (sphere shapes as zero-length capsules, multi-sphere and cylinder
 /// shapes) changes GLB collision extras.

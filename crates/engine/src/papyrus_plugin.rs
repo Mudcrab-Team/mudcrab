@@ -54,6 +54,10 @@ impl Plugin for PapyrusScriptsPlugin {
             warn!(target: "papyrus", "--papyrus-scripts needs a loaded world; scripts stay off");
             return;
         };
+        // Off unless asked for: a pack loads exactly as before, whatever script ABI it has.
+        if !config.papyrus_scripts {
+            return;
+        }
         let database = config.assets_dir.join("skyrim_world.db");
         let scripts = config.assets_dir.join("scripts");
         if !scripts.is_dir() {
@@ -556,5 +560,89 @@ mod tests {
         // The first update has no delta; each later one advances 0.1 s.
         let clock = script_clock(&app);
         assert!((clock - 0.5).abs() < 0.05, "script clock {clock}");
+    }
+
+    /// A pack-shaped folder: `skyrim_world.db` with a `scripts` table naming the script on
+    /// `REFERENCE`, and a `scripts` folder holding the fixture classes plus a stale
+    /// `papyrus_runtime.luau` copy, as a pack converted at an older script ABI would.
+    fn old_abi_pack() -> TempDir {
+        let pack = TempDir::new().unwrap();
+        let scripts_dir = pack.path().join("scripts");
+        std::fs::create_dir(&scripts_dir).unwrap();
+        let fixtures = scripts();
+        for entry in std::fs::read_dir(fixtures.path()).unwrap() {
+            let entry = entry.unwrap();
+            std::fs::copy(entry.path(), scripts_dir.join(entry.file_name())).unwrap();
+        }
+        std::fs::write(
+            scripts_dir.join("papyrus_runtime.luau"),
+            "this stale ABI 3 copy is not even valid Luau !!!",
+        )
+        .unwrap();
+        let connection = rusqlite::Connection::open(pack.path().join("skyrim_world.db")).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE scripts(form_id INTEGER NOT NULL, script_name TEXT NOT NULL, \
+                 vmad BLOB NOT NULL, PRIMARY KEY(form_id, script_name));",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO scripts VALUES (?1, 'defaultDisableSelfOnActivate', x'00')",
+                [REFERENCE],
+            )
+            .unwrap();
+        pack
+    }
+
+    fn app_for_pack(pack: &TempDir, papyrus_scripts: bool) -> App {
+        let config = crate::config::EngineConfig {
+            assets_dir: pack.path().to_path_buf(),
+            papyrus_scripts,
+            ..Default::default()
+        };
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(CursorCapture::Captured)
+            .insert_resource(config)
+            .add_plugins(PapyrusScriptsPlugin);
+        app
+    }
+
+    #[test]
+    fn without_the_flag_a_pack_loads_as_before_and_scripts_stay_off() {
+        let pack = old_abi_pack();
+        let mut app = app_for_pack(&pack, false);
+        assert!(
+            app.world().get_non_send::<PapyrusHostResource>().is_none(),
+            "no host without --papyrus-scripts"
+        );
+        let entity = app
+            .world_mut()
+            .spawn((FormId(REFERENCE), Visibility::Inherited))
+            .id();
+        app.update();
+        assert!(app.world().get::<ScriptedReference>(entity).is_none());
+        assert_eq!(
+            app.world().get::<Visibility>(entity),
+            Some(&Visibility::Inherited)
+        );
+    }
+
+    #[test]
+    fn with_the_flag_an_old_abi_pack_runs_on_the_built_in_runtime() {
+        let pack = old_abi_pack();
+        let mut app = app_for_pack(&pack, true);
+        assert!(app.world().get_non_send::<PapyrusHostResource>().is_some());
+        let entity = app
+            .world_mut()
+            .spawn((FormId(REFERENCE), Visibility::Inherited))
+            .id();
+        app.update();
+        // The stale runtime copy in the pack is never read: the script attached and ran.
+        assert!(app.world().get::<ScriptedReference>(entity).is_some());
+        let host = &app.world().non_send::<PapyrusHostResource>().0;
+        assert!(host.is_attached(REFERENCE));
     }
 }
