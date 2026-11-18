@@ -761,22 +761,7 @@ fn record_texture_path(path: String) -> Option<String> {
 /// `..` or `.` segment, an absolute or drive-prefixed path, an empty segment, or a `:` (a Windows
 /// drive or stream, or an asset source such as `embedded://`) - is refused rather than loaded.
 pub(crate) fn converted_texture_path(path: String) -> Option<String> {
-    // Converted assets are published with lowercase canonical paths, so the
-    // lookup must lowercase too (matching world-inspect's resolver).
-    let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    let without_prefix = normalized.strip_prefix("textures/").unwrap_or(&normalized);
-    if without_prefix.is_empty()
-        || !is_safe_relative_asset_path(without_prefix)
-        || without_prefix.contains(':')
-        || without_prefix
-            .split('/')
-            .any(|segment| matches!(segment, "" | "." | ".."))
-    {
-        return None;
-    }
-    let mut converted = std::path::PathBuf::from("textures").join(without_prefix);
-    converted.set_extension("ktx2");
-    Some(converted.to_string_lossy().replace('\\', "/"))
+    shared::texture_aliases::converted_record_texture_path(&path)
 }
 
 /// Rejects a database-supplied relative path that could escape the assets

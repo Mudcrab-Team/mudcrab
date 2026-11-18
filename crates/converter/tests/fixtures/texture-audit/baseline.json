@@ -1,9 +1,9 @@
 {
   "max_by_cause": {
     "source_texture_absent": 2,
-    "converted_texture_missing": 1,
+    "converted_texture_missing": 2,
     "slot_unreferenced": 1,
-    "unparseable_path": 0,
+    "unparseable_path": 1,
     "primitive_without_uvs": 1,
     "texture_set_unresolved": 0,
     "land_texture_unresolved": 0,

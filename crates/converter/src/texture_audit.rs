@@ -149,6 +149,8 @@ pub struct Summary {
     /// Of those, the GLBs audited from their own contents (image references and UVs).
     #[serde(default)]
     pub glb_files_audited_without_source: u64,
+    /// Meshes the audit could not read (a GLB or its source NIF). Their findings are missing, so
+    /// the audit is incomplete and no baseline check may pass.
     pub nif_files_failed: u64,
     pub wanted_slots: u64,
     pub resolved_slots: u64,
@@ -160,6 +162,16 @@ pub struct Summary {
     /// Unresolved findings on meshes that some reference places.
     pub placed_findings_by_cause: BTreeMap<Cause, u64>,
     pub failed_nifs: Vec<String>,
+    /// Selected archives the lister could not read, with the reason. Their textures are missing
+    /// from the catalog, so the audit is incomplete.
+    #[serde(default)]
+    pub skipped_archives: Vec<String>,
+    /// Archives left out because the plugin that owns them is installed but not active.
+    #[serde(default)]
+    pub inactive_archives: Vec<String>,
+    /// True when the database was read (texture sets, terrain layers, alternate textures).
+    #[serde(default)]
+    pub records_audited: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -200,7 +212,42 @@ impl Baseline {
     }
 }
 
-/// One message per cause whose count exceeds the baseline; empty means the ratchet holds.
+/// Why the audit did not look at everything it should have. Findings that a skipped mesh, archive
+/// or table would have produced are missing, so a count that looks like an improvement may be a
+/// blind spot.
+pub fn incomplete(report: &Report) -> Vec<String> {
+    let summary = &report.summary;
+    let mut reasons = Vec::new();
+    if summary.nif_files_failed != 0 {
+        reasons.push(format!(
+            "{} meshes could not be read, for example {}",
+            summary.nif_files_failed,
+            summary.failed_nifs.first().map_or("", String::as_str)
+        ));
+    }
+    for archive in &summary.skipped_archives {
+        reasons.push(format!("archive could not be listed: {archive}"));
+    }
+    if report.overrides.undecodable_records != 0 {
+        reasons.push(format!(
+            "{} records with alternate textures could not be decoded",
+            report.overrides.undecodable_records
+        ));
+    }
+    if summary.glb_files == 0 {
+        reasons.push("no GLB was audited".to_owned());
+    }
+    if summary.glb_files_with_source_nif != 0 && summary.wanted_slots == 0 {
+        reasons.push("no NIF texture slot was read".to_owned());
+    }
+    if summary.records_audited && summary.texture_set_paths == 0 {
+        reasons.push("no texture set or terrain layer was read; did the schema change?".to_owned());
+    }
+    reasons
+}
+
+/// One message per cause whose count exceeds the baseline, and one per reason the audit is
+/// incomplete; empty means the ratchet holds.
 pub fn compare_to_baseline(report: &Report, baseline: &Baseline) -> Vec<String> {
     let mut regressions = Vec::new();
     for cause in Cause::ALL {
@@ -217,7 +264,53 @@ pub fn compare_to_baseline(report: &Report, baseline: &Baseline) -> Vec<String> 
             ));
         }
     }
+    regressions.extend(
+        incomplete(report)
+            .into_iter()
+            .map(|reason| format!("incomplete audit: {reason}")),
+    );
     regressions
+}
+
+/// One message per cause whose count is now below the baseline. The baseline is a ceiling that
+/// has to follow the count down, or a later regression up to the old ceiling would pass.
+pub fn improvements(report: &Report, baseline: &Baseline) -> Vec<String> {
+    Cause::ALL
+        .into_iter()
+        .filter_map(|cause| {
+            let now = report
+                .summary
+                .counts_by_cause
+                .get(&cause)
+                .copied()
+                .unwrap_or(0);
+            let allowed = baseline.max_by_cause.get(&cause).copied().unwrap_or(0);
+            (now < allowed)
+                .then(|| format!("{cause:?}: lower the baseline from {allowed} to {now}"))
+        })
+        .collect()
+}
+
+/// Reads the plugin load order of a pack's world database, read-only.
+pub fn plugin_names(database: &Path) -> Result<Vec<String>> {
+    let connection = Connection::open_with_flags(
+        database,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .wrap_err_with(|| format!("failed to open {} read-only", database.display()))?;
+    let mut statement = connection.prepare("SELECT name FROM plugins ORDER BY priority")?;
+    let names = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(names)
+}
+
+/// Takes the shared asset lock of a pack, as the engine does. A conversion that would replace
+/// the pack waits for it, so the plugin order, the GLBs and the database the audit reads belong
+/// to one pack. Hold the returned lock from the first read to the last.
+pub fn lock_pack(pack: &Path) -> Result<shared::asset_lock::AssetLock> {
+    shared::asset_lock::AssetLock::acquire_shared(pack)
+        .map_err(|error| color_eyre::eyre::eyre!("cannot lock {}: {error}", pack.display()))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -247,6 +340,13 @@ impl SourceLocation {
     }
 }
 
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Every mesh and texture the game data supplies, keyed like the converter keys them
 /// (`meshes/x.nif`, `textures/y.dds`). Later archives win, loose files win over archives.
 #[derive(Debug, Default)]
@@ -254,36 +354,70 @@ pub struct SourceCatalog {
     meshes: HashMap<String, SourceLocation>,
     textures: HashMap<String, SourceLocation>,
     texture_stems: HashMap<String, Vec<String>>,
+    /// Archives the lister could not read. Their files are missing from the catalog, so an
+    /// audit that skipped one is incomplete and must not pass a baseline.
+    skipped_archives: Vec<String>,
+    /// Archives left out because the plugin that owns them is installed but not active.
+    inactive_archives: Vec<String>,
 }
 
 impl SourceCatalog {
     /// Indexes the archives (`*.bsa`, `*.ba2`) and loose `meshes`/`textures` under `data_dir`.
-    /// `plugin_names` is the load order used to rank archives; an unknown archive ranks last,
-    /// as in the converter.
+    ///
+    /// `plugin_names` is the active load order. Archives are selected the way the converter
+    /// selects them: an archive owned by an installed plugin that is not active is left out, and
+    /// an archive no plugin owns stays eligible. Selected archives rank by the load order of the
+    /// plugin that owns them, with unowned archives last. A selected archive that cannot be
+    /// listed is recorded in [`Self::skipped_archives`].
     pub fn build(data_dir: &Path, plugin_names: &[String]) -> Result<Self> {
+        let mut files = Vec::new();
         let mut archives = Vec::new();
+        let mut loose_roots = Vec::new();
         for entry in fs::read_dir(data_dir)
             .wrap_err_with(|| format!("failed to read {}", data_dir.display()))?
         {
-            let path = entry?.path();
+            let entry = entry?;
+            let path = entry.path();
+            // A case-sensitive filesystem can hold `Meshes` and `Textures`; the converter reads
+            // them, so the audit matches the folder names without regard to case.
+            if entry.file_type()?.is_dir() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.eq_ignore_ascii_case("meshes") || name.eq_ignore_ascii_case("textures") {
+                    loose_roots.push(path);
+                }
+                continue;
+            }
             if path.extension().is_some_and(|extension| {
                 extension.eq_ignore_ascii_case("bsa") || extension.eq_ignore_ascii_case("ba2")
             }) {
-                archives.push(path);
+                archives.push(path.clone());
             }
+            files.push(path);
         }
         let plugins: Vec<PathBuf> = plugin_names
             .iter()
             .map(|name| data_dir.join(name))
             .collect();
-        crate::pipeline::sort_archives_by_load_order(&mut archives, &plugins);
+        let owners = crate::pipeline::installed_archive_owners(data_dir, &files, &plugins);
         let mut catalog = Self::default();
+        archives.retain(|archive| {
+            let active = crate::pipeline::non_mo2_archive_is_active(archive, &owners);
+            if !active {
+                catalog.inactive_archives.push(file_name(archive));
+            }
+            active
+        });
+        crate::pipeline::sort_archives_by_load_order(&mut archives, &plugins);
         for archive in &archives {
             let listed = match ArchiveExtractor::list_paths(archive) {
                 Ok(listed) => listed,
-                // An archive of another kind (sounds, animations) can use a layout the lister
-                // refuses; it holds no meshes or textures the audit needs.
-                Err(_) => continue,
+                Err(error) => {
+                    catalog
+                        .skipped_archives
+                        .push(format!("{}: {error:#}", file_name(archive)));
+                    continue;
+                }
             };
             for inner in listed {
                 let name = inner.to_string_lossy().into_owned();
@@ -296,11 +430,8 @@ impl SourceCatalog {
                 );
             }
         }
-        for folder in ["meshes", "textures"] {
-            let root = data_dir.join(folder);
-            if !root.is_dir() {
-                continue;
-            }
+        loose_roots.sort();
+        for root in loose_roots {
             for entry in WalkDir::new(&root).follow_links(false) {
                 let entry = entry?;
                 if entry.file_type().is_file() {
@@ -312,8 +443,19 @@ impl SourceCatalog {
                 }
             }
         }
+        catalog.skipped_archives.sort();
         catalog.index_stems();
         Ok(catalog)
+    }
+
+    /// Archives that were selected but could not be listed, each with the reason.
+    pub fn skipped_archives(&self) -> &[String] {
+        &self.skipped_archives
+    }
+
+    /// Archives left out because their owning plugin is installed but not active.
+    pub fn inactive_archives(&self) -> &[String] {
+        &self.inactive_archives
     }
 
     fn insert(&mut self, path: &str, location: SourceLocation) {
@@ -434,13 +576,39 @@ impl PackTextures {
     }
 }
 
+/// One external image of a GLB, as the engine requests it.
+#[derive(Debug, Clone)]
+struct ImageRef {
+    /// The URI as written in the GLB.
+    uri: String,
+    /// The pack-relative path the URI names (lowercase, `/`): the file the engine loads.
+    exact: String,
+    /// The converted texture that file aliases, for example `textures/a/b.ktx2`.
+    base: String,
+}
+
+/// The images a material binds, found through the NIF shape block the converter records.
+#[derive(Debug, Clone, Copy, Default)]
+struct MaterialBinding {
+    shape_block: Option<u32>,
+    /// Index into `GlbFacts::images` of the base-colour image.
+    diffuse: Option<usize>,
+    /// Index into `GlbFacts::images` of the normal image.
+    normal: Option<usize>,
+}
+
 /// What a GLB says about textures.
 #[derive(Debug, Default)]
 struct GlbFacts {
-    /// Base keys of every image URI that resolves inside the pack, resolved or not.
-    referenced_bases: HashSet<String>,
-    /// Image URIs that cannot be resolved to a key at all.
-    unresolvable_uris: Vec<String>,
+    /// Every image in glTF order; `None` for an embedded image or one with a refused URI.
+    images: Vec<Option<ImageRef>>,
+    /// The external images, once each by exact path.
+    external: Vec<ImageRef>,
+    /// Image URIs the resolver refused, with the reason (traversal, bad escape, not `.ktx2`).
+    refused_uris: Vec<(String, String)>,
+    bindings: Vec<MaterialBinding>,
+    /// Texture path repairs the converter published: original base key to replacement base key.
+    repairs: HashMap<String, String>,
     /// Primitives with a textured material and no `TEXCOORD_0`.
     no_uv_primitives: Vec<NoUv>,
 }
@@ -452,70 +620,124 @@ struct NoUv {
     texture: Option<String>,
 }
 
+/// Reads the JSON chunk of a GLB without reading geometry. The header must be a version-2 GLB
+/// whose declared length matches the file and whose first chunk is JSON inside those bounds, so a
+/// truncated or hostile file is refused before any allocation sized from its header.
 fn read_glb_json(path: &Path) -> Result<serde_json::Value> {
     let mut file =
         fs::File::open(path).wrap_err_with(|| format!("failed to open {}", path.display()))?;
+    let file_length = file.metadata()?.len();
     let mut header = [0u8; 20];
-    file.read_exact(&mut header)?;
-    ensure!(&header[..4] == b"glTF", "not a GLB: {}", path.display());
+    file.read_exact(&mut header)
+        .wrap_err_with(|| format!("truncated GLB header in {}", path.display()))?;
+    let version = u32::from_le_bytes(header[4..8].try_into().unwrap());
+    let total = u32::from_le_bytes(header[8..12].try_into().unwrap());
     let json_length = u32::from_le_bytes(header[12..16].try_into().unwrap());
-    let mut json = vec![0u8; usize::try_from(json_length)?];
-    file.read_exact(&mut json)?;
-    Ok(serde_json::from_slice(&json)?)
+    ensure!(
+        &header[..4] == b"glTF"
+            && version == 2
+            && &header[16..20] == b"JSON"
+            && u64::from(total) == file_length
+            && u64::from(json_length) + 20 <= u64::from(total),
+        "invalid GLB JSON chunk in {}",
+        path.display()
+    );
+    serde_json::from_reader(std::io::BufReader::new(file.take(u64::from(json_length))))
+        .wrap_err_with(|| format!("invalid GLB JSON in {}", path.display()))
+}
+
+/// Resolves one image URI to the file the engine loads, with the converter's resolver.
+fn image_ref(pack: &Path, glb: &Path, uri: &str) -> std::result::Result<ImageRef, String> {
+    let path = resolve_asset_uri(pack, glb, uri).map_err(|error| format!("{error:#}"))?;
+    let exact = path
+        .strip_prefix(pack)
+        .map_err(|_| "the URI names a path outside the pack".to_owned())?
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    let base = runtime_texture_source(&exact)
+        .ok_or_else(|| "the URI is not a converted .ktx2 texture".to_owned())?;
+    Ok(ImageRef {
+        uri: uri.to_owned(),
+        exact,
+        base,
+    })
 }
 
 fn glb_facts(pack: &Path, glb: &Path) -> Result<GlbFacts> {
     let document = read_glb_json(glb)?;
     let mut facts = GlbFacts::default();
-    let images = document
+    let mut seen = HashSet::new();
+    for image in document
         .get("images")
         .and_then(|images| images.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let mut image_keys: Vec<Option<String>> = Vec::with_capacity(images.len());
-    for image in &images {
-        let key = image
+        .into_iter()
+        .flatten()
+    {
+        let uri = image
             .get("uri")
             .and_then(|uri| uri.as_str())
-            .filter(|uri| !uri.starts_with("data:"))
-            .and_then(|uri| match resolve_asset_uri(pack, glb, uri) {
-                Ok(path) => path
-                    .strip_prefix(pack)
-                    .ok()
-                    .map(|relative| relative.to_string_lossy().replace('\\', "/"))
-                    .and_then(|relative| runtime_texture_source(&relative.to_ascii_lowercase())),
-                Err(_) => {
-                    facts.unresolvable_uris.push(uri.to_owned());
+            .filter(|uri| !uri.starts_with("data:"));
+        let resolved = match uri {
+            Some(uri) => match image_ref(pack, glb, uri) {
+                Ok(reference) => Some(reference),
+                Err(reason) => {
+                    facts.refused_uris.push((uri.to_owned(), reason));
                     None
                 }
-            });
-        if let Some(key) = &key {
-            facts.referenced_bases.insert(key.clone());
+            },
+            None => None,
+        };
+        if let Some(reference) = &resolved
+            && seen.insert(reference.exact.clone())
+        {
+            facts.external.push(reference.clone());
         }
-        image_keys.push(key);
+        facts.images.push(resolved);
+    }
+    // The converter records the images it replaced (the two volcanic grass normals). The audit
+    // accepts the replacement where the authored path is the original.
+    if let Some(repairs) = document
+        .pointer("/extras/mudcrab/texturePathRepairs")
+        .and_then(|repairs| repairs.as_object())
+    {
+        for (original, replacement) in repairs {
+            let Some(replacement) = replacement.as_str() else {
+                continue;
+            };
+            if let (Ok(original), Ok(replacement)) = (
+                image_ref(pack, glb, original),
+                image_ref(pack, glb, replacement),
+            ) {
+                facts.repairs.insert(original.base, replacement.base);
+            }
+        }
     }
     let textures = document
         .get("textures")
         .and_then(|textures| textures.as_array())
         .cloned()
         .unwrap_or_default();
-    let texture_key = |index: usize| -> Option<String> {
-        textures
-            .get(index)
-            .and_then(|texture| texture.get("source"))
-            .and_then(|source| source.as_u64())
-            .and_then(|source| {
-                image_keys
-                    .get(usize::try_from(source).ok()?)
-                    .cloned()
-                    .flatten()
-            })
+    // glTF texture index to glTF image index.
+    let image_of_texture = |texture: Option<&serde_json::Value>| -> Option<usize> {
+        let index = usize::try_from(texture?.get("index")?.as_u64()?).ok()?;
+        usize::try_from(textures.get(index)?.get("source")?.as_u64()?).ok()
     };
     let materials = document
         .get("materials")
         .and_then(|materials| materials.as_array())
         .cloned()
         .unwrap_or_default();
+    for material in &materials {
+        facts.bindings.push(MaterialBinding {
+            shape_block: material
+                .pointer("/extras/openSkyrim/shapeBlock")
+                .and_then(|block| block.as_u64())
+                .and_then(|block| u32::try_from(block).ok()),
+            diffuse: image_of_texture(material.pointer("/pbrMetallicRoughness/baseColorTexture")),
+            normal: image_of_texture(material.get("normalTexture")),
+        });
+    }
     for mesh in document
         .get("meshes")
         .and_then(|meshes| meshes.as_array())
@@ -539,26 +761,18 @@ fn glb_facts(pack: &Path, glb: &Path) -> Result<GlbFacts> {
             if has_uv {
                 continue;
             }
-            let Some(material) = primitive
+            let Some(index) = primitive
                 .get("material")
                 .and_then(|material| material.as_u64())
-                .and_then(|material| materials.get(usize::try_from(material).ok()?))
+                .and_then(|material| usize::try_from(material).ok())
             else {
                 continue;
             };
-            let texture_index = |value: Option<&serde_json::Value>| {
-                value
-                    .and_then(|info| info.get("index"))
-                    .and_then(|index| index.as_u64())
-                    .and_then(|index| usize::try_from(index).ok())
+            let (Some(binding), Some(material)) = (facts.bindings.get(index), materials.get(index))
+            else {
+                continue;
             };
-            let base = texture_index(
-                material
-                    .get("pbrMetallicRoughness")
-                    .and_then(|pbr| pbr.get("baseColorTexture")),
-            );
-            let normal = texture_index(material.get("normalTexture"));
-            if let Some(index) = base.or(normal) {
+            if let Some(image) = binding.diffuse.or(binding.normal) {
                 facts.no_uv_primitives.push(NoUv {
                     mesh: mesh_name.to_owned(),
                     material: material
@@ -566,7 +780,11 @@ fn glb_facts(pack: &Path, glb: &Path) -> Result<GlbFacts> {
                         .and_then(|name| name.as_str())
                         .unwrap_or_default()
                         .to_owned(),
-                    texture: texture_key(index),
+                    texture: facts
+                        .images
+                        .get(image)
+                        .and_then(|image| image.as_ref())
+                        .map(|image| image.base.clone()),
                 });
             }
         }
@@ -608,10 +826,31 @@ fn semantic_name(semantic: NifTextureSemantic) -> &'static str {
 
 /// A slot the NIF authored, before it is checked.
 struct WantedSlot {
+    shape_block: u32,
+    semantic: NifTextureSemantic,
     shape: String,
     slot: String,
     path: String,
     came_from: String,
+}
+
+/// What the GLB can show for one wanted texture.
+enum SlotView<'a> {
+    /// A record path: the engine loads the converted file that
+    /// [`shared::texture_aliases::converted_record_texture_path`] names.
+    Record,
+    /// The image the shape's own material binds to this slot, found through the shape block the
+    /// converter records. `None` means the material binds no image there.
+    Bound {
+        image: Option<&'a ImageRef>,
+        repairs: &'a HashMap<String, String>,
+    },
+    /// No single material identifies the shape or the slot has no glTF binding to follow, so
+    /// any image of the GLB may carry it.
+    Any {
+        images: &'a [ImageRef],
+        repairs: &'a HashMap<String, String>,
+    },
 }
 
 struct SlotCheck<'a> {
@@ -620,7 +859,8 @@ struct SlotCheck<'a> {
 }
 
 impl SlotCheck<'_> {
-    /// Classifies one wanted texture. Returns `None` when it resolves.
+    /// Classifies one wanted texture. Returns `None` when it reaches the renderer: the GLB binds
+    /// it and the exact file the engine requests exists in the pack.
     #[allow(clippy::too_many_arguments)]
     fn check(
         &self,
@@ -630,7 +870,7 @@ impl SlotCheck<'_> {
         slot: &str,
         wanted_path: &str,
         came_from: &str,
-        glb_bases: Option<&HashSet<String>>,
+        view: SlotView<'_>,
         unresolved_cause: Cause,
     ) -> Option<Finding> {
         let mut finding = Finding {
@@ -649,28 +889,55 @@ impl SlotCheck<'_> {
             same_name_elsewhere: None,
             used_by: UsedBy::default(),
         };
-        let (Ok(source_key), Ok(base_key)) = (
+        let (Ok(source_key), Ok(wanted_base)) = (
             canonical_asset_path(wanted_path, AssetKind::Texture, "dds"),
             canonical_asset_path(wanted_path, AssetKind::Texture, "ktx2"),
         ) else {
             finding.cause = Cause::UnparseablePath;
             return Some(finding);
         };
-        finding.wanted_key = Some(base_key.clone());
         let source = self.sources.texture(&source_key);
         finding.source_has_dds = source.is_some();
         finding.source_archive = source.map(SourceLocation::label);
-        finding.pack_has_ktx2 = self.pack_textures.has_base(&base_key);
-        finding.glb_references_it = glb_bases.is_some_and(|bases| bases.contains(&base_key));
-        let referenced_ok = glb_bases.is_none_or(|_| finding.glb_references_it);
-        if finding.pack_has_ktx2 && referenced_ok {
-            return None;
+        match view {
+            SlotView::Record => {
+                // The engine reads a record path with its own rule, which refuses a `.` segment
+                // that the source-path canonicalizer would quietly remove.
+                let Some(engine_key) =
+                    shared::texture_aliases::converted_record_texture_path(wanted_path)
+                else {
+                    finding.cause = Cause::UnparseablePath;
+                    return Some(finding);
+                };
+                finding.pack_has_ktx2 = self.pack_textures.has_file(&engine_key);
+                finding.wanted_key = Some(engine_key);
+                if finding.pack_has_ktx2 {
+                    return None;
+                }
+                finding.cause = unresolved_cause;
+            }
+            SlotView::Bound { image, repairs } => {
+                let candidates: Vec<&ImageRef> = image
+                    .into_iter()
+                    .filter(|image| accepts(&wanted_base, repairs, &image.base))
+                    .collect();
+                if self.classify(&mut finding, &wanted_base, &candidates) {
+                    return None;
+                }
+            }
+            SlotView::Any { images, repairs } => {
+                let candidates: Vec<&ImageRef> = images
+                    .iter()
+                    .filter(|image| accepts(&wanted_base, repairs, &image.base))
+                    .collect();
+                if self.classify(&mut finding, &wanted_base, &candidates) {
+                    return None;
+                }
+            }
         }
-        finding.cause = match (finding.pack_has_ktx2, finding.source_has_dds) {
-            (false, false) => unresolved_cause_for_absent(unresolved_cause),
-            (false, true) => unresolved_cause_for_missing(unresolved_cause),
-            (true, _) => Cause::SlotUnreferenced,
-        };
+        if finding.wanted_key.is_none() {
+            finding.wanted_key = Some(wanted_base);
+        }
         if !finding.source_has_dds {
             let stem = source_key.rsplit('/').next().unwrap_or(&source_key);
             finding.same_name_elsewhere = self
@@ -681,31 +948,54 @@ impl SlotCheck<'_> {
         }
         Some(finding)
     }
-}
 
-impl SlotCheck<'_> {
+    /// Sets the cause of a GLB slot from the images that could carry it. Returns true when the
+    /// slot reaches the renderer, and then leaves the cause alone.
+    fn classify(&self, finding: &mut Finding, wanted_base: &str, candidates: &[&ImageRef]) -> bool {
+        let referenced = !candidates.is_empty();
+        let exact_present = candidates
+            .iter()
+            .any(|image| self.pack_textures.has_file(&image.exact));
+        finding.glb_references_it = referenced;
+        finding.pack_has_ktx2 = if referenced {
+            exact_present
+        } else {
+            self.pack_textures.has_base(wanted_base)
+        };
+        if referenced && exact_present {
+            return true;
+        }
+        finding.cause = if referenced {
+            // The GLB names an image the pack does not hold: the engine requests that exact file.
+            absent_or_missing(finding.source_has_dds)
+        } else if finding.pack_has_ktx2 {
+            // The pack holds the converted texture, but this slot does not bind it.
+            Cause::SlotUnreferenced
+        } else {
+            absent_or_missing(finding.source_has_dds)
+        };
+        false
+    }
+
     /// Checks one image a GLB references when there is no source NIF to say what was wanted.
-    fn check_reference(&self, base_key: &str, mesh: &str) -> Option<Finding> {
-        if self.pack_textures.has_base(base_key) {
+    fn check_reference(&self, image: &ImageRef, mesh: &str) -> Option<Finding> {
+        if self.pack_textures.has_file(&image.exact) {
             return None;
         }
-        let source_key = base_key
+        let source_key = image
+            .base
             .strip_suffix(".ktx2")
             .map(|stem| format!("{stem}.dds"))?;
         let source = self.sources.texture(&source_key);
         Some(Finding {
-            cause: if source.is_some() {
-                Cause::ConvertedTextureMissing
-            } else {
-                Cause::SourceTextureAbsent
-            },
+            cause: absent_or_missing(source.is_some()),
             origin: Origin::GlbPrimitive,
             mesh: mesh.to_owned(),
             shape: String::new(),
             slot: "image".to_owned(),
             wanted_path: source_key,
-            wanted_key: Some(base_key.to_owned()),
-            came_from: "GLB image URI (no source NIF)".to_owned(),
+            wanted_key: Some(image.base.clone()),
+            came_from: format!("GLB image URI {} (no source NIF)", image.uri),
             source_has_dds: source.is_some(),
             source_archive: source.map(SourceLocation::label),
             pack_has_ktx2: false,
@@ -716,57 +1006,92 @@ impl SlotCheck<'_> {
     }
 }
 
-fn unresolved_cause_for_absent(cause: Cause) -> Cause {
-    match cause {
-        Cause::TextureSetUnresolved => Cause::TextureSetUnresolved,
-        _ => Cause::SourceTextureAbsent,
+fn absent_or_missing(source_has_dds: bool) -> Cause {
+    if source_has_dds {
+        Cause::ConvertedTextureMissing
+    } else {
+        Cause::SourceTextureAbsent
     }
 }
 
-fn unresolved_cause_for_missing(cause: Cause) -> Cause {
-    match cause {
-        Cause::TextureSetUnresolved => Cause::TextureSetUnresolved,
-        _ => Cause::ConvertedTextureMissing,
+/// Whether a bound image's base key satisfies the wanted one: the same texture, or the texture the
+/// converter published as its repair.
+fn accepts(wanted_base: &str, repairs: &HashMap<String, String>, bound_base: &str) -> bool {
+    bound_base == wanted_base
+        || repairs
+            .get(wanted_base)
+            .is_some_and(|repair| repair == bound_base)
+}
+
+/// A finding for an image URI the resolver refused, so a broken image cannot vanish.
+fn refused_uri_finding(mesh: &str, uri: &str, reason: &str) -> Finding {
+    Finding {
+        cause: Cause::UnparseablePath,
+        origin: Origin::GlbPrimitive,
+        mesh: mesh.to_owned(),
+        shape: String::new(),
+        slot: "image".to_owned(),
+        wanted_path: uri.to_owned(),
+        wanted_key: None,
+        came_from: format!("GLB image URI refused: {reason}"),
+        source_has_dds: false,
+        source_archive: None,
+        pack_has_ktx2: false,
+        glb_references_it: true,
+        same_name_elsewhere: None,
+        used_by: UsedBy::default(),
     }
 }
 
-fn glb_files(pack: &Path, filter: Option<&str>) -> Vec<(String, PathBuf)> {
-    let mut files: Vec<(String, PathBuf)> = WalkDir::new(pack.join("meshes"))
-        .follow_links(false)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            entry.file_type().is_file()
-                && entry
-                    .path()
-                    .extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("glb"))
-        })
-        .filter_map(|entry| {
-            let relative = entry
+/// Every GLB under `meshes/`. A folder that cannot be read is an error, not a smaller audit.
+fn glb_files(pack: &Path, filter: Option<&str>) -> Result<Vec<(String, PathBuf)>> {
+    let root = pack.join("meshes");
+    ensure!(
+        root.is_dir(),
+        "{} has no meshes folder; is this a converted pack?",
+        pack.display()
+    );
+    let mut files = Vec::new();
+    for entry in WalkDir::new(&root).follow_links(false) {
+        let entry = entry.wrap_err_with(|| format!("failed to scan {}", root.display()))?;
+        if !entry.file_type().is_file()
+            || !entry
                 .path()
-                .strip_prefix(pack)
-                .ok()?
-                .to_string_lossy()
-                .replace('\\', "/")
-                .to_ascii_lowercase();
-            filter
-                .is_none_or(|text| relative.contains(&text.to_ascii_lowercase()))
-                .then(|| (relative, entry.into_path()))
-        })
-        .collect();
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("glb"))
+        {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(pack)?
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        if filter.is_none_or(|text| relative.contains(&text.to_ascii_lowercase())) {
+            files.push((relative, entry.into_path()));
+        }
+    }
     files.sort();
-    files
+    Ok(files)
 }
 
 /// Audits a pack. Reads the pack, the sources and the database; writes only to `scratch`.
+///
+/// A mesh or archive that cannot be read is recorded in the summary rather than dropped, and
+/// [`compare_to_baseline`] refuses to pass such an incomplete audit.
 pub fn audit_pack(options: &AuditOptions<'_>) -> Result<Report> {
-    let pack_textures = PackTextures::scan(options.pack)?;
+    // One normalized root serves discovery, URI resolution and `strip_prefix`, so `./pack` and
+    // `pack` give the same report.
+    let pack = fs::canonicalize(options.pack)
+        .wrap_err_with(|| format!("failed to open pack {}", options.pack.display()))?;
+    let pack = pack.as_path();
+    let pack_textures = PackTextures::scan(pack)?;
     let check = SlotCheck {
         pack_textures: &pack_textures,
         sources: options.sources,
     };
-    let glbs = glb_files(options.pack, options.mesh_filter);
+    let glbs = glb_files(pack, options.mesh_filter)?;
     fs::create_dir_all(options.scratch)?;
     let needed: Vec<String> = glbs
         .iter()
@@ -795,14 +1120,20 @@ pub fn audit_pack(options: &AuditOptions<'_>) -> Result<Report> {
                 failed: None,
             };
             let nif_key = format!("{}.nif", relative.trim_end_matches(".glb"));
-            let facts = match glb_facts(options.pack, glb_path) {
+            let facts = match glb_facts(pack, glb_path) {
                 Ok(facts) => facts,
                 Err(error) => {
                     result.failed = Some(format!("{relative}: {error:#}"));
                     return result;
                 }
             };
-            let no_uv_findings = |result: &mut MeshResult| {
+            // Findings every GLB can have, with or without a source NIF.
+            let common_findings = |result: &mut MeshResult| {
+                for (uri, reason) in &facts.refused_uris {
+                    result
+                        .findings
+                        .push(refused_uri_finding(relative, uri, reason));
+                }
                 for primitive in &facts.no_uv_primitives {
                     result.findings.push(Finding {
                         cause: Cause::PrimitiveWithoutUvs,
@@ -827,12 +1158,12 @@ pub fn audit_pack(options: &AuditOptions<'_>) -> Result<Report> {
                 // what the GLB itself says can be checked: every image it references must
                 // exist in the pack, and no textured primitive may lack UVs.
                 result.generated = true;
-                for base in &facts.referenced_bases {
-                    if let Some(finding) = check.check_reference(base, relative) {
+                for image in &facts.external {
+                    if let Some(finding) = check.check_reference(image, relative) {
                         result.findings.push(finding);
                     }
                 }
-                no_uv_findings(&mut result);
+                common_findings(&mut result);
                 return result;
             }
             result.has_source = true;
@@ -865,6 +1196,8 @@ pub fn audit_pack(options: &AuditOptions<'_>) -> Result<Report> {
                     }
                     if seen.insert((shape.shape_block, slot.slot)) {
                         wanted.push(WantedSlot {
+                            shape_block: shape.shape_block,
+                            semantic: slot.semantic,
                             shape: shape_name.clone(),
                             slot: semantic_name(slot.semantic).to_owned(),
                             path: slot.path,
@@ -878,6 +1211,32 @@ pub fn audit_pack(options: &AuditOptions<'_>) -> Result<Report> {
             }
             result.wanted = wanted.len() as u64;
             for slot in &wanted {
+                // Diffuse and normal follow the shape's own material binding. A shape that no
+                // single material identifies, and the other slots, may be carried by any image.
+                let mut matching = facts
+                    .bindings
+                    .iter()
+                    .filter(|binding| binding.shape_block == Some(slot.shape_block));
+                let binding = matching.next().filter(|_| matching.next().is_none());
+                let image = |index: Option<usize>| {
+                    index
+                        .and_then(|index| facts.images.get(index))
+                        .and_then(|image| image.as_ref())
+                };
+                let view = match (slot.semantic, binding) {
+                    (NifTextureSemantic::Diffuse, Some(binding)) => SlotView::Bound {
+                        image: image(binding.diffuse),
+                        repairs: &facts.repairs,
+                    },
+                    (NifTextureSemantic::Normal, Some(binding)) => SlotView::Bound {
+                        image: image(binding.normal),
+                        repairs: &facts.repairs,
+                    },
+                    _ => SlotView::Any {
+                        images: &facts.external,
+                        repairs: &facts.repairs,
+                    },
+                };
                 if let Some(finding) = check.check(
                     Origin::NifShape,
                     relative,
@@ -885,19 +1244,21 @@ pub fn audit_pack(options: &AuditOptions<'_>) -> Result<Report> {
                     &slot.slot,
                     &slot.path,
                     &slot.came_from,
-                    Some(&facts.referenced_bases),
+                    view,
                     Cause::SourceTextureAbsent,
                 ) {
                     result.findings.push(finding);
                 }
             }
-            no_uv_findings(&mut result);
+            common_findings(&mut result);
             result
         })
         .collect();
 
     let mut summary = Summary {
         glb_files: glbs.len() as u64,
+        skipped_archives: options.sources.skipped_archives().to_vec(),
+        inactive_archives: options.sources.inactive_archives().to_vec(),
         ..Summary::default()
     };
     let mut findings = Vec::new();
@@ -932,6 +1293,7 @@ pub fn audit_pack(options: &AuditOptions<'_>) -> Result<Report> {
         overrides = audit;
         findings.extend(override_findings);
         attach_used_by(&connection, &mut findings)?;
+        summary.records_audited = true;
     }
     summary.texture_set_paths = texture_set_paths;
     findings.sort_by(|left, right| {
@@ -1011,10 +1373,9 @@ fn audit_records(connection: &Connection, check: &SlotCheck<'_>) -> Result<(u64,
         let sql = format!(
             "SELECT id,{column} FROM texture_sets WHERE {column} IS NOT NULL AND {column} <> '' ORDER BY id"
         );
-        let Ok(mut statement) = connection.prepare(&sql) else {
-            // An older database without this column has nothing to audit for it.
-            continue;
-        };
+        // A missing column is an error, not an empty result: a renamed column would otherwise
+        // pass the baseline with no texture set read.
+        let mut statement = connection.prepare(&sql)?;
         let rows = statement
             .query_map([], |row| {
                 Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
@@ -1029,18 +1390,21 @@ fn audit_records(connection: &Connection, check: &SlotCheck<'_>) -> Result<(u64,
                 slot,
                 &path,
                 &format!("TXST {id:08X} {column}"),
-                None,
+                SlotView::Record,
                 Cause::TextureSetUnresolved,
             ) {
                 findings.push(finding);
             }
         }
     }
-    if let Ok(mut statement) = connection.prepare(
-        "SELECT id,flow_normal_path FROM waters WHERE flow_normal_path IS NOT NULL AND flow_normal_path <> '' ORDER BY id",
-    ) {
+    {
+        let mut statement = connection.prepare(
+            "SELECT id,flow_normal_path FROM waters WHERE flow_normal_path IS NOT NULL AND flow_normal_path <> '' ORDER BY id",
+        )?;
         let rows = statement
-            .query_map([], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?)))?
+            .query_map([], |row| {
+                Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for (id, path) in rows {
             checked += 1;
@@ -1051,7 +1415,7 @@ fn audit_records(connection: &Connection, check: &SlotCheck<'_>) -> Result<(u64,
                 "flow_normal",
                 &path,
                 &format!("WATR {id:08X} flow_normal_path"),
-                None,
+                SlotView::Record,
                 Cause::TextureSetUnresolved,
             ) {
                 finding.origin = Origin::Water;
@@ -1061,6 +1425,17 @@ fn audit_records(connection: &Connection, check: &SlotCheck<'_>) -> Result<(u64,
     }
     audit_land_textures(connection, &mut findings, &mut checked)?;
     Ok((checked, findings))
+}
+
+fn table_exists(connection: &Connection, name: &str) -> bool {
+    connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            [name],
+            |row| row.get::<_, u32>(0),
+        )
+        .unwrap_or(0)
+        > 0
 }
 
 /// Terrain layers: an LTEX whose texture set has no diffuse path, and LAND layers that name an
@@ -1090,11 +1465,12 @@ fn audit_land_textures(
             cells: Vec::new(),
         },
     };
-    if let Ok(mut statement) = connection.prepare(
-        "SELECT l.id, l.editor_id FROM landscape_textures l
-         LEFT JOIN texture_sets t ON t.id = l.texture_set_id
-         WHERE t.diffuse_path IS NULL OR t.diffuse_path = '' ORDER BY l.id",
-    ) {
+    {
+        let mut statement = connection.prepare(
+            "SELECT l.id, l.editor_id FROM landscape_textures l
+             LEFT JOIN texture_sets t ON t.id = l.texture_set_id
+             WHERE t.diffuse_path IS NULL OR t.diffuse_path = '' ORDER BY l.id",
+        )?;
         let rows = statement
             .query_map([], |row| {
                 Ok((row.get::<_, u32>(0)?, row.get::<_, Option<String>>(1)?))
@@ -1112,10 +1488,12 @@ fn audit_land_textures(
             ));
         }
     }
-    if let Ok(mut statement) = connection.prepare(
-        "SELECT texture_form_id, count(*) FROM inhouse_unresolved_terrain_textures
-         GROUP BY texture_form_id ORDER BY texture_form_id",
-    ) {
+    // Only packs read with the in-house record reader have this table.
+    if table_exists(connection, "inhouse_unresolved_terrain_textures") {
+        let mut statement = connection.prepare(
+            "SELECT texture_form_id, count(*) FROM inhouse_unresolved_terrain_textures
+             GROUP BY texture_form_id ORDER BY texture_form_id",
+        )?;
         let rows = statement
             .query_map([], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u64>(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1280,25 +1658,23 @@ pub fn parse_alternate_textures(body: &[u8]) -> Option<Vec<AlternateTexture>> {
     Some(entries)
 }
 
-/// The alternate-texture subrecords of one record payload (a run of `type, u16 size, data`).
-fn alternate_texture_subrecords(payload: &[u8]) -> Vec<Vec<AlternateTexture>> {
+/// The alternate-texture subrecords of one record payload. The payload keeps its source framing,
+/// so the converter's checked decoder reads it: it follows `XXXX` extended lengths and refuses a
+/// truncated subrecord instead of losing alignment.
+fn alternate_texture_subrecords(payload: &[u8]) -> Result<Vec<Vec<AlternateTexture>>> {
     let mut found = Vec::new();
-    let mut at = 0usize;
-    while let Some(header) = payload.get(at..at + 6) {
-        let size = usize::from(u16::from_le_bytes([header[4], header[5]]));
-        let Some(body) = payload.get(at + 6..at + 6 + size) else {
-            break;
-        };
-        if ALTERNATE_TEXTURE_SUBRECORDS
+    for (tag, body) in crate::esm::extractors::extract_subrecords(payload)? {
+        if !ALTERNATE_TEXTURE_SUBRECORDS
             .iter()
-            .any(|name| &header[..4] == *name)
-            && let Some(entries) = parse_alternate_textures(body)
+            .any(|name| tag.as_slice() == *name)
         {
-            found.push(entries);
+            continue;
         }
-        at += 6 + size;
+        found.push(parse_alternate_textures(&body).ok_or_else(|| {
+            color_eyre::eyre::eyre!("malformed {} subrecord", String::from_utf8_lossy(&tag))
+        })?);
     }
-    found
+    Ok(found)
 }
 
 /// What the alternate-texture entries of a pack come to, by the retail rules (RF-TEX-001..005).
@@ -1323,6 +1699,10 @@ pub struct OverrideAudit {
     /// Entries whose texture set no plugin defines. Counted as a miss.
     pub unresolved_target_entries: u64,
     pub by_record_type: BTreeMap<String, u64>,
+    /// Source records that held alternate-texture bytes the decoder could not read. The audit is
+    /// incomplete while this is not zero.
+    #[serde(default)]
+    pub undecodable_records: u64,
     /// True when the pack publishes `base_texture_swaps`, which the engine applies.
     pub engine_applies_entries: bool,
     /// Entries whose texture set fills a slot other than diffuse (TX00) or normal (TX01). The
@@ -1356,13 +1736,14 @@ fn audit_published_swaps(connection: &Connection) -> Result<(OverrideAudit, Vec<
     let mut findings = Vec::new();
     // (has any path, has a path in a slot other than diffuse and normal)
     let mut sets: HashMap<u32, (bool, bool)> = HashMap::new();
-    if let Ok(mut statement) = connection.prepare(
-        "SELECT id,
-                coalesce(diffuse_path,'') || coalesce(normal_path,''),
-                coalesce(glow_path,'') || coalesce(height_path,'') || coalesce(environment_path,'')
-                || coalesce(mask_path,'') || coalesce(specular_path,'') || coalesce(detail_path,'')
-         FROM texture_sets",
-    ) {
+    {
+        let mut statement = connection.prepare(
+            "SELECT id,
+                    coalesce(diffuse_path,'') || coalesce(normal_path,''),
+                    coalesce(glow_path,'') || coalesce(height_path,'') || coalesce(environment_path,'')
+                    || coalesce(mask_path,'') || coalesce(specular_path,'') || coalesce(detail_path,'')
+             FROM texture_sets",
+        )?;
         for row in statement.query_map([], |row| {
             Ok((
                 row.get::<_, u32>(0)?,
@@ -1470,13 +1851,15 @@ fn unresolved_override(
 fn audit_source_overrides(connection: &Connection) -> Result<(OverrideAudit, Vec<Finding>)> {
     let mut audit = OverrideAudit::default();
     let mut findings = Vec::new();
-    let Ok(mut records) = connection.prepare(
+    // Only packs read with the in-house record reader keep the source records.
+    if !table_exists(connection, "inhouse_source_records") {
+        return Ok((audit, findings));
+    }
+    let mut records = connection.prepare(
         "SELECT form_id, record_type, load_order, payload FROM inhouse_source_records
          WHERE instr(payload, X'4D4F4453') > 0 OR instr(payload, X'4D4F3253') > 0
             OR instr(payload, X'4D4F3353') > 0 OR instr(payload, X'4D4F3453') > 0",
-    ) else {
-        return Ok((audit, findings));
-    };
+    )?;
     let rows = records
         .query_map([], |row| {
             Ok((
@@ -1489,12 +1872,13 @@ fn audit_source_overrides(connection: &Connection) -> Result<(OverrideAudit, Vec
         .collect::<rusqlite::Result<Vec<_>>>()?;
     // Texture sets that hold at least one path; any other defined set is empty.
     let mut with_paths: HashMap<u32, bool> = HashMap::new();
-    if let Ok(mut statement) = connection.prepare(
-        "SELECT id, coalesce(diffuse_path,'') || coalesce(normal_path,'') || coalesce(glow_path,'')
-                || coalesce(height_path,'') || coalesce(environment_path,'')
-                || coalesce(mask_path,'') || coalesce(specular_path,'') || coalesce(detail_path,'')
-         FROM texture_sets",
-    ) {
+    {
+        let mut statement = connection.prepare(
+            "SELECT id, coalesce(diffuse_path,'') || coalesce(normal_path,'') || coalesce(glow_path,'')
+                    || coalesce(height_path,'') || coalesce(environment_path,'')
+                    || coalesce(mask_path,'') || coalesce(specular_path,'') || coalesce(detail_path,'')
+             FROM texture_sets",
+        )?;
         for row in statement.query_map([], |row| {
             Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
         })? {
@@ -1514,7 +1898,13 @@ fn audit_source_overrides(connection: &Connection) -> Result<(OverrideAudit, Vec
     let mut masters_cache: HashMap<u32, Vec<String>> = HashMap::new();
     let mut global_cache: HashMap<(String, u32), Option<u32>> = HashMap::new();
     for (form_id, record_type, load_order, payload) in rows {
-        let lists = alternate_texture_subrecords(&payload);
+        let lists = match alternate_texture_subrecords(&payload) {
+            Ok(lists) => lists,
+            Err(_) => {
+                audit.undecodable_records += 1;
+                continue;
+            }
+        };
         if lists.is_empty() {
             continue;
         }
@@ -1652,6 +2042,8 @@ mod tests {
 
     fn report_with(counts: &[(Cause, u64)]) -> Report {
         let mut report = Report::default();
+        // A complete audit looked at one mesh; an empty report would count as incomplete.
+        report.summary.glb_files = 1;
         for (cause, count) in counts {
             report.summary.counts_by_cause.insert(*cause, *count);
         }
@@ -1700,6 +2092,32 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_or_failed_audit_is_incomplete_and_fails_every_baseline() {
+        let baseline = Baseline::from_report(&report_with(&[]), "test");
+        assert!(compare_to_baseline(&report_with(&[]), &baseline).is_empty());
+        let mut report = report_with(&[]);
+        report.summary.glb_files = 0;
+        report.summary.nif_files_failed = 2;
+        report.summary.failed_nifs = vec!["meshes/a.glb: truncated".into()];
+        report.summary.skipped_archives = vec!["Skyrim - Textures9.bsa: bad magic".into()];
+        report.summary.records_audited = true;
+        report.overrides.undecodable_records = 1;
+        let problems = compare_to_baseline(&report, &baseline);
+        for expected in [
+            "2 meshes could not be read, for example meshes/a.glb: truncated",
+            "archive could not be listed: Skyrim - Textures9.bsa: bad magic",
+            "1 records with alternate textures could not be decoded",
+            "no GLB was audited",
+            "no texture set or terrain layer was read",
+        ] {
+            assert!(
+                problems.iter().any(|line| line.contains(expected)),
+                "{expected}: {problems:?}"
+            );
+        }
+    }
+
+    #[test]
     fn alternate_texture_entries_parse_and_truncated_bodies_do_not() {
         let body = mods_body(&[
             ("TundraStreamBend01:0", 0x0002_4E2F, 4),
@@ -1717,9 +2135,19 @@ mod tests {
         payload.extend(b"MODS");
         payload.extend((body.len() as u16).to_le_bytes());
         payload.extend(&body);
-        let lists = alternate_texture_subrecords(&payload);
+        let lists = alternate_texture_subrecords(&payload).unwrap();
         assert_eq!(lists.len(), 1);
         assert_eq!(lists[0].len(), 2);
+        // An `XXXX` extended length carries a body longer than the 16-bit size can hold; the
+        // decoder follows it instead of reading an empty body and losing alignment.
+        let mut extended = b"XXXX\x04\x00".to_vec();
+        extended.extend((body.len() as u32).to_le_bytes());
+        extended.extend(b"MODS\x00\x00");
+        extended.extend(&body);
+        let lists = alternate_texture_subrecords(&extended).unwrap();
+        assert_eq!(lists[0].len(), 2);
+        // A truncated subrecord is an error, never an empty list.
+        assert!(alternate_texture_subrecords(&payload[..payload.len() - 3]).is_err());
     }
 
     #[test]

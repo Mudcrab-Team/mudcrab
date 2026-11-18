@@ -1,14 +1,17 @@
-//! A record of every surface that renders with a stand-in for a texture.
+//! A record of every surface that may render with a stand-in for a texture.
 //!
 //! The renderer never fails a draw for a missing texture. A material with no base-colour image
 //! draws its flat base colour (white), a primitive with no UV set samples one texel, and a
 //! terrain layer with no diffuse image draws Bevy's stand-in image. Each of those looks like
 //! "a white building" and none of them raises an error, so an in-game miss could stay silent.
 //!
-//! [`record`] is called where the engine meets such a surface. It logs the first sighting of
-//! each (kind, mesh, slot) at `warn` level and counts it, so the log names every miss exactly
-//! once and [`counts`] gives the total for a run. The offline `texture-audit` tool finds the
-//! same classes from the pack and the game data; this module is the in-engine check.
+//! [`record`] is called where the engine meets such a surface while it loads the model. It logs
+//! the first sighting of each (kind, mesh, slot) at `warn` level and counts it, so the log names
+//! every candidate exactly once and [`counts`] gives the total for a run. These are candidates,
+//! not confirmed misses: the hook sees the model's own material, and a texture swap that a
+//! placed reference applies afterwards (`object_materials`) can supply the missing image or hide
+//! the shape. The offline `texture-audit` tool finds the same classes from the pack and the game
+//! data; this module is the in-engine check.
 
 use std::{
     collections::BTreeMap,
@@ -17,7 +20,7 @@ use std::{
 
 use bevy::log::warn;
 
-/// What kind of stand-in the renderer uses.
+/// What kind of stand-in the renderer may use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FallbackKind {
     /// A lighting material with no base-colour image: the surface draws its flat colour.
@@ -78,7 +81,8 @@ pub fn record(kind: FallbackKind, mesh: &str, slot: &str) -> bool {
             kind = kind.label(),
             mesh = mesh,
             slot = slot,
-            "texture fallback: this surface renders without its texture"
+            "texture fallback candidate: this model's own material has no texture here; a placed \
+             texture swap can still supply one"
         );
     }
     first

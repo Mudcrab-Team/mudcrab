@@ -296,7 +296,9 @@ fn effect_palette_material(
     }
 }
 
-/// The stand-ins a primitive will render with, as (kind, slot) pairs.
+/// The stand-ins a primitive may render with, as (kind, slot) pairs. They are candidates: a
+/// placed reference's texture swap (`object_materials`) can supply the missing image or hide the
+/// shape, and this load-time hook cannot see that.
 ///
 /// A lighting material with no base-colour image draws its flat colour. Skin and face tint
 /// materials are exempt: the actor systems supply their images at runtime. A primitive with a
@@ -328,7 +330,7 @@ fn texture_fallbacks(
     found
 }
 
-/// Logs each fallback of a primitive once per model, with the model path and the slot.
+/// Logs each fallback candidate of a primitive once per model, with the model path and the slot.
 fn record_texture_fallbacks(
     context: &LoadContext<'_>,
     primitive: &gltf::Primitive<'_>,
