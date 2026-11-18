@@ -119,9 +119,11 @@ pub fn new_sandboxed_vm_with_frame(
     let lua = Lua::new();
     lua.set_memory_limit(memory_limit)?;
     lua.sandbox(true)?;
+    // The first grant respects the frame total too, as every later refill does.
+    let first_grant = per_call_budget.min(frame_budget);
     let budget = ExecutionBudget {
-        remaining: Arc::new(AtomicU64::new(per_call_budget)),
-        granted: Arc::new(AtomicU64::new(per_call_budget)),
+        remaining: Arc::new(AtomicU64::new(first_grant)),
+        granted: Arc::new(AtomicU64::new(first_grant)),
         frame_remaining: Arc::new(AtomicU64::new(frame_budget)),
         strikes: Arc::new(AtomicU64::new(0)),
         per_call: per_call_budget,

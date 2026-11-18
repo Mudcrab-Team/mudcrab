@@ -125,6 +125,15 @@ fn attach_scripts(
 ) {
     for (entity, form) in &new {
         entities.0.insert(form.0, entity);
+        // The streamer spawns only enabled references, following enable parents, so a
+        // spawned reference is enabled whatever its own header flag says. Tell the host
+        // before any event runs, so a `Disable` from `OnCellAttach` is not ignored.
+        {
+            let mut world = host.0.world();
+            if !world.disabled.contains(&form.0) {
+                world.enabled.insert(form.0);
+            }
+        }
         let report = host.0.attach_reference(form.0);
         for (script, reason) in &report.skipped {
             warn!(target: "papyrus", "{:08X}: script {script} skipped: {reason}", form.0);
@@ -372,8 +381,13 @@ mod tests {
         dir
     }
 
-    fn host(dir: &TempDir) -> PapyrusHost {
+    /// `own_flag_disabled` sets the reference's own "initially disabled" header flag, as a
+    /// reference has when it spawns only because its enable parent is enabled.
+    fn host_with_flag(dir: &TempDir, own_flag_disabled: bool) -> PapyrusHost {
         let mut forms = MemoryForms::default();
+        if own_flag_disabled {
+            forms.initially_disabled.insert(REFERENCE);
+        }
         forms
             .scripts
             .entry(REFERENCE)
@@ -386,6 +400,10 @@ mod tests {
     /// scripted reference 100 units ahead whose entity itself carries a collider, as a static
     /// reference's authored collision does. Each update advances script time by 0.1 s.
     fn live_app(dir: &TempDir) -> (App, Entity, Entity) {
+        live_app_with(dir, false)
+    }
+
+    fn live_app_with(dir: &TempDir, own_flag_disabled: bool) -> (App, Entity, Entity) {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
@@ -393,7 +411,7 @@ mod tests {
             )))
             .init_resource::<ButtonInput<KeyCode>>()
             .insert_resource(CursorCapture::Captured);
-        install(&mut app, host(dir));
+        install(&mut app, host_with_flag(dir, own_flag_disabled));
         app.world_mut()
             .spawn((StreamingCamera, Transform::default()));
         let reference = app
@@ -470,6 +488,21 @@ mod tests {
             Some(&Visibility::Hidden)
         );
         assert!(app.world().get::<ColliderDisabled>(reference).is_some());
+    }
+
+    #[test]
+    fn a_spawned_reference_hides_even_when_its_own_flag_says_disabled() {
+        // The streamer spawned it, so an enable parent made it enabled; Disable must work.
+        let dir = scripts();
+        let (mut app, reference, _) = live_app_with(&dir, true);
+        app.update();
+        press_e(&mut app);
+        app.update();
+        assert!(app.world().get::<ScriptDisabled>(reference).is_some());
+        assert_eq!(
+            app.world().get::<Visibility>(reference),
+            Some(&Visibility::Hidden)
+        );
     }
 
     #[test]
@@ -583,7 +616,14 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE scripts(form_id INTEGER NOT NULL, script_name TEXT NOT NULL, \
-                 vmad BLOB NOT NULL, PRIMARY KEY(form_id, script_name));",
+                 vmad BLOB NOT NULL, PRIMARY KEY(form_id, script_name)); \
+                 CREATE TABLE script_properties(form_id INTEGER NOT NULL, script_name TEXT NOT NULL, \
+                 property_index INTEGER NOT NULL, name TEXT NOT NULL, property_type INTEGER NOT NULL, \
+                 status INTEGER NOT NULL, value_count INTEGER NOT NULL); \
+                 CREATE TABLE script_property_values(form_id INTEGER NOT NULL, \
+                 script_name TEXT NOT NULL, property_index INTEGER NOT NULL, \
+                 value_index INTEGER NOT NULL, object_form_id INTEGER, alias_id INTEGER, \
+                 string_value TEXT, integer_value INTEGER, float_bits INTEGER, boolean_value INTEGER);",
             )
             .unwrap();
         connection
@@ -644,5 +684,26 @@ mod tests {
         assert!(app.world().get::<ScriptedReference>(entity).is_some());
         let host = &app.world().non_send::<PapyrusHostResource>().0;
         assert!(host.is_attached(REFERENCE));
+    }
+
+    #[test]
+    fn a_legacy_reader_pack_keeps_scripts_off_with_a_clear_message() {
+        let pack = old_abi_pack();
+        // A legacy-reader database has no script property tables.
+        let connection = rusqlite::Connection::open(pack.path().join("skyrim_world.db")).unwrap();
+        connection
+            .execute_batch("DROP TABLE script_properties; DROP TABLE script_property_values;")
+            .unwrap();
+        drop(connection);
+        let error = SqliteForms::open(&pack.path().join("skyrim_world.db"))
+            .err()
+            .expect("a legacy database is refused");
+        assert!(error.contains("legacy record reader"), "{error}");
+        assert!(error.contains("Regenerate"), "{error}");
+        let app = app_for_pack(&pack, true);
+        assert!(
+            app.world().get_non_send::<PapyrusHostResource>().is_none(),
+            "scripts stay off rather than run without their properties"
+        );
     }
 }

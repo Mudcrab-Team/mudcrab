@@ -578,12 +578,14 @@ impl PapyrusHost {
         let Ok(send): mlua::Result<Function> = self.runtime.get("send_event") else {
             return 0;
         };
+        // Building arguments runs Lua (`proxy`), so the budget must be whole first.
+        self.budget.reset();
         let mut lua_args = Vec::new();
         for arg in args {
             match arg.to_lua(self) {
                 Ok(value) => lua_args.push(value),
                 Err(error) => {
-                    self.note(
+                    self.note_once(
                         "error",
                         format!("event {event}: argument could not be built: {error}"),
                     );
@@ -1116,6 +1118,26 @@ impl SqliteForms {
                 .map_err(|error| error.to_string())?;
             rows.flatten().collect()
         };
+        // The in-house record reader writes properties to these two tables. The legacy reader
+        // stores them as JSON in `scripts.properties_json` instead, which this host does not
+        // read. Refuse such a pack: attaching its scripts without their properties would
+        // silently run them with every property `None`.
+        let property_tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' \
+                 AND name IN ('script_properties', 'script_property_values')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
+        if property_tables != 2 {
+            return Err(format!(
+                "{} has no script_properties and script_property_values tables, so it was made \
+                 by the legacy record reader, which stores script properties as JSON. Regenerate \
+                 the pack with the in-house reader",
+                path.display()
+            ));
+        }
         Ok(Self {
             connection,
             scripted,
@@ -1951,9 +1973,9 @@ return Script
             .filter(|line| line.contains("budget exceeded"))
             .count();
         // Seven entries were cut off. Each distinct message logs once: the coroutine's own
-        // error, and the host's note when the scheduler could not even start the entry.
+        // error, and the host's notes when an argument or the scheduler could not even start.
         assert!(
-            (1..=2).contains(&cut_off),
+            (1..=3).contains(&cut_off),
             "cut-off entries log once each kind: {cut_off}"
         );
 
@@ -2001,6 +2023,32 @@ return Script
         assert_eq!(lines.len(), 1, "one line, not one per tick: {lines:?}");
         let counts: Table = host.runtime().get("fault_counts").unwrap();
         assert!(counts.get::<i64>(lines[0].clone()).unwrap() >= 25);
+    }
+
+    #[test]
+    fn a_legacy_reader_database_is_refused_and_an_in_house_one_opens() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("skyrim_world.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE scripts(form_id INTEGER NOT NULL, script_name TEXT NOT NULL, \
+                 vmad BLOB NOT NULL, properties_json TEXT);",
+            )
+            .unwrap();
+        drop(connection);
+        let error = SqliteForms::open(&path).err().expect("refused");
+        assert!(error.contains("legacy record reader"), "{error}");
+
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE script_properties(form_id INTEGER); \
+                 CREATE TABLE script_property_values(form_id INTEGER);",
+            )
+            .unwrap();
+        drop(connection);
+        assert!(SqliteForms::open(&path).is_ok());
     }
 
     #[test]

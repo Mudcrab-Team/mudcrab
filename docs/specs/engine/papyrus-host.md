@@ -79,7 +79,18 @@ total is spent fails the same way.
 - Retail logs a script error and drops the stack. Mudcrab logs and continues with `None` for the
   faults in section 3.
 - Not in the slice: trigger volumes, death and combat events, an animation graph, a lock system, a
-  map, alias-bound properties, and several scripts on one form (other scripts see the first).
+  map, and alias-bound properties.
+- Several scripts on one form all attach and run their own events, but a native or another script
+  that looks the form up gets only the first script object.
+- One E press goes to the nearest scripted reference the ray hits, and a load door or a carryable
+  object can react to the same press. A scripted reference with no model bounds cannot be hit by
+  the ray (the door path uses a fallback box; this path fails closed).
+- A reference the streamer spawned counts as enabled, so `Disable` works whatever its own header
+  flag says (an enable parent may have enabled it). For a reference that is not resident, the host
+  reads only its own flag and does not follow enable parents.
+- Packs: the host needs the `script_properties` and `script_property_values` tables. A pack made
+  by the legacy record reader stores properties as JSON instead, so the host refuses it with a
+  message and scripts stay off.
 
 ## 5. Checking it
 
