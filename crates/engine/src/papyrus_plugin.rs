@@ -9,9 +9,16 @@
 //! Not in this slice: trigger volumes (`OnTriggerEnter`), combat and death events, an
 //! animation graph for `PlayAnimation`, and placing a reference that was never spawned.
 //! Each gap logs when a script reaches it.
+//!
+//! Where retail differs: events fire when the reference spawns, before its model has loaded
+//! (retail sends `OnLoad` once the 3D is loaded), and the E key reaches every scripted
+//! reference whose model the ray hits (retail shows an activation prompt only for
+//! activatable references). `docs/specs/engine/papyrus-host.md` lists the rest.
 
 use crate::{
-    door_crossing::{DOOR_BLOCKER_SLACK, DOOR_REACH, ray_hits_door},
+    door_crossing::{
+        DOOR_BLOCKER_SLACK, DOOR_REACH, DoorCrossing, no_door_crossing, ray_hits_door,
+    },
     papyrus_host::{Effect, HostConfig, PLAYER_REFERENCE, PapyrusHost, SLICE_SCRIPTS, SqliteForms},
     physics::{CursorCapture, PlayerBody},
     world::components::{ExpectedModelBounds, FormId, StreamingCamera},
@@ -32,8 +39,10 @@ pub struct ScriptDisabled;
 /// The host lives on the main thread only: a Luau VM is not `Send`.
 struct PapyrusHostResource(PapyrusHost);
 
-/// Spawned reference entities by form id, for applying effects. Entries can go stale when
-/// a cell unloads, so every use checks that the entity still exists.
+/// Spawned reference entities by form id, for applying effects. It holds every spawned
+/// reference, not only scripted ones, because a script may disable one that has no script.
+/// Entries can go stale when a cell unloads, so every use checks that the entity still
+/// exists; the map is bounded by the number of distinct references seen.
 #[derive(Resource, Default)]
 struct ReferenceEntities(HashMap<u32, Entity>);
 
@@ -75,20 +84,32 @@ impl Plugin for PapyrusScriptsPlugin {
             "scripts on: attaching {} to the references that carry them",
             SLICE_SCRIPTS.join(", ")
         );
-        app.insert_non_send(PapyrusHostResource(host))
-            .init_resource::<ReferenceEntities>()
-            .add_systems(
-                Update,
-                (
-                    attach_scripts,
-                    activate_scripted_reference,
-                    tick_scripts,
-                    apply_effects,
-                    keep_disabled_references_off,
-                )
-                    .chain(),
-            );
+        install(app, host);
     }
+}
+
+/// Add the host and its systems to `app`. Split from [`PapyrusScriptsPlugin::build`] so tests
+/// install exactly the systems the plugin installs.
+pub(crate) fn install(app: &mut App, host: PapyrusHost) {
+    app.insert_non_send(PapyrusHostResource(host))
+        .init_resource::<ReferenceEntities>()
+        .add_systems(
+            Update,
+            (
+                begin_script_frame,
+                attach_scripts,
+                activate_scripted_reference,
+                tick_scripts,
+                apply_effects,
+                keep_disabled_references_off,
+            )
+                .chain(),
+        );
+}
+
+/// The per-frame script budget starts whole at the top of each frame's script systems.
+fn begin_script_frame(host: NonSend<PapyrusHostResource>) {
+    host.0.begin_frame();
 }
 
 /// Attach scripts to every reference the streamer just spawned.
@@ -103,6 +124,14 @@ fn attach_scripts(
         let report = host.0.attach_reference(form.0);
         for (script, reason) in &report.skipped {
             warn!(target: "papyrus", "{:08X}: script {script} skipped: {reason}", form.0);
+        }
+        if !report.attached.is_empty() {
+            info!(
+                target: "papyrus",
+                "attached {} to {:08X}",
+                report.attached.join(", "),
+                form.0
+            );
         }
         if !report.attached.is_empty() || host.0.is_attached(form.0) {
             commands.entity(entity).insert(ScriptedReference);
@@ -123,17 +152,36 @@ type ActivatableFields = (
 );
 type ActivatableFilter = (With<ScriptedReference>, Without<ScriptDisabled>);
 
+/// The reference entity and everything below it. A static reference's collider sits on the
+/// entity itself, a model's colliders on its descendants, so both must be reached.
+fn entity_and_descendants<'a>(
+    entity: Entity,
+    children: &'a Query<&Children>,
+) -> impl Iterator<Item = Entity> + 'a {
+    std::iter::once(entity).chain(children.iter_descendants(entity))
+}
+
 /// E at a scripted reference: the same camera ray the load doors use, and the same
 /// refusal when something solid is in the way.
 fn activate_scripted_reference(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    capture: Res<CursorCapture>,
+    (keyboard, capture, time): (
+        Res<ButtonInput<KeyCode>>,
+        Res<CursorCapture>,
+        Res<Time<Virtual>>,
+    ),
+    crossing: Option<Res<DoorCrossing>>,
     camera: Query<&Transform, With<StreamingCamera>>,
     scripted: Query<ActivatableFields, ActivatableFilter>,
     (physics, player): (ReadRapierContext, Query<Entity, With<PlayerBody>>),
     host: NonSend<PapyrusHostResource>,
 ) {
-    if !keyboard.just_pressed(KeyCode::KeyE) || *capture != CursorCapture::Captured {
+    // The same guards as the door path: a press while the game is paused, or during a door
+    // crossing's fade, is not an activation.
+    if !keyboard.just_pressed(KeyCode::KeyE)
+        || *capture != CursorCapture::Captured
+        || time.is_paused()
+        || !no_door_crossing(crossing)
+    {
         return;
     }
     let Ok(view) = camera.single() else {
@@ -183,9 +231,9 @@ fn hide(
     commands
         .entity(entity)
         .insert((ScriptDisabled, Visibility::Hidden));
-    for descendant in children.iter_descendants(entity) {
-        if colliders.contains(descendant) {
-            commands.entity(descendant).insert(ColliderDisabled);
+    for target in entity_and_descendants(entity, children) {
+        if colliders.contains(target) {
+            commands.entity(target).insert(ColliderDisabled);
         }
     }
 }
@@ -226,9 +274,9 @@ fn apply_effects(
                         .entity(entity)
                         .remove::<ScriptDisabled>()
                         .insert(Visibility::Inherited);
-                    for descendant in children.iter_descendants(entity) {
-                        if disabled_colliders.contains(descendant) {
-                            commands.entity(descendant).remove::<ColliderDisabled>();
+                    for target in entity_and_descendants(entity, &children) {
+                        if disabled_colliders.contains(target) {
+                            commands.entity(target).remove::<ColliderDisabled>();
                         }
                     }
                 }
@@ -265,9 +313,9 @@ fn keep_disabled_references_off(
         if *visibility != Visibility::Hidden {
             commands.entity(entity).insert(Visibility::Hidden);
         }
-        for descendant in children.iter_descendants(entity) {
-            if colliders.contains(descendant) {
-                commands.entity(descendant).insert(ColliderDisabled);
+        for target in entity_and_descendants(entity, &children) {
+            if colliders.contains(target) {
+                commands.entity(target).insert(ColliderDisabled);
             }
         }
     }
@@ -276,7 +324,9 @@ fn keep_disabled_references_off(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::papyrus_host::{MemoryForms, PLAYER_REFERENCE};
+    use crate::papyrus_host::MemoryForms;
+    use bevy::time::TimeUpdateStrategy;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     const REFERENCE: u32 = 0x1234;
@@ -318,67 +368,193 @@ mod tests {
         dir
     }
 
-    #[test]
-    fn a_spawned_scripted_reference_hides_when_its_script_disables_it() {
-        let dir = scripts();
+    fn host(dir: &TempDir) -> PapyrusHost {
         let mut forms = MemoryForms::default();
         forms
             .scripts
             .entry(REFERENCE)
             .or_default()
             .push(("defaultDisableSelfOnActivate".into(), vec![]));
-        let host = PapyrusHost::new(HostConfig::new(dir.path()), Rc::new(forms)).unwrap();
+        PapyrusHost::new(HostConfig::new(dir.path()), Rc::new(forms)).unwrap()
+    }
 
+    /// An app with the plugin's real systems, a camera at the origin looking down -Z, and a
+    /// scripted reference 100 units ahead whose entity itself carries a collider, as a static
+    /// reference's authored collision does. Each update advances script time by 0.1 s.
+    fn live_app(dir: &TempDir) -> (App, Entity, Entity) {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .insert_non_send(PapyrusHostResource(host))
-            .init_resource::<ReferenceEntities>()
-            .add_systems(
-                Update,
-                (attach_scripts, apply_effects, keep_disabled_references_off).chain(),
-            );
-        let entity = app
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                100,
+            )))
+            .init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(CursorCapture::Captured);
+        install(&mut app, host(dir));
+        app.world_mut()
+            .spawn((StreamingCamera, Transform::default()));
+        let reference = app
             .world_mut()
-            .spawn((FormId(REFERENCE), Visibility::Inherited))
+            .spawn((
+                FormId(REFERENCE),
+                GlobalTransform::from(Transform::from_xyz(0.0, 0.0, -100.0)),
+                ExpectedModelBounds {
+                    min: Vec3::splat(-10.0),
+                    max: Vec3::splat(10.0),
+                },
+                Visibility::Inherited,
+                Collider::ball(10.0),
+            ))
             .id();
         let bystander = app
             .world_mut()
             .spawn((FormId(0x9999), Visibility::Inherited))
             .id();
+        (app, reference, bystander)
+    }
+
+    fn press_e(app: &mut App) {
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.release(KeyCode::KeyE);
+        keys.clear();
+        keys.press(KeyCode::KeyE);
+    }
+
+    fn script_clock(app: &App) -> f64 {
+        let host = &app.world().non_send::<PapyrusHostResource>().0;
+        host.runtime().get::<f64>("clock").unwrap()
+    }
+
+    #[test]
+    fn pressing_e_on_a_scripted_reference_hides_it_and_turns_its_own_collider_off() {
+        let dir = scripts();
+        let (mut app, reference, bystander) = live_app(&dir);
         app.update();
-        assert!(app.world().get::<ScriptedReference>(entity).is_some());
+        assert!(app.world().get::<ScriptedReference>(reference).is_some());
         assert!(app.world().get::<ScriptedReference>(bystander).is_none());
         assert_eq!(
-            app.world().get::<Visibility>(entity),
+            app.world().get::<Visibility>(reference),
             Some(&Visibility::Inherited)
         );
+        assert!(app.world().get::<ColliderDisabled>(reference).is_none());
 
-        // The player activates it; the next frame applies the Disable effect.
-        let handled = app
-            .world()
-            .non_send::<PapyrusHostResource>()
-            .0
-            .activate(REFERENCE, PLAYER_REFERENCE);
-        assert_eq!(handled, 1);
+        press_e(&mut app);
         app.update();
-        assert!(app.world().get::<ScriptDisabled>(entity).is_some());
+        assert!(app.world().get::<ScriptDisabled>(reference).is_some());
         assert_eq!(
-            app.world().get::<Visibility>(entity),
+            app.world().get::<Visibility>(reference),
             Some(&Visibility::Hidden)
+        );
+        assert!(
+            app.world().get::<ColliderDisabled>(reference).is_some(),
+            "the collider on the reference entity itself must be off"
         );
         assert_eq!(
             app.world().get::<Visibility>(bystander),
             Some(&Visibility::Inherited)
         );
 
-        // Streaming reveals the model later; the plugin hides the reference again.
+        // Streaming reveals the model later and may add colliders; the plugin hides them again.
         app.world_mut()
-            .entity_mut(entity)
+            .entity_mut(reference)
             .insert(Visibility::Inherited);
+        app.world_mut()
+            .entity_mut(reference)
+            .remove::<ColliderDisabled>();
         app.update();
         assert_eq!(
-            app.world().get::<Visibility>(entity),
+            app.world().get::<Visibility>(reference),
             Some(&Visibility::Hidden)
         );
+        assert!(app.world().get::<ColliderDisabled>(reference).is_some());
+    }
+
+    #[test]
+    fn a_disabled_reference_cannot_be_activated_again() {
+        let dir = scripts();
+        let (mut app, reference, _) = live_app(&dir);
+        app.update();
+        press_e(&mut app);
+        app.update();
+        assert!(app.world().get::<ScriptDisabled>(reference).is_some());
+        let before = app
+            .world()
+            .non_send::<PapyrusHostResource>()
+            .0
+            .log_lines()
+            .len();
+        press_e(&mut app);
+        app.update();
+        let host = &app.world().non_send::<PapyrusHostResource>().0;
+        assert_eq!(host.log_lines().len(), before, "no second activation ran");
+    }
+
+    #[test]
+    fn e_does_nothing_while_paused_during_a_door_crossing_or_off_target() {
+        let dir = scripts();
+        let (mut app, reference, _) = live_app(&dir);
+        app.update();
+
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        press_e(&mut app);
+        app.update();
+        assert!(
+            app.world().get::<ScriptDisabled>(reference).is_none(),
+            "paused"
+        );
+        app.world_mut().resource_mut::<Time<Virtual>>().unpause();
+
+        app.insert_resource(DoorCrossing::holding_for_test());
+        press_e(&mut app);
+        app.update();
+        assert!(
+            app.world().get::<ScriptDisabled>(reference).is_none(),
+            "door crossing"
+        );
+        app.world_mut().remove_resource::<DoorCrossing>();
+
+        // Looking away from the reference: nothing is hit.
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<Entity, With<StreamingCamera>>();
+        let camera = cameras.single(app.world()).unwrap();
+        app.world_mut()
+            .entity_mut(camera)
+            .insert(Transform::default().looking_to(Vec3::Z, Vec3::Y));
+        press_e(&mut app);
+        app.update();
+        assert!(
+            app.world().get::<ScriptDisabled>(reference).is_none(),
+            "off target"
+        );
+
+        // Back on target with the cursor released: still nothing.
+        app.world_mut()
+            .entity_mut(camera)
+            .insert(Transform::default());
+        app.insert_resource(CursorCapture::Released);
+        press_e(&mut app);
+        app.update();
+        assert!(
+            app.world().get::<ScriptDisabled>(reference).is_none(),
+            "cursor released"
+        );
+
+        // Everything clear: it works.
+        app.insert_resource(CursorCapture::Captured);
+        press_e(&mut app);
+        app.update();
+        assert!(app.world().get::<ScriptDisabled>(reference).is_some());
+    }
+
+    #[test]
+    fn script_time_follows_the_frame_clock() {
+        let dir = scripts();
+        let (mut app, _, _) = live_app(&dir);
+        for _ in 0..6 {
+            app.update();
+        }
+        // The first update has no delta; each later one advances 0.1 s.
+        let clock = script_clock(&app);
+        assert!((clock - 0.5).abs() < 0.05, "script clock {clock}");
     }
 }

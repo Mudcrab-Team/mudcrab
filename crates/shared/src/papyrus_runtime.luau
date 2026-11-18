@@ -16,6 +16,7 @@ function Runtime.new()
         messages = {},
         unbound = {},
         notes = {},
+        fault_counts = {},
         sleepers = {},
         updates = {},
         sequence = 0,
@@ -43,8 +44,17 @@ function Runtime:note_once(key, message)
     self:log("warn", message)
 end
 
+-- Log a message at most once per distinct text, and count the repeats in `fault_counts`.
+-- A script that faults on every `OnUpdate` tick would otherwise write one line per tick.
+function Runtime:log_once(level, message)
+    local count = (self.fault_counts[message] or 0) + 1
+    self.fault_counts[message] = count
+    if count == 1 then self:log(level, message) end
+    return count
+end
+
 function Runtime:fault(message)
-    self:log("error", message)
+    self:log_once("error", message)
     return nil
 end
 
@@ -379,7 +389,7 @@ function Runtime:resume(thread, label)
     if self.reset_budget ~= nil then self.reset_budget() end
     local ok, request = coroutine.resume(thread)
     if not ok then
-        self:log("error", label .. ": " .. tostring(request))
+        self:log_once("error", label .. ": " .. tostring(request))
         return
     end
     if coroutine.status(thread) == "suspended" then

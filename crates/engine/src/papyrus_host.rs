@@ -13,13 +13,27 @@
 //! - Every entry into script code gets a fresh instruction budget.
 
 use crate::papyrus_runtime::{
-    self as runtime, DEFAULT_CALL_BUDGET, DEFAULT_MEMORY_LIMIT, ExecutionBudget,
+    self as runtime, DEFAULT_CALL_BUDGET, DEFAULT_FRAME_BUDGET, DEFAULT_MEMORY_LIMIT,
+    ExecutionBudget,
 };
+use crate::world::enable_state::INITIALLY_DISABLED;
 use mlua::{Function, IntoLua, Lua, MultiValue, Table, Value};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+
+/// VMAD property value types as the converter writes them to `script_properties` (the
+/// decoder is `crates/converter/src/records/vmad.rs`, `scalar` and `property`). An array of a
+/// scalar type has the scalar's code plus 10.
+const VMAD_OBJECT: i64 = 1;
+const VMAD_STRING: i64 = 2;
+const VMAD_INT: i64 = 3;
+const VMAD_FLOAT: i64 = 4;
+const VMAD_BOOL: i64 = 5;
+const VMAD_ARRAY_OFFSET: i64 = 10;
+const VMAD_ARRAY_FIRST: i64 = VMAD_OBJECT + VMAD_ARRAY_OFFSET;
+const VMAD_ARRAY_LAST: i64 = VMAD_BOOL + VMAD_ARRAY_OFFSET;
 
 /// The form id of the player reference.
 pub const PLAYER_REFERENCE: u32 = 0x14;
@@ -119,6 +133,8 @@ pub struct HostConfig {
     pub allowed: Option<HashSet<String>>,
     pub memory_limit: usize,
     pub call_budget: u64,
+    /// Interrupts all entries in one frame may use together; see [`ExecutionBudget`].
+    pub frame_budget: u64,
     /// Make an unbound native raise instead of log. Tests use this.
     pub strict_natives: bool,
 }
@@ -130,6 +146,7 @@ impl HostConfig {
             allowed: None,
             memory_limit: DEFAULT_MEMORY_LIMIT,
             call_budget: DEFAULT_CALL_BUDGET,
+            frame_budget: DEFAULT_FRAME_BUDGET,
             strict_natives: false,
         }
     }
@@ -163,7 +180,11 @@ pub struct PapyrusHost {
 
 impl PapyrusHost {
     pub fn new(config: HostConfig, forms: Rc<dyn FormSource>) -> mlua::Result<Self> {
-        let (lua, budget) = runtime::new_sandboxed_vm(config.memory_limit, config.call_budget)?;
+        let (lua, budget) = runtime::new_sandboxed_vm_with_frame(
+            config.memory_limit,
+            config.call_budget,
+            config.frame_budget,
+        )?;
         let runtime_table = runtime::load_runtime(&lua)?;
         runtime_table.set("strict_natives", config.strict_natives)?;
         let log = Rc::new(RefCell::new(Vec::<LogLine>::new()));
@@ -245,6 +266,11 @@ impl PapyrusHost {
 
     pub fn world(&self) -> std::cell::RefMut<'_, WorldState> {
         self.world.borrow_mut()
+    }
+
+    /// Make the per-frame script budget whole again. Call once at the start of each frame.
+    pub fn begin_frame(&self) {
+        self.budget.begin_frame();
     }
 
     pub fn budget(&self) -> &ExecutionBudget {
@@ -420,6 +446,13 @@ impl PapyrusHost {
         }
     }
 
+    /// Like [`Self::note`], but each distinct message logs once and the repeats are counted.
+    fn note_once(&self, level: &str, message: String) {
+        if let Ok(log) = self.runtime.get::<Function>("log_once") {
+            let _ = log.call::<()>((self.runtime.clone(), level, message));
+        }
+    }
+
     fn seed_properties(
         &self,
         object: &Table,
@@ -565,9 +598,18 @@ impl PapyrusHost {
             let mut call_args = MultiValue::new();
             call_args.push_back(Value::Table(self.runtime.clone()));
             call_args.push_back(Value::Table(object));
-            call_args.push_back(Value::String(
-                self.lua.create_string(event).expect("string"),
-            ));
+            // `create_string` fails when the VM is at its memory limit. That is a script
+            // problem, never an engine panic: log it and skip this object.
+            match self.lua.create_string(event) {
+                Ok(name) => call_args.push_back(Value::String(name)),
+                Err(error) => {
+                    self.note(
+                        "error",
+                        format!("event {event} on {form_id:08X} skipped: {error}"),
+                    );
+                    continue;
+                }
+            }
             for value in &lua_args {
                 call_args.push_back(value.clone());
             }
@@ -575,7 +617,7 @@ impl PapyrusHost {
                 Ok(true) => handled += 1,
                 Ok(false) => {}
                 Err(error) => {
-                    self.note("error", format!("event {event} on {form_id:08X}: {error}"))
+                    self.note_once("error", format!("event {event} on {form_id:08X}: {error}"))
                 }
             }
         }
@@ -1128,8 +1170,8 @@ impl FormSource for SqliteForms {
             .unwrap_or_default();
         let mut output = Vec::new();
         for (index, name, kind) in rows {
-            let scalar_kind = if (11..=15).contains(&kind) {
-                kind - 10
+            let scalar_kind = if (VMAD_ARRAY_FIRST..=VMAD_ARRAY_LAST).contains(&kind) {
+                kind - VMAD_ARRAY_OFFSET
             } else {
                 kind
             };
@@ -1142,22 +1184,22 @@ impl FormSource for SqliteForms {
                     let float_bits: Option<i64> = row.get(4)?;
                     let boolean: Option<i64> = row.get(5)?;
                     Ok(match scalar_kind {
-                        1 => PropertyValue::Object {
+                        VMAD_OBJECT => PropertyValue::Object {
                             form_id: object.unwrap_or(0),
                             alias: alias.and_then(|alias| u16::try_from(alias & 0xFFFF).ok()),
                         },
-                        2 => PropertyValue::Str(string.unwrap_or_default()),
-                        3 => PropertyValue::Int(integer.unwrap_or(0)),
-                        4 => PropertyValue::Float(f64::from(f32::from_bits(
+                        VMAD_STRING => PropertyValue::Str(string.unwrap_or_default()),
+                        VMAD_INT => PropertyValue::Int(integer.unwrap_or(0)),
+                        VMAD_FLOAT => PropertyValue::Float(f64::from(f32::from_bits(
                             float_bits.unwrap_or(0) as u32,
                         ))),
-                        5 => PropertyValue::Bool(boolean.unwrap_or(0) != 0),
+                        VMAD_BOOL => PropertyValue::Bool(boolean.unwrap_or(0) != 0),
                         _ => PropertyValue::None,
                     })
                 })
                 .map(|rows| rows.flatten().collect())
                 .unwrap_or_default();
-            let value = if (11..=15).contains(&kind) {
+            let value = if (VMAD_ARRAY_FIRST..=VMAD_ARRAY_LAST).contains(&kind) {
                 PropertyValue::Array(elements)
             } else {
                 elements.into_iter().next().unwrap_or(PropertyValue::None)
@@ -1197,12 +1239,13 @@ impl FormSource for SqliteForms {
     }
 
     fn initially_enabled(&self, reference: u32) -> bool {
-        // 0x800 is the "initially disabled" header flag.
+        // The "initially disabled" header flag, the one the streamer's enable-state resolver
+        // reads. Enable-parent chains are not followed here.
         self.one_u32(
             "SELECT header_flags FROM \"references\" WHERE id = ?1",
             reference,
         )
-        .is_none_or(|flags| flags & 0x800 == 0)
+        .is_none_or(|flags| flags & INITIALLY_DISABLED == 0)
     }
 }
 
@@ -1836,20 +1879,128 @@ return Script
             host.send_to_form(REFERENCE, "OnReset", &[]);
             assert!(host.object(REFERENCE).unwrap().get::<bool>("ran").unwrap());
         }
+        // Every runaway call failed and none poisoned the VM (`ran` was set each round), but
+        // the log carries one line, with the count kept in the runtime.
         let failures: Vec<String> = errors(&host)
             .into_iter()
             .filter(|line| line.contains("budget exceeded"))
             .collect();
-        assert_eq!(
-            failures.len(),
-            3,
-            "each runaway call fails, none poisons the VM"
-        );
+        assert_eq!(failures.len(), 1, "logged once: {failures:?}");
         assert!(
             failures[0].starts_with("Spinner::OnActivate:"),
             "{}",
             failures[0]
         );
+        let counts: Table = host.runtime().get("fault_counts").unwrap();
+        assert_eq!(counts.get::<i64>(failures[0].clone()).unwrap(), 3);
+    }
+
+    #[test]
+    fn many_events_in_one_frame_share_a_total_and_a_new_frame_refills_it() {
+        let dir = fixture_dir();
+        std::fs::write(
+            dir.path().join("burner.luau"),
+            class(
+                "Burner",
+                "ObjectReference",
+                "",
+                "Script[\"OnActivate\"] = function(self, p0) local n = 0 for i = 1, 2000 do n = n + i end self.runs = (self.runs or 0) + 1 end\n",
+            ),
+        )
+        .unwrap();
+        let mut forms = base_forms();
+        attach(&mut forms, REFERENCE, "burner", vec![]);
+        // One entry costs roughly a few thousand interrupts; allow each 100,000 but the frame
+        // only enough for about three.
+        let mut config = HostConfig::new(dir.path());
+        config.call_budget = 100_000;
+        let mut host = PapyrusHost::new(config.clone(), Rc::new(forms)).unwrap();
+        host.attach_reference(REFERENCE);
+        host.begin_frame();
+        host.budget().reset();
+        let before = host.budget().frame_remaining();
+        host.activate(REFERENCE, PLAYER_REFERENCE);
+        let cost = before - host.budget().frame_remaining();
+        // The cost is only known after the next refill charges it.
+        host.budget().reset();
+        let one = before - host.budget().frame_remaining();
+        assert!(one > 0, "an entry costs something ({cost})");
+
+        let mut config = HostConfig::new(dir.path());
+        config.call_budget = 100_000;
+        config.frame_budget = one * 3;
+        let mut forms = base_forms();
+        attach(&mut forms, REFERENCE, "burner", vec![]);
+        let mut host = PapyrusHost::new(config, Rc::new(forms)).unwrap();
+        host.attach_reference(REFERENCE);
+        host.begin_frame();
+        for _ in 0..10 {
+            host.activate(REFERENCE, PLAYER_REFERENCE);
+        }
+        let runs = host
+            .object(REFERENCE)
+            .unwrap()
+            .get::<i64>("runs")
+            .unwrap_or(0);
+        assert!(
+            (1..10).contains(&runs),
+            "some ran, the rest were cut off: {runs}"
+        );
+        let cut_off = errors(&host)
+            .iter()
+            .filter(|line| line.contains("budget exceeded"))
+            .count();
+        // Seven entries were cut off. Each distinct message logs once: the coroutine's own
+        // error, and the host's note when the scheduler could not even start the entry.
+        assert!(
+            (1..=2).contains(&cut_off),
+            "cut-off entries log once each kind: {cut_off}"
+        );
+
+        host.begin_frame();
+        let before = host
+            .object(REFERENCE)
+            .unwrap()
+            .get::<i64>("runs")
+            .unwrap_or(0);
+        host.activate(REFERENCE, PLAYER_REFERENCE);
+        let after = host
+            .object(REFERENCE)
+            .unwrap()
+            .get::<i64>("runs")
+            .unwrap_or(0);
+        assert_eq!(
+            after,
+            before + 1,
+            "a new frame makes the budget whole again"
+        );
+    }
+
+    #[test]
+    fn a_fault_repeated_by_an_update_logs_once_and_is_counted() {
+        let dir = fixture_dir();
+        std::fs::write(
+            dir.path().join("nagger.luau"),
+            class(
+                "Nagger",
+                "ObjectReference",
+                "",
+                "Script[\"OnInit\"] = function(self) self.__runtime:call_method(self, \"RegisterForUpdate\", {0.1}) end\n\
+                 Script[\"OnUpdate\"] = function(self) self.__runtime:call_method(nil, \"GetStage\", {}) end\n",
+            ),
+        )
+        .unwrap();
+        let mut forms = base_forms();
+        attach(&mut forms, REFERENCE, "nagger", vec![]);
+        let mut host = host_with(dir.path(), forms, false);
+        host.attach_reference(REFERENCE);
+        for _ in 0..30 {
+            host.advance(0.1);
+        }
+        let lines = errors(&host);
+        assert_eq!(lines.len(), 1, "one line, not one per tick: {lines:?}");
+        let counts: Table = host.runtime().get("fault_counts").unwrap();
+        assert!(counts.get::<i64>(lines[0].clone()).unwrap() >= 25);
     }
 
     #[test]

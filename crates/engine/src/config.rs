@@ -3506,8 +3506,7 @@ mod tests {
         assert_eq!(missing.terrain_lod, TerrainLodDistances::default());
     }
 
-    /// Lights are opt-in: the flag is off unless it is given, so the default run - and every
-    /// acceptance or benchmark baseline taken from one - is unchanged.
+    /// Converted Papyrus scripts are opt-in: the flag is off unless it is given.
     #[test]
     fn papyrus_scripts_are_off_until_the_flag_is_given() {
         assert!(!EngineConfig::default().papyrus_scripts);
@@ -3515,6 +3514,8 @@ mod tests {
         assert!(run_config(&["--papyrus-scripts"]).papyrus_scripts);
     }
 
+    /// Lights are opt-in: the flag is off unless it is given, so the default run - and every
+    /// acceptance or benchmark baseline taken from one - is unchanged.
     #[test]
     fn lights_are_off_until_the_flag_is_given() {
         assert!(!EngineConfig::default().lights);
