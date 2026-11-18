@@ -15,6 +15,7 @@ use std::{
 };
 
 /// Anonymous copies are reserved for external inputs at or below this size.
+/// The 16 MiB cap bounds the extra memory per snapshot while larger inputs use direct mappings.
 pub(crate) const MEMORY_SNAPSHOT_LIMIT: u64 = 16 * 1024 * 1024;
 
 /// An input view and the source generation checked after its consumer finishes.
@@ -76,14 +77,19 @@ impl SourceStamp {
 
     /// Detect changed metadata or a pathname replaced with a different file.
     pub(crate) fn verify(&self, file: &File, path: &Path) -> Result<()> {
-        let unchanged = || -> Result<bool> {
+        let unchanged = || -> std::io::Result<bool> {
             let metadata = file.metadata()?;
             Ok(metadata.len() == self.length
                 && metadata.modified()? == self.modified
                 && Handle::from_path(path)? == self.identity)
         };
         ensure!(
-            unchanged().unwrap_or(false),
+            unchanged().wrap_err_with(|| {
+                format!(
+                    "could not verify input during conversion: {}",
+                    path.display()
+                )
+            })?,
             "input changed during conversion: {}",
             path.display()
         );
@@ -227,6 +233,27 @@ mod tests {
         std::fs::write(&path, b"same").unwrap();
         let error = map_input(&source, &path).unwrap_err();
         assert!(format!("{error:#}").contains("input changed during conversion"));
+    }
+
+    /// A missing pathname retains its I/O cause in the verification diagnostic.
+    #[test]
+    fn verification_reports_missing_path_io_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("source.bin");
+        std::fs::write(&path, b"source").unwrap();
+        let source = File::open(&path).unwrap();
+        let stamp = SourceStamp::capture(&source).unwrap();
+        let missing = directory.path().join("missing.bin");
+        let error = stamp.verify(&source, &missing).unwrap_err();
+        assert!(format!("{error:#}").contains("missing.bin"));
+        assert!(
+            error.chain().any(|cause| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            }),
+            "verification must report the missing-path I/O cause: {error:#}"
+        );
     }
 
     /// An empty input returns a named error rather than requesting an empty OS mapping.
