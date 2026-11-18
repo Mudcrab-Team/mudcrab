@@ -100,6 +100,13 @@ const DROPPED_AFTER_FRAMES: u32 = 40;
 /// Textures keep arriving after a scene is ready: a capture waits this long, and this many frames.
 const TEXTURE_SETTLE: Duration = Duration::from_millis(1500);
 const TEXTURE_SETTLE_FRAMES: u32 = 90;
+/// How long a capture waits for one screenshot before it records a failure and goes on.
+const SCREENSHOT_DEADLINE: Duration = Duration::from_secs(30);
+
+/// True when a screenshot requested at `requested_at` is overdue at `now`.
+fn screenshot_overdue(requested_at: Instant, now: Instant) -> bool {
+    now.duration_since(requested_at) >= SCREENSHOT_DEADLINE
+}
 
 #[derive(Clone)]
 struct Npc {
@@ -236,6 +243,11 @@ struct Capture {
     failures: Vec<String>,
     /// Set when a PNG or `capture.json` could not be written: the run then exits with an error.
     failed: bool,
+    /// Counts screenshot requests. A late screenshot of an older request is ignored.
+    serial: u64,
+    /// When the pending screenshot was requested, and its file name.
+    requested_at: Option<Instant>,
+    requested_file: String,
     records: Vec<NpcRecord>,
     frames_until_next: u32,
 }
@@ -517,6 +529,9 @@ fn main() {
             images: Vec::new(),
             failures: Vec::new(),
             failed: false,
+            serial: 0,
+            requested_at: None,
+            requested_file: String::new(),
             records: Vec::new(),
             frames_until_next: 0,
         }
@@ -1225,6 +1240,25 @@ fn step_capture(world: &mut World, viewer: &mut Viewer, capture: &mut Capture) {
         return;
     }
     if capture.phase == Phase::Requested {
+        // A screenshot that never arrives must not hold the batch: record it and go on. The
+        // request number makes a late arrival of this one harmless.
+        if capture
+            .requested_at
+            .is_some_and(|at| screenshot_overdue(at, Instant::now()))
+        {
+            let message = format!(
+                "{}: no screenshot within {} s",
+                capture.requested_file,
+                SCREENSHOT_DEADLINE.as_secs()
+            );
+            eprintln!("npc_viewer: {message}");
+            capture.failures.push(message);
+            capture.failed = true;
+            capture.serial += 1;
+            capture.requested_at = None;
+            capture.phase = Phase::Pose;
+            capture.shot += 1;
+        }
         return;
     }
     // Textures keep arriving after the scene is ready; give them wall-clock time and frames.
@@ -1265,6 +1299,9 @@ fn step_capture(world: &mut World, viewer: &mut Viewer, capture: &mut Capture) {
     );
     let path = capture.dir.join(&file);
     capture.phase = Phase::Requested;
+    capture.requested_at = Some(Instant::now());
+    capture.requested_file = file.clone();
+    let serial = capture.serial;
     let target = capture.target.clone();
     world.spawn(Screenshot::image(target)).observe(
         move |event: On<ScreenshotCaptured>, mut viewer: ResMut<Viewer>| {
@@ -1280,6 +1317,11 @@ fn step_capture(world: &mut World, viewer: &mut Viewer, capture: &mut Capture) {
                         .map_err(|error| format!("cannot save {}: {error}", path.display()))
                 });
             if let Some(capture) = viewer.capture.as_mut() {
+                if capture.serial != serial {
+                    // This screenshot came after its deadline: the run has moved on.
+                    return;
+                }
+                capture.requested_at = None;
                 match saved {
                     Ok(()) => capture.images.push(file.clone()),
                     Err(error) => {
@@ -1357,6 +1399,17 @@ mod tests {
             );
         }
         assert!(converted_model_path("../escape.nif".to_owned()).is_none());
+    }
+
+    #[test]
+    fn a_screenshot_is_overdue_only_after_the_deadline() {
+        let at = Instant::now();
+        assert!(!screenshot_overdue(at, at));
+        assert!(!screenshot_overdue(
+            at,
+            at + SCREENSHOT_DEADLINE - Duration::from_millis(1)
+        ));
+        assert!(screenshot_overdue(at, at + SCREENSHOT_DEADLINE));
     }
 
     #[test]
