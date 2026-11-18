@@ -489,6 +489,7 @@ fn undecoded_perk_entry_points_are_reported_in_projection_omissions() {
             normal_texture: layout::GENERATED_NORMAL_PATH,
         })
         .unwrap();
+        skyrim.extend(perks::targets());
         let mut bad = perks::prefix(10);
         // 1) Unknown EPFT parameter type 9
         bad.extend(perks::entry_effect(35, 1, 9, Some(&[1, 2, 3, 4]), None));
@@ -498,6 +499,28 @@ fn undecoded_perk_entry_points_are_reported_in_projection_omissions() {
         bad.extend(perks::entry_effect(51, 10, 5, Some(&[1, 2]), None));
         // 4) Missing required numeric EPFD for EPFT=1
         bad.extend(perks::entry_effect(36, 3, 1, None, None));
+        // 5) Parameterized entry-point function=3 (multiply_value) with neither EPFT nor EPFD
+        bad.extend(sub(b"PRKE", &[2, 1, 0]));
+        bad.extend(sub(b"DATA", &[36, 3, 1]));
+        bad.extend(sub(b"PRKF", &[]));
+        // 6) EPFT=3 pointing at a wrong-type SPEL target instead of LVLI
+        bad.extend(perks::entry_effect(
+            9,
+            8,
+            3,
+            Some(&perks::SPELL_ID.to_le_bytes()),
+            None,
+        ));
+        // 7) EPFT=5 pointing at an absent FormID
+        bad.extend(perks::entry_effect(
+            51,
+            10,
+            5,
+            Some(&0x0000_BEEFu32.to_le_bytes()),
+            None,
+        ));
+        // 8) EPFT=7 (set_text) missing its EPFD subrecord
+        bad.extend(perks::entry_effect(81, 15, 7, None, None));
         // Valid sibling effect must survive.
         bad.extend(perks::entry_effect(
             36,
@@ -519,7 +542,7 @@ fn undecoded_perk_entry_points_are_reported_in_projection_omissions() {
 
         let omissions = ProjectionOmissions::read(&conn).unwrap();
         let entry = &omissions.categories[OmissionCategory::PerkEffectUndecoded.name()];
-        assert_eq!(entry.count, 4, "{reader:?}: {entry:?}");
+        assert_eq!(entry.count, 8, "{reader:?}: {entry:?}");
         assert_eq!(entry.samples[0].form_id, perks::FIRST_ID);
 
         let surviving: Vec<(i64, i64, f64)> = conn
@@ -535,6 +558,66 @@ fn undecoded_perk_entry_points_are_reported_in_projection_omissions() {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(surviving, vec![(4, 36, 1.5)], "{reader:?}");
+        assert_eq!(surviving, vec![(8, 36, 1.5)], "{reader:?}");
+    }
+}
+
+#[test]
+fn localized_malformed_epfd_triggers_omission_while_null_key_stays_nullable() {
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut perk = sub(b"EDID", &perks::text("LocalizedMalformedEpfd"));
+        perk.extend(sub(b"FULL", &101u32.to_le_bytes()));
+        perk.extend(sub(b"DESC", &202u32.to_le_bytes()));
+        perk.extend(sub(b"DATA", &[0, 10, 1, 1, 0]));
+        // Effect 0: intentional null key (0) -> NULL value_text, zero omissions.
+        perk.extend(perks::entry_effect(
+            81,
+            15,
+            7,
+            Some(&0u32.to_le_bytes()),
+            None,
+        ));
+        // Effect 1: malformed 2-byte localized EPFD -> perk_effect_undecoded.
+        perk.extend(perks::entry_effect(81, 15, 7, Some(&[1, 2]), None));
+        let skyrim = [
+            header(0x80, &[]),
+            top(
+                b"PERK",
+                &record_with_flags(b"PERK", perks::FIRST_ID, 0, &perk),
+            ),
+        ]
+        .concat();
+        write_string_table(
+            &dir.path().join("Strings/Skyrim_English.STRINGS"),
+            &[(101, "Perk Name")],
+            false,
+        );
+        write_string_table(
+            &dir.path().join("Strings/Skyrim_English.DLSTRINGS"),
+            &[(202, "Perk Description")],
+            true,
+        );
+        let skyrim_path = dir.path().join("Skyrim.esm");
+        fs::write(&skyrim_path, skyrim).unwrap();
+        let db = dir.path().join("skyrim_world.db");
+
+        EsmParser::convert_plugins_with_reader(&[skyrim_path], &db, reader, dir.path()).unwrap();
+        let conn = Connection::open(db).unwrap();
+
+        let omissions = ProjectionOmissions::read(&conn).unwrap();
+        let entry = &omissions.categories[OmissionCategory::PerkEffectUndecoded.name()];
+        assert_eq!(entry.count, 1, "{reader:?}: {entry:?}");
+
+        let rows: Vec<(i64, Option<String>)> = conn
+            .prepare(
+                "SELECT effect_index, value_text FROM perk_entry_points WHERE perk_id = ?1 ORDER BY effect_index",
+            )
+            .unwrap()
+            .query_map([perks::FIRST_ID], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![(0, None)], "{reader:?}");
     }
 }

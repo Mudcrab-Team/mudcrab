@@ -165,12 +165,23 @@ fn collect_conditions<'a>(
     Ok(entries)
 }
 
+/// Returns the first subrecord matching `tag` inside one `PRKE..PRKF` effect block.
+fn first_block_subrecord<'a>(block: &'a [Subrecord], tag: &[u8; 4]) -> Option<&'a [u8]> {
+    block
+        .get(1..)?
+        .iter()
+        .find(|(sub_tag, _)| sub_tag.as_slice() == tag)
+        .map(|(_, payload)| payload.as_slice())
+}
+
 /// Writes the `perks`, `perk_effects`, `perk_entry_points`, and `record_conditions` rows for
-/// one winning `PERK` record, recording undecodable effects in `omissions`.
+/// one winning `PERK` record (projected with unresolved localized text cleared, alongside its
+/// `canonical` winning record), recording undecodable effects in `omissions`.
 pub(crate) fn insert_record(
     tx: &Transaction<'_>,
     links: &Links<'_>,
     record: &RawRecord,
+    canonical: &RawRecord,
     omissions: &mut ProjectionOmissions,
 ) -> Result<()> {
     let perk_id = record.form_id;
@@ -189,6 +200,7 @@ pub(crate) fn insert_record(
     }
 
     let (top_subs, effect_blocks) = split_perk_sections(&record.subrecords);
+    let (_, canonical_blocks) = split_perk_sections(&canonical.subrecords);
     let top_view = SubrecordView::new(top_subs);
     let data = top_view.find(b"DATA").filter(|bytes| bytes.len() == 5);
     let is_trait = data.map(|bytes| i64::from(bytes[0]));
@@ -389,12 +401,16 @@ pub(crate) fn insert_record(
                 let mut target_form_id: Option<u32> = None;
                 let mut value_text: Option<String> = None;
 
+                let canonical_epfd = canonical_blocks
+                    .get(effect_index)
+                    .and_then(|canonical_block| first_block_subrecord(canonical_block, b"EPFD"));
                 let decoded_ok = match (parameter_type, epfd) {
-                    (None, None) | (Some(0), _) => true,
+                    (None, None) | (Some(0), _) => matches!(function, 0 | 6 | 7),
                     // `add_activate_choice` (fn=9, EPFT=4) uses button label/flags in vanilla plugins without an activation spell.
                     (Some(4), None) => function == 9 && (epf2.is_some() || epf3.is_some()),
-                    // Intentionally unresolved EPFT=7 localized text is stripped by runtime_projection.
-                    (Some(7), None) => true,
+                    // Intentionally unresolved EPFT=7 localized text is stripped by runtime_projection
+                    // while remaining non-empty on the canonical winning record.
+                    (Some(7), None) => canonical_epfd.is_some_and(|b| !b.is_empty()),
                     (None, Some(_)) | (Some(1..=6), None) => false,
                     (Some(1), Some(b)) => {
                         if let Some(v) = (b.len() == 4).then(|| f32_at(b, 0)).flatten() {
@@ -422,23 +438,19 @@ pub(crate) fn insert_record(
                         }
                     }
                     (Some(2), Some(_)) => false,
-                    (Some(3), Some(b)) => {
-                        if let Some(id) = (b.len() == 4).then(|| u32_at(b, 0)).flatten() {
-                            target_form_id = links.resolve(Some(id), &[b"LVLI"]);
-                            true
-                        } else {
-                            false
-                        }
+                    (Some(tag @ 3..=5), Some(b)) => {
+                        let expected: &[&[u8; 4]] = if tag == 3 { &[b"LVLI"] } else { &[b"SPEL"] };
+                        target_form_id = (b.len() == 4)
+                            .then(|| u32_at(b, 0))
+                            .flatten()
+                            .and_then(|id| links.resolve(Some(id), expected));
+                        target_form_id.is_some()
                     }
-                    (Some(4 | 5), Some(b)) => {
-                        if let Some(id) = (b.len() == 4).then(|| u32_at(b, 0)).flatten() {
-                            target_form_id = links.resolve(Some(id), &[b"SPEL"]);
-                            true
-                        } else {
-                            false
-                        }
+                    (Some(6), Some(b)) => {
+                        value_text = Some(decode_subrecord_text(b));
+                        true
                     }
-                    (Some(6 | 7), Some(b)) => {
+                    (Some(7), Some(b)) if !b.is_empty() => {
                         value_text = Some(decode_subrecord_text(b));
                         true
                     }

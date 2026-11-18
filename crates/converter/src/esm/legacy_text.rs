@@ -108,7 +108,13 @@ pub(crate) fn resolve_localized_fields(
             match id.and_then(|id| localized_text(id, &table.as_ref()?.values)) {
                 Some(text) => *data = runtime_string(text),
                 None => {
-                    unresolved.entry(record.form_id).or_default().insert(index);
+                    // A wrong-width localized PERK/EPFD cannot be projected as NULL; keep the
+                    // warning below, clear its payload to empty bytes, and keep it out of
+                    // `unresolved` so runtime_projection forwards it to `perk_effect_undecoded`.
+                    let malformed_perk_epfd = is_perk_localized_epfd && id.is_none();
+                    if !malformed_perk_epfd {
+                        unresolved.entry(record.form_id).or_default().insert(index);
+                    }
                     // Zero is the reader's null-key sentinel, not a failed lookup.
                     if id != Some(0) {
                         let malformed = id.is_some_and(|id| {
@@ -147,7 +153,11 @@ pub(crate) fn resolve_localized_fields(
                         miss.0 += 1;
                     }
                     // The in-house reader stores an unresolved name as empty text.
-                    *data = runtime_string("");
+                    *data = if malformed_perk_epfd {
+                        Vec::new()
+                    } else {
+                        runtime_string("")
+                    };
                 }
             }
         }

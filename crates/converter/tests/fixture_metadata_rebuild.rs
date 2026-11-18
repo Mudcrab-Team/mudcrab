@@ -2611,8 +2611,8 @@ async fn metadata_rebuild_populates_perk_tables_while_reusing_assets() {
     convert(&data, &source).await;
     // Drop the optional #599 tables from `source` to simulate a pre-#599 pack so only a fresh
     // rebuild projection can populate them in `output/skyrim_world.db`.
-    Connection::open(source.join("skyrim_world.db"))
-        .unwrap()
+    let source_db = Connection::open(source.join("skyrim_world.db")).unwrap();
+    source_db
         .execute_batch(
             "DROP TABLE perks;
              DROP TABLE perk_effects;
@@ -2620,6 +2620,15 @@ async fn metadata_rebuild_populates_perk_tables_while_reusing_assets() {
              DROP TABLE record_conditions;",
         )
         .unwrap();
+    let dropped_tables: i64 = source_db
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='perk_entry_points'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(dropped_tables, 0);
+    drop(source_db);
 
     let report = rebuild(&data, &source, &output).await.unwrap();
     assert!(report.complete, "{:?}", report.warnings);

@@ -806,6 +806,7 @@ fn export_records(
                     &tx,
                     &crate::esm::gameplay_common::Links { master },
                     record,
+                    canonical_record,
                     &mut omissions,
                 )?;
             }
