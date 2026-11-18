@@ -295,7 +295,15 @@ pub(crate) fn update_sun(
     config: Res<EngineConfig>,
     catalog: Option<Res<EnvironmentCatalog>>,
     space: Option<Res<ActiveSpace>>,
-    mut sun: Query<&mut Transform, With<SunLight>>,
+    // Sky modes 1 and 2 hold the sun with the cell key light (RF-LIGHT-CPU-011): the clock must
+    // not turn it (`world::environment::interior`).
+    mut sun: Query<
+        &mut Transform,
+        (
+            With<SunLight>,
+            Without<crate::world::environment::interior::ExteriorSunState>,
+        ),
+    >,
     mut reported: Local<Option<SunPathProblem>>,
 ) {
     clock.advance(time.delta_secs_f64());
