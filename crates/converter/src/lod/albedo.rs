@@ -45,18 +45,13 @@ fn diffuse_catalog(connection: &Connection) -> Result<BTreeMap<u32, String>> {
         }).collect()
 }
 
-/// Every diffuse a terrain bake may read: each landscape texture's and the built-in Skyrim
-/// default ([`crate::terrain_pipeline::builtin_default_diffuse`]), so a conversion extracts the
-/// default even when no LTEX record names it.
+/// Ordinary LTEX diffuse inputs, excluding defaults that no LTEX references.
+/// The caller selects optional default sources separately using rebuilt quadrant coverage.
 pub(crate) fn terrain_diffuse_paths(connection: &Connection) -> Result<BTreeSet<PathBuf>> {
-    let mut paths: BTreeSet<_> = diffuse_catalog(connection)?
+    Ok(diffuse_catalog(connection)?
         .into_values()
         .map(PathBuf::from)
-        .collect();
-    paths.insert(PathBuf::from(
-        crate::terrain_pipeline::builtin_default_diffuse()?,
-    ));
-    Ok(paths)
+        .collect())
 }
 
 /// Whether a quadrant is painted with the default texture: it has no layers at all, or its base
@@ -140,7 +135,7 @@ impl LoadedDefault {
     }
 }
 
-/// The generated white diffuse entry 0 of the land texture table holds with the default `white`
+/// The generated white diffuse entry 0 of the land texture table holds with an explicit `white`
 /// selection: one white texel in every tier, painted like any other default.
 fn generated_white_tiers() -> [LinearImage; 3] {
     std::array::from_fn(|_| LinearImage {
@@ -656,12 +651,7 @@ impl TerrainAtlas {
     }
 
     pub fn encode(self) -> Result<Vec<u8>> {
-        TextureConverter::encode_rgba_mips(
-            self.size as u32,
-            self.size as u32,
-            &mip_chain(self.size, self.rgba),
-            TextureEncoding::ColorSrgb,
-        )
+        encode_srgb_atlas(self.size, self.rgba)
     }
 
     /// Uses the same authored three-mip chain for both encoders. The caller
@@ -768,6 +758,25 @@ fn encode_atlas_batch_with(
             })
         })
         .collect()
+}
+
+/// Publishes a square sRGB RGBA8 image as a terrain LOD atlas is published: the given base level
+/// and the two smaller levels derived from it, each texel the linear-light mean of the four it
+/// covers, encoded as a colour KTX2.
+///
+/// Public so a GPU probe can sample exactly the levels a compiled chunk carries.
+pub fn encode_srgb_atlas(size: usize, rgba: Vec<u8>) -> Result<Vec<u8>> {
+    ensure!(
+        rgba.len() == size * size * 4,
+        "atlas has {} bytes, expected {size}x{size} RGBA8",
+        rgba.len()
+    );
+    TextureConverter::encode_rgba_mips(
+        size as u32,
+        size as u32,
+        &mip_chain(size, rgba),
+        TextureEncoding::ColorSrgb,
+    )
 }
 
 fn mip_chain(size: usize, rgba: Vec<u8>) -> Vec<Vec<u8>> {
@@ -1919,16 +1928,31 @@ mod tests {
         connection
     }
 
+    /// LTEX collection excludes implicit defaults; baking loads and hashes only needed images.
     #[test]
     fn the_default_texture_is_extracted_loaded_and_hashed_only_when_a_quadrant_needs_it() {
         let connection = texture_database();
         let default_path = crate::terrain_pipeline::builtin_default_diffuse().unwrap();
+        assert_eq!(
+            terrain_diffuse_paths(&connection).unwrap(),
+            BTreeSet::from([PathBuf::from("textures/landscape/grass.dds")]),
+            "implicit defaults are selected separately from ordinary LTEX inputs"
+        );
+        connection
+            .execute("UPDATE texture_sets SET diffuse_path=?1", [&default_path])
+            .unwrap();
         assert!(
             terrain_diffuse_paths(&connection)
                 .unwrap()
-                .contains(&PathBuf::from(&default_path)),
-            "the conversion extracts the default even though no LTEX names it"
+                .contains(Path::new(&default_path)),
+            "a default also named by an LTEX remains an ordinary required source"
         );
+        connection
+            .execute(
+                "UPDATE texture_sets SET diffuse_path='textures/landscape/grass.dds'",
+                [],
+            )
+            .unwrap();
 
         let vfs = tempfile::tempdir().unwrap();
         let bytes = test_dds();
@@ -1993,7 +2017,7 @@ mod tests {
         // A quadrant with no BTXT: the one that paints entry 0.
         let null_base = || cell(vec![layer(0, true, 0.0)]);
 
-        // The default `white` selection: the Dirt02 file is present, and it must not be read.
+        // The explicit `white` selection: the Dirt02 file is present, and it must not be read.
         let white = null_base();
         let textures = TerrainTextures::load(
             &connection,

@@ -47,3 +47,21 @@ repaired as part of this tooling slice.
 Prepare dependencies, source sink annotations and existing test references do not prove
 executed engine rows, draw readiness, native physics/rendering behavior or Skyrim parity.
 These results precede publication; GitHub CI results remain separate from local evidence.
+
+## Refresh after merging main — 2026-11-18
+
+This branch merged `main` (`cd7f77f5`). The converter, shared and engine sources had moved
+since the first review, so the source guard fired. The refresh changed only classification data:
+
+- New emitted tables `base_texture_swaps` and `race_animation_sources` got the same
+  `deferred` disposition as the other declared tables. No field-level trace was added.
+- The `waters.deep_color` sink anchor moved with #299 and `waters.shallow_color` gained
+  its new sink. Their `SELECT` mapping is no longer verified: the water-colors query is now
+  built with `format!`, and the lexical scan resolves only plain literals and constants.
+  Both fields keep their sink and test references, and their `mapped` state is `unknown`.
+- Reviewed source fingerprint after the refresh: `48dd509fc0c9af2bfdb344fbcccadea770989bb9336fb2f8606b047b59e801fd`.
+- Passed locally: the 16 Python controls, `inventory.py --check`, the Rust extraction test
+  (`world::database::inventory_tests`, one test) and `config::tests` (103 tests).
+- The refresh did not trace the 29 new query candidates or the other new tables from main
+  one by one. They remain `unknown` or `deferred`.
+

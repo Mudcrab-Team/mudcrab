@@ -134,7 +134,7 @@ pub struct ConsoleState {
     /// Capture to give back one frame after a backtick close. It is held back so the movement and
     /// look systems, which read the capture, ignore the input the closing frame carried.
     pub restore_capture: Option<CursorCapture>,
-    /// Whether virtual time was already paused when the console opened.
+    /// Pause that existed before this menu, excluding the independent focus reason.
     pub was_paused: bool,
     /// Lines entered with Enter, run by the dispatch system.
     pub pending: Vec<String>,
@@ -421,6 +421,7 @@ fn console_input_system(
     mut time: ResMut<Time<Virtual>>,
     registry: Res<ConsoleRegistry>,
     mut motion: MotionReset,
+    focus_pause: Option<Res<crate::focus_pause::FocusPause>>,
     menu: Option<Res<crate::settings_ui::SettingsMenuState>>,
 ) {
     if state.closing {
@@ -428,7 +429,10 @@ fn console_input_system(
     }
     // A report hides UI without yielding gameplay input. Preserve the user's pending backtick
     // restoration until readback ends; Escape still leaves it released permanently.
-    if !state.capture_suppressed
+    // `is_some()` reads through `Deref`, so a frame with no pending restore does not dirty
+    // `ConsoleState`; only the frame that actually restores capture mutates it.
+    if state.restore_capture.is_some()
+        && !state.capture_suppressed
         && let Some(restored) = state.restore_capture.take()
     {
         *capture = restored;
@@ -440,12 +444,20 @@ fn console_input_system(
     // The physical key under Escape on every layout (the same key Skyrim uses), not the character.
     if keys.just_pressed(KeyCode::Backquote) {
         if state.open {
-            close_console(&mut state, &mut capture, &mut time, false);
+            close_console(
+                &mut state,
+                &mut capture,
+                &mut time,
+                false,
+                focus_pause.as_deref(),
+            );
         } else {
             state.open = true;
             state.buffer.clear();
             state.previous_capture = state.restore_capture.take().unwrap_or(*capture);
-            state.was_paused = time.is_paused();
+            state.was_paused = focus_pause
+                .as_deref()
+                .map_or_else(|| time.is_paused(), |focus| focus.without_focus(&time));
             *capture = CursorCapture::Released;
             // Virtual time already advanced this frame in `First`; the pause bites from the next.
             time.pause();
@@ -463,7 +475,13 @@ fn console_input_system(
             continue;
         }
         match event.key_code {
-            KeyCode::Escape => close_console(&mut state, &mut capture, &mut time, true),
+            KeyCode::Escape => close_console(
+                &mut state,
+                &mut capture,
+                &mut time,
+                true,
+                focus_pause.as_deref(),
+            ),
             KeyCode::Backspace => {
                 state.buffer.pop();
             }
@@ -494,6 +512,7 @@ fn close_console(
     capture: &mut CursorCapture,
     time: &mut Time<Virtual>,
     escape: bool,
+    focus_pause: Option<&crate::focus_pause::FocusPause>,
 ) {
     state.open = false;
     state.closing = true;
@@ -501,7 +520,7 @@ fn close_console(
     // The capture stays Released for the closing frame; Escape leaves it released for good.
     *capture = CursorCapture::Released;
     state.restore_capture = (!escape).then_some(state.previous_capture);
-    if !state.was_paused {
+    if !state.was_paused && !focus_pause.is_some_and(|focus| focus.active) {
         time.unpause();
     }
 }
@@ -658,6 +677,33 @@ mod tests {
 
     fn scrollback(app: &App) -> String {
         app.world().resource::<ConsoleState>().scrollback.join("\n")
+    }
+
+    /// Whether a system running at the end of the frame saw `ConsoleState` changed.
+    #[derive(Resource, Default)]
+    struct ConsoleStateProbe(Option<bool>);
+
+    /// Records, at the end of the frame, whether `ConsoleState` was marked changed.
+    fn probe_console_state(state: Res<ConsoleState>, mut probe: ResMut<ConsoleStateProbe>) {
+        probe.0 = Some(state.is_changed());
+    }
+
+    /// A closed console with no input leaves `ConsoleState` untouched frame after frame.
+    #[test]
+    fn settled_closed_console_does_not_dirty_its_state() {
+        let mut app = console_app();
+        app.init_resource::<ConsoleStateProbe>()
+            .add_systems(Last, probe_console_state);
+        // The probe's own first run sets its change-detection baseline.
+        app.update();
+        for frame in 1..=3 {
+            app.update();
+            assert_eq!(
+                app.world().resource::<ConsoleStateProbe>().0,
+                Some(false),
+                "frame {frame}: a settled closed console marked ConsoleState changed"
+            );
+        }
     }
 
     /// Records which command ran, in registration order.

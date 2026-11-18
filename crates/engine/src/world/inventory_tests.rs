@@ -53,7 +53,7 @@ fn schema(connection: &Connection) -> Value {
 }
 
 fn query_result(connection: &Connection) -> Value {
-    match ReferenceQuery::for_connection(connection) {
+    match ReferenceQuery::for_connection(connection, WorldDatabaseFeatures::default()) {
         Ok(query) => {
             let statements = json!({"exterior": query.exterior_sql(), "interior": query.interior_sql(),
                 "parent": query.parent_sql, "exterior_cell": EXTERIOR_CELL_ID_SQL});

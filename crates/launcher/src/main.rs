@@ -83,6 +83,10 @@ impl Plugin for LauncherPlugin {
 }
 
 fn main() {
+    if shared::wants_version(std::env::args_os().skip(1)) {
+        println!("{}", shared::VERSION_LINE);
+        return;
+    }
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {

@@ -743,6 +743,8 @@ fn open_system_browser(url: &str, _cancelled: &AtomicBool) -> Result<(), String>
     };
     // ShellExecuteW may load COM-based shell extensions that need an STA on this worker.
     // RPC_E_CHANGED_MODE leaves the existing apartment in place and must not be balanced.
+    // SAFETY: a null reserved pointer and valid apartment flags are the documented arguments.
+    // The matching CoUninitialize below runs only when this call succeeded.
     let com = unsafe {
         CoInitializeEx(
             std::ptr::null(),
@@ -751,7 +753,8 @@ fn open_system_browser(url: &str, _cancelled: &AtomicBool) -> Result<(), String>
     };
     let wide: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
     let operation: Vec<u16> = "open".encode_utf16().chain(Some(0)).collect();
-    // Both UTF-16 strings are terminated and remain live through this native shell call.
+    // SAFETY: both UTF-16 strings are NUL-terminated and remain live through this native shell
+    // call. The remaining pointer arguments are the documented null values.
     let result = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),
@@ -764,6 +767,7 @@ fn open_system_browser(url: &str, _cancelled: &AtomicBool) -> Result<(), String>
     } as isize;
     if com >= 0 {
         // S_OK and S_FALSE both require a matching uninitialize on this thread.
+        // SAFETY: balances the successful CoInitializeEx above, on the same thread.
         unsafe { CoUninitialize() };
     }
     if result > 32 {

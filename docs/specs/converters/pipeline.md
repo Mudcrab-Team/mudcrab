@@ -35,6 +35,10 @@ warnings. Usable neighboring records still publish, but data-loss warnings mark
 both the report and conversion manifest incomplete and make the CLI exit with
 code 1. Compatibility notices remain visible without affecting completeness or
 the exit code; a mixed run retains both severities and stays incomplete.
+Recoverable configured-default land texture fallbacks are also `notices`: an unusable
+diffuse uses generated white, while an unusable optional normal leaves a valid diffuse intact.
+These advisories alone do not make the report or manifest incomplete or make the CLI exit 1;
+failures that prevent publishing usable output still fail conversion.
 `--report-json`, the CLI and the launcher show the warnings and notices. Reader
 recovery does not increment the separate skipped-asset counter. Metadata rebuild
 and `--reuse-assets` use the same severity and completeness rules when they
@@ -92,8 +96,11 @@ their original recorded reader configuration. Older unstamped packs and the exac
 they are not identified as a versioned projection. Exact version-1 and version-2
 legacy stamps and full hashes remain recognized as their original retained-asset
 contracts and are not upgraded to the current projection.
-Adapter-12 metadata recognizes the exact adapter-10 and adapter-11 retained-asset contracts
-with matching original schema/add-on bytes, reader fields and combined settings
+Adapter-14 metadata recognizes the exact adapter-10, adapter-11, adapter-12 and adapter-13
+retained-asset contracts (adapter 13 adds placed database rows; adapter 14 adds the STAT MODS
+alternate-texture table and the `object-texture-swap-geometry-index-v1` NIF contract, so retained DDS and PEX
+candidates stay reusable and NIF output is rebuilt), and legacy projection 6 recognizes the exact
+projection-4 and projection-5 contracts, with matching original schema/add-on bytes, reader fields and combined settings
 hash. The original reader and asset producer remain recorded across repeated
 metadata rebuilds. The string-table language changes database text only, so a pack
 read in one language is a valid source for a rebuild in another; its proof is
@@ -225,6 +232,8 @@ MO2 also checks the longest installed owner, using all root plugin identities in
 
 Metadata rebuilds use the source package's checksum-matched plugin order for archive priority. The longest installed direct-Data owner must appear in that order before an archive supplies current LOD settings or terrain diffuse inputs. Verified source assets remain retained.
 
+Default-only terrain sources are collected only when the rebuilt cell cache needs the configured Skyrim land default. Default-only images are regenerated from current source bytes and are not compared with retained asset hashes. Unusable default archive entries or loose overrides are omitted with advisory notices so default publication can fall back to white or omit only the normal. A path also named by an LTEX remains an ordinary required source with strict extraction, overlay and source-identity checks.
+
 Asset repair selects replacement sources with the same installed-owner filters after recovering the selected plugins. It keeps recorded database plugin provenance and existing assets outside the repair targets. It retains non-MO2 standalone admission and MO2 unowned-archive exclusion. Archive sorting uses the same shared matcher and longest matching active stem, keeping the first load-order slot for equal stems.
 
 Creation fallback warnings are typed entries in the report's `selection_warnings`, naming the CCC path, read failure and installed built-in fallback. CLI summaries, progress and the launcher show them as warnings. They describe input-selection policy and do not count as failed asset conversions or make healthy published output incomplete. The `warnings` field describes conversion failures and reader data loss; successful compatibility remaps remain `notices`. Empty `skipped_plugins`, `load_order` and `selection_warnings` fields are omitted; old reports deserialize with empty vectors.
@@ -267,7 +276,7 @@ Creation fallback warnings are typed entries in the report's `selection_warnings
 | :---------------------------- | :------------------------------------------- | :----------------------------------------------------------------- | :------------------------------------- |
 | **`.bsa` / `.ba2`**           | Directory Hierarchy / VFS                    | Extracted compressed virtual filesystem                            | Rust (`flate2`, `lz4_flex`)            |
 | **`.nif`**                    | **`glTF 2.0` (`.glb`)**                      | Standard 3D geometry, mesh hierarchies, PBR materials, skinning    | `nif-parser` ➔ `gltf` crate            |
-| **`.dds` (BC1-BC7)**          | **`KTX2` / Supercompressed Basis Universal** | Fast GPU texture streaming & compressed VRAM footprints            | `image` crate / `basis-universal`      |
+| **`.dds` (BC1-BC7)**          | **`KTX2` / native formats or UASTC**         | Native preservation, BC7 encoding or UASTC fallback                  | `ddsfile` / `intel_tex_2` / `basis-universal` |
 | **`.hkx` (Havok)**            | **glTF Animations & Rapier 3D Colliders**    | Skeletal animation clips & physics collision meshes                | Havok XML exporter / custom parser     |
 | **`.esm` / `.esp`**           | **`SQLite3` / Binary (Bincode / rkyv)**      | High-performance spatial indexing, memory-mapped zero-copy queries | `rusqlite` / `rkyv` / `zerocopy`       |
 | **`.pex` / `.psc` (Papyrus)** | **`Luau` Scripts**                           | High-performance, sandboxed scripting engine                       | `mlua` / Papyrus-to-Luau AST Transpiler |
@@ -291,7 +300,7 @@ Creation fallback warnings are typed entries in the report's `selection_warnings
 
 ### B. Texture Transcoder (`.dds` ➔ `.ktx2`)
 
-- Converts DirectDraw Surface files into supercompressed **Basis Universal KTX2** textures.
+- Converts DirectDraw Surface files into KTX2 with native payloads, CPU-encoded BC7 or UASTC fallback.
 - Derives sRGB, linear-normal, or linear-data encoding from the texture slot recorded by the
   published GLB/world database; filenames and extensions do not determine color space.
 - Preserves source alpha and authored mip levels, validates the published KTX2 metadata/hash, and
@@ -304,7 +313,7 @@ Creation fallback warnings are typed entries in the report's `selection_warnings
   follow attached ones. This deterministic tie policy has not been established as equivalent
   to every mod manager's archive insertion order. BSA header file-type categories are advisory;
   unknown category bits do not relax layout, count, offset or compression validation.
-- Supports runtime transcoding into WebGPU/Vulkan native compressed formats (BC1/BC7 for Desktop, ASTC/ETC2 for Mobile/Web).
+- Runtime transcoding applies to UASTC outputs only. Native BC and newly encoded BC7 require compatible BC GPU support. GPU encoder selection does not make a pack portable. The [desktop texture contract](../../adr/0014-phase1-desktop-texture-contract.md) records the deferral of the mobile/web profile. Its implementation and validation are tracked in [#548](https://github.com/Mudcrab-Team/mudcrab/issues/548).
 
 ### C. World & Scene Database (`.esm` ➔ `SQLite3` + `rkyv` Zero-Copy Cache)
 
@@ -367,7 +376,16 @@ physical source paths and unrelated database rows are excluded. Historical v1
 proofs remain eligible for package-snapshot retention.
 `default-gait-v1` consumes the body NIF,
 skeleton NIF, skeleton HKX and the sex-specific gait HKX; it builds its bone tree
-from the NIF inputs. Original asset producer/settings provenance remains on the
+from the NIF inputs. `creature-idle-v1` records the explicit cow and chicken body
+NIF, skeleton NIF, skeleton HKX and `mt_idle.hkx` inputs. `authored-actor-idle-v2`
+records one converted body GLB, the project rig HKX, the source clip HKX and
+`recipes/authored-actor-idle-v2/tree/<sha256>.json`, the digest of that body's
+complete bone tree. Its output path is derived from those inputs without the body
+GLB, so bodies with an identical tree share one clip. `actor-idle-catalog-v1`
+records `recipes/actor-idle-catalog-v1/context.json` for
+`meshes/actor-idles/catalog.json`; the context digest covers every binding's
+inputs, unresolved and excluded bodies, clip issues and discovery issues. See
+[animal idle investigation](../../research/animal-idle-471.md). Original asset producer/settings provenance remains on the
 manifest. Material repair and texture pruning refresh the derived output hash
 to describe the published bytes.
 
@@ -393,9 +411,39 @@ resumed staging run rebuild meshes an earlier converter of the same producer
 wrote, while textures and scripts stay reusable. Every producer-27 manifest
 records per-kind proofs, which arrived with producer 26, so the combined fallback
 below never decides current-producer meshes. The list is cleared when the
-producer advances. `--reuse-assets` still retains the source
-package's mesh bytes and its recorded mesh proof, so a later normal conversion
-of that package rebuilds them.
+producer advances. `--reuse-assets` retains the source package's mesh bytes
+only when its recorded `nif` proof equals the current list's proof
+(`crates/converter/src/metadata.rs`). A source written before a name was
+appended is rejected with "retained mesh settings predate the current mesh
+output contract", and a normal conversion rebuilds its meshes. The NIF scene-depth
+bound and the unparsable-skin refusal append no name, so the `nif` proof is unchanged
+and `--reuse-assets` behaves as before.
+
+`--reuse-assets` decides each asset kind on its own recorded proof
+(`crates/converter/src/reuse.rs`). The combined settings proof also binds the
+script ABI, so the rebuild recovers the ABI that proof records and requires every
+other setting to match. Meshes (`nif`) and textures (`dds`) are copied only when
+their recorded proof equals the current one; otherwise the rebuild is refused and
+a normal conversion regenerates that kind. Scripts (`pex`) whose recorded ABI is
+older are never copied: the rebuild converts them again from the Data scripts and
+requires every recorded script source hash to match, so Data that changed since the
+package refuses the rebuild. `metadata-rebuild.json` records the outcome and proof
+of each kind (`asset_kinds`) and both script ABIs. A pack decoded with an earlier
+base schema is accepted when `crates/converter/src/records/schema-lineage.json` lists
+its digest. Each entry is pinned to the compiled schema digest it was reviewed against
+and to a hash in `schema_lineage.rs`, and CODEOWNERS covers both files. A schema edit
+therefore refuses older packs again until a maintainer reviews the entry afresh. A
+saved script ABI newer than the converter's is refused. An output folder inside any
+asset pack is refused. `--reuse-assets` adds no lane that rebuilds a stale `nif` or `dds`
+kind; it refuses and points to a normal conversion into an APFS clone of the package,
+never into a registered pack. That conversion needs the same `--record-reader inhouse
+--texture-encoder gpu --gpu-quality 2` settings the package was made with, needs the
+project owner's explicit approval because it is a conversion, and reuses every other kind
+by its own proof. On the reference pack, one appended mesh contract name cost about 14
+minutes of converter time with LOD and about 65 GiB of transient disk, mostly the
+rewritten ingestion cache. A missing `pex` proof is never reused: the scripts rebuild. A
+missing `dds` proof (manifests older than the per-kind proofs) is covered only by the
+combined settings proof, which must match the current settings and the recorded reader.
 
 Normal producer eligibility remains independent of explicit metadata retention.
 The only cross-producer mesh allowance is producer 24 -> 26; a future producer

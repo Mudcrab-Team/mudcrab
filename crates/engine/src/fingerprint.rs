@@ -7,7 +7,7 @@
 //! and only for a run that records measurements
 //! ([`records_measurements`]): an ordinary play session installs nothing from this module.
 
-use crate::config::EngineConfig;
+use crate::{config::EngineConfig, visual_profile::VisualProfile};
 use bevy::{
     prelude::*,
     render::{
@@ -137,13 +137,14 @@ pub struct RendererFingerprint {
 pub struct GraphicsFingerprint {
     pub stream_radius: i32,
     pub unload_radius: i32,
-    /// `fBlockLevel0Distance`, the level-4 terrain tier's distance in Creation units.
+    /// `fBlockLevel0Distance` in Creation units: the object LOD level-8 handover. Unused until
+    /// object LOD lands.
     pub block_level0_distance: f32,
-    /// `fBlockLevel1Distance`, the level-8 terrain tier's distance.
+    /// `fBlockLevel1Distance`: the object LOD level-16 handover. Unused until object LOD lands.
     pub block_level1_distance: f32,
-    /// `fBlockMaximumDistance`, the level-16 terrain tier's distance.
+    /// `fBlockMaximumDistance`: with `fSplitDistanceMult`, the outer reach of terrain tier 16.
     pub block_maximum_distance: f32,
-    /// `fSplitDistanceMult`, the multiplier on all three block distances.
+    /// `fSplitDistanceMult`, the terrain split multiplier (RF-LOD-003).
     pub split_distance_mult: f32,
     /// MiB of newly loaded render assets a frame may prepare; `0` is unlimited.
     pub max_upload_mib_per_frame: usize,
@@ -154,6 +155,9 @@ pub struct GraphicsFingerprint {
     /// The window's present mode (`AutoNoVsync` for a benchmark, `AutoVsync` otherwise), or `null`
     /// when the run opens no window.
     pub present_mode: Option<String>,
+    /// The visual profile the run rendered with. The profiles disagree on how colour textures
+    /// decode, so two reports from different profiles are never comparable.
+    pub visual_profile: VisualProfile,
 }
 
 impl RunFingerprint {
@@ -215,6 +219,7 @@ impl RunFingerprint {
                 lights: config.lights,
                 headless: config.headless,
                 present_mode: window.map(|window| format!("{:?}", window.present_mode)),
+                visual_profile: config.visual_profile,
             },
         }
     }
@@ -305,6 +310,7 @@ mod tests {
         assert_eq!(graphics["split_distance_mult"], serde_json::json!(1.25));
         assert_eq!(graphics["lights"], serde_json::json!(true));
         assert_eq!(graphics["present_mode"], serde_json::Value::Null);
+        assert_eq!(graphics["visual_profile"], serde_json::json!("mudcrab"));
     }
 
     /// The renderer half carries the adapter, driver and capability names a report is compared on.

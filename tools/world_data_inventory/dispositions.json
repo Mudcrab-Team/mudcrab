@@ -451,26 +451,21 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "mapping": {
-        "expression": "deep_color",
-        "ordinal": 2,
-        "query": "SELECT id,shallow_color,deep_color"
-      },
       "owner": "Mudcrab maintainers (#298)",
-      "reason": "Value maps to WaterColors.deep and StandardMaterial.base_color. Opacity remains an approximation; native parity unproven.",
+      "reason": "Value maps to WaterColors.deep and then, through render::water_deep_color, to the water material base colour. Opacity remains an approximation; native parity unproven. The SELECT mapping is no longer verified: the water-colors query is built with format! for its optional opacity and data columns, and the lexical scan resolves only plain literals and constants.",
       "roles": [
         "filter",
         "result"
       ],
       "sink": [
         {
-          "anchor": "let [r, g, b] = colors.deep;",
+          "anchor": "let base_color = crate::render::water_deep_color([r, g, b], multiplier);",
           "path": "crates/engine/src/streaming.rs"
         }
       ],
       "states": {
         "decoded": "source_decoded",
-        "mapped": "source_mapping",
+        "mapped": "unknown",
         "preserved": "source_preserved",
         "projected": "source_projected",
         "query_dependent": "source_reference",
@@ -494,13 +489,8 @@
           "path": "crates/engine/src/world/database.rs"
         }
       ],
-      "mapping": {
-        "expression": "shallow_color",
-        "ordinal": 1,
-        "query": "SELECT id,shallow_color,deep_color"
-      },
       "owner": "Mudcrab maintainers (#298)",
-      "reason": "Non-NULL predicate gates eligibility; value maps to WaterColors.shallow. No shallow-value material sink found in audited setup. Active PR #299 adds shallow color behavior; it is not part of this reviewed head.",
+      "reason": "Non-NULL predicate gates eligibility; value maps to WaterColors.shallow. Since #299 the water material setup passes it to WaterExtension::with_body and the underwater pass reads it. The SELECT mapping is no longer verified: the water-colors query is built with format! for its optional opacity and data columns, and the lexical scan resolves only plain literals and constants.",
       "roles": [
         "filter",
         "result"
@@ -509,11 +499,15 @@
         {
           "anchor": "WHERE shallow_color IS NOT NULL AND deep_color IS NOT NULL",
           "path": "crates/engine/src/world/database.rs"
+        },
+        {
+          "anchor": "crate::render::DEFAULT_WATER_SHALLOW_COLOR, |colors| {",
+          "path": "crates/engine/src/streaming.rs"
         }
       ],
       "states": {
         "decoded": "source_decoded",
-        "mapped": "source_mapping",
+        "mapped": "unknown",
         "preserved": "source_preserved",
         "projected": "source_projected",
         "query_dependent": "source_reference",
@@ -649,6 +643,11 @@
       "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
     },
     "actor_models": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "base_texture_swaps": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
@@ -827,6 +826,11 @@
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+    },
+    "race_animation_sources": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
     },
     "race_movement_links": {
       "classification": "deferred",

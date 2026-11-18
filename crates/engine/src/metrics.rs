@@ -460,6 +460,10 @@ struct Thresholds {
     minimum_average_fps: f64,
     maximum_p95_frame_ms: f64,
     maximum_memory_growth_gib: f64,
+    /// `--accept-frame-pass-bar` was given: the frame-budget bar decides the run.
+    frame_pass_bar_required: bool,
+    /// The frame-budget window met the bar (99.9% within budget, none over twice it).
+    frame_pass_bar_met: bool,
     no_streaming_failures: bool,
     commit_budget_respected: bool,
     streaming_lifecycle_validated: bool,
@@ -649,8 +653,23 @@ fn collect_and_finish(
         .first_process_memory_gib
         .zip(samples.last_process_memory_gib)
         .map(|(first, last)| (last - first).max(0.0));
+    // The frame-budget bar is computed before the verdict because the opt-in gate reads it. The
+    // window is the measured frames; a route run scores the route, as it does for the report.
+    let frame_budget = FrameBudgetReport::from_frames(
+        config.frame_budget_ms,
+        if route.is_some() || measurements.file_route.is_some() {
+            "route window: the frames from the first full frame on the route to the end of the measured window"
+        } else {
+            "measured window: every frame after the warm-up"
+        },
+        &samples.ledger.scored,
+    );
+    // Off by default. `None` (no scored frame) cannot meet the bar, so with the flag a run that
+    // scored no frame fails even when the frame rate limit is 0.
+    let frame_pass_bar_met = frame_budget.meets_pass_bar == Some(true);
     let passed = average_fps >= config.accept_min_fps
         && p95 <= config.accept_p95_ms
+        && (!config.accept_frame_pass_bar || frame_pass_bar_met)
         && memory_growth_gib.is_none_or(|growth| growth <= config.accept_max_memory_growth_gib)
         && no_streaming_failures
         && commit_budget_respected
@@ -688,15 +707,6 @@ fn collect_and_finish(
         core_count: value.core_count.clone(),
         memory: value.memory.clone(),
     });
-    let frame_budget = FrameBudgetReport::from_frames(
-        config.frame_budget_ms,
-        if route.is_some() || measurements.file_route.is_some() {
-            "route window: the frames from the first full frame on the route to the end of the measured window"
-        } else {
-            "measured window: every frame after the warm-up"
-        },
-        &samples.ledger.scored,
-    );
     let report = BenchmarkReport {
         format_version: 11,
         generated_unix_ms: SystemTime::now()
@@ -769,6 +779,8 @@ fn collect_and_finish(
             minimum_average_fps: config.accept_min_fps,
             maximum_p95_frame_ms: config.accept_p95_ms,
             maximum_memory_growth_gib: config.accept_max_memory_growth_gib,
+            frame_pass_bar_required: config.accept_frame_pass_bar,
+            frame_pass_bar_met,
             no_streaming_failures,
             commit_budget_respected,
             streaming_lifecycle_validated,
@@ -836,7 +848,12 @@ fn collect_and_finish(
             passed,
             "acceptance benchmark complete"
         ),
-        Err(error) => error!(%error, "failed to write benchmark report"),
+        Err(error) => {
+            error!(%error, "failed to write benchmark report");
+            exit.write(AppExit::error());
+            samples.finished = true;
+            return;
+        }
     }
     samples.finished = true;
     exit.write(if passed {
@@ -860,6 +877,7 @@ fn record_frame_ledger(
     render_timings: Res<RenderTimings>,
     streaming: Option<Res<StreamingMetrics>>,
     route: Option<Res<RouteRunner>>,
+    streaming_route: Option<Res<crate::app::StreamingBenchmarkRoute>>,
     mut samples: ResMut<BenchmarkSamples>,
 ) {
     if samples.finished || samples.measurement_complete || !config.is_benchmark_run() {
@@ -879,7 +897,7 @@ fn record_frame_ledger(
     let scored = frame_is_scored(
         ledger.frames_seen,
         config.benchmark_warmup_frames,
-        route.as_deref().map(RouteRunner::scoring),
+        route_scoring(streaming_route.as_deref(), route.as_deref()),
     );
     let milliseconds = real_time.delta_secs_f64() * 1000.0;
     if scored && milliseconds.is_finite() && milliseconds > 0.0 {
@@ -898,6 +916,21 @@ fn record_frame_ledger(
         });
     }
     ledger.previous_upload_ms = commit_ms;
+}
+
+/// Whether the route the run follows is scoring this frame, or `None` when the run has no route.
+/// A streaming route scores only its measured window (`route_window`), the same frames the
+/// summary measures: the waiting for the world and the moving tail are not scored, so a loading
+/// hitch there cannot fail the frame budget. A file route scores its own frames.
+fn route_scoring(
+    streaming: Option<&crate::app::StreamingBenchmarkRoute>,
+    file: Option<&RouteRunner>,
+) -> Option<bool> {
+    match (streaming, file) {
+        (Some(route), _) => Some(route_window(route) == BenchmarkWindow::Measured),
+        (None, Some(file)) => Some(file.scoring()),
+        (None, None) => None,
+    }
 }
 
 /// Whether a frame belongs to the frame budget's window. A run with no route scores the frames
@@ -1419,6 +1452,76 @@ mod tests {
         let snapshot = route_snapshot(&route, 10_000.0);
         assert_eq!(snapshot.cpu_settled_elapsed_ms, Some(4000.0));
         assert_eq!(snapshot.movement_started_elapsed_ms, Some(7000.0));
+    }
+
+    /// A streaming route scores only its measured window. A 40 ms frame while the route waits for
+    /// the world or in its moving tail is not scored, so it cannot fail `--accept-frame-pass-bar`;
+    /// the same frame while the route moves is scored and misses the bar.
+    #[test]
+    fn a_streaming_route_scores_only_its_measured_window() {
+        use crate::{
+            app::{StreamingBenchmarkPhase, StreamingBenchmarkRoute},
+            frame_budget::{FrameBudgetReport, ScoredFrame},
+            profiling::ProfilingPlugin,
+        };
+        use bevy::time::TimeUpdateStrategy;
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(EngineConfig {
+                streaming_benchmark_route_speed: Some(370.0),
+                accept_frame_pass_bar: true,
+                benchmark_output: directory.path().join("report.json"),
+                profile_output_dir: Some(directory.path().join("profile")),
+                ..default()
+            })
+            .insert_resource(StreamingBenchmarkRoute::default())
+            .insert_resource(TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(40),
+            ))
+            .init_resource::<DiagnosticsStore>()
+            .init_resource::<RendererMetrics>()
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<Image>>()
+            .add_plugins((AcceptanceMetricsPlugin, ProfilingPlugin));
+        let scored = |app: &App| {
+            app.world()
+                .resource::<BenchmarkSamples>()
+                .ledger
+                .scored
+                .clone()
+        };
+        let bar = |frames: &[ScoredFrame]| {
+            FrameBudgetReport::from_frames(6.25, "test window", frames).meets_pass_bar
+        };
+
+        // Waiting for the world: 40 ms frames are loading, not the route.
+        app.update();
+        app.update();
+        assert!(scored(&app).is_empty(), "waiting frames are not scored");
+        assert_eq!(bar(&scored(&app)), None, "no window, no verdict");
+
+        // Moving: the same frame belongs to the window and misses the 6.25 ms bar.
+        {
+            let mut route = app.world_mut().resource_mut::<StreamingBenchmarkRoute>();
+            route.phase = StreamingBenchmarkPhase::Moving;
+            route.movement_started_real_seconds = Some(1.0);
+        }
+        app.update();
+        let moving = scored(&app);
+        assert_eq!(moving.len(), 1, "the moving frame is scored");
+        assert!((moving[0].ms - 40.0).abs() < 1.0, "{}", moving[0].ms);
+        assert_eq!(bar(&moving), Some(false));
+
+        // Moving tail: scoring stops again, and the window keeps its single frame.
+        {
+            let mut route = app.world_mut().resource_mut::<StreamingBenchmarkRoute>();
+            route.phase = StreamingBenchmarkPhase::Tail;
+            route.movement_finished_real_seconds = Some(5.0);
+        }
+        app.update();
+        assert_eq!(scored(&app).len(), 1, "tail frames are not scored");
     }
 
     /// Verify trace frame ordering across all benchmark windows with GPU inventory on and off.
@@ -1945,5 +2048,96 @@ mod tests {
         let report = written_report(directory.path());
         assert_eq!(report["thresholds"]["screenshot_captured"], true);
         assert_eq!(report["passed"], true);
+    }
+
+    /// `--accept-frame-pass-bar` is off by default, so a 40 ms hitch is reported and does not fail
+    /// the run. With the flag the same window misses the bar (one frame over twice the 6.25 ms
+    /// budget) and the run fails, with the gate named in the report.
+    #[test]
+    fn the_frame_pass_bar_flag_fails_a_run_with_one_hitch() {
+        use crate::frame_budget::{FrameOwner, ScoredFrame};
+        use bevy::app::AppExit;
+        use bevy::ecs::message::Messages;
+        use std::time::Duration;
+
+        let run = |required: bool| {
+            let directory = tempfile::tempdir().unwrap();
+            let mut app = acceptance_report_app(directory.path(), None, Duration::ZERO);
+            {
+                let mut config = app.world_mut().resource_mut::<EngineConfig>();
+                config.accept_frame_pass_bar = required;
+                // Widen p95 so the hitch is judged by the pass bar alone, not by two gates.
+                config.accept_p95_ms = 100.0;
+            }
+            app.world_mut()
+                .resource_mut::<BenchmarkSamples>()
+                .ledger
+                .scored
+                .push(ScoredFrame {
+                    ms: 40.0,
+                    owner: FrameOwner::MainWorld,
+                    wait_ms: None,
+                });
+            app.update();
+            let exits: Vec<AppExit> = app
+                .world()
+                .resource::<Messages<AppExit>>()
+                .iter_current_update_messages()
+                .cloned()
+                .collect();
+            let report = written_report(directory.path());
+            (exits, report, directory)
+        };
+
+        let (exits, report, _directory) = run(false);
+        assert_eq!(report["thresholds"]["frame_pass_bar_required"], false);
+        assert_eq!(report["thresholds"]["frame_pass_bar_met"], false);
+        assert_eq!(report["frame_budget"]["meets_pass_bar"], false);
+        assert_eq!(report["passed"], true, "the bar is advisory unless asked");
+        assert_eq!(exits, vec![AppExit::Success], "a pass exits successfully");
+
+        let (exits, report, _directory) = run(true);
+        assert_eq!(report["thresholds"]["frame_pass_bar_required"], true);
+        assert_eq!(report["thresholds"]["frame_pass_bar_met"], false);
+        assert_eq!(
+            report["passed"], false,
+            "a 40 ms frame misses the 6.25 ms bar"
+        );
+        assert_eq!(exits, vec![AppExit::error()]);
+    }
+
+    /// A report that cannot be written fails the run even when every measured threshold passed.
+    /// Otherwise a full disk, a read-only directory or a path that is a directory exits as a pass
+    /// with no report for acceptance to read.
+    #[test]
+    fn an_unwritable_report_fails_the_run() {
+        use bevy::app::AppExit;
+        use bevy::ecs::message::Messages;
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = acceptance_report_app(directory.path(), None, std::time::Duration::ZERO);
+        // The report path is the temp directory itself: `create_dir_all` on its parent succeeds
+        // and `fs::write` on the directory always fails, as it does on a disk that cannot take
+        // the file.
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .benchmark_output = directory.path().to_path_buf();
+        app.update();
+        assert!(app.world().resource::<BenchmarkSamples>().finished);
+        let exits: Vec<AppExit> = app
+            .world()
+            .resource::<Messages<AppExit>>()
+            .iter_current_update_messages()
+            .cloned()
+            .collect();
+        assert_eq!(
+            exits,
+            vec![AppExit::error()],
+            "a report that was not written fails the run"
+        );
+        assert!(
+            fs::read_dir(directory.path()).unwrap().next().is_none(),
+            "the failed run left a report behind"
+        );
     }
 }

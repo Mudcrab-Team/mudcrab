@@ -200,6 +200,24 @@ choose an empty or new folder.` (or why it is not a folder). The rule lives in o
 press asks again, so a folder that has filled up since it was chosen, or the default
 `modern_assets`, is refused at the press, not only at the drop.
 
+If the launcher's existing output check finds damaged metadata, **Start**, **Start over**
+and **Resume** first show the unreadable file and its error and ask before reusing or
+replacing that output. The question stays in its own visible line above the buttons,
+outside the scrolling result and notice history. The ordinary controls are replaced
+by an action-specific confirmation (for example, **Confirm Resume** or **Confirm Start over**)
+and **Cancel**. Confirm stays disabled and ignores presses for the first 500 ms, so a
+double-click on Resume cannot immediately consent when the button row moves.
+Confirmation continues the selected action, including Resume's kept
+staging folder; Cancel leaves that output and staging in place without starting a run.
+Empty folders and valid unfinished conversions keep their normal flow. A damaged
+output still offers leftover staging for Resume, which asks for the same consent.
+
+The confirmation press rechecks the chosen folders, stopped-run state, output safety,
+damaged-file classification and running-game guard. Changed folders/state or a different
+reported damage require choosing the action again. This compares the classifier's
+file/reason; it is not a byte-by-byte monitor of the output. Check/Full check and the
+converter's manifest recovery remain unchanged.
+
 - **Start** always converts from scratch into a fresh staging folder. In `Finished` or `Stopped` it
   means "convert again", and any staging folder from the last run stays until it is deleted.
 - **Stop** asks the run to stop. The pipeline finishes the asset in flight, keeps its staging folder

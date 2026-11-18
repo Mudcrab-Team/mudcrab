@@ -86,6 +86,8 @@ pub enum UnresolvedReason {
     NoFacegenAndNoDefault,
     /// An armature's `BOD2` has no biped slot this catalog stores.
     UnrecognizedSlot,
+    /// Multiple head-slot models remain without a normal body in a creature skin.
+    AmbiguousCreatureBody,
 }
 
 impl UnresolvedReason {
@@ -111,6 +113,7 @@ impl UnresolvedReason {
             Self::NoMatchingArma => "no_matching_arma",
             Self::NoFacegenAndNoDefault => "no_facegen_and_no_default",
             Self::UnrecognizedSlot => "unrecognized_slot",
+            Self::AmbiguousCreatureBody => "ambiguous_creature_body",
         }
     }
 }
@@ -253,7 +256,33 @@ pub fn resolve_actor_models(
         let race_view = SubrecordView::new(&race.subrecords);
 
         let skin_id = effective_skin(records, &view, &race_view, id, &mut catalog);
-        let mut parts = resolve_body(records, skin_id, race_id, female, id, &mut catalog);
+        let authoring = crate::animation::authoring::read_race_authoring_fields(
+            race.subrecords
+                .iter()
+                .map(|(tag, data)| (tag.as_slice(), data.as_slice())),
+        )
+        .ok();
+        let creature_project = authoring
+            .and_then(|row| {
+                if female {
+                    row.female_project
+                } else {
+                    row.male_project
+                }
+            })
+            .is_some_and(|project| !project.starts_with("meshes/actors/character/"));
+        let creature_head_body = race_view.find(b"DATA").is_some_and(|data| data.len() >= 36)
+            && !race_uses_facegen(&race_view)
+            && creature_project;
+        let mut parts = resolve_body(
+            records,
+            skin_id,
+            race_id,
+            female,
+            creature_head_body,
+            id,
+            &mut catalog,
+        );
         let head = resolve_head(&race_view, female, plugin_ids.get(&root_id), &parts);
         if head.is_none() {
             catalog.diagnostics.push(ActorModelDiagnostic {
@@ -435,12 +464,54 @@ fn npc_weight(view: &SubrecordView<'_>) -> Option<f32> {
     (weight.is_finite() && (0.0..=100.0).contains(&weight)).then_some(weight)
 }
 
+/// `(armature, armature race)` pairs: race-compatible first, `DefaultRace` second.
+pub(crate) type ArmatureTiers = (Vec<(u32, u32)>, Vec<(u32, u32)>);
+
+/// Splits an `ARMO`'s armatures by race compatibility, keeping authored order in each tier.
+///
+/// The first tier holds armatures whose own race, or one of their additional races, is
+/// `race_id`; the second holds `DefaultRace` armatures. Both are `(armature, armature race)`.
+/// Skin armor and worn outfit armor share this rule.
+pub(crate) fn partition_armatures(
+    records: &HashMap<u32, RawRecord>,
+    armatures: &[u32],
+    race_id: u32,
+) -> ArmatureTiers {
+    let mut compatible: Vec<(u32, u32)> = Vec::new();
+    let mut default: Vec<(u32, u32)> = Vec::new();
+    for &armature_id in armatures {
+        let Some(armature) = records
+            .get(&armature_id)
+            .filter(|armature| &armature.record_type == b"ARMA" && !armature.is_deleted())
+        else {
+            continue;
+        };
+        let armature_view = SubrecordView::new(&armature.subrecords);
+        let armature_race_id = armature_view.get_form_id(b"RNAM").unwrap_or(0);
+        let exact_race = armature_race_id == race_id;
+        let additional_race = armature_view.get_form_ids(b"MODL").into_iter().any(|id| {
+            id != 0
+                && id == race_id
+                && records
+                    .get(&id)
+                    .is_some_and(|race| &race.record_type == b"RACE" && !race.is_deleted())
+        });
+        if exact_race || additional_race {
+            compatible.push((armature_id, armature_race_id));
+        } else if armature_race_id == DEFAULT_RACE_FORM_ID {
+            default.push((armature_id, DEFAULT_RACE_FORM_ID));
+        }
+    }
+    (compatible, default)
+}
+
 /// Follows effective skin armor -> `ARMO/MODL` -> compatible `ARMA` tiers, and fills biped slots.
 fn resolve_body(
     records: &HashMap<u32, RawRecord>,
     skin_id: Option<u32>,
     race_id: u32,
     female: bool,
+    creature_head_body: bool,
     npc_id: u32,
     catalog: &mut ActorModelCatalog,
 ) -> Vec<ActorModelPartRow> {
@@ -470,39 +541,21 @@ fn resolve_body(
         return Vec::new();
     }
 
-    // Preserve authored order across exact and additional-race compatible entries.
-    let mut compatible: Vec<(u32, u32)> = Vec::new();
-    let mut default: Vec<(u32, u32)> = Vec::new();
-    for armature_id in armatures {
-        let Some(armature) = records
-            .get(&armature_id)
-            .filter(|armature| &armature.record_type == b"ARMA" && !armature.is_deleted())
-        else {
-            continue;
-        };
-        let armature_view = SubrecordView::new(&armature.subrecords);
-        let armature_race_id = armature_view.get_form_id(b"RNAM").unwrap_or(0);
-        let exact_race = armature_race_id == race_id;
-        let additional_race = armature_view.get_form_ids(b"MODL").into_iter().any(|id| {
-            id != 0
-                && id == race_id
-                && records
-                    .get(&id)
-                    .is_some_and(|race| &race.record_type == b"RACE" && !race.is_deleted())
-        });
-        if exact_race || additional_race {
-            compatible.push((armature_id, armature_race_id));
-        } else if armature_race_id == DEFAULT_RACE_FORM_ID {
-            default.push((armature_id, DEFAULT_RACE_FORM_ID));
-        }
-    }
+    let (compatible, default) = partition_armatures(records, &armatures, race_id);
 
     let mut parts: Vec<ActorModelPartRow> = Vec::new();
+    let mut creature_candidates = Vec::new();
     let mut seen_paths: BTreeSet<String> = BTreeSet::new();
     for (armature_id, armature_race_id) in compatible.into_iter().chain(default) {
         let armature = &records[&armature_id];
         let view = SubrecordView::new(&armature.subrecords);
-        let slot = match classify_slot(view.find(b"BOD2").or_else(|| view.find(b"BODT"))) {
+        let bod = view.find(b"BOD2").or_else(|| view.find(b"BODT"));
+        let creature_head = creature_head_body
+            && bod
+                .filter(|data| data.len() >= 4)
+                .is_some_and(|data| u32::from_le_bytes(data[..4].try_into().unwrap()) & 1 != 0);
+        let standard_slot = classify_slot(bod);
+        let slot = match standard_slot.or_else(|| creature_head.then_some(ActorModelSlot::Body)) {
             Some(slot) => slot,
             None => {
                 catalog.diagnostics.push(ActorModelDiagnostic {
@@ -524,6 +577,22 @@ fn resolve_body(
         let Some(path) = path else {
             continue;
         };
+        if standard_slot.is_none() && creature_head {
+            let skin_tag = if female { b"NAM1" } else { b"NAM0" };
+            let candidate = ActorModelPartRow {
+                npc_id,
+                slot: ActorModelSlot::Body,
+                model_path: path,
+                armature_race_id,
+                skin_texture_set_id: view.get_form_id(skin_tag).filter(|id| *id != 0),
+            };
+            if !creature_candidates.iter().any(|row: &ActorModelPartRow| {
+                row.model_path.eq_ignore_ascii_case(&candidate.model_path)
+            }) {
+                creature_candidates.push(candidate);
+            }
+            continue;
+        }
         if parts.iter().any(|part| part.slot == slot) || !seen_paths.insert(path.to_lowercase()) {
             continue;
         }
@@ -538,6 +607,20 @@ fn resolve_body(
         });
     }
 
+    // Many authored creatures (horse, bear, atronachs, mammoth) put their whole
+    // skin in slot 30. It is a body only when a non-FaceGen creature project has
+    // no ordinary body and exactly one compatible head-slot model. Never let a
+    // head candidate displace an existing biped body or choose between two models.
+    if !parts.iter().any(|part| part.slot == ActorModelSlot::Body) {
+        if creature_candidates.len() == 1 {
+            parts.push(creature_candidates.pop().unwrap());
+        } else if creature_candidates.len() > 1 {
+            catalog.diagnostics.push(ActorModelDiagnostic {
+                npc_id,
+                reason: UnresolvedReason::AmbiguousCreatureBody,
+            });
+        }
+    }
     if parts.is_empty() {
         catalog.diagnostics.push(ActorModelDiagnostic {
             npc_id,

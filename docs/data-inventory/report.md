@@ -6,7 +6,7 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 
 ## Denominators
 
-- rusqlite_candidates: 61
+- rusqlite_candidates: 90
 - emitted_schema_columns: unknown
 - manually_traced_fields: 14
 - named_external_stores: 3
@@ -27,8 +27,8 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 | `race_movement_links.walk_movt_id` | source_decoded | source_preserved | source_projected | source_reference | source_mapping | source_sink | validation: Read to reject unsupported non-null race selection; not proof that the linked movement profile controls speed. Active PR #246 owns selection changes. |
 | `records.data` | unknown | source_preserved | source_projected | unknown | unknown | unknown | provenance: Opaque archive/payload disposition. Preservation does not establish interpretation of every subrecord. Current image-space reader decodes selected records.data; no blanket unused claim. |
 | `references.data` | unknown | source_preserved | source_projected | unknown | unknown | unknown | provenance: Opaque archive/payload disposition. Preservation does not establish interpretation of every subrecord. Current image-space reader decodes selected records.data; no blanket unused claim. |
-| `waters.deep_color` | source_decoded | source_preserved | source_projected | source_reference | source_mapping | source_sink | filter, result: Value maps to WaterColors.deep and StandardMaterial.base_color. Opacity remains an approximation; native parity unproven. |
-| `waters.shallow_color` | source_decoded | source_preserved | source_projected | source_reference | source_mapping | source_sink | filter, result: Non-NULL predicate gates eligibility; value maps to WaterColors.shallow. No shallow-value material sink found in audited setup. Active PR #299 adds shallow color behavior; it is not part of this reviewed head. |
+| `waters.deep_color` | source_decoded | source_preserved | source_projected | source_reference | unknown | source_sink | filter, result: Value maps to WaterColors.deep and then, through render::water_deep_color, to the water material base colour. Opacity remains an approximation; native parity unproven. The SELECT mapping is no longer verified: the water-colors query is built with format! for its optional opacity and data columns, and the lexical scan resolves only plain literals and constants. |
+| `waters.shallow_color` | source_decoded | source_preserved | source_projected | source_reference | unknown | source_sink | filter, result: Non-NULL predicate gates eligibility; value maps to WaterColors.shallow. Since #299 the water material setup passes it to WaterExtension::with_body and the underwater pass reads it. The SELECT mapping is no longer verified: the water-colors query is built with format! for its optional opacity and data columns, and the lexical scan resolves only plain literals and constants. |
 
 ## External stores
 
@@ -51,7 +51,7 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 - `records.data`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/world/imagespace.rs](../../crates/engine/src/world/imagespace.rs). Exact anchors in inventory.json.
 - `references.data`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/world/imagespace.rs](../../crates/engine/src/world/imagespace.rs). Exact anchors in inventory.json.
 - `waters.deep_color`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/streaming.rs](../../crates/engine/src/streaming.rs), [crates/engine/src/world/database.rs](../../crates/engine/src/world/database.rs). Exact anchors in inventory.json.
-- `waters.shallow_color`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/world/database.rs](../../crates/engine/src/world/database.rs). Exact anchors in inventory.json.
+- `waters.shallow_color`: [crates/converter/src/esm/exporter.rs](../../crates/converter/src/esm/exporter.rs), [crates/engine/src/streaming.rs](../../crates/engine/src/streaming.rs), [crates/engine/src/world/database.rs](../../crates/engine/src/world/database.rs). Exact anchors in inventory.json.
 
 ## Retained legacy dispositions
 
@@ -63,64 +63,93 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 
 | Candidate | Status |
 |---|---|
-| `crates/engine/src/app.rs:810` execute | literal |
-| `crates/engine/src/app.rs:811` execute | literal |
-| `crates/engine/src/app.rs:815` execute_batch | unknown |
-| `crates/engine/src/app.rs:830` execute | literal |
-| `crates/engine/src/app.rs:835` prepare | literal |
-| `crates/engine/src/app.rs:839` execute | unknown |
-| `crates/engine/src/app.rs:844` execute | literal |
-| `crates/engine/src/app.rs:848` execute | literal |
-| `crates/engine/src/app.rs:2416` query_row | unknown |
-| `crates/engine/src/app.rs:2451` query_row | unknown |
-| `crates/engine/src/bin/world-inspect.rs:271` query_row | literal |
-| `crates/engine/src/bin/world-inspect.rs:292` query_row | literal |
-| `crates/engine/src/bin/world-inspect.rs:418` query_row | literal |
-| `crates/engine/src/bin/world-inspect.rs:427` query_row | literal |
-| `crates/engine/src/bin/world-inspect.rs:445` query_row | literal |
-| `crates/engine/src/bin/world-inspect.rs:453` prepare | literal |
-| `crates/engine/src/bin/world-inspect.rs:536` prepare | unknown |
-| `crates/engine/src/bug_report/snapshot.rs:690` query_row | literal |
-| `crates/engine/src/bug_report/snapshot.rs:699` query_row | literal |
-| `crates/engine/src/cell_commands.rs:104` query_row | literal |
-| `crates/engine/src/cell_commands.rs:132` query_row | unknown |
-| `crates/engine/src/physics.rs:109` query_row | literal |
-| `crates/engine/src/physics.rs:117` query_row | literal |
-| `crates/engine/src/physics.rs:120` query_row | literal |
-| `crates/engine/src/physics.rs:131` query_row | literal |
-| `crates/engine/src/physics.rs:144` query_row | literal |
+| `crates/engine/src/app.rs:987` execute | literal |
+| `crates/engine/src/app.rs:988` execute | literal |
+| `crates/engine/src/app.rs:992` execute_batch | unknown |
+| `crates/engine/src/app.rs:1007` execute | literal |
+| `crates/engine/src/app.rs:1012` prepare | literal |
+| `crates/engine/src/app.rs:1016` execute | unknown |
+| `crates/engine/src/app.rs:1021` execute | literal |
+| `crates/engine/src/app.rs:1025` execute | literal |
+| `crates/engine/src/app.rs:2631` query_row | unknown |
+| `crates/engine/src/app.rs:2666` query_row | unknown |
+| `crates/engine/src/bin/world-inspect.rs:323` query_row | literal |
+| `crates/engine/src/bin/world-inspect.rs:347` query_row | literal |
+| `crates/engine/src/bin/world-inspect.rs:498` query_row | literal |
+| `crates/engine/src/bin/world-inspect.rs:519` query_row | unknown |
+| `crates/engine/src/bin/world-inspect.rs:564` query_row | literal |
+| `crates/engine/src/bin/world-inspect.rs:573` query_row | literal |
+| `crates/engine/src/bin/world-inspect.rs:591` query_row | literal |
+| `crates/engine/src/bin/world-inspect.rs:599` prepare | literal |
+| `crates/engine/src/bin/world-inspect.rs:683` prepare | unknown |
+| `crates/engine/src/bin/world-inspect.rs:718` prepare | unknown |
+| `crates/engine/src/bug_report/snapshot.rs:697` query_row | literal |
+| `crates/engine/src/bug_report/snapshot.rs:706` query_row | literal |
+| `crates/engine/src/cell_commands.rs:108` query_row | literal |
+| `crates/engine/src/cell_commands.rs:136` query_row | unknown |
+| `crates/engine/src/object_materials/tests.rs:1015` query_row | literal |
+| `crates/engine/src/object_materials/tests.rs:1034` execute_batch | unknown |
+| `crates/engine/src/object_materials.rs:69` query_row | literal |
+| `crates/engine/src/object_materials.rs:79` prepare | literal |
+| `crates/engine/src/object_materials.rs:97` prepare | literal |
+| `crates/engine/src/object_materials.rs:111` query_row | unknown |
+| `crates/engine/src/physics/carry.rs:223` prepare | literal |
+| `crates/engine/src/physics.rs:115` query_row | literal |
+| `crates/engine/src/physics.rs:123` query_row | literal |
+| `crates/engine/src/physics.rs:126` query_row | literal |
+| `crates/engine/src/physics.rs:137` query_row | literal |
+| `crates/engine/src/physics.rs:150` query_row | literal |
+| `crates/engine/src/room_culling.rs:655` prepare_cached | literal |
+| `crates/engine/src/room_culling.rs:657` query_row | unknown |
+| `crates/engine/src/room_culling.rs:670` prepare_cached | literal |
+| `crates/engine/src/room_culling.rs:692` prepare_cached | literal |
+| `crates/engine/src/room_culling.rs:715` prepare_cached | literal |
+| `crates/engine/src/room_culling.rs:754` prepare_cached | literal |
 | `crates/engine/src/route.rs:350` query_row | unknown |
-| `crates/engine/src/streaming/lod.rs:900` prepare | unknown |
-| `crates/engine/src/world/actor_catalog.rs:140` query_row | literal |
-| `crates/engine/src/world/actor_catalog.rs:160` prepare | unknown |
-| `crates/engine/src/world/actor_catalog.rs:161` prepare | unknown |
-| `crates/engine/src/world/actor_catalog.rs:220` prepare | literal |
-| `crates/engine/src/world/database.rs:244` prepare | literal |
-| `crates/engine/src/world/database.rs:259` prepare | literal |
-| `crates/engine/src/world/database.rs:273` prepare | literal |
-| `crates/engine/src/world/database.rs:288` prepare | literal |
-| `crates/engine/src/world/database.rs:592` query_row | literal |
-| `crates/engine/src/world/database.rs:599` query_row | literal |
-| `crates/engine/src/world/database.rs:609` query_row | literal |
-| `crates/engine/src/world/database.rs:636` query_row | literal |
-| `crates/engine/src/world/database.rs:647` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:676` query_row | literal |
-| `crates/engine/src/world/database.rs:870` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:871` query_row | unknown |
-| `crates/engine/src/world/database.rs:879` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:880` query_row | unknown |
-| `crates/engine/src/world/database.rs:904` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:930` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:933` query_row | unknown |
-| `crates/engine/src/world/database.rs:940` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:944` query_row | unknown |
-| `crates/engine/src/world/database.rs:1016` query_row | literal |
-| `crates/engine/src/world/database.rs:1063` query_row | literal |
-| `crates/engine/src/world/database.rs:1080` prepare_cached | unknown |
-| `crates/engine/src/world/database.rs:1090` prepare_cached | unknown |
-| `crates/engine/src/world/database.rs:1101` prepare_cached | unknown |
-| `crates/engine/src/world/database.rs:1102` query_row | unknown |
-| `crates/engine/src/world/environment.rs:486` prepare | unknown |
+| `crates/engine/src/streaming/collision_placement_probe.rs:52` query_row | literal |
+| `crates/engine/src/streaming/lod.rs:935` prepare | unknown |
+| `crates/engine/src/world/actor_catalog.rs:176` prepare | literal |
+| `crates/engine/src/world/actor_catalog.rs:200` query_row | literal |
+| `crates/engine/src/world/actor_catalog.rs:220` prepare | unknown |
+| `crates/engine/src/world/actor_catalog.rs:221` prepare | unknown |
+| `crates/engine/src/world/actor_catalog.rs:280` prepare | literal |
+| `crates/engine/src/world/database.rs:539` prepare | literal |
+| `crates/engine/src/world/database.rs:554` prepare | literal |
+| `crates/engine/src/world/database.rs:568` prepare | literal |
+| `crates/engine/src/world/database.rs:586` prepare | literal |
+| `crates/engine/src/world/database.rs:587` query_row | unknown |
+| `crates/engine/src/world/database.rs:603` prepare | unknown |
+| `crates/engine/src/world/database.rs:652` query_row | literal |
+| `crates/engine/src/world/database.rs:658` query_row | literal |
+| `crates/engine/src/world/database.rs:976` query_row | literal |
+| `crates/engine/src/world/database.rs:1122` query_row | literal |
+| `crates/engine/src/world/database.rs:1129` query_row | literal |
+| `crates/engine/src/world/database.rs:1141` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1178` query_row | literal |
+| `crates/engine/src/world/database.rs:1201` query_row | literal |
+| `crates/engine/src/world/database.rs:1225` query_row | literal |
+| `crates/engine/src/world/database.rs:1233` query_row | literal |
+| `crates/engine/src/world/database.rs:1243` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1285` query_row | literal |
+| `crates/engine/src/world/database.rs:1482` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1483` query_row | unknown |
+| `crates/engine/src/world/database.rs:1491` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1492` query_row | unknown |
+| `crates/engine/src/world/database.rs:1516` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1542` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1545` query_row | unknown |
+| `crates/engine/src/world/database.rs:1552` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1556` query_row | unknown |
+| `crates/engine/src/world/database.rs:1629` query_row | literal |
+| `crates/engine/src/world/database.rs:1676` query_row | literal |
+| `crates/engine/src/world/database.rs:1693` prepare_cached | unknown |
+| `crates/engine/src/world/database.rs:1703` prepare_cached | unknown |
+| `crates/engine/src/world/database.rs:1714` prepare_cached | unknown |
+| `crates/engine/src/world/database.rs:1715` query_row | unknown |
+| `crates/engine/src/world/environment.rs:606` prepare | literal |
+| `crates/engine/src/world/environment.rs:645` prepare | literal |
+| `crates/engine/src/world/environment.rs:739` prepare | literal |
+| `crates/engine/src/world/environment.rs:890` prepare | unknown |
 | `crates/engine/src/world/imagespace.rs:228` prepare | literal |
 | `crates/engine/src/world/imagespace.rs:245` query_row | literal |
 | `crates/engine/src/world/imagespace.rs:266` prepare | literal |

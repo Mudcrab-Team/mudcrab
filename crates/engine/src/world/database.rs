@@ -3,7 +3,9 @@ use bevy::prelude::Resource;
 use color_eyre::{Result, eyre::WrapErr};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use shared::lod::{ChunkAnchor, ChunkKey, LodOrigin, LodTier, chunk_payload_path};
+use shared::lod::{
+    ChunkAnchor, ChunkKey, LodOrigin, LodTier, chunk_payload_path, object_chunk_payload_path,
+};
 use std::{
     collections::{BTreeSet, HashSet},
     path::Path,
@@ -37,6 +39,13 @@ pub struct ReferenceRow {
     /// New-game enable-state snapshot, including parent chains. All rows remain available;
     /// this bootstrap value does not represent subsequent script/quest/save state.
     pub initially_enabled: bool,
+    /// The placed reference carries the Multibound flag. Its authored policy, including `NONE`,
+    /// must not be replaced with geometric room membership from an older conversion.
+    pub has_multibound_override: bool,
+    /// The winning `ACHR` header's `Starts Dead` flag (`0x200`). Only actor references read it;
+    /// other record types assign that bit another meaning. The engine has no death pose or
+    /// ragdoll, so a corpse keeps its bind pose instead of playing a standing idle.
+    pub starts_dead: bool,
     pub cell_id: u32,
     pub base_form_id: u32,
     /// Authoritative base record type; `statics` also contains movable clutter.
@@ -118,6 +127,12 @@ pub enum DatabaseRequest {
         query: LodChunkQuery,
         queued_at: Instant,
     },
+    /// All object LOD chunks of a worldspace (the additive `lod_object_chunks` table).
+    LoadLodObjectChunks {
+        generation: u64,
+        worldspace_id: u32,
+        queued_at: Instant,
+    },
     Shutdown,
 }
 
@@ -175,6 +190,15 @@ pub struct LodChunkResponse {
     pub chunk_count: usize,
 }
 
+/// Generation-tagged result of loading a worldspace's object LOD chunks. It has its own channel,
+/// so terrain LOD intake never sees an object response.
+#[derive(Debug)]
+pub struct LodObjectResponse {
+    pub generation: u64,
+    pub worldspace_id: u32,
+    pub result: std::result::Result<Vec<LodChunkMetadata>, LodQueryFailure>,
+}
+
 /// Whether an asynchronous query failed temporarily or rejected invalid metadata.
 #[derive(Debug)]
 pub struct LodQueryFailure {
@@ -201,21 +225,228 @@ impl std::fmt::Display for LodQueryFailure {
     }
 }
 
+/// Which door-link contract the worker may read. Core packs discover the optional table;
+/// legacy extension packs require a valid declaration and may explicitly disable the reader.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DoorLinksAccess {
+    /// Upstream core output; older core packs may have no door table.
+    #[default]
+    Core,
+    /// A validated legacy extension declaration requires a complete door table.
+    LegacyExtension,
+    /// A stale or unsupported legacy declaration must not be read as core data.
+    Disabled,
+}
+
+/// Dataset capabilities used by the world database worker (`crate::extensions`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorldDatabaseFeatures {
+    /// Ownership and validation policy for the promoted `door_links` table.
+    pub door_links: DoorLinksAccess,
+}
+
 #[derive(Resource)]
 pub struct WorldDatabase {
     requests: Sender<DatabaseRequest>,
     responses: Receiver<DatabaseResponse>,
     lod_responses: Receiver<LodChunkResponse>,
+    lod_object_responses: Receiver<LodObjectResponse>,
     worker: Option<thread::JoinHandle<()>>,
     worker_stopped: Arc<AtomicBool>,
 }
 
-/// A water's Skyrim colours and reflectivity factors, decoded by the converter from its WATR
-/// record's `DNAM` (`crates/converter/src/esm/exporter.rs`). `fresnel`/`reflectivity` are
-/// additive `waters` columns: a database converted before they existed lacks them, so
-/// [`AssetCatalog::water_colors`] returns `None` for every water rather than erroring, and
-/// callers fall back to Skyrim's DefaultWater values (see `render::DEFAULT_WATER_FRESNEL` /
-/// `render::DEFAULT_WATER_REFLECTIVITY`).
+/// A water's above-water fog, read from its WATR `DNAM` in the record bytes (`waters.data`), so it
+/// needs no column and no reconversion: the view into the water starts to cloud
+/// `near` world units behind the surface, is fully opaque at `far`, and `amount` is the exponent of
+/// the curve between them (0 leaves the body clear).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaterFog {
+    pub near: f32,
+    pub far: f32,
+    pub amount: f32,
+}
+
+impl Default for WaterFog {
+    /// Skyrim's DefaultWater after Update.esm: fog near -10, far 150, amount 0.7.
+    fn default() -> Self {
+        Self {
+            near: -10.0,
+            far: 150.0,
+            amount: 0.7,
+        }
+    }
+}
+
+impl WaterFog {
+    fn is_usable(self) -> bool {
+        self.near.is_finite() && self.far.is_finite() && self.amount.is_finite()
+    }
+}
+
+/// Byte offsets of the above-water fog in a WATR `DNAM`, three little-endian `f32`s (see
+/// `docs/research/water.md`). The amount sits at 132, so a `DNAM` shorter than 136 bytes has none.
+const WATER_DNAM_FOG_NEAR: usize = 32;
+const WATER_DNAM_FOG_FAR: usize = 36;
+const WATER_DNAM_FOG_AMOUNT: usize = 132;
+
+/// The parts of a `waters.data` blob the engine reads: the WATR `DNAM` bytes and the three noise
+/// texture paths (`NAM2` to `NAM4`). The blob is the converter's archived list of the record's
+/// subrecords. `None` when it does not decode or has no `DNAM`.
+struct WaterRecord {
+    dnam: Vec<u8>,
+    /// `FNAM` (one byte, `TESWaterForm` +0xB9): bit 0 dangerous, bit 3 flow map, bit 4 blend
+    /// normals (RF-WATER-013).
+    flags: Option<u8>,
+    noise_paths: [Option<String>; 3],
+}
+
+fn parse_water_record(record: &[u8]) -> Option<WaterRecord> {
+    // SQLite gives no alignment guarantee, and the archive is validated before it is read.
+    let mut aligned = rkyv::util::AlignedVec::<16>::with_capacity(record.len());
+    aligned.extend_from_slice(record);
+    let record =
+        rkyv::from_bytes::<shared::records::ArchivedRecordData, rkyv::rancor::Error>(&aligned)
+            .ok()?;
+    let find = |tag: &[u8; 4]| {
+        record
+            .subrecords
+            .iter()
+            .find(|subrecord| &subrecord.tag == tag)
+            .map(|subrecord| subrecord.data.as_slice())
+    };
+    let path = |tag: &[u8; 4]| {
+        let bytes = find(tag)?;
+        let end = bytes
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(bytes.len());
+        let text = String::from_utf8_lossy(&bytes[..end]).into_owned();
+        (!text.is_empty()).then_some(text)
+    };
+    Some(WaterRecord {
+        dnam: find(b"DNAM")?.to_vec(),
+        flags: find(b"FNAM").and_then(|bytes| bytes.first().copied()),
+        noise_paths: [path(b"NAM2"), path(b"NAM3"), path(b"NAM4")],
+    })
+}
+
+/// A little-endian `f32` at `offset` of a `DNAM`, if it is there and finite.
+fn dnam_float(dnam: &[u8], offset: usize) -> Option<f32> {
+    let bytes = dnam.get(offset..offset + 4)?;
+    Some(f32::from_le_bytes(bytes.try_into().ok()?)).filter(|value| value.is_finite())
+}
+
+fn water_fog_from_dnam(dnam: &[u8]) -> Option<WaterFog> {
+    let fog = WaterFog {
+        near: dnam_float(dnam, WATER_DNAM_FOG_NEAR)?,
+        far: dnam_float(dnam, WATER_DNAM_FOG_FAR)?,
+        amount: dnam_float(dnam, WATER_DNAM_FOG_AMOUNT)?,
+    };
+    fog.is_usable().then_some(fog)
+}
+
+/// Decodes a water's fog from the `waters.data` blob. `None` when the blob does not decode, has no
+/// `DNAM`, the `DNAM` is too short, or a value is not finite; the caller then uses
+/// [`WaterFog::default`] and keeps the water's colours.
+#[cfg(test)]
+fn water_fog_from_record(record: &[u8]) -> Option<WaterFog> {
+    water_fog_from_dnam(&parse_water_record(record)?.dnam)
+}
+
+/// The surface of a water, as its WATR record gives it: three noise normal maps, each with a UV
+/// scale and an amplitude, and the depth property that flattens them in shallow water. Skyrim's
+/// water shader blends the three maps as `normalize((0,0,1) + a0*n0 + a1*n1 + a2*n2)`
+/// (Community Shaders `Water.hlsl`, `GetWaterNormal`); `docs/research/water.md` has the sources.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WaterNoise {
+    /// The converted texture of each layer (`NAM2` to `NAM4`); `None` for a layer with no path.
+    pub textures: [Option<String>; 3],
+    /// World units per texture tile (`DNAM` `uvScaleA`).
+    pub uv_scale: [f32; 3],
+    /// How much each layer tilts the normal (`DNAM` `amplitudeA`).
+    pub amplitude: [f32; 3],
+    /// `DNAM` depth properties: reflections, refraction, normals and specular lighting.
+    pub depth_properties: [f32; 4],
+    /// `DNAM` `noiseWindDirectionA`, degrees: the compass bearing the wind of each layer comes from
+    /// (0 is north, 90 is east).
+    pub wind_direction: [f32; 3],
+    /// `DNAM` `noiseWindSpeedA`: noise-tile repeats per second.
+    pub wind_speed: [f32; 3],
+    /// `DNAM` `noiseFalloff` (+0x60), world units: the distance the reflection weight blends over
+    /// (RF-SHADER-008).
+    pub noise_falloff: f32,
+    /// The sun terms of the retail water shader (RF-WATER-010): sun specular power (+0x10), sun
+    /// specular magnitude (+0xCC), sparkle power (+0xE0), sparkle magnitude (+0xC8).
+    pub sun: [f32; 4],
+    /// `DNAM` refraction magnitude (+0x98), world units: how far the wave normal moves the point
+    /// the bed is seen through (RF-WATER-049; 40 for the river records, 8 for the creek).
+    pub refraction_magnitude: f32,
+}
+
+/// Byte offsets in a WATR `DNAM` (`docs/research/water.md`, section 1.2).
+const WATER_DNAM_REFLECTION_MAGNITUDE: usize = 0xC4;
+const WATER_DNAM_UV_SCALE: usize = 0xAC;
+const WATER_DNAM_AMPLITUDE: usize = 0xB8;
+const WATER_DNAM_DEPTH_PROPERTIES: usize = 0xD0;
+const WATER_DNAM_WIND_DIRECTION: usize = 0x64;
+const WATER_DNAM_WIND_SPEED: usize = 0x70;
+const WATER_DNAM_NOISE_FALLOFF: usize = 0x60;
+const WATER_DNAM_UNDERWATER_FOG_NEAR: usize = 0x90;
+const WATER_DNAM_UNDERWATER_FOG_FAR: usize = 0x94;
+const WATER_DNAM_SUN_SPECULAR_POWER: usize = 0x10;
+const WATER_DNAM_SUN_SPECULAR_MAGNITUDE: usize = 0xCC;
+const WATER_DNAM_SUN_SPARKLE_POWER: usize = 0xE0;
+const WATER_DNAM_SUN_SPARKLE_MAGNITUDE: usize = 0xC8;
+const WATER_DNAM_REFRACTION_MAGNITUDE: usize = 0x98;
+
+/// Skyrim's DefaultWater reflection magnitude (`DNAM` +0xC4, 0.42 in the retail records read for
+/// this PR), used when a water's record cannot be read.
+pub const DEFAULT_WATER_REFLECTION_MAGNITUDE: f32 = 0.42;
+
+fn water_noise_from_record(record: &WaterRecord) -> Option<WaterNoise> {
+    let triple = |offset: usize| {
+        Some([
+            dnam_float(&record.dnam, offset)?,
+            dnam_float(&record.dnam, offset + 4)?,
+            dnam_float(&record.dnam, offset + 8)?,
+        ])
+    };
+    let uv_scale = triple(WATER_DNAM_UV_SCALE)?;
+    let amplitude = triple(WATER_DNAM_AMPLITUDE)?;
+    // A scale of zero or less has no tile size; the amplitude may be zero, which silences a layer.
+    if uv_scale.iter().any(|scale| *scale <= 0.0) || amplitude.iter().any(|amount| *amount < 0.0) {
+        return None;
+    }
+    let depth = |index: usize| dnam_float(&record.dnam, WATER_DNAM_DEPTH_PROPERTIES + 4 * index);
+    Some(WaterNoise {
+        textures: record
+            .noise_paths
+            .clone()
+            .map(|path| path.and_then(record_texture_path)),
+        uv_scale,
+        amplitude,
+        depth_properties: [depth(0)?, depth(1)?, depth(2)?, depth(3)?],
+        wind_direction: triple(WATER_DNAM_WIND_DIRECTION)?,
+        wind_speed: triple(WATER_DNAM_WIND_SPEED)?,
+        noise_falloff: dnam_float(&record.dnam, WATER_DNAM_NOISE_FALLOFF)?,
+        sun: [
+            dnam_float(&record.dnam, WATER_DNAM_SUN_SPECULAR_POWER)?,
+            dnam_float(&record.dnam, WATER_DNAM_SUN_SPECULAR_MAGNITUDE)?,
+            dnam_float(&record.dnam, WATER_DNAM_SUN_SPARKLE_POWER)?,
+            dnam_float(&record.dnam, WATER_DNAM_SUN_SPARKLE_MAGNITUDE)?,
+        ],
+        refraction_magnitude: dnam_float(&record.dnam, WATER_DNAM_REFRACTION_MAGNITUDE)?,
+    })
+}
+
+/// A water's Skyrim colours, reflectivity factors, opacity and fog. The colours and factors are
+/// decoded by the converter from its WATR record's `DNAM` into `waters` columns
+/// (`crates/converter/src/esm/exporter.rs`); a database converted before those columns existed
+/// lacks them, so [`AssetCatalog::water_colors`] returns `None` for every water rather than
+/// erroring, and callers fall back to Skyrim's DefaultWater values (see
+/// `render::DEFAULT_WATER_FRESNEL`, `render::DEFAULT_WATER_REFLECTIVITY` and
+/// [`WaterFog::default`]). `fog` is read from the record bytes in `waters.data`, per record: a
+/// water whose `DNAM` cannot be read reads as `None` while its colours stay usable.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WaterColors {
     pub shallow: [u8; 3],
@@ -223,6 +454,35 @@ pub struct WaterColors {
     pub reflection: [u8; 3],
     pub fresnel: f32,
     pub reflectivity: f32,
+    /// The water's `ANAM` opacity, 0-100: how much of the surface covers the bed. A water row with
+    /// no opacity reads as Skyrim's DefaultWater 50.
+    pub opacity: u8,
+    pub fog: Option<WaterFog>,
+    /// `DNAM` Reflection Magnitude: Skyrim's water shader reflects along
+    /// `reflect(view, magnitude * normal + (0, 0, 1 - magnitude))`, so it is how much of the wave
+    /// normal reaches the reflection. Read from the record bytes in `waters.data`.
+    pub reflection_magnitude: Option<f32>,
+    /// The record's `FNAM` byte, read from the record bytes: `waters.flags` holds the record header
+    /// flags, not this (RF-WATER-013). Bit 3 selects retail's flow-map program, bit 4 blends the
+    /// normals. `None` when the record bytes cannot be read.
+    pub fnam: Option<u8>,
+    /// `DNAM` underwater fog near (+0x90) and far (+0x94): the distances the underwater fog blends
+    /// over (RF-WATER-031). `DNAM` +0x8C, the fog amount, is passed to the effect but no program
+    /// reads it, so it is not read here.
+    pub underwater_fog: Option<[f32; 2]>,
+}
+
+impl WaterColors {
+    /// FNAM bit 3: retail draws this water with its flow-map program (RF-WATER-013, RF-WATER-019)
+    /// in a cell that has a flow map (RF-WATER-036).
+    pub fn uses_flow_map(&self) -> bool {
+        self.fnam.is_some_and(|flags| flags & 0x08 != 0)
+    }
+
+    /// FNAM bit 4: blend normals (RF-WATER-013, RF-WATER-023).
+    pub fn blends_normals(&self) -> bool {
+        self.fnam.is_some_and(|flags| flags & 0x10 != 0)
+    }
 }
 
 fn unpack_color(value: u32) -> [u8; 3] {
@@ -232,10 +492,45 @@ fn unpack_color(value: u32) -> [u8; 3] {
 
 #[derive(Resource, Default)]
 pub struct AssetCatalog {
+    object_texture_swaps: crate::object_materials::ObjectTextureCatalog,
     landscape_diffuse: std::collections::HashMap<u32, String>,
     landscape_normal: std::collections::HashMap<u32, String>,
+    default_land: (Option<String>, Option<String>),
     water_flow: std::collections::HashMap<u32, String>,
     water_colors: std::collections::HashMap<u32, WaterColors>,
+    water_noise: std::collections::HashMap<u32, WaterNoise>,
+    /// The cells whose pack holds a per-cell flow map (RF-WATER-036), read from the pack's
+    /// `textures/water/<plugin>/` folder when the catalog opens.
+    water_flow_maps: std::collections::HashSet<(i32, i32)>,
+}
+
+/// The plugin folder the retail game reads a cell's flow map from: it formats the cell's own
+/// plugin file name (RF-WATER-036). Every one of the 641 flow maps is under `skyrim.esm`, and no
+/// other archive has one, so the engine reads that folder.
+pub const WATER_FLOW_MAP_PLUGIN: &str = "skyrim.esm";
+
+/// The cells with a flow map in `<pack>/textures/water/<plugin>/`: the file names are
+/// `flow.<cellX>.<cellY>.ktx2`. A pack with no such folder has none.
+fn read_flow_map_cells(pack: &Path) -> std::collections::HashSet<(i32, i32)> {
+    let folder = pack
+        .join("textures")
+        .join("water")
+        .join(WATER_FLOW_MAP_PLUGIN);
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Default::default();
+    };
+    entries
+        .filter_map(std::result::Result::ok)
+        .filter_map(|entry| flow_map_cell(&entry.file_name().to_string_lossy()))
+        .collect()
+}
+
+/// The cell a flow map file name `flow.<x>.<y>.ktx2` belongs to.
+fn flow_map_cell(file_name: &str) -> Option<(i32, i32)> {
+    let stem = file_name.to_ascii_lowercase();
+    let stem = stem.strip_prefix("flow.")?.strip_suffix(".ktx2")?;
+    let (x, y) = stem.split_once('.')?;
+    Some((x.parse().ok()?, y.parse().ok()?))
 }
 
 impl AssetCatalog {
@@ -283,17 +578,43 @@ impl AssetCatalog {
         drop(statement);
         // A database converted before `fresnel`/`reflectivity` existed has no such columns, and
         // `prepare` fails with a "no such column" error rather than an empty result. Treat that
-        // the same as no water colours at all instead of refusing to open the catalog.
-        let water_colors = connection
-            .prepare(
-                "SELECT id,shallow_color,deep_color,reflection_color,fresnel,reflectivity FROM waters \
-                 WHERE shallow_color IS NOT NULL AND deep_color IS NOT NULL \
-                 AND reflection_color IS NOT NULL AND fresnel IS NOT NULL AND reflectivity IS NOT NULL",
-            )
+        // the same as no water colours at all instead of refusing to open the catalog. The fog is
+        // not a column: it is read from the record bytes in `data`, so a database of any age that
+        // still has them yields fog, and one that does not yields the default.
+        let has_column = |name: &str| {
+            connection
+                .prepare("SELECT COUNT(*) FROM pragma_table_info('waters') WHERE name=?1")
+                .and_then(|mut statement| statement.query_row([name], |row| row.get::<_, i64>(0)))
+                .unwrap_or(0)
+                > 0
+        };
+        let opacity_column = if has_column("opacity") {
+            "COALESCE(opacity,50)"
+        } else {
+            "50"
+        };
+        let record_column = if has_column("data") { "data" } else { "NULL" };
+        let water_colors_query = format!(
+            "SELECT id,shallow_color,deep_color,reflection_color,fresnel,reflectivity,{opacity_column},{record_column} FROM waters \
+             WHERE shallow_color IS NOT NULL AND deep_color IS NOT NULL \
+             AND reflection_color IS NOT NULL AND fresnel IS NOT NULL AND reflectivity IS NOT NULL"
+        );
+        let water_rows: Vec<(u32, WaterColors, Option<WaterNoise>)> = connection
+            .prepare(&water_colors_query)
             .ok()
             .and_then(|mut statement| {
                 statement
                     .query_map([], |row| {
+                        let parsed = row
+                            .get::<_, Option<Vec<u8>>>(7)?
+                            .and_then(|record| parse_water_record(&record));
+                        let fog = parsed
+                            .as_ref()
+                            .and_then(|record| water_fog_from_dnam(&record.dnam));
+                        let reflection_magnitude = parsed.as_ref().and_then(|record| {
+                            dnam_float(&record.dnam, WATER_DNAM_REFLECTION_MAGNITUDE)
+                        });
+                        let noise = parsed.as_ref().and_then(water_noise_from_record);
                         Ok((
                             row.get::<_, u32>(0)?,
                             WaterColors {
@@ -302,27 +623,112 @@ impl AssetCatalog {
                                 reflection: unpack_color(row.get::<_, u32>(3)?),
                                 fresnel: row.get::<_, f32>(4)?,
                                 reflectivity: row.get::<_, f32>(5)?,
+                                opacity: row.get::<_, i64>(6)?.clamp(0, 100) as u8,
+                                fog,
+                                reflection_magnitude,
+                                fnam: parsed.as_ref().and_then(|record| record.flags),
+                                underwater_fog: parsed.as_ref().and_then(|record| {
+                                    Some([
+                                        dnam_float(&record.dnam, WATER_DNAM_UNDERWATER_FOG_NEAR)?,
+                                        dnam_float(&record.dnam, WATER_DNAM_UNDERWATER_FOG_FAR)?,
+                                    ])
+                                }),
                             },
+                            noise,
                         ))
                     })
                     .ok()
                     .map(|rows| rows.filter_map(std::result::Result::ok).collect())
             })
             .unwrap_or_default();
+        let mut water_colors = std::collections::HashMap::new();
+        let mut water_noise = std::collections::HashMap::new();
+        for (id, colors, noise) in water_rows {
+            water_colors.insert(id, colors);
+            if let Some(noise) = noise {
+                water_noise.insert(id, noise);
+            }
+        }
+        let has_default_land: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='terrain_default_texture')",
+            [],
+            |row| row.get(0),
+        )?;
+        let default_land = if has_default_land {
+            match connection.query_row(
+                "SELECT diffuse_path,normal_path FROM terrain_default_texture WHERE id=0",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            ) {
+                Ok((diffuse, normal)) => {
+                    let valid = |path: String| {
+                        if !is_safe_relative_asset_path(&path)
+                            || path.contains([':', '\\'])
+                            || path.split('/').any(|part| matches!(part, "" | "." | ".."))
+                            || path != path.to_ascii_lowercase()
+                            || !path.ends_with(".ktx2")
+                        {
+                            bevy::log::warn!("Invalid default land path; using white: {path}");
+                            return None;
+                        }
+                        Some(path)
+                    };
+                    let diffuse = diffuse.and_then(valid);
+                    let normal = diffuse.as_ref().and(normal).and_then(valid);
+                    (diffuse, normal)
+                }
+                Err(error) => {
+                    bevy::log::warn!("Invalid default land metadata; using white: {error}");
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
         Ok(Self {
+            default_land,
+            object_texture_swaps: crate::object_materials::ObjectTextureCatalog::read(&connection)?,
             landscape_diffuse,
             landscape_normal,
             water_flow,
             water_colors,
+            water_noise,
+            water_flow_maps: path.parent().map(read_flow_map_cells).unwrap_or_default(),
         })
     }
 
+    /// The converted per-cell flow map of cell (`x`, `y`) (RF-WATER-036), when the pack has one.
+    pub fn water_flow_map(&self, x: i32, y: i32) -> Option<String> {
+        self.water_flow_maps
+            .contains(&(x, y))
+            .then(|| format!("textures/water/{WATER_FLOW_MAP_PLUGIN}/flow.{x}.{y}.ktx2"))
+    }
+
+    /// The converted LTEX diffuse, or the pack's configured default for the zero base ID.
     pub fn landscape_diffuse(&self, form_id: u32) -> Option<&str> {
+        if form_id == shared::terrain_mesh::DEFAULT_LAND_TEXTURE_FORM_ID {
+            return self.default_land.0.as_deref();
+        }
         self.landscape_diffuse.get(&form_id).map(String::as_str)
     }
 
-    /// The converted normal map of landscape texture `form_id`, if its texture set has one.
+    pub(crate) fn object_texture_swaps(
+        &self,
+        base: u32,
+    ) -> Option<crate::object_materials::ReferenceTextureSwaps> {
+        self.object_texture_swaps.get(base)
+    }
+
+    /// The converted LTEX normal, or the pack's configured default for the zero base ID.
     pub fn landscape_normal(&self, form_id: u32) -> Option<&str> {
+        if form_id == shared::terrain_mesh::DEFAULT_LAND_TEXTURE_FORM_ID {
+            return self.default_land.1.as_deref();
+        }
         self.landscape_normal.get(&form_id).map(String::as_str)
     }
 
@@ -330,9 +736,23 @@ impl AssetCatalog {
         self.water_flow.get(&form_id).map(String::as_str)
     }
 
+    /// The noise normal maps and their scales of water `form_id`, when its record bytes give them.
+    pub fn water_noise(&self, form_id: u32) -> Option<&WaterNoise> {
+        self.water_noise.get(&form_id)
+    }
+
     pub fn water_colors(&self, form_id: u32) -> Option<WaterColors> {
         self.water_colors.get(&form_id).copied()
     }
+}
+
+/// The converted texture of a path as a record's own subrecord spells it, for example
+/// `Data\\Textures\\Water\\DefaultWater.dds`: the converter's `waters` columns hold such paths
+/// already without the `Data` folder, the record bytes do not.
+fn record_texture_path(path: String) -> Option<String> {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    let without_data = normalized.strip_prefix("data/").unwrap_or(&normalized);
+    converted_texture_path(without_data.to_owned())
 }
 
 /// Maps a texture path stored in the world database to the converted `.ktx2` under `textures/`.
@@ -340,7 +760,7 @@ impl AssetCatalog {
 /// The database is input the engine did not write, so a path that could leave `textures/` - a
 /// `..` or `.` segment, an absolute or drive-prefixed path, an empty segment, or a `:` (a Windows
 /// drive or stream, or an asset source such as `embedded://`) - is refused rather than loaded.
-fn converted_texture_path(path: String) -> Option<String> {
+pub(crate) fn converted_texture_path(path: String) -> Option<String> {
     // Converted assets are published with lowercase canonical paths, so the
     // lookup must lowercase too (matching world-inspect's resolver).
     let normalized = path.replace('\\', "/").to_ascii_lowercase();
@@ -379,11 +799,13 @@ impl WorldDatabase {
         let (requests, request_rx) = bounded(capacity);
         let (response_tx, responses) = unbounded();
         let (_lod_tx, lod_responses) = unbounded();
+        let (_lod_object_tx, lod_object_responses) = unbounded();
         (
             Self {
                 requests,
                 responses,
                 lod_responses,
+                lod_object_responses,
                 worker: None,
                 worker_stopped: Arc::new(AtomicBool::new(true)),
             },
@@ -392,19 +814,66 @@ impl WorldDatabase {
         )
     }
 
+    /// [`Self::channel_fixture`] that keeps the object LOD response sender, so a test can answer
+    /// an object chunk request itself.
+    #[cfg(test)]
+    pub(crate) fn channel_fixture_with_lod_objects(
+        capacity: usize,
+    ) -> (Self, Receiver<DatabaseRequest>, Sender<LodObjectResponse>) {
+        let (requests, request_rx) = bounded(capacity);
+        let (_response_tx, responses) = unbounded();
+        let (_lod_tx, lod_responses) = unbounded();
+        let (lod_object_tx, lod_object_responses) = unbounded();
+        (
+            Self {
+                requests,
+                responses,
+                lod_responses,
+                lod_object_responses,
+                worker: None,
+                worker_stopped: Arc::new(AtomicBool::new(true)),
+            },
+            request_rx,
+            lod_object_tx,
+        )
+    }
+
+    /// Opens available core doors, including legacy packages with no door table.
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with(path, WorldDatabaseFeatures::default())
+    }
+
+    /// Opens the ordinary database with a validated door capability policy.
+    pub fn open_with(path: &Path, features: WorldDatabaseFeatures) -> Result<Self> {
         validate(path)?;
+        if features.door_links == DoorLinksAccess::LegacyExtension {
+            require_table(path, "door_links", crate::extensions::Feature::DoorLinks)?;
+            let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            color_eyre::eyre::ensure!(
+                has_door_links(&connection)?,
+                "extension {} is listed but its door_links table lacks columns",
+                shared::extensions::DOOR_LINKS
+            );
+        }
         let path = path.to_owned();
         let (request_tx, request_rx) = bounded(128);
         // Responses must not block shutdown if the main world stops polling.
         let (response_tx, response_rx) = unbounded();
         let (lod_response_tx, lod_response_rx) = unbounded();
+        let (lod_object_tx, lod_object_rx) = unbounded();
         let worker_stopped = Arc::new(AtomicBool::new(false));
         let stopped = worker_stopped.clone();
         let worker = thread::Builder::new()
             .name("mudcrab-world-db".into())
             .spawn(move || {
-                worker(path, request_rx, response_tx, lod_response_tx);
+                worker(
+                    path,
+                    features,
+                    request_rx,
+                    response_tx,
+                    lod_response_tx,
+                    lod_object_tx,
+                );
                 stopped.store(true, Ordering::Release);
             })
             .wrap_err("failed to start world database worker")?;
@@ -412,6 +881,7 @@ impl WorldDatabase {
             requests: request_tx,
             responses: response_rx,
             lod_responses: lod_response_rx,
+            lod_object_responses: lod_object_rx,
             worker: Some(worker),
             worker_stopped,
         })
@@ -445,6 +915,23 @@ impl WorldDatabase {
     /// Read the next LOD response without consuming ordinary cell responses.
     pub fn try_lod_response(&self) -> Option<LodChunkResponse> {
         self.lod_responses.try_recv().ok()
+    }
+
+    /// Queue a load of every object LOD chunk of `worldspace_id` on the existing worker.
+    pub fn request_lod_object_chunks(&self, generation: u64, worldspace_id: u32) -> Result<()> {
+        enqueue_request(
+            &self.requests,
+            DatabaseRequest::LoadLodObjectChunks {
+                generation,
+                worldspace_id,
+                queued_at: Instant::now(),
+            },
+        )
+    }
+
+    /// Read the next object LOD response.
+    pub fn try_lod_object_response(&self) -> Option<LodObjectResponse> {
+        self.lod_object_responses.try_recv().ok()
     }
 }
 
@@ -483,6 +970,23 @@ impl Drop for WorldDatabase {
     }
 }
 
+fn require_table(path: &Path, table: &str, feature: crate::extensions::Feature) -> Result<()> {
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .wrap_err_with(|| format!("failed to open {}", path.display()))?;
+    let found: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1 COLLATE NOCASE",
+        [table],
+        |row| row.get(0),
+    )?;
+    color_eyre::eyre::ensure!(
+        found > 0,
+        "extension {} is listed but {} has no `{table}` table",
+        feature.extension(),
+        path.display()
+    );
+    Ok(())
+}
+
 fn validate(path: &Path) -> Result<()> {
     shared::world_assets::validate_world_database(path).map(|_| ())
 }
@@ -491,9 +995,11 @@ pub(crate) use shared::world_assets::validate_lod_build_contract;
 
 fn worker(
     path: std::path::PathBuf,
+    features: WorldDatabaseFeatures,
     requests: Receiver<DatabaseRequest>,
     responses: Sender<DatabaseResponse>,
     lod_responses: Sender<LodChunkResponse>,
+    lod_object_responses: Sender<LodObjectResponse>,
 ) {
     // Which optional tables and columns this database has does not change while it is open, so
     // the reference query is built once for the connection. If the database cannot be opened or
@@ -505,7 +1011,7 @@ fn worker(
     )
     .map_err(color_eyre::eyre::Report::from)
     .and_then(|connection| {
-        let query = ReferenceQuery::for_connection(&connection)?;
+        let query = ReferenceQuery::for_connection(&connection, features)?;
         Ok((connection, query))
     })
     .map_err(|error| format!("world database {} is unusable: {error:#}", path.display()));
@@ -576,6 +1082,30 @@ fn worker(
                     break;
                 }
             }
+            DatabaseRequest::LoadLodObjectChunks {
+                generation,
+                worldspace_id,
+                queued_at: _,
+            } => {
+                let result = match &setup {
+                    Ok((connection, _)) => load_lod_object_chunks(connection, worldspace_id)
+                        .map_err(LodQueryFailure::from_error),
+                    Err(error) => Err(LodQueryFailure {
+                        transient: false,
+                        reason: error.clone(),
+                    }),
+                };
+                if lod_object_responses
+                    .send(LodObjectResponse {
+                        generation,
+                        worldspace_id,
+                        result,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
         }
     }
 }
@@ -605,44 +1135,8 @@ fn load_lod_chunks(connection: &Connection, query: LodChunkQuery) -> Result<Vec<
         return Ok(Vec::new());
     }
 
-    let (origin_x, origin_y): (Option<i32>, Option<i32>) = connection
-        .query_row(
-            "SELECT lod_origin_x,lod_origin_y FROM worldspaces WHERE id=?1",
-            [query.worldspace_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .wrap_err_with(|| {
-            format!(
-                "LOD worldspace {} is missing from worldspaces or has invalid origin columns",
-                query.worldspace_id
-            )
-        })?;
-    let origin = LodOrigin::new(
-        origin_x.ok_or_else(|| {
-            color_eyre::eyre::eyre!(
-                "LOD worldspace {} has no valid X origin",
-                query.worldspace_id
-            )
-        })?,
-        origin_y.ok_or_else(|| {
-            color_eyre::eyre::eyre!(
-                "LOD worldspace {} has no valid Y origin",
-                query.worldspace_id
-            )
-        })?,
-    );
-
-    let build_identity: String = connection
-        .query_row(
-            "SELECT build_identity FROM lod_build WHERE id=1",
-            [],
-            |row| row.get(0),
-        )
-        .wrap_err("LOD build identity is missing from lod_build")?;
-    color_eyre::eyre::ensure!(
-        is_canonical_sha256(&build_identity),
-        "LOD build identity is not a lowercase SHA-256 digest"
-    );
+    let origin = lod_worldspace_origin(connection, query.worldspace_id)?;
+    let build_identity = lod_build_identity(connection)?;
 
     let mut statement = connection.prepare_cached(
         "SELECT DISTINCT c.worldspace_id,c.tier,c.anchor_x,c.anchor_y,c.payload_path,c.content_hash,\
@@ -667,9 +1161,124 @@ fn load_lod_chunks(connection: &Connection, query: LodChunkQuery) -> Result<Vec<
 
     rows.map(|row| {
         let raw = row?;
-        validate_lod_chunk(raw, query.worldspace_id, origin, &build_identity)
+        validate_lod_chunk(
+            raw,
+            query.worldspace_id,
+            origin,
+            &build_identity,
+            chunk_payload_path,
+        )
     })
     .collect()
+}
+
+/// The LOD grid origin of a worldspace, from its `worldspaces` row.
+fn lod_worldspace_origin(connection: &Connection, worldspace_id: u32) -> Result<LodOrigin> {
+    let (origin_x, origin_y): (Option<i32>, Option<i32>) = connection
+        .query_row(
+            "SELECT lod_origin_x,lod_origin_y FROM worldspaces WHERE id=?1",
+            [worldspace_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .wrap_err_with(|| {
+            format!(
+                "LOD worldspace {worldspace_id} is missing from worldspaces or has invalid origin columns"
+            )
+        })?;
+    Ok(LodOrigin::new(
+        origin_x.ok_or_else(|| {
+            color_eyre::eyre::eyre!("LOD worldspace {worldspace_id} has no valid X origin")
+        })?,
+        origin_y.ok_or_else(|| {
+            color_eyre::eyre::eyre!("LOD worldspace {worldspace_id} has no valid Y origin")
+        })?,
+    ))
+}
+
+/// The pack's LOD build identity (`lod_build`), which every chunk row is checked against.
+fn lod_build_identity(connection: &Connection) -> Result<String> {
+    let build_identity: String = connection
+        .query_row(
+            "SELECT build_identity FROM lod_build WHERE id=1",
+            [],
+            |row| row.get(0),
+        )
+        .wrap_err("LOD build identity is missing from lod_build")?;
+    color_eyre::eyre::ensure!(
+        is_canonical_sha256(&build_identity),
+        "LOD build identity is not a lowercase SHA-256 digest"
+    );
+    Ok(build_identity)
+}
+
+/// Object LOD chunks of a worldspace, from the additive `lod_object_chunks` table.
+///
+/// Returns no chunks for a pack without that table, so a pack converted before object LOD loads
+/// exactly as before. A pack that has the table is held to the terrain contract: a row with a
+/// non-canonical payload path, a bad hash, bad bounds or an identity that does not match
+/// `lod_build` is an error, never a skipped row. Use [`verify_lod_object_payloads`] to check that
+/// every listed file exists and matches its hash.
+pub fn load_lod_object_chunks(
+    connection: &Connection,
+    worldspace_id: u32,
+) -> Result<Vec<LodChunkMetadata>> {
+    let has_table: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lod_object_chunks')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_table {
+        return Ok(Vec::new());
+    }
+    let has_chunks: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM lod_object_chunks WHERE worldspace_id=?1)",
+        [worldspace_id],
+        |row| row.get(0),
+    )?;
+    if !has_chunks {
+        return Ok(Vec::new());
+    }
+    let origin = lod_worldspace_origin(connection, worldspace_id)?;
+    let build_identity = lod_build_identity(connection)?;
+    let mut statement = connection.prepare_cached(
+        "SELECT worldspace_id,tier,anchor_x,anchor_y,payload_path,content_hash,\
+         bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,\
+         source_cells FROM lod_object_chunks WHERE worldspace_id=?1 \
+         ORDER BY tier,anchor_x,anchor_y",
+    )?;
+    let rows = statement.query_map([worldspace_id], RawLodChunk::from_row)?;
+    rows.map(|row| {
+        validate_lod_chunk(
+            row?,
+            worldspace_id,
+            origin,
+            &build_identity,
+            object_chunk_payload_path,
+        )
+    })
+    .collect()
+}
+
+/// Checks that every object LOD chunk's file exists under `assets` and matches its recorded
+/// SHA-256. A listed chunk whose file is missing or damaged is an error that names the chunk: the
+/// pack fails closed instead of drawing without it.
+pub fn verify_lod_object_payloads(assets: &Path, chunks: &[LodChunkMetadata]) -> Result<()> {
+    for chunk in chunks {
+        // The terrain loader's own check: it reads the file, hashes it and reports a missing
+        // file or a different SHA-256 as an error.
+        crate::streaming::lod::verify_payload_hash(
+            assets.join(&chunk.payload_path),
+            chunk.content_hash.clone(),
+        )
+        .map_err(|failure| {
+            color_eyre::eyre::eyre!(
+                "object LOD chunk {:?} failed its integrity check: {}",
+                chunk.key,
+                failure.reason()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn has_lod_table(connection: &Connection) -> Result<bool> {
@@ -726,6 +1335,7 @@ fn validate_lod_chunk(
     requested_worldspace: u32,
     origin: LodOrigin,
     build_identity: &str,
+    canonical_payload_path: fn(ChunkKey) -> String,
 ) -> Result<LodChunkMetadata> {
     let worldspace_id = u32::try_from(raw.worldspace_id)
         .wrap_err_with(|| format!("LOD chunk has invalid worldspace id {}", raw.worldspace_id))?;
@@ -740,7 +1350,7 @@ fn validate_lod_chunk(
         .wrap_err_with(|| format!("LOD chunk has invalid anchor Y {}", raw.anchor_y))?;
     let key = ChunkKey::new(worldspace_id, tier, ChunkAnchor::new(anchor_x, anchor_y));
 
-    let canonical_path = chunk_payload_path(key);
+    let canonical_path = canonical_payload_path(key);
     color_eyre::eyre::ensure!(
         is_safe_relative_asset_path(&raw.payload_path) && raw.payload_path == canonical_path,
         "LOD chunk {key:?} has unsafe or non-canonical payload path {:?}; expected {canonical_path:?}",
@@ -845,6 +1455,8 @@ const ABSENT_RADIUS_OVERRIDE_COLUMN: &str = "NULL";
 // reserved suffix so combining the optional door/emittance projections with enable state cannot
 // reinterpret either feature.
 const REFERENCE_ENABLE_START: usize = 37;
+/// `ACHR` record header flag: the actor is placed as a corpse.
+const ACTOR_STARTS_DEAD: u32 = 0x200;
 
 /// The `lights` row of the reference's base record: one `LIGH` record can be placed many times,
 /// each reference lighting the space at its own radius.
@@ -899,7 +1511,7 @@ const DOOR_LINK_COLUMN_NAMES: [&str; 10] = [
 /// It is optional: a database converted before doors were exported still loads, and no reference
 /// in it is a load door. A table of another shape is treated the same way (and logged) rather than
 /// failing every cell's query, like [`has_radius_override`] checks its column.
-fn has_door_links(connection: &Connection) -> Result<bool> {
+pub(crate) fn has_door_links(connection: &Connection) -> Result<bool> {
     let mut statement =
         connection.prepare_cached("SELECT name FROM pragma_table_info('door_links')")?;
     let columns: BTreeSet<String> = statement
@@ -973,7 +1585,7 @@ impl ReferenceQuery {
         format!("SELECT {columns} FROM \"references\" r{joins} WHERE r.cell_id=?1")
     }
 
-    fn for_connection(connection: &Connection) -> Result<Self> {
+    fn for_connection(connection: &Connection, features: WorldDatabaseFeatures) -> Result<Self> {
         let has_records = has_records(connection)?;
         let record_column = if has_records { "b.record_type" } else { "NULL" };
         let has_lights = has_lights(connection)?;
@@ -987,7 +1599,8 @@ impl ReferenceQuery {
         } else {
             ABSENT_RADIUS_OVERRIDE_COLUMN
         };
-        let has_door_links = has_door_links(connection)?;
+        let has_door_links =
+            features.door_links != DoorLinksAccess::Disabled && has_door_links(connection)?;
         let door_columns = if has_door_links {
             DOOR_COLUMNS
         } else {
@@ -1192,10 +1805,15 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
         None => None,
     };
     let base_flags: Option<u32> = row.get(STATIC_FLAGS_INDEX)?;
+    let enable_inputs = map_enable_inputs(row, REFERENCE_ENABLE_START)?;
     Ok((
         ReferenceRow {
             form_id: row.get(0)?,
             initially_enabled: true,
+            has_multibound_override: enable_inputs.header_flags
+                & shared::records::MULTIBOUND_REFERENCE_FLAG
+                != 0,
+            starts_dead: enable_inputs.header_flags & ACTOR_STARTS_DEAD != 0,
             cell_id: row.get(1)?,
             base_form_id: row.get(2)?,
             base_record_type,
@@ -1212,8 +1830,113 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
             door,
             emittance,
         },
-        map_enable_inputs(row, REFERENCE_ENABLE_START)?,
+        enable_inputs,
     ))
+}
+
+/// Archived WATR records for tests, shaped as the converter writes `waters.data`.
+#[cfg(test)]
+pub(crate) mod water_fixtures {
+    use super::{
+        WATER_DNAM_AMPLITUDE, WATER_DNAM_DEPTH_PROPERTIES, WATER_DNAM_FOG_AMOUNT,
+        WATER_DNAM_FOG_FAR, WATER_DNAM_FOG_NEAR, WATER_DNAM_NOISE_FALLOFF,
+        WATER_DNAM_REFLECTION_MAGNITUDE, WATER_DNAM_REFRACTION_MAGNITUDE,
+        WATER_DNAM_SUN_SPARKLE_MAGNITUDE, WATER_DNAM_SUN_SPARKLE_POWER,
+        WATER_DNAM_SUN_SPECULAR_MAGNITUDE, WATER_DNAM_SUN_SPECULAR_POWER, WATER_DNAM_UV_SCALE,
+        WATER_DNAM_WIND_DIRECTION, WATER_DNAM_WIND_SPEED, WaterFog,
+    };
+
+    /// A WATR record's archived subrecords, with a `DNAM` of `len` bytes holding the given fog at
+    /// the documented offsets, as the converter writes it into `waters.data`.
+    pub(crate) fn water_record_with_fog(len: usize, fog: WaterFog) -> Vec<u8> {
+        let mut dnam = vec![0u8; len];
+        for (offset, value) in [
+            (WATER_DNAM_FOG_NEAR, fog.near),
+            (WATER_DNAM_FOG_FAR, fog.far),
+            (WATER_DNAM_FOG_AMOUNT, fog.amount),
+        ] {
+            if let Some(slot) = dnam.get_mut(offset..offset + 4) {
+                slot.copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        water_record(vec![(*b"EDID", b"TestWater\0".to_vec()), (*b"DNAM", dnam)])
+    }
+
+    /// What a retail water record puts in the `DNAM` of a 228-byte water: the three noise layers'
+    /// UV scales and amplitudes, the depth properties and the Reflection Magnitude.
+    pub(crate) struct NoiseFixture {
+        pub uv_scale: [f32; 3],
+        pub amplitude: [f32; 3],
+        pub depth_properties: [f32; 4],
+        pub reflection_magnitude: f32,
+        pub wind_direction: [f32; 3],
+        pub wind_speed: [f32; 3],
+        pub noise_falloff: f32,
+        pub sun: [f32; 4],
+        pub refraction_magnitude: f32,
+        pub fnam: u8,
+        pub textures: [&'static str; 3],
+    }
+
+    pub(crate) fn water_record_with_noise(len: usize, noise: &NoiseFixture) -> Vec<u8> {
+        let mut dnam = vec![0u8; len];
+        let mut put = |offset: usize, value: f32| {
+            if let Some(slot) = dnam.get_mut(offset..offset + 4) {
+                slot.copy_from_slice(&value.to_le_bytes());
+            }
+        };
+        for index in 0..3 {
+            put(WATER_DNAM_UV_SCALE + 4 * index, noise.uv_scale[index]);
+            put(WATER_DNAM_AMPLITUDE + 4 * index, noise.amplitude[index]);
+        }
+        for index in 0..4 {
+            put(
+                WATER_DNAM_DEPTH_PROPERTIES + 4 * index,
+                noise.depth_properties[index],
+            );
+        }
+        put(WATER_DNAM_REFLECTION_MAGNITUDE, noise.reflection_magnitude);
+        put(WATER_DNAM_NOISE_FALLOFF, noise.noise_falloff);
+        put(WATER_DNAM_REFRACTION_MAGNITUDE, noise.refraction_magnitude);
+        for (offset, value) in [
+            (WATER_DNAM_SUN_SPECULAR_POWER, noise.sun[0]),
+            (WATER_DNAM_SUN_SPECULAR_MAGNITUDE, noise.sun[1]),
+            (WATER_DNAM_SUN_SPARKLE_POWER, noise.sun[2]),
+            (WATER_DNAM_SUN_SPARKLE_MAGNITUDE, noise.sun[3]),
+        ] {
+            put(offset, value);
+        }
+        for index in 0..3 {
+            put(
+                WATER_DNAM_WIND_DIRECTION + 4 * index,
+                noise.wind_direction[index],
+            );
+            put(WATER_DNAM_WIND_SPEED + 4 * index, noise.wind_speed[index]);
+        }
+        let mut subrecords = vec![
+            (*b"EDID", b"TestWater\0".to_vec()),
+            (*b"FNAM", vec![noise.fnam]),
+            (*b"DNAM", dnam),
+        ];
+        for (tag, path) in [b"NAM2", b"NAM3", b"NAM4"].into_iter().zip(noise.textures) {
+            let mut bytes = path.as_bytes().to_vec();
+            bytes.push(0);
+            subrecords.push((*tag, bytes));
+        }
+        water_record(subrecords)
+    }
+
+    pub(super) fn water_record(subrecords: Vec<([u8; 4], Vec<u8>)>) -> Vec<u8> {
+        let record = shared::records::ArchivedRecordData {
+            subrecords: subrecords
+                .into_iter()
+                .map(|(tag, data)| shared::records::ArchivedSubRecord { tag, data })
+                .collect(),
+        };
+        rkyv::to_bytes::<rkyv::rancor::Error>(&record)
+            .unwrap()
+            .to_vec()
+    }
 }
 
 #[cfg(test)]
@@ -1222,6 +1945,9 @@ mod inventory_tests;
 
 #[cfg(test)]
 mod tests {
+    use super::water_fixtures::{
+        NoiseFixture, water_record, water_record_with_fog, water_record_with_noise,
+    };
     use super::*;
 
     #[test]
@@ -1246,7 +1972,7 @@ mod tests {
     fn load_cell(connection: &Connection, generation: u64, key: CellKey) -> Result<CellPayload> {
         super::load_cell(
             connection,
-            &mut ReferenceQuery::for_connection(connection)?,
+            &mut ReferenceQuery::for_connection(connection, WorldDatabaseFeatures::default())?,
             generation,
             key,
         )
@@ -1283,6 +2009,44 @@ mod tests {
     }
 
     #[test]
+    fn disabled_legacy_doors_preserve_query_layout_without_reading_core_doors() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        add_door_links(&connection);
+        let core =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
+        assert!(core.joins.contains("door_links"));
+        let mut denied = ReferenceQuery::for_connection(
+            &connection,
+            WorldDatabaseFeatures {
+                door_links: DoorLinksAccess::Disabled,
+            },
+        )
+        .unwrap();
+        assert!(!denied.joins.contains("door_links"));
+        assert!(denied.columns.contains(ABSENT_DOOR_COLUMNS));
+        let sql = format!(
+            "SELECT {} FROM \"references\" r{} WHERE r.id=30",
+            denied.columns, denied.joins
+        );
+        connection
+            .query_row(&sql, [], |row| {
+                for index in 25..34 {
+                    assert_eq!(row.get::<_, Option<i64>>(index)?, None);
+                }
+                Ok(())
+            })
+            .unwrap();
+        let payload = super::load_cell(&connection, &mut denied, 1, CellKey::Interior(99)).unwrap();
+        assert!(
+            payload
+                .references
+                .iter()
+                .all(|reference| reference.door.is_none())
+        );
+    }
+
+    #[test]
     fn enable_metadata_does_not_decode_reserved_door_slots() {
         let connection = Connection::open_in_memory().unwrap();
         fixture(&connection);
@@ -1292,7 +2056,8 @@ mod tests {
                 "UPDATE \"references\" SET header_flags=2048,enable_parent_id=20,enable_parent_flags=1 WHERE id=30;",
             )
             .unwrap();
-        let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+        let mut query =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
         let sql = format!(
             "SELECT {} FROM \"references\" r{} WHERE r.id=30",
             query.columns, query.joins
@@ -1353,6 +2118,32 @@ mod tests {
     }
 
     #[test]
+    fn starts_dead_comes_from_the_reference_header_and_defaults_off() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        let mut legacy =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
+        let payload = super::load_cell(&connection, &mut legacy, 1, CellKey::Interior(10)).unwrap();
+        assert!(!payload.references.is_empty());
+        assert!(payload.references.iter().all(|row| !row.starts_dead));
+        enable_columns(&connection);
+        // 0x200 Starts Dead with Persistent (0x400); 0x800 alone is Initially Disabled.
+        connection
+            .execute_batch(
+                "UPDATE \"references\" SET header_flags=1536 WHERE id=30;
+                 UPDATE \"references\" SET header_flags=2048 WHERE id<>30;",
+            )
+            .unwrap();
+        let mut query =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
+        let payload = super::load_cell(&connection, &mut query, 1, CellKey::Interior(10)).unwrap();
+        for row in &payload.references {
+            assert_eq!(row.starts_dead, row.form_id == 30, "{:08X}", row.form_id);
+        }
+        assert!(payload.references.iter().any(|row| row.form_id == 30));
+    }
+
+    #[test]
     fn initial_enable_state_uses_parents_outside_the_loaded_cell_without_models() {
         let connection = Connection::open_in_memory().unwrap();
         fixture(&connection);
@@ -1364,7 +2155,8 @@ mod tests {
              UPDATE \"references\" SET header_flags=2048,enable_parent_id=200,enable_parent_flags=952044802 WHERE id=30;
              UPDATE \"references\" SET enable_parent_id=30,enable_parent_flags=1 WHERE id=31;"
         ).unwrap();
-        let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+        let mut query =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
         for _ in 0..2 {
             let interior =
                 super::load_cell(&connection, &mut query, 1, CellKey::Interior(99)).unwrap();
@@ -1419,7 +2211,9 @@ mod tests {
             connection.execute_batch(
                 "UPDATE \"references\" SET enable_parent_id=30,enable_parent_flags=1 WHERE id=31;"
             ).unwrap();
-            let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+            let mut query =
+                ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default())
+                    .unwrap();
             for _ in 0..2 {
                 let payload = super::load_cell(
                     &connection,
@@ -1440,11 +2234,34 @@ mod tests {
     }
 
     #[test]
+    fn authored_multibound_override_survives_the_existing_database_projection() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        enable_columns(&connection);
+        connection
+            .execute(
+                "UPDATE \"references\" SET header_flags=?1 WHERE id=31",
+                [shared::records::MULTIBOUND_REFERENCE_FLAG],
+            )
+            .unwrap();
+        let unrestricted = load_cell(&connection, 1, CellKey::Interior(99)).unwrap();
+        assert!(unrestricted.references[0].has_multibound_override);
+        let automatic = load_cell(&connection, 1, CellKey::Interior(10)).unwrap();
+        assert!(!automatic.references[0].has_multibound_override);
+    }
+
+    #[test]
     fn legacy_reference_columns_default_enabled_but_partial_columns_fail() {
         let connection = Connection::open_in_memory().unwrap();
         fixture(&connection);
         let payload = load_cell(&connection, 1, CellKey::Interior(99)).unwrap();
         assert!(payload.references.iter().all(|row| row.initially_enabled));
+        assert!(
+            payload
+                .references
+                .iter()
+                .all(|row| !row.has_multibound_override)
+        );
         connection
             .execute_batch(
                 "ALTER TABLE \"references\" ADD COLUMN header_flags INTEGER NOT NULL DEFAULT 0;",
@@ -1591,6 +2408,134 @@ mod tests {
                 [identity],
             )
             .unwrap();
+    }
+
+    const OBJECT_PATH: &str = "lod/0000003c/16/objects_0_0.glb";
+
+    /// The additive object LOD table, with one level-16 chunk for worldspace 60 whose file is
+    /// the bytes `payload` (its hash is computed from them).
+    fn object_chunk_fixture(connection: &Connection, path: &str, payload: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        connection
+            .execute_batch(
+                "CREATE TABLE lod_object_chunks(
+                    worldspace_id INTEGER NOT NULL,tier INTEGER NOT NULL,anchor_x INTEGER NOT NULL,anchor_y INTEGER NOT NULL,
+                    payload_path TEXT NOT NULL,content_hash TEXT NOT NULL,
+                    bounds_min_x REAL NOT NULL,bounds_min_y REAL NOT NULL,bounds_min_z REAL NOT NULL,
+                    bounds_max_x REAL NOT NULL,bounds_max_y REAL NOT NULL,bounds_max_z REAL NOT NULL,
+                    source_cells TEXT NOT NULL,PRIMARY KEY(worldspace_id,tier,anchor_x,anchor_y));",
+            )
+            .unwrap();
+        let hash: String = Sha256::digest(payload)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        connection
+            .execute(
+                "INSERT INTO lod_object_chunks VALUES(60,16,0,0,?1,?2,\
+                 0.0,0.0,0.0,65536.0,65536.0,500.0,'-8,12;-7,12')",
+                [path, hash.as_str()],
+            )
+            .unwrap();
+        hash
+    }
+
+    #[test]
+    fn a_pack_without_the_object_lod_table_loads_no_object_chunks() {
+        let connection = Connection::open_in_memory().unwrap();
+        lod_fixture(&connection);
+        assert!(load_lod_object_chunks(&connection, 60).unwrap().is_empty());
+        // The terrain loader is unaffected by the object table's absence.
+        assert_eq!(
+            load_lod_chunks(
+                &connection,
+                lod_query([-50_000.0, 0.0], [50_000.0, 60_000.0])
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn object_chunks_load_under_the_terrain_contract_and_leave_terrain_alone() {
+        let connection = Connection::open_in_memory().unwrap();
+        lod_fixture(&connection);
+        let hash = object_chunk_fixture(&connection, OBJECT_PATH, b"glb");
+        let chunks = load_lod_object_chunks(&connection, 60).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].key.tier, LodTier::Tier16);
+        assert_eq!(chunks[0].payload_path, OBJECT_PATH);
+        assert_eq!(chunks[0].content_hash, hash);
+        assert_eq!(chunks[0].build_identity, "a".repeat(64));
+        assert_eq!(chunks[0].origin, LodOrigin::new(-8, 12));
+        // Another worldspace has none, and the terrain rows are the same as without the table.
+        assert!(load_lod_object_chunks(&connection, 61).unwrap().is_empty());
+        assert_eq!(
+            load_lod_chunks(
+                &connection,
+                lod_query([-50_000.0, 0.0], [50_000.0, 60_000.0])
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_damaged_object_row_fails_closed_instead_of_being_skipped() {
+        // A terrain-style path, a bad hash and an unsafe path are errors, not skipped rows.
+        for (path, hash_sql) in [
+            ("lod/0000003c/16/cell_0_0.glb", None),
+            (
+                OBJECT_PATH,
+                Some("UPDATE lod_object_chunks SET content_hash='xyz'"),
+            ),
+            ("../objects_0_0.glb", None),
+        ] {
+            let connection = Connection::open_in_memory().unwrap();
+            lod_fixture(&connection);
+            object_chunk_fixture(&connection, path, b"glb");
+            if let Some(sql) = hash_sql {
+                connection.execute_batch(sql).unwrap();
+            }
+            assert!(
+                load_lod_object_chunks(&connection, 60).is_err(),
+                "{path} {hash_sql:?}"
+            );
+        }
+        // An identity that is not a SHA-256 digest fails the whole load.
+        let connection = Connection::open_in_memory().unwrap();
+        lod_fixture(&connection);
+        object_chunk_fixture(&connection, OBJECT_PATH, b"glb");
+        connection
+            .execute_batch("UPDATE lod_build SET build_identity='bad'")
+            .unwrap();
+        assert!(load_lod_object_chunks(&connection, 60).is_err());
+    }
+
+    #[test]
+    fn a_missing_or_damaged_object_payload_fails_closed() {
+        let connection = Connection::open_in_memory().unwrap();
+        lod_fixture(&connection);
+        object_chunk_fixture(&connection, OBJECT_PATH, b"glb");
+        let chunks = load_lod_object_chunks(&connection, 60).unwrap();
+        let assets = tempfile::tempdir().unwrap();
+
+        let missing = verify_lod_object_payloads(assets.path(), &chunks).unwrap_err();
+        assert!(
+            format!("{missing:#}").contains("failed to read LOD payload"),
+            "{missing:#}"
+        );
+
+        let file = assets.path().join(OBJECT_PATH);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"damaged").unwrap();
+        let damaged = verify_lod_object_payloads(assets.path(), &chunks).unwrap_err();
+        assert!(format!("{damaged:#}").contains("expected"), "{damaged:#}");
+
+        std::fs::write(&file, b"glb").unwrap();
+        verify_lod_object_payloads(assets.path(), &chunks).unwrap();
     }
 
     #[test]
@@ -2096,7 +3041,7 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT); \
                  CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER); \
-                 CREATE TABLE waters(id INTEGER PRIMARY KEY,shallow_color INTEGER,deep_color INTEGER,reflection_color INTEGER,fresnel REAL,reflectivity REAL,flow_normal_path TEXT);",
+                 CREATE TABLE waters(id INTEGER PRIMARY KEY,opacity INTEGER,shallow_color INTEGER,deep_color INTEGER,reflection_color INTEGER,fresnel REAL,reflectivity REAL,flow_normal_path TEXT);",
             )
             .unwrap();
         let shallow = u32::from_le_bytes([38, 39, 24, 0]);
@@ -2104,8 +3049,20 @@ mod tests {
         let reflection = u32::from_le_bytes([119, 140, 157, 0]);
         connection
             .execute(
-                "INSERT INTO waters(id,shallow_color,deep_color,reflection_color,fresnel,reflectivity,flow_normal_path) VALUES (?1,?2,?3,?4,?5,?6,NULL)",
-                params![18u32, shallow, deep, reflection, 0.10f32, 0.8f32],
+                "INSERT INTO waters(id,opacity,shallow_color,deep_color,reflection_color,fresnel,reflectivity,flow_normal_path) VALUES (?1,?2,?3,?4,?5,?6,?7,NULL)",
+                params![18u32, 35u32, shallow, deep, reflection, 0.10f32, 0.8f32],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO waters(id,opacity,shallow_color,deep_color,reflection_color,fresnel,reflectivity,flow_normal_path) VALUES (?1,NULL,?2,?3,?4,?5,?6,NULL)",
+                params![19u32, shallow, deep, reflection, 0.10f32, 0.8f32],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO waters(id,opacity,shallow_color,deep_color,reflection_color,fresnel,reflectivity,flow_normal_path) VALUES (?1,140,?2,?3,?4,?5,?6,NULL)",
+                params![20u32, shallow, deep, reflection, 0.10f32, 0.8f32],
             )
             .unwrap();
         drop(connection);
@@ -2118,8 +3075,308 @@ mod tests {
                 reflection: [119, 140, 157],
                 fresnel: 0.10,
                 reflectivity: 0.8,
+                opacity: 35,
+                fog: None,
+                reflection_magnitude: None,
+                fnam: None,
+                underwater_fog: None,
             })
         );
+        // A waters row with no ANAM reads as DefaultWater's 50, and an out-of-range one clamps
+        // rather than wrapping to a shifted alpha.
+        assert_eq!(
+            catalog.water_colors(19).map(|colors| colors.opacity),
+            Some(50)
+        );
+        assert_eq!(
+            catalog.water_colors(20).map(|colors| colors.opacity),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn a_water_record_yields_its_fog_from_the_dnam() {
+        let default = WaterFog::default();
+        // Skyrim LE writes a 228-byte DNAM and SE 232; both hold the fog at the same offsets.
+        for len in [228, 232] {
+            assert_eq!(
+                water_fog_from_record(&water_record_with_fog(len, default)),
+                Some(default),
+                "{len}-byte DNAM"
+            );
+        }
+        // A puddle: near 0, far 10, amount 0 (a clear body with a ten-unit colour mix).
+        let puddle = WaterFog {
+            near: 0.0,
+            far: 10.0,
+            amount: 0.0,
+        };
+        assert_eq!(
+            water_fog_from_record(&water_record_with_fog(228, puddle)),
+            Some(puddle)
+        );
+        // A DNAM that ends before the amount at +132 has no fog; so does one with a NaN or an
+        // infinity, a record with no DNAM, and bytes that are not an archive at all.
+        assert_eq!(
+            water_fog_from_record(&water_record_with_fog(100, default)),
+            None
+        );
+        assert_eq!(
+            water_fog_from_record(&water_record_with_fog(135, default)),
+            None
+        );
+        for bad in [f32::NAN, f32::INFINITY] {
+            let fog = WaterFog {
+                amount: bad,
+                ..default
+            };
+            assert_eq!(
+                water_fog_from_record(&water_record_with_fog(228, fog)),
+                None
+            );
+        }
+        assert_eq!(
+            water_fog_from_record(&water_record(vec![(*b"EDID", b"NoDnam\0".to_vec())])),
+            None
+        );
+        assert_eq!(water_fog_from_record(b"not an archive"), None);
+        assert_eq!(water_fog_from_record(&[]), None);
+    }
+
+    #[test]
+    fn catalog_returns_each_waters_fog_from_its_record() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        let connection = Connection::open(&path).unwrap();
+        // The columns a registered pack's `waters` table has today: colours, factors and the
+        // record bytes, and no fog columns.
+        connection
+            .execute_batch(
+                "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT); \
+                 CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER); \
+                 CREATE TABLE waters(id INTEGER PRIMARY KEY,editor_id TEXT,opacity INTEGER,flags INTEGER NOT NULL,shallow_color INTEGER,deep_color INTEGER,reflection_color INTEGER,fresnel REAL,reflectivity REAL,flow_normal_path TEXT,data BLOB NOT NULL);",
+            )
+            .unwrap();
+        let shallow = u32::from_le_bytes([38, 39, 24, 0]);
+        let deep = u32::from_le_bytes([5, 14, 18, 0]);
+        let reflection = u32::from_le_bytes([119, 140, 157, 0]);
+        let insert = |id: u32, record: Vec<u8>| {
+            connection
+                .execute(
+                    "INSERT INTO waters(id,opacity,flags,shallow_color,deep_color,reflection_color,fresnel,reflectivity,flow_normal_path,data) VALUES (?1,50,0,?2,?3,?4,0.10,0.8,NULL,?5)",
+                    params![id, shallow, deep, reflection, record],
+                )
+                .unwrap();
+        };
+        let creek = WaterFog {
+            near: 10.0,
+            far: 90.0,
+            amount: 0.71,
+        };
+        let puddle = WaterFog {
+            near: 0.0,
+            far: 10.0,
+            amount: 0.0,
+        };
+        insert(87079, water_record_with_fog(228, creek));
+        insert(1013293, water_record_with_fog(228, puddle));
+        // Records the fog cannot be read from keep their colours and read as no fog.
+        insert(7, water_record_with_fog(100, creek));
+        insert(8, b"garbage".to_vec());
+        drop(connection);
+
+        let catalog = AssetCatalog::open(&path).unwrap();
+        let fog = |id| catalog.water_colors(id).map(|colors| colors.fog);
+        assert_eq!(fog(87079), Some(Some(creek)));
+        // A puddle's fog amount is zero: the body stays clear while the colour mix still uses its
+        // ten-unit far distance.
+        assert_eq!(fog(1013293), Some(Some(puddle)));
+        assert_eq!(fog(7), Some(None));
+        assert_eq!(fog(8), Some(None));
+        assert_eq!(
+            catalog.water_colors(7).map(|colors| colors.shallow),
+            Some([38, 39, 24])
+        );
+    }
+
+    #[test]
+    fn flow_maps_are_found_by_their_file_names() {
+        // RF-WATER-036: flow.<cellX>.<cellY>.ktx2, negative coordinates included.
+        assert_eq!(flow_map_cell("flow.-1.-14.ktx2"), Some((-1, -14)));
+        assert_eq!(flow_map_cell("Flow.27.1.KTX2"), Some((27, 1)));
+        assert_eq!(flow_map_cell("flow.27.ktx2"), None);
+        assert_eq!(flow_map_cell("riverflow.ktx2"), None);
+        assert_eq!(flow_map_cell("flow.a.b.ktx2"), None);
+        let directory = tempfile::tempdir().unwrap();
+        let folder = directory.path().join("textures/water/skyrim.esm");
+        std::fs::create_dir_all(&folder).unwrap();
+        for name in ["flow.-1.-14.ktx2", "flow.27.1.ktx2", "notes.txt"] {
+            std::fs::write(folder.join(name), b"x").unwrap();
+        }
+        let cells = read_flow_map_cells(directory.path());
+        assert_eq!(cells.len(), 2);
+        assert!(cells.contains(&(-1, -14)) && cells.contains(&(27, 1)));
+        // A pack with no such folder has none, and the catalog then names no flow map.
+        assert!(read_flow_map_cells(&directory.path().join("missing")).is_empty());
+    }
+
+    const DEFAULT_WATER_NOISE: NoiseFixture = NoiseFixture {
+        // DefaultWater (0x18) as the retail Skyrim.esm and Update.esm write it.
+        uv_scale: [1920.0, 6703.0, 488.0],
+        amplitude: [0.6957, 0.6304, 0.4746],
+        depth_properties: [0.3, 0.95, 0.1, 0.9],
+        reflection_magnitude: 0.42,
+        wind_direction: [270.0, 210.0, 225.0],
+        wind_speed: [0.019, 0.013, 0.096],
+        noise_falloff: 4007.0,
+        // DefaultWater: sun specular 1021 x 4.65, sparkle 3521 x 2.89 (RF-WATER-010).
+        sun: [1021.0, 4.65, 3521.0, 2.89],
+        // DefaultWater (Update.esm): DNAM +0x98 = 40 (RF-WATER-056).
+        refraction_magnitude: 40.0,
+        fnam: 0,
+        textures: [
+            "Data\\Textures\\Water\\DefaultWater.dds",
+            "Data\\Textures\\Water\\DefaultWater.dds",
+            "Data\\Textures\\Water\\DefaultWater.dds",
+        ],
+    };
+
+    #[test]
+    fn a_water_record_yields_its_noise_layers() {
+        let record = parse_water_record(&water_record_with_noise(228, &DEFAULT_WATER_NOISE))
+            .expect("a record");
+        let noise = water_noise_from_record(&record).expect("noise layers");
+        assert_eq!(noise.uv_scale, [1920.0, 6703.0, 488.0]);
+        assert_eq!(noise.amplitude, [0.6957, 0.6304, 0.4746]);
+        assert_eq!(noise.depth_properties, [0.3, 0.95, 0.1, 0.9]);
+        assert_eq!(noise.wind_direction, [270.0, 210.0, 225.0]);
+        assert_eq!(noise.wind_speed, [0.019, 0.013, 0.096]);
+        assert_eq!(noise.noise_falloff, 4007.0);
+        assert_eq!(noise.sun, [1021.0, 4.65, 3521.0, 2.89]);
+        assert_eq!(noise.refraction_magnitude, 40.0);
+        // The record's own Windows path becomes the converted texture.
+        let expected = Some("textures/water/defaultwater.ktx2".to_owned());
+        assert_eq!(
+            noise.textures,
+            [expected.clone(), expected.clone(), expected]
+        );
+        assert_eq!(
+            dnam_float(&record.dnam, WATER_DNAM_REFLECTION_MAGNITUDE),
+            Some(0.42)
+        );
+        // A layer with no path has no texture; a `DNAM` that stops before the depth properties,
+        // a zero scale and a non-finite amplitude give no noise at all.
+        let mut no_path = DEFAULT_WATER_NOISE;
+        no_path.textures = ["", "Data\\Textures\\Water\\DefaultWater.dds", ""];
+        let record = parse_water_record(&water_record_with_noise(228, &no_path)).unwrap();
+        let noise = water_noise_from_record(&record).unwrap();
+        assert_eq!(noise.textures[0], None);
+        assert!(noise.textures[1].is_some());
+        let short =
+            parse_water_record(&water_record_with_noise(200, &DEFAULT_WATER_NOISE)).unwrap();
+        assert_eq!(water_noise_from_record(&short), None);
+        let mut zero_scale = DEFAULT_WATER_NOISE;
+        zero_scale.uv_scale[1] = 0.0;
+        let record = parse_water_record(&water_record_with_noise(228, &zero_scale)).unwrap();
+        assert_eq!(water_noise_from_record(&record), None);
+        let mut broken = DEFAULT_WATER_NOISE;
+        broken.amplitude[2] = f32::NAN;
+        let record = parse_water_record(&water_record_with_noise(228, &broken)).unwrap();
+        assert_eq!(water_noise_from_record(&record), None);
+    }
+
+    #[test]
+    fn the_fnam_flags_come_from_the_record_bytes() {
+        // RF-WATER-013: RiverWaterFlow and DefaultWaterFlow 0x08, the Blend records 0x18,
+        // DLC2ApocryphaWater 0x01, every other WATR 0.
+        let colors = |fnam: u8| {
+            let mut fixture = DEFAULT_WATER_NOISE;
+            fixture.fnam = fnam;
+            let record = parse_water_record(&water_record_with_noise(228, &fixture)).unwrap();
+            assert_eq!(record.flags, Some(fnam));
+            WaterColors {
+                shallow: [0; 3],
+                deep: [0; 3],
+                reflection: [0; 3],
+                fresnel: 0.1,
+                reflectivity: 0.8,
+                opacity: 50,
+                fog: None,
+                reflection_magnitude: None,
+                fnam: record.flags,
+                underwater_fog: None,
+            }
+        };
+        assert!(colors(0x08).uses_flow_map() && !colors(0x08).blends_normals());
+        assert!(colors(0x18).uses_flow_map() && colors(0x18).blends_normals());
+        assert!(!colors(0x01).uses_flow_map() && !colors(0x01).blends_normals());
+        assert!(!colors(0x00).uses_flow_map());
+        // A record with no FNAM has no flags, and an unreadable record neither.
+        let none = parse_water_record(&water_record(vec![(*b"DNAM", vec![0u8; 228])])).unwrap();
+        assert_eq!(none.flags, None);
+    }
+
+    #[test]
+    fn the_catalog_serves_each_waters_noise_and_reflection_magnitude() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT); \
+                 CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER); \
+                 CREATE TABLE waters(id INTEGER PRIMARY KEY,opacity INTEGER,shallow_color INTEGER,deep_color INTEGER,reflection_color INTEGER,fresnel REAL,reflectivity REAL,flow_normal_path TEXT,data BLOB NOT NULL);",
+            )
+            .unwrap();
+        let insert = |id: u32, record: Vec<u8>| {
+            connection
+                .execute(
+                    "INSERT INTO waters VALUES (?1,50,1,2,3,0.1,0.8,NULL,?2)",
+                    params![id, record],
+                )
+                .unwrap();
+        };
+        insert(24, water_record_with_noise(232, &DEFAULT_WATER_NOISE));
+        insert(7, water_record_with_fog(100, WaterFog::default()));
+        drop(connection);
+        let catalog = AssetCatalog::open(&path).unwrap();
+        let noise = catalog.water_noise(24).expect("DefaultWater's noise");
+        assert_eq!(noise.uv_scale, [1920.0, 6703.0, 488.0]);
+        assert_eq!(
+            catalog
+                .water_colors(24)
+                .and_then(|colors| colors.reflection_magnitude),
+            Some(0.42)
+        );
+        // A record that stops short of the noise fields still has its colours, no noise and no
+        // magnitude; the caller then keeps the surface flat and uses DefaultWater's magnitude.
+        assert!(catalog.water_noise(7).is_none());
+        assert_eq!(
+            catalog
+                .water_colors(7)
+                .and_then(|colors| colors.reflection_magnitude),
+            None
+        );
+        assert!(catalog.water_colors(7).is_some());
+    }
+
+    #[test]
+    fn a_waters_table_without_opacity_or_record_bytes_still_yields_colours() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT); \
+                 CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER); \
+                 CREATE TABLE waters(id INTEGER PRIMARY KEY,shallow_color INTEGER,deep_color INTEGER,reflection_color INTEGER,fresnel REAL,reflectivity REAL,flow_normal_path TEXT); \
+                 INSERT INTO waters VALUES (24,1,2,3,0.1,0.8,NULL);",
+            )
+            .unwrap();
+        drop(connection);
+        let colors = AssetCatalog::open(&path).unwrap().water_colors(24).unwrap();
+        assert_eq!(colors.opacity, 50);
+        assert_eq!(colors.fog, None);
     }
 
     #[test]
@@ -2293,7 +3550,14 @@ mod tests {
         }
         request_tx.send(DatabaseRequest::Shutdown).unwrap();
 
-        worker(path, request_rx, response_tx, lod_response_tx);
+        worker(
+            path,
+            WorldDatabaseFeatures::default(),
+            request_rx,
+            response_tx,
+            lod_response_tx,
+            unbounded().0,
+        );
 
         let responses: Vec<DatabaseResponse> = response_rx.try_iter().collect();
         assert_eq!(responses.len(), 2, "every request is answered");
@@ -2325,12 +3589,63 @@ mod tests {
             .unwrap();
         request_tx.send(DatabaseRequest::Shutdown).unwrap();
 
-        worker(path, request_rx, cell_response_tx, lod_response_tx);
+        worker(
+            path,
+            WorldDatabaseFeatures::default(),
+            request_rx,
+            cell_response_tx,
+            lod_response_tx,
+            unbounded().0,
+        );
 
         let response = lod_response_rx.try_recv().unwrap();
         assert_eq!(response.generation, 7);
         assert_eq!(response.chunk_count, 1);
         assert_eq!(response.result.unwrap().len(), 1);
+        assert!(cell_response_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn the_worker_answers_object_chunk_requests_on_their_own_channel() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        let connection = Connection::open(&path).unwrap();
+        lod_fixture(&connection);
+        object_chunk_fixture(&connection, OBJECT_PATH, b"glb");
+        drop(connection);
+
+        let (request_tx, request_rx) = bounded(3);
+        let (cell_response_tx, cell_response_rx) = unbounded();
+        let (lod_response_tx, lod_response_rx) = unbounded();
+        let (object_tx, object_rx) = unbounded();
+        for worldspace_id in [60, 61] {
+            request_tx
+                .send(DatabaseRequest::LoadLodObjectChunks {
+                    generation: 9,
+                    worldspace_id,
+                    queued_at: Instant::now(),
+                })
+                .unwrap();
+        }
+        request_tx.send(DatabaseRequest::Shutdown).unwrap();
+
+        worker(
+            path,
+            WorldDatabaseFeatures::default(),
+            request_rx,
+            cell_response_tx,
+            lod_response_tx,
+            object_tx,
+        );
+
+        let with_chunks = object_rx.try_recv().unwrap();
+        assert_eq!((with_chunks.generation, with_chunks.worldspace_id), (9, 60));
+        assert_eq!(with_chunks.result.unwrap().len(), 1);
+        let empty = object_rx.try_recv().unwrap();
+        assert_eq!(empty.worldspace_id, 61);
+        assert!(empty.result.unwrap().is_empty());
+        // Terrain intake never sees an object response.
+        assert!(lod_response_rx.try_recv().is_err());
         assert!(cell_response_rx.try_recv().is_err());
     }
 

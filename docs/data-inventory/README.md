@@ -107,8 +107,8 @@ The current traces preserve important distinctions:
 
 - Light falloff is published but absent from the audited light suffix. Day emittance
   reaches a material multiplier; other time slots are not implied.
-- Shallow water color gates row eligibility and maps into a DTO. The audited material
-  setup uses deep color; no downstream shallow-value sink is established here.
+- Shallow water color gates row eligibility and maps into a DTO. Since #299 the water
+  material setup passes it to the water shader, as it does the deep color.
 - Race links reject unsupported selection. Selected directional MOVT speeds affect the
   movement target; this does not validate selection rules or sprint semantics.
 - Terrain uses `cell_cache.rkyv`, merged JSON/KTX2/rkyv and fallback paths outside SQLite.
@@ -136,7 +136,7 @@ remain separate tools; this adds no record decoder.
 
 #270/#271/#276/#277/#278/#279 and #236 are merged. #225 rooms and #282 grass remain open.
 Active #488 (`094f4674b2dfeaca66c57df853cf83a9461a0f76`) changes local-light consumption;
-#299 (`904a2d0cf33738754dc7a0b82ff388849c4adec2`) changes shallow-water consumption;
+#299 (merged) changes shallow-water consumption;
 #246 (`0524aab7a3875651ec57d7f03bfdfa058ef3371f`) owns movement/default selection;
 #480 (`d38f461b036a25458c548124b8c0b7f08c0f9070`) adds interior lighting consumers.
 Their proposed behavior is not attributed to this source head. Landing them requires
