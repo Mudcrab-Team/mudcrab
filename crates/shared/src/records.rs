@@ -5,6 +5,10 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
+/// Placed-reference `Multibound` header flag (xEdit TES5 definitions, bit 31). Such references
+/// carry an authored visibility policy, including `NONE`, instead of automatic pivot membership.
+pub const MULTIBOUND_REFERENCE_FLAG: u32 = 0x8000_0000;
+
 #[derive(Debug, Archive, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArchivedSubRecord {
     pub tag: [u8; 4],

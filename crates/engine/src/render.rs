@@ -1,7 +1,10 @@
 use crate::{
     color_pipeline::{DEFAULT_SCENE_EV100, SceneColorPipeline},
     profiling::ProfilingState,
-    world::{cache::TerrainSnapshot, database::AssetCatalog},
+    world::{
+        cache::TerrainSnapshot,
+        database::{AssetCatalog, WaterFog},
+    },
 };
 use bevy::{
     app::{HierarchyPropagatePlugin, PropagateOver, PropagateSet},
@@ -42,22 +45,254 @@ use std::sync::{
 pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, TerrainExtension>;
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExtension>;
 
-/// How far the procedural waves tilt the water's normal. Skyrim's water is close to flat at a
-/// distance; a stronger tilt striped lakes with bright and dark bands.
+/// The previous procedural waves' tilt, kept only as the neutral point of the user's "Water wave
+/// strength" setting: the setting divided by this is a multiplier on the amplitudes the water's own
+/// WATR record gives, so the default setting changes nothing. It never reaches the shader as a
+/// value of its own.
 pub(crate) const WAVE_STRENGTH: f32 = 0.05;
+
+/// The neutral point of the "Water wave scale" setting, in the same way: the setting over this is a
+/// multiplier on the record's noise UV scales.
+pub(crate) const DEFAULT_WAVE_SCALE: f32 = 0.006;
+
+/// The neutral point of the "Water wave speed" setting: the setting over this is a multiplier on
+/// the record's wind speeds.
+pub(crate) const DEFAULT_WAVE_SPEED: f32 = 0.15;
+
+/// DefaultWater's `noiseFalloff` (`DNAM` +0x60), from the retail records read for this PR; used for a
+/// water whose record bytes cannot be read.
+pub(crate) const DEFAULT_WATER_NOISE_FALLOFF: f32 = 4007.0;
+
+/// The weight of the retail near-camera blend of the reflection and the mix (RF-SHADER-008):
+/// `distT = sat(lerp(flag, 1, (D - 8192) / (falloff - 8192)))`, `D` the eye distance, `falloff` the
+/// record's `noiseFalloff` clamped to `[1, 8191]` (RF-SHADER-007). The frame flag `w` of the main
+/// pass is unverified (#698); `1` is the value for which `distT` is `1` at every distance, which is
+/// what the arithmetic also gives for any flag at distances up to 4007 units.
+#[cfg(test)]
+pub(crate) const WATER_FRAME_FLAG: f32 = 1.0;
+
+/// The retail literal in the `distT` ratio (RF-SHADER-008, RF-WATER-009).
+#[cfg(test)]
+pub(crate) const WATER_DISTANCE_LITERAL: f32 = 8192.0;
+
+/// `fWaterSSRIntensity:Display`: 0.5 in this install's `Skyrim.ini`; the executable's own default
+/// is 1.3. The install value is followed (RF-WATER-009, `verify-report.md` apply item 1).
+#[cfg(test)]
+pub(crate) const WATER_SSR_INTENSITY: f32 = 0.5;
+
+/// The retail distance term of the reflection mix (RF-SHADER-008).
+#[cfg(test)]
+pub(crate) fn water_dist_t(eye_distance: f32, noise_falloff: f32, flag: f32) -> f32 {
+    let falloff = noise_falloff.clamp(1.0, 8191.0);
+    let ratio = (eye_distance - WATER_DISTANCE_LITERAL) / (falloff - WATER_DISTANCE_LITERAL);
+    (flag + (1.0 - flag) * ratio).clamp(0.0, 1.0)
+}
+
+/// The share of the sampled reflection image in the environment, as the retail pixel shader weights
+/// its screen-space reflection (RF-WATER-009): `sat(distT * fWaterSSRIntensity * ssr.a)`.
+#[cfg(test)]
+pub(crate) fn water_reflection_share(dist_t: f32, coverage: f32) -> f32 {
+    (dist_t * WATER_SSR_INTENSITY * coverage).clamp(0.0, 1.0)
+}
+
+/// The reflection the retail cube-map programs write (RF-WATER-050): `lerp(ReflectionColor, env,
+/// DNAM 0x14)` with `env = lerp(cube * FBR, ssr, share)`, `share` being [`water_reflection_share`].
+/// The flat colour is only the `1 - DNAM 0x14` part; the cube is the rest less the SSR share.
+#[cfg(test)]
+pub(crate) fn water_reflection_colour(
+    flat: f32,
+    cube: f32,
+    ssr: f32,
+    share: f32,
+    reflection_amount: f32,
+) -> f32 {
+    let environment = cube + (ssr - cube) * share;
+    flat + (environment - flat) * reflection_amount
+}
+
+/// The world-XY offset of the refracted point (RF-WATER-049): `N.xy * DNAM 0x98 * lerp(1, sat(L / F),
+/// DNAM 0xD4)`, `along` being `sat(L / F)` and `depth_refraction` the DNAM 0xD4 depth property.
+#[cfg(test)]
+pub(crate) fn water_refraction_offset(
+    normal_xy: [f32; 2],
+    magnitude: f32,
+    depth_refraction: f32,
+    along: f32,
+) -> [f32; 2] {
+    let factor = 1.0 + depth_refraction * (along.clamp(0.0, 1.0) - 1.0);
+    normal_xy.map(|component| component * magnitude * factor)
+}
+
+/// The leak test of the refraction (RF-WATER-049, medium-high on the sign): the scene point seen
+/// through the offset pixel is in front of the water when it is on the same side of the water plane
+/// as the camera, and the unperturbed pixel is used then.
+#[cfg(test)]
+pub(crate) fn water_refraction_leaks(
+    camera_height: f32,
+    surface_height: f32,
+    scene_height: f32,
+) -> bool {
+    (camera_height - surface_height) * (scene_height - surface_height) > 0.0
+}
+
+/// The bilinear weight of the flow-map program along one axis (RF-WATER-044): `1 - |2 * fract(64 *
+/// uv) - 1|`, 1 at a texel centre and 0 at a texel edge.
+#[cfg(test)]
+pub(crate) fn water_flow_weight(cell_uv: f32) -> f32 {
+    let scaled = 64.0 * cell_uv;
+    1.0 - (2.0 * (scaled - scaled.floor()) - 1.0).abs()
+}
+
+/// The renormalising divisor of the flow blend (RF-WATER-044): `sqrt((1 - w)^2 + w^2)` per axis,
+/// multiplied.
+#[cfg(test)]
+pub(crate) fn water_flow_divisor(weight_x: f32, weight_y: f32) -> f32 {
+    let axis = |w: f32| ((1.0 - w) * (1.0 - w) + w * w).sqrt();
+    axis(weight_x) * axis(weight_y)
+}
+
+/// The flow clock in game seconds after `seconds` of real time: the retail clock is the game hour
+/// times 3600 and wraps at midnight (RF-WATER-038); the engine starts it at hour 12 and runs it at
+/// the retail time scale of 20. `speed` is the player's wave-speed multiplier, 1 at its default and
+/// 0 for a frozen phase.
+#[cfg(test)]
+pub(crate) fn water_flow_clock(seconds: f32, speed: f32) -> f32 {
+    (43200.0 + seconds * speed * 20.0) % 86400.0
+}
+
+/// The flow program's normal xy after the player's wave settings: the retail value times the
+/// strength multiplier (0 with waves off, 1 at the default).
+#[cfg(test)]
+pub(crate) fn water_flow_strength(retail_xy: [f32; 2], strength: f32) -> [f32; 2] {
+    retail_xy.map(|component| component * strength)
+}
+
+/// The two sun terms of the retail water pixel shader, before the sun colour (RF-WATER-010):
+/// `sat(R.sun)^specularPower * specularMagnitude + sat(N.(-0.099, -0.099, 0.99))^sparklePower *
+/// sparkleMagnitude`. `terms` is (specular power, specular magnitude, sparkle power, sparkle
+/// magnitude). A base of zero is floored so a power of zero gives the magnitude rather than NaN.
+#[cfg(test)]
+pub(crate) fn water_sun_terms(r_dot_sun: f32, n_dot_sparkle: f32, terms: [f32; 4]) -> f32 {
+    let floor = 1.0e-30_f32;
+    let term = |base: f32, power: f32, magnitude: f32| {
+        (power * base.clamp(0.0, 1.0).max(floor).log2()).exp2() * magnitude
+    };
+    term(r_dot_sun, terms[0], terms[1]) + term(n_dot_sparkle, terms[2], terms[3])
+}
+
+/// The body colour of the retail variants that have no depth (RF-WATER-017): `lerp(Shallow, Deep, F)`
+/// times `sat(sunDir.N)` for the exterior no-depth program, and without that factor for the
+/// interior program, which has no sun and no light.
+#[cfg(test)]
+pub(crate) fn water_variant_body(
+    shallow: f32,
+    deep: f32,
+    fresnel: f32,
+    sun_dot_n: Option<f32>,
+) -> f32 {
+    (shallow + (deep - shallow) * fresnel) * sun_dot_n.map_or(1.0, |dot| dot.clamp(0.0, 1.0))
+}
+
+/// A phase below zero makes the shader run the waves on the frame clock instead of a phase the CPU
+/// uploaded, so an interactive run does not rewrite every water material every frame.
+pub(crate) const ANIMATED_WAVE_PHASE: f32 = -1.0;
+
+/// Degrees to radians as the retail engine does it for the noise wind directions: a float
+/// constant, `0.017453292` (`SkyrimSE.exe` 1.7.104.0, VA `0x1418121c8`, read in the loop at
+/// `0x1405290ac`; `evidence/rea-20261114/q1-water.md`).
+pub(crate) const WATER_DEGREES_TO_RADIANS: f32 = 0.017453292;
+
+/// Where the pattern of a noise layer sits at water clock `seconds`, in tiles. Skyrim wraps
+/// `(sin(theta) * speed * T, cos(theta) * speed * T)` into `[0, 1)`, `theta` being the layer's wind
+/// direction in radians and `speed` its wind speed in tiles per second (`SkyrimSE.exe`
+/// `0x1405290ac` to `0x140529356`; `evidence/rea-20261114/q1-water.md`). The shader adds it to
+/// the layer's UV. `water.wgsl` does the same; a test keeps them equal.
+#[cfg(test)]
+pub(crate) fn noise_scroll(direction_degrees: f32, speed: f32, seconds: f32) -> Vec2 {
+    let theta = direction_degrees * WATER_DEGREES_TO_RADIANS;
+    let wrap = |value: f32| value - value.floor();
+    Vec2::new(
+        wrap(theta.sin() * speed * seconds),
+        wrap(theta.cos() * speed * seconds),
+    )
+}
+
+/// How long the shared shader clock (`globals.time`) runs before it wraps to zero. Bevy wraps it
+/// after one hour, and the waves would jump to a different pattern at that instant, because the
+/// wave phase is the clock times the wave speed and is not periodic in an hour. A day keeps `f32`
+/// resolution near 8 ms, which is far finer than the wave motion needs.
+pub(crate) const SHADER_CLOCK_WRAP: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Lengthens the shader clock's wrap period so the water waves do not jump once per hour.
+fn extend_shader_clock(time: Option<ResMut<Time<Virtual>>>) {
+    if let Some(mut time) = time {
+        time.set_wrap_period(SHADER_CLOCK_WRAP);
+    }
+}
 
 /// Skyrim's DefaultWater after Update.esm: Fresnel Amount 0.10 and a Reflectivity Amount of 0.8
 /// (WATR `DNAM`). Used when a water has no decoded colours yet, e.g. a database converted before
 /// `crates/converter` started reading them.
 pub const DEFAULT_WATER_FRESNEL: f32 = 0.10;
 pub const DEFAULT_WATER_REFLECTIVITY: f32 = 0.8;
+/// The `specular_transmission` of the water's `StandardMaterial`. Only its being above zero matters:
+/// it makes Bevy draw the water in the transmissive phase and bind the scene copy the shader
+/// refracts (an engineering flag; the shader reads neither the value nor any transmission term).
+pub const WATER_TRANSMISSION_FLAG: f32 = 1.0;
+
+/// DefaultWater's refraction magnitude after Update.esm (WATR DNAM +0x98 = 40; RF-WATER-056), used
+/// when a water's record cannot be read.
+pub const DEFAULT_WATER_REFRACTION_MAGNITUDE: f32 = 40.0;
 /// DefaultWater's Reflection Color after Update.esm (`#778C9D`): what the water reflects where the
 /// reflection image holds nothing, and what a water with no decoded colours falls back to.
 pub const DEFAULT_WATER_REFLECTION_COLOR: [u8; 3] = [0x77, 0x8C, 0x9D];
+/// DefaultWater's Deep Color (WATR DNAM): the material base colour, and the fallback deep colour
+/// for a water with no decoded colours.
+pub const DEFAULT_WATER_DEEP_COLOR: [u8; 3] = [0x05, 0x0E, 0x12];
+/// DefaultWater's Shallow Color (WATR DNAM): the fallback for a water with no decoded colours.
+pub const DEFAULT_WATER_SHALLOW_COLOR: [u8; 3] = [0x26, 0x27, 0x18];
+/// DefaultWater's opacity (WATR ANAM, 0-100).
+pub const DEFAULT_WATER_OPACITY: u8 = 50;
+/// A WATR colour (stored sRGB bytes) times the weather's Water Multiplier (also bytes), as the
+/// retail water shader multiplies them (RF-SHADER-007, `evidence/rea-20261114/s1-water-mix.md`):
+/// the product is taken on the 0..1 values and then read as an sRGB colour, as in retail.
+fn water_srgb(rgb: [u8; 3], multiplier: [f32; 3]) -> [f32; 3] {
+    [
+        f32::from(rgb[0]) / 255.0 * multiplier[0],
+        f32::from(rgb[1]) / 255.0 * multiplier[1],
+        f32::from(rgb[2]) / 255.0 * multiplier[2],
+    ]
+}
 
-fn water_reflection_color(rgb: [u8; 3]) -> Vec4 {
-    let linear = Color::srgb_u8(rgb[0], rgb[1], rgb[2]).to_linear();
+fn linear_rgb(rgb: [f32; 3]) -> Vec4 {
+    let linear = Color::srgb(rgb[0], rgb[1], rgb[2]).to_linear();
     Vec4::new(linear.red, linear.green, linear.blue, 0.0)
+}
+
+/// A water's Deep Color times the weather's Water Multiplier, as the material base colour.
+pub fn water_deep_color(deep: [u8; 3], multiplier: [u8; 3]) -> Color {
+    let [r, g, b] = water_srgb(deep, multiplier.map(|byte| f32::from(byte) / 255.0));
+    Color::srgb(r, g, b)
+}
+
+/// The above-water fog terms as the retail material copy writes them (RF-SHADER-006,
+/// `SkyrimSE.exe` `0x140307460`): x = opacity (ANAM / 100, used only where the depth is unknown),
+/// y = the fog range, far minus near (`1e-5` when that is zero), z = max(far, 1), w = the curve
+/// exponent max(4 * fog amount, 1). The shader's opacity is
+/// `1 - saturate((z - min(L, z)) / y) ^ w` for a view path `L` through the water
+/// (RF-SHADER-010).
+fn water_body(opacity: u8, fog: WaterFog) -> Vec4 {
+    let range = fog.far - fog.near;
+    Vec4::new(
+        f32::from(opacity.min(100)) / 100.0,
+        if range == 0.0 { 1.0e-5 } else { range },
+        fog.far.max(1.0),
+        (4.0 * fog.amount).max(1.0),
+    )
+}
+
+fn default_water_body() -> Vec4 {
+    water_body(DEFAULT_WATER_OPACITY, WaterFog::default())
 }
 
 /// One rendering layer per role, so no view list is a bare literal.
@@ -136,17 +371,16 @@ impl Plugin for VercidiumRendererPlugin {
             MaterialPlugin::<TerrainMaterial>::default(),
             MaterialPlugin::<WaterMaterial>::default(),
             crate::prepass_vertex_alpha::PrepassVertexAlphaPlugin,
+            crate::water_depth::WaterDepthPlugin,
+            crate::underwater_pass::UnderwaterPassPlugin,
             ExtractComponentPlugin::<crate::world::components::StreamingCamera>::default(),
         ))
         .init_resource::<RendererMetrics>()
-        .add_systems(Startup, setup_water_reflection)
+        .add_systems(Startup, (setup_water_reflection, extend_shader_clock))
+        .add_systems(PostUpdate, animate_water_materials)
         .add_systems(
             Update,
-            (
-                animate_water_materials,
-                update_water_reflection_camera,
-                sync_renderer_metrics,
-            )
+            (update_water_reflection_camera, sync_renderer_metrics)
                 .after(crate::settings_ui::SettingsUiSet),
         );
 
@@ -694,6 +928,44 @@ impl MaterialExtension for TerrainExtension {
     }
 }
 
+/// The WATR `DNAM` values that shape and move a water's noise layers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaterNoiseValues {
+    /// World units per tile of each layer (`uvScaleA`).
+    pub uv_scale: [f32; 3],
+    /// How much each layer tilts the normal (`amplitudeA`).
+    pub amplitude: [f32; 3],
+    /// Reflections, refraction, normals and specular lighting depth properties.
+    pub depth_properties: [f32; 4],
+    /// Compass bearing each layer's wind comes from, degrees (`noiseWindDirectionA`).
+    pub wind_direction: [f32; 3],
+    /// Tiles per second (`noiseWindSpeedA`).
+    pub wind_speed: [f32; 3],
+    /// World units (`noiseFalloff`, `DNAM` +0x60).
+    pub noise_falloff: f32,
+    /// Sun specular power, sun specular magnitude, sparkle power, sparkle magnitude (`DNAM` +0x10,
+    /// +0xCC, +0xE0, +0xC8; RF-WATER-010).
+    pub sun: [f32; 4],
+    /// World units the wave normal moves the refracted point by (`DNAM` +0x98; RF-WATER-049).
+    pub refraction_magnitude: f32,
+}
+
+impl WaterNoiseValues {
+    /// No layers: a flat surface.
+    pub fn flat() -> Self {
+        Self {
+            uv_scale: [1.0; 3],
+            amplitude: [0.0; 3],
+            depth_properties: [0.0; 4],
+            wind_direction: [0.0; 3],
+            wind_speed: [0.0; 3],
+            noise_falloff: DEFAULT_WATER_NOISE_FALLOFF,
+            sun: [0.0; 4],
+            refraction_magnitude: DEFAULT_WATER_REFRACTION_MAGNITUDE,
+        }
+    }
+}
+
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct WaterExtension {
     #[uniform(100)]
@@ -704,35 +976,119 @@ pub struct WaterExtension {
     #[texture(103)]
     #[sampler(104)]
     flow_normal: Option<Handle<Image>>,
+    #[texture(105, filterable = false)]
+    bed_depth: Option<Handle<Image>>,
+    /// The three noise normal maps (WATR `NAM2` to `NAM4`), read with the sampler of `flow_normal`.
+    #[texture(106)]
+    noise_normal_0: Option<Handle<Image>>,
+    #[texture(107)]
+    noise_normal_1: Option<Handle<Image>>,
+    #[texture(108)]
+    noise_normal_2: Option<Handle<Image>>,
+    /// The cell's 64 by 64 flow map (RF-WATER-036): per texel the flow direction (rg), the scale (b)
+    /// and the phase speed (a). Read by texel with `textureLoad`, so it is not filtered.
+    #[texture(110, filterable = false)]
+    flow_map: Option<Handle<Image>>,
+    /// The weather's Water Multiplier as 0..1 values, applied to the colours set after it.
+    multiplier: [f32; 3],
 }
 
-#[derive(ShaderType, Reflect, Debug, Clone)]
+#[derive(ShaderType, Reflect, Debug, Clone, PartialEq)]
 struct WaterSettings {
+    /// x = multiplier on the noise UV scales, y = multiplier on the wind speeds, z = multiplier on
+    /// the amplitudes (all neutral at 1 and set from the user's settings; z is 0 when waves are
+    /// off), w = pinned wave time in seconds, or negative to run on the frame clock.
     wave_scale_speed_strength: Vec4,
-    flow_direction: Vec4,
-    /// x = Fresnel Amount (Schlick F0), y = Reflectivity Amount. z/w unused.
+    /// xyz = the three noise layers' wind directions in radians (WATR DNAM `noiseWindDirectionA`,
+    /// compass bearing the wind comes from); w unused.
+    noise_wind_direction: Vec4,
+    /// xyz = the three noise layers' wind speeds in tiles per second (DNAM `noiseWindSpeedA`).
+    noise_wind_speed: Vec4,
+    /// x = Fresnel Amount (Schlick F0), y = Reflectivity Amount, z = the user's reflection
+    /// multiplier, w = Reflection Magnitude (all WATR DNAM except z).
     fresnel_reflectivity: Vec4,
     /// The water's Reflection Color (WATR DNAM), linear. What the reflection fades to where the
     /// reflection image has no coverage; alpha unused.
     reflection_color: Vec4,
+    /// The water's Shallow Color (WATR DNAM), linear; alpha unused. The deep colour is the
+    /// StandardMaterial base colour.
+    shallow_color: Vec4,
+    /// x = opacity 0..1 (WATR ANAM / 100), used where the depth is unknown; y, z = above-water fog
+    /// near and far distance in world units; w = fog amount, the curve exponent (WATR DNAM).
+    body: Vec4,
+    /// x = 1 when a snapshot texture is bound to `bed_depth`, 0 when none is and the body falls
+    /// back to its ANAM opacity. It says nothing about whether this frame's depth is valid: a
+    /// frame whose resolve was skipped leaves the texture bound but cleared to a negative sentinel,
+    /// which the shader reads as unknown too. y = the record's noise falloff, clamped to
+    /// `[1, 8191]` (RF-SHADER-007). z = 1 for a water in an interior cell, which uses retail's
+    /// interior program (RF-WATER-017). w = 1 when the sky gradient below is set, 0 when the flat
+    /// Reflection Color stands in for it.
+    depth_params: Vec4,
+    /// xyz = the three noise layers' UV scales in world units per texture tile (WATR DNAM
+    /// `uvScaleA`); w = 1 when the noise textures are bound, 0 for a flat surface.
+    noise_uv_scale: Vec4,
+    /// xyz = the three noise layers' amplitudes (WATR DNAM `amplitudeA`).
+    noise_amplitude: Vec4,
+    /// x, y, z, w = the WATR DNAM depth properties: reflections, refraction, normals and specular
+    /// lighting. How much of each effect is left at zero depth is `1 - value`; only the normals one
+    /// is used.
+    depth_control: Vec4,
+    /// x = sun specular power, y = its magnitude, z = sparkle power, w = its magnitude (WATR DNAM
+    /// +0x10, +0xCC, +0xE0, +0xC8; RF-WATER-010).
+    sun_terms: Vec4,
+    /// rgb = the sun colour `S` the terms are multiplied by (linear); the weather's sunlight
+    /// colour. The sun intensity `SunDir.w` is not traced and taken as 1 (#698). w unused.
+    sun_color: Vec4,
+    /// x = the refraction magnitude in world units (WATR DNAM +0x98; RF-WATER-049); yzw unused.
+    refraction: Vec4,
+    /// xy = the cell's grid coordinates, z = 1 when the water runs retail's flow-map program
+    /// (FNAM bit 3 with a flow map and a flow normal texture bound), w unused (RF-WATER-044).
+    flow: Vec4,
+    /// The sky dome's colour table (`SkyUniform`): row elevations in degrees, four rows to a
+    /// vector. The water reflects it where retail reflects its sky cube (see `with_sky`).
+    sky_elevations: [Vec4; 4],
+    /// Per row: the sRGB-encoded dome colour and the row's alpha.
+    sky_colours: [Vec4; 16],
+    /// x = the dome's linear brightness scale.
+    sky_brightness: Vec4,
 }
 
 impl Default for WaterExtension {
     fn default() -> Self {
         Self {
             settings: WaterSettings {
-                wave_scale_speed_strength: Vec4::new(0.006, 0.15, WAVE_STRENGTH, 0.0),
-                flow_direction: Vec4::new(0.8, 0.35, 0.0, 0.0),
+                wave_scale_speed_strength: Vec4::new(1.0, 1.0, 1.0, ANIMATED_WAVE_PHASE),
+                noise_wind_direction: Vec4::ZERO,
+                noise_wind_speed: Vec4::ZERO,
                 fresnel_reflectivity: Vec4::new(
                     DEFAULT_WATER_FRESNEL,
                     DEFAULT_WATER_REFLECTIVITY,
                     1.0,
-                    0.0,
+                    crate::world::database::DEFAULT_WATER_REFLECTION_MAGNITUDE,
                 ),
-                reflection_color: water_reflection_color(DEFAULT_WATER_REFLECTION_COLOR),
+                reflection_color: linear_rgb(water_srgb(DEFAULT_WATER_REFLECTION_COLOR, [1.0; 3])),
+                shallow_color: linear_rgb(water_srgb(DEFAULT_WATER_SHALLOW_COLOR, [1.0; 3])),
+                body: default_water_body(),
+                depth_params: Vec4::new(0.0, DEFAULT_WATER_NOISE_FALLOFF, 0.0, 0.0),
+                noise_uv_scale: Vec4::ZERO,
+                noise_amplitude: Vec4::ZERO,
+                depth_control: Vec4::ZERO,
+                sun_terms: Vec4::ZERO,
+                sun_color: Vec4::ZERO,
+                refraction: Vec4::new(DEFAULT_WATER_REFRACTION_MAGNITUDE, 0.0, 0.0, 0.0),
+                flow: Vec4::ZERO,
+                sky_elevations: [Vec4::ZERO; 4],
+                sky_colours: [Vec4::ZERO; 16],
+                sky_brightness: Vec4::ZERO,
             },
             reflection: None,
             flow_normal: None,
+            bed_depth: None,
+            noise_normal_0: None,
+            noise_normal_1: None,
+            noise_normal_2: None,
+            flow_map: None,
+            multiplier: [1.0; 3],
         }
     }
 }
@@ -741,7 +1097,13 @@ impl WaterExtension {
     /// Per-cell dependencies. The shared reflection target belongs to the
     /// renderer baseline and must not keep a retired water cell reserved.
     pub(crate) fn image_ids(&self) -> impl Iterator<Item = bevy::asset::AssetId<Image>> + '_ {
-        self.flow_normal.iter().map(Handle::id)
+        self.flow_normal
+            .iter()
+            .chain(self.noise_normal_0.iter())
+            .chain(self.noise_normal_1.iter())
+            .chain(self.noise_normal_2.iter())
+            .chain(self.flow_map.iter())
+            .map(Handle::id)
     }
 
     /// Builds a water material with Skyrim's DefaultWater fresnel and reflectivity. Callers that
@@ -762,23 +1124,199 @@ impl WaterExtension {
         fresnel: f32,
         reflectivity: f32,
     ) -> Self {
-        let has_flow_normal = flow_normal.is_some() as u8 as f32;
         Self {
             reflection: Some(reflection),
             flow_normal,
             settings: WaterSettings {
-                wave_scale_speed_strength: Vec4::new(0.006, 0.15, WAVE_STRENGTH, 0.0),
-                flow_direction: Vec4::new(0.8, 0.35, 0.0, has_flow_normal),
+                wave_scale_speed_strength: Vec4::new(1.0, 1.0, 1.0, ANIMATED_WAVE_PHASE),
+                noise_wind_direction: Vec4::ZERO,
+                noise_wind_speed: Vec4::ZERO,
                 // z gates the reflection strength; 1.0 keeps reflections on until settings set it.
-                fresnel_reflectivity: Vec4::new(fresnel, reflectivity, 1.0, 0.0),
-                reflection_color: water_reflection_color(DEFAULT_WATER_REFLECTION_COLOR),
+                fresnel_reflectivity: Vec4::new(
+                    fresnel,
+                    reflectivity,
+                    1.0,
+                    crate::world::database::DEFAULT_WATER_REFLECTION_MAGNITUDE,
+                ),
+                reflection_color: linear_rgb(water_srgb(DEFAULT_WATER_REFLECTION_COLOR, [1.0; 3])),
+                shallow_color: linear_rgb(water_srgb(DEFAULT_WATER_SHALLOW_COLOR, [1.0; 3])),
+                body: default_water_body(),
+                depth_params: Vec4::new(0.0, DEFAULT_WATER_NOISE_FALLOFF, 0.0, 0.0),
+                noise_uv_scale: Vec4::ZERO,
+                noise_amplitude: Vec4::ZERO,
+                depth_control: Vec4::ZERO,
+                sun_terms: Vec4::ZERO,
+                sun_color: Vec4::ZERO,
+                refraction: Vec4::new(DEFAULT_WATER_REFRACTION_MAGNITUDE, 0.0, 0.0, 0.0),
+                flow: Vec4::ZERO,
+                sky_elevations: [Vec4::ZERO; 4],
+                sky_colours: [Vec4::ZERO; 16],
+                sky_brightness: Vec4::ZERO,
             },
+            bed_depth: None,
+            noise_normal_0: None,
+            noise_normal_1: None,
+            noise_normal_2: None,
+            flow_map: None,
+            multiplier: [1.0; 3],
         }
+    }
+
+    /// x = opacity 0..1, y/z = above-water fog near and far, w = fog amount, as the shader reads them.
+    #[cfg(test)]
+    pub(crate) fn body(&self) -> Vec4 {
+        self.settings.body
+    }
+
+    /// The depth snapshot this material reads the bed from, when it has one.
+    pub(crate) fn bed_depth(&self) -> Option<&Handle<Image>> {
+        self.bed_depth.as_ref()
+    }
+
+    /// Points the material at a new bed-depth snapshot, or at the constant fallback when `None`.
+    /// Binding a texture only enables the lookup; per-frame validity is carried by the texels.
+    pub(crate) fn set_bed_depth(&mut self, handle: Option<Handle<Image>>) {
+        self.settings.depth_params.x = if handle.is_some() { 1.0 } else { 0.0 };
+        self.bed_depth = handle;
+    }
+
+    /// Runs retail's flow-map program (RF-WATER-044) for the cell `grid`, over its flow map, or
+    /// stops it with `None`. It needs the flow normal texture (WATR NAM5) too, so call it after
+    /// the water has one; without both the water keeps its noise layers.
+    pub fn with_flow(mut self, grid: IVec2, flow_map: Option<Handle<Image>>) -> Self {
+        let active = flow_map.is_some() && self.flow_normal.is_some();
+        self.settings.flow = Vec4::new(
+            grid.x as f32,
+            grid.y as f32,
+            f32::from(u8::from(active)),
+            0.0,
+        );
+        self.flow_map = flow_map;
+        self
+    }
+
+    /// Gives the water the sky it reflects, or none (the flat Reflection Color then stands in).
+    /// Retail's exterior water reflects a sky cube: the worldspace names one, and when that name is
+    /// not a cube (Tamriel's is a 2D path) the constructor falls back to a rendered six-face cube of
+    /// the sky (RF-WATER-007; `Cubemaps\QuickSky_e.dds` only when no name exists). The engine
+    /// renders no cube, so the reflection is the sky dome's own colour for the reflected direction:
+    /// the dome the camera draws, as a rendered cube of it would show, without clouds or sun disc.
+    /// The 32 by 32 `quicksky_e` cube was tried first and read as coarse rectangular blocks (its
+    /// BC1 texels, magnified), so it is not used (#698).
+    pub fn with_sky(mut self, sky: Option<&crate::sky::SkyUniform>) -> Self {
+        self.settings.depth_params.w = f32::from(u8::from(sky.is_some()));
+        if let Some(sky) = sky {
+            self.settings.sky_elevations = sky.elevations;
+            self.settings.sky_colours = sky.colours;
+            self.settings.sky_brightness = sky.brightness;
+        }
+        self
+    }
+
+    /// Whether the water reflects a sky (an exterior water; an interior one has none).
+    pub(crate) fn reflects_sky(&self) -> bool {
+        self.settings.depth_params.w == 1.0
+    }
+
+    /// Whether the water already holds exactly this sky (the sync system writes only on a change).
+    pub(crate) fn sky_matches(&self, sky: &crate::sky::SkyUniform) -> bool {
+        self.settings.depth_params.w == 1.0
+            && self.settings.sky_elevations == sky.elevations
+            && self.settings.sky_colours == sky.colours
+            && self.settings.sky_brightness == sky.brightness
+    }
+
+    /// Gives the water its three noise normal maps and the DNAM values that shape and move them.
+    /// A layer without a texture adds no tilt; with none, the surface is flat.
+    pub fn with_noise(
+        mut self,
+        textures: [Option<Handle<Image>>; 3],
+        values: WaterNoiseValues,
+    ) -> Self {
+        let has = |texture: &Option<Handle<Image>>| texture.is_some() as u8 as f32;
+        // A missing layer is a zero amplitude, so the shader can sample all three unconditionally.
+        let amplitude = [
+            values.amplitude[0] * has(&textures[0]),
+            values.amplitude[1] * has(&textures[1]),
+            values.amplitude[2] * has(&textures[2]),
+        ];
+        let bound = textures.iter().any(Option::is_some);
+        let scale = values.uv_scale;
+        self.settings.noise_uv_scale = Vec4::new(scale[0], scale[1], scale[2], bound as u8 as f32);
+        self.settings.noise_amplitude = Vec4::new(amplitude[0], amplitude[1], amplitude[2], 0.0);
+        self.settings.depth_control = Vec4::from_array(values.depth_properties);
+        let radians = values
+            .wind_direction
+            .map(|degrees| degrees * WATER_DEGREES_TO_RADIANS);
+        self.settings.noise_wind_direction = Vec4::new(radians[0], radians[1], radians[2], 0.0);
+        let speed = values.wind_speed;
+        self.settings.noise_wind_speed = Vec4::new(speed[0], speed[1], speed[2], 0.0);
+        // The retail clamp of the noise falloff (RF-SHADER-007).
+        self.settings.depth_params.y = values.noise_falloff.clamp(1.0, 8191.0);
+        self.settings.sun_terms = Vec4::from_array(values.sun);
+        self.settings.refraction.x = values.refraction_magnitude;
+        let [first, second, third] = textures;
+        self.noise_normal_0 = first;
+        self.noise_normal_1 = second;
+        self.noise_normal_2 = third;
+        self
+    }
+
+    /// Shallow colour, Reflection Color, sun colour (linear) and the interior flag, for tests.
+    #[cfg(test)]
+    pub(crate) fn colours(&self) -> (Vec4, Vec4, Vec4, f32) {
+        (
+            self.settings.shallow_color,
+            self.settings.reflection_color,
+            self.settings.sun_color,
+            self.settings.depth_params.z,
+        )
+    }
+
+    /// The noise layers' UV scales and amplitudes as the shader reads them, for tests.
+    #[cfg(test)]
+    pub(crate) fn noise(&self) -> (Vec4, Vec4) {
+        (self.settings.noise_uv_scale, self.settings.noise_amplitude)
+    }
+
+    /// Sets the sun colour the sun terms are multiplied by: the weather's sunlight colour
+    /// (RF-WATER-010, `S = SunDir.w * SunColor`, with `SunDir.w` taken as 1).
+    pub fn with_sun_color(mut self, color: Color) -> Self {
+        let linear = color.to_linear();
+        self.settings.sun_color = Vec4::new(linear.red, linear.green, linear.blue, 0.0);
+        self
+    }
+
+    /// Marks the water as one in an interior cell: retail draws it with its interior program, which
+    /// has no sun, no depth, no refraction, no reflection image and no light (RF-WATER-017).
+    pub fn with_interior(mut self, interior: bool) -> Self {
+        self.settings.depth_params.z = f32::from(u8::from(interior));
+        self
+    }
+
+    /// Sets the weather's Water Multiplier (bytes). Call it before the colour setters: they apply it.
+    pub fn with_water_multiplier(mut self, multiplier: [u8; 3]) -> Self {
+        self.multiplier = multiplier.map(|byte| f32::from(byte) / 255.0);
+        self
+    }
+
+    /// Sets the water's Reflection Magnitude (WATR DNAM): how much of the wave normal reaches the
+    /// reflection.
+    pub fn with_reflection_magnitude(mut self, magnitude: f32) -> Self {
+        self.settings.fresnel_reflectivity.w = magnitude;
+        self
     }
 
     /// Sets the water's own Reflection Color (WATR DNAM, as stored bytes).
     pub fn with_reflection_color(mut self, rgb: [u8; 3]) -> Self {
-        self.settings.reflection_color = water_reflection_color(rgb);
+        self.settings.reflection_color = linear_rgb(water_srgb(rgb, self.multiplier));
+        self
+    }
+
+    /// Sets the water's Shallow Color (stored sRGB bytes), opacity (0-100) and above-water fog.
+    pub fn with_body(mut self, shallow: [u8; 3], opacity: u8, fog: WaterFog) -> Self {
+        self.settings.shallow_color = linear_rgb(water_srgb(shallow, self.multiplier));
+        self.settings.body = water_body(opacity, fog);
         self
     }
 }
@@ -789,42 +1327,71 @@ impl MaterialExtension for WaterExtension {
     }
 }
 
+/// The wave phase a capture pins, in seconds: `--water-time` when the run sets it, and the capture
+/// default for a terrain/water fixture or a shot run. `None` leaves an interactive run's waves on
+/// the shader clock.
+fn water_phase(config: Option<&crate::config::EngineConfig>) -> Option<f32> {
+    config.and_then(|config| {
+        config
+            .water_time
+            .or_else(|| (config.terrain_water_fixture || config.shots.is_some()).then_some(1.0))
+    })
+}
+
+/// The settings a water material should carry: the resolved phase and the live rendering settings,
+/// with every other field left as the material set it.
+fn wanted_water_settings(
+    current: &WaterExtension,
+    phase: f32,
+    settings: Option<&crate::settings::RenderingSettings>,
+) -> WaterSettings {
+    let mut wanted = current.settings.clone();
+    wanted.wave_scale_speed_strength.w = phase;
+    if let Some(settings) = settings {
+        // The user's wave scale and strength are multipliers on the water's own values, neutral at
+        // their defaults.
+        wanted.wave_scale_speed_strength.x = settings.wave_scale / DEFAULT_WAVE_SCALE;
+        wanted.wave_scale_speed_strength.y = settings.wave_speed / DEFAULT_WAVE_SPEED;
+        wanted.wave_scale_speed_strength.z = if settings.water_waves {
+            settings.wave_strength / WAVE_STRENGTH
+        } else {
+            0.0
+        };
+        wanted.fresnel_reflectivity.z = if settings.water_reflections {
+            settings.water_reflection_strength
+        } else {
+            0.0
+        };
+    }
+    wanted
+}
+
+/// Writes the phase and the live water settings into each water material, touching a material only
+/// when a value actually changes: the asset is re-extracted and re-uploaded on every write, and an
+/// interactive frame keeps the phase at the sentinel the shader runs on its own clock.
 fn animate_water_materials(
-    time: Res<Time>,
     config: Option<Res<crate::config::EngineConfig>>,
     mut materials: ResMut<Assets<WaterMaterial>>,
     mut profiler: ResMut<ProfilingState>,
     settings: Option<Res<crate::settings::RenderingSettings>>,
+    mut ids: Local<Vec<AssetId<WaterMaterial>>>,
 ) {
     let started = std::time::Instant::now();
-    let elapsed =
-        if config.is_some_and(|config| config.terrain_water_fixture || config.shots.is_some()) {
-            1.0
-        } else {
-            time.elapsed_secs()
+    let phase = water_phase(config.as_deref()).unwrap_or(ANIMATED_WAVE_PHASE);
+    // Reading the assets by id keeps an unchanged material from being marked changed; the ids sit
+    // in a buffer the system keeps, so a steady frame allocates nothing.
+    ids.clear();
+    ids.extend(materials.ids());
+    for &id in ids.iter() {
+        let Some(current) = materials.get(id) else {
+            continue;
         };
-    for (_, material) in materials.iter_mut() {
-        material.extension.settings.wave_scale_speed_strength.w = elapsed;
-        if let Some(settings) = settings.as_deref() {
-            let water = &mut material.extension;
-            water.settings.wave_scale_speed_strength.x = settings.wave_scale;
-            water.settings.wave_scale_speed_strength.y = settings.wave_speed;
-            water.settings.wave_scale_speed_strength.z = if settings.water_waves {
-                settings.wave_strength
-            } else {
-                0.0
-            };
-            water.settings.flow_direction.w =
-                if settings.water_flow_normals && water.flow_normal.is_some() {
-                    1.0
-                } else {
-                    0.0
-                };
-            water.settings.fresnel_reflectivity.z = if settings.water_reflections {
-                settings.water_reflection_strength
-            } else {
-                0.0
-            };
+        let wanted = wanted_water_settings(&current.extension, phase, settings.as_deref());
+        if wanted == current.extension.settings {
+            continue;
+        }
+        if let Some(mut material) = materials.get_mut(id) {
+            material.extension.settings = wanted;
         }
     }
     profiler.record_elapsed("render/water_animation", started);
@@ -880,6 +1447,11 @@ fn setup_water_reflection(mut commands: Commands, mut images: ResMut<Assets<Imag
         DepthPrepass,
         OcclusionCulling,
         RenderLayers::from_layers(REFLECTION_VIEW_LAYERS),
+        // The mirrored terrain carries the same scene fog as the direct view. Retail reads the
+        // already-fogged frame for its screen-space reflection (RF-WATER-009, RF-WATER-011: the
+        // fog is the scene fog). That the reflection should be fogged is REASONED from the SSR
+        // source, not traced: no reflection-fog setting was found (medium confidence).
+        crate::sky::FogCamera,
         WaterReflectionCamera,
     ));
 }
@@ -1966,30 +2538,731 @@ mod tests {
         }
     }
 
-    #[test]
-    fn animated_water_advances_the_shader_phase() {
+    fn water_app(config: Option<crate::config::EngineConfig>) -> App {
         let mut app = App::new();
-        app.init_resource::<Time>()
-            .init_resource::<Assets<WaterMaterial>>()
+        app.init_resource::<Assets<WaterMaterial>>()
             .init_resource::<ProfilingState>()
-            .add_systems(Update, animate_water_materials);
-        let handle = app
-            .world_mut()
+            .add_systems(PostUpdate, animate_water_materials);
+        if let Some(config) = config {
+            app.insert_resource(config);
+        }
+        app
+    }
+
+    fn add_water(app: &mut App) -> Handle<WaterMaterial> {
+        app.world_mut()
             .resource_mut::<Assets<WaterMaterial>>()
             .add(WaterMaterial {
                 base: StandardMaterial::default(),
                 extension: WaterExtension::default(),
-            });
-        app.world_mut()
-            .resource_mut::<Time>()
-            .advance_by(std::time::Duration::from_secs(2));
+            })
+    }
+
+    fn water_phase_of(app: &App, handle: &Handle<WaterMaterial>) -> f32 {
+        app.world()
+            .resource::<Assets<WaterMaterial>>()
+            .get(handle)
+            .expect("water material")
+            .extension
+            .settings
+            .wave_scale_speed_strength
+            .w
+    }
+
+    #[test]
+    fn an_interactive_run_leaves_the_waves_on_the_shader_clock() {
+        let mut app = water_app(None);
+        let handle = add_water(&mut app);
         app.update();
-        let material = app
+        assert_eq!(water_phase_of(&app, &handle), ANIMATED_WAVE_PHASE);
+
+        let current = app
             .world()
             .resource::<Assets<WaterMaterial>>()
             .get(&handle)
-            .unwrap();
-        assert_eq!(material.extension.settings.wave_scale_speed_strength.w, 2.0);
+            .unwrap()
+            .extension
+            .clone();
+        assert_eq!(
+            wanted_water_settings(&current, ANIMATED_WAVE_PHASE, None),
+            current.settings,
+            "a steady interactive frame must not rewrite the material"
+        );
+        let settled = app
+            .world()
+            .get_resource_change_ticks::<Assets<WaterMaterial>>()
+            .unwrap()
+            .changed;
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_eq!(
+            app.world()
+                .get_resource_change_ticks::<Assets<WaterMaterial>>()
+                .unwrap()
+                .changed,
+            settled,
+            "steady interactive frames must not take the materials mutably"
+        );
+    }
+
+    #[test]
+    fn a_capture_pins_every_water_material_including_late_ones() {
+        let mut app = water_app(Some(crate::config::EngineConfig {
+            shots: Some(std::path::PathBuf::from("shots.toml")),
+            ..default()
+        }));
+        let first = add_water(&mut app);
+        app.update();
+        assert_eq!(water_phase_of(&app, &first), 1.0);
+
+        let late = add_water(&mut app);
+        app.update();
+        assert_eq!(water_phase_of(&app, &late), 1.0);
+    }
+
+    #[test]
+    fn an_explicit_water_time_outranks_the_capture_default() {
+        let mut app = water_app(Some(crate::config::EngineConfig {
+            terrain_water_fixture: true,
+            water_time: Some(0.0),
+            ..default()
+        }));
+        let handle = add_water(&mut app);
+        app.update();
+        assert_eq!(water_phase_of(&app, &handle), 0.0);
+    }
+
+    #[test]
+    fn water_phase_pins_only_when_asked() {
+        use crate::config::EngineConfig;
+        assert_eq!(water_phase(None), None);
+        assert_eq!(water_phase(Some(&EngineConfig::default())), None);
+
+        let fixture = EngineConfig {
+            terrain_water_fixture: true,
+            ..default()
+        };
+        assert_eq!(water_phase(Some(&fixture)), Some(1.0));
+
+        let shot = EngineConfig {
+            shots: Some(std::path::PathBuf::from("shots.toml")),
+            ..default()
+        };
+        assert_eq!(water_phase(Some(&shot)), Some(1.0));
+
+        let pinned = EngineConfig {
+            water_time: Some(3.25),
+            ..default()
+        };
+        assert_eq!(water_phase(Some(&pinned)), Some(3.25));
+
+        let pinned_zero = EngineConfig {
+            water_time: Some(0.0),
+            ..default()
+        };
+        assert_eq!(water_phase(Some(&pinned_zero)), Some(0.0));
+
+        // An explicit capture time outranks the capture default.
+        let pinned_fixture = EngineConfig {
+            terrain_water_fixture: true,
+            water_time: Some(3.25),
+            ..default()
+        };
+        assert_eq!(water_phase(Some(&pinned_fixture)), Some(3.25));
+        // An explicit capture time outranks the shot default just as it outranks the fixture.
+        let pinned_shots = EngineConfig {
+            shots: Some("poses.json".into()),
+            water_time: Some(3.25),
+            ..default()
+        };
+        assert_eq!(water_phase(Some(&pinned_shots)), Some(3.25));
+    }
+
+    #[test]
+    fn the_shader_clock_does_not_wrap_at_the_hour() {
+        let two_hours = std::time::Duration::from_secs(2 * 3600);
+        // Bevy's default wrap period would restart the clock, and with it the waves, at one hour.
+        let mut default_clock = Time::<Virtual>::default();
+        default_clock.advance_by(two_hours);
+        assert_eq!(default_clock.elapsed_secs_wrapped(), 0.0);
+
+        let mut clock = Time::<Virtual>::default();
+        clock.set_wrap_period(SHADER_CLOCK_WRAP);
+        clock.advance_by(two_hours);
+        assert_eq!(clock.elapsed_secs_wrapped(), 7200.0);
+    }
+
+    #[test]
+    fn the_renderer_extends_the_clock_the_shaders_read() {
+        let mut app = App::new();
+        app.add_plugins(bevy::time::TimePlugin)
+            .add_systems(Startup, extend_shader_clock);
+        // The first frame runs Startup; the next copies the virtual clock into the generic one
+        // that the render world extracts as `globals.time`.
+        app.update();
+        app.update();
+        assert_eq!(
+            app.world().resource::<Time<Virtual>>().wrap_period(),
+            SHADER_CLOCK_WRAP
+        );
+        assert_eq!(
+            app.world().resource::<Time>().wrap_period(),
+            SHADER_CLOCK_WRAP
+        );
+    }
+
+    #[test]
+    fn the_fog_terms_are_the_retail_material_copy() {
+        // RF-SHADER-006 / 010: range = far - near (1e-5 when zero), F = max(far, 1), exponent =
+        // max(4 * amount, 1).
+        let body = |near, far, amount| water_body(100, WaterFog { near, far, amount });
+        // DefaultWater: near -10, far 150, amount 0.7. The exponent floors at 1.
+        assert_eq!(
+            body(-10.0, 150.0, 0.7),
+            Vec4::new(1.0, 160.0, 150.0, 2.8_f32.max(1.0))
+        );
+        // A larger amount raises the exponent.
+        assert_eq!(body(-10.0, 150.0, 1.0).w, 4.0);
+        // No fog amount does not make the water clear: the exponent stays 1.
+        assert_eq!(body(0.0, 10.0, 0.0), Vec4::new(1.0, 10.0, 10.0, 1.0));
+        // The retail records whose far is not above zero: lava (near 0, far 0) has a zero range
+        // that becomes 1e-5, and Apocrypha water (-10000, -9200) keeps its range of 800 while
+        // the far used for the depth ratio floors at 1.
+        assert_eq!(body(0.0, 0.0, 0.95), Vec4::new(1.0, 1.0e-5, 1.0, 3.8));
+        assert_eq!(
+            body(-10000.0, -9200.0, 1.0),
+            Vec4::new(1.0, 800.0, 1.0, 4.0)
+        );
+        // Opacity is ANAM over 100.
+        assert_eq!(water_body(35, WaterFog::default()).x, 0.35);
+    }
+
+    #[test]
+    fn the_water_multiplier_scales_the_colours_in_srgb_before_they_become_linear() {
+        // RF-SHADER-007: Shallow, Deep and Reflection colours times the weather's Water Multiplier.
+        // SkyrimClear's day value is (175, 237, 214); a colour of (200, 100, 50) becomes
+        // (200 * 175, 100 * 237, 50 * 214) / 255 / 255 as sRGB values.
+        let multiplier = crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER;
+        let water = WaterExtension::default()
+            .with_water_multiplier(multiplier)
+            .with_reflection_color([200, 100, 50]);
+        let expected = Color::srgb(
+            200.0 / 255.0 * 175.0 / 255.0,
+            100.0 / 255.0 * 237.0 / 255.0,
+            50.0 / 255.0 * 214.0 / 255.0,
+        )
+        .to_linear();
+        let linear = water.settings.reflection_color;
+        assert!((linear.x - expected.red).abs() < 1.0e-6);
+        assert!((linear.y - expected.green).abs() < 1.0e-6);
+        assert!((linear.z - expected.blue).abs() < 1.0e-6);
+        // The deep colour takes the same product as the material base colour.
+        let deep = water_deep_color([5, 14, 18], multiplier).to_linear();
+        let expected = Color::srgb(
+            5.0 / 255.0 * 175.0 / 255.0,
+            14.0 / 255.0 * 237.0 / 255.0,
+            18.0 / 255.0 * 214.0 / 255.0,
+        )
+        .to_linear();
+        assert!((deep.red - expected.red).abs() < 1.0e-6);
+        // Without a multiplier the colours are unchanged.
+        let plain = WaterExtension::default().with_reflection_color([200, 100, 50]);
+        assert!(
+            (plain.settings.reflection_color.x - Color::srgb_u8(200, 100, 50).to_linear().red)
+                .abs()
+                < 1.0e-6
+        );
+    }
+
+    #[test]
+    fn the_shader_holds_the_retail_framebuffer_range_and_mix() {
+        // RF-SHADER-001: FramebufferRange 1.2. RF-SHADER-008: color = lerp(lerp(refr, body, a),
+        // reflection, m), written opaque over the refracted scene copy.
+        let source = include_str!("shaders/water.wgsl");
+        assert!(source.contains("const FRAMEBUFFER_RANGE: f32 = 1.2;"));
+        assert!(!source.contains("coverage = a + m - a * m"));
+        assert!(source.contains(
+            "let m = mix(1.0, fresnel * depth_reflections * water.fresnel_reflectivity.z, dist_t);"
+        ));
+        assert!(source.contains(
+            "let reflection_planar = mix(flat_reflection, environment, water.fresnel_reflectivity.y);"
+        ));
+        // The Fresnel reflection no longer raises the alpha and no lit body colour remains.
+        assert!(!source.contains("max(body"));
+        assert!(!source.contains("apply_pbr_lighting"));
+    }
+
+    /// DefaultWater's own values (WATR 0x18), as the retail Skyrim.esm and Update.esm write them.
+    fn default_water_noise() -> WaterNoiseValues {
+        WaterNoiseValues {
+            uv_scale: [1920.0, 6703.0, 488.0],
+            amplitude: [0.6957, 0.6304, 0.4746],
+            depth_properties: [0.3, 0.95, 0.1, 0.9],
+            wind_direction: [270.0, 210.0, 225.0],
+            wind_speed: [0.019, 0.013, 0.096],
+            noise_falloff: 4007.0,
+            sun: [1021.0, 4.65, 3521.0, 2.89],
+            refraction_magnitude: 40.0,
+        }
+    }
+
+    #[test]
+    fn the_noise_layers_carry_the_records_values() {
+        let layer = || Some(Handle::<Image>::default());
+        let water = WaterExtension::default()
+            .with_noise([layer(), layer(), layer()], default_water_noise());
+        let (scale, amplitude) = water.noise();
+        assert_eq!(scale, Vec4::new(1920.0, 6703.0, 488.0, 1.0));
+        assert_eq!(amplitude, Vec4::new(0.6957, 0.6304, 0.4746, 0.0));
+        assert_eq!(water.settings.depth_control, Vec4::new(0.3, 0.95, 0.1, 0.9));
+        // The wind directions go to the shader in radians, with the retail conversion constant.
+        assert_eq!(
+            water.settings.noise_wind_direction.x,
+            270.0 * WATER_DEGREES_TO_RADIANS
+        );
+        assert_eq!(
+            water.settings.noise_wind_speed,
+            Vec4::new(0.019, 0.013, 0.096, 0.0)
+        );
+        assert_eq!(water.image_ids().count(), 3);
+        // A layer without a texture adds no tilt, and with none the surface is flat.
+        let two =
+            WaterExtension::default().with_noise([layer(), None, layer()], default_water_noise());
+        assert_eq!(two.noise().1, Vec4::new(0.6957, 0.0, 0.4746, 0.0));
+        let flat =
+            WaterExtension::default().with_noise([None, None, None], WaterNoiseValues::flat());
+        assert_eq!(flat.noise().0.w, 0.0);
+        assert_eq!(flat.noise().1, Vec4::ZERO);
+        assert_eq!(flat.image_ids().count(), 0);
+    }
+
+    /// The compass bearing (0 north, 90 east, clockwise) a pattern moves toward when its UV offset
+    /// follows `noise_scroll`: U runs east and V north, and the offset is added to the UV, so the
+    /// pattern moves against it.
+    fn pattern_bearing(direction_degrees: f32) -> f32 {
+        let before = noise_scroll(direction_degrees, 0.05, 1.0);
+        let after = noise_scroll(direction_degrees, 0.05, 1.01);
+        // Fractions wrap at tile edges; a step this small does not cross one for these directions.
+        let toward = -(after - before);
+        toward.x.atan2(toward.y).to_degrees().rem_euclid(360.0)
+    }
+
+    #[test]
+    fn the_reflection_camera_carries_the_scene_fog() {
+        // RF-WATER-009 / RF-WATER-011 (reasoned, medium confidence): the mirrored terrain is fogged
+        // like the direct view, so the reflection camera is a FogCamera.
+        let mut app = App::new();
+        app.init_resource::<Assets<Image>>()
+            .add_systems(Startup, setup_water_reflection);
+        app.update();
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<Entity, (With<WaterReflectionCamera>, With<crate::sky::FogCamera>)>();
+        assert_eq!(cameras.iter(app.world()).count(), 1);
+    }
+
+    #[test]
+    fn the_variants_without_depth_follow_retail() {
+        // RF-WATER-017: the exterior no-depth program is lerp(Shallow, Deep, F) * sat(sunDir.N), the
+        // interior program the same without the sun factor, and both use the ANAM opacity
+        // (RF-WATER-026: ANAM is read only in programs without depth).
+        assert_eq!(water_variant_body(0.2, 0.0, 0.25, Some(1.0)), 0.15);
+        assert_eq!(water_variant_body(0.2, 0.0, 0.25, Some(0.5)), 0.075);
+        assert_eq!(water_variant_body(0.2, 0.0, 0.25, Some(-1.0)), 0.0);
+        assert_eq!(water_variant_body(0.2, 0.0, 0.25, None), 0.15);
+        let interior = WaterExtension::default().with_interior(true);
+        assert_eq!(interior.settings.depth_params.z, 1.0);
+        assert_eq!(WaterExtension::default().settings.depth_params.z, 0.0);
+        let source = include_str!("shaders/water.wgsl");
+        assert!(source.contains("let interior = water.depth_params.z > 0.5;"));
+        assert!(source.contains("mix(water.shallow_color.rgb, deep, fresnel)"));
+        assert!(source.contains("let a = select(body.y, water.body.x, no_depth);"));
+        // Retail's reflected vector has no clamp; the engine's only guards the planar lookup.
+        assert!(source.contains("engineering guard"));
+    }
+
+    #[test]
+    fn the_sun_terms_are_the_retail_specular_and_sparkle() {
+        // RF-WATER-010 with DefaultWater's fields: 1021 x 4.65 and 3521 x 2.89.
+        let terms = [1021.0, 4.65, 3521.0, 2.89];
+        // Perfect alignment gives each magnitude.
+        assert!((water_sun_terms(1.0, 1.0, terms) - (4.65 + 2.89)).abs() < 1.0e-5);
+        // The glint is a narrow lobe: a mirror direction ten degrees off the sun is dark.
+        let ten_degrees = 10.0_f32.to_radians().cos();
+        assert!(water_sun_terms(ten_degrees, 0.0, terms) < 1.0e-3);
+        // The power falls with the angle and is monotonic.
+        let wide = water_sun_terms(0.9999, 0.0, terms);
+        let narrow = water_sun_terms(0.9995, 0.0, terms);
+        assert!(wide > narrow && narrow > 0.0);
+        // Pointing away from the sun adds nothing; an unlit water (power and magnitude 0, as in
+        // `LavaSettingsDUPLICATE001`) adds nothing and is not NaN.
+        assert_eq!(water_sun_terms(-0.5, -0.5, terms), 0.0);
+        let lava = water_sun_terms(0.3, 0.3, [0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(lava, 0.0);
+        // The sparkle direction is the retail literal in the engine's shader.
+        let source = include_str!("shaders/water.wgsl");
+        assert!(source.contains("vec3<f32>(-0.099, -0.099, 0.99)"));
+        assert!(source.contains("exp2(water.sun_terms.x * log2("));
+        assert!(source.contains("exp2(water.sun_terms.z * log2("));
+        // The material carries the record's four fields and the sun colour.
+        let water = WaterExtension::default()
+            .with_noise(
+                [None, None, None],
+                WaterNoiseValues {
+                    sun: terms,
+                    ..WaterNoiseValues::flat()
+                },
+            )
+            .with_sun_color(Color::srgb_u8(190, 181, 171));
+        assert_eq!(water.settings.sun_terms, Vec4::from_array(terms));
+        let expected = Color::srgb_u8(190, 181, 171).to_linear();
+        assert_eq!(water.settings.sun_color.x, expected.red);
+    }
+
+    #[test]
+    fn the_reflection_weight_follows_the_retail_ssr_weighting() {
+        // RF-WATER-009: sat(distT * fWaterSSRIntensity * coverage), 0.5 in this install.
+        assert_eq!(WATER_SSR_INTENSITY, 0.5);
+        assert_eq!(water_reflection_share(1.0, 1.0), 0.5);
+        assert_eq!(water_reflection_share(1.0, 0.0), 0.0);
+        assert_eq!(water_reflection_share(0.5, 1.0), 0.25);
+        // The share never exceeds one, even with the executable's own intensity of 1.3 scaled up.
+        assert_eq!(water_reflection_share(10.0, 1.0), 1.0);
+        // Coverage below one, as at the edge of a mirrored mountain, lowers it in proportion.
+        assert!((water_reflection_share(1.0, 0.4) - 0.2).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn the_flat_colour_is_only_the_part_the_reflection_amount_leaves() {
+        // RF-WATER-050: refl = lerp(ReflectionColor, env, DNAM 0x14); env = lerp(sky, ssr, share).
+        // A river (DNAM 0x14 = 0.8) at distT 1 with full image coverage: share = 0.5. The flat
+        // colour's weight is 1 - 0.8 = 0.2 and nothing else; before the sky it was
+        // 0.2 + 0.8 * 0.5 = 0.6 (RF-WATER-050 correction, WATER5 section 1).
+        let share = water_reflection_share(1.0, 1.0);
+        let only_flat = water_reflection_colour(1.0, 0.0, 0.0, share, 0.8);
+        assert!((only_flat - 0.2).abs() < 1.0e-6);
+        let only_sky = water_reflection_colour(0.0, 1.0, 0.0, share, 0.8);
+        assert!((only_sky - 0.8 * 0.5).abs() < 1.0e-6);
+        let only_ssr = water_reflection_colour(0.0, 0.0, 1.0, share, 0.8);
+        assert!((only_ssr - 0.8 * 0.5).abs() < 1.0e-6);
+        // Where the image has no coverage the sky carries all of the 0.8.
+        let no_image =
+            water_reflection_colour(0.0, 1.0, 0.0, water_reflection_share(1.0, 0.0), 0.8);
+        assert!((no_image - 0.8).abs() < 1.0e-6);
+        // A creek (DNAM 0x14 = 1.0) has no flat share at all.
+        assert_eq!(water_reflection_colour(1.0, 0.0, 0.0, share, 1.0), 0.0);
+        // The shader holds the same mix over the sky dome's colour for the reflected direction,
+        // in Bevy's axes (the dome shader's elevation of the ray).
+        let source = include_str!("shaders/water.wgsl");
+        assert!(source.contains("fn sky_dome_colour(elevation: f32) -> vec3<f32>"));
+        assert!(source.contains("let sky_elevation = degrees(asin(clamp(sky_ray.y, -1.0, 1.0)));"));
+        assert!(source.contains("let reflection_planar = mix(flat_reflection, environment, water.fresnel_reflectivity.y);"));
+    }
+
+    #[test]
+    fn the_refraction_offset_and_leak_test_follow_retail() {
+        // RF-WATER-049: a river (DNAM 0x98 = 40, 0xD4 = 0.95) at a normal tilt of 0.1 moves the
+        // point 4 units where the water is deep and 0.05 of that at zero depth.
+        let deep = water_refraction_offset([0.1, -0.05], 40.0, 0.95, 1.0);
+        assert!((deep[0] - 4.0).abs() < 1.0e-5 && (deep[1] + 2.0).abs() < 1.0e-5);
+        let shallow = water_refraction_offset([0.1, 0.0], 40.0, 0.95, 0.0);
+        assert!((shallow[0] - 4.0 * 0.05).abs() < 1.0e-5);
+        // A creek's magnitude is 8, a flat normal moves nothing.
+        assert_eq!(
+            water_refraction_offset([0.0, 0.0], 8.0, 0.95, 0.5),
+            [0.0, 0.0]
+        );
+        // The bed below a camera above the water is not a leak; a bank above the water is.
+        assert!(!water_refraction_leaks(100.0, 0.0, -50.0));
+        assert!(water_refraction_leaks(100.0, 0.0, 30.0));
+        // A camera under the surface sees the surface from below: the ground below is on its side.
+        assert!(water_refraction_leaks(-100.0, 0.0, -50.0));
+        assert!(!water_refraction_leaks(-100.0, 0.0, 30.0));
+        // The shader holds the formula: the offset is in the water plane, the factor uses DNAM 0xD4,
+        // the scene copy is Bevy's transmission texture and the colour is written opaque.
+        let source = include_str!("shaders/water.wgsl");
+        assert!(source.contains("let factor = water.depth_control.y * (along - 1.0) + 1.0;"));
+        assert!(source.contains(
+            "vec3<f32>(normal_skyrim.x, 0.0, -normal_skyrim.y) * water.refraction.x * factor"
+        ));
+        assert!(source.contains("if camera_side * scene_side <= 0.0 {"));
+        assert!(
+            source.contains(
+                "textureSampleLevel(view_transmission_texture, view_transmission_sampler"
+            )
+        );
+        assert!(source.contains("refracted * (1.0 - a) * (1.0 - m) + water_colour * (1.0 - m) * a + reflection * m + sun, 1.0)"));
+    }
+
+    #[test]
+    fn the_flow_program_follows_the_retail_arithmetic() {
+        // RF-WATER-044: weight 1 at a texel centre, 0 at an edge, and the divisor that keeps the
+        // blend's spread when the weights are one half.
+        assert!((water_flow_weight(0.5 / 64.0) - 1.0).abs() < 1.0e-6);
+        assert!(water_flow_weight(1.0 / 64.0).abs() < 1.0e-6);
+        assert!((water_flow_weight(0.25 / 64.0) - 0.5).abs() < 1.0e-6);
+        assert!((water_flow_divisor(1.0, 1.0) - 1.0).abs() < 1.0e-6);
+        assert!((water_flow_divisor(0.5, 0.5) - 0.5).abs() < 1.0e-6);
+        // RF-WATER-038: hour 12 at the start, 20 game seconds per real second, wrapping at midnight.
+        assert_eq!(water_flow_clock(0.0, 1.0), 43200.0);
+        assert_eq!(water_flow_clock(10.0, 1.0), 43400.0);
+        assert_eq!(water_flow_clock(2160.0, 1.0), 0.0);
+        // The player's wave settings apply to the flow path and are neutral at their defaults:
+        // speed 0 freezes the phase, waves off (strength 0) leaves no ripple tilt, strength scales it.
+        assert_eq!(water_flow_clock(10.0, 0.0), 43200.0);
+        assert_eq!(water_flow_clock(10.0, 2.0), 43600.0);
+        assert_eq!(water_flow_strength([0.2, -0.1], 1.0), [0.2, -0.1]);
+        assert_eq!(water_flow_strength([0.2, -0.1], 0.0), [0.0, 0.0]);
+        assert_eq!(water_flow_strength([0.2, -0.1], 2.0), [0.4, -0.2]);
+        // The shader holds the corrected taps (RF-WATER-044): A at (0, h), B at (h, h), C at the
+        // pixel, D at (h, 0); rates 10.64, 9.92, 8, 8.48 with offsets 0.27, 0, 0, 0.62.
+        let source = include_str!("shaders/water.wgsl");
+        for needle in [
+            "let flow_a = flow_texel(cell_uv + vec2<f32>(0.0, h));",
+            "let flow_b = flow_texel(cell_uv + vec2<f32>(h, h));",
+            "let flow_c = flow_texel(cell_uv);",
+            "let flow_d = flow_texel(cell_uv + vec2<f32>(h, 0.0));",
+            "return textureLoad(water_flow_map, texel, 0);",
+            "const FLOW_RATES: vec4<f32> = vec4<f32>(10.64, 9.92, 8.0, 8.48);",
+            "const FLOW_OFFSETS: vec4<f32> = vec4<f32>(0.27, 0.0, 0.0, 0.62);",
+            "const FLOW_SCALE_BASE: f32 = 1.01;",
+            "const FLOW_CLOCK_FACTOR: f32 = 0.001;",
+            "const FLOW_DEPTH_FLOOR: f32 = 0.4;",
+            "let w = 1.0 - abs(2.0 * fract(FLOW_MAP_TEXELS * cell_uv) - 1.0);",
+            "w.y * (w.x * n_c + (1.0 - w.x) * n_d) + (1.0 - w.y) * (w.x * n_a + (1.0 - w.x) * n_b)",
+            "normal_skyrim = normalize(mix(flow_tiled_normal(position, time), flow, dist_t));",
+            "let ripple = (cell_uv + vec2<f32>(water.flow.x, -water.flow.y)) * wave_scale;",
+            "let clock = (FLOW_CLOCK_START + seconds * wave_speed * FLOW_CLOCK_SPEED) % FLOW_CLOCK_DAY;",
+            "return renormalised * max(normals_depth, FLOW_DEPTH_FLOOR) * wave_strength;",
+            "let wave_strength = water.wave_scale_speed_strength.z;",
+        ] {
+            assert!(source.contains(needle), "missing {needle}");
+        }
+        // The flow map is point-sampled: filtering a direction and a phase speed smears the ripples
+        // into flat patches.
+        assert!(!source.contains("textureSampleLevel(water_flow_map"));
+        // A material that runs the flow program takes the player's wave settings through the same
+        // uniform as every water: waves off gives strength 0, speed 0 gives a frozen clock, and the
+        // flow program stays on.
+        let handle = || Some(Handle::<Image>::default());
+        let flowing = WaterExtension::with_reflection(Handle::default(), handle())
+            .with_flow(IVec2::new(-3, 12), handle());
+        let defaults = crate::settings::RenderingSettings::default();
+        let neutral = wanted_water_settings(&flowing, 0.0, Some(&defaults));
+        assert_eq!(neutral.wave_scale_speed_strength.xyz(), Vec3::ONE);
+        assert_eq!(neutral.flow.z, 1.0);
+        let still = crate::settings::RenderingSettings {
+            water_waves: false,
+            wave_speed: 0.0,
+            ..defaults
+        };
+        let wanted = wanted_water_settings(&flowing, 0.0, Some(&still));
+        assert_eq!(wanted.wave_scale_speed_strength.y, 0.0);
+        assert_eq!(wanted.wave_scale_speed_strength.z, 0.0);
+        assert_eq!(wanted.flow.z, 1.0);
+        // The program runs only with a flow map and a flow normal texture bound.
+        let both = WaterExtension::with_reflection(Handle::default(), handle())
+            .with_flow(IVec2::new(-3, 12), handle());
+        assert_eq!(both.settings.flow, Vec4::new(-3.0, 12.0, 1.0, 0.0));
+        assert_eq!(both.image_ids().count(), 2);
+        let no_normal = WaterExtension::default().with_flow(IVec2::new(1, 2), handle());
+        assert_eq!(no_normal.settings.flow.z, 0.0);
+        assert_eq!(
+            both.with_flow(IVec2::new(-3, 12), None).settings.flow.z,
+            0.0
+        );
+    }
+
+    #[test]
+    fn the_sky_is_set_only_when_there_is_one() {
+        let sky = crate::sky::SkyUniform::new(&crate::sky::SkyPalette::default());
+        let without = WaterExtension::default();
+        assert_eq!(without.settings.depth_params.w, 0.0);
+        assert!(!without.sky_matches(&sky));
+        let with = WaterExtension::default().with_sky(Some(&sky));
+        assert_eq!(with.settings.depth_params.w, 1.0);
+        assert!(with.sky_matches(&sky));
+        assert_eq!(with.with_sky(None).settings.depth_params.w, 0.0);
+    }
+
+    #[test]
+    fn the_distance_term_is_the_retail_one() {
+        // RF-SHADER-008: distT = sat(lerp(flag, 1, (D - 8192) / (falloff - 8192))), the falloff
+        // clamped to [1, 8191]. With the flag at 1 it is 1 everywhere.
+        for distance in [0.0, 100.0, 4000.0, 8192.0, 20000.0] {
+            assert_eq!(water_dist_t(distance, 4007.0, WATER_FRAME_FLAG), 1.0);
+        }
+        // With the flag at 0 the term follows the ratio: 1 up to the falloff (the ratio is above 1
+        // there), and a record whose falloff is outside the range is clamped first.
+        assert_eq!(water_dist_t(4007.0, 4007.0, 0.0), 1.0);
+        assert!(
+            (water_dist_t(6000.0, 4007.0, 0.0) - (6000.0 - 8192.0) / (4007.0 - 8192.0)).abs()
+                < 1.0e-6
+        );
+        assert_eq!(water_dist_t(9000.0, 4007.0, 0.0), 0.0);
+        assert_eq!(water_dist_t(100.0, 0.0, 0.0), water_dist_t(100.0, 1.0, 0.0));
+        assert_eq!(
+            water_dist_t(100.0, 90000.0, 0.0),
+            water_dist_t(100.0, 8191.0, 0.0)
+        );
+        // The noise falloff reaches the shader through the material, clamped as in retail.
+        let flat = |falloff| {
+            WaterExtension::default()
+                .with_noise(
+                    [None, None, None],
+                    WaterNoiseValues {
+                        noise_falloff: falloff,
+                        ..WaterNoiseValues::flat()
+                    },
+                )
+                .settings
+                .depth_params
+                .y
+        };
+        assert_eq!(flat(4007.0), 4007.0);
+        assert_eq!(flat(0.0), 1.0);
+        assert_eq!(flat(50000.0), 8191.0);
+        // The shader holds the same terms.
+        let source = include_str!("shaders/water.wgsl");
+        assert!(source.contains("const WATER_DISTANCE_LITERAL: f32 = 8192.0;"));
+        assert!(source.contains("const WATER_SSR_INTENSITY: f32 = 0.5;"));
+        assert!(source.contains("const WATER_FRAME_FLAG: f32 = 1.0;"));
+        assert!(
+            source.contains("clamp(dist_t * WATER_SSR_INTENSITY * reflection_sample.a, 0.0, 1.0)")
+        );
+        assert!(source.contains(
+            "let m = mix(1.0, fresnel * depth_reflections * water.fresnel_reflectivity.z, dist_t);"
+        ));
+    }
+
+    #[test]
+    fn the_wind_direction_is_the_bearing_the_wind_comes_from() {
+        // The retail scroll (`SkyrimSE.exe` 0x1405290ac; `evidence/rea-20261114/q1-water.md`) puts
+        // the pattern toward the wind direction plus 180 degrees. The five directional retail
+        // records agree with their names under it: first-layer direction, then the bearing the
+        // water flows toward.
+        for (record, direction, toward) in [
+            ("RiverWaterFlowNE", 233.0, 53.0),
+            ("RiverWaterFlowNW", 141.0, 321.0),
+            ("RiverWaterFlowSE", 340.0, 160.0),
+            ("CreekWaterFlowSW", 33.0, 213.0),
+            ("CreekWaterFlowSE", 360.0, 180.0),
+        ] {
+            let bearing = pattern_bearing(direction);
+            let off = (bearing - toward + 540.0).rem_euclid(360.0) - 180.0;
+            assert!(
+                off.abs() < 0.5,
+                "{record}: {direction} degrees moves toward {bearing}, not {toward}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_noise_scroll_is_the_retail_formula() {
+        // frac(sin(theta) * speed * T) in U and frac(cos(theta) * speed * T) in V.
+        let scroll = noise_scroll(90.0, 0.5, 3.0);
+        assert!((scroll.x - 0.5).abs() < 1.0e-6, "{scroll}");
+        assert!(
+            scroll.y.abs() < 1.0e-4 || (scroll.y - 1.0).abs() < 1.0e-4,
+            "{scroll}"
+        );
+        // Negative products wrap upward, as the retail `fmodf(x, 1) + 1` does.
+        let scroll = noise_scroll(270.0, 0.25, 1.0);
+        assert!((scroll.x - 0.75).abs() < 1.0e-6, "{scroll}");
+        // The shader holds the same formula.
+        let source = include_str!("shaders/water.wgsl");
+        assert!(
+            source.contains("return fract(vec2<f32>(sin(theta), cos(theta)) * speed * seconds);")
+        );
+        assert_eq!(WATER_DEGREES_TO_RADIANS, 0.017453292);
+    }
+
+    #[test]
+    fn the_users_wave_settings_are_multipliers_that_are_neutral_at_their_defaults() {
+        let water = WaterExtension::default();
+        let defaults = crate::settings::RenderingSettings::default();
+        let wanted = wanted_water_settings(&water, 0.0, Some(&defaults));
+        assert_eq!(wanted.wave_scale_speed_strength.x, 1.0);
+        assert_eq!(wanted.wave_scale_speed_strength.y, 1.0);
+        assert_eq!(wanted.wave_scale_speed_strength.z, 1.0);
+        let doubled = crate::settings::RenderingSettings {
+            wave_scale: defaults.wave_scale * 2.0,
+            wave_speed: defaults.wave_speed * 2.0,
+            wave_strength: defaults.wave_strength * 2.0,
+            ..defaults.clone()
+        };
+        let wanted = wanted_water_settings(&water, 0.0, Some(&doubled));
+        assert_eq!(wanted.wave_scale_speed_strength.x, 2.0);
+        assert_eq!(wanted.wave_scale_speed_strength.y, 2.0);
+        assert_eq!(wanted.wave_scale_speed_strength.z, 2.0);
+        let off = crate::settings::RenderingSettings {
+            water_waves: false,
+            ..defaults
+        };
+        assert_eq!(
+            wanted_water_settings(&water, 0.0, Some(&off))
+                .wave_scale_speed_strength
+                .z,
+            0.0
+        );
+    }
+
+    #[test]
+    fn the_shader_has_no_tuned_or_legacy_constants_left() {
+        // Every number in the water shader is a WATR field, a number from a cited source, or an
+        // engineering guard. The names below were tuned by eye or kept from the old waves, and are
+        // gone.
+        let source = include_str!("shaders/water.wgsl");
+        for gone in [
+            "REFLECTION_SHARE",
+            "REFLECTION_DISTORTION",
+            "MAX_REFLECTION_OFFSET",
+            "NORMAL_FADE_START",
+            "NORMAL_FADE_END",
+            "SECOND_OCTAVE",
+            "MAX_WATER_PATH",
+            "LEGACY",
+            "flow_direction",
+            "0.006",
+        ] {
+            assert!(!source.contains(gone), "{gone} is back in water.wgsl");
+        }
+    }
+
+    #[test]
+    fn with_body_sets_the_shallow_colour_and_clamps_opacity() {
+        let water = WaterExtension::default().with_body(
+            DEFAULT_WATER_SHALLOW_COLOR,
+            50,
+            WaterFog::default(),
+        );
+        assert_eq!(water.settings.body.x, 0.5);
+        // DefaultWater's fog as the retail copy writes it: range 160, F 150, exponent 2.8.
+        assert_eq!(water.settings.body.yzw(), Vec3::new(160.0, 150.0, 2.8));
+        assert_eq!(
+            water.settings.shallow_color,
+            linear_rgb(water_srgb(DEFAULT_WATER_SHALLOW_COLOR, [1.0; 3]))
+        );
+        // A WATR ANAM above 100 must not push the body past fully opaque.
+        let clamped = WaterExtension::default().with_body(
+            DEFAULT_WATER_SHALLOW_COLOR,
+            250,
+            WaterFog::default(),
+        );
+        assert_eq!(clamped.settings.body.x, 1.0);
+    }
+
+    #[test]
+    fn with_body_takes_the_records_fog_terms() {
+        let puddle = WaterFog {
+            near: 0.0,
+            far: 10.0,
+            amount: 0.0,
+        };
+        let water = WaterExtension::default().with_body([1, 2, 3], 25, puddle);
+        // Range 10, F 10, and the exponent floors at 1: no fog amount does not clear the body.
+        assert_eq!(water.settings.body, Vec4::new(0.25, 10.0, 10.0, 1.0));
     }
 
     #[test]
@@ -2954,5 +4227,112 @@ mod tests {
             without_whitespace(source).contains(&without_whitespace(coordinate)),
             "the fragment's coordinate must be quadrant-local, on the grid's own scale"
         );
+    }
+}
+
+/// A CPU mirror of the body maths in `shaders/water.wgsl` (`water_path_length`, `water_body` and
+/// the colour mix in `fragment`), fed from a real `WaterExtension`'s uniform. It is not a GPU
+/// test: the WGSL is not executed, so a change to the shader equations must be repeated here.
+#[cfg(test)]
+mod water_body_tests {
+    use super::*;
+
+    const NEAR_PLANE: f32 = 0.1;
+    const MAX_WATER_PATH: f32 = 16384.0;
+    /// What `water_depth.rs` clears the snapshot to when it cannot resolve the bed.
+    const UNRESOLVED: f32 = -1.0;
+
+    /// Camera at the origin looking down -Z, water surface 50 units below it and 100 ahead.
+    const SURFACE_VIEW: Vec3 = Vec3::new(0.0, -50.0, -100.0);
+
+    /// Returns (colour mix toward deep, body alpha) for one snapshot texel.
+    fn shade(extension: &WaterExtension, texel: f32) -> (f32, f32) {
+        let settings = &extension.settings;
+        let path = if settings.depth_params.x < 0.5 || texel < 0.0 {
+            -1.0
+        } else if texel <= 0.0 {
+            MAX_WATER_PATH
+        } else {
+            let bed_view_z = -NEAR_PLANE / texel;
+            let past_surface = (bed_view_z / SURFACE_VIEW.z.min(-1e-4) - 1.0).max(0.0);
+            (SURFACE_VIEW.length() * past_surface).min(MAX_WATER_PATH)
+        };
+        let vertical = path * SURFACE_VIEW.y.abs() / SURFACE_VIEW.length().max(1e-4);
+        let body = settings.body;
+        if path < 0.0 {
+            return (1.0, body.x);
+        }
+        // The retail terms (RF-SHADER-006, RF-SHADER-010): body.y is the fog range, body.z the far
+        // distance floored at 1 and body.w the curve exponent. The colour follows the path.
+        let _ = vertical;
+        let colour = (path / body.z).clamp(0.0, 1.0);
+        let clear = ((body.z - path.min(body.z)) / body.y).clamp(0.0, 1.0);
+        (colour, 1.0 - clear.powf(body.w))
+    }
+
+    /// The snapshot texel a bed at `bed_view_z` would leave behind.
+    fn texel_for_bed(bed_view_z: f32) -> f32 {
+        -NEAR_PLANE / bed_view_z
+    }
+
+    fn extension() -> WaterExtension {
+        let mut extension = WaterExtension::default().with_body(
+            [0x80, 0xA0, 0x60],
+            50,
+            WaterFog {
+                near: 0.0,
+                far: 150.0,
+                amount: 0.7,
+            },
+        );
+        extension.set_bed_depth(Some(Handle::default()));
+        extension
+    }
+
+    #[test]
+    fn deeper_beds_give_a_deeper_colour_and_a_more_opaque_body() {
+        let extension = extension();
+        let shallow = shade(&extension, texel_for_bed(-110.0));
+        let middle = shade(&extension, texel_for_bed(-150.0));
+        let deep = shade(&extension, texel_for_bed(-300.0));
+
+        assert!(
+            shallow.0 < middle.0 && middle.0 < deep.0,
+            "colour: {shallow:?} {middle:?} {deep:?}"
+        );
+        assert!(
+            shallow.1 < middle.1 && middle.1 < deep.1,
+            "alpha: {shallow:?} {middle:?} {deep:?}"
+        );
+        assert!(
+            shallow.0 < 0.1 && shallow.1 < 0.2,
+            "a thin film stays shallow and clear"
+        );
+        assert!(
+            deep.1 > 0.99,
+            "past the far fog distance the body is opaque"
+        );
+    }
+
+    #[test]
+    fn an_unresolved_or_unbound_snapshot_draws_deep_at_the_anam_opacity() {
+        let extension = extension();
+        let anam = extension.body().x;
+        assert_eq!(shade(&extension, UNRESOLVED), (1.0, anam));
+
+        // A bound texture with a valid texel must not take the same branch.
+        assert_ne!(shade(&extension, texel_for_bed(-110.0)), (1.0, anam));
+
+        let mut unbound = extension.clone();
+        unbound.set_bed_depth(None);
+        assert_eq!(shade(&unbound, texel_for_bed(-300.0)), (1.0, anam));
+    }
+
+    #[test]
+    fn nothing_behind_the_water_reads_as_bottomless() {
+        let extension = extension();
+        let open = shade(&extension, 0.0);
+        assert_eq!(open, shade(&extension, texel_for_bed(-1.0e6)));
+        assert!(open.1 > 0.99);
     }
 }
