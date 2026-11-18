@@ -45,8 +45,16 @@ def git(repo: Path, *args: str) -> str:
 
 def write_json(path: Path, data: dict) -> None:
     temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    try:
+        temporary.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
+    except BaseException:
+        # A full disk can fail after the file exists. Do not leave a partial file behind.
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def read_json(path: Path) -> dict:
@@ -748,6 +756,22 @@ class Workspace:
         self.safe_receipt(slot, "slot-incremental", "removal incomplete" if failed else "trimmed", total, checks)
         return row
 
+    def leftover_proven(self, leftover: Path) -> bool:
+        """A leftover is the tool's own if it holds its build.json or a receipt names it.
+
+        The tool writes the receipt before it renames a build or an incremental directory."""
+        if leftover.name.startswith(".retiring-"):
+            marker = leftover / "build.json"
+            if marker.is_file() and not marker.is_symlink():
+                return True
+            prefix = f"retired-{leftover.name[len('.retiring-'):leftover.name.rfind('-')]}-"
+        else:
+            prefix = f"trimmed-{leftover.parent.parent.parent.name}-"
+        try:
+            return any(p.is_file() and not p.is_symlink() for p in (self.root / "evidence").glob(prefix + "*.json"))
+        except OSError:
+            return False
+
     def recover_interrupted(self) -> list[dict]:
         """Finish deletions that a crash interrupted: `.retiring-*` builds and `.trim-incremental-*` state."""
         rows = []
@@ -768,6 +792,9 @@ class Workspace:
             rows.append(row)
             if leftover.is_symlink() or not leftover.is_dir():
                 row["status"] = "held: symlink or not a directory"
+                continue
+            if not self.leftover_proven(leftover):
+                row["status"] = "held: no build.json or receipt shows that the tool made it"
                 continue
             hold = self.consumer_hold(leftover)
             scan = inventory(leftover, device=self.device()) if hold is None else None
