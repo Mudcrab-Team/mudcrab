@@ -398,12 +398,16 @@
           "path": "crates/converter/src/esm/exporter.rs"
         },
         {
+          "anchor": "fn export_legacy_records(",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
           "anchor": "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
           "path": "crates/engine/src/world/imagespace.rs"
         }
       ],
       "owner": "Mudcrab maintainers (#298)",
-      "reason": "Opaque archive/payload disposition. Preservation does not establish interpretation of every subrecord. Current image-space reader decodes selected records.data; no blanket unused claim.",
+      "reason": "Opaque archive/payload disposition. Published payloads still use the compatibility representation after native FormKey resolution, including reader-specific clearing or rejection of unrepresentable links and identities. Preservation does not establish interpretation of every subrecord. The image-space reader decodes selected archives.",
       "roles": [
         "provenance"
       ],
@@ -1447,7 +1451,7 @@
     }
   ],
   "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
-  "reviewed_source_guard_sha256": "a56b70818f0b669586d6636a68bb3f732a362939910e9950ce24107084c60391",
+  "reviewed_source_guard_sha256": "92086dfe4541ce012f1982f75455ed1e3b44a6adbd50e82415eaf00d14f56f2c",
   "schema_status": "not_extracted",
   "schemas": {},
   "stores": {
