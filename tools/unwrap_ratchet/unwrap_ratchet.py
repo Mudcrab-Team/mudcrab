@@ -4,7 +4,7 @@
 The count may not rise. CI compares the pull request's tree with its base commit
 (`--base-root`), so a pull request is judged only by the sites it adds, and no committed
 number goes stale. A justified rise is accepted when the same pull request raises that
-crate's entry in `baseline.json` (`--update`). Without `--base-root` the check compares
+crate's entry in `baseline.json` (`--update`, which also raises the file's `revision`). Without `--base-root` the check compares
 with `baseline.json` alone, for a quick local run. It does not ask for zero: most existing
 sites guard their own input, and a bulk rewrite would be riskier than the sites it removes.
 
@@ -253,17 +253,52 @@ ITEM_START = re.compile(
 )
 
 
+BLOCK_START = re.compile(r"(?:'[A-Za-z_][A-Za-z0-9_]*\s*:\s*)?(?:if|match|for|while|loop)\b|\{")
+ELSE = re.compile(r"\s*else\b")
+
+
+def block_statement_end(code, index):
+    """End of a block-like statement (`if`, `match`, `for`, `while`, `loop` or a bare block).
+
+    The statement ends at the closing brace of its block, or of the last block of an
+    `else` chain, so the next statement is not part of it.
+    """
+    end = None
+    depth = 0
+    while index < len(code):
+        char = code[index]
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+        elif char == "{" and depth == 0:
+            end = matching_bracket(code, index)
+            index = end + 1
+            chain = ELSE.match(code, index)
+            if chain is None:
+                return end
+            index = chain.end()
+            continue
+        if depth < 0:  # the bracket that closes the parent
+            return index - 1
+        index += 1
+    return len(code) - 1 if end is None else end
+
+
 def item_end(code, index, attribute_start):
     """Last character of the item, field, argument or statement that an attribute applies to.
 
-    An item ends at its block or at its `;`. A `let` statement ends at its `;`, whatever
-    blocks it holds. A field, variant, argument or other expression ends at the next
+    An item ends at its block or at its `;`. A block-like statement (`if`, `match`, `for`,
+    `while`, `loop`, `{}`) ends at its closing brace and `else` chain. A `let` statement ends
+    at its `;`, whatever blocks it holds. A field, variant, argument or other expression ends at the next
     comma or `;` outside brackets, or just before the bracket that closes its parent.
     """
     index = skip_attributes(code, index)
     opening = enclosing_open(code, attribute_start)
     if opening >= 0 and in_type_body(code, opening):
         return field_end(code, index, matching_bracket(code, opening))
+    if BLOCK_START.match(code, index):
+        return block_statement_end(code, index)
     starts = ITEM_START.match(code, index)
     statement = starts is not None and starts.group(0) == "let"
     expression = starts is None
@@ -424,19 +459,31 @@ def read_baseline(path):
     return json.loads(path.read_text(encoding="utf-8"))["counts"]
 
 
-def write_baseline(path, counts):
+def read_revision(path):
+    """The `revision` of a baseline file; 0 when the file or the key is missing."""
+    try:
+        return int(json.loads(path.read_text(encoding="utf-8")).get("revision", 0))
+    except (OSError, ValueError, AttributeError):
+        return 0
+
+
+def write_baseline(path, counts, revision):
     """Write LF newlines on every host, so `--update` on Windows does not rewrite the file."""
-    text = json.dumps({"counts": dict(sorted(counts.items()))}, indent=2) + "\n"
+    document = {"counts": dict(sorted(counts.items())), "revision": revision}
+    text = json.dumps(document, indent=2) + "\n"
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(text)
 
 
-def limits_from_base(root, base_root, names):
+def limits_from_base(root, base_root, names, measured):
     """Per crate, the count a pull request may not exceed: the count at its base commit.
 
-    A crate that the base lacks has no limit and is reported as new. A pull request that
-    accepts more sites changes that crate's `baseline.json` entry, and the changed entry
-    raises the limit for that crate. An entry that the pull request left alone never does,
+    A crate that the base lacks has no limit and is reported as new. A pull request accepts
+    more sites by running `--update`, which writes the measured counts and raises the
+    file's `revision`. A crate's entry then raises its limit when the pull request changed
+    the entry, or when the revision changed and the entry equals the measured count. The
+    revision makes the approval visible in the diff even when the number is the same as a
+    stale entry's. An entry the pull request left alone otherwise never raises a limit,
     so a stale baseline cannot hide a rise or cause a false failure.
     """
     try:
@@ -447,13 +494,16 @@ def limits_from_base(root, base_root, names):
         base = read_baseline(base_root / DEFAULT_BASELINE)
     except (OSError, ValueError, KeyError):
         base = {}
+    revised = read_revision(root / DEFAULT_BASELINE) != read_revision(base_root / DEFAULT_BASELINE)
     limits = {}
     for name in names:
         if not (base_root / "crates" / name / "src").is_dir():
             continue
         limit = count_crate(base_root, name)
-        if name in head and head[name] != base.get(name):
-            limit = max(limit, head[name])
+        if name in head:
+            changed = head[name] != base.get(name)
+            if changed or (revised and head[name] == measured[name]):
+                limit = max(limit, head[name])
         limits[name] = limit
     return limits
 
@@ -487,7 +537,7 @@ def main(argv=None):
         except (OSError, ValueError, KeyError):
             counts = {}
         counts.update(measured)
-        write_baseline(baseline_path, counts)
+        write_baseline(baseline_path, counts, read_revision(baseline_path) + 1)
         print(f"ratchet: wrote {baseline_path}")
         return 0
 
@@ -496,7 +546,7 @@ def main(argv=None):
         if not (base_root / "crates").is_dir():
             print(f"ratchet: no crates directory in {base_root}", file=sys.stderr)
             return 2
-        allowed = limits_from_base(root, base_root, names)
+        allowed = limits_from_base(root, base_root, names, measured)
     else:
         try:
             allowed = read_baseline(baseline_path)

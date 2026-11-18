@@ -194,6 +194,25 @@ class CountTests(unittest.TestCase):
             1,
         )
 
+    def test_a_cfg_test_block_statement_covers_only_itself(self):
+        for statement in (
+            "#[cfg(test)] if c { x.unwrap(); }",
+            "#[cfg(test)] if c { x.unwrap(); } else if d { x.unwrap(); } else { x.unwrap(); }",
+            "#[cfg(test)] if let Some(v) = f(|| { 1 }) { x.unwrap(); }",
+            "#[cfg(test)] match c { _ => x.unwrap() }",
+            "#[cfg(test)] for _ in 0..2 { x.unwrap(); }",
+            "#[cfg(test)] while c { x.unwrap(); }",
+            "#[cfg(test)] loop { x.unwrap(); break; }",
+            "#[cfg(test)] 'outer: loop { x.unwrap(); break 'outer; }",
+            "#[cfg(test)] { x.unwrap(); }",
+            "#[cfg(test)] unsafe { x.unwrap(); }",
+        ):
+            with self.subTest(statement=statement):
+                self.assertEqual(
+                    count(f"fn a(c: bool, d: bool, x: Option<u8>) {{ {statement} x.unwrap(); }}"),
+                    1,
+                )
+
     def test_a_cfg_test_macro_item_and_argument_end_where_they_end(self):
         self.assertEqual(
             count(
@@ -478,6 +497,39 @@ class BaseCompareTests(unittest.TestCase):
             0,
         )
         self.assertEqual(self.run_ratchet()[0], 0)
+
+    def test_update_approves_a_rise_that_reaches_a_stale_entry(self):
+        # The entry is stale (2) while the real count at the base is 1. A justified rise makes
+        # the count 2, so `--update` writes the same number. The revision makes it visible.
+        self.set_baseline(self.root, 2)
+        self.set_baseline(self.base, 2)
+        self.add_unwrap()
+        self.assertEqual(self.run_ratchet()[0], 1)
+        self.assertEqual(ratchet.main(["--root", str(self.root), "--update"]), 0)
+        document = json.loads((self.root / "tools/unwrap_ratchet/baseline.json").read_text())
+        self.assertEqual(document["counts"]["demo"], 2)
+        self.assertEqual(document["revision"], 1)
+        self.assertEqual(self.run_ratchet()[0], 0)
+        # More sites after the update are not covered.
+        self.add_unwrap()
+        self.assertEqual(self.run_ratchet()[0], 1)
+
+    def test_a_revision_change_does_not_approve_a_stale_entry_that_misses_the_count(self):
+        # Entry 5 is stale and high. A raised revision with a different measured count must not
+        # turn it into slack.
+        self.set_baseline(self.root, 5)
+        self.set_baseline(self.base, 5)
+        (self.root / "tools/unwrap_ratchet/baseline.json").write_text(
+            json.dumps({"counts": {"demo": 5}, "revision": 1}), encoding="utf-8"
+        )
+        self.add_unwrap()
+        self.assertEqual(self.run_ratchet()[0], 1)
+
+    def test_update_raises_the_revision_every_time(self):
+        for expected in (1, 2):
+            self.assertEqual(ratchet.main(["--root", str(self.root), "--update"]), 0)
+            document = json.loads((self.root / "tools/unwrap_ratchet/baseline.json").read_text())
+            self.assertEqual(document["revision"], expected)
 
     def test_a_lower_count_passes_without_a_reminder(self):
         (self.root / "crates/demo/src/lib.rs").write_text("fn f() {}\n", encoding="utf-8")
