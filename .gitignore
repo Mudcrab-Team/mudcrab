@@ -41,3 +41,5 @@ mod_cache/
 
 # Remove once an official .agents is introduced
 .agents
+# Shared local storage (builds, packs, scratch, evidence)
+/.mudcrab-local/
