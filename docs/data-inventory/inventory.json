@@ -1328,7 +1328,7 @@
     {
       "expression": "\"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1 COLLATE NOCASE\"",
       "id": "crates/engine/src/world/database.rs::query_row::6a6f377c4776f1f9::1",
-      "line": 976,
+      "line": 961,
       "method": "query_row",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1338,7 +1338,7 @@
     {
       "expression": "\"SELECT version FROM schema_info\"",
       "id": "crates/engine/src/world/database.rs::query_row::7893cc68ce99edec::1",
-      "line": 1122,
+      "line": 1107,
       "method": "query_row",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1348,7 +1348,7 @@
     {
       "expression": "\"SELECT EXISTS(SELECT 1 FROM lod_chunks WHERE worldspace_id=?1)\"",
       "id": "crates/engine/src/world/database.rs::query_row::ec0674f97917939d::1",
-      "line": 1129,
+      "line": 1114,
       "method": "query_row",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1358,7 +1358,7 @@
     {
       "expression": "\"SELECT DISTINCT c.worldspace_id,c.tier,c.anchor_x,c.anchor_y,c.payload_path,c.content_hash,\\\n         c.bounds_min_x,c.bounds_min_y,c.bounds_min_z,c.bounds_max_x,c.bounds_max_y,c.bounds_max_z,\\\n         c.source_cells FROM lod_chunks_spatial r \\\n         JOIN lod_chunks c ON c.worldspace_id=r.worldspace_id AND c.tier=r.tier \\\n         AND c.anchor_x=r.anchor_x AND c.anchor_y=r.anchor_y \\\n         WHERE r.worldspace_id=?1 AND r.tier=?2 \\\n         AND r.minX<=?4 AND r.maxX>=?3 AND r.minY<=?6 AND r.maxY>=?5\"",
       "id": "crates/engine/src/world/database.rs::prepare_cached::f6cb976932cb09a7::1",
-      "line": 1141,
+      "line": 1126,
       "method": "prepare_cached",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1368,7 +1368,7 @@
     {
       "expression": "\"SELECT lod_origin_x,lod_origin_y FROM worldspaces WHERE id=?1\"",
       "id": "crates/engine/src/world/database.rs::query_row::ae11216bd8fce7ee::1",
-      "line": 1178,
+      "line": 1163,
       "method": "query_row",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1378,7 +1378,7 @@
     {
       "expression": "\"SELECT build_identity FROM lod_build WHERE id=1\"",
       "id": "crates/engine/src/world/database.rs::query_row::f6d3127f7e727b75::1",
-      "line": 1201,
+      "line": 1186,
       "method": "query_row",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1388,7 +1388,7 @@
     {
       "expression": "\"SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lod_object_chunks')\"",
       "id": "crates/engine/src/world/database.rs::query_row::d852a54e5437d23e::1",
-      "line": 1225,
+      "line": 1210,
       "method": "query_row",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1398,7 +1398,7 @@
     {
       "expression": "\"SELECT EXISTS(SELECT 1 FROM lod_object_chunks WHERE worldspace_id=?1)\"",
       "id": "crates/engine/src/world/database.rs::query_row::c64f23e06fc30b00::1",
-      "line": 1233,
+      "line": 1218,
       "method": "query_row",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1408,7 +1408,7 @@
     {
       "expression": "\"SELECT worldspace_id,tier,anchor_x,anchor_y,payload_path,content_hash,\\\n         bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,\\\n         source_cells FROM lod_object_chunks WHERE worldspace_id=?1 \\\n         ORDER BY tier,anchor_x,anchor_y\"",
       "id": "crates/engine/src/world/database.rs::prepare_cached::25dc35df9e3a7483::1",
-      "line": 1243,
+      "line": 1228,
       "method": "prepare_cached",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1418,7 +1418,7 @@
     {
       "expression": "\"SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lod_chunks')\"",
       "id": "crates/engine/src/world/database.rs::query_row::7348bbafac0aa457::1",
-      "line": 1285,
+      "line": 1270,
       "method": "query_row",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1428,7 +1428,7 @@
     {
       "expression": "\"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='records'\"",
       "id": "crates/engine/src/world/database.rs::prepare_cached::48f76a4ac37e2d76::1",
-      "line": 1482,
+      "line": 1467,
       "method": "prepare_cached",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1438,7 +1438,7 @@
     {
       "expression": "[]",
       "id": "crates/engine/src/world/database.rs::query_row::4f53cda18c2baa0c::1",
-      "line": 1483,
+      "line": 1468,
       "method": "query_row",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1448,7 +1448,7 @@
     {
       "expression": "\"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='lights'\"",
       "id": "crates/engine/src/world/database.rs::prepare_cached::00394cc7abe7d0d3::1",
-      "line": 1491,
+      "line": 1476,
       "method": "prepare_cached",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1458,7 +1458,7 @@
     {
       "expression": "[]",
       "id": "crates/engine/src/world/database.rs::query_row::4f53cda18c2baa0c::2",
-      "line": 1492,
+      "line": 1477,
       "method": "query_row",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1468,7 +1468,7 @@
     {
       "expression": "\"SELECT name FROM pragma_table_info('door_links')\"",
       "id": "crates/engine/src/world/database.rs::prepare_cached::a947ed95f29771cc::1",
-      "line": 1516,
+      "line": 1501,
       "method": "prepare_cached",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1478,7 +1478,7 @@
     {
       "expression": "\"SELECT COUNT(*) FROM pragma_table_info('references') WHERE name='radius_override'\"",
       "id": "crates/engine/src/world/database.rs::prepare_cached::87ae2ec6251d6ff0::1",
-      "line": 1542,
+      "line": 1527,
       "method": "prepare_cached",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1488,7 +1488,7 @@
     {
       "expression": "[]",
       "id": "crates/engine/src/world/database.rs::query_row::4f53cda18c2baa0c::3",
-      "line": 1545,
+      "line": 1530,
       "method": "query_row",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1498,7 +1498,7 @@
     {
       "expression": "\"SELECT (SELECT COUNT(*) FROM pragma_table_info('references') WHERE name='emittance_id')\n                  * (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='emittance')\"",
       "id": "crates/engine/src/world/database.rs::prepare_cached::c06410587e7f08d3::1",
-      "line": 1552,
+      "line": 1537,
       "method": "prepare_cached",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1508,7 +1508,7 @@
     {
       "expression": "[]",
       "id": "crates/engine/src/world/database.rs::query_row::4f53cda18c2baa0c::4",
-      "line": 1556,
+      "line": 1541,
       "method": "query_row",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1518,7 +1518,7 @@
     {
       "expression": "\"SELECT COUNT(*) FROM pragma_table_info('references') \\\n             WHERE name IN ('header_flags','enable_parent_id','enable_parent_flags')\"",
       "id": "crates/engine/src/world/database.rs::query_row::492a76dac4a59df8::1",
-      "line": 1629,
+      "line": 1614,
       "method": "query_row",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1528,7 +1528,7 @@
     {
       "expression": "EXTERIOR_CELL_ID_SQL",
       "id": "crates/engine/src/world/database.rs::query_row::3feb92284c126719::1",
-      "line": 1676,
+      "line": 1661,
       "method": "query_row",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1538,7 +1538,7 @@
     {
       "expression": "&sql",
       "id": "crates/engine/src/world/database.rs::prepare_cached::239129b74dd812c4::1",
-      "line": 1693,
+      "line": 1678,
       "method": "prepare_cached",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1548,7 +1548,7 @@
     {
       "expression": "&sql",
       "id": "crates/engine/src/world/database.rs::prepare_cached::239129b74dd812c4::2",
-      "line": 1703,
+      "line": 1688,
       "method": "prepare_cached",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1558,7 +1558,7 @@
     {
       "expression": "&query.parent_sql",
       "id": "crates/engine/src/world/database.rs::prepare_cached::a18fbdd617638c39::1",
-      "line": 1714,
+      "line": 1699,
       "method": "prepare_cached",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1568,7 +1568,7 @@
     {
       "expression": "[parent]",
       "id": "crates/engine/src/world/database.rs::query_row::6263c514a152526f::1",
-      "line": 1715,
+      "line": 1700,
       "method": "query_row",
       "path": "crates/engine/src/world/database.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1647,7 +1647,7 @@
     }
   ],
   "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
-  "reviewed_source_guard_sha256": "905c56b28aca38f08003d1ed8b5409018bf6dda94adba8276cc94978ae610837",
+  "reviewed_source_guard_sha256": "8e38dffee580eaab0f7eae47672a97eb22f02a7ba3aa3971d1c42bb182e83c3c",
   "schema_status": "not_extracted",
   "schemas": {},
   "stores": {
