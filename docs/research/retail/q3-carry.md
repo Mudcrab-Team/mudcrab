@@ -15,7 +15,7 @@ Build: SkyrimSE.exe 1.7.104.0, SHA-256 846efccf…1402f. Static trace (Ghidra 12
 | fZKeyMaxContactDistance | 10 | — | 10 |
 | fZKeyComplexHelperMinDistance / Scale / WeightMax / WeightMin | 6 / 2 / 100 / 0 | — | same |
 | fZKeyHeavyWeight | 75 | — | 75 |
-| fZKeyDelay:Controls (INI) | 0.2 s | not in this install's INI | 0.2 s |
+| fZKeyDelay:Controls (INI) | 0.2 s | — | 0.2 s |
 | fGrabMaxWeightWalking / Running | 100 / 50 | — | 100 / 50 (Running has no code reference: unused) |
 (Update.esm and DLC masters do not override these; checked by GMST EDID scan.)
 
@@ -24,7 +24,7 @@ Build: SkyrimSE.exe 1.7.104.0, SHA-256 846efccf…1402f. Static trace (Ghidra 12
 - Release: if a grab is active and this press did not start it, drop (`0x140751a30`). If no grab happened, the release activates normally (`0x140751580`).
 - So: tap = activate; hold 0.2 s = grab; the release that ends that hold does nothing; the next press-release drops. High.
 
-> Update (2026-11-18): the hold distance and the fZKeyHeavyWeight rule were refined after this note (registry RF-CARRY-008 and RF-CARRY-012, published separately): the hold distance is the eye-to-crosshair-hit distance shortened by an obstacle ray, minimum capsule radius x 69.99 + 5 units; holding more than 75 kg replaces run speeds with walk speeds.
+> Update (2026-11-18): later research refined the hold distance and the fZKeyHeavyWeight rule: the hold distance is the eye-to-crosshair-hit distance shortened by an obstacle ray, minimum capsule radius x 69.99 + 5 units; holding more than 75 kg replaces run speeds with walk speeds.
 
 ## Grab start (`0x140751870` -> `0x140752630`)
 - Refused if the crosshair object's rigid-body mass > fGrabMaxWeightWalking (100, Havok kg) (`0x140751974`).

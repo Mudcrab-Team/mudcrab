@@ -1,6 +1,6 @@
 # Q7a Player camera states and settings (neighbourhood of 0x1408f47a0 / 0x1408fe3c0)
 
-Build: SkyrimSE.exe 1.7.104.0, SHA-256 846efccf…1402f. Static trace (Ghidra 12.2 + decompiler, capstone). Values are executable defaults; this install's Skyrim.ini overrides are noted ("INI here").
+Build: SkyrimSE.exe 1.7.104.0, SHA-256 846efccf…1402f. Static trace (Ghidra 12.2 + decompiler, capstone). Values are executable defaults unless a game-data override is stated.
 
 ## Structure
 - `PlayerCamera` (vtable `0x14196d980`, constructor `0x1408f79f0`, singleton `0x1431a5478`). State array at `+0xB8 + 8*i`, current state at `+0x28`. Index order (from the array use): 0 FirstPerson `+0xB8`, 1 AutoVanity `+0xC0`, 6 PlayerCameraTransition `+0xE8`, 9 ThirdPerson `+0x100`. Others (VATS, Free, IronSights, Furniture, TweenMenu, Animated, Horse, Bleedout, Dragon) exist as RTTI classes; indices beyond these four are from CommonLib order, unverified.
@@ -12,13 +12,13 @@ Build: SkyrimSE.exe 1.7.104.0, SHA-256 846efccf…1402f. Static trace (Ghidra 12
 - Pitch offset feature (f1stPitchOffset* settings, `0x1408f5970`/`0x1408f5a40`) adjusts a view pitch offset on acceleration (target 0.75 x ...). Partly traced; medium.
 
 ## FOV
-- `PlayerCamera +0x13C` = world FOV, `+0x140` = first-person FOV, both set from `fDefaultWorldFOV:Display` and `fDefault1stPersonFOV:Display` (exe 80 / 80; INI here 90 / 90) at construction `0x1408f79f0`.
+- `PlayerCamera +0x13C` = world FOV, `+0x140` = first-person FOV, both set from `fDefaultWorldFOV:Display` and `fDefault1stPersonFOV:Display` (exe 80 / 80) at construction `0x1408f79f0`.
 - `0x1408fb1e0` returns the first-person FOV when the current state is FirstPerson, else the world FOV. high.
 - Other FOV changes found: iron sights / bow zoom (`fIronSightsFOVTimeChange` 0.25 s), dialogue zoom (`fDialogZoomInSeconds` 1.5, `fDialogZoomOutSeconds` 0.5), tween menu (`fTweenCamZoomFOVMod` 10). No sprint FOV change was found in the FOV consumers. Sprint FOV: not found (absence in the consumer list; medium).
 - Look sensitivity scales with zoom: pitch input is multiplied by current FOV / fDefaultWorldFOV when zoomed (`0x1408fb2e0`).
 
 ## Mouse look (PlayerControls `0x1431a5698`, look vector at `+0x2C/+0x30`)
-- Input scaling `0x1407aeba0`: `lookX = counts_x * fMouseHeadingSensitivity * fMouseHeadingXScale / T_real`; `lookY = counts_y * fMouseHeadingSensitivity * fMouseHeadingYScale` (bInvertYValues flips Y). Defaults 0.0125, 0.02, 0.85 (same in SkyrimPrefs.ini/Skyrim.ini here). T_real = `0x14327560c`.
+- Input scaling `0x1407aeba0`: `lookX = counts_x * fMouseHeadingSensitivity * fMouseHeadingXScale / T_real`; `lookY = counts_y * fMouseHeadingSensitivity * fMouseHeadingYScale` (bInvertYValues flips Y). Defaults 0.0125, 0.02, 0.85. T_real = `0x14327560c`.
 - **Yaw** (`0x1407a3fd0`): lookX becomes the actor's angular velocity Z, multiplied by a movement-type factor read from the movement controller (`[rbp-0x1c]`). spud identifies that factor as the MOVT "rotate in place / while moving" speed; NPC_Default_MT = pi rad/s (Skyrim.esm `0x3580D` SPED), NPC_Sprinting_MT = pi/2. Integrated over T, yaw per count = 0.0125 * 0.02 * pi = **0.000785 rad/count** walking/running, 0.000393 sprinting. The trace of the factor's source is medium; the formula with the factor is high. This confirms the controller-feel estimate (0.000785). Mudcrab's 0.0025 rad/count is about 3.2x too fast.
 - **Pitch** (`0x1408fb2e0` -> `0x140693050`): pitch delta per frame = -lookY * fLookingSpeed:Camera (0.1) * zoomRatio. So **0.0010625 rad/count** (0.0125*0.85*0.1) at default FOV. Not time-scaled. high.
 - **Pitch limits** (`0x140693050`): ±pi/2 (constants `0x141b5be30`, `0x14181ab90`). Positive pitch = looking down. Sitting: down limit fSittingMaxLookingDown 40 deg. Mounted: down fMountedMaxLookingDown 40, up fHorseMaxUpwardPitch 25. Flying mount: down 70, up fDragonMaxUpwardPitch 45. high.
@@ -26,7 +26,7 @@ Build: SkyrimSE.exe 1.7.104.0, SHA-256 846efccf…1402f. Static trace (Ghidra 12
 
 ## Third person (ThirdPersonState)
 - **Distance:** `D = fVanityModeMinDist + (fVanityModeMaxDist - fVanityModeMinDist) * zoom` = 155 + 445*zoom (`0x1408fe4bd`). Flying mount: min 1200, max x4.
-- **Zoom:** target zoom in [fMinCurrentZoom -0.2, 1.0]. Mouse wheel step fMouseWheelZoomIncrement 0.075 (`0x1408fdd20`); thumbstick fThumbstickZoomSpeed 0.05 x stick. Current zoom moves toward the target at fMouseWheelZoomSpeed (0.8; INI here 3.0) zoom units per second, linear, no overshoot (`0x1408fe830`). Zooming in past -0.2 switches to first person. high.
+- **Zoom:** target zoom in [fMinCurrentZoom -0.2, 1.0]. Mouse wheel step fMouseWheelZoomIncrement 0.075 (`0x1408fdd20`); thumbstick fThumbstickZoomSpeed 0.05 x stick. Current zoom moves toward the target at fMouseWheelZoomSpeed (0.8) zoom units per second, linear, no overshoot (`0x1408fe830`). Zooming in past -0.2 switches to first person. high.
 - **Shoulder offset:** local offset (x, y, z) = (fOverShoulderPosX 30, fOverShoulderAddY... , fOverShoulderPosZ -10); combat: X 0, Z 20, AddY -100; horse: X 0, Z 0, AddY -300; dragon: AddY -600; ranged dragon: Z 90, AddY -150. Target set in `0x1408fd970`; current moves toward target by `fShoulderDollySpeed (3.0) * T * difference` per frame (first-order, rate 3/s) with a snap when the step would overshoot (`0x1408fe830`). Position = node + R*(x, -D + addY - collisionAdjust, z) (`0x1408fe3c0`). high (structure), medium (which field is AddY).
 - **Chase yaw:** camera yaw follows the actor yaw at fChaseCameraSpeed (10, x T) and never lags more than fChaseCameraMaxAngle (30 deg) (`0x1408fe830`). high.
 - **Target point:** node returned by actor vtable +0x378 (third-person camera node), else actor position. No vertical spring (RF-CAM-006).
@@ -36,7 +36,7 @@ Build: SkyrimSE.exe 1.7.104.0, SHA-256 846efccf…1402f. Static trace (Ghidra 12
 ## View switching and transitions
 - First person POV key (`0x1408f54b0`): release after a hold shorter than f1st3rdSwitchDelay (0.25 s) and at least fTogglePOVDelay (0.0) -> switch to third person (`0x1408f8ed0`). Hold for f1st3rdSwitchDelay or more -> `0x1408f8f40` (third person free-look / vanity orbit; medium). Zoom-out input also switches to third person.
 - Third person POV key (`0x1408fdd20`): same delays; zoom in past -0.2 -> first person (`0x1408f8de0`).
-- **PlayerCameraTransitionState** (`0x1408fcd50`): progress `t = clamp((now_ms - start_ms) / duration_ms, 0, 1)`, optionally smoothstep `t*t*(3 - 2t)` (mode 1). Durations: iHorseTransitionMillis 500 (INI here 250), iBleedoutTransitionMillis 500, iAnimatedTransitionMillis 1000. Clock `0x143275610` (ms). A plain first/third toggle does not use this state on the traced path (it switches directly). medium.
+- **PlayerCameraTransitionState** (`0x1408fcd50`): progress `t = clamp((now_ms - start_ms) / duration_ms, 0, 1)`, optionally smoothstep `t*t*(3 - 2t)` (mode 1). Durations: iHorseTransitionMillis 500, iBleedoutTransitionMillis 500, iAnimatedTransitionMillis 1000. Clock `0x143275610` (ms). A plain first/third toggle does not use this state on the traced path (it switches directly). medium.
 
 ## Auto vanity (idle orbit)
 - Idle timer `PlayerCamera +0x150` += T each frame while not in AutoVanity, auto vanity is allowed (`+0x160` = !bDisableAutoVanityMode), controls allow it (`0x1407ae030`) and the player is not mounted. Any look/move input (PlayerControls `+0x4A`) resets it. When > fAutoVanityModeDelay (120 s) -> enter AutoVanity (`0x1408fc170`). bForceAutoVanityMode forces entry. In AutoVanity, any input returns to the previous state (`0x1408fc8a0`). high.

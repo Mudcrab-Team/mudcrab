@@ -1,4 +1,4 @@
-# Q11 Stealth detection formula (B7)
+# Q11 Stealth detection formula
 
 Build: SkyrimSE.exe 1.7.104.0, SHA-256 846efccf…1402f. Static trace (Ghidra 12.2 + decompiler). Values: Skyrim.esm where it overrides the executable (marked ESM), else the executable default (exe).
 
@@ -10,7 +10,7 @@ Build: SkyrimSE.exe 1.7.104.0, SHA-256 846efccf…1402f. Static trace (Ghidra 12
 - Distance d = |D - T| (`0x1402f41e0`). Detection range R = max distance (`0x14041cd30`, below); x fDetectionCombatNonTargetDistanceMult (0.75 exe) when D is in combat and T is not its target.
 - Angle a from D's facing to T (`0x1406a32c0`). If a > fDetectionLOSDistanceAngle (60 deg exe): R *= lerp(1, m, (a - 60 deg)/(180 deg - 60 deg)), m = fDetectionLOSDistanceMultInterior 0.75 / Exterior 0.5 (exe).
 - If d < R: a line-of-sight test (`0x1406a2830`) gives LOS; "in view" = LOS and a < fDetectionViewCone/2 (190/2 = 95 deg, exe).
-- Light level of T: T's computed light (`0x1406ff470`), x fDetectionNightEyeBonus (3.0 exe) if D has Night Eye (AV 0x37). Offset: exterior iLightLevelExteriorMod (0 exe); interior min(iLightLevelInteriorMod (25 ESM), 100 x max channel of the scene ambient colour (Sky +0xCC..+0xD4)). light = clamp(L - offset, 0, iLightLevelMax (300 ESM)), then perk entry point 0x2F, rounded.
+- Light level of T: T's computed light (`0x1406ff470`), x int(fDetectionNightEyeBonus) (3.0 exe, truncated to 3) if D has Night Eye (AV 0x37). Offset: exterior iLightLevelExteriorMod (0 exe); interior min(iLightLevelInteriorMod (25 ESM), 100 x max channel of the scene ambient colour (Sky +0xCC..+0xD4)). light = clamp(L - offset, 0, iLightLevelMax (300 ESM)), then perk entry point 0x2F, rounded.
 - Sneak skills: D's Sneak (AV 0x0F) is the "perception" skill; T's Sneak. For the player, skill' = fPlayerDetectionSneakMult (0.4 ESM) x skill + fPlayerDetectionSneakBase (10 ESM); then perk entry point 0x39 on T's value.
 - T state: equipped weight, action noise counter (T +0x11C), moving, running, sneaking, movement noise multiplier (AV 0x5C); a perk entry point (0x0F) clears running, and clears moving while sneaking. D state: alert, asleep, in combat, ambush mode (target 2.5 / non-target 0 ESM), blindness (AV 0x54), T invisible (AV 0x36 > 0).
 - Size class of T's race (small / normal / large / very large).
@@ -47,3 +47,12 @@ high (structure and constants); medium (meaning of some inputs taken from the ca
 
 ## Other engines
 - spud / OpenSky: not checked for detection in this pass.
+
+## Second-path check (2026-11-18)
+Path 2 = capstone disassembly annotated with setting-record names, plus Skyrim.esm GMST values.
+| row | path 2 | result |
+|---|---|---|
+| RF-DETECT-001 | every GMST in the formula is read in `0x14041cd90` in the expected order (`0x14041cdad` player sneak mult/base … `0x14041d1cb` fSneakSkillMult; powf at `0x14041cf9b`); tail `0x14041d1d4`–`0x14041d1ee`: sum, then 0 < x < 1 -> 1, else truncation; values from Skyrim.esm | high kept |
+| RF-DETECT-002 | disassembly `0x1406a3710`–`0x1406a3770`: Night Eye factor = int(fDetectionNightEyeBonus); ambient max over Sky +0xCC/+0xD0/+0xD4 x 100 truncated; min with iLightLevelInteriorMod; clamp to iLightLevelMax | high kept. **Refinement:** the Night Eye factor is truncated to an integer (3) |
+| RF-DETECT-003 | disassembly `0x1406a355b` (combat non-target mult), `0x1406a35d8`–`0x1406a3635` (60 deg threshold, lerp to the LOS mults over (angle - 60 deg)/(pi - 60 deg)), `0x1406a3650` (LOS test), `0x1406a3662`–`0x1406a367a` (view cone x deg->rad x 0.5) | high kept |
+| RF-DETECT-004 | disassembly `0x14041cdad`–`0x14041cdbf`; Skyrim.esm fPlayerDetectionSneakMult 0.4, Base 10 | high kept |

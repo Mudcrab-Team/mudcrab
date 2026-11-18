@@ -39,7 +39,7 @@ For an ACHR whose base NPC has TPLT = LVLN, at reference creation:
 So the final NPC = the placed base's own fields, overwritten group by group (per the base's template flags) by the picked NPC, which itself was resolved through its own template chain.
 
 ## Consequence for #661
-A reference cannot take its body (traits) from the base NPC alone when the base's template is a leveled list: until a reference resolves it, the base carries placeholder traits. Resolving the LVLN per reference (Q9) and applying the flagged groups (this note) is needed for those 8,191 references.
+A reference cannot take its body (traits) from the base NPC alone when the base's template is a leveled list: until a reference resolves it, the base carries placeholder traits. Resolving the LVLN per reference (Q9) and applying the flagged groups (this note) is needed for those references (8,191 in the maintainer's data for #661).
 
 ## Other engines
 - spud / OpenSky: not checked for templates in this pass.

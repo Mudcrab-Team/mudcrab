@@ -1,6 +1,6 @@
 # Q1 Water: noise scroll from WATR DNAM wind fields
 
-Binary: `SkyrimSE.exe` SHA-256 `846efccf…1402f`, 1.7.104.0, image base `0x140000000`. Static analysis only (capstone disassembly of an APFS clone). Addresses are VAs.
+Binary: `SkyrimSE.exe` SHA-256 `846efccf…1402f`, 1.7.104.0, image base `0x140000000`. Static analysis only (capstone disassembly). Addresses are VAs.
 
 ## Answer (formula)
 
@@ -40,10 +40,10 @@ The earlier "names disagree" note (#299 `docs/research/water.md`) assumed the an
 - Shader side (not disassembled from the retail DXBC): Community Shaders `package/Shaders/Water.hlsl` (GPL-3.0, a reconstruction of the retail shader) lines 151–153 and 201–244: `NormalsScroll0` c3, `NormalsScroll1` c4, `NormalsScale` c5; `TexCoord = NormalsScroll + (worldPos.xy + PosAdjust)/NormalsScale`. This is a cross-check, not retail proof. The material `+0x100/+0x110` -> c3/c4 mapping is inferred from layout and from this source.
 
 ## Related executable defaults (INI, `[Water]`/`[Display]`)
-`fSurfaceTileSize:Water` 2048, `fTileTextureDivisor:Water` 4.75, `iWaterNoiseResolution:Water` 256, `uSurfaceFPS:Water` 12, `fWaterSSRIntensity:Display` 1.3 (this install's Skyrim.ini sets 0.5), `fWaterSSRBlurAmount:Display` 0.3, `fWaterSSRNormalPerturbationScale:Display` 0.05, `fReflectionsIntensityScale:Display` 0.8. Their consumers were not traced.
+`fSurfaceTileSize:Water` 2048, `fTileTextureDivisor:Water` 4.75, `iWaterNoiseResolution:Water` 256, `uSurfaceFPS:Water` 12, `fWaterSSRIntensity:Display` 1.3, `fWaterSSRBlurAmount:Display` 0.3, `fWaterSSRNormalPerturbationScale:Display` 0.05, `fReflectionsIntensityScale:Display` 0.8. Their consumers were not traced.
 
 ## Reflection and fresnel inputs
-Not traced in the binary in this pass. CS Water.hlsl names the pixel constants `FresnelRI.x` = DNAM fresnel amount, `VarAmounts` = (sun specular power, reflection amount, alpha, refraction magnitude), `ReflectionColor`, `ShallowColor`, `DeepColor`. That indicates they are record fields copied through, not code constants. Confidence: medium, unverified in the binary. The #299 `REFLECTION_SHARE` 0.6 has no retail source.
+Traced later in separate shader notes (not part of this note set): the reflection mix and the SSR inputs are taken from the record fields and the live setting values. The text below is the first-pass reading. Not traced in the binary in this pass. CS Water.hlsl names the pixel constants `FresnelRI.x` = DNAM fresnel amount, `VarAmounts` = (sun specular power, reflection amount, alpha, refraction magnitude), `ReflectionColor`, `ShallowColor`, `DeepColor`. That indicates they are record fields copied through, not code constants. Confidence: medium, unverified in the binary. The #299 `REFLECTION_SHARE` 0.6 has no retail source.
 
 ## Other engines (leads only)
 - spud (`src/engine/water.cpp:117-127`, `shaders/water.vert:66-68`): same formula (x = d*sin, y = d*cos, frac, uv = base/scale + offset). It is consistent with the binary, so derived. spud `c[12]=(1.3,0.3)` and `c[13]=0.05` equal the exe defaults of fWaterSSRIntensity, fWaterSSRBlurAmount, fWaterSSRNormalPerturbationScale. spud `0.4` (c[3].y) and `1.2` (c[7].w) have no source found.

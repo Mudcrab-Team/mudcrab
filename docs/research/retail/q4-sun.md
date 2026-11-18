@@ -35,7 +35,7 @@ Derived path (ESM values; toward-sun vector, X = east, Y = north): sunrise point
 
 **Sun visibility alpha:** 0 outside [A, B]; ramps 0->1 over [riseMid - trans, riseMid + trans]; 1 between; ramps 1->0 over [setMid - trans, setMid + trans]. Glare alpha = alpha x WTHR byte `+0x668` / 255 x weather transition (current and outgoing weathers blended). high.
 
-**Interior / no-sky mode** (Sky mode 0): the light rotation comes from the cell's lighting (`0x140295700`, XCLL directional rotation; see Q5) through sincos. With no cell: a fixed default rotation with -pi/4 entries. medium.
+**Interior modes** (Sky modes 1 and 2; with no current cell the sky mode is 3, the exterior path): the light rotation comes from the cell's lighting (`0x140295700`, XCLL directional rotation; see Q5) through sincos. With neither a cell nor a lighting template: a fixed default rotation with -pi/4 entries. The mode-0 branch has no effect in practice. medium.
 
 ## Day/night light colour and intensity (#653) (`0x140416760`)
 Time-of-day colour weights (WTHR colour slots 0 sunrise, 1 day, 2 sunset, 3 night):

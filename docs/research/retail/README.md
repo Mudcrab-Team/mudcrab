@@ -19,11 +19,11 @@ Addresses are valid for this build only. Another build moves them.
 
 - Static analysis only. The executable was never run or modified. Tools: Ghidra 12.2 (headless, full auto-analysis, native decompiler) and capstone disassembly, cross-checked against each other.
 - Settings: the executable's default for every INI setting and game setting was read from its setting records. Skyrim.esm overrides some game settings; the notes always state which value applies (for example fZKeyMaxForce: executable 250, Skyrim.esm 100).
-- Confirmation: a second path where possible (decompiler and disassembly, or two callers), a data cross-check (records, INI, record names), and numeric reproduction of derived claims.
+- Confirmation: a second path where possible (decompiler and disassembly at the same addresses, or two callers), a data cross-check (game-setting records, record data), and numeric reproduction of derived claims. Rows rated high on the detection and combat topics cite their second path in the method column.
 - "Not found" claims are limited to the functions that were read in full, and say so.
 - **No decompiler output is published.** The notes give addresses, formulas and values in our own words.
 
-Confidence: **high** = direct instruction trace; **medium-high** = traced with one inferred link; **medium** = partly inferred or from a reconstruction; **low** = lead only.
+Confidence: **high** = direct instruction trace, confirmed by a second path where the row says so; **medium-high** = traced with one inferred link; **medium** = partly inferred or from a reconstruction; **low** = lead only.
 
 ## Other sources (leads only)
 
@@ -37,6 +37,8 @@ Confidence: **high** = direct instruction trace; **medium-high** = traced with o
 No code from these projects was copied. Facts and formulas are cited where used.
 
 ## Contents
+
+The codes B7, C2 and C3 in the registry's "used by" column are Mudcrab parity-milestone labels (stealth, actor values, combat).
 
 | File | Topic | PRs | Summary |
 | --- | --- | --- | --- |
@@ -52,8 +54,8 @@ No code from these projects was copied. Facts and formulas are cited where used.
 | [q8-mods.md](q8-mods.md) | Alternate textures (MODS) | #508 | matched by 3D Index (depth-first geometry count); whole texture set replaced |
 | [q9-leveled-lists.md](q9-leveled-lists.md) | Leveled lists (LVLI, LVLN) | #661, clothing | chance none per pick; highest level group <= level; time-seeded MT19937; when lists roll |
 | [q10-npc-templates.md](q10-npc-templates.md) | NPC templates | #661 | per-flag group copy; depth-first chain; per-reference leveled actors |
-| [q11-detection.md](q11-detection.md) | Stealth detection | B7 | base + sound + sight + skill; distance falloff; light against ambient |
-| [q12-combat-damage.md](q12-combat-damage.md) | Combat damage | C3, C2 | weapon damage, sneak and critical multipliers, armour cap, block, difficulty |
+| [q11-detection.md](q11-detection.md) | Stealth detection | detection work | base + sound + sight + skill; distance falloff; light against ambient |
+| [q12-combat-damage.md](q12-combat-damage.md) | Combat damage | combat work | weapon damage, sneak and critical multipliers, armour cap, block, difficulty |
 | [registry.md](registry.md) | All facts by ID | | |
 
 This publication covers the areas WATER, GRASS, CARRY, SUN, LIGHT-CPU, CAM, PHYS, TEX, LVL, NPC, DETECT and COMBAT. Other areas are researched separately and are not included here.

@@ -56,28 +56,20 @@ These are Papyrus scenes. Their camera behaviour comes from the calls above (Dis
 ## Other engines
 - spud implements DisablePlayerControls flags and SetPlayerAIDriven in its script layer (not checked line by line). OpenSky: not checked.
 
-## Addendum: Helgen and Thieves Guild sequences (converted scripts, read-only)
-Source: the scripts converted from the retail PEX files in a maintainer pack (Luau, fragment names as in the PEX). Argument order for Disable/EnablePlayerControls: movement, fighting, camSwitch, looking, sneaking, menu, activate, journalTabs, POVType. FadeOutGame args: fadingOut, blackFade, secsBeforeFade, fadeDuration.
+## Addendum: Helgen and Thieves Guild sequences (retail Papyrus scripts)
+Summary of the camera-related calls in the retail quest scripts (MQ101 quest and scene fragments; TG05 and TG05SP fragments), in our own words. Argument order for Disable/EnablePlayerControls: movement, fighting, camSwitch, looking, sneaking, menu, activate, journalTabs, POVType. FadeOutGame arguments: fadingOut, blackFade, secsBeforeFade, fadeDuration.
 
-**Helgen intro, MQ101 (`qf_mq101_0003372b.luau`)**
-| fragment (line) | call | camera effect |
-|---|---|---|
-| Fragment_204 (1261) | DisablePlayerControls(T,T,T,F,T,T,T,F,0) | no move/fight/POV switch/sneak/menu/activate; looking stays enabled |
-| Fragment_4 (1306-1477) | SetInChargen(T,T,T); DisablePlayerControls(T,T,T,F,T,T,T,T,0); FadeOutGame(F,T,14.0,15.0) | cart start: fade in from black after 14 s over 15 s; free look only |
-| Fragment_175 (5696-5723) | SetVehicle(cart) on the player and the passengers | the player rides the cart as a vehicle (camera follows the player; POV switch blocked) |
-| Fragment_27 (1887-1896) | SetInChargen(F,F,F); FadeOutGame(F,T,1.0,1.0) | fade up after 1 s over 1 s |
-| Fragment_227 (2164-2167) | EnablePlayerControls(T,F,F,T,...); SetPlayerAIDriven(T) | player walks under AI: first-person spring fades out (RF-CAM-021) |
-| Fragment_191 / 197 / 57 | Disable/EnablePlayerControls variants; SetPlayerAIDriven(T) (3639) | scripted walks |
-| Fragment_295 (5017) | SetPlayerAIDriven(F) | spring returns |
-| Fragment_101 (5980-6019) | ShakeCamera(CollapsingBridgeAnim, 0.5, 1.25), (…, 1.0, 2.0), (…, 0.6, 2.0) | shakes from the bridge source (RF-CAM-022) |
-| mq101questscript.luau 1058 / 1091 | DisablePlayerControls(T,T,F,T,F,T,T,F,0) / EnablePlayerControls(…looking…) | dragon attack: looking disabled then re-enabled |
-Image space modifiers used: BlackoutImod, FadeUpFromBlack, CGDragonAttackBlurLong, PlayerAlduinIMOD.
+**Helgen intro (MQ101)**
+- Cart start: SetInChargen(true, true, true); DisablePlayerControls blocks movement, fighting, POV switch, sneaking, menus, activation and journal tabs, but leaves looking enabled; FadeOutGame(false, true, 14.0, 15.0): the screen fades in from black after 14 s over 15 s.
+- The player and the passengers are attached to the carts with SetVehicle; the camera follows the player, and the POV switch stays blocked.
+- Arrival: SetInChargen(false, false, false); FadeOutGame(false, true, 1.0, 1.0).
+- Scripted walks: EnablePlayerControls (movement, looking) followed by SetPlayerAIDriven(true): the first-person spring fades out (RF-CAM-021); later SetPlayerAIDriven(false) restores it.
+- Bridge collapse: ShakeCamera from the bridge object with (strength, duration) = (0.5, 1.25), (1.0, 2.0), (0.6, 2.0) (RF-CAM-022).
+- Dragon attack: DisablePlayerControls with looking disabled, later re-enabled. Image space modifiers used: a blackout, a fade up from black, a dragon-attack blur and an Alduin effect.
 
-**Thieves Guild knock-out, TG05 (Karliah's arrow)**
-| script (line) | call |
-|---|---|
-| `qf_tg05sp_0002c367.luau` 245-260 | Mercer StopCombat; **ForceFirstPerson()**; enable arrow-hit ref; ImageSpaceModifier StrikeandFall.Apply(1.0); DisablePlayerControls(T,T,T,T,T,T,T,F,0) (everything but journal, including looking) |
-| `sf_tg05spkillscene_00032e64.luau` 97 | TG05BlackFrame.ApplyCrossfade(1.0) (black frame) |
-| `qf_tg05_00021551.luau` 289-332 | player MoveTo(TG05PlayerAwakenMarker); pimodWakeUp.ApplyCrossFade(1.0); PlayIdle(GetUp); EnablePlayerControls(all) |
-Other TG camera calls: TG08 (`qf_tg08_00021554.luau` 244-861) DisablePlayerControls + SetInChargen; TG08A oath scene imod crossfade; TG08B tower fall / rising water ShakeCamera with script-set amounts; TG09 imod crossfade.
-The knock-out uses no special camera state: it forces first person, blocks input, and uses image space modifiers for the fade. high (script calls as converted).
+**Thieves Guild knock-out (TG05)**
+- Karliah's arrow: the enemy stops combat; ForceFirstPerson(); the arrow-hit marker is enabled; a strike-and-fall image space modifier is applied; DisablePlayerControls blocks everything except the journal, including looking; a black-frame crossfade follows.
+- Wake-up: the player is moved to the awaken marker; a wake-up image space crossfade; the get-up idle plays; EnablePlayerControls(all).
+- Later TG quests use DisablePlayerControls with SetInChargen, image space crossfades, and ShakeCamera with script-set amounts.
+
+The knock-out uses no special camera state: it forces first person, blocks input and fades with image space modifiers. These are summaries of the retail script content, not executable facts, so they have no registry rows.

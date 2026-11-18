@@ -18,7 +18,7 @@ S = P_now + e
 V = (e - d) / T   if |d| <= 300 and T > 0, else 0     (= velocity of S)
 ```
 
-Defaults (executable; this install's INI does not override them): vertical spring 0.001, vertical damping 0.6 (`0x1420ba090`, `0x1420ba0a8`); horizontal spring 0.0001, damping 0.4 (`0x1420ba0c0`, `0x1420ba0d8`).
+Defaults (executable): vertical spring 0.001, vertical damping 0.6 (`0x1420ba090`, `0x1420ba0a8`); horizontal spring 0.0001, damping 0.4 (`0x1420ba0c0`, `0x1420ba0d8`).
 
 **Meaning and units.** "Spring constant" is the fraction of the lag that remains after one second: lag decays as `K^T`. Vertical: `0.001^t` = time constant `-1/ln(0.001)` = 0.145 s. Horizontal: 0.109 s. "Velocity dampening" is a momentum factor: the smoothed point keeps moving by 0.6 x its last per-frame displacement (scaled by T_now/T_prev). This makes a second-order response with slight overshoot that depends on frame rate. It is not a 55 ms first-order exponential.
 
@@ -34,7 +34,7 @@ Defaults (executable; this install's INI does not override them): vertical sprin
 2. The movement controller is NOT controls-driven: byte +0x1C5 of the player's movement controller (actor +0x150), read through vtable slot +0x78 `0x140796ac0`. Slot +0x68 `0x1407969f0` sets it, slot +0x60 `0x140796940` clears it. The console command handler `0x14037b3a0` names this state: "ToggleControlsDriven ... actor movement is now controls-driven / AI-driven". So the spring is ON in normal player-controlled walking and OFF (fades out) when the player is AI-driven.
 3. A state byte at +0x88 is set (meaning unverified).
 4. A reference handle at player +0x1F0 resolves (candidate: furniture or mount; unverified).
-5. A check `0x1401573e0(player+0x70, 0xA9)` passes when player +0x204 bit 1 is clear (meaning unverified).
+5. A check `0x1401573e0(player+0x70, 0xA9)` passes when player +0x204 bit 1 is clear. Later research identified it as "the actor is on a mount": the spring fades out while mounted.
 W fades in or out over 1/1.5 = 0.67 s.
 
 **Answers to the #520 / lead questions (first person):**
@@ -49,7 +49,7 @@ W fades in or out over 1/1.5 = 0.67 s.
 | discontinuity (teleport) limit | 300 units (3D distance between S and P): lag and velocity reset to 0 that frame | high |
 | cadence | once per camera update (per rendered frame), not a fixed step | medium-high |
 
-**Clock T** (`0x143275608`, writer `0x140ce36b0`, from #520): T = tick-count delta in ms x 0.001 (`0x141b5bdc4`). A delta over 166.67 ms is clamped to 0.1667 s (`0x141a220f8`, `0x141869dd8`). An optional running average over N frames is applied when the filter length is 3 or more. Whether this is time-scaled is unverified.
+**Clock T** (`0x143275608`, writer `0x140ce36b0`, from #520): T = tick-count delta in ms x 0.001 (`0x141b5bdc4`). A delta over 166.67 ms is clamped to 0.1667 s (`0x141a220f8`, `0x141869dd8`). Later research found that the optional running average is inactive in this build (its filter length is 0) and that the published delta is multiplied by the global slow-time factor (1.0 normally).
 
 ## Third person (`0x1408fe3c0`, called from ThirdPersonState update `0x1408fd590`)
 
@@ -62,12 +62,6 @@ No vertical spring. The follow target is the world position of a node returned b
 | 30 deg walkable-slope rule | No retail equivalent. Retail smooths all motion. |
 | 1 unit per-tick slack | No retail equivalent. |
 Teleport reset: retail uses a 300-unit distance test, plus the W gates. #511's event-based resets (door, mode change) are extra.
-
-## Why earlier attempts failed (and what changed)
-1. First static attempt (2026-11-03, maintainer evidence): blocked before opening the project. Ghidra rejects a project path with an element that starts with ".". Fix here: a project path without such an element.
-2. Second attempt (2026-11-03): the Ghidra package had no macOS arm64 decompiler, and the saved project had only partial analysis (missing xrefs). It traced the spring formula from disassembly, but could not resolve the +0x1C5 gate, the clock, or callers. Fix here: native decompiler (built 2026-11-03) and a fresh full auto-analysis; the gate was resolved through the 103 callers of the controller getter `0x1406a51b0`, which led to the ToggleControlsDriven handler.
-3. #511 follow-up work (2026-11-02): implemented a tuned 55 ms first-order offset and per-tick stair markers because no retail formula was established. Its fixed-step tests failed on down-steps (camera moved farther than the body). The retail model is per-frame and continuous, with no step detection.
-4. Controller-feel report (2026-11-14, maintainer evidence): derived the same 0.001/0.6 numbers from spud and #511 text, but did not know whether the spring acts on stairs. Answered here: yes, when controls-driven and the smoothed point is under 500 u/s.
 
 ## Cross-checks
 - spud: uses vertical 0.001/0.6 and horizontal 0.0001/0.4 (per the controller-feel report). Derived; matches the binary. Whether spud implements the 300/500/1.5 gates was not checked.
