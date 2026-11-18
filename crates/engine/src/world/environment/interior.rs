@@ -454,6 +454,8 @@ impl CellFog {
     /// it at 163,840), and fog with an authored `max <= 0` has a factor of 0 everywhere, so the
     /// engine draws no fog for either. A near that is not usable (<= 0 or beyond far) becomes
     /// [`FOG_NEAR_CLAMP_FRACTION`] of far, as in retail (`RF-FOG-001`), so fog is drawn for those.
+    /// A near equal to far is usable but leaves a zero-width ramp: retail draws no fog there
+    /// (`RF-LIGHT-CPU-021`, the "no fog" constant block), so this returns `None`.
     ///
     /// A missing `max` with an authored near and far is different: it comes from a short XCLL
     /// (72 to 91 bytes, which ends before the max field) or a short template. What retail does
@@ -470,7 +472,7 @@ impl CellFog {
             authored_near
         };
         let max = lighting.fog_max.unwrap_or(1.0);
-        (far > 0.0 && max > 0.0).then(|| Self {
+        (far > 0.0 && near < far && max > 0.0).then(|| Self {
             near_color: lighting.fog_near_color.unwrap_or([0; 3]),
             far_color: lighting.fog_far_color.unwrap_or([0; 3]),
             near,
@@ -2179,9 +2181,11 @@ mod tests {
         assert_eq!(fog(Some(-5.0), Some(5000.0)).unwrap().near, 850.0);
         // A near beyond far is clamped; the ramp is no longer empty.
         assert_eq!(fog(Some(6000.0), Some(5000.0)).unwrap().near, 850.0);
-        // A usable near is kept, at far itself too.
+        // A usable near is kept.
         assert_eq!(fog(Some(100.0), Some(5000.0)).unwrap().near, 100.0);
-        assert_eq!(fog(Some(5000.0), Some(5000.0)).unwrap().near, 5000.0);
+        // Near equal to far is a zero-width ramp, which retail draws as no fog
+        // (RF-LIGHT-CPU-021); Bevy's linear fog would divide by zero.
+        assert_eq!(fog(Some(5000.0), Some(5000.0)), None);
         // No far: nothing to ramp to.
         assert_eq!(fog(Some(100.0), None), None);
         assert_eq!(fog(Some(0.0), Some(0.0)), None);
@@ -2232,8 +2236,15 @@ mod tests {
             ..default()
         }));
         assert_eq!(short.fog.unwrap().max, 1.0);
-        // No fog ramp in the template: no room fog, whatever the cell has.
+        // No fog ramp in the template: no room fog, whatever the cell has. Near equal to far is
+        // no ramp either (RF-LIGHT-CPU-021).
         assert_eq!(cell.with_room_template(&template(default())).fog, None);
+        let equal = template(Lighting {
+            fog_near: Some(2000.0),
+            fog_far: Some(2000.0),
+            ..default()
+        });
+        assert_eq!(cell.with_room_template(&equal).fog, None);
         // The rotation stays the cell's.
         assert_eq!(room.key_travel, cell.key_travel);
     }

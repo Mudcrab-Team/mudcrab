@@ -60,7 +60,8 @@ repository; ask in #264 for a row. This spec states each fact it relies on.
    Retail scene fog is `min(saturate((d - near)/(far - near))^power, max)` with a near-to-far
    colour lerp (RF-WATER-011). Bevy has no power term and one colour, so power and the far
    colour are reported only. A near that is not usable (<= 0 or beyond far) becomes 0.17 of
-   far, as in retail (RF-FOG-001, RF-LIGHT-CPU-023): near 0, far 5000 starts at 850. `far <= 0`
+   far, as in retail (RF-FOG-001, RF-LIGHT-CPU-023): near 0, far 5000 starts at 850. Near equal to
+   far draws no fog (RF-LIGHT-CPU-021). `far <= 0`
    draws no fog (retail's far clamp would put the fog's start at 27,853 units, so the picture is
    the same). The far clamp above 163,840 and the clip distance are not applied.
    A short XCLL (72 to 91 bytes) has no fog max field. Retail behaviour for a short block is
