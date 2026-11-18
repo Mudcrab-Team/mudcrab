@@ -401,13 +401,16 @@ pub(crate) fn insert_record(
                 let mut target_form_id: Option<u32> = None;
                 let mut value_text: Option<String> = None;
 
+                let activate_choice_spell_optional = parameter_type == Some(4)
+                    && function == 9
+                    && (epf2.is_some() || epf3.is_some());
                 let canonical_epfd = canonical_blocks
                     .get(effect_index)
                     .and_then(|canonical_block| first_block_subrecord(canonical_block, b"EPFD"));
                 let decoded_ok = match (parameter_type, epfd) {
                     (None, None) | (Some(0), _) => matches!(function, 0 | 6 | 7),
-                    // `add_activate_choice` (fn=9, EPFT=4) uses button label/flags in vanilla plugins without an activation spell.
-                    (Some(4), None) => function == 9 && (epf2.is_some() || epf3.is_some()),
+                    // `add_activate_choice` (fn=9, EPFT=4) uses button label/flags in vanilla plugins with no spell (`None` or null FormID `0`).
+                    (Some(4), None) => activate_choice_spell_optional,
                     // Intentionally unresolved EPFT=7 localized text is stripped by runtime_projection
                     // while remaining non-empty on the canonical winning record.
                     (Some(7), None) => canonical_epfd.is_some_and(|b| !b.is_empty()),
@@ -440,11 +443,14 @@ pub(crate) fn insert_record(
                     (Some(2), Some(_)) => false,
                     (Some(tag @ 3..=5), Some(b)) => {
                         let expected: &[&[u8; 4]] = if tag == 3 { &[b"LVLI"] } else { &[b"SPEL"] };
-                        target_form_id = (b.len() == 4)
-                            .then(|| u32_at(b, 0))
-                            .flatten()
-                            .and_then(|id| links.resolve(Some(id), expected));
-                        target_form_id.is_some()
+                        match (b.len() == 4).then(|| u32_at(b, 0)).flatten() {
+                            Some(0) => activate_choice_spell_optional,
+                            Some(id) => {
+                                target_form_id = links.resolve(Some(id), expected);
+                                target_form_id.is_some()
+                            }
+                            None => false,
+                        }
                     }
                     (Some(6), Some(b)) => {
                         value_text = Some(decode_subrecord_text(b));

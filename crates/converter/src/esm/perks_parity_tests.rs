@@ -196,7 +196,7 @@ fn build_fixture(root: &Path) -> Vec<std::path::PathBuf> {
         Some(b"bStagger\xC3\xA9OnHit\0"),
         None,
     ));
-    // EPFT=0 (none), EPFT=5 (spell), and EPFT=4 add_activate_choice (fn=9) with label and no EPFD.
+    // EPFT=0 (none), EPFT=5 (spell), and EPFT=4 add_activate_choice (fn=9) with label and no EPFD or null FormID 0.
     p2.extend(perks::entry_effect(65, 0, 0, None, None));
     p2.extend(perks::entry_effect(
         51,
@@ -207,6 +207,14 @@ fn build_fixture(root: &Path) -> Vec<std::path::PathBuf> {
     ));
     let talk_label = perks::text("Talk");
     p2.extend(perks::entry_effect(14, 9, 4, None, Some(&talk_label)));
+    let open_label = perks::text("Open");
+    p2.extend(perks::entry_effect(
+        14,
+        9,
+        4,
+        Some(&0u32.to_le_bytes()),
+        Some(&open_label),
+    ));
     let deleted_perk_id = perks::FIRST_ID + 2;
 
     skyrim.extend(top(
@@ -438,15 +446,25 @@ fn both_readers_publish_identical_perk_entry_points_and_conditions() {
         .unwrap();
     assert_eq!(bad_conds, vec![(0, None), (0, None)]);
 
-    let activate_label: Option<String> = inhouse
-        .query_row(
-            "SELECT button_label FROM perk_entry_points
-             WHERE perk_id = ?1 AND entry_point = 14 AND function = 9 AND parameter_type = 4",
-            [perks::FIRST_ID + 1],
-            |row| row.get(0),
+    let activate_labels: Vec<(Option<String>, Option<u32>)> = inhouse
+        .prepare(
+            "SELECT button_label, target_form_id
+             FROM perk_entry_points
+             WHERE perk_id = ?1 AND entry_point = 14 AND function = 9 AND parameter_type = 4
+             ORDER BY effect_index",
         )
+        .unwrap()
+        .query_map([perks::FIRST_ID + 1], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
         .unwrap();
-    assert_eq!(activate_label.as_deref(), Some("Talk"));
+    assert_eq!(
+        activate_labels,
+        vec![
+            (Some("Talk".to_owned()), None),
+            (Some("Open".to_owned()), None),
+        ]
+    );
 
     let deleted_count: i64 = inhouse
         .query_row(
@@ -521,6 +539,14 @@ fn undecoded_perk_entry_points_are_reported_in_projection_omissions() {
         ));
         // 8) EPFT=7 (set_text) missing its EPFD subrecord
         bad.extend(perks::entry_effect(81, 15, 7, None, None));
+        // 9) EPFT=4 (add_activate_choice) with null FormID 0 and no label/flags
+        bad.extend(perks::entry_effect(
+            14,
+            9,
+            4,
+            Some(&0u32.to_le_bytes()),
+            None,
+        ));
         // Valid sibling effect must survive.
         bad.extend(perks::entry_effect(
             36,
@@ -542,7 +568,7 @@ fn undecoded_perk_entry_points_are_reported_in_projection_omissions() {
 
         let omissions = ProjectionOmissions::read(&conn).unwrap();
         let entry = &omissions.categories[OmissionCategory::PerkEffectUndecoded.name()];
-        assert_eq!(entry.count, 8, "{reader:?}: {entry:?}");
+        assert_eq!(entry.count, 9, "{reader:?}: {entry:?}");
         assert_eq!(entry.samples[0].form_id, perks::FIRST_ID);
 
         let surviving: Vec<(i64, i64, f64)> = conn
@@ -558,7 +584,7 @@ fn undecoded_perk_entry_points_are_reported_in_projection_omissions() {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(surviving, vec![(8, 36, 1.5)], "{reader:?}");
+        assert_eq!(surviving, vec![(9, 36, 1.5)], "{reader:?}");
     }
 }
 
