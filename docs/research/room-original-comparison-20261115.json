@@ -1342,7 +1342,7 @@
       ]
     }
   ],
-  "evidence_directory": "/home/aivv/.t3/artifacts/skyrim-culling-20261115",
+  "evidence_directory": "skyrim-culling-20261115",
   "limitations": [
     "No functioning native multibound-off control: MBC is a no-op in the pinned build.",
     "Different renderers, lighting, fog, materials, water, effects, and clip planes.",

@@ -9,7 +9,7 @@ web and foliage overdraw recorded below. These observations preserve the earlier
 
 The machine-readable [capture report](room-original-comparison-20261115.json) records the live
 native cameras, executable hash, Mudcrab revision, render receipts, observations, and all 36 image
-hashes. The local evidence directory is `/home/aivv/.t3/artifacts/skyrim-culling-20261115`.
+hashes. The local evidence bundle is named `skyrim-culling-20261115`.
 It contains the original PNGs, Mudcrab render receipts, capture helpers, a contact sheet, and the
 comparison viewer. Screenshots and proprietary game data are not included in the repository.
 
