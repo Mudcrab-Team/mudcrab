@@ -322,6 +322,7 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
 
     // Optional reference link and detail tables (db-schema.md, #269 gap 3).
     conn.execute_batch(crate::esm::reference_links::REFERENCE_LINK_TABLES_SQL)?;
+    super::object_materials::create_tables(conn)?;
     // `CREATE TABLE IF NOT EXISTS` leaves a reused older table as it was; give it the columns
     // later exports added, so a subset export can still insert into it.
     add_missing_columns(conn, "lights", LIGHT_DETAIL_COLUMNS)?;
@@ -556,6 +557,7 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
     for table in crate::esm::environment::ENVIRONMENT_TABLES
         .iter()
         .chain(crate::esm::reference_links::REFERENCE_LINK_TABLES.iter())
+        .chain(std::iter::once(&super::object_materials::TABLE))
     {
         tx.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))?;
     }
@@ -767,6 +769,9 @@ fn export_records(
         let projection = runtime_projection(record, unresolved_fields);
         let record = projection.as_ref().unwrap_or(record);
         let view = SubrecordView::new(&record.subrecords);
+        if record.record_type == *b"STAT" {
+            super::object_materials::insert(&tx, master, record, &view)?;
+        }
         let vmad_bytes = view.find(b"VMAD");
         if let Some(vmad_bytes) = vmad_bytes {
             let parsed = parse_vmad(vmad_bytes, &record.record_type);
@@ -3275,6 +3280,31 @@ mod tests {
         assert_eq!(report.objects_in_several_rooms, 1);
         let read = rooms::RoomGraphReport::read(&conn).unwrap();
         assert_eq!(read, report);
+    }
+
+    #[test]
+    fn authored_multibound_overrides_do_not_acquire_geometric_room_membership() {
+        let mut unrestricted = reference(0x2001, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        unrestricted.flags |= 0x8000_0000;
+        let mut assigned = unrestricted.clone();
+        assigned.form_id = 0x2002;
+        assigned.subrecords.push((b"XMBR".to_vec(), word(0x1001)));
+        let (conn, _) = export_rooms(vec![
+            interior_cell(0x100),
+            room(0x1001, 0x100, [0.0; 3], [0.0; 3], [100.0; 3], vec![]),
+            unrestricted,
+            assigned,
+            reference(0x2003, 0x100, 0x500, [0.0; 3], [0.0; 3]),
+        ]);
+        assert!(
+            rooms_of(&conn, 0x2001).is_empty(),
+            "NONE stays unrestricted"
+        );
+        assert!(
+            rooms_of(&conn, 0x2002).is_empty(),
+            "authored targets bypass geometric membership too"
+        );
+        assert_eq!(rooms_of(&conn, 0x2003), vec![(0x1001, 1)]);
     }
 
     #[test]
