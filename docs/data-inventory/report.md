@@ -6,7 +6,7 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 
 ## Denominators
 
-- rusqlite_candidates: 98
+- rusqlite_candidates: 99
 - emitted_schema_columns: unknown
 - manually_traced_fields: 14
 - named_external_stores: 3
@@ -91,16 +91,17 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 | `crates/engine/src/object_materials.rs:79` prepare | literal |
 | `crates/engine/src/object_materials.rs:97` prepare | literal |
 | `crates/engine/src/object_materials.rs:111` query_row | unknown |
-| `crates/engine/src/papyrus_host.rs:1112` prepare | literal |
-| `crates/engine/src/papyrus_host.rs:1127` prepare_cached | unknown |
-| `crates/engine/src/papyrus_host.rs:1129` query_row | unknown |
-| `crates/engine/src/papyrus_host.rs:1140` prepare_cached | literal |
-| `crates/engine/src/papyrus_host.rs:1152` prepare_cached | literal |
-| `crates/engine/src/papyrus_host.rs:1158` prepare_cached | literal |
-| `crates/engine/src/papyrus_host.rs:1221` prepare_cached | literal |
-| `crates/engine/src/papyrus_host.rs:1223` query_row | unknown |
-| `crates/engine/src/papyrus_host.rs:1229` prepare_cached | literal |
-| `crates/engine/src/papyrus_host.rs:1234` query_row | unknown |
+| `crates/engine/src/papyrus_host.rs:1114` prepare | literal |
+| `crates/engine/src/papyrus_host.rs:1126` query_row | literal |
+| `crates/engine/src/papyrus_host.rs:1149` prepare_cached | unknown |
+| `crates/engine/src/papyrus_host.rs:1151` query_row | unknown |
+| `crates/engine/src/papyrus_host.rs:1162` prepare_cached | literal |
+| `crates/engine/src/papyrus_host.rs:1174` prepare_cached | literal |
+| `crates/engine/src/papyrus_host.rs:1180` prepare_cached | literal |
+| `crates/engine/src/papyrus_host.rs:1243` prepare_cached | literal |
+| `crates/engine/src/papyrus_host.rs:1245` query_row | unknown |
+| `crates/engine/src/papyrus_host.rs:1251` prepare_cached | literal |
+| `crates/engine/src/papyrus_host.rs:1256` query_row | unknown |
 | `crates/engine/src/physics/carry.rs:223` prepare | literal |
 | `crates/engine/src/physics.rs:115` query_row | literal |
 | `crates/engine/src/physics.rs:123` query_row | literal |
@@ -129,31 +130,31 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 | `crates/engine/src/world/database.rs:603` prepare | unknown |
 | `crates/engine/src/world/database.rs:652` query_row | literal |
 | `crates/engine/src/world/database.rs:658` query_row | literal |
-| `crates/engine/src/world/database.rs:976` query_row | literal |
-| `crates/engine/src/world/database.rs:1122` query_row | literal |
-| `crates/engine/src/world/database.rs:1129` query_row | literal |
-| `crates/engine/src/world/database.rs:1141` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:1178` query_row | literal |
-| `crates/engine/src/world/database.rs:1201` query_row | literal |
-| `crates/engine/src/world/database.rs:1225` query_row | literal |
-| `crates/engine/src/world/database.rs:1233` query_row | literal |
-| `crates/engine/src/world/database.rs:1243` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:1285` query_row | literal |
-| `crates/engine/src/world/database.rs:1482` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:1483` query_row | unknown |
-| `crates/engine/src/world/database.rs:1491` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:1492` query_row | unknown |
-| `crates/engine/src/world/database.rs:1516` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:1542` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:1545` query_row | unknown |
-| `crates/engine/src/world/database.rs:1552` prepare_cached | literal |
-| `crates/engine/src/world/database.rs:1556` query_row | unknown |
-| `crates/engine/src/world/database.rs:1629` query_row | literal |
-| `crates/engine/src/world/database.rs:1676` query_row | literal |
-| `crates/engine/src/world/database.rs:1693` prepare_cached | unknown |
-| `crates/engine/src/world/database.rs:1703` prepare_cached | unknown |
-| `crates/engine/src/world/database.rs:1714` prepare_cached | unknown |
-| `crates/engine/src/world/database.rs:1715` query_row | unknown |
+| `crates/engine/src/world/database.rs:961` query_row | literal |
+| `crates/engine/src/world/database.rs:1107` query_row | literal |
+| `crates/engine/src/world/database.rs:1114` query_row | literal |
+| `crates/engine/src/world/database.rs:1126` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1163` query_row | literal |
+| `crates/engine/src/world/database.rs:1186` query_row | literal |
+| `crates/engine/src/world/database.rs:1210` query_row | literal |
+| `crates/engine/src/world/database.rs:1218` query_row | literal |
+| `crates/engine/src/world/database.rs:1228` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1270` query_row | literal |
+| `crates/engine/src/world/database.rs:1467` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1468` query_row | unknown |
+| `crates/engine/src/world/database.rs:1476` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1477` query_row | unknown |
+| `crates/engine/src/world/database.rs:1501` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1527` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1530` query_row | unknown |
+| `crates/engine/src/world/database.rs:1537` prepare_cached | literal |
+| `crates/engine/src/world/database.rs:1541` query_row | unknown |
+| `crates/engine/src/world/database.rs:1614` query_row | literal |
+| `crates/engine/src/world/database.rs:1661` query_row | literal |
+| `crates/engine/src/world/database.rs:1678` prepare_cached | unknown |
+| `crates/engine/src/world/database.rs:1688` prepare_cached | unknown |
+| `crates/engine/src/world/database.rs:1699` prepare_cached | unknown |
+| `crates/engine/src/world/database.rs:1700` query_row | unknown |
 | `crates/engine/src/world/environment.rs:606` prepare | literal |
 | `crates/engine/src/world/environment.rs:645` prepare | literal |
 | `crates/engine/src/world/environment.rs:739` prepare | literal |
