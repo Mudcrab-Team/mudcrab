@@ -24,8 +24,9 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
             NifBlock::NiNode(node)
             | NifBlock::BSFadeNode(node)
             | NifBlock::BSLeafAnimNode(node) => (&node.av, None, node.children.as_slice()),
+            // LoadBinary overwrites the file bit and clears it for zero or unordered radii.
             NifBlock::BSOrderedNode(node)
-                if node.static_bound != 0 && node.node.av.flags.fixed_bound() =>
+                if node.static_bound != 0 && node.alpha_sort_bound[3].abs() > 0.0 =>
             {
                 let bound = ModelSphere {
                     center: node.alpha_sort_bound[..3].try_into().ok()?,
