@@ -137,16 +137,28 @@ impl IdleNameRule {
 /// The clips a creature may show besides its default idle: names that start with `idle` or
 /// contain `_idle`, minus these:
 ///
-/// - attacks, deaths, combat poses, get-ups, lie-downs, and the enter and exit transitions (a
-///   looped `idle_enterfeed` is not an idle);
+/// - fights and dying: `attack`, `combat`, `block`, `ambush`, `death`, `bleedout`;
+/// - posture changes and their transitions: `getup`, `getdown`, `lay`, `liedown`, `sit`, `sleep`,
+///   `kneel`, `squat`, `enter`, `exit`, `start`, `stop`, `intro`, `outro`, `_end`;
+/// - the look, call, feed, forage and graze variants (`look`, `call`, `mooo`, `feed`, `forage`,
+///   `graze`). Retail picks those in the engine's `IDLE` tree, with conditions and replay delays,
+///   not in the behaviour graph (RF-IDLE-020). They are a follow-up;
+/// - other states and gaits: `alcove`, `coffin`, `run`, `walk`, `swim`, `dance`, `levitate`;
 /// - `idle_a_`: the twelve `idle_A_*` stand idles. Retail disables their root, `BaseIdleRoot`,
 ///   with a `GetRandomPercent < 0` condition that never passes, so they are not part of the
 ///   reachable stand set (RF-IDLE-021).
+///
+/// What is left is mostly the head, tail and body spice clips that the dog and cow graphs re-pick
+/// among (RF-IDLE-018, RF-IDLE-019). The filter is a stand-in for that graph, so it can keep a
+/// clip the graph would not and drop one it would. See [`crate::actor_animation::IdleSequence`].
 pub const VARIED_IDLE_NAMES: IdleNameRule = IdleNameRule {
     starts_with: &["idle"],
     contains: &["_idle"],
     exclude: &[
-        "attack", "death", "combat", "getup", "laydown", "enter", "exit", "idle_a_",
+        "attack", "combat", "block", "ambush", "death", "bleedout", "getup", "getdown", "lay",
+        "liedown", "sit", "sleep", "kneel", "squat", "enter", "exit", "start", "stop", "intro",
+        "outro", "_end", "look", "call", "mooo", "feed", "forage", "graze", "alcove", "coffin",
+        "run", "walk", "swim", "dance", "levitate", "idle_a_",
     ],
 };
 
@@ -1332,7 +1344,8 @@ mod tests {
     fn varied_idle_names_keep_idles_and_drop_attacks_deaths_and_transitions() {
         for accepted in [
             "meshes/actors/canine/animations/dog_idle_spice_head1.hkx",
-            "meshes/actors/cow/animations/idle_lookleft.hkx",
+            "meshes/actors/canine/animations/dog_idle_spice_tail3.hkx",
+            "meshes/actors/cow/animations/idle_tailwag1.hkx",
             r"Meshes\Actors\Bear\Animations\IdleShake.HKX",
             "idlerooting.hkx",
         ] {
@@ -1346,16 +1359,23 @@ mod tests {
             "meshes/actors/cow/animations/idle_laydown.hkx",
             "meshes/actors/cow/animations/idle_enterfeed.hkx",
             "meshes/actors/cow/animations/idle_exitfeed.hkx",
-            "meshes/actors/character/animations/idle_A_sway_fastTrans.hkx",
-            "meshes/actors/character/animations/Idle_A_left_longTrans.hkx",
+            "meshes/actors/cow/animations/idle_lookleft.hkx",
+            "meshes/actors/cow/animations/idle_mooo.hkx",
+            "meshes/actors/cow/animations/idle_feed.hkx",
+            "meshes/actors/cow/animations/idle_forage.hkx",
+            "meshes/actors/canine/animations/dog_spice_sit_idle.hkx",
+            "meshes/actors/canine/animations/dog_spice_lay_idle.hkx",
+            "meshes/actors/draugr/animations/bleedout_idle.hkx",
+            "meshes/actors/draugr/animations/alcove_idle.hkx",
             "meshes/actors/draugr/animations/mtidle.hkx",
             "meshes/actors/draugr/animations/walkcycle.hkx",
-            "attack/idle.hkx",
+            "meshes/actors/character/animations/idle_A_sway_fastTrans.hkx",
+            "meshes/actors/character/animations/Idle_A_left_longTrans.hkx",
         ] {
-            // The folder is not part of the name: `attack/idle.hkx` is the file `idle`.
-            let expected = rejected == "attack/idle.hkx";
-            assert_eq!(VARIED_IDLE_NAMES.accepts(rejected), expected, "{rejected}");
+            assert!(!VARIED_IDLE_NAMES.accepts(rejected), "{rejected}");
         }
+        // The folder is not part of the name: `attack/idle.hkx` is the file `idle`.
+        assert!(VARIED_IDLE_NAMES.accepts("attack/idle.hkx"));
     }
 
     /// A creature binding with the given clips: `(source key, frame count, file on disk)`.
@@ -1384,7 +1404,7 @@ mod tests {
                     scene,
                     frame_count: *frames,
                     frames_per_second: 30.0,
-                    motion_frame: Some(1),
+                    motion_frame: (*frames >= 2).then_some(1),
                     bound_tracks: 5,
                     moving_bound_tracks: 2,
                     skipped_tracks: Vec::new(),
@@ -1426,12 +1446,14 @@ mod tests {
         let (_directory, catalog, plan) = creature_catalog(&[
             ("meshes/custom/mtidle.hkx", 30, true),
             ("meshes/custom/dog_idle_spice_head1.hkx", 30, true),
-            ("meshes/custom/idle_lookleft.hkx", 30, true),
+            ("meshes/custom/idle_tailwag.hkx", 30, true),
             ("meshes/custom/idle_shake.hkx", 30, true),
             ("meshes/custom/attack1.hkx", 30, true),
             ("meshes/custom/deathpose.hkx", 30, true),
             ("meshes/custom/combatidle.hkx", 30, true),
             ("meshes/custom/idle_enterfeed.hkx", 30, true),
+            ("meshes/custom/idle_lookleft.hkx", 30, true),
+            ("meshes/custom/bleedout_idle.hkx", 30, true),
             ("meshes/custom/idle_static.hkx", 1, true),
             ("meshes/custom/idle_missing.hkx", 30, false),
         ]);
@@ -1446,7 +1468,7 @@ mod tests {
             std::collections::BTreeSet::from([
                 "meshes/custom/idle_shake.hkx",
                 "meshes/custom/dog_idle_spice_head1.hkx",
-                "meshes/custom/idle_lookleft.hkx",
+                "meshes/custom/idle_tailwag.hkx",
             ])
         );
         assert_eq!(pool.len(), 4, "the base is not listed twice");
