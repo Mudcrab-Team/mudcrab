@@ -608,8 +608,9 @@ Rules beyond the ones above:
 `world::environment::EnvironmentCatalog` (cell lighting, worldspace environment, lighting
 templates, weathers with their colours and directional ambient, image spaces, climate weather
 lists). A table that is missing or lacks a column the reader needs loads as empty, with one log
-line. Nothing renders from the catalog yet: the hard-coded `SkyrimClear` lighting in `sky.rs` is
-unchanged.
+line. The clock sun reads climate timing from it, and interiors in sky modes 1 and 2 take their
+key light, ambient and fog from `cell_lighting`, `lighting_templates`, `image_spaces` and
+`room_bounds` (`docs/specs/engine/interior-environment.md`).
 
 | Case | Converter writes | Engine |
 |---|---|---|
@@ -1352,9 +1353,15 @@ The tables are derived data: a full load-order export clears and rebuilds them f
 records on every conversion, like the grass tables, and the subset export used by movement
 annotation leaves them alone. `create_tables` adds them to an older reused database.
 
-**These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`.** No engine code reads
-them yet; a reader must probe for them first, as the engine does for `lights` and the additive
-`waters` columns, so a database without them behaves as before.
+**These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`.** The engine reads
+them automatically and probes for them first, as it does for `lights` and the
+additive `waters` columns, so a database without them behaves as before.
+
+Placed references carrying the `Multibound` header flag (`0x80000000`) have an authored visibility
+policy, including `NONE`. Both pivot and bounds-overlap export omit their geometric memberships;
+integration also removes stale rows for these references. The engine reads the existing
+`references.header_flags` column and exempts flagged roots even when an older conversion still
+contains geometric room rows. Named overrides are conservatively kept visible too.
 
 | Case | Converter writes | Engine |
 |---|---|---|

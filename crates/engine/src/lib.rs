@@ -41,6 +41,7 @@ pub mod render;
 mod render_teardown;
 pub mod render_timing;
 mod renderer_init;
+pub mod room_culling;
 pub mod route;
 mod scene_evidence;
 pub mod schedule_timing;
@@ -60,6 +61,7 @@ pub mod terrain_merge;
 pub mod terrain_upload;
 #[cfg(test)]
 mod test_support;
+pub mod texture_fallback;
 pub mod tone_mapping;
 mod underwater;
 mod underwater_pass;
