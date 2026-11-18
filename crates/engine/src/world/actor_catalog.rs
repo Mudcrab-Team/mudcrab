@@ -100,6 +100,79 @@ impl ActorSpawnPlan {
     }
 }
 
+/// A creature family whose retail idle layers are verified, with the clips those layers re-pick.
+///
+/// Only these families get an idle sequence. For every other creature the retail clip set is not
+/// verified, so it keeps looping its default catalog clip, as before. A name filter was tried and
+/// dropped: it let scene-only clips through (a goblin praying, a lich holding a staff) and missed
+/// verified ones.
+#[derive(Debug, Clone, Copy)]
+pub struct VerifiedIdleLayers {
+    /// The binding's default clip (the base loop). A binding qualifies only when its default clip
+    /// is this one, which keeps wolves out: they share the canine folder but use `mt_idle_wolf`.
+    pub base_source: &'static str,
+    /// The clips the layers re-pick, besides the base. A clip a binding lacks is skipped.
+    pub clips: &'static [&'static str],
+    /// The registry rows that verify this family.
+    pub rows: &'static str,
+}
+
+/// The creature idle layers that retail data verifies. Part of a stand-in; see
+/// [`crate::actor_animation::IdleSequence`].
+///
+/// - Dog (`canine/behaviors/noncombatidle.hkx`, RF-IDLE-018): the head layer picks among bark,
+///   head 1 to 4 and the base; the tail layer among tail 1 to 3 and the base.
+/// - Cow (`cow/behaviors/noncombatidle.hkx`, RF-IDLE-019): the tail wag picks among three clips.
+///   The look, call, feed, forage and lie-down clips come from the engine's `IDLE` tree
+///   (RF-IDLE-020) and are not listed.
+pub const VERIFIED_IDLE_LAYERS: [VerifiedIdleLayers; 2] = [
+    VerifiedIdleLayers {
+        base_source: "meshes/actors/canine/animations/mt_idle.hkx",
+        clips: &[
+            "meshes/actors/canine/animations/dog_spice_bark.hkx",
+            "meshes/actors/canine/animations/dog_idle_spice_head1.hkx",
+            "meshes/actors/canine/animations/dog_idle_spice_head2.hkx",
+            "meshes/actors/canine/animations/dog_spice_head3.hkx",
+            "meshes/actors/canine/animations/dog_spice_head4.hkx",
+            "meshes/actors/canine/animations/dog_idle_spice_tail1.hkx",
+            "meshes/actors/canine/animations/dog_idle_spice_tail2.hkx",
+            "meshes/actors/canine/animations/dog_idle_spice_tail3.hkx",
+        ],
+        rows: "RF-IDLE-018",
+    },
+    VerifiedIdleLayers {
+        base_source: "meshes/actors/cow/animations/mt_idle.hkx",
+        clips: &[
+            "meshes/actors/cow/animations/idle_tailwag.hkx",
+            "meshes/actors/cow/animations/idle_tailwag1.hkx",
+            "meshes/actors/cow/animations/idle_tailwag2.hkx",
+        ],
+        rows: "RF-IDLE-019",
+    },
+];
+
+/// One clip of a creature's idle pool: the catalog's source key and the converted scene.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdlePoolClip {
+    pub source: String,
+    pub scene: String,
+}
+
+/// The animation set [`ActorCatalog::insert_actor_components`] gave an actor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActorAnimationSetup {
+    /// The shared composed body: gait clips and an `ActorDrive`.
+    Gait,
+    /// A placed corpse: no idle.
+    Corpse,
+    /// A creature with an authored idle from the idle catalog (it may vary it).
+    AuthoredIdle,
+    /// A creature with the legacy default idle clip.
+    CreatureIdle,
+    /// No supported gait or idle for this body.
+    None,
+}
+
 #[derive(Resource, Debug, Clone, Default)]
 pub struct ActorCatalog {
     models: HashMap<u32, ActorModel>,
@@ -408,6 +481,153 @@ impl ActorCatalog {
             .join(scene)
             .is_file()
             .then_some(scene.as_str())
+    }
+
+    /// The clips one creature may play in turn, the default clip first.
+    ///
+    /// Only a binding whose default clip starts a [`VERIFIED_IDLE_LAYERS`] family gets more than
+    /// the default: it then adds that family's clips that the binding has, with at least two
+    /// frames and a file on disk, in the order of the list. An empty list means the actor has no
+    /// catalog binding. A single entry means nothing to vary, so the caller keeps the looping
+    /// default clip. Part of the stand-in described on [`crate::actor_animation::IdleSequence`].
+    pub fn idle_sequence_pool(&self, plan: &ActorSpawnPlan) -> Vec<IdlePoolClip> {
+        let Some(row) = self.idle_catalog.find(
+            plan.actor.race_id,
+            plan.actor.sex.as_str(),
+            &plan.scene_path,
+        ) else {
+            return Vec::new();
+        };
+        let Some(root) = self.assets_root.as_ref() else {
+            return Vec::new();
+        };
+        if !root.join(&row.scene).is_file() {
+            return Vec::new();
+        }
+        let mut pool = vec![IdlePoolClip {
+            source: row.source.clone(),
+            scene: row.scene.clone(),
+        }];
+        let Some(layers) = VERIFIED_IDLE_LAYERS
+            .iter()
+            .find(|layers| layers.base_source == row.source)
+        else {
+            return pool;
+        };
+        for source in layers.clips {
+            if let Some(clip) = row.clips.get(*source)
+                && clip.frame_count >= 2
+                && root.join(&clip.scene).is_file()
+            {
+                pool.push(IdlePoolClip {
+                    source: (*source).to_owned(),
+                    scene: clip.scene.clone(),
+                });
+            }
+        }
+        pool
+    }
+
+    /// Puts every component a spawned actor needs on `entity`: the plan's parts, head, outfit,
+    /// skin tone and body weight, and the animation set that fits the body.
+    ///
+    /// This is the one place that decides it. The streamed world calls it for each placed
+    /// reference and the `npc_viewer` example calls it for each NPC it shows, so what the viewer
+    /// shows is what the game draws. `reference_form_id` is the placed reference's FormID; it seeds
+    /// the creature idle sequence.
+    ///
+    /// The branches run in this order: the shared composed body (gait clips and a drive) first,
+    /// even for a corpse, then `starts_dead` (no idle), then an authored idle, a legacy creature
+    /// idle, and nothing.
+    pub fn insert_actor_components(
+        &self,
+        entity: &mut EntityCommands,
+        plan: &ActorSpawnPlan,
+        asset_server: &AssetServer,
+        reference_form_id: u32,
+        starts_dead: bool,
+    ) -> ActorAnimationSetup {
+        entity.insert(plan.actor);
+        if !plan.parts.is_empty() {
+            entity.insert(plan.parts.clone());
+        }
+        if let Some(head) = &plan.head {
+            entity.insert(head.clone());
+        }
+        if let Some(outfit) = &plan.outfit {
+            entity.insert(outfit.clone());
+        }
+        if let Some(tone) = plan.skin_tone {
+            entity.insert(tone);
+        }
+        if let Some(weight) = plan.weight {
+            entity.insert(crate::actor_body_weight::ActorBodyWeight(
+                (1.0 - weight / 100.0).clamp(0.0, 1.0),
+            ));
+        }
+        if plan.uses_composed_body() {
+            entity.insert((
+                crate::actor_animation::ActorClips::load(asset_server, plan.actor.sex),
+                crate::actor_drive::ActorDrive::default(),
+            ));
+            ActorAnimationSetup::Gait
+        } else if starts_dead {
+            // No death pose or ragdoll exists yet. A placed corpse keeps its bind pose; a standing
+            // idle loop would make it look alive.
+            debug!(
+                reference_form_id = format_args!("{reference_form_id:08X}"),
+                base_form_id = format_args!("{:08X}", plan.actor.base_form_id),
+                body_model = %plan.scene_path,
+                reason = "starts_dead",
+                "actor spawned without idle playback"
+            );
+            ActorAnimationSetup::Corpse
+        } else if let Some(scene) = self.idle_scene(plan) {
+            entity.insert((
+                crate::actor_animation::ActorClips::load_idle(asset_server, scene),
+                crate::actor_animation::ActorIdleLibrary {
+                    body_scene: plan.scene_path.clone(),
+                },
+            ));
+            // Stand-in for the retail behaviour graph's idle variety; see `IdleSequence`.
+            if let Some(sequence) = crate::actor_animation::IdleSequence::new(
+                self.idle_sequence_pool(plan),
+                reference_form_id,
+            ) {
+                entity.insert(sequence.preload(asset_server));
+            }
+            ActorAnimationSetup::AuthoredIdle
+        } else if let Some(scene) = self.legacy_creature_idle_scene(plan) {
+            entity.insert(crate::actor_animation::ActorClips::load_idle(
+                asset_server,
+                scene,
+            ));
+            ActorAnimationSetup::CreatureIdle
+        } else {
+            debug!(
+                reference_form_id = format_args!("{reference_form_id:08X}"),
+                base_form_id = format_args!("{:08X}", plan.actor.base_form_id),
+                race_id = format_args!("{:08X}", plan.actor.race_id),
+                sex = plan.actor.sex.as_str(),
+                body_model = %plan.scene_path,
+                reason = "no_supported_gait_mapping",
+                "actor spawned without gait setup"
+            );
+            ActorAnimationSetup::None
+        }
+    }
+
+    /// The worn-outfit row for a base `NPC_` FormID, when the pack's `actor-outfits.json` has one.
+    /// A row can exist for an actor that does not wear it: only the shared composed body does.
+    pub fn outfit_for(&self, base_form_id: u32) -> Option<&shared::actor_outfits::ActorOutfit> {
+        // The lookup `spawn_plan` uses, so the viewer never shows a row the spawn did not.
+        self.outfits.find(base_form_id)
+    }
+
+    /// How many worn-outfit rows the pack's `actor-outfits.json` gave. Zero means the file is
+    /// missing or was rejected (the reason is logged when the catalog opens).
+    pub fn outfit_count(&self) -> usize {
+        self.outfits.outfits.len()
     }
 
     /// The catalog row for a base `NPC_` FormID, if this world has one.
@@ -1240,5 +1460,359 @@ mod tests {
         model.head_model = None;
         let plan = catalog.spawn_plan(&model).unwrap();
         assert!(plan.head.is_none());
+    }
+
+    /// A creature binding with the given clips: `(source key, frame count, file on disk)`.
+    fn creature_catalog(
+        clips: &[(&str, u32, bool)],
+    ) -> (tempfile::TempDir, ActorCatalog, ActorSpawnPlan) {
+        use shared::actor_idle_catalog::{
+            ActorIdleBinding, ActorIdleCatalog, ActorIdleClip, PATH, VERSION,
+        };
+        let connection = connection();
+        insert_actor(&connection, 77, 13, "male", "body", None, None);
+        insert_part(&connection, 77, "body", "Actors/Custom/body.nif");
+        connection.execute_batch("CREATE TABLE race_animation_sources(race_id INTEGER,sex TEXT,skeleton_nif TEXT,project_hkx TEXT); INSERT INTO race_animation_sources VALUES (13,'male','meshes/custom/skeleton.nif','meshes/custom/project.hkx');").unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let clip_directory = directory.path().join("meshes/actor-idles/clips");
+        std::fs::create_dir_all(&clip_directory).unwrap();
+        let mut map = std::collections::BTreeMap::new();
+        for (index, (source, frames, on_disk)) in clips.iter().enumerate() {
+            let scene = format!("meshes/actor-idles/clips/clip{index}.glb");
+            if *on_disk {
+                std::fs::write(directory.path().join(&scene), b"clip").unwrap();
+            }
+            map.insert(
+                (*source).to_owned(),
+                ActorIdleClip {
+                    scene,
+                    frame_count: *frames,
+                    frames_per_second: 30.0,
+                    motion_frame: (*frames >= 2).then_some(1),
+                    bound_tracks: 5,
+                    moving_bound_tracks: 2,
+                    skipped_tracks: Vec::new(),
+                },
+            );
+        }
+        let base = clips[0].0;
+        let binding = ActorIdleBinding {
+            race_id: 13,
+            sex: "male".into(),
+            body_scene: "meshes/actors/custom/body.glb".into(),
+            project: "meshes/custom/project.hkx".into(),
+            skeleton: "meshes/custom/rig.hkx".into(),
+            race_skeleton_nif: "meshes/custom/skeleton.nif".into(),
+            source: base.into(),
+            scene: map[base].scene.clone(),
+            bound_tracks: 5,
+            moving_bound_tracks: 2,
+            skipped_tracks: Vec::new(),
+            clips: map,
+        };
+        let catalog = ActorIdleCatalog {
+            version: VERSION,
+            bindings: vec![binding],
+            ..Default::default()
+        };
+        std::fs::write(
+            directory.path().join(PATH),
+            serde_json::to_vec(&catalog).unwrap(),
+        )
+        .unwrap();
+        let loaded = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+        let plan = loaded.spawn_plan(loaded.get(77).unwrap()).unwrap();
+        (directory, loaded, plan)
+    }
+
+    const DOG: &str = "meshes/actors/canine/animations/";
+    const COW: &str = "meshes/actors/cow/animations/";
+
+    fn sources(pool: &[IdlePoolClip]) -> Vec<&str> {
+        pool.iter().map(|clip| clip.source.as_str()).collect()
+    }
+
+    #[test]
+    fn the_dog_pool_is_the_verified_layer_clips_in_list_order() {
+        let dog = |name: &str| format!("{DOG}{name}.hkx");
+        let keys = [
+            dog("mt_idle"),
+            dog("dog_idle_spice_tail1"),
+            dog("dog_spice_head3"),
+            dog("dog_idle_spice_head1"),
+            dog("dog_spice_bark"),
+            dog("dog_idle_spice_head2"),
+            // Listed, but skipped: one frame, and no file on disk.
+            dog("dog_spice_head4"),
+            dog("dog_idle_spice_tail2"),
+            // Not listed: postures, a fight clip and an idle-looking name.
+            dog("dog_spice_sit_head1"),
+            dog("dog_spice_lay_tail1"),
+            dog("attack1"),
+            dog("idle_foraging"),
+        ];
+        let frames = |key: &str| if key.ends_with("head4.hkx") { 1 } else { 30 };
+        let clips: Vec<(&str, u32, bool)> = keys
+            .iter()
+            .map(|key| (key.as_str(), frames(key), !key.ends_with("tail2.hkx")))
+            .collect();
+        let (_directory, catalog, plan) = creature_catalog(&clips);
+        let pool = catalog.idle_sequence_pool(&plan);
+        assert_eq!(
+            sources(&pool),
+            [
+                dog("mt_idle"),
+                dog("dog_spice_bark"),
+                dog("dog_idle_spice_head1"),
+                dog("dog_idle_spice_head2"),
+                dog("dog_spice_head3"),
+                dog("dog_idle_spice_tail1"),
+            ]
+        );
+        assert!(pool.iter().all(|clip| clip.scene.ends_with(".glb")));
+    }
+
+    #[test]
+    fn the_cow_pool_is_the_three_tail_wags_and_nothing_else() {
+        let cow = |name: &str| format!("{COW}{name}.hkx");
+        let keys = [
+            cow("mt_idle"),
+            cow("idle_tailwag2"),
+            cow("idle_tailwag"),
+            cow("idle_tailwag1"),
+            cow("idle_lookleft"),
+            cow("idle_mooo"),
+            cow("idle_feed"),
+            cow("idle_foraging"),
+            cow("idle_enterfeed"),
+        ];
+        let clips: Vec<(&str, u32, bool)> =
+            keys.iter().map(|key| (key.as_str(), 30, true)).collect();
+        let (_directory, catalog, plan) = creature_catalog(&clips);
+        assert_eq!(
+            sources(&catalog.idle_sequence_pool(&plan)),
+            [
+                cow("mt_idle"),
+                cow("idle_tailwag"),
+                cow("idle_tailwag1"),
+                cow("idle_tailwag2"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_creature_outside_the_verified_families_keeps_its_default_clip() {
+        // A goblin-like binding with scene-only idles, and a wolf: it shares the canine clips
+        // but its default clip is `mt_idle_wolf`.
+        for (base, others) in [
+            (
+                "meshes/actors/goblin/animations/mt_idle.hkx".to_owned(),
+                vec![
+                    "meshes/actors/goblin/animations/idleprayingbow.hkx".to_owned(),
+                    "meshes/actors/goblin/animations/idlechisel.hkx".to_owned(),
+                    "meshes/actors/goblin/animations/chieftain_idle_cheer.hkx".to_owned(),
+                ],
+            ),
+            (
+                format!("{DOG}mt_idle_wolf.hkx"),
+                vec![
+                    format!("{DOG}dog_idle_spice_head1.hkx"),
+                    format!("{DOG}dog_idle_spice_tail1.hkx"),
+                ],
+            ),
+        ] {
+            let mut keys = vec![base.clone()];
+            keys.extend(others);
+            let clips: Vec<(&str, u32, bool)> =
+                keys.iter().map(|key| (key.as_str(), 30, true)).collect();
+            let (_directory, catalog, plan) = creature_catalog(&clips);
+            let pool = catalog.idle_sequence_pool(&plan);
+            assert_eq!(sources(&pool), [base.as_str()], "{base}");
+            assert!(
+                crate::actor_animation::IdleSequence::new(pool, 1).is_none(),
+                "no variety means no sequence: the default clip keeps looping"
+            );
+        }
+    }
+
+    #[test]
+    fn a_race_without_a_binding_has_an_empty_pool() {
+        let (_directory, catalog, plan) =
+            creature_catalog(&[("meshes/custom/mtidle.hkx", 30, true)]);
+        let mut elsewhere = plan.clone();
+        elsewhere.actor.race_id = 14;
+        assert!(catalog.idle_sequence_pool(&elsewhere).is_empty());
+    }
+
+    #[test]
+    fn the_pool_is_deterministic_and_seeded_sequences_repeat() {
+        let dog = |name: &str| format!("{DOG}{name}.hkx");
+        let keys = [
+            dog("mt_idle"),
+            dog("dog_idle_spice_head1"),
+            dog("dog_idle_spice_head2"),
+            dog("dog_idle_spice_tail1"),
+        ];
+        let clips: Vec<(&str, u32, bool)> =
+            keys.iter().map(|key| (key.as_str(), 30, true)).collect();
+        let (_directory, catalog, plan) = creature_catalog(&clips);
+        let first = catalog.idle_sequence_pool(&plan);
+        assert_eq!(first, catalog.idle_sequence_pool(&plan));
+        let play = |reference: u32| {
+            let mut sequence =
+                crate::actor_animation::IdleSequence::new(first.clone(), reference).unwrap();
+            (0..12)
+                .map(|_| {
+                    sequence.advance_for_test();
+                    sequence.current_source().to_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(play(0x000A_91A0), play(0x000A_91A0));
+        assert_ne!(play(0x000A_91A0), play(0x000A_91A1));
+    }
+
+    /// Puts the components of `plan` on a fresh entity, as the streamed world and the viewer do.
+    fn spawn_components(
+        catalog: &ActorCatalog,
+        plan: &ActorSpawnPlan,
+        starts_dead: bool,
+    ) -> (tempfile::TempDir, App, Entity, ActorAnimationSetup) {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin {
+                file_path: directory.path().to_string_lossy().into_owned(),
+                ..default()
+            },
+        ))
+        .init_asset::<bevy::gltf::Gltf>();
+        let server = app.world().resource::<AssetServer>().clone();
+        let entity = app.world_mut().spawn_empty().id();
+        let setup = {
+            let mut commands = app.world_mut().commands();
+            let mut entity_commands = commands.entity(entity);
+            catalog.insert_actor_components(
+                &mut entity_commands,
+                plan,
+                &server,
+                0x23A92,
+                starts_dead,
+            )
+        };
+        app.world_mut().flush();
+        (directory, app, entity, setup)
+    }
+
+    fn has<T: Component>(app: &App, entity: Entity) -> bool {
+        app.world().get::<T>(entity).is_some()
+    }
+
+    fn plan_on(scene_path: &str) -> ActorSpawnPlan {
+        ActorSpawnPlan {
+            actor: Actor::new(0x13475, 79686, ActorSex::Male, ActorResolution::Body),
+            parts: ActorParts::default(),
+            head: None,
+            skin_tone: ActorSkinTone::new([0.5, 0.4, 0.3]),
+            weight: Some(50.0),
+            scene_path: scene_path.into(),
+            outfit: None,
+        }
+    }
+
+    #[test]
+    fn a_human_gets_its_appearance_gait_clips_and_a_drive() {
+        let plan = plan_on(composed_body_scene(ActorSex::Male));
+        let (_directory, app, entity, setup) =
+            spawn_components(&ActorCatalog::default(), &plan, false);
+        assert_eq!(setup, ActorAnimationSetup::Gait);
+        assert!(has::<Actor>(&app, entity));
+        assert!(has::<ActorSkinTone>(&app, entity));
+        assert_eq!(
+            app.world()
+                .get::<crate::actor_body_weight::ActorBodyWeight>(entity)
+                .map(|weight| weight.0),
+            Some(0.5),
+            "weight 50 maps to a morph of 0.5"
+        );
+        assert!(has::<crate::actor_animation::ActorClips>(&app, entity));
+        assert!(has::<crate::actor_drive::ActorDrive>(&app, entity));
+        assert!(!has::<crate::actor_animation::ActorIdleLibrary>(
+            &app, entity
+        ));
+        assert!(!has::<crate::actor_animation::IdleSequence>(&app, entity));
+    }
+
+    #[test]
+    fn a_composed_body_corpse_still_gets_the_gait_set() {
+        // The composed-body branch runs before `starts_dead`, as in the old spawn path.
+        let plan = plan_on(composed_body_scene(ActorSex::Male));
+        let (_directory, app, entity, setup) =
+            spawn_components(&ActorCatalog::default(), &plan, true);
+        assert_eq!(setup, ActorAnimationSetup::Gait);
+        assert!(has::<crate::actor_animation::ActorClips>(&app, entity));
+        assert!(has::<crate::actor_drive::ActorDrive>(&app, entity));
+    }
+
+    #[test]
+    fn a_creature_corpse_gets_no_idle_at_all() {
+        let (_directory, catalog, plan) = creature_catalog(&[
+            ("meshes/actors/canine/animations/mt_idle.hkx", 30, true),
+            (
+                "meshes/actors/canine/animations/dog_idle_spice_head1.hkx",
+                30,
+                true,
+            ),
+        ]);
+        let (_directory2, app, entity, setup) = spawn_components(&catalog, &plan, true);
+        assert_eq!(setup, ActorAnimationSetup::Corpse);
+        assert!(has::<Actor>(&app, entity));
+        assert!(!has::<crate::actor_animation::ActorClips>(&app, entity));
+        assert!(!has::<crate::actor_animation::ActorIdleLibrary>(
+            &app, entity
+        ));
+        assert!(!has::<crate::actor_animation::IdleSequence>(&app, entity));
+        assert!(!has::<crate::actor_drive::ActorDrive>(&app, entity));
+    }
+
+    #[test]
+    fn a_dog_with_an_authored_idle_gets_clips_a_library_and_a_sequence() {
+        let (_directory, catalog, plan) = creature_catalog(&[
+            ("meshes/actors/canine/animations/mt_idle.hkx", 30, true),
+            (
+                "meshes/actors/canine/animations/dog_idle_spice_head1.hkx",
+                30,
+                true,
+            ),
+            (
+                "meshes/actors/canine/animations/dog_idle_spice_tail1.hkx",
+                30,
+                true,
+            ),
+        ]);
+        let (_directory2, app, entity, setup) = spawn_components(&catalog, &plan, false);
+        assert_eq!(setup, ActorAnimationSetup::AuthoredIdle);
+        assert!(has::<crate::actor_animation::ActorClips>(&app, entity));
+        assert_eq!(
+            app.world()
+                .get::<crate::actor_animation::ActorIdleLibrary>(entity)
+                .map(|library| library.body_scene.as_str()),
+            Some(plan.scene_path.as_str())
+        );
+        assert!(has::<crate::actor_animation::IdleSequence>(&app, entity));
+        assert!(!has::<crate::actor_drive::ActorDrive>(&app, entity));
+    }
+
+    #[test]
+    fn a_body_with_no_gait_or_idle_mapping_gets_only_its_appearance() {
+        let plan = plan_on("meshes/actors/custom/body.glb");
+        let (_directory, app, entity, setup) =
+            spawn_components(&ActorCatalog::default(), &plan, false);
+        assert_eq!(setup, ActorAnimationSetup::None);
+        assert!(has::<Actor>(&app, entity));
+        assert!(has::<ActorSkinTone>(&app, entity));
+        assert!(!has::<crate::actor_animation::ActorClips>(&app, entity));
+        assert!(!has::<crate::actor_drive::ActorDrive>(&app, entity));
     }
 }

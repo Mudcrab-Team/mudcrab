@@ -106,11 +106,11 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 | `crates/engine/src/route.rs:350` query_row | unknown |
 | `crates/engine/src/streaming/collision_placement_probe.rs:52` query_row | literal |
 | `crates/engine/src/streaming/lod.rs:935` prepare | unknown |
-| `crates/engine/src/world/actor_catalog.rs:176` prepare | literal |
-| `crates/engine/src/world/actor_catalog.rs:200` query_row | literal |
-| `crates/engine/src/world/actor_catalog.rs:220` prepare | unknown |
-| `crates/engine/src/world/actor_catalog.rs:221` prepare | unknown |
-| `crates/engine/src/world/actor_catalog.rs:280` prepare | literal |
+| `crates/engine/src/world/actor_catalog.rs:249` prepare | literal |
+| `crates/engine/src/world/actor_catalog.rs:273` query_row | literal |
+| `crates/engine/src/world/actor_catalog.rs:293` prepare | unknown |
+| `crates/engine/src/world/actor_catalog.rs:294` prepare | unknown |
+| `crates/engine/src/world/actor_catalog.rs:353` prepare | literal |
 | `crates/engine/src/world/database.rs:539` prepare | literal |
 | `crates/engine/src/world/database.rs:554` prepare | literal |
 | `crates/engine/src/world/database.rs:568` prepare | literal |
