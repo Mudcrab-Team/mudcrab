@@ -1731,6 +1731,8 @@ mod tests {
             .id();
         app.update();
         let first = app.world().get::<IdleSequence>(actor).unwrap().position();
+        // The generator state shows a draw even when it picks the same clip again.
+        let drawn_state = app.world().get::<IdleSequence>(actor).unwrap().state;
         let request = app.world().get::<AuthoredIdleRequest>(actor).unwrap();
         assert_eq!(
             request.source,
@@ -1747,6 +1749,10 @@ mod tests {
             app.update();
             let sequence = app.world().get::<IdleSequence>(actor).unwrap();
             assert_eq!(sequence.position(), first, "the sequence drew again");
+            assert_eq!(
+                sequence.state, drawn_state,
+                "the generator advanced while the replacement was pending"
+            );
             assert!(sequence.awaiting);
         }
     }
