@@ -1,6 +1,6 @@
 # World-data inventory
 
-Schema status: **not_extracted**. Reviewed source: `64108a1c38b0a854d4f82d7031ea50b57c336a5a`.
+Schema status: **not_extracted**. Reviewed source: `99ac022c441810f0a8e0e571e1c950f80a6f9c71`.
 
 Prepare dependencies are not executed rows, mapped rows, semantic use, population, or retail parity.
 
@@ -9,7 +9,7 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 - rusqlite_candidates: 88
 - emitted_schema_columns: unknown
 - manually_traced_fields: 14
-- named_external_stores: 3
+- named_external_stores: 4
 
 ## Traced examples
 
@@ -34,6 +34,7 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 
 - `cell_cache.rkyv`: Versioned rkyv store supplies terrain heights, normals, colors, layers, water height/type through CellCache. SQLite absence does not mean terrain is unused. Source path only; native draw evidence pending.
 - `converted glTF/KTX2 assets`: External model/texture paths are assets, not SQL field payloads. This slice names the store; no asset completeness or shader-use claim.
+- `interface/controls/pc`: Conversion and metadata rebuild can publish optional PC control files beside the world database. The files preserve usable source lines. The JSON sidecar records effective provider, source and output hashes, and skipped line numbers. Runtime consumption remains unknown in this inventory.
 - `merged-terrain JSON/KTX2/rkyv`: terrain/land-textures.json, KTX2 texture arrays and terrain/<worldspace>/chunk_<x>_<y>.rkyv form an alternative terrain path with per-cell fallback. Mapping is not GPU residency or draw confirmation.
 
 ## Evidence anchors

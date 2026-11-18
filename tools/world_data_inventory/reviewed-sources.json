@@ -12,10 +12,10 @@
     "crates/converter/src/animation/packfile.rs": "9b6e00d7b78464c4b759dfea77fc84a3c46b16364e4a9efa853ae8559df4adac",
     "crates/converter/src/animation/spline.rs": "9e90e1c556a84f334b2d09f7f35158dfd9813a6831b81522eecc1b2eb220c7ac",
     "crates/converter/src/archive/ba2.rs": "dfdf459cee8db26c2c71371e70b0bfd31acc45f3a5feb5f63246d15477d91401",
-    "crates/converter/src/archive/batched.rs": "5d9304755cce6328b0f77914f0b3a5f83d821237d2e541e82b8a0abdcabed953",
+    "crates/converter/src/archive/batched.rs": "409e1b6489ac2e52b3984de5ba33f996b608e4432cc97d10f0fefcbaef6b22f8",
     "crates/converter/src/archive/bsa.rs": "2ae5d70776441db7d4d4dbe8e317067aa75dd84e6654ffcfe22488f79f6ad952",
     "crates/converter/src/archive/bsa_name.rs": "c0f588742680a0761628bfc324c00a804e5ceb45719b32907fb6e7d0a92277f9",
-    "crates/converter/src/archive/mod.rs": "069e23032304b2920cceea8d092646a40061c4584c958505672ea73a4a8fb367",
+    "crates/converter/src/archive/mod.rs": "f97bae2043ef40985bc50d30b375e5959bb81ca6ab58efb9a1cae1055a734479",
     "crates/converter/src/asset_path.rs": "344cde43dc498ad24eed69b1ca605a6260a89aef5af03eca989204b4bb970e97",
     "crates/converter/src/bin/asset-closure-convert.rs": "71b037e447579d11540b7f0c76c3dc4b7e385b2945e841eab724585a07124ab6",
     "crates/converter/src/bin/asset-closure-textures.rs": "d6ddf6cc8df873457f4542db27559fa11df629868f83e437c0fc69190e3b535f",
@@ -40,6 +40,7 @@
     "crates/converter/src/collision.rs": "ada8fbbf9e728eada436604f172e913dc23a172e4ac9647f3379b22a5351378f",
     "crates/converter/src/compose.rs": "8cd0708c430239161250852afc74272bd849de485a1cb1a9e18a030298c40f98",
     "crates/converter/src/config.rs": "a4b9d4f53e175ed88082dc813d0a4be2b5e59030d50b5f99c0480b3e44f3155a",
+    "crates/converter/src/controls.rs": "d5dc2084c2fb1a06401174f24aeb07525fe3040613da6fd96bf8fe983e77bf60",
     "crates/converter/src/database_cache.rs": "b0ca0902e16bfc83a00fe43c633e2e718d4eda1f071c1f995d95699dc3861cbc",
     "crates/converter/src/derive_outfits.rs": "e301eaeee89356e848b3da63ff08c53da65053f58cb616bc44fcd6c646ed5e30",
     "crates/converter/src/derive_outfits/tests.rs": "64f9cea14d1952a1cefd4b3b807670e196eda7b3011976accae09daed04a7350",
@@ -89,7 +90,7 @@
     "crates/converter/src/extensions.rs": "6dc67c06beb7e8eba8c6d4f0690d80010fef5b68ab04e4c68934a7d735bd25d1",
     "crates/converter/src/inhouse_records_option_tests.rs": "936709aa9ca564b38320d6d321c0229d10dae7115f1e53c3979ef47303bd6aae",
     "crates/converter/src/integration.rs": "6b06601b70a8853659a570e8af41a360950535b14770ad2dec901dbd43b41daa",
-    "crates/converter/src/lib.rs": "5101fb152518544f9036acccaed29fd97b4d87e63291758b18463e404041dbdf",
+    "crates/converter/src/lib.rs": "89588f98dca69f0ffb4d69bc937ed54422b585cb7ff5249676589a223a6eaf61",
     "crates/converter/src/lip.rs": "6ba608a3d072d2a4e2f9e97da9e70e657db17030cb28c9ad1cff0e0b3dd34e74",
     "crates/converter/src/lod/albedo.rs": "c152b3fc443295493e50a5c7c4b71ee0bae4822086b92d6021acf67b8f73f7ea",
     "crates/converter/src/lod/mod.rs": "e55f9f4e8c77613de6e4341da9218df8e3d1a6e8d4801bfdfe8490c41f7ddf3a",
@@ -104,8 +105,8 @@
     "crates/converter/src/main.rs": "ea753bf67639003595d6f60b76f4bbf251cbe2662464bf16f2000bc9cdf28374",
     "crates/converter/src/material.rs": "53bdf8f8f1e37ba47399e5e3d1ec62cf1b1b3320701053dffde3b298e3c395d5",
     "crates/converter/src/mesh.rs": "99f114cb7f0479d1e80f89716c8539f5c1f8252b60ac22c30b81dd61e648708a",
-    "crates/converter/src/metadata.rs": "47d769d96c1d42dfa67a25c18be012d9ce5aac06a463acb12ed23beeaec38edb",
-    "crates/converter/src/pipeline.rs": "578f2ee98c51b31a1b02b11e3f1554bfa415a24b869002d1522e27f649b51e31",
+    "crates/converter/src/metadata.rs": "3b134ef7a913c7007b8ffb6a9e024cd4fea173941c9670d0fd4eae9dfc8ee357",
+    "crates/converter/src/pipeline.rs": "640281da15bbb37bc1a23e8e7e7c03f4f2058f6c8b2f9f70c3584287abfcc81a",
     "crates/converter/src/pipeline/authored_actor_idle.rs": "65a308649b7dbc4cf47baff573c8ee93518bed48898e2726986a9efa904e080d",
     "crates/converter/src/pipeline/creature_idle.rs": "5b3a12d728755e43d4f009acfdcf9619a80dac397229ec4cd1dffbebd3eb6fa1",
     "crates/converter/src/pipeline/recovery_tests.rs": "9d919f78348fe036db75d97e028fc6c6d0efa79f6008b3cf319f91324855acc9",
@@ -282,6 +283,7 @@
     "crates/engine/src/world/imagespace.rs::prepare::e00b22ed53d96ea7::1"
   ],
   "reader_sources": {
+    "crates/converter/src/controls.rs": "d5dc2084c2fb1a06401174f24aeb07525fe3040613da6fd96bf8fe983e77bf60",
     "crates/converter/src/esm/exporter.rs": "3ceb3d675dababba619b62589e76e20435c328254d7b55ca859d579b8c76d6be",
     "crates/engine/src/app.rs": "24d0dfdf94339f7365a1693c11c0c1eb8684b9592632217f0ee2a36033e29c0f",
     "crates/engine/src/bin/world-inspect.rs": "861f7a36b9494f9d72bee16c44047e98db0ec139ea8d5b511e80a9e4196e1185",
@@ -307,7 +309,7 @@
   },
   "tooling_sources": {
     "crates/engine/src/world/inventory_tests.rs": "ab21f2aa58e71bfab6c3b86c2730f0fdec71fe9be8e10aa3e391ce50151be94e",
-    "tools/world_data_inventory/dispositions.json": "0edd3baed3208e4488eebf6353e77f87eccf006c45a5b8107311fcf5d8bead53",
+    "tools/world_data_inventory/dispositions.json": "5f84ea94d4da316476c15b196b9f81da92610f8e70cd6a088bde525148403157",
     "tools/world_data_inventory/dispositions.schema.json": "23e3b0df8b2fbcb6c55af460b35345162df8acbabc97bdf01025119c4b692061",
     "tools/world_data_inventory/inventory.py": "2b97b002c92edd0c571d8a703b7f3e020d764cb0387b6a03d9d960c33f1c77db"
   }

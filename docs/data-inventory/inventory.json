@@ -2,7 +2,7 @@
   "denominators": {
     "emitted_schema_columns": null,
     "manually_traced_fields": 14,
-    "named_external_stores": 3,
+    "named_external_stores": 4,
     "rusqlite_candidates": 88
   },
   "fields": {
@@ -1446,8 +1446,8 @@
       "status": "literal"
     }
   ],
-  "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
-  "reviewed_source_guard_sha256": "a56b70818f0b669586d6636a68bb3f732a362939910e9950ce24107084c60391",
+  "reviewed_at_commit": "99ac022c441810f0a8e0e571e1c950f80a6f9c71",
+  "reviewed_source_guard_sha256": "7895d553ad4dc9da21b5f51254e05d4c66ef3af03fc240ad3f44eda48dd08ff0",
   "schema_status": "not_extracted",
   "schemas": {},
   "stores": {
@@ -1487,6 +1487,28 @@
         "mapped": "unknown",
         "preserved": "unknown",
         "projected": "unknown",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
+    "interface/controls/pc": {
+      "evidence": [
+        {
+          "anchor": "pub(crate) fn publish(",
+          "path": "crates/converter/src/controls.rs"
+        },
+        {
+          "anchor": "let path = \"interface/controls/pc/provenance.json\";",
+          "path": "crates/converter/src/controls.rs"
+        }
+      ],
+      "owner": "converter and PC control maintainers (#741)",
+      "reason": "Conversion and metadata rebuild can publish optional PC control files beside the world database. The files preserve usable source lines. The JSON sidecar records effective provider, source and output hashes, and skipped line numbers. Runtime consumption remains unknown in this inventory.",
+      "states": {
+        "decoded": "unknown",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
         "query_dependent": "unknown",
         "semantic_use": "unknown"
       }
