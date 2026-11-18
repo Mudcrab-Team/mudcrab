@@ -184,13 +184,31 @@ impl MeshConverter {
         skeleton_path: Option<&Path>,
         unresolved_skin: Option<&str>,
     ) -> Result<()> {
-        let (nif, diagnostics, material_contract) = open_nif_for_conversion(nif_path)?;
-        let mut collision = collision::from_nif(nif_path, &nif)?;
+        let source = fs::read(nif_path)
+            .wrap_err_with(|| format!("failed to read {}", nif_path.display()))?;
+        Self::convert_nif_snapshot(
+            nif_path,
+            &source,
+            glb_output_path,
+            skeleton_path,
+            unresolved_skin,
+        )
+    }
+
+    fn convert_nif_snapshot(
+        nif_path: &Path,
+        source: &[u8],
+        glb_output_path: &Path,
+        skeleton_path: Option<&Path>,
+        unresolved_skin: Option<&str>,
+    ) -> Result<()> {
+        let (nif, diagnostics, material_contract) = parse_nif_for_conversion(nif_path, source)?;
+        let mut collision = collision::from_nif_bytes(nif_path, &nif, source)?;
         let declares_skin = declares_skin_type(&diagnostics);
         let room_sphere = if !declares_skin
             || (skeleton_path.is_none()
                 && unresolved_skin.is_none()
-                && collision::skin_pose_is_fixed(nif_path)?)
+                && collision::skin_pose_is_fixed(nif_path, source)?)
         {
             room_bounds::source_sphere(&nif)
         } else {
@@ -1571,7 +1589,15 @@ fn apply_vertex_color_contract(
 fn open_nif_for_conversion(
     path: &Path,
 ) -> Result<(NifFile, NifParseDiagnostics, Vec<NifShapeMaterial>)> {
-    let opened = open_nif_resilient(path)?;
+    let bytes = fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
+    parse_nif_for_conversion(path, &bytes)
+}
+
+fn parse_nif_for_conversion(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(NifFile, NifParseDiagnostics, Vec<NifShapeMaterial>)> {
+    let opened = parse_nif_resilient(path, bytes)?;
     ensure!(
         opened.1.conversion_refusals.is_empty(),
         "{}",
@@ -1590,7 +1616,14 @@ fn open_nif_resilient(
     path: &Path,
 ) -> Result<(NifFile, NifParseDiagnostics, Vec<NifShapeMaterial>)> {
     let bytes = fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
-    let (mut data, header) = parse_skyrim_header(&bytes, path)?;
+    parse_nif_resilient(path, &bytes)
+}
+
+fn parse_nif_resilient(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(NifFile, NifParseDiagnostics, Vec<NifShapeMaterial>)> {
+    let (mut data, header) = parse_skyrim_header(bytes, path)?;
     let block_count = usize::try_from(header.block_count)
         .wrap_err_with(|| format!("NIF block count is out of range in {}", path.display()))?;
     ensure!(
@@ -3504,6 +3537,30 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn snapshot_export_keeps_geometry_and_collision_after_source_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("source.nif");
+        let control = directory.path().join("control.glb");
+        let output = directory.path().join("snapshot.glb");
+        let source = collidable_static_nif();
+        fs::write(&input, &source).unwrap();
+        MeshConverter::convert_nif_to_glb_with_skeleton(&input, &control, None).unwrap();
+        let original = fs::read(control).unwrap();
+        let document = glb_json_from_bytes(&original).unwrap();
+        assert!(document["extras"]["mudcrabRoomSphere"].is_object());
+        assert_eq!(
+            document["scenes"][0]["extras"]["mudcrabCollision"]["bodies"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        fs::write(&input, b"replacement is not a NIF").unwrap();
+        MeshConverter::convert_nif_snapshot(&input, &source, &output, None, None).unwrap();
+        assert_eq!(fs::read(output).unwrap(), original);
     }
 
     /// A single-shape NIF whose shape node scale is replaced after generation. A scale of
