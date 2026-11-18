@@ -1796,29 +1796,26 @@ mod tests {
                 )
                 .unwrap();
             let pool = catalog.idle_sequence_pool(&plan);
-            let Some(sequence) = IdleSequence::new(pool.clone(), form_id)
-                .map(|sequence| sequence.preload(app.world().resource::<AssetServer>()))
-            else {
-                assert!(
-                    !expect_sequence,
-                    "the {name} must get an idle sequence, but its pool has {} clip(s)",
-                    pool.len()
-                );
+            let sequence = IdleSequence::new(pool.clone(), form_id)
+                .map(|sequence| sequence.preload(app.world().resource::<AssetServer>()));
+            assert_eq!(
+                sequence.is_some(),
+                expect_sequence,
+                "the {name}: a sequence is {} but its pool has {} clip(s)",
+                if expect_sequence {
+                    "expected"
+                } else {
+                    "not expected"
+                },
+                pool.len()
+            );
+            if !expect_sequence {
                 assert_eq!(
                     pool.len(),
                     1,
                     "the {name} control keeps only its default clip"
                 );
-                println!(
-                    "IDLE_SEQUENCE {name}: pool of {} clip(s), nothing to vary (control)",
-                    pool.len()
-                );
-                continue;
-            };
-            assert!(
-                expect_sequence,
-                "the {name} is outside the verified families but got a sequence"
-            );
+            }
             let scene = catalog
                 .idle_scene(&plan)
                 .expect("the default clip exists")
@@ -1830,18 +1827,18 @@ mod tests {
                         &assets.join(&plan.scene_path),
                     )));
             let clips = ActorClips::load_idle(app.world().resource::<AssetServer>(), &scene);
-            let actor = app
-                .world_mut()
-                .spawn((
-                    plan.actor,
-                    clips,
-                    WorldAssetRoot(body),
-                    ActorIdleLibrary {
-                        body_scene: plan.scene_path.clone(),
-                    },
-                    sequence,
-                ))
-                .id();
+            let mut spawned = app.world_mut().spawn((
+                plan.actor,
+                clips,
+                WorldAssetRoot(body),
+                ActorIdleLibrary {
+                    body_scene: plan.scene_path.clone(),
+                },
+            ));
+            if let Some(sequence) = sequence {
+                spawned.insert(sequence);
+            }
+            let actor = spawned.id();
             app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
                 Duration::ZERO,
             ));
@@ -1849,6 +1846,35 @@ mod tests {
                 app.world().get::<AnimationPlayer>(actor).is_some()
             });
             let step = Duration::from_secs_f64(1.0 / 30.0);
+            if !expect_sequence {
+                // A control has no sequence, so its default clip must keep looping. Play it for
+                // longer than any base clip, then check that it still runs and was not replaced.
+                let graph = app
+                    .world()
+                    .get::<AnimationGraphHandle>(actor)
+                    .map(|handle| handle.0.id());
+                app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(step));
+                for _ in 0..(30.0 / step.as_secs_f64()) as u32 {
+                    app.update();
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let world = app.world();
+                let player = world.get::<AnimationPlayer>(actor).unwrap();
+                assert!(
+                    !player.all_finished() && player.playing_animations().next().is_some(),
+                    "the {name} default clip stopped instead of looping"
+                );
+                assert_eq!(
+                    world
+                        .get::<AnimationGraphHandle>(actor)
+                        .map(|handle| handle.0.id()),
+                    graph,
+                    "the {name} control changed its player"
+                );
+                println!("IDLE_SEQUENCE {name}: control, default clip loops for 30 s");
+                app.world_mut().entity_mut(actor).despawn();
+                continue;
+            }
             let mut elapsed = 0.0;
             let mut played = vec![(
                 0.0,
