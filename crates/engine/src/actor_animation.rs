@@ -15,6 +15,7 @@
 use crate::{
     actor_drive::{ActorGait, ActorGaitNodes, Gait},
     actors::{Actor, ActorSex},
+    world::actor_catalog::IdlePoolClip,
 };
 use bevy::{
     animation::{
@@ -105,22 +106,26 @@ struct IdlePlayback {
 
 /// A creature's stand-in for the retail behaviour graph's idle variety.
 ///
-/// **This is a placeholder, not the retail rule.** Retail plays `ActionIdle` and the actor's
-/// behaviour graph picks the clips (RF-IDLE-005). The graph data is verified: the dog head layer
-/// (6 states) and tail layer (4 states) re-pick with equal weights when their clip ends
-/// (RF-IDLE-018), and so does the cow tail wag (3 states, RF-IDLE-019). The clips run 1.0 to 5.0 s,
-/// so the time between picks is the clip length and no separate timer exists. Retail blends those
-/// layers over a base loop at the same time. Mudcrab plays one clip at a time, so this component
-/// folds the layers into one sequence:
+/// **This is a placeholder, not the retail rule.** Retail's engine walks the `ActionIdle` tree for
+/// the stand idle and sends the chosen event to the actor's behaviour graph (RF-IDLE-005). Inside
+/// the stand state the graph's own layers keep re-picking. The verified graph data is: the dog head
+/// layer (bark, head 1 to 4, base) and tail layer (tail 1 to 3, base) re-pick with equal weights
+/// when their clip ends (RF-IDLE-018), and so does the cow tail wag (3 clips, RF-IDLE-019). The
+/// clips run 1.0 to 5.0 s, so the time between picks is the clip length and no separate timer
+/// exists. Retail blends those layers over a base loop at the same time. Mudcrab plays one clip at
+/// a time, so this component folds the layers into one sequence:
 ///
+/// - Only the verified families get a sequence (`VERIFIED_IDLE_LAYERS` in the actor catalog: dogs
+///   and cows). Every other creature keeps looping its default catalog clip.
 /// - The actor starts on its catalog default clip, the base. Every clip plays once, to its end. No
 ///   timer decides when to change.
 /// - When a clip finishes, [`advance_idle_sequences`] picks the next clip from the pool with equal
-///   weights. The pool is the base plus the catalog clips accepted by
-///   `crate::world::actor_catalog::VARIED_IDLE_NAMES`. The pick may be the clip that just finished,
-///   as it may be on the retail tail layers.
+///   weights. The pick may be the clip that just finished, as it may be on the retail tail layers.
 /// - The pick comes from a small generator seeded by the placed reference's FormID. The same
 ///   reference always plays the same sequence, whatever the frame rate.
+/// - The pool's clips load when the actor spawns and stay loaded. If the next clip is not ready
+///   when the current one ends, the creature holds its last pose and waits. A clip that fails to
+///   load is dropped from the pool, and the sequence goes on with the rest.
 ///
 /// Not done here, on purpose: the look, call, sit, lie-down, feed and forage variants of dogs and
 /// cows. Retail takes those from the engine's `IDLE` tree (RF-IDLE-020): a depth-first first-match
@@ -129,36 +134,72 @@ struct IdlePlayback {
 /// engine walks the `ActionIdle` tree for them (RF-IDLE-022) and their graph has no random
 /// re-pick (RF-IDLE-023).
 ///
+/// Known limit: each change still rebuilds the player's graph and the bone targets of the body. That
+/// work happens once per clip end, every 1 to 5 s per creature. It has not been measured in a cell
+/// with many creatures.
+///
 /// An actor with fewer than two pool clips gets no `IdleSequence` and keeps looping its default
 /// clip, exactly as before.
 #[derive(Component, Debug, Clone)]
 pub struct IdleSequence {
-    pool: Vec<String>,
+    pool: Vec<IdlePoolClip>,
+    /// The clips of `pool`, loaded at spawn and kept. Empty when nothing was preloaded.
+    clips: Vec<Handle<Gltf>>,
+    /// Clips that failed to load or to start.
+    failed: Vec<bool>,
     current: usize,
+    /// The pick that waits for its clip to finish loading.
+    pending: Option<usize>,
     state: u64,
 }
 
+/// Whether the clip of a pick can start now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClipReadiness {
+    Ready,
+    Loading,
+    Failed,
+}
+
 impl IdleSequence {
-    /// A sequence over `pool` (source keys, the base clip first) for one placed reference.
+    /// A sequence over `pool` (the base clip first) for one placed reference.
     ///
     /// Returns `None` when `pool` has fewer than two clips, so there is nothing to vary.
-    pub fn new(pool: Vec<String>, reference_form_id: u32) -> Option<Self> {
-        (pool.len() >= 2).then_some(Self {
+    pub fn new(pool: Vec<IdlePoolClip>, reference_form_id: u32) -> Option<Self> {
+        (pool.len() >= 2).then(|| Self {
+            failed: vec![false; pool.len()],
             pool,
+            clips: Vec::new(),
             current: 0,
+            pending: None,
             // A fixed salt keeps FormID 0 away from the generator's all-zero state.
             state: u64::from(reference_form_id) ^ 0x1D1E_5EED_0000_0000,
         })
     }
 
+    /// Starts loading every clip of the pool and keeps the handles, so a change never waits on disk.
+    pub fn preload(mut self, asset_server: &AssetServer) -> Self {
+        self.clips = self
+            .pool
+            .iter()
+            .map(|clip| asset_server.load(clip.scene.clone()))
+            .collect();
+        self
+    }
+
     /// The source key of the clip that is playing now.
     pub fn current_source(&self) -> &str {
-        &self.pool[self.current]
+        &self.pool[self.current].source
     }
 
     /// The position of the playing clip in the pool, and the pool size.
     pub fn position(&self) -> (usize, usize) {
         (self.current, self.pool.len())
+    }
+
+    /// True while the next clip is still loading and the creature holds its last pose.
+    pub fn is_waiting(&self) -> bool {
+        self.pending.is_some()
     }
 
     /// SplitMix64: one 64-bit step of a small, well-mixed generator.
@@ -170,25 +211,47 @@ impl IdleSequence {
         z ^ (z >> 31)
     }
 
-    /// Test hook for sibling modules: [`Self::advance`] without a running player.
-    #[cfg(test)]
-    pub(crate) fn advance_for_test(&mut self) {
-        self.advance();
+    /// The next clip: uniform over the clips that did not fail, the playing clip included.
+    /// `None` when every clip failed.
+    fn choose(&mut self) -> Option<usize> {
+        let usable: Vec<usize> = (0..self.pool.len())
+            .filter(|index| !self.failed[*index])
+            .collect();
+        if usable.is_empty() {
+            return None;
+        }
+        Some(usable[(self.next_random() % usable.len() as u64) as usize])
     }
 
-    /// Moves to the next clip: uniform over the whole pool, the finished clip included.
-    fn advance(&mut self) -> &str {
-        self.current = (self.next_random() % self.pool.len() as u64) as usize;
-        &self.pool[self.current]
+    fn readiness(&self, index: usize, asset_server: &AssetServer) -> ClipReadiness {
+        let Some(handle) = self.clips.get(index) else {
+            return ClipReadiness::Ready;
+        };
+        match asset_server.load_state(handle.id()) {
+            LoadState::Loaded => ClipReadiness::Ready,
+            LoadState::Failed(_) => ClipReadiness::Failed,
+            LoadState::NotLoaded | LoadState::Loading => ClipReadiness::Loading,
+        }
+    }
+
+    /// Test hook for sibling modules: moves to the next pick without a running player.
+    #[cfg(test)]
+    pub(crate) fn advance_for_test(&mut self) {
+        if let Some(next) = self.choose() {
+            self.current = next;
+        }
     }
 }
 
 /// Asks for the next clip of every [`IdleSequence`] whose current clip has finished.
 ///
 /// A new request replaces the player, so this waits until the previous request has loaded
-/// (`Without<ActorClips>`) and the new player exists.
+/// (`Without<ActorClips>`) and the new player exists. The next clip is already loaded in the usual
+/// case. If it is not, the creature holds its last pose until it is. A clip that failed to load is
+/// marked and another pick is made.
 fn advance_idle_sequences(
     mut commands: Commands,
+    asset_server: Res<AssetServer>,
     mut sequences: Query<
         (Entity, &Actor, &mut IdleSequence, &AnimationPlayer),
         Without<ActorClips>,
@@ -198,12 +261,79 @@ fn advance_idle_sequences(
         if !player.all_finished() {
             continue;
         }
-        let source = sequence.advance().to_owned();
-        debug!(
+        let Some(next) = sequence.pending.or_else(|| sequence.choose()) else {
+            warn!(
+                base_form_id = actor.base_form_id,
+                "idle sequence: no clip could be loaded; the actor keeps looping its last clip"
+            );
+            commands.entity(entity).remove::<IdleSequence>();
+            continue;
+        };
+        match sequence.readiness(next, &asset_server) {
+            ClipReadiness::Loading => sequence.pending = Some(next),
+            ClipReadiness::Failed => {
+                warn!(
+                    base_form_id = actor.base_form_id,
+                    source = %sequence.pool[next].source,
+                    "idle sequence: a clip failed to load; it leaves the pool"
+                );
+                sequence.failed[next] = true;
+                sequence.pending = None;
+            }
+            ClipReadiness::Ready => {
+                sequence.pending = None;
+                sequence.current = next;
+                let source = sequence.pool[next].source.clone();
+                debug!(
+                    base_form_id = actor.base_form_id,
+                    %source,
+                    "idle sequence: next clip"
+                );
+                commands.entity(entity).insert(AuthoredIdleRequest {
+                    source,
+                    repeat: false,
+                });
+            }
+        }
+    }
+}
+
+/// Continues a sequence whose clip did not start.
+///
+/// `start_actor_animations` removes the clip request without installing a player when the clip has
+/// no animation or the body has no animation root. Without a player [`advance_idle_sequences`]
+/// never runs again. This marks the clip as failed and asks for another one, so one bad clip cannot
+/// stop the sequence. When every clip failed, the sequence is removed.
+fn recover_idle_sequences(
+    mut commands: Commands,
+    mut sequences: Query<
+        (Entity, &Actor, &mut IdleSequence),
+        (
+            With<ActorBodyReady>,
+            Without<AnimationPlayer>,
+            Without<ActorClips>,
+        ),
+    >,
+) {
+    for (entity, actor, mut sequence) in &mut sequences {
+        let failed = sequence.current;
+        warn!(
             base_form_id = actor.base_form_id,
-            %source,
-            "idle sequence: next clip"
+            source = %sequence.pool[failed].source,
+            "idle sequence: a clip did not start; it leaves the pool"
         );
+        sequence.failed[failed] = true;
+        sequence.pending = None;
+        let Some(next) = sequence.choose() else {
+            warn!(
+                base_form_id = actor.base_form_id,
+                "idle sequence: no clip could start; the actor keeps its last pose"
+            );
+            commands.entity(entity).remove::<IdleSequence>();
+            continue;
+        };
+        sequence.current = next;
+        let source = sequence.pool[next].source.clone();
         commands.entity(entity).insert(AuthoredIdleRequest {
             source,
             repeat: false,
@@ -536,6 +666,7 @@ impl Plugin for ActorAnimationPlugin {
         app.add_observer(mark_actor_body_ready).add_systems(
             Update,
             (
+                recover_idle_sequences,
                 advance_idle_sequences,
                 select_authored_idle,
                 start_actor_animations,
@@ -1469,8 +1600,13 @@ mod tests {
         );
     }
 
-    fn pool(count: usize) -> Vec<String> {
-        (0..count).map(|index| format!("clip{index}")).collect()
+    fn pool(count: usize) -> Vec<IdlePoolClip> {
+        (0..count)
+            .map(|index| IdlePoolClip {
+                source: format!("clip{index}"),
+                scene: format!("meshes/actor-idles/clips/clip{index}.glb"),
+            })
+            .collect()
     }
 
     #[test]
@@ -1552,13 +1688,77 @@ mod tests {
         app.update();
         let sequence = app.world().get::<IdleSequence>(actor).unwrap();
         let request = app.world().get::<AuthoredIdleRequest>(actor).unwrap();
-        assert_ne!(
-            sequence.position().0,
-            0,
-            "the pick is not the clip that finished"
-        );
         assert_eq!(request.source, sequence.current_source());
         assert!(!request.repeat, "each clip plays to its end");
+        assert!(
+            !sequence.is_waiting(),
+            "a clip with no pending load starts at once"
+        );
+    }
+
+    #[test]
+    fn a_pick_never_lands_on_a_clip_that_failed() {
+        let mut sequence = IdleSequence::new(pool(4), 0x23A92).unwrap();
+        sequence.failed = vec![true, false, true, false];
+        for _ in 0..200 {
+            let next = sequence.choose().unwrap();
+            assert!(next == 1 || next == 3, "picked failed clip {next}");
+        }
+        sequence.failed = vec![true; 4];
+        assert!(sequence.choose().is_none());
+    }
+
+    #[test]
+    fn a_clip_that_did_not_start_is_dropped_and_the_sequence_goes_on() {
+        let (_directory, mut app) = fixture_app();
+        // The body is ready, but the clip request was consumed and no player was installed:
+        // what `start_actor_animations` leaves behind when a clip has no animation.
+        let actor = app
+            .world_mut()
+            .spawn((
+                Actor::new(
+                    0x23A92,
+                    0x131EE,
+                    ActorSex::Male,
+                    crate::actors::ActorResolution::Body,
+                ),
+                IdleSequence::new(pool(3), 0x23A92).unwrap(),
+                ActorBodyReady,
+            ))
+            .id();
+        app.update();
+        let sequence = app.world().get::<IdleSequence>(actor).unwrap();
+        assert!(sequence.failed[0], "the clip that did not start is marked");
+        assert_ne!(sequence.position().0, 0, "the next clip is another one");
+        let request = app.world().get::<AuthoredIdleRequest>(actor).unwrap();
+        assert_eq!(request.source, sequence.current_source());
+        assert!(!request.repeat);
+    }
+
+    #[test]
+    fn a_sequence_whose_clips_all_fail_stops_and_leaves_the_actor_alone() {
+        let (_directory, mut app) = fixture_app();
+        let actor = app
+            .world_mut()
+            .spawn((
+                Actor::new(
+                    0x23A92,
+                    0x131EE,
+                    ActorSex::Male,
+                    crate::actors::ActorResolution::Body,
+                ),
+                IdleSequence::new(pool(2), 0x23A92).unwrap(),
+                ActorBodyReady,
+            ))
+            .id();
+        // Clip 0 fails, clip 1 is asked for and fails too: the third pass finds nothing left.
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(
+            app.world().get::<IdleSequence>(actor).is_none(),
+            "no usable clip is left, so the component is removed"
+        );
     }
 
     /// Plays a creature's idle sequence for a simulated minute (no window, no GPU) and prints the
@@ -1593,7 +1793,9 @@ mod tests {
                 )
                 .unwrap();
             let pool = catalog.idle_sequence_pool(&plan);
-            let Some(sequence) = IdleSequence::new(pool.clone(), form_id) else {
+            let Some(sequence) = IdleSequence::new(pool.clone(), form_id)
+                .map(|sequence| sequence.preload(app.world().resource::<AssetServer>()))
+            else {
                 println!(
                     "IDLE_SEQUENCE {name}: pool of {} clip(s), nothing to vary",
                     pool.len()
@@ -1642,17 +1844,29 @@ mod tests {
             println!("IDLE_SEQUENCE {name}: pool of {} clips", pool.len());
             println!("IDLE_SEQUENCE {name} t=0.00 {}", played[0].1);
             let deadline = Instant::now() + Duration::from_secs(120);
+            // Updates in which the creature had no running player or waited for a clip to load,
+            // and the longest run of them. A clip change must not freeze the creature.
+            let (mut stalled, mut run, mut longest_run) = (0_u32, 0_u32, 0_u32);
             while elapsed < seconds {
                 assert!(
                     Instant::now() < deadline,
                     "the {name} sequence stalled at {elapsed:.1} s"
                 );
-                // Time stands still while a new clip loads, so a slow disk cannot skip a clip.
+                // Time stands still while a clip is not running, so every stalled update is
+                // counted and none is hidden. A short sleep lets the preload make progress.
                 let ready = {
                     let world = app.world();
                     world.get::<ActorClips>(actor).is_none()
                         && world.get::<AnimationPlayer>(actor).is_some()
+                        && !world.get::<IdleSequence>(actor).unwrap().is_waiting()
                 };
+                if ready {
+                    run = 0;
+                } else {
+                    stalled += 1;
+                    run += 1;
+                    longest_run = longest_run.max(run);
+                }
                 app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(if ready {
                     step
                 } else {
@@ -1661,9 +1875,8 @@ mod tests {
                 app.update();
                 if ready {
                     elapsed += step.as_secs_f64();
-                } else {
-                    std::thread::sleep(Duration::from_millis(2));
                 }
+                std::thread::sleep(Duration::from_millis(1));
                 let current = app
                     .world()
                     .get::<IdleSequence>(actor)
@@ -1676,9 +1889,13 @@ mod tests {
             }
             let distinct: HashSet<_> = played.iter().map(|(_, source)| source.as_str()).collect();
             println!(
-                "IDLE_SEQUENCE {name}: {} clip changes, {} distinct clips in {elapsed:.0} s",
+                "IDLE_SEQUENCE {name}: {} clip changes, {} distinct clips in {elapsed:.0} s; {stalled} stalled updates, longest run {longest_run}",
                 played.len() - 1,
                 distinct.len()
+            );
+            assert!(
+                longest_run <= 10,
+                "the {name} stood still for {longest_run} updates in a row"
             );
             most_distinct = most_distinct.max(distinct.len());
             app.world_mut().entity_mut(actor).despawn();

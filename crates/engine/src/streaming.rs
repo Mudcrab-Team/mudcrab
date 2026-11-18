@@ -1953,7 +1953,7 @@ fn spawn_cell(
                         actor_catalog.idle_sequence_pool(plan),
                         reference.form_id,
                     ) {
-                        entity.insert(sequence);
+                        entity.insert(sequence.preload(asset_server));
                     }
                 } else if let Some(scene) = actor_catalog.legacy_creature_idle_scene(plan) {
                     entity.insert(crate::actor_animation::ActorClips::load_idle(

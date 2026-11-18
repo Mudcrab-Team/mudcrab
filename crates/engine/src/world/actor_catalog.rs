@@ -100,67 +100,63 @@ impl ActorSpawnPlan {
     }
 }
 
-/// Which authored clips may join a creature's idle sequence, by the clip's file name.
+/// A creature family whose retail idle layers are verified, with the clips those layers re-pick.
 ///
-/// This is part of a stand-in. Retail does not filter by name: the behaviour graph owns which clip
-/// plays when (the dog graph's `PickNewIdle` / `PickNewHead` / `PickNewTail`, the cow graph's
-/// `PickNewIdle`). The name filter only keeps attacks, deaths and transitions out of a loop that
-/// has no graph to sequence them (RF-IDLE-018, RF-IDLE-019). See
-/// [`crate::actor_animation::IdleSequence`].
+/// Only these families get an idle sequence. For every other creature the retail clip set is not
+/// verified, so it keeps looping its default catalog clip, as before. A name filter was tried and
+/// dropped: it let scene-only clips through (a goblin praying, a lich holding a staff) and missed
+/// verified ones.
 #[derive(Debug, Clone, Copy)]
-pub struct IdleNameRule {
-    /// A file name that starts with one of these is a candidate.
-    pub starts_with: &'static [&'static str],
-    /// A file name that contains one of these is a candidate.
-    pub contains: &'static [&'static str],
-    /// A file name that contains one of these is never accepted.
-    pub exclude: &'static [&'static str],
+pub struct VerifiedIdleLayers {
+    /// The binding's default clip (the base loop). A binding qualifies only when its default clip
+    /// is this one, which keeps wolves out: they share the canine folder but use `mt_idle_wolf`.
+    pub base_source: &'static str,
+    /// The clips the layers re-pick, besides the base. A clip a binding lacks is skipped.
+    pub clips: &'static [&'static str],
+    /// The registry rows that verify this family.
+    pub rows: &'static str,
 }
 
-impl IdleNameRule {
-    /// True when the file name of `source` (a `.hkx` key, any case) passes the rule.
-    pub fn accepts(&self, source: &str) -> bool {
-        let file = source.rsplit(['/', '\\']).next().unwrap_or(source);
-        let name = file
-            .rsplit_once('.')
-            .map_or(file, |(stem, _)| stem)
-            .to_ascii_lowercase();
-        let included = self
-            .starts_with
-            .iter()
-            .any(|prefix| name.starts_with(prefix))
-            || self.contains.iter().any(|part| name.contains(part));
-        included && !self.exclude.iter().any(|part| name.contains(part))
-    }
-}
+/// The creature idle layers that retail data verifies. Part of a stand-in; see
+/// [`crate::actor_animation::IdleSequence`].
+///
+/// - Dog (`canine/behaviors/noncombatidle.hkx`, RF-IDLE-018): the head layer picks among bark,
+///   head 1 to 4 and the base; the tail layer among tail 1 to 3 and the base.
+/// - Cow (`cow/behaviors/noncombatidle.hkx`, RF-IDLE-019): the tail wag picks among three clips.
+///   The look, call, feed, forage and lie-down clips come from the engine's `IDLE` tree
+///   (RF-IDLE-020) and are not listed.
+pub const VERIFIED_IDLE_LAYERS: [VerifiedIdleLayers; 2] = [
+    VerifiedIdleLayers {
+        base_source: "meshes/actors/canine/animations/mt_idle.hkx",
+        clips: &[
+            "meshes/actors/canine/animations/dog_spice_bark.hkx",
+            "meshes/actors/canine/animations/dog_idle_spice_head1.hkx",
+            "meshes/actors/canine/animations/dog_idle_spice_head2.hkx",
+            "meshes/actors/canine/animations/dog_spice_head3.hkx",
+            "meshes/actors/canine/animations/dog_spice_head4.hkx",
+            "meshes/actors/canine/animations/dog_idle_spice_tail1.hkx",
+            "meshes/actors/canine/animations/dog_idle_spice_tail2.hkx",
+            "meshes/actors/canine/animations/dog_idle_spice_tail3.hkx",
+        ],
+        rows: "RF-IDLE-018",
+    },
+    VerifiedIdleLayers {
+        base_source: "meshes/actors/cow/animations/mt_idle.hkx",
+        clips: &[
+            "meshes/actors/cow/animations/idle_tailwag.hkx",
+            "meshes/actors/cow/animations/idle_tailwag1.hkx",
+            "meshes/actors/cow/animations/idle_tailwag2.hkx",
+        ],
+        rows: "RF-IDLE-019",
+    },
+];
 
-/// The clips a creature may show besides its default idle: names that start with `idle` or
-/// contain `_idle`, minus these:
-///
-/// - fights and dying: `attack`, `combat`, `block`, `ambush`, `death`, `bleedout`;
-/// - posture changes and their transitions: `getup`, `getdown`, `lay`, `liedown`, `sit`, `sleep`,
-///   `kneel`, `squat`, `enter`, `exit`, `start`, `stop`, `intro`, `outro`, `_end`;
-/// - the look, call, feed, forage and graze variants (`look`, `call`, `mooo`, `feed`, `forage`,
-///   `graze`). Retail picks those in the engine's `IDLE` tree, with conditions and replay delays,
-///   not in the behaviour graph (RF-IDLE-020). They are a follow-up;
-/// - other states and gaits: `alcove`, `coffin`, `run`, `walk`, `swim`, `dance`, `levitate`;
-/// - `idle_a_`: the twelve `idle_A_*` stand idles. Retail disables their root, `BaseIdleRoot`,
-///   with a `GetRandomPercent < 0` condition that never passes, so they are not part of the
-///   reachable stand set (RF-IDLE-021).
-///
-/// What is left is mostly the head, tail and body spice clips that the dog and cow graphs re-pick
-/// among (RF-IDLE-018, RF-IDLE-019). The filter is a stand-in for that graph, so it can keep a
-/// clip the graph would not and drop one it would. See [`crate::actor_animation::IdleSequence`].
-pub const VARIED_IDLE_NAMES: IdleNameRule = IdleNameRule {
-    starts_with: &["idle"],
-    contains: &["_idle"],
-    exclude: &[
-        "attack", "combat", "block", "ambush", "death", "bleedout", "getup", "getdown", "lay",
-        "liedown", "sit", "sleep", "kneel", "squat", "enter", "exit", "start", "stop", "intro",
-        "outro", "_end", "look", "call", "mooo", "feed", "forage", "graze", "alcove", "coffin",
-        "run", "walk", "swim", "dance", "levitate", "idle_a_",
-    ],
-};
+/// One clip of a creature's idle pool: the catalog's source key and the converted scene.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdlePoolClip {
+    pub source: String,
+    pub scene: String,
+}
 
 #[derive(Resource, Debug, Clone, Default)]
 pub struct ActorCatalog {
@@ -472,14 +468,14 @@ impl ActorCatalog {
             .then_some(scene.as_str())
     }
 
-    /// The source keys of the clips one creature may play in turn, the default clip first.
+    /// The clips one creature may play in turn, the default clip first.
     ///
-    /// The base is the binding's default clip. The rest are the binding's other clips that pass
-    /// [`VARIED_IDLE_NAMES`], have at least two frames and exist on disk, in catalog order.
-    /// An empty list means the actor has no catalog binding. A single entry means it has nothing
-    /// to vary, so the caller keeps the looping default clip. Part of the stand-in described on
-    /// [`crate::actor_animation::IdleSequence`].
-    pub fn idle_sequence_pool(&self, plan: &ActorSpawnPlan) -> Vec<String> {
+    /// Only a binding whose default clip starts a [`VERIFIED_IDLE_LAYERS`] family gets more than
+    /// the default: it then adds that family's clips that the binding has, with at least two
+    /// frames and a file on disk, in the order of the list. An empty list means the actor has no
+    /// catalog binding. A single entry means nothing to vary, so the caller keeps the looping
+    /// default clip. Part of the stand-in described on [`crate::actor_animation::IdleSequence`].
+    pub fn idle_sequence_pool(&self, plan: &ActorSpawnPlan) -> Vec<IdlePoolClip> {
         let Some(row) = self.idle_catalog.find(
             plan.actor.race_id,
             plan.actor.sex.as_str(),
@@ -493,18 +489,27 @@ impl ActorCatalog {
         if !root.join(&row.scene).is_file() {
             return Vec::new();
         }
-        let mut pool = vec![row.source.clone()];
-        pool.extend(
-            row.clips
-                .iter()
-                .filter(|(source, clip)| {
-                    **source != row.source
-                        && VARIED_IDLE_NAMES.accepts(source)
-                        && clip.frame_count >= 2
-                        && root.join(&clip.scene).is_file()
-                })
-                .map(|(source, _)| source.clone()),
-        );
+        let mut pool = vec![IdlePoolClip {
+            source: row.source.clone(),
+            scene: row.scene.clone(),
+        }];
+        let Some(layers) = VERIFIED_IDLE_LAYERS
+            .iter()
+            .find(|layers| layers.base_source == row.source)
+        else {
+            return pool;
+        };
+        for source in layers.clips {
+            if let Some(clip) = row.clips.get(*source)
+                && clip.frame_count >= 2
+                && root.join(&clip.scene).is_file()
+            {
+                pool.push(IdlePoolClip {
+                    source: (*source).to_owned(),
+                    scene: clip.scene.clone(),
+                });
+            }
+        }
         pool
     }
 
@@ -1340,44 +1345,6 @@ mod tests {
         assert!(plan.head.is_none());
     }
 
-    #[test]
-    fn varied_idle_names_keep_idles_and_drop_attacks_deaths_and_transitions() {
-        for accepted in [
-            "meshes/actors/canine/animations/dog_idle_spice_head1.hkx",
-            "meshes/actors/canine/animations/dog_idle_spice_tail3.hkx",
-            "meshes/actors/cow/animations/idle_tailwag1.hkx",
-            r"Meshes\Actors\Bear\Animations\IdleShake.HKX",
-            "idlerooting.hkx",
-        ] {
-            assert!(VARIED_IDLE_NAMES.accepts(accepted), "{accepted}");
-        }
-        for rejected in [
-            "meshes/actors/canine/animations/attack1.hkx",
-            "meshes/actors/canine/animations/death.hkx",
-            "meshes/actors/canine/animations/combatidle.hkx",
-            "meshes/actors/cow/animations/getup.hkx",
-            "meshes/actors/cow/animations/idle_laydown.hkx",
-            "meshes/actors/cow/animations/idle_enterfeed.hkx",
-            "meshes/actors/cow/animations/idle_exitfeed.hkx",
-            "meshes/actors/cow/animations/idle_lookleft.hkx",
-            "meshes/actors/cow/animations/idle_mooo.hkx",
-            "meshes/actors/cow/animations/idle_feed.hkx",
-            "meshes/actors/cow/animations/idle_forage.hkx",
-            "meshes/actors/canine/animations/dog_spice_sit_idle.hkx",
-            "meshes/actors/canine/animations/dog_spice_lay_idle.hkx",
-            "meshes/actors/draugr/animations/bleedout_idle.hkx",
-            "meshes/actors/draugr/animations/alcove_idle.hkx",
-            "meshes/actors/draugr/animations/mtidle.hkx",
-            "meshes/actors/draugr/animations/walkcycle.hkx",
-            "meshes/actors/character/animations/idle_A_sway_fastTrans.hkx",
-            "meshes/actors/character/animations/Idle_A_left_longTrans.hkx",
-        ] {
-            assert!(!VARIED_IDLE_NAMES.accepts(rejected), "{rejected}");
-        }
-        // The folder is not part of the name: `attack/idle.hkx` is the file `idle`.
-        assert!(VARIED_IDLE_NAMES.accepts("attack/idle.hkx"));
-    }
-
     /// A creature binding with the given clips: `(source key, frame count, file on disk)`.
     fn creature_catalog(
         clips: &[(&str, u32, bool)],
@@ -1441,47 +1408,137 @@ mod tests {
         (directory, loaded, plan)
     }
 
-    #[test]
-    fn idle_sequence_pool_filters_clips_and_keeps_the_default_first() {
-        let (_directory, catalog, plan) = creature_catalog(&[
-            ("meshes/custom/mtidle.hkx", 30, true),
-            ("meshes/custom/dog_idle_spice_head1.hkx", 30, true),
-            ("meshes/custom/idle_tailwag.hkx", 30, true),
-            ("meshes/custom/idle_shake.hkx", 30, true),
-            ("meshes/custom/attack1.hkx", 30, true),
-            ("meshes/custom/deathpose.hkx", 30, true),
-            ("meshes/custom/combatidle.hkx", 30, true),
-            ("meshes/custom/idle_enterfeed.hkx", 30, true),
-            ("meshes/custom/idle_lookleft.hkx", 30, true),
-            ("meshes/custom/bleedout_idle.hkx", 30, true),
-            ("meshes/custom/idle_static.hkx", 1, true),
-            ("meshes/custom/idle_missing.hkx", 30, false),
-        ]);
-        let pool = catalog.idle_sequence_pool(&plan);
-        assert_eq!(
-            pool[0], "meshes/custom/mtidle.hkx",
-            "the default is the base"
-        );
-        let rest: std::collections::BTreeSet<_> = pool[1..].iter().map(String::as_str).collect();
-        assert_eq!(
-            rest,
-            std::collections::BTreeSet::from([
-                "meshes/custom/idle_shake.hkx",
-                "meshes/custom/dog_idle_spice_head1.hkx",
-                "meshes/custom/idle_tailwag.hkx",
-            ])
-        );
-        assert_eq!(pool.len(), 4, "the base is not listed twice");
+    const DOG: &str = "meshes/actors/canine/animations/";
+    const COW: &str = "meshes/actors/cow/animations/";
+
+    fn sources(pool: &[IdlePoolClip]) -> Vec<&str> {
+        pool.iter().map(|clip| clip.source.as_str()).collect()
     }
 
     #[test]
-    fn idle_sequence_pool_is_deterministic_and_seeded_sequences_repeat() {
-        let (_directory, catalog, plan) = creature_catalog(&[
-            ("meshes/custom/mtidle.hkx", 30, true),
-            ("meshes/custom/idle_a.hkx", 30, true),
-            ("meshes/custom/idle_b.hkx", 30, true),
-            ("meshes/custom/idle_c.hkx", 30, true),
-        ]);
+    fn the_dog_pool_is_the_verified_layer_clips_in_list_order() {
+        let dog = |name: &str| format!("{DOG}{name}.hkx");
+        let keys = [
+            dog("mt_idle"),
+            dog("dog_idle_spice_tail1"),
+            dog("dog_spice_head3"),
+            dog("dog_idle_spice_head1"),
+            dog("dog_spice_bark"),
+            dog("dog_idle_spice_head2"),
+            // Listed, but skipped: one frame, and no file on disk.
+            dog("dog_spice_head4"),
+            dog("dog_idle_spice_tail2"),
+            // Not listed: postures, a fight clip and an idle-looking name.
+            dog("dog_spice_sit_head1"),
+            dog("dog_spice_lay_tail1"),
+            dog("attack1"),
+            dog("idle_foraging"),
+        ];
+        let frames = |key: &str| if key.ends_with("head4.hkx") { 1 } else { 30 };
+        let clips: Vec<(&str, u32, bool)> = keys
+            .iter()
+            .map(|key| (key.as_str(), frames(key), !key.ends_with("tail2.hkx")))
+            .collect();
+        let (_directory, catalog, plan) = creature_catalog(&clips);
+        let pool = catalog.idle_sequence_pool(&plan);
+        assert_eq!(
+            sources(&pool),
+            [
+                dog("mt_idle"),
+                dog("dog_spice_bark"),
+                dog("dog_idle_spice_head1"),
+                dog("dog_idle_spice_head2"),
+                dog("dog_spice_head3"),
+                dog("dog_idle_spice_tail1"),
+            ]
+        );
+        assert!(pool.iter().all(|clip| clip.scene.ends_with(".glb")));
+    }
+
+    #[test]
+    fn the_cow_pool_is_the_three_tail_wags_and_nothing_else() {
+        let cow = |name: &str| format!("{COW}{name}.hkx");
+        let keys = [
+            cow("mt_idle"),
+            cow("idle_tailwag2"),
+            cow("idle_tailwag"),
+            cow("idle_tailwag1"),
+            cow("idle_lookleft"),
+            cow("idle_mooo"),
+            cow("idle_feed"),
+            cow("idle_foraging"),
+            cow("idle_enterfeed"),
+        ];
+        let clips: Vec<(&str, u32, bool)> =
+            keys.iter().map(|key| (key.as_str(), 30, true)).collect();
+        let (_directory, catalog, plan) = creature_catalog(&clips);
+        assert_eq!(
+            sources(&catalog.idle_sequence_pool(&plan)),
+            [
+                cow("mt_idle"),
+                cow("idle_tailwag"),
+                cow("idle_tailwag1"),
+                cow("idle_tailwag2"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_creature_outside_the_verified_families_keeps_its_default_clip() {
+        // A goblin-like binding with scene-only idles, and a wolf: it shares the canine clips
+        // but its default clip is `mt_idle_wolf`.
+        for (base, others) in [
+            (
+                "meshes/actors/goblin/animations/mt_idle.hkx".to_owned(),
+                vec![
+                    "meshes/actors/goblin/animations/idleprayingbow.hkx".to_owned(),
+                    "meshes/actors/goblin/animations/idlechisel.hkx".to_owned(),
+                    "meshes/actors/goblin/animations/chieftain_idle_cheer.hkx".to_owned(),
+                ],
+            ),
+            (
+                format!("{DOG}mt_idle_wolf.hkx"),
+                vec![
+                    format!("{DOG}dog_idle_spice_head1.hkx"),
+                    format!("{DOG}dog_idle_spice_tail1.hkx"),
+                ],
+            ),
+        ] {
+            let mut keys = vec![base.clone()];
+            keys.extend(others);
+            let clips: Vec<(&str, u32, bool)> =
+                keys.iter().map(|key| (key.as_str(), 30, true)).collect();
+            let (_directory, catalog, plan) = creature_catalog(&clips);
+            let pool = catalog.idle_sequence_pool(&plan);
+            assert_eq!(sources(&pool), [base.as_str()], "{base}");
+            assert!(
+                crate::actor_animation::IdleSequence::new(pool, 1).is_none(),
+                "no variety means no sequence: the default clip keeps looping"
+            );
+        }
+    }
+
+    #[test]
+    fn a_race_without_a_binding_has_an_empty_pool() {
+        let (_directory, catalog, plan) =
+            creature_catalog(&[("meshes/custom/mtidle.hkx", 30, true)]);
+        let mut elsewhere = plan.clone();
+        elsewhere.actor.race_id = 14;
+        assert!(catalog.idle_sequence_pool(&elsewhere).is_empty());
+    }
+
+    #[test]
+    fn the_pool_is_deterministic_and_seeded_sequences_repeat() {
+        let dog = |name: &str| format!("{DOG}{name}.hkx");
+        let keys = [
+            dog("mt_idle"),
+            dog("dog_idle_spice_head1"),
+            dog("dog_idle_spice_head2"),
+            dog("dog_idle_spice_tail1"),
+        ];
+        let clips: Vec<(&str, u32, bool)> =
+            keys.iter().map(|key| (key.as_str(), 30, true)).collect();
+        let (_directory, catalog, plan) = creature_catalog(&clips);
         let first = catalog.idle_sequence_pool(&plan);
         assert_eq!(first, catalog.idle_sequence_pool(&plan));
         let play = |reference: u32| {
@@ -1496,23 +1553,5 @@ mod tests {
         };
         assert_eq!(play(0x000A_91A0), play(0x000A_91A0));
         assert_ne!(play(0x000A_91A0), play(0x000A_91A1));
-    }
-
-    #[test]
-    fn idle_sequence_pool_falls_back_to_the_default_clip_when_nothing_matches() {
-        let (_directory, catalog, plan) = creature_catalog(&[
-            ("meshes/custom/mtidle.hkx", 30, true),
-            ("meshes/custom/attack1.hkx", 30, true),
-            ("meshes/custom/walkcycle.hkx", 30, true),
-        ]);
-        let pool = catalog.idle_sequence_pool(&plan);
-        assert_eq!(pool, vec!["meshes/custom/mtidle.hkx".to_owned()]);
-        assert!(
-            crate::actor_animation::IdleSequence::new(pool, 1).is_none(),
-            "no variety means no sequence: the default clip keeps looping"
-        );
-        let mut elsewhere = plan.clone();
-        elsewhere.actor.race_id = 14;
-        assert!(catalog.idle_sequence_pool(&elsewhere).is_empty());
     }
 }
