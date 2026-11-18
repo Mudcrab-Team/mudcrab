@@ -183,22 +183,33 @@ fn ensure_outside(label: &str, path: &Path, inputs: &[(&str, &Path)]) -> Result<
     Ok(())
 }
 
-/// Checks, before the audit starts, that an output can be created: its parent folder exists and a
-/// file can be made there. A missing folder would otherwise fail the write after a long run.
+/// Checks, before the audit starts, that an output can be created: the folder it would really be
+/// written to exists and a file can be made there. A missing folder would otherwise fail the
+/// write after a long run.
+///
+/// The path is resolved first, with the same resolver as [`ensure_outside`], so a symbolic link
+/// is followed to the folder of its target. The probe file goes there and never into the folder
+/// of the link, which can be an input folder. A real create attempt is used instead of a
+/// permission bit because the bits do not show a read-only mount, an access list or the user
+/// running the tool. Call this after `ensure_outside`, which proves the resolved folder lies
+/// outside the pack and the game data.
 fn ensure_parent_writable(label: &str, path: &Path) -> Result<()> {
-    let parent = match path.parent() {
+    let resolved = resolve_for_write(path)?;
+    let parent = match resolved.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
     };
     ensure!(
         parent.is_dir(),
-        "the folder of {label} {} does not exist; create it first",
-        path.display()
+        "the folder of {label} {} ({}) does not exist; create it first",
+        path.display(),
+        parent.display()
     );
     tempfile::NamedTempFile::new_in(parent).wrap_err_with(|| {
         format!(
-            "cannot create a file next to {label} {}; is the folder writable?",
-            path.display()
+            "cannot create a file next to {label} {} in {}; is the folder writable?",
+            path.display(),
+            parent.display()
         )
     })?;
     Ok(())
@@ -494,6 +505,60 @@ mod tests {
         assert!(fs::read_dir(dir.path()).unwrap().next().is_none());
         let missing = dir.path().join("new/dir/report.json");
         let error = ensure_parent_writable("--json", &missing).unwrap_err();
+        assert!(format!("{error:#}").contains("does not exist"), "{error:#}");
+    }
+
+    /// An output link inside a read-only pack folder that points to a writable folder outside it
+    /// is a valid output. The probe goes beside the target, and nothing is created in the pack.
+    #[cfg(unix)]
+    #[test]
+    fn an_output_link_is_probed_beside_its_target_not_in_the_link_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let pack = base.join("pack");
+        let outside = base.join("outside");
+        fs::create_dir_all(&pack).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let link = pack.join("report.json");
+        std::os::unix::fs::symlink(outside.join("real.json"), &link).unwrap();
+        let listing = |folder: &Path| -> Vec<_> {
+            let mut names: Vec<_> = fs::read_dir(folder)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            names.sort();
+            names
+        };
+        let before = listing(&pack);
+        fs::set_permissions(&pack, fs::Permissions::from_mode(0o555)).unwrap();
+        // The containment check accepts the resolved target, and so must the folder check.
+        let outside_inputs = ensure_outside("--json", &link, &[("pack", pack.as_path())]);
+        let result = ensure_parent_writable("--json", &link);
+        // Restore access first so the temporary folder can be removed even if an assert fails.
+        fs::set_permissions(&pack, fs::Permissions::from_mode(0o755)).unwrap();
+        // The link lies in the pack folder, but the file a write would create does not.
+        outside_inputs.unwrap();
+        result.unwrap();
+        assert_eq!(
+            listing(&pack),
+            before,
+            "the probe must not touch the pack folder"
+        );
+        assert!(
+            listing(&outside).is_empty(),
+            "the probe file is removed again"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_a_folder_that_does_not_exist_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let link = base.join("report.json");
+        std::os::unix::fs::symlink(base.join("missing/real.json"), &link).unwrap();
+        let error = ensure_parent_writable("--json", &link).unwrap_err();
         assert!(format!("{error:#}").contains("does not exist"), "{error:#}");
     }
 
