@@ -61,6 +61,83 @@ class PublicationTests(unittest.TestCase):
                         self.assertEqual(inner.getinfo('capture.log').comment, b'' if location == 'entry' else b'public')
                 self.assertEqual(publication.transform('outer.zip', public, {}), public)
 
+    def test_local_and_central_zip_metadata_are_checked_independently(self):
+        private = b'/home/alice/capture'
+        clean = b'X' * len(private)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as archive:
+            entry = zipfile.ZipInfo('log')
+            entry.extra = struct.pack('<HH', 0xcafe, len(clean)) + clean
+            archive.writestr(entry, b'public')
+        for offset, location in ((buf.getvalue().index(clean), 'local'),
+                                 (buf.getvalue().rindex(clean), 'central')):
+            with self.subTest(location=location):
+                raw = bytearray(buf.getvalue())
+                raw[offset:offset + len(clean)] = private
+                outer = zipped({'inner.zip': bytes(raw)})
+                self.assertIn(f'outer.zip!inner.zip!log!{location} ZIP extra: operator home path',
+                              publication.findings('outer.zip', outer))
+                changes = {}
+                derivative = publication.transform('outer.zip', outer, changes)
+                self.assertFalse(publication.findings('outer.zip', derivative))
+                self.assertEqual(changes['outer.zip']['published_sha256'], publication.sha(derivative))
+
+    def test_present_evidence_trees_must_be_completely_readable_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tree = root / publication.TREES[0]
+            tree.parent.mkdir(parents=True)
+            tree.write_text('wrong shape')
+            with self.assertRaises(NotADirectoryError):
+                publication.candidates(root)
+            tree.unlink()
+            hidden = tree / 'inaccessible'
+            hidden.mkdir(parents=True)
+            iterdir = Path.iterdir
+
+            def read_dir(path):
+                if path == hidden:
+                    raise PermissionError(str(path))
+                return iterdir(path)
+
+            with patch.object(Path, 'iterdir', read_dir), self.assertRaises(PermissionError):
+                publication.candidates(root)
+
+    def test_initial_sanitization_and_retry_preserve_acquisition_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / publication.MANIFEST
+            manifest.parent.mkdir(parents=True)
+            originals = {manifest.parent / f'{index}.txt': f'/home/user/{index}'.encode() for index in range(2)}
+            for path, data in originals.items():
+                path.write_bytes(data)
+            argv = ['audit', '--root', str(root)]
+            with patch('sys.argv', argv), self.assertRaises(FileNotFoundError):
+                publication.main()
+            write_file = publication.write_publication_file
+
+            def interrupted(path, data, **kwargs):
+                if path.name == '1.txt':
+                    raise KeyboardInterrupt()
+                write_file(path, data, **kwargs)
+
+            with patch('sys.argv', argv + ['--sanitize']), patch.object(publication, 'write_publication_file', interrupted):
+                with self.assertRaises(KeyboardInterrupt):
+                    publication.main()
+            self.assertEqual((manifest.parent / '0.txt').read_bytes(), b'<operator-home>/0')
+            self.assertEqual((manifest.parent / '1.txt').read_bytes(), b'/home/user/1')
+            first_mapping = manifest.read_bytes()
+            with patch('sys.argv', argv), self.assertRaisesRegex(ValueError, 'artifact changed'):
+                publication.main()
+            with patch('sys.argv', argv + ['--sanitize']):
+                publication.main()
+            self.assertEqual(manifest.read_bytes(), first_mapping)
+            with patch('sys.argv', argv):
+                publication.main()
+            for path, original in originals.items():
+                self.assertEqual(publication.artifact_digest(path, root), publication.sha(original))
+                self.assertNotEqual(path.read_bytes(), original)
+
     def test_duplicate_zip_entries_cannot_hide_the_earlier_payload(self):
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, 'w') as archive:
@@ -79,12 +156,16 @@ class PublicationTests(unittest.TestCase):
             manifest.parent.mkdir(parents=True)
             archive = manifest.parent / 'capture.zip'
             external = Path(directory) / 'outside.zip'
-            external.write_bytes(zipped({'log': b'public but different'}))
+            external.write_bytes(zipped({'log': b'public'}))
             archive.symlink_to(external)
             name = str(archive.relative_to(root))
-            changes = {name: dict(original_sha256='a' * 64, published_sha256='b' * 64)}
+            changes = {name: dict(original_sha256='a' * 64, published_sha256=publication.sha(external.read_bytes()))}
             manifest.write_text(json.dumps(dict(changes=changes)))
             self.assertEqual(publication.artifact_digest(external, root), publication.sha(external.read_bytes()))
+            with patch('sys.argv', ['audit', '--root', str(root)]):
+                publication.main()
+            self.assertEqual(publication.artifact_digest(archive, root), 'a' * 64)
+            external.write_bytes(zipped({'log': b'other public data'}))
             with patch('sys.argv', ['audit', '--root', str(root)]), self.assertRaisesRegex(ValueError, 'artifact changed'):
                 publication.main()
 

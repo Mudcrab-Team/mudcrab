@@ -16,8 +16,12 @@ import gzip
 import hashlib
 import io
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
+import stat
+import struct
+import tempfile
 import zipfile
 import zlib
 
@@ -117,6 +121,14 @@ def read_gzip(name, data):
     return b''.join(payloads), issues
 
 
+def zip_extra_findings(name, data, entry):
+    # ZipInfo.extra describes only the central directory. The local copy can differ.
+    filename_len, extra_len = struct.unpack_from('<HH', data, entry.header_offset + 26)
+    start = entry.header_offset + 30 + filename_len
+    return (content_findings(name + '!central ZIP extra', entry.extra) +
+            content_findings(name + '!local ZIP extra', data[start:start + extra_len]))
+
+
 def transform(name, data, changes):
     original = data
     if name.endswith('.zip'):
@@ -136,6 +148,8 @@ def transform(name, data, changes):
                     metadata_changed = True
                 else:
                     info.comment = entry.comment
+                if zip_extra_findings(entry.filename, data, entry):
+                    metadata_changed = True
                 dest.writestr(info, member)
         candidate = output.getvalue()
         if metadata_changed or changes.get(name + '!members'):
@@ -206,11 +220,32 @@ def public_value(value):
     return value
 
 
+def evidence_files(directory):
+    for path in directory.iterdir():
+        if path.name == '__pycache__':
+            continue
+        mode = path.stat().st_mode
+        if stat.S_ISREG(mode):
+            yield path
+        elif stat.S_ISDIR(mode) and not path.is_symlink():
+            yield from evidence_files(path)
+        else:
+            raise ValueError(f'Cannot audit evidence entry: {path}')
+
+
 def candidates(root):
-    files = {root / name for name in DIRECT}
-    for name in TREES:
-        files.update(p for p in (root / name).rglob('*') if p.is_file())
-    return sorted(p for p in files if p.exists() and p != root / MANIFEST and '__pycache__' not in p.parts)
+    files = set()
+    for name in DIRECT + TREES:
+        path = root / name
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        if name in TREES:
+            files.update(evidence_files(path))
+        else:
+            files.add(path)
+    return sorted(files - {root / MANIFEST})
 
 
 def unsafe_member(name):
@@ -228,6 +263,7 @@ def findings(name, data):
                 if unsafe_member(entry.filename):
                     issues.append(f'{name}: unsafe ZIP member name {entry.filename}')
                 issues.extend(content_findings(member + '!member comment', entry.comment))
+                issues.extend(zip_extra_findings(member, data, entry))
                 issues.extend(findings(member, archive.read(entry)))
             if len(set(archive.namelist())) != len(archive.infolist()):
                 issues.append(f'{name}: duplicate ZIP member name')
@@ -259,41 +295,88 @@ def publication_record(changes):
             'source_transforms': {name: value for name, value in changes.items() if name in DIRECT}}
 
 
+def write_publication_file(path, data, *, create=False):
+    # Install complete files. The first publisher owns the immutable acquisition mapping.
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as output:
+        temporary = Path(output.name)
+        try:
+            output.write(data)
+            if not create:
+                os.fchmod(output.fileno(), stat.S_IMODE(path.stat().st_mode))
+            output.flush()
+            os.fsync(output.fileno())
+            if create:
+                os.link(temporary, path)
+            else:
+                os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def sanitize(root, paths, manifest):
+    changes = {}
+    pending = {}
+    for path in paths:
+        name = str(path.relative_to(root))
+        raw = path.read_bytes()
+        published = transform(name, raw, changes)
+        issues = findings(name, published)
+        if issues:
+            raise SystemExit('\n'.join(issues))
+        if published != raw:
+            pending[name] = published
+    proposed = publication_record(changes)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    if not manifest.exists():
+        data = (json.dumps(proposed, indent=2, sort_keys=True) + '\n').encode()
+        try:
+            write_publication_file(manifest, data, create=True)
+        except FileExistsError:
+            pass
+    # On retry only the still-original files need transforming. Their identities
+    # (including nested archive members) must match the original transaction.
+    recorded = json.loads(manifest.read_bytes())
+    for section in ('changes', 'source_transforms'):
+        for name, identity in proposed[section].items():
+            if recorded.get(section, {}).get(name) != identity:
+                raise ValueError(f'Existing publication mapping differs for {name}')
+    for name, data in pending.items():
+        path = root / name
+        actual = sha(path.read_bytes())
+        if actual == changes[name]['published_sha256']:
+            continue
+        if actual != changes[name]['original_sha256']:
+            raise ValueError(f'Acquisition changed during publication: {name}')
+        write_publication_file(path, data)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=ROOT)
     parser.add_argument('--sanitize', action='store_true')
     args = parser.parse_args()
     root = args.root.resolve()
-    changes = {}
-    pending = []
+    paths = candidates(root)
     manifest_path = root / MANIFEST
-    prior = json.loads(manifest_path.read_bytes()) if manifest_path.exists() else None
-    for path in candidates(root):
-        name = str(path.relative_to(root))
-        raw = path.read_bytes()
-        if args.sanitize:
-            published = transform(name, raw, changes)
-            if published != raw:
-                pending.append((path, published))
-    if args.sanitize and changes:
-        if prior:
-            raise ValueError('Existing publication mapping must not be overwritten; reproduce from original artifacts')
-        for path, published in pending:
-            path.write_bytes(published)
-        manifest_path.write_text(json.dumps(publication_record(changes), indent=2, sort_keys=True) + '\n')
-    issues = [issue for path in candidates(root) for issue in findings(str(path.relative_to(root)), path.read_bytes())]
-    if manifest_path.exists():
-        issues.extend(findings(MANIFEST, manifest_path.read_bytes()))
-        recorded = json.loads(manifest_path.read_bytes())
-        for name in recorded['changes']:
-            if name.endswith('!members'):
-                continue
-            path = root / name
-            if not path.is_file():
-                raise ValueError(f'Recorded publication artifact missing: {name}')
-            artifact_digest(path, root)
-    for path in candidates(root):
+    if args.sanitize:
+        sanitize(root, paths, manifest_path)
+    raw_manifest = manifest_path.read_bytes()
+    issues = findings(MANIFEST, raw_manifest)
+    recorded = json.loads(raw_manifest)
+    for name in recorded['changes']:
+        if name.endswith('!members'):
+            continue
+        path = root / name
+        if not path.is_file():
+            raise ValueError(f'Recorded publication artifact missing: {name}')
+        artifact_digest(path, root)
+    for path in paths:
+        issues.extend(findings(str(path.relative_to(root)), path.read_bytes()))
         artifact_digest(path, root)
     if issues:
         raise SystemExit('\n'.join(issues))
