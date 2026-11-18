@@ -1,6 +1,6 @@
 # Q6 Camera: vertical follow on stairs and slopes (#520, #511, #619)
 
-Binary: `SkyrimSE.exe` 1.7.104.0, SHA-256 `846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f`, image base `0x140000000`. Method: Ghidra 12.2 full auto-analysis (headless, this task) + native decompiler, cross-checked with capstone disassembly. Static only. Raw decompiler output is kept private and is not published.
+Binary: `SkyrimSE.exe` 1.7.104.0, SHA-256 `846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f`, image base `0x140000000`. Method: Ghidra 12.2 full auto-analysis (headless) + native decompiler, cross-checked with capstone disassembly. Static only. Raw decompiler output is kept private and is not published.
 
 ## Answer: first person (FirstPersonState update `0x1408f47a0`, vtable `0x14196d8f0` slot +0x18)
 
@@ -22,12 +22,13 @@ Defaults (executable): vertical spring 0.001, vertical damping 0.6 (`0x1420ba090
 
 **Meaning and units.** "Spring constant" is the fraction of the lag that remains after one second: lag decays as `K^T`. Vertical: `0.001^t` = time constant `-1/ln(0.001)` = 0.145 s. Horizontal: 0.109 s. "Velocity dampening" is a momentum factor: the smoothed point keeps moving by 0.6 x its last per-frame displacement (scaled by T_now/T_prev). This makes a second-order response with slight overshoot that depends on frame rate. It is not a 55 ms first-order exponential.
 
-**Step response (derived by simulating the formula, W = 1, 24-unit rise):**
-| fps | camera rise in first frame | 95% settled | overshoot |
-|---|---|---|---|
-| 30 | 4.9 | 0.100 s | 4.1 units |
-| 60 | 2.6 | 0.117 s | 1.3 units |
-| 144 | 1.1 | 0.139 s | 0.0 |
+**Step response (derived by simulating the formula above, W = 1, a 24-unit rise, tolerance 5% = 1.2 units).** Convention: the rise happens between two frames; the first rendered frame after it is at t = T (one frame time), the next at 2T, and so on.
+| fps | camera rise in the first frame | first inside 5% | stays inside 5% from | overshoot |
+|---|---|---|---|---|
+| 30 | 4.9 | 0.133 s | 0.333 s | 4.1 units |
+| 60 | 2.6 | 0.133 s | 0.217 s | 1.3 units |
+| 144 | 1.1 | 0.146 s | 0.146 s | 0.0 |
+At 30 and 60 fps the camera overshoots and leaves the 5% band again before it settles.
 
 **Weight W (the gate).** Each update: W += 1.5*T (clamped to 1.0), or W -= 1.5*T (clamped to 0) when any of these is true (constant 1.5 at `0x141b5be2c`):
 1. |V| > 500 units/s (3D speed of the smoothed point, constant `0x1420ba1e4`). This is the only speed gate. It is not vertical-specific.

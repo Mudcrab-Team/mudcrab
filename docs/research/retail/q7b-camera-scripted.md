@@ -51,7 +51,7 @@ The shake offsets come from an animated NIF (`sCameraShakeFilename_G` = `%s\Acto
 CameraOverrideStart/Stop handlers (animation events) also exist. Their behaviour was not traced.
 
 ## Worked examples (Helgen cart ride, Thieves Guild knock-out)
-These are Papyrus scenes. Their camera behaviour comes from the calls above (DisablePlayerControls, SetPlayerAIDriven, ForceFirstPerson, fades through ImageSpaceModifiers) plus furniture/animated states. The quest scripts (PEX) were not decompiled in this pass, so the exact call sequences are unverified. Next step: read the converted scripts in a registered pack (no reconversion needed).
+These are Papyrus scenes. Their camera behaviour comes from the calls above (DisablePlayerControls, SetPlayerAIDriven, ForceFirstPerson, fades through ImageSpaceModifiers) plus furniture and animated states. The addendum below summarises the call sequences from the retail Papyrus scripts; they have no registry rows.
 
 ## Other engines
 - spud implements DisablePlayerControls flags and SetPlayerAIDriven in its script layer (not checked line by line). OpenSky: not checked.

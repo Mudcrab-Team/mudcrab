@@ -45,7 +45,7 @@ Lag = distance between the grabbed point and its target, in game units (Havok me
 1. Lag > 96 units -> drop (`0x14181ab88` = 96.0, hard-coded). Not applied to telekinesis.
 2. Contact rule: let R = (heaviest body touching the held body) / held mass. If lag > fZKeyMaxContactDistance (10) AND R > fZKeyMaxContactMassRatio (4) -> drop.
 3. Complex helper: if lag > fZKeyComplexHelperMinDistance (6) and the object qualifies (a node flag, or a biped/layer 0x20-0x21 case), an extra velocity is added toward the target, scaled by (lag - 6) * fZKeyComplexHelperScale and by a mass term between WeightMin 0 and WeightMax 100. Exact formula partly traced; medium.
-- fZKeyHeavyWeight 75: while holding an object of mass > 75 (player `+0x8DC`), a movement-permission check returns false (`0x140674390`, `0x140686089`). spud reads this as "no running". Which movement it blocks is unverified.
+- fZKeyHeavyWeight 75: while holding an object of mass > 75 (player `+0x8DC`), a movement-permission check returns false (`0x140674390`, `0x140686089`). spud reads this as "no running". Which movement it blocks: see the update above (run speeds are replaced by walk speeds).
 
 ## Throw / shove on attack
 No throw or impulse was found on the Z-key path. Drop (`0x140751a30`) removes the spring actions and re-enables the bodies; it applies no impulse. No GMST for a Z-key throw exists (only fMagicTelekinesisThrow* for telekinesis, fMagicGrabActorThrowForce for Grab Actor). Whether an attack input while holding drops the object or lets the swing hit it was not traced. Status: no retail source for a throw on left click; #689's `THROW_BUTTON` is Mudcrab tuning.
