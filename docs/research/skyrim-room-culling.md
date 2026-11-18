@@ -250,7 +250,8 @@ reconvert through the standard pipeline, which resolves effective sources and re
 metadata and mesh contracts. The helper's existing endpoint-provenance requirement prevents a
 canonical cleared FormID from being promoted to authored outside space. Each invocation replaces
 all room metadata with the selected cells. Use a fresh private copy for independent cell sets,
-or include every desired cell when reusing a copy.
+or include every desired cell when reusing a copy. The helper requires Unix hard-link validation
+and holds the asset directory's exclusive lock through database and mesh finalization.
 
 ## Default-on review validation
 

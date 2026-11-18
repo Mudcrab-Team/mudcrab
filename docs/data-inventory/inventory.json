@@ -1587,7 +1587,7 @@
     }
   ],
   "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
-  "reviewed_source_guard_sha256": "3b2fe90502cd2aecdc67b5201dae46a8ebf0a189a848aee1fdbb9e0c33376e97",
+  "reviewed_source_guard_sha256": "71f6b071387fc57f6dbe771924313387afe691d331de867a291487c715383d27",
   "schema_status": "not_extracted",
   "schemas": {},
   "stores": {

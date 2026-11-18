@@ -83,7 +83,7 @@
     "crates/converter/src/esm/reference_links.rs": "c5957e6a08d8ae09b7baf40530d4baa6ea46c9bf4ed75572e894a4592662bb59",
     "crates/converter/src/esm/reference_links_parity_tests.rs": "fbb3abcafff978ef6d82947812b94f22b7632721f06ac0495522a40792f8cdaf",
     "crates/converter/src/esm/report_warnings_official_tests.rs": "6df4d059ba3884b31239b70bd1996f527326931b4681a3419a6c9e0d454b983b",
-    "crates/converter/src/esm/rooms.rs": "5313b8202c37d8df08c4487b1ba3a9b1b0df79a4bc14c8fc03f5531518c9c293",
+    "crates/converter/src/esm/rooms.rs": "455b7bd0bb802cec2c5125ebc5b1150640a32fa3e2f0862fcbe5729ca344a972",
     "crates/converter/src/esm/terrain_mesh.rs": "0e41e626eb06542fbc7048a025695ba23e491dfb4611cfc26e2efd6d251e8300",
     "crates/converter/src/esm/types.rs": "118cd9d95db5e61cdf7ca2d81a662caf51a684d215d2e90a5c919c417afadb81",
     "crates/converter/src/extensions.rs": "4a25cdaa3d61a8dfef31b87f1ca3957f7182b0e1381a103a563ede025dc6656f",
