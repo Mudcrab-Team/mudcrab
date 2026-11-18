@@ -161,65 +161,13 @@ fn patch_prepass_functions(
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-
     use super::*;
+    use crate::bevy_source::{
+        bevy_pbr_crate_dir, locked_bevy_pbr_version, registry_source, required_source,
+    };
 
     /// The Bevy version the anchor was written against.
     const PATCHED_BEVY_PBR: &str = "0.19.0";
-
-    /// The `bevy_pbr` version `Cargo.lock` pins.
-    fn locked_bevy_pbr_version() -> String {
-        let lock = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock"),
-        )
-        .expect("the workspace has a Cargo.lock");
-        let entry = lock
-            .split("[[package]]")
-            .find(|entry| {
-                entry
-                    .lines()
-                    .any(|line| line.trim() == "name = \"bevy_pbr\"")
-            })
-            .expect("Cargo.lock pins bevy_pbr");
-        entry
-            .lines()
-            .find_map(|line| line.trim().strip_prefix("version = \""))
-            .and_then(|version| version.strip_suffix('"'))
-            .expect("the bevy_pbr entry has a version")
-            .to_owned()
-    }
-
-    /// The unpinned `bevy_pbr` source directory in the local cargo registry, or `None` when there
-    /// is none: a vendored build, or a machine without `CARGO_HOME`/`USERPROFILE`/`HOME`.
-    fn bevy_pbr_source_dir(version: &str) -> Option<PathBuf> {
-        let cargo_home = std::env::var_os("CARGO_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("USERPROFILE")
-                    .or_else(|| std::env::var_os("HOME"))
-                    .map(|home| Path::new(&home).join(".cargo"))
-            })?;
-        // Low risk, documented: a git- or patch-pinned bevy_pbr of the same version number could
-        // differ from this registry copy, so the check might read the wrong source.
-        let registry = cargo_home.join("registry").join("src");
-        std::fs::read_dir(registry)
-            .ok()?
-            .filter_map(Result::ok)
-            .map(|index| index.path().join(format!("bevy_pbr-{version}")))
-            .find(|dir| dir.join("src/render/pbr_prepass_functions.wgsl").is_file())
-    }
-
-    fn registry_source(dir: &Path, relative: &str) -> Option<String> {
-        let path = dir.join(relative);
-        match std::fs::read_to_string(&path) {
-            Ok(source) => Some(source),
-            Err(error) => {
-                eprintln!("{} is unreadable ({error}); skipped", path.display());
-                None
-            }
-        }
-    }
 
     /// A miniature `prepass_alpha_discard()` with the same shape the patch relies on.
     fn synthetic_prepass_functions() -> String {
@@ -257,9 +205,9 @@ mod tests {
 
     /// A Bevy upgrade fails here, not silently at runtime: the pinned version must be the one the
     /// anchor was written for, that version's shader must contain the anchor, and its
-    /// `VertexOutput` must carry the `color` and `output_color` the inserted line needs. The check
-    /// is skipped, with a note, when the cargo registry has no sources (a vendored build) or the
-    /// files the anchor and the inserted line depend on are not readable.
+    /// `VertexOutput` must carry the `color` and `output_color` the inserted line needs. A missing
+    /// `bevy_pbr` crate or `pbr_prepass_functions.wgsl` fails; only the optional `prepass_io.wgsl`
+    /// check is skipped, with a note, when that file is unreadable.
     #[test]
     fn the_anchor_is_in_bevys_prepass_functions() {
         let version = locked_bevy_pbr_version();
@@ -268,16 +216,8 @@ mod tests {
             "bevy_pbr {version} is locked: re-check the prepass anchor against its \
              pbr_prepass_functions.wgsl, then update PATCHED_BEVY_PBR"
         );
-        let Some(dir) = bevy_pbr_source_dir(&version) else {
-            eprintln!(
-                "no bevy_pbr {version} source in the cargo registry (a vendored build, or no \
-                 CARGO_HOME/USERPROFILE/HOME); skipped"
-            );
-            return;
-        };
-        let Some(functions) = registry_source(&dir, "src/render/pbr_prepass_functions.wgsl") else {
-            return;
-        };
+        let dir = bevy_pbr_crate_dir(&version);
+        let functions = required_source(&dir, "src/render/pbr_prepass_functions.wgsl");
         let prepass_io = registry_source(&dir, "src/prepass/prepass_io.wgsl");
 
         assert!(
