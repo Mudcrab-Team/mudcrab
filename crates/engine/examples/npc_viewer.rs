@@ -94,6 +94,11 @@ const CURATED: &[(u32, &str)] = &[
 
 const IDLE_FRAMES: u32 = 45;
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
+/// Frames a loaded part scene may go without a drawn mesh before it counts as dropped.
+const DROPPED_AFTER_FRAMES: u32 = 40;
+/// Textures keep arriving after a scene is ready: a capture waits this long, and this many frames.
+const TEXTURE_SETTLE: Duration = Duration::from_millis(1500);
+const TEXTURE_SETTLE_FRAMES: u32 = 90;
 
 #[derive(Clone)]
 struct Npc {
@@ -210,13 +215,16 @@ struct Capture {
     settle: u32,
     phase: Phase,
     images: Vec<String>,
+    /// Image files that could not be saved, for the NPC being captured.
+    failures: Vec<String>,
+    /// Set when a PNG or `capture.json` could not be written: the run then exits with an error.
+    failed: bool,
     records: Vec<NpcRecord>,
     frames_until_next: u32,
 }
 
 #[derive(Resource)]
 struct Viewer {
-    assets: PathBuf,
     connection: Mutex<Connection>,
     list: Vec<Npc>,
     index: usize,
@@ -488,15 +496,17 @@ fn main() {
             settle: 0,
             phase: Phase::Pose,
             images: Vec::new(),
+            failures: Vec::new(),
+            failed: false,
             records: Vec::new(),
             frames_until_next: 0,
         }
     });
     app.insert_resource(Viewer {
-        assets: options.assets,
         connection: Mutex::new(connection),
         list,
-        index: start,
+        // A capture covers the whole list; `--npc` only picks where an interactive run starts.
+        index: if capture.is_some() { 0 } else { start },
         shown: None,
         outfits,
         yaw: 0.5,
@@ -758,7 +768,7 @@ fn refresh(world: &mut World, shown: &mut Shown) {
                 let attached = instance.is_some_and(|entity| has_mesh_below(world, entity));
                 tracked.state = if attached {
                     PartState::Attached
-                } else if tracked.loaded_frames > 40 {
+                } else if tracked.loaded_frames > DROPPED_AFTER_FRAMES {
                     PartState::Dropped
                 } else {
                     PartState::Loading
@@ -974,6 +984,8 @@ fn select(world: &mut World, viewer: &mut Viewer, index: usize) {
     viewer.index = index % viewer.list.len();
     viewer.yaw = 0.5;
     viewer.pitch = 0.1;
+    // The pause belongs to the NPC that was on screen; a new NPC starts playing.
+    viewer.paused = false;
     let shown = spawn(world, viewer);
     println!(
         "NPC_START {:08X} {} ({})",
@@ -982,7 +994,7 @@ fn select(world: &mut World, viewer: &mut Viewer, index: usize) {
     viewer.shown = Some(shown);
 }
 
-fn record(viewer: &Viewer, shown: &Shown, images: Vec<String>) -> NpcRecord {
+fn record(viewer: &Viewer, shown: &Shown, images: Vec<String>, failures: &[String]) -> NpcRecord {
     let part = |t: &Tracked| PartRecord {
         scene: t.scene.clone(),
         mask: t.mask,
@@ -1008,6 +1020,10 @@ fn record(viewer: &Viewer, shown: &Shown, images: Vec<String>) -> NpcRecord {
     if shown.timed_out {
         problems.push("timed out waiting for assets".into());
     }
+    if shown.skip.is_none() && viewer.bounds.is_none() {
+        problems.push("no geometry: the body scene did not load".into());
+    }
+    problems.extend(failures.iter().cloned());
     NpcRecord {
         index: viewer.index + 1,
         form_id: format!("{:08X}", shown.npc.form_id),
@@ -1129,6 +1145,13 @@ fn update(world: &mut World) {
         }
         let mut shown = viewer.shown.take().unwrap();
         refresh(world, &mut shown);
+        // Space may be pressed before the player exists: apply the pause once it does.
+        if viewer.paused
+            && shown.root != Entity::PLACEHOLDER
+            && let Some(mut player) = world.get_mut::<AnimationPlayer>(shown.root)
+        {
+            player.pause_all();
+        }
         if shown.timed_out || shown.started.elapsed() > READY_TIMEOUT {
             shown.timed_out = true;
         }
@@ -1211,14 +1234,18 @@ fn step_capture(world: &mut World, viewer: &mut Viewer, capture: &mut Capture) {
         return;
     }
     // Textures keep arriving after the scene is ready; give them wall-clock time and frames.
+    // A body that never loads has no bounds. After the timeout the NPC ends with a recorded failure
+    // instead of holding the whole batch.
+    let no_geometry = shown.timed_out && viewer.bounds.is_none();
     let ready_enough = skipped
-        || (ready.is_some_and(|r| r >= Duration::from_millis(1500))
-            && capture.settle >= 90
+        || no_geometry
+        || (ready.is_some_and(|r| r >= TEXTURE_SETTLE)
+            && capture.settle >= TEXTURE_SETTLE_FRAMES
             && viewer.bounds.is_some());
     if !ready_enough {
         return;
     }
-    if skipped || capture.shot >= SHOTS.len() {
+    if skipped || no_geometry || capture.shot >= SHOTS.len() {
         finish_npc(world, viewer, capture);
         return;
     }
@@ -1247,26 +1274,42 @@ fn step_capture(world: &mut World, viewer: &mut Viewer, capture: &mut Capture) {
     let target = capture.target.clone();
     world.spawn(Screenshot::image(target)).observe(
         move |event: On<ScreenshotCaptured>, mut viewer: ResMut<Viewer>| {
-            match event.image.clone().try_into_dynamic() {
-                Ok(image) => {
-                    if let Err(error) = image.to_rgb8().save(&path) {
-                        eprintln!("npc_viewer: cannot save {}: {error}", path.display());
+            let saved = event
+                .image
+                .clone()
+                .try_into_dynamic()
+                .map_err(|error| format!("cannot convert the capture: {error}"))
+                .and_then(|image| {
+                    image
+                        .to_rgb8()
+                        .save(&path)
+                        .map_err(|error| format!("cannot save {}: {error}", path.display()))
+                });
+            if let Some(capture) = viewer.capture.as_mut() {
+                match saved {
+                    Ok(()) => capture.images.push(file.clone()),
+                    Err(error) => {
+                        eprintln!("npc_viewer: {file}: {error}");
+                        capture.failures.push(format!("{file}: {error}"));
+                        capture.failed = true;
                     }
                 }
-                Err(error) => eprintln!("npc_viewer: cannot convert the capture: {error}"),
-            }
-            if let Some(capture) = viewer.capture.as_mut() {
                 capture.phase = Phase::Pose;
                 capture.shot += 1;
             }
         },
     );
-    capture.images.push(file);
 }
 
 fn finish_npc(world: &mut World, viewer: &mut Viewer, capture: &mut Capture) {
     let shown = viewer.shown.take().unwrap();
-    let rec = record(viewer, &shown, std::mem::take(&mut capture.images));
+    let failures = std::mem::take(&mut capture.failures);
+    let rec = record(
+        viewer,
+        &shown,
+        std::mem::take(&mut capture.images),
+        &failures,
+    );
     println!(
         "CAPTURED {} {} parts={} states={:?} hidden={:?}",
         rec.form_id,
@@ -1282,21 +1325,23 @@ fn finish_npc(world: &mut World, viewer: &mut Viewer, capture: &mut Capture) {
     capture.phase = Phase::Pose;
     let next = viewer.index + 1;
     let report = capture.dir.join("capture.json");
-    let _ = std::fs::write(
+    if let Err(error) = std::fs::write(
         &report,
         serde_json::to_vec_pretty(&capture.records).unwrap(),
-    );
+    ) {
+        eprintln!("npc_viewer: cannot write {}: {error}", report.display());
+        capture.failed = true;
+    }
     if next >= viewer.list.len() {
         println!("CAPTURE_DONE {}", capture.records.len());
-        world.write_message(AppExit::Success);
+        world.write_message(if capture.failed {
+            AppExit::error()
+        } else {
+            AppExit::Success
+        });
         return;
     }
     select(world, viewer, next);
-}
-
-#[allow(dead_code)]
-fn pack_dir(viewer: &Viewer) -> &Path {
-    &viewer.assets
 }
 
 #[cfg(test)]
