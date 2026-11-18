@@ -10148,6 +10148,9 @@ mod tests {
             false,
         );
         app.insert_resource(AssetCatalog::open(&path).unwrap());
+        // `spawn_queued_references` spawns one cell and then stops; clear the root so the
+        // update below spawns the references again against the catalogue with the swap rows.
+        app.insert_resource(SpawnedCellRoot::default());
         app.update();
         let mut query = app.world_mut().query::<(
             &FormId,
