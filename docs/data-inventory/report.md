@@ -9,7 +9,7 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 - rusqlite_candidates: 88
 - emitted_schema_columns: unknown
 - manually_traced_fields: 14
-- named_external_stores: 3
+- named_external_stores: 4
 
 ## Traced examples
 
@@ -33,6 +33,7 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 ## External stores
 
 - `cell_cache.rkyv`: Versioned rkyv store supplies terrain heights, normals, colors, layers, water height/type through CellCache. SQLite absence does not mean terrain is unused. Source path only; native draw evidence pending.
+- `conversion-manifest.json`: The optional ignored_inputs_by_extension member records counts of inputs excluded by the selected policy, including discovered loose inputs and archive entries. The aggregate is conversion provenance outside SQLite and is omitted when empty.
 - `converted glTF/KTX2 assets`: External model/texture paths are assets, not SQL field payloads. This slice names the store; no asset completeness or shader-use claim.
 - `merged-terrain JSON/KTX2/rkyv`: terrain/land-textures.json, KTX2 texture arrays and terrain/<worldspace>/chunk_<x>_<y>.rkyv form an alternative terrain path with per-cell fallback. Mapping is not GPU residency or draw confirmation.
 

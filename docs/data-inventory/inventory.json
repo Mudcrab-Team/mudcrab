@@ -2,7 +2,7 @@
   "denominators": {
     "emitted_schema_columns": null,
     "manually_traced_fields": 14,
-    "named_external_stores": 3,
+    "named_external_stores": 4,
     "rusqlite_candidates": 88
   },
   "fields": {
@@ -1447,7 +1447,7 @@
     }
   ],
   "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
-  "reviewed_source_guard_sha256": "a56b70818f0b669586d6636a68bb3f732a362939910e9950ce24107084c60391",
+  "reviewed_source_guard_sha256": "c14bc1da4441efe1abde49a4764f0d5b0dc55d1b58ca88910a8228a5edc8aba8",
   "schema_status": "not_extracted",
   "schemas": {},
   "stores": {
@@ -1467,6 +1467,28 @@
       "states": {
         "decoded": "source_decoded",
         "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
+    "conversion-manifest.json": {
+      "evidence": [
+        {
+          "anchor": "pub ignored_inputs_by_extension: BTreeMap<String, u64>,",
+          "path": "crates/converter/src/cache.rs"
+        },
+        {
+          "anchor": "manifest.save(&staging.join(\"conversion-manifest.json\"))?",
+          "path": "crates/converter/src/pipeline.rs"
+        }
+      ],
+      "owner": "converter pipeline maintainers (#751)",
+      "reason": "The optional ignored_inputs_by_extension member records counts of inputs excluded by the selected policy, including discovered loose inputs and archive entries. The aggregate is conversion provenance outside SQLite and is omitted when empty.",
+      "states": {
+        "decoded": "unknown",
+        "mapped": "unknown",
         "preserved": "source_preserved",
         "projected": "source_projected",
         "query_dependent": "unknown",
