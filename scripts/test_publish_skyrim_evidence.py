@@ -103,6 +103,45 @@ class PublicationTests(unittest.TestCase):
             with patch.object(Path, 'iterdir', read_dir), self.assertRaises(PermissionError):
                 publication.candidates(root)
 
+    def test_rejected_payload_or_proposed_mapping_preserves_all_originals(self):
+        for finding in ('frozen trace', 'manifest path'):
+            with self.subTest(finding=finding), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                manifest = root / publication.MANIFEST
+                manifest.parent.mkdir(parents=True)
+                log = manifest.parent / '0.log'
+                log.write_bytes(b'/home/user/log')
+                if finding == 'frozen trace':
+                    private = manifest.parent / 'trace.bin.gz'
+                    private.write_bytes(gzip.compress(b'/home/user/frozen'))
+                else:
+                    private = manifest.parent / 'home/user/run.log'
+                    private.parent.mkdir(parents=True)
+                    private.write_bytes(b'/home/user/record')
+                before = private.read_bytes()
+                with patch('sys.argv', ['audit', '--root', str(root), '--sanitize']):
+                    with self.assertRaisesRegex(SystemExit, 'operator home path'):
+                        publication.main()
+                self.assertEqual(log.read_bytes(), b'/home/user/log')
+                self.assertEqual(private.read_bytes(), before)
+                self.assertFalse(manifest.exists())
+
+    def test_sanitizing_a_link_publishes_an_independent_local_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'checkout'
+            manifest = root / publication.MANIFEST
+            manifest.parent.mkdir(parents=True)
+            external = Path(directory) / 'original.log'
+            external.write_bytes(b'/home/operator/data')
+            published = manifest.parent / 'capture.log'
+            published.symlink_to(external)
+            with patch('sys.argv', ['audit', '--root', str(root), '--sanitize']):
+                publication.main()
+            self.assertFalse(published.is_symlink())
+            self.assertEqual(published.read_bytes(), b'<operator-home>/data')
+            self.assertEqual(external.read_bytes(), b'/home/operator/data')
+            self.assertEqual(publication.artifact_digest(published, root), publication.sha(external.read_bytes()))
+
     def test_initial_sanitization_and_retry_preserve_acquisition_hashes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -272,11 +311,24 @@ class PublicationTests(unittest.TestCase):
             self.assertFalse(publication.findings(name, evolved))
             self.assertTrue(publication.findings(name, original))
 
+    def test_runtime_signature_spellings_describe_the_same_bytes(self):
+        name = 'tools/skyrim-recorder/runtime.json'
+        identity = publication.range_identity(bytes.fromhex('abcdefff'))
+        for spelling in ('abcdefff', 'ABCDEFFF', 'aBCdEfFf'):
+            with self.subTest(spelling=spelling):
+                original = json.dumps({'camera_signature': spelling}).encode()
+                self.assertIn(name + ': literal executable signature', publication.findings(name, original))
+                published = publication.public_text(name, original)
+                self.assertEqual(json.loads(published)['camera_signature'], identity)
+                self.assertFalse(publication.findings(name, published))
+
     def test_static_extractors_audit_all_recorded_signature_lengths(self):
         for name in publication.STATIC:
-            original = b"CHECKS = [('short', 16, '11223344'), ('long', 32, '" + b'11' * 27 + b"')]\n"
-            self.assertTrue(publication.findings(name, original))
-            self.assertFalse(publication.findings(name, publication.public_text(name, original)))
+            for size in (4, 27):
+                with self.subTest(name=name, size=size):
+                    original = b"CHECK = ('fixture', 16, '" + b'aB' * size + b"')"
+                    self.assertIn(name + ': literal static executable range', publication.findings(name, original))
+                    self.assertFalse(publication.findings(name, publication.public_text(name, original)))
 
     def test_external_capture_archive_has_no_historical_publication_mapping(self):
         with tempfile.TemporaryDirectory() as directory:

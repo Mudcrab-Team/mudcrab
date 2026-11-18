@@ -1,5 +1,6 @@
 import unittest
 import json
+import hashlib
 import fcntl
 import multiprocessing
 import signal
@@ -73,6 +74,62 @@ class ScreenshotOwnershipTests(unittest.TestCase):
 
 
 class RecordingLifecycleTests(unittest.TestCase):
+    def test_documents_link_is_checked_before_creating_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory) / 'session'
+            user = session / 'compatdata/pfx/drive_c/users/steamuser'
+            user.mkdir(parents=True)
+            external = Path(directory) / 'outside'
+            external.mkdir()
+            (user / 'Documents').symlink_to(external, target_is_directory=True)
+            status = 'ActiveState=active\nSubState=exited\nExecMainStatus=0'
+            with patch.object(recorder.subprocess, 'check_output', return_value=status), \
+                    patch.object(recorder, 'stop_owned_services'):
+                with self.assertRaisesRegex(RuntimeError, 'escapes the isolated session'):
+                    recorder.initialize_prefix(session, {'proton': 'proton'}, {}, session, 'prefix',
+                                               lambda *args, **kwargs: None)
+            self.assertEqual(list(external.iterdir()), [])
+
+    def test_start_timeout_reconciles_ownership_before_returning_cancellation(self):
+        for owner in ('ours', 'unrelated', 'absent', 'unreachable'):
+            with self.subTest(owner=owner), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                config = dict(exe_sha256='test', build=dict(dll_sha256='test'), input_sha256='test',
+                              proton_sha256='test', source_save_sha256='test', proton='proton', source_save='save')
+                (root / 'session.json').write_text(json.dumps(config))
+                launch, stopped = {}, []
+                def run(argv, **kwargs):
+                    if argv[0] == 'systemd-run':
+                        self.assertGreater(kwargs['timeout'], 0)
+                        launch['unit'] = next(a.split('=', 1)[1] for a in argv if a.startswith('--unit='))
+                        launch['tag'] = next(a.split('=', 1)[1] for a in argv if a.startswith('--description='))
+                        os.kill(os.getpid(), signal.SIGTERM)
+                        raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+                    if argv[:3] == ['systemctl', '--user', 'stop']:
+                        stopped.append(argv[-1])
+                    active = owner == 'unreachable' and argv[:3] == ['systemctl', '--user', 'show'] and argv[3] == launch.get('unit')
+                    return subprocess.CompletedProcess(argv, 0, stdout='active' if active else 'inactive', stderr='')
+
+                def show(argv, **kwargs):
+                    self.assertEqual(argv[3:], [launch['unit'], '-p', 'Description', '--value'])
+                    self.assertGreater(kwargs['timeout'], 0)
+                    if owner == 'unreachable':
+                        raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+                    return {'ours': launch['tag'], 'unrelated': 'other recording', 'absent': ''}[owner]
+
+                with patch.object(recorder, 'sha256', return_value='test'), \
+                        patch.object(recorder.subprocess, 'run', side_effect=run), \
+                        patch.object(recorder.subprocess, 'check_output', side_effect=show):
+                    with self.assertRaises(SystemExit) as cancelled:
+                        recorder.run_recording(root, root / 'capture', root)
+                    if owner == 'unreachable':
+                        failure = json.loads((root / 'capture/failure.json').read_text())
+                        self.assertIn('systemctl --user status ' + launch['unit'], failure['error'])
+                        with self.assertRaisesRegex(RuntimeError, 'still active'):
+                            recorder.run_recording(root, root / 'retry', root)
+                self.assertEqual(cancelled.exception.code, 128 + signal.SIGTERM)
+                self.assertEqual(stopped, [launch['unit']] if owner == 'ours' else [])
+
     def test_unconfirmed_cleanup_blocks_reuse_with_a_different_output(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -246,6 +303,23 @@ class RecordingLifecycleTests(unittest.TestCase):
 
 
 class MotionProofTests(unittest.TestCase):
+    def test_fixture_proof_uses_the_bytes_parsed_before_the_file_changed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'fixture.json'
+            original = dict(schema=1, kind='jump', position=[0, 0, 0], yaw_degrees=90, hold_ms=500)
+            data = json.dumps(original, indent=2).encode() + b'\n'
+            path.write_bytes(data)
+            read = Path.read_bytes
+            def replace_after_read(file):
+                snapshot = read(file)
+                file.write_text(json.dumps(dict(original, yaw_degrees=180)))
+                return snapshot
+            with patch.object(Path, 'read_bytes', replace_after_read):
+                receipt = recorder.fixture_receipt(path)
+            self.assertEqual(receipt['fixture'], original)
+            self.assertEqual(receipt['fixture_sha256'], hashlib.sha256(data).hexdigest())
+            self.assertEqual(json.loads(path.read_bytes())['yaw_degrees'], 180)
+
     def test_hold_window_must_cover_required_frames_at_requested_cap(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -28,7 +28,7 @@ import zlib
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = 'docs/research/evidence/skyrim-physics-221/publication.json'
 HOME = re.compile(rb'/(?:home|Users)/[^/\s"\'`<>]+')
-SIGNATURE = re.compile(rb'("[a-z_]+_signature"\s*:\s*)"([0-9a-f]+)"')
+SIGNATURE = re.compile(rb'("[a-z_]+_signature"\s*:\s*)"([0-9a-fA-F]+)"')
 STATIC = {'scripts/inspect_skyrim_physics.py', 'scripts/inspect_skyrim_jump_inputs.py'}
 DIRECT = (*STATIC, 'tools/skyrim-recorder/build.py', 'tools/skyrim-recorder/runtime.json',
           'tools/skyrim-recorder/runtime-inputs-v4.json')
@@ -86,7 +86,7 @@ Do not publish the resulting instruction listings or executable bytes.
         text = re.sub(r'bytes\.fromhex\(profile\[(.*?)\]\)', r'checked_signature(\1)', text)
         text = text.replace('bytes.fromhex(value)', 'checked_signature(name)')
     if name in STATIC:
-        text = re.sub(r"'([0-9a-f]{8,62})'", lambda m: repr(range_identity(bytes.fromhex(m[1]))), text)
+        text = re.sub(r"'([0-9a-fA-F]{8,62})'", lambda m: repr(range_identity(bytes.fromhex(m[1]))), text)
         text = text.replace('len(bytes.fromhex(signature))', "signature['length']")
         text = text.replace('len(bytes.fromhex(expected))', "expected['length']")
         text = re.sub(r'at\(rva, (signature\[\x27length\x27\]|expected\[\x27length\x27\])\)\.hex\(\) != (signature|expected)',
@@ -280,9 +280,9 @@ def content_findings(name, data):
         issues.append(name + ': operator home path')
     if SIGNATURE.search(data):
         issues.append(name + ': literal executable signature')
-    if re.search(rb'^\s*[0-9a-f]{8,16}:\s+(?:[0-9a-f]{2} ){2,}', data, re.M):
+    if re.search(rb'^\s*[0-9a-fA-F]{8,16}:\s+(?:[0-9a-fA-F]{2} ){2,}', data, re.M):
         issues.append(name + ': copied disassembly')
-    if name.split('!')[-1] in STATIC and re.search(rb"'[0-9a-f]{8,62}'", data):
+    if name.split('!')[-1] in STATIC and re.search(rb"'[0-9a-fA-F]{8,62}'", data):
         issues.append(name + ': literal static executable range')
     return issues
 
@@ -318,6 +318,25 @@ def write_publication_file(path, data, *, create=False):
         os.close(directory)
 
 
+def checked_record(data):
+    issues = findings(MANIFEST, data)
+    if issues:
+        raise SystemExit('\n'.join(issues))
+    return json.loads(data)
+
+
+def check_recorded_files(root, recorded, pending):
+    for name, identity in recorded['changes'].items():
+        if name.endswith('!members'):
+            continue
+        path = root / name
+        if not path.is_file():
+            raise ValueError(f'Recorded publication artifact missing: {name}')
+        data = pending[name] if name in pending else path.read_bytes()
+        if sha(data) != identity['published_sha256']:
+            raise ValueError(f'Published artifact changed: {name}')
+
+
 def sanitize(root, paths, manifest):
     changes = {}
     pending = {}
@@ -331,16 +350,21 @@ def sanitize(root, paths, manifest):
         if published != raw:
             pending[name] = published
     proposed = publication_record(changes)
-    manifest.parent.mkdir(parents=True, exist_ok=True)
+    for path in [manifest, *(root / name for name in pending)]:
+        if not path.parent.resolve().is_relative_to(root):
+            raise ValueError(f'Publication destination outside root: {path}')
+    data = (json.dumps(proposed, indent=2, sort_keys=True) + '\n').encode()
+    checked_record(data)
     if not manifest.exists():
-        data = (json.dumps(proposed, indent=2, sort_keys=True) + '\n').encode()
+        manifest.parent.mkdir(parents=True, exist_ok=True)
         try:
             write_publication_file(manifest, data, create=True)
         except FileExistsError:
             pass
     # On retry only the still-original files need transforming. Their identities
     # (including nested archive members) must match the original transaction.
-    recorded = json.loads(manifest.read_bytes())
+    recorded = checked_record(manifest.read_bytes())
+    check_recorded_files(root, recorded, pending)
     for section in ('changes', 'source_transforms'):
         for name, identity in proposed[section].items():
             if recorded.get(section, {}).get(name) != identity:
@@ -365,16 +389,9 @@ def main():
     manifest_path = root / MANIFEST
     if args.sanitize:
         sanitize(root, paths, manifest_path)
-    raw_manifest = manifest_path.read_bytes()
-    issues = findings(MANIFEST, raw_manifest)
-    recorded = json.loads(raw_manifest)
-    for name in recorded['changes']:
-        if name.endswith('!members'):
-            continue
-        path = root / name
-        if not path.is_file():
-            raise ValueError(f'Recorded publication artifact missing: {name}')
-        artifact_digest(path, root)
+    recorded = checked_record(manifest_path.read_bytes())
+    check_recorded_files(root, recorded, {})
+    issues = []
     for path in paths:
         issues.extend(findings(str(path.relative_to(root)), path.read_bytes()))
         artifact_digest(path, root)

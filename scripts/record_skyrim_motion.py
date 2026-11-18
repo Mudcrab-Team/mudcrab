@@ -20,6 +20,7 @@ import sys
 import time
 import tempfile
 import traceback
+import uuid
 
 
 MIN_DURING_FRAMES = 5
@@ -127,9 +128,10 @@ def initialize_prefix(session, config, environment, output, unit, start):
         raise RuntimeError('Wine prefix initialization timed out')
     stop_owned_services([unit], output)
     documents = session / 'compatdata/pfx/drive_c/users/steamuser/Documents/My Games/Skyrim Special Edition'
-    documents.mkdir(parents=True, exist_ok=True)
-    if not documents.resolve().is_relative_to(session):
+    documents = documents.resolve()
+    if not documents.is_relative_to(session.resolve()):
         raise RuntimeError('Wine Documents escapes the isolated session')
+    documents.mkdir(parents=True, exist_ok=True)
     (documents / 'Saves').mkdir(exist_ok=True)
     shutil.copy2(config['source_save'], documents / 'Saves/MudcrabFixture.ess')
     archives = ', '.join('Skyrim - ' + name + '.bsa' for name in
@@ -162,7 +164,12 @@ def parse_ocr(tsv):
 
 
 def read_fixture(path):
-    fixture = json.loads(path.read_text())
+    return fixture_receipt(path)['fixture']
+
+
+def fixture_receipt(path):
+    data = path.read_bytes()
+    fixture = json.loads(data)
     if fixture.get('schema') != 1 or fixture.get('kind') not in ('survey', 'ascent', 'descent', 'flat', 'jump'):
         raise ValueError('Unsupported motion fixture')
     pose = fixture['position']
@@ -179,13 +186,14 @@ def read_fixture(path):
     for name, allowed in [('jump_height_min', (64.0, 76.0)), ('reference_scale', (1.0, 1.25))]:
         if name in fixture and (fixture['kind'] != 'jump' or fixture[name] not in allowed):
             raise ValueError(f'Unsupported jump-input intervention {name}')
-    return fixture
+    return {'fixture': fixture, 'fixture_sha256': hashlib.sha256(data).hexdigest()}
 
 
 def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
     if frame_cap not in (30, 60, 120):
         raise ValueError('Experimental frame cap must be 30, 60, or 120')
-    fixture = read_fixture(fixture_path) if fixture_path else None
+    receipt = fixture_receipt(fixture_path) if fixture_path else {}
+    fixture = receipt.get('fixture')
     minimum_hold = math.ceil(MIN_DURING_FRAMES * 1000 / frame_cap)
     if fixture and fixture['hold_ms'] < minimum_hold:
         raise ValueError(f'Fixture hold must span {MIN_DURING_FRAMES} frames at {frame_cap} FPS (minimum {minimum_hold} ms)')
@@ -223,6 +231,7 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
                            'while True: time.sleep(3600)\n')
     phase = 'display-start'
     owned = []
+    description = 'Mudcrab recording ' + uuid.uuid4().hex
 
     termination_signal = None
     interruptible = True
@@ -237,7 +246,7 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
     def start(unit, argv, environment=None, cwd=None, properties=()):
         nonlocal interruptible
         command = ['systemd-run', '--user', '--collect', '--unit=' + unit,
-                   '--property=TimeoutStopSec=10']
+                   '--property=TimeoutStopSec=10', '--description=' + description]
         command += ['--property=' + value for value in properties]
         if environment:
             command += ['--setenv=' + k + '=' + v for k, v in environment.items()]
@@ -246,7 +255,19 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
         # A terminal interrupt must spare the client until it confirms unit ownership.
         interruptible = False
         try:
-            subprocess.run(command + argv, check=True, capture_output=True, start_new_session=True)
+            subprocess.run(command + argv, check=True, capture_output=True, start_new_session=True, timeout=20)
+        except subprocess.TimeoutExpired:
+            # The manager can accept a request before its client receives the reply.
+            try:
+                actual = subprocess.check_output(['systemctl', '--user', 'show', unit, '-p', 'Description', '--value'],
+                                                 text=True, timeout=10, start_new_session=True)
+            except (OSError, subprocess.SubprocessError) as error:
+                raise RuntimeError(f'Start timed out and ownership of {unit} could not be confirmed. '
+                                   f'Inspect it with systemctl --user status {unit} before reusing the session.') from error
+            if actual.rstrip('\n') == description:
+                owned.append(unit)
+            raise
+        else:
             owned.append(unit)
         finally:
             interruptible = True
@@ -425,9 +446,7 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
         proof['dxvk_config'] = environment['DXVK_CONFIG']
         proof['ini'] = {name: {'sha256': sha256(documents / name), 'text': (documents / name).read_text()}
                         for name in ('Skyrim.ini', 'SkyrimPrefs.ini')}
-        if fixture:
-            proof['fixture'] = fixture
-            proof['fixture_sha256'] = sha256(fixture_path)
+        proof.update(receipt)
         (output / 'proof.json').write_text(json.dumps(proof, indent=2) + '\n')
         (output / 'trace.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in rows))
         print(json.dumps(proof, indent=2))

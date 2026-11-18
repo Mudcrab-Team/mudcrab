@@ -4083,6 +4083,7 @@ mod tests {
             "['record',",
             "['report',",
             "patch('sys.argv', argv + [",
+            "patch('sys.argv', ['audit',",
         ]
         .iter()
         .any(|owner| start.contains(owner) || current.contains(owner))
@@ -4252,26 +4253,10 @@ mod tests {
                                 | "--setenv"
                                 | "--signal"
                                 | "--unit"
+                                | "--description"
                                 | "--working-directory"
                         ) && native_tool_owns_option(scanned, flag)
                     });
-            // The standalone HTML report embeds CSS custom properties.
-            let chart_style = path.file_name().is_some_and(|name| {
-                name == "report_skyrim_jump.py"
-                    && matches!(
-                        flag,
-                        "--foreground"
-                            | "--muted-foreground"
-                            | "--background"
-                            | "--border"
-                            | "--font-sans"
-                            | "--font-mono"
-                            | "--chart-"
-                            | "--chart-1"
-                            | "--chart-2"
-                            | "--chart-3"
-                    )
-            });
             if NON_ENGINE_FLAGS.contains(&flag)
                 || observation_option
                 || material_oracle_option
@@ -4280,7 +4265,6 @@ mod tests {
                 || release_option
                 || publication_test_option
                 || native_jump_option
-                || chart_style
             {
                 continue;
             }
@@ -4519,7 +4503,10 @@ mod tests {
         );
         for (text, path) in [
             ("engine --unknown-engine-option", native),
-            ("engine --session fixture", native),
+            (
+                "run.add_argument('--session')\nengine --session fixture",
+                native,
+            ),
             ("cmd = ['engine',\n    '--session', 'fixture']", native),
             (
                 "engine --session fixture",
@@ -4604,7 +4591,11 @@ mod tests {
                 // identically named CLI argument visible to the parser check.
                 let offset = flag.as_ptr() as usize - script.as_ptr() as usize;
                 let prefix = &script[..offset];
-                !(prefix.trim_end().ends_with("var(")
+                let suffix = &script[offset + flag.len()..];
+                let declaration =
+                    prefix.trim_end().ends_with(['{', ';']) && suffix.trim_start().starts_with(':');
+                !(declaration
+                    || prefix.trim_end().ends_with("var(")
                     || prefix.ends_with(".setProperty('")
                     || prefix.ends_with(".setProperty(\""))
             })
@@ -4619,13 +4610,16 @@ mod tests {
 
     #[test]
     fn checked_script_audit_ignores_css_but_rejects_the_same_unknown_cli_option() {
-        let path = std::path::Path::new("capture_tonemap_tuning.py");
-        let script = "color:var(--foreground); x.style.setProperty('--aspect','16/9'); engine --headless --assets pack";
+        let path = std::path::Path::new("report_skyrim_jump.py");
+        let script = ":root{ --foreground: white; --border: black } color:var(--foreground); x.style.setProperty('--aspect','16/9'); engine --headless --assets pack";
         assert_eq!(checked_script_engine_flags(script, path), 2);
 
         assert!(
             std::panic::catch_unwind(|| {
-                checked_script_engine_flags("color:var(--foreground); engine --foreground", path)
+                checked_script_engine_flags(
+                    ":root{ --foreground: white } engine --foreground",
+                    path,
+                )
             })
             .is_err()
         );
