@@ -2391,6 +2391,62 @@ fn conflicting_portal_occurrences_keep_both_readers_conservative() {
 }
 
 #[test]
+fn ambiguous_room_headers_keep_both_readers_conservative() {
+    for typed in [false, true] {
+        for headers in [
+            vec![],
+            vec![vec![0, 0, 1, 0]],
+            vec![vec![0, 0, 1, 0], vec![0, 0, 0, 0]],
+            vec![vec![0, 0, 1, 0], vec![0, 0, 1, 0]],
+            vec![vec![]],
+            vec![vec![0, 0, 1]],
+            vec![vec![0, 0, 1, 0, 0]],
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let data = directory.path().join("Data");
+            let mut shape = vec![0; 32];
+            for offset in [0, 4, 8] {
+                shape[offset..offset + 4].copy_from_slice(&100f32.to_le_bytes());
+            }
+            shape[28..32].copy_from_slice(&1u32.to_le_bytes());
+            let mut fields = [
+                sub(b"NAME", &0x1Fu32.to_le_bytes()),
+                sub(b"DATA", &[0; 24]),
+                sub(b"XPRM", &shape),
+            ]
+            .concat();
+            for header in &headers {
+                fields.extend(sub(b"XRMR", header));
+            }
+            room_graph_review_fixture_with_fields(
+                &data,
+                None,
+                None,
+                vec![record(b"REFR", 0x803, 0, fields)],
+            );
+            let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+            let conn = rusqlite::Connection::open(db).unwrap();
+            let complete: bool = conn
+                .query_row(
+                    "SELECT complete FROM room_graph_cells WHERE cell_id=0x900",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let expected = headers.is_empty() || (headers.len() == 1 && headers[0].len() == 4);
+            assert_eq!(complete, expected, "typed={typed}, headers={headers:?}");
+            let rooms: i64 = conn
+                .query_row("SELECT COUNT(*) FROM room_bounds", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(
+                rooms, 3,
+                "ambiguous metadata must not discard valid room geometry"
+            );
+        }
+    }
+}
+
+#[test]
 fn failed_room_link_remapping_keeps_both_readers_conservative() {
     for typed in [false, true] {
         for link in [None, Some(0x801), Some(0x0900_0801)] {

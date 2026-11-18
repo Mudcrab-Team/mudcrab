@@ -185,7 +185,10 @@ pub(crate) fn restore_rejected_room_fields<'a>(
         if record.rejected_fields.contains(b"XMBR") {
             assignment.execute([record.form_id])?;
         }
-        if !record.payload_complete || record.rejected_fields.contains(b"XLRM") {
+        if !record.payload_complete
+            || record.rejected_fields.contains(b"XLRM")
+            || record.rejected_fields.contains(b"XRMR")
+        {
             incomplete.execute([record.cell_form_id])?;
         }
     }
@@ -638,9 +641,13 @@ pub fn export_room_graph(
             incomplete.insert(cell);
             continue;
         }
-        let flags = view
-            .find(b"XRMR")
-            .filter(|data| data.len() >= 4)
+        let mut headers = record.subrecords.iter().filter(|(tag, _)| tag == b"XRMR");
+        let header = headers.next().map(|(_, data)| data);
+        if headers.next().is_some() || header.is_some_and(|data| data.len() != 4) {
+            incomplete.insert(cell);
+        }
+        let flags = header
+            .filter(|data| data.len() == 4)
             .map(|data| {
                 i64::from(data[1]) | (i64::from(u16::from_le_bytes([data[2], data[3]])) << 8)
             })
