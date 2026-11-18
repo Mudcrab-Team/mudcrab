@@ -70,19 +70,85 @@ fn parse() -> Result<Args> {
     Ok(args)
 }
 
-/// Resolves `path` as far as it exists, then appends the rest, so a path that does not exist yet
-/// still resolves symlinks in its existing part (`..` and aliases cannot hide an input tree).
+/// One piece of a path, owned, so a symbolic link's target can be queued in front of the rest.
+enum Part {
+    Root(std::ffi::OsString),
+    Current,
+    Parent,
+    Name(std::ffi::OsString),
+}
+
+fn parts(path: &Path) -> Vec<Part> {
+    use std::path::Component;
+    path.components()
+        .map(|component| match component {
+            Component::Prefix(_) | Component::RootDir => {
+                Part::Root(component.as_os_str().to_owned())
+            }
+            Component::CurDir => Part::Current,
+            Component::ParentDir => Part::Parent,
+            Component::Normal(name) => Part::Name(name.to_owned()),
+        })
+        .collect()
+}
+
+/// Follows every symbolic link of `path`, including a dangling one, so the result names the file
+/// a write would create. `fs::canonicalize` cannot do this for a link whose target does not exist
+/// yet, and `fs::write` follows such a link and creates its target.
+fn expand_symlinks(path: &Path) -> Result<PathBuf> {
+    use std::collections::VecDeque;
+    let mut resolved = PathBuf::new();
+    let mut todo: VecDeque<Part> = parts(path).into();
+    let mut hops = 0;
+    while let Some(part) = todo.pop_front() {
+        match part {
+            Part::Root(root) => resolved.push(root),
+            Part::Current => {}
+            Part::Parent => {
+                resolved.pop();
+            }
+            Part::Name(name) => {
+                let next = resolved.join(&name);
+                let is_link = fs::symlink_metadata(&next)
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink());
+                if !is_link {
+                    resolved = next;
+                    continue;
+                }
+                hops += 1;
+                ensure!(
+                    hops <= 40,
+                    "too many symbolic links while resolving {}",
+                    path.display()
+                );
+                let target = fs::read_link(&next)
+                    .wrap_err_with(|| format!("cannot read the link {}", next.display()))?;
+                if target.is_absolute() {
+                    resolved = PathBuf::new();
+                }
+                for part in parts(&target).into_iter().rev() {
+                    todo.push_front(part);
+                }
+            }
+        }
+    }
+    Ok(resolved)
+}
+
+/// Resolves `path` to the file a write would create: every symbolic link is followed, even one
+/// that dangles, and the part that exists is canonicalized (so `..`, aliases and letter case
+/// cannot hide an input tree). A part that does not exist yet is appended as written.
 fn resolve_for_write(path: &Path) -> Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
         env::current_dir()?.join(path)
     };
-    let mut existing = absolute.as_path();
+    let expanded = expand_symlinks(&absolute)?;
+    let mut existing = expanded.as_path();
     let mut rest = Vec::new();
     loop {
-        if let Ok(resolved) = fs::canonicalize(existing) {
-            let mut resolved = resolved;
+        if let Ok(mut resolved) = fs::canonicalize(existing) {
             for part in rest.iter().rev() {
                 resolved.push(part);
             }
@@ -260,4 +326,84 @@ fn main() -> Result<()> {
 fn read_baseline(path: &Path) -> Result<Baseline> {
     serde_json::from_slice(&fs::read(path)?)
         .wrap_err_with(|| format!("failed to read baseline {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    mod symlinks {
+        use super::*;
+        use std::os::unix::fs::symlink;
+
+        /// A pack folder and an outside folder, both canonical.
+        fn folders() -> (tempfile::TempDir, PathBuf, PathBuf) {
+            let root = tempfile::tempdir().unwrap();
+            let base = fs::canonicalize(root.path()).unwrap();
+            let pack = base.join("pack");
+            let outside = base.join("outside");
+            fs::create_dir_all(&pack).unwrap();
+            fs::create_dir_all(&outside).unwrap();
+            (root, pack, outside)
+        }
+
+        fn outside_pack(path: &Path, pack: &Path) -> Result<()> {
+            ensure_outside("--json", path, &[("pack", pack)])
+        }
+
+        #[test]
+        fn a_plain_path_outside_the_inputs_is_accepted() {
+            let (_root, pack, outside) = folders();
+            outside_pack(&outside.join("report.json"), &pack).unwrap();
+            outside_pack(&outside.join("new/dir/report.json"), &pack).unwrap();
+            // `..` cannot walk back into the pack.
+            let error = outside_pack(&outside.join("../pack/report.json"), &pack).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("inside the pack"),
+                "{error:#}"
+            );
+        }
+
+        #[test]
+        fn a_dangling_output_link_into_the_pack_is_refused() {
+            let (_root, pack, outside) = folders();
+            // `pack/new.json` does not exist, so the link dangles. `fs::write` through it would
+            // create the file inside the pack.
+            symlink(pack.join("new.json"), outside.join("report.json")).unwrap();
+            assert!(!pack.join("new.json").exists());
+            let error = outside_pack(&outside.join("report.json"), &pack).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("inside the pack"),
+                "{error:#}"
+            );
+            // The same with a relative target and with a chain of links.
+            symlink("../pack/other.json", outside.join("relative.json")).unwrap();
+            assert!(outside_pack(&outside.join("relative.json"), &pack).is_err());
+            symlink(outside.join("relative.json"), outside.join("chain.json")).unwrap();
+            assert!(outside_pack(&outside.join("chain.json"), &pack).is_err());
+        }
+
+        #[test]
+        fn a_dangling_folder_link_into_the_pack_is_refused() {
+            let (_root, pack, outside) = folders();
+            // The folder the link names does not exist yet, so the file below it is new too.
+            symlink(pack.join("missing-folder"), outside.join("dir")).unwrap();
+            assert!(outside_pack(&outside.join("dir/report.json"), &pack).is_err());
+        }
+
+        #[test]
+        fn a_link_that_stays_outside_the_inputs_is_accepted_and_a_loop_is_refused() {
+            let (_root, pack, outside) = folders();
+            symlink(outside.join("elsewhere.json"), outside.join("report.json")).unwrap();
+            outside_pack(&outside.join("report.json"), &pack).unwrap();
+            symlink(outside.join("b"), outside.join("a")).unwrap();
+            symlink(outside.join("a"), outside.join("b")).unwrap();
+            let error = outside_pack(&outside.join("a"), &pack).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("too many symbolic links"),
+                "{error:#}"
+            );
+        }
+    }
 }

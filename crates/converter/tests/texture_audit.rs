@@ -585,10 +585,13 @@ fn an_unreadable_mesh_folder_is_an_error_not_a_smaller_audit() {
     fs::write(locked.join("hidden.glb"), b"x").unwrap();
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
     let result = audit(&data, &pack, &scratch, None);
+    // Ask the filesystem whether the folder really is unreadable; a process that ignores
+    // permissions (root) can read it.
+    let unreadable = fs::read_dir(&locked).is_err();
     // Restore access first so the temporary folder can be removed even if an assert fails.
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
-    // A process that ignores permissions (root) can read the folder; then nothing is hidden.
-    if let Err(error) = result {
+    if unreadable {
+        let error = result.expect_err("an unreadable mesh folder must fail the audit");
         assert!(format!("{error:#}").contains("failed to scan"), "{error:#}");
     }
 }
