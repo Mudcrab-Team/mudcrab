@@ -103,6 +103,28 @@ const TEXTURE_SETTLE_FRAMES: u32 = 90;
 /// How long a capture waits for one screenshot before it records a failure and goes on.
 const SCREENSHOT_DEADLINE: Duration = Duration::from_secs(30);
 
+/// Gives up on the pending screenshot: records the failure, moves to the next shot, and bumps the
+/// request number so that this screenshot, if it arrives later, is ignored.
+fn expire_screenshot(capture: &mut Capture) {
+    let message = format!(
+        "{}: no screenshot within {} s",
+        capture.requested_file,
+        SCREENSHOT_DEADLINE.as_secs()
+    );
+    eprintln!("npc_viewer: {message}");
+    capture.failures.push(message);
+    capture.failed = true;
+    capture.serial += 1;
+    capture.requested_at = None;
+    capture.phase = Phase::Pose;
+    capture.shot += 1;
+}
+
+/// True when a screenshot of request `serial` arrives after its deadline passed.
+fn is_late_screenshot(capture: &Capture, serial: u64) -> bool {
+    capture.serial != serial
+}
+
 /// True when a screenshot requested at `requested_at` is overdue at `now`.
 fn screenshot_overdue(requested_at: Instant, now: Instant) -> bool {
     now.duration_since(requested_at) >= SCREENSHOT_DEADLINE
@@ -1246,18 +1268,7 @@ fn step_capture(world: &mut World, viewer: &mut Viewer, capture: &mut Capture) {
             .requested_at
             .is_some_and(|at| screenshot_overdue(at, Instant::now()))
         {
-            let message = format!(
-                "{}: no screenshot within {} s",
-                capture.requested_file,
-                SCREENSHOT_DEADLINE.as_secs()
-            );
-            eprintln!("npc_viewer: {message}");
-            capture.failures.push(message);
-            capture.failed = true;
-            capture.serial += 1;
-            capture.requested_at = None;
-            capture.phase = Phase::Pose;
-            capture.shot += 1;
+            expire_screenshot(capture);
         }
         return;
     }
@@ -1305,6 +1316,13 @@ fn step_capture(world: &mut World, viewer: &mut Viewer, capture: &mut Capture) {
     let target = capture.target.clone();
     world.spawn(Screenshot::image(target)).observe(
         move |event: On<ScreenshotCaptured>, mut viewer: ResMut<Viewer>| {
+            let Some(capture) = viewer.capture.as_mut() else {
+                return;
+            };
+            // A screenshot that comes after its deadline neither writes a file nor moves the run.
+            if is_late_screenshot(capture, serial) {
+                return;
+            }
             let saved = event
                 .image
                 .clone()
@@ -1316,23 +1334,17 @@ fn step_capture(world: &mut World, viewer: &mut Viewer, capture: &mut Capture) {
                         .save(&path)
                         .map_err(|error| format!("cannot save {}: {error}", path.display()))
                 });
-            if let Some(capture) = viewer.capture.as_mut() {
-                if capture.serial != serial {
-                    // This screenshot came after its deadline: the run has moved on.
-                    return;
+            capture.requested_at = None;
+            match saved {
+                Ok(()) => capture.images.push(file.clone()),
+                Err(error) => {
+                    eprintln!("npc_viewer: {file}: {error}");
+                    capture.failures.push(format!("{file}: {error}"));
+                    capture.failed = true;
                 }
-                capture.requested_at = None;
-                match saved {
-                    Ok(()) => capture.images.push(file.clone()),
-                    Err(error) => {
-                        eprintln!("npc_viewer: {file}: {error}");
-                        capture.failures.push(format!("{file}: {error}"));
-                        capture.failed = true;
-                    }
-                }
-                capture.phase = Phase::Pose;
-                capture.shot += 1;
             }
+            capture.phase = Phase::Pose;
+            capture.shot += 1;
         },
     );
 }
@@ -1410,6 +1422,44 @@ mod tests {
             at + SCREENSHOT_DEADLINE - Duration::from_millis(1)
         ));
         assert!(screenshot_overdue(at, at + SCREENSHOT_DEADLINE));
+    }
+
+    fn test_capture() -> Capture {
+        Capture {
+            dir: PathBuf::from("/nonexistent"),
+            target: Handle::default(),
+            shot: 3,
+            settle: 0,
+            phase: Phase::Requested,
+            images: Vec::new(),
+            failures: Vec::new(),
+            failed: false,
+            serial: 7,
+            requested_at: Some(Instant::now()),
+            requested_file: "01-00013669-front.png".into(),
+            records: Vec::new(),
+            frames_until_next: 0,
+        }
+    }
+
+    #[test]
+    fn a_missed_screenshot_is_recorded_and_its_late_arrival_is_ignored() {
+        let mut capture = test_capture();
+        assert!(
+            !is_late_screenshot(&capture, 7),
+            "the pending request is current"
+        );
+        expire_screenshot(&mut capture);
+        assert!(capture.failed);
+        assert_eq!(capture.failures.len(), 1);
+        assert!(capture.failures[0].contains("01-00013669-front.png"));
+        assert_eq!(capture.shot, 4);
+        assert!(capture.phase == Phase::Pose);
+        assert!(capture.requested_at.is_none());
+        // The screenshot of request 7 arrives now: it is late and must change nothing.
+        assert!(is_late_screenshot(&capture, 7));
+        // A screenshot requested after the deadline carries the new number and is current.
+        assert!(!is_late_screenshot(&capture, 8));
     }
 
     #[test]
