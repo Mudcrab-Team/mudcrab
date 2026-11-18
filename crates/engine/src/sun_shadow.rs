@@ -132,8 +132,9 @@ fn build_sun_shadow_cascades(
 }
 
 /// Fit and texel-snap a cascade with Bevy 0.19's reverse-Z construction.
-/// Adapted from Bevy's `bevy_light/src/cascade.rs::calculate_cascade` (MIT OR Apache-2.0),
+/// Adapted from Bevy's `bevy_light/src/cascade.rs::calculate_cascade` under its MIT license,
 /// <https://github.com/bevyengine/bevy/blob/v0.19.0/crates/bevy_light/src/cascade.rs>.
+/// The permission notice is retained in `docs/specs/engine/sun-shadows.md`.
 /// Keep this construction aligned with Bevy when upgrading the renderer.
 fn fit_cascade(
     corners: [Vec3A; 8],
@@ -413,7 +414,15 @@ mod tests {
     /// Travel, a changed climate/GMST, and the untimed-world fallback bypass angular holds.
     #[test]
     fn changed_world_or_sun_path_refreshes_shadows_immediately() {
-        let (mut app, sun, _) = fixture(EngineConfig::default());
+        let config = EngineConfig {
+            sun_shadow: SunShadowSettings {
+                threshold_degrees: 180.0,
+                max_hold_seconds: 1000.0,
+                ..default()
+            },
+            ..default()
+        };
+        let (mut app, sun, _) = fixture(config);
         let before = shadow_rotation(&app, sun);
         app.world_mut()
             .resource_mut::<EngineConfig>()
