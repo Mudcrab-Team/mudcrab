@@ -42,9 +42,11 @@ source is unchanged and keeps `MIT OR Apache-2.0`; both upstream license files a
 the [patch notes](vendor/bevy_image/README.mudcrab.md) for the source hash, the exact change and
 the removal criteria.
 
-`vendor/bevy_pbr` is the published `bevy_pbr` 0.19.0 crate plus a morph-target fix taken from
-the open Bevy pull request [bevyengine/bevy#26504](https://github.com/bevyengine/bevy/pull/26504)
-and one Mudcrab bound. The crate keeps `MIT OR Apache-2.0` and both upstream license files; the
+`vendor/bevy_pbr` is the published `bevy_pbr` 0.19.0 crate plus fixes taken from the open Bevy pull
+requests [bevyengine/bevy#26504](https://github.com/bevyengine/bevy/pull/26504) (morph descriptors),
+[#26095](https://github.com/bevyengine/bevy/pull/26095) and [#26588](https://github.com/bevyengine/bevy/pull/26588),
+and one Mudcrab bound. `vendor/bevy_render` is the published `bevy_render` 0.19.0 crate plus the
+`bevy_render` half of #26095. The crate keeps `MIT OR Apache-2.0` and both upstream license files; the
 changed files keep their upstream license. The ledger [`vendor/BEVY_PATCHES.md`](vendor/BEVY_PATCHES.md)
 lists every carried Bevy change, and the [patch notes](vendor/bevy_pbr/README.mudcrab.md) give the
 source hash and the removal rule.

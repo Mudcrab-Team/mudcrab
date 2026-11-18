@@ -1811,6 +1811,10 @@ pub fn prepare_preprocess_bind_groups(
     pipelines: Res<PreprocessPipelines>,
     mut bin_unpacking_bind_groups: ResMut<BinUnpackingBindGroups>,
 ) {
+    // mudcrab: bevyengine/bevy#26095, see vendor/BEVY_PATCHES.md.
+    // Clear out old bind groups, since they may refer to stale metadata.
+    bin_unpacking_bind_groups.clear();
+
     // Grab the `BatchedInstanceBuffers`.
     let BatchedInstanceBuffers {
         current_input_buffer: current_input_buffer_vec,
