@@ -152,6 +152,14 @@ enum PartState {
 /// The problem recorded for an NPC whose body scene never produced geometry.
 const NO_GEOMETRY: &str = "no geometry: the body scene did not load";
 
+/// True when an NPC has no body geometry to photograph: the wait timed out, the actor was revealed
+/// and measured, and still nothing has bounds. Before the reveal there is nothing to measure yet, so
+/// a body that loaded but waits for a missing idle is not called geometry-less: it is revealed after
+/// the timeout and captured, and the missing idle is reported on its own.
+fn lacks_geometry(timed_out: bool, revealed: bool, has_bounds: bool) -> bool {
+    timed_out && revealed && !has_bounds
+}
+
 /// True when an NPC's recorded problems make the whole capture run fail: a body that never loaded.
 /// A failed PNG or report write sets the failure where it happens.
 fn batch_fails(problems: &[String]) -> bool {
@@ -1275,7 +1283,7 @@ fn step_capture(world: &mut World, viewer: &mut Viewer, capture: &mut Capture) {
     // Textures keep arriving after the scene is ready; give them wall-clock time and frames.
     // A body that never loads has no bounds. After the timeout the NPC ends with a recorded failure
     // instead of holding the whole batch.
-    let no_geometry = shown.timed_out && viewer.bounds.is_none();
+    let no_geometry = lacks_geometry(shown.timed_out, shown.revealed, viewer.bounds.is_some());
     let ready_enough = skipped
         || no_geometry
         || (ready.is_some_and(|r| r >= TEXTURE_SETTLE)
@@ -1411,6 +1419,16 @@ mod tests {
             );
         }
         assert!(converted_model_path("../escape.nif".to_owned()).is_none());
+    }
+
+    #[test]
+    fn geometry_is_missing_only_after_the_reveal_found_nothing() {
+        // A loaded body that waits for a missing idle: timed out, not yet revealed.
+        assert!(!lacks_geometry(true, false, false));
+        // Revealed and measured with nothing to show: a real failure.
+        assert!(lacks_geometry(true, true, false));
+        assert!(!lacks_geometry(true, true, true));
+        assert!(!lacks_geometry(false, true, false));
     }
 
     #[test]
