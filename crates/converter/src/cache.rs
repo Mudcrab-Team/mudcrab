@@ -468,6 +468,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "skin-static-fallback",
     "object-texture-swap-geometry-index-v1",
     "object-texture-swap-geometry-index-v2",
+    "non-finite-uv-repair-v1",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
