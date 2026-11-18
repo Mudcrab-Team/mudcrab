@@ -2146,6 +2146,19 @@ mod tests {
         }
     }
 
+    /// Review the asset-proof floor before accepting a new historical projection.
+    #[test]
+    fn legacy_asset_reader_identities_pin_historical_projections() {
+        let versions: Vec<_> = legacy_asset_reader_identities("french")
+            .map(|identity| identity["projection_version"].as_u64().unwrap())
+            .collect();
+        assert_eq!(
+            versions,
+            [4, 5, 6],
+            "legacy asset-proof projections changed: raise LEGACY_ASSET_PROOF_VERSION if shared asset settings changed"
+        );
+    }
+
     /// A metadata-only version change preserves exact legacy asset proofs, including locale.
     #[test]
     fn projection4_asset_proofs_keep_their_language_and_exact_settings() {
