@@ -72,6 +72,41 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'duplicate ZIP member'):
             publication.transform('capture.zip', buf.getvalue(), {})
 
+    def test_mapped_symlink_uses_its_declared_publication_hash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'public'
+            manifest = root / publication.MANIFEST
+            manifest.parent.mkdir(parents=True)
+            archive = manifest.parent / 'capture.zip'
+            external = Path(directory) / 'outside.zip'
+            external.write_bytes(zipped({'log': b'public but different'}))
+            archive.symlink_to(external)
+            name = str(archive.relative_to(root))
+            changes = {name: dict(original_sha256='a' * 64, published_sha256='b' * 64)}
+            manifest.write_text(json.dumps(dict(changes=changes)))
+            self.assertEqual(publication.artifact_digest(external, root), publication.sha(external.read_bytes()))
+            with patch('sys.argv', ['audit', '--root', str(root)]), self.assertRaisesRegex(ValueError, 'artifact changed'):
+                publication.main()
+
+    def test_gzip_metadata_in_later_members_is_audited_inside_zip(self):
+        for flag in (4, 8, 16):
+            with self.subTest(flag=flag):
+                member = bytearray(gzip.compress(b'payload', mtime=0))
+                member[3] |= flag
+                field = b'/home/alice/private'
+                member[10:10] = (len(field).to_bytes(2, 'little') + field if flag == 4 else field + b'\0')
+                raw = gzip.compress(b'first', mtime=0) + member
+                archive = zipped({'build.log.gz': raw})
+                self.assertTrue(publication.findings('outer.zip', archive))
+                changes = {}
+                public = publication.transform('outer.zip', archive, changes)
+                self.assertFalse(publication.findings('outer.zip', public))
+                self.assertEqual(changes['outer.zip']['published_sha256'], publication.sha(public))
+                with zipfile.ZipFile(io.BytesIO(public)) as result:
+                    self.assertEqual(gzip.decompress(result.read('build.log.gz')), b'firstpayload')
+                with self.assertRaisesRegex(ValueError, 'gzip header'):
+                    publication.transform('trace.bin.gz', raw, {})
+
     def test_missing_recorded_immutable_evidence_fails_the_audit(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

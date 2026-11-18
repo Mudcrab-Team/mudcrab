@@ -203,6 +203,22 @@ class RecordingLifecycleTests(unittest.TestCase):
 
 
 class MotionProofTests(unittest.TestCase):
+    def test_hold_window_must_cover_required_frames_at_requested_cap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / 'fixture.json'
+            fixture = dict(schema=1, kind='jump', position=[0, 0, 0], yaw_degrees=0, hold_ms=100)
+            for cap, hold, valid in ((30, 100, False), (30, 166, False), (30, 167, True), (60, 100, True)):
+                with self.subTest(cap=cap, hold=hold):
+                    path.write_text(json.dumps(dict(fixture, hold_ms=hold)))
+                    if valid:
+                        with self.assertRaises(FileNotFoundError):
+                            recorder.run_recording(root, root / 'output', root, path, cap)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'hold.*frames'):
+                            recorder.run_recording(root, root / 'output', root, path, cap)
+                    self.assertFalse((root / 'output').exists())
+
     def test_v3_sessions_reject_typed_v4_interventions_before_recording(self):
         for control, value in (('jump_height_min', 64.0), ('reference_scale', 1.25)):
             with self.subTest(control=control), tempfile.TemporaryDirectory() as directory:

@@ -22,6 +22,7 @@ import time
 import traceback
 
 
+MIN_DURING_FRAMES = 5
 RECORD = struct.Struct('<4Q4I40f48s')
 ROOT = Path(__file__).resolve().parents[1]
 SCREENSHOT_PATH = Path('/tmp/gamescope.png')
@@ -217,6 +218,9 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
     if frame_cap not in (30, 60, 120):
         raise ValueError('Experimental frame cap must be 30, 60, or 120')
     fixture = read_fixture(fixture_path) if fixture_path else None
+    minimum_hold = math.ceil(MIN_DURING_FRAMES * 1000 / frame_cap)
+    if fixture and fixture['hold_ms'] < minimum_hold:
+        raise ValueError(f'Fixture hold must span {MIN_DURING_FRAMES} frames at {frame_cap} FPS (minimum {minimum_hold} ms)')
     config = json.loads((session / 'session.json').read_text())
     if (fixture and config.get('profile_name') != 'inputs-v4' and
             any(key in fixture for key in ('jump_height_min', 'reference_scale'))):
@@ -576,7 +580,7 @@ def verify_trace(rows, *, requested_fps=None):
     before = [r for r in frames if r['qpc'] < down['qpc']]
     during = [r for r in frames if down['qpc'] <= r['qpc'] <= up['qpc']]
     after = [r for r in frames if r['qpc'] > up['qpc']]
-    require(len(before) >= 10 and len(during) >= 5 and len(after) >= 10,
+    require(len(before) >= 10 and len(during) >= MIN_DURING_FRAMES and len(after) >= 10,
             'Insufficient first-person samples before/during/after W')
     selected = before[-10:] + during + after[:10]
     require(all(r['code'] & 2 for r in selected), 'Attached NiCamera is missing')

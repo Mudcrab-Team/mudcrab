@@ -19,6 +19,7 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import zipfile
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = 'docs/research/evidence/skyrim-physics-221/publication.json'
@@ -90,9 +91,33 @@ Do not publish the resulting instruction listings or executable bytes.
     return text.encode()
 
 
+def read_gzip(name, data):
+    """Return the combined payload and findings in each member's optional header fields."""
+    payloads = []
+    issues = []
+    while data:
+        stream = zlib.decompressobj(wbits=31)
+        payloads.append(stream.decompress(data))
+        if not stream.eof:
+            raise ValueError(f'{name}: incomplete gzip member')
+        # zlib validated the member. The optional fields follow its ten-byte fixed header.
+        flags = data[3]
+        offset = 10
+        if flags & 4:
+            size = int.from_bytes(data[offset:offset + 2], 'little')
+            offset += 2
+            issues.extend(content_findings(name + '!gzip header extra', data[offset:offset + size]))
+            offset += size
+        for flag, label in ((8, 'filename'), (16, 'comment')):
+            if flags & flag:
+                end = data.index(b'\0', offset)
+                issues.extend(content_findings(name + '!gzip header ' + label, data[offset:end]))
+                offset = end + 1
+        data = stream.unused_data.lstrip(b'\0')
+    return b''.join(payloads), issues
+
+
 def transform(name, data, changes):
-    if name.endswith('.bin.gz'):
-        return data
     original = data
     if name.endswith('.zip'):
         output = io.BytesIO()
@@ -118,12 +143,13 @@ def transform(name, data, changes):
         if not changes.get(name + '!members'):
             changes.pop(name + '!members', None)
     elif name.endswith('.gz'):
-        raw = gzip.decompress(data)
-        try:
-            published = public_text(name[:-3], raw)
-        except UnicodeDecodeError:
-            published = raw
-        if published != raw:
+        raw, header_issues = read_gzip(name, data)
+        if name.endswith('.bin.gz'):
+            if header_issues:
+                raise ValueError('\n'.join(header_issues))
+            return data
+        published = transform(name[:-3], raw, {})
+        if published != raw or header_issues:
             data = gzip.compress(published, mtime=0)
     else:
         try:
@@ -135,36 +161,33 @@ def transform(name, data, changes):
     return data
 
 
+def publication_identity(path, root):
+    actual = sha(path.read_bytes())
+    manifest_path = root / MANIFEST
+    if manifest_path.is_file():
+        changes = json.loads(manifest_path.read_bytes())['changes']
+        # Prefer the declared name. External aliases of retained evidence can still use its receipt.
+        for candidate, base in ((path.absolute(), root.absolute()), (path.resolve(), root.resolve())):
+            if candidate.is_relative_to(base):
+                name = str(candidate.relative_to(base))
+                if name in changes:
+                    record = changes[name]
+                    if actual != record['published_sha256']:
+                        raise ValueError(f'Published artifact changed: {name}')
+                    return record['original_sha256'], changes.get(name + '!members', {})
+    return actual, {}
+
+
 def artifact_digest(path, root=ROOT):
     """Check the publication identity and return its declared original identity."""
-    actual = sha(path.read_bytes())
-    try:
-        relative = str(path.resolve().relative_to(root.resolve()))
-    except ValueError:
-        return actual
-    manifest_path = root / MANIFEST
-    if not manifest_path.exists():
-        return actual
-    record = json.loads(manifest_path.read_bytes())['changes'].get(relative)
-    if record:
-        if actual != record['published_sha256']:
-            raise ValueError(f'Published artifact changed: {relative}')
-        return record['original_sha256']
-    return actual
+    digest, _ = publication_identity(path, root)
+    return digest
 
 
 def source_digest(archive_path, member, data, root=ROOT):
     """Validate a derivative before resolving its historical acquisition identity."""
-    artifact_digest(archive_path, root)
-    try:
-        relative = str(archive_path.resolve().relative_to(root.resolve()))
-    except ValueError:
-        return sha(data)
-    manifest_path = root / MANIFEST
-    if not manifest_path.exists():
-        return sha(data)
-    manifest = json.loads(manifest_path.read_bytes())
-    record = manifest['changes'].get(relative + '!members', {}).get(member)
+    _, members = publication_identity(archive_path, root)
+    record = members.get(member)
     if record:
         if sha(data) != record['published_sha256']:
             raise ValueError(f'Published source changed: {member}')
@@ -210,7 +233,8 @@ def findings(name, data):
                 issues.append(f'{name}: duplicate ZIP member name')
             return issues
     if name.endswith('.gz'):
-        return findings(name[:-3], gzip.decompress(data))
+        raw, header_issues = read_gzip(name, data)
+        return header_issues + findings(name[:-3], raw)
     return content_findings(name, data)
 
 
