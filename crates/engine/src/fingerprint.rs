@@ -137,13 +137,14 @@ pub struct RendererFingerprint {
 pub struct GraphicsFingerprint {
     pub stream_radius: i32,
     pub unload_radius: i32,
-    /// `fBlockLevel0Distance`, the level-4 terrain tier's distance in Creation units.
+    /// `fBlockLevel0Distance` in Creation units: the object LOD level-8 handover. Unused until
+    /// object LOD lands.
     pub block_level0_distance: f32,
-    /// `fBlockLevel1Distance`, the level-8 terrain tier's distance.
+    /// `fBlockLevel1Distance`: the object LOD level-16 handover. Unused until object LOD lands.
     pub block_level1_distance: f32,
-    /// `fBlockMaximumDistance`, the level-16 terrain tier's distance.
+    /// `fBlockMaximumDistance`: with `fSplitDistanceMult`, the outer reach of terrain tier 16.
     pub block_maximum_distance: f32,
-    /// `fSplitDistanceMult`, the multiplier on all three block distances.
+    /// `fSplitDistanceMult`, the terrain split multiplier (RF-LOD-003).
     pub split_distance_mult: f32,
     /// MiB of newly loaded render assets a frame may prepare; `0` is unlimited.
     pub max_upload_mib_per_frame: usize,
