@@ -45,8 +45,9 @@ world with, and `None` otherwise:
   Bevy world unit, so no conversion is applied.
 - `color` is the record's colour, read as sRGB like every other colour of the game.
 - `intensity` comes from the effective radius (§4).
-- `shadow_maps_enabled` is **false**: one cube map per light is unaffordable at 64 lights. Skyrim
-  does have shadow-casting lights (the record's shadow flags); honouring them is left for later.
+- `shadow_maps_enabled` is **false** when the light spawns. The budget (§6) later gives a cube
+  shadow map to the nearest few lights when the Point-light shadows setting is on. The record's own
+  shadow flags (`RF-LIGHT-GPU-009`) are not read yet.
 - the area `radius` stays 0, so there is no oversized specular highlight.
 
 `streaming::spawn_cell` places the light as a **child of its reference**, which is what makes it sit
@@ -140,6 +141,27 @@ number of lights is invisible to a count, and a room walked into and stopped in 
 the player moved another 256 units. Re-choosing is a sort over every spawned light, so it is not done
 every frame.
 
+### Shadows
+
+When the **Point-light shadows** setting is on, only the `MAX_SHADOW_CASTING_POINT_LIGHTS = 4`
+nearest of the enabled lights have `shadow_maps_enabled` set. Every other `SkyrimLight` has it off.
+The cap is retail's limit: the lighting pixel shader shadows the first `min(NumShadowLights, 4)`
+point lights (`RF-LIGHT-GPU-004`). The registry row does not give the order of "first", so the
+engine takes the nearest to the camera.
+
+The cap is also a GPU limit. Bevy renders each cube face of a shadow-casting point light as its own
+view, and each view opens about five command encoders (an estimate read from the Bevy 0.19 code, not
+measured). The Metal backend of wgpu loses the device when 4,096 command buffers are outstanding. A
+64-light budget with shadows on did that on entering Bleak Falls Barrow (71 lights). A guard system
+logs an error if the estimate for the visible shadow-casting `PointLight`s reaches a quarter of that
+limit.
+
+The shadow set is not cached with the 64-light choice. It is ranked again among the enabled lights
+after every camera move, with the entity as the tie-break, so the light the player walks up to takes
+a shadow at once and the light left behind gives it up. The set is never larger than the cap. The
+record's shadow flags (`RF-LIGHT-GPU-009`) are not read yet, so the nearest lights are shadowed
+whatever their flags.
+
 ## 7. The `--lights` flag
 
 `EngineConfig::lights` (`crates/engine/src/config.rs`) is false by default and set by `--lights`.
@@ -158,5 +180,6 @@ exactly as it did before this feature, and the acceptance, profiling and benchma
   field, flicker period and amplitudes, the `FOV` cone and the near clip in `lights`
   (`db-schema.md` §12). The engine reads none of them: a converted torch burns steadily and lights
   in every direction.
-- **Shadows.** Off for every converted light; a light therefore also lights the far side of the wall
-  it is mounted on.
+- **Shadow flags.** Only the nearest 4 enabled lights cast shadows, whatever the record's shadow
+  flags say (§6, `RF-LIGHT-GPU-009`). A light without a shadow map also lights the far side of the
+  wall it is mounted on.
