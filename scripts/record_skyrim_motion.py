@@ -4,7 +4,6 @@
 import argparse
 from contextlib import suppress
 import csv
-import ctypes as C
 import fcntl
 import hashlib
 import io
@@ -19,103 +18,59 @@ import struct
 import subprocess
 import sys
 import time
+import tempfile
 import traceback
 
 
 MIN_DURING_FRAMES = 5
 RECORD = struct.Struct('<4Q4I40f48s')
 ROOT = Path(__file__).resolve().parents[1]
-SCREENSHOT_PATH = Path('/tmp/gamescope.png')
-SCREENSHOT_LOCK_PATH = Path('/tmp/mudcrab-gamescope-screenshot.lock')
 
 
 def capture(display, destination):
-    # Gamescope shares this output path across otherwise isolated displays.
-    with SCREENSHOT_LOCK_PATH.open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        source = SCREENSHOT_PATH
-        previous = source.stat().st_mtime_ns if source.exists() else None
-        subprocess.run(['xprop', '-root', '-f', 'GAMESCOPECTRL_REQUEST_SCREENSHOT', '32c',
-                        '-set', 'GAMESCOPECTRL_REQUEST_SCREENSHOT', '1'],
-                       env=dict(os.environ, DISPLAY=display), check=True, capture_output=True)
+    if not display:
+        raise ValueError('The recording has no owned Gamescope Wayland display')
+    with tempfile.TemporaryDirectory(prefix='mudcrab-screenshot-', dir='/tmp') as directory:
+        source = Path(directory).resolve() / 'screenshot.png'
+        subprocess.run(['gamescopectl', 'screenshot', str(source)],
+                       env=dict(os.environ, GAMESCOPE_WAYLAND_DISPLAY=display),
+                       check=True, capture_output=True, timeout=10)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            if source.exists() and source.stat().st_mtime_ns != previous:
+            if source.exists():
                 data = source.read_bytes()
                 if data.startswith(b'\x89PNG\r\n\x1a\n') and data[-8:-4] == b'IEND':
                     destination.write_bytes(data)
                     return
             time.sleep(0.1)
-        raise RuntimeError('Gamescope did not produce a complete fresh screenshot')
+        raise RuntimeError('Gamescope did not complete the requested PNG; check gamescopectl screenshot support')
 
 
 class GameWindow:
-    """Focus only the exact Skyrim window on the task-owned display."""
+    """Operate on the exact Skyrim window through an isolated X11 client."""
 
     def __init__(self, display):
-        self.x = C.CDLL('libX11.so.6')
-        declarations = {
-            'XOpenDisplay': ([C.c_char_p], C.c_void_p),
-            'XDefaultRootWindow': ([C.c_void_p], C.c_ulong),
-            'XQueryTree': ([C.c_void_p, C.c_ulong, C.POINTER(C.c_ulong), C.POINTER(C.c_ulong),
-                            C.POINTER(C.POINTER(C.c_ulong)), C.POINTER(C.c_uint)], C.c_int),
-            'XFetchName': ([C.c_void_p, C.c_ulong, C.POINTER(C.c_void_p)], C.c_int),
-            'XFree': ([C.c_void_p], C.c_int),
-            'XSetInputFocus': ([C.c_void_p, C.c_ulong, C.c_int, C.c_ulong], C.c_int),
-            'XGetInputFocus': ([C.c_void_p, C.POINTER(C.c_ulong), C.POINTER(C.c_int)], C.c_int),
-            'XRaiseWindow': ([C.c_void_p, C.c_ulong], C.c_int),
-            'XSync': ([C.c_void_p, C.c_int], C.c_int),
-            'XCloseDisplay': ([C.c_void_p], C.c_int),
-        }
-        for name, (args, result) in declarations.items():
-            f = getattr(self.x, name)
-            f.argtypes, f.restype = args, result
-        self.display = self.x.XOpenDisplay(display.encode())
-        if not self.display:
-            raise RuntimeError(f'Cannot open isolated X display {display}')
-        self.window = None
+        self.environment = dict(os.environ, DISPLAY=display)
 
-    def windows(self, parent=None, depth=0):
-        parent = parent or self.x.XDefaultRootWindow(self.display)
-        result = []
-        root, ancestor, children, count = C.c_ulong(), C.c_ulong(), C.POINTER(C.c_ulong)(), C.c_uint()
-        if not self.x.XQueryTree(self.display, parent, C.byref(root), C.byref(ancestor),
-                                 C.byref(children), C.byref(count)):
-            return result
-        try:
-            for i in range(count.value):
-                window = children[i]
-                name = C.c_void_p()
-                if self.x.XFetchName(self.display, window, C.byref(name)) and name.value:
-                    result.append((window, C.string_at(name).decode(errors='replace')))
-                    self.x.XFree(name)
-                if depth < 2:
-                    result.extend(self.windows(window, depth + 1))
-        finally:
-            if children:
-                self.x.XFree(children)
-        return result
+    def command(self, *args, check=True):
+        return subprocess.run(['xdotool', *args], env=self.environment, check=check,
+                              capture_output=True, text=True, timeout=10)
+
+    def matches(self):
+        result = self.command('search', '--onlyvisible', '--name', '^Skyrim Special Edition$', check=False)
+        if result.returncode == 1 and not result.stderr and not result.stdout:
+            return []
+        result.check_returncode()
+        return result.stdout.splitlines()
 
     def focus(self):
-        matches = [w for w, name in self.windows() if name == 'Skyrim Special Edition']
+        matches = self.matches()
         if len(matches) != 1:
-            raise RuntimeError(f'Expected one Skyrim window; found {len(matches)}')
-        self.window = matches[0]
-        self.x.XRaiseWindow(self.display, self.window)
-        self.x.XSetInputFocus(self.display, self.window, 2, 0)
-        self.x.XSync(self.display, 0)
-        self.check_focus()
-
-    def check_focus(self):
-        focused, revert = C.c_ulong(), C.c_int()
-        self.x.XGetInputFocus(self.display, C.byref(focused), C.byref(revert))
-        if focused.value != self.window:
+            raise RuntimeError(f'Expected one visible Skyrim window; found {len(matches)}')
+        window = matches[0]
+        self.command('windowraise', window, 'windowfocus', window)
+        if self.command('getwindowfocus', '-f').stdout.strip() != window:
             raise RuntimeError('The owned Skyrim window lost keyboard focus')
-
-    def close(self):
-        if self.display:
-            self.x.XCloseDisplay(self.display)
-            self.display = None
 
 
 def sha256(path):
@@ -153,11 +108,24 @@ def prepare_session(game, save, proton, session, profile_name='v3'):
     (session / 'session.json').write_text(json.dumps(config, indent=2) + '\n')
 
 
-def initialize_prefix(session, config, environment, output):
-    process = subprocess.run([config['proton'], 'run', 'wineboot.exe', '-u'], env=environment,
-                             capture_output=True, text=True, timeout=120)
-    (output / 'prefix-init.log').write_text(process.stdout + process.stderr)
-    process.check_returncode()
+def initialize_prefix(session, config, environment, output, unit, start):
+    # A daemonized wineserver remains in the unit even if it outlives wineboot.
+    start(unit, [config['proton'], 'run', 'wineboot.exe', '-u'], environment,
+          properties=['RemainAfterExit=yes', 'RuntimeMaxSec=130', f'StandardOutput=append:{output / "prefix-init.log"}',
+                      'StandardError=inherit'])
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        status = subprocess.check_output(['systemctl', '--user', 'show', unit, '-p', 'ActiveState',
+                                          '-p', 'SubState', '-p', 'ExecMainStatus'], text=True, timeout=10)
+        fields = dict(line.split('=', 1) for line in status.splitlines())
+        if fields['SubState'] == 'exited' and fields['ExecMainStatus'] == '0':
+            break
+        if fields['ActiveState'] in ('failed', 'inactive'):
+            raise RuntimeError('Wine prefix initialization failed; see prefix-init.log')
+        time.sleep(0.1)
+    else:
+        raise RuntimeError('Wine prefix initialization timed out')
+    stop_owned_services([unit], output)
     documents = session / 'compatdata/pfx/drive_c/users/steamuser/Documents/My Games/Skyrim Special Edition'
     documents.mkdir(parents=True, exist_ok=True)
     if not documents.resolve().is_relative_to(session):
@@ -237,9 +205,13 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
         raise ValueError('Source save changed since preparation')
     if subprocess.run(['pgrep', '-x', 'steam'], capture_output=True).returncode:
         raise RuntimeError('Steam must be running and signed in before recording')
+    token = hashlib.sha256(str(session.resolve()).encode()).hexdigest()[:24]
+    display_unit, prefix_unit, game_unit = [f'mudcrab-record-{role}-{token}' for role in ('display', 'prefix', 'game')]
+    # The user manager retains these session-specific names across output directories and process death.
+    for unit in (display_unit, prefix_unit, game_unit):
+        if not unit_stopped(unit):
+            raise RuntimeError(f'Cannot reuse the session while {unit} is still active')
     output.mkdir(parents=True, exist_ok=False)
-    token = hashlib.sha256(str(output).encode()).hexdigest()[:10]
-    display_unit, game_unit = f'mudcrab-record-display-{token}', f'mudcrab-record-game-{token}'
     environment_file = output / 'display.json'
     ready_script = output / 'display_ready.py'
     ready_script.write_text('import os,json,time\nfrom pathlib import Path\n'
@@ -251,7 +223,6 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
                            'while True: time.sleep(3600)\n')
     phase = 'display-start'
     owned = []
-    keyboard = None
 
     termination_signal = None
     interruptible = True
@@ -263,10 +234,11 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
             if interruptible:
                 raise SystemExit(128 + signum)
 
-    def start(unit, argv, environment=None, cwd=None):
+    def start(unit, argv, environment=None, cwd=None, properties=()):
         nonlocal interruptible
         command = ['systemd-run', '--user', '--collect', '--unit=' + unit,
                    '--property=TimeoutStopSec=10']
+        command += ['--property=' + value for value in properties]
         if environment:
             command += ['--setenv=' + k + '=' + v for k, v in environment.items()]
         if cwd:
@@ -301,8 +273,7 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
         if invocation != display['INVOCATION_ID']:
             raise RuntimeError('Display invocation changed')
         socket = Path(os.environ['XDG_RUNTIME_DIR']) / display['LIBEI_SOCKET']
-        environment = dict(os.environ, DISPLAY=display['DISPLAY'],
-                           WAYLAND_DISPLAY=display['GAMESCOPE_WAYLAND_DISPLAY'],
+        environment = dict(DISPLAY=display['DISPLAY'], WAYLAND_DISPLAY=display['GAMESCOPE_WAYLAND_DISPLAY'],
                            STEAM_COMPAT_DATA_PATH=str(session / 'compatdata'),
                            STEAM_COMPAT_CLIENT_INSTALL_PATH=str(Path(config['source_game']).parents[2]),
                            STEAM_COMPAT_INSTALL_PATH=str(session / 'game'), SteamAppId='489830',
@@ -310,25 +281,22 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
                            DXVK_CONFIG=f'dxvk.maxFrameRate = {frame_cap}', WINEDLLOVERRIDES='dinput8=n,b',
                            MUDCRAB_TRACE_FILE='Z:' + str(output / 'trace.bin').replace('/', '\\'))
         phase = 'prefix-initialize'
-        initialize_prefix(session, config, environment, output)
+        initialize_prefix(session, config, environment, output, prefix_unit, start)
+        if prefix_unit in owned:
+            owned.remove(prefix_unit)
         phase = 'game-start'
-        # Forward only task-specific launch variables into the owned service.
-        game_environment = {k: environment[k] for k in ['DISPLAY', 'WAYLAND_DISPLAY', 'STEAM_COMPAT_DATA_PATH',
-                            'STEAM_COMPAT_CLIENT_INSTALL_PATH', 'STEAM_COMPAT_INSTALL_PATH', 'SteamAppId',
-                            'SteamGameId', 'PROTON_LOG', 'PROTON_LOG_DIR', 'DXVK_CONFIG',
-                            'WINEDLLOVERRIDES', 'MUDCRAB_TRACE_FILE']}
         start(game_unit, [config['proton'], 'run', str(session / 'game/SkyrimSE.exe')],
-              game_environment, session / 'game')
+              environment, session / 'game')
         keyboard = GameWindow(display['DISPLAY'])
         phase = 'main-menu'
         deadline = time.monotonic() + 120
         while True:
             if time.monotonic() > deadline:
                 raise RuntimeError('No verified main menu')
-            if not any(name == 'Skyrim Special Edition' for _, name in keyboard.windows()):
+            if not keyboard.matches():
                 time.sleep(0.5)
                 continue
-            capture(display['DISPLAY'], output / 'startup.png')
+            capture(display['GAMESCOPE_WAYLAND_DISPLAY'], output / 'startup.png')
             text, _, _ = recognize(output / 'startup.png', ocr_prefix)
             if 'continue' in text and 'new' in text:
                 break
@@ -358,7 +326,7 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
         while True:
             if time.monotonic() > deadline:
                 raise RuntimeError('No stable first-person gameplay before the deadline')
-            capture(display['DISPLAY'], output / 'current.png')
+            capture(display['GAMESCOPE_WAYLAND_DISPLAY'], output / 'current.png')
             text, words, tsv = recognize(output / 'current.png', ocr_prefix)
             if 'missing content' in text or 'content is no longer present' in text:
                 raise RuntimeError('The fixture references missing content')
@@ -429,7 +397,7 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
                     raise RuntimeError('Fixture pose did not settle at the requested position/heading')
                 time.sleep(0.2)
         phase = 'one-w-press'
-        capture(display['DISPLAY'], output / 'before.png')
+        capture(display['GAMESCOPE_WAYLAND_DISPLAY'], output / 'before.png')
         keys = '17'
         if fixture and fixture.get('modifier'):
             keys += '+' + {'walk': '42', 'jump': '57'}[fixture['modifier']]
@@ -445,7 +413,7 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
                 if time.monotonic() > deadline:
                     raise
                 time.sleep(0.2)
-        capture(display['DISPLAY'], output / 'after.png')
+        capture(display['GAMESCOPE_WAYLAND_DISPLAY'], output / 'after.png')
         if sha256(Path(config['source_save'])) != config['source_save_sha256']:
             raise RuntimeError('Original save changed during recording')
         proof.update(session=config, trace_sha256=sha256(output / 'trace.bin'),
@@ -474,8 +442,6 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
     finally:
         try:
             interruptible = False
-            if keyboard:
-                keyboard.close()
             try:
                 journal = subprocess.run(['journalctl', '--user', '-u', game_unit, '--no-pager'],
                                          capture_output=True, text=True, timeout=10)
@@ -494,6 +460,14 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
                     raise SystemExit(128 + termination_signal)
 
 
+def unit_stopped(unit):
+    # --collect can unload the unit between stopping it and this query. systemctl
+    # show reports ActiveState=inactive for an unknown unit.
+    state = subprocess.run(['systemctl', '--user', 'show', unit, '-p', 'ActiveState', '--value'],
+                           capture_output=True, text=True, timeout=10, check=True)
+    return state.stdout.strip() == 'inactive'
+
+
 def stop_owned_services(owned, output):
     cleanup_errors = []
     for unit in reversed(owned):
@@ -502,8 +476,13 @@ def stop_owned_services(owned, output):
                            check=True, start_new_session=True)
         except (OSError, subprocess.SubprocessError) as stop_error:
             try:
+                if unit_stopped(unit):
+                    continue
                 subprocess.run(['systemctl', '--user', 'kill', '--signal=KILL', unit],
                                timeout=10, capture_output=True, check=True, start_new_session=True)
+                if not unit_stopped(unit):
+                    subprocess.run(['systemctl', '--user', 'stop', unit], timeout=20, capture_output=True,
+                                   check=True, start_new_session=True)
             except (OSError, subprocess.SubprocessError) as kill_error:
                 cleanup_errors.append(f'{unit}: stop: {stop_error}, kill: {kill_error}')
     if cleanup_errors:
@@ -511,6 +490,7 @@ def stop_owned_services(owned, output):
         print(diagnostic, file=sys.stderr, end='')
         with suppress(OSError):
             (output / 'cleanup-errors.log').write_text(diagnostic)
+        raise RuntimeError('Recording unit cleanup failed: ' + diagnostic.strip())
 
 
 def read_trace(path, *, live=False):

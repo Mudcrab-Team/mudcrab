@@ -7,10 +7,8 @@ import os
 import runpy
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
-import threading
 from unittest.mock import patch
 
 import record_skyrim_motion as recorder
@@ -48,38 +46,73 @@ def recording():
 
 
 class ScreenshotOwnershipTests(unittest.TestCase):
-    def test_two_sessions_receive_their_own_screenshot(self):
+    def test_cancelled_request_cannot_supply_the_next_displays_png(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / 'gamescope.png'
-            first_requested = threading.Event()
-            second_requested = threading.Event()
+            output = Path(directory) / 'menu.png'
+            first_file = None
             images = {display: b'\x89PNG\r\n\x1a\n' + display.encode() + b'IENDxxxx'
-                      for display in (':1', ':2')}
+                      for display in ('gamescope-1', 'gamescope-2')}
 
-            def request(*args, env, **kwargs):
-                display = env['DISPLAY']
-                source.write_bytes(images[display])
-                if display == ':1':
-                    first_requested.set()
-                    second_requested.wait(0.2)
-                else:
-                    second_requested.set()
+            def request(argv, env, **kwargs):
+                nonlocal first_file
+                self.assertEqual(argv[:2], ['gamescopectl', 'screenshot'])
+                display = env['GAMESCOPE_WAYLAND_DISPLAY']
+                if display == 'gamescope-1':
+                    first_file = open(argv[2], 'wb')
+                    raise KeyboardInterrupt()
+                # An asynchronous write from the cancelled Gamescope finishes during B.
+                with first_file:
+                    first_file.write(images['gamescope-1'])
+                Path(argv[2]).write_bytes(images[display])
 
-            with patch.object(recorder, 'SCREENSHOT_PATH', source), \
-                    patch.object(recorder, 'SCREENSHOT_LOCK_PATH', root / 'screenshot.lock'), \
-                    patch.object(recorder.subprocess, 'run', side_effect=request):
-                with ThreadPoolExecutor(max_workers=2) as workers:
-                    first = workers.submit(recorder.capture, ':1', root / 'first.png')
-                    self.assertTrue(first_requested.wait(2))
-                    second = workers.submit(recorder.capture, ':2', root / 'second.png')
-                    first.result(timeout=3)
-                    second.result(timeout=3)
-            self.assertEqual((root / 'first.png').read_bytes(), images[':1'])
-            self.assertEqual((root / 'second.png').read_bytes(), images[':2'])
+            with patch.object(recorder.subprocess, 'run', side_effect=request):
+                with self.assertRaises(KeyboardInterrupt):
+                    recorder.capture('gamescope-1', output)
+                recorder.capture('gamescope-2', output)
+            self.assertEqual(output.read_bytes(), images['gamescope-2'])
 
 
 class RecordingLifecycleTests(unittest.TestCase):
+    def test_unconfirmed_cleanup_blocks_reuse_with_a_different_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = dict(exe_sha256='test', build=dict(dll_sha256='test'), input_sha256='test',
+                          proton_sha256='test', source_save_sha256='test', proton='/proton',
+                          source_save='/save', source_game='/games/steam/common/skyrim')
+            (root / 'session.json').write_text(json.dumps(config))
+            units = set()
+            starts = []
+            def run(argv, **kwargs):
+                if argv[0] == 'systemd-run':
+                    unit = next(arg.split('=', 1)[1] for arg in argv if arg.startswith('--unit='))
+                    units.add(unit)
+                    starts.append(unit)
+                    if argv[-1].endswith('display_ready.py'):
+                        display = dict(DISPLAY=':42', INVOCATION_ID='inv', LIBEI_SOCKET='socket',
+                                       GAMESCOPE_WAYLAND_DISPLAY='gamescope-1')
+                        (root / 'one/display.json').write_text(json.dumps(display))
+                elif argv[:3] == ['systemctl', '--user', 'show']:
+                    return subprocess.CompletedProcess(argv, 0, stdout='active' if argv[3] in units else 'inactive')
+                elif argv[:2] == ['systemctl', '--user'] and argv[2] in ('kill', 'stop'):
+                    raise subprocess.TimeoutExpired(argv, 1)
+                return subprocess.CompletedProcess(argv, 0, stdout='', stderr='')
+
+            with patch.dict(os.environ, XDG_RUNTIME_DIR=directory), \
+                    patch.object(recorder, 'sha256', return_value='test'), \
+                    patch.object(recorder.subprocess, 'run', side_effect=run), \
+                    patch.object(recorder.subprocess, 'check_output', return_value='inv'), \
+                    patch.object(recorder, 'initialize_prefix'), \
+                    patch.object(recorder.GameWindow, 'matches',
+                                 side_effect=subprocess.CalledProcessError(1, 'xdotool')):
+                with self.assertRaisesRegex(RuntimeError, 'cleanup failed'):
+                    recorder.run_recording(root, root / 'one', root)
+                self.assertEqual(json.loads((root / 'one/failure.json').read_text())['phase'], 'main-menu')
+                self.assertTrue(all(unit in (root / 'one/cleanup-errors.log').read_text() for unit in starts))
+                with self.assertRaisesRegex(RuntimeError, 'still active'):
+                    recorder.run_recording(root, root / 'two', root)
+                self.assertEqual(len(starts), 2)
+                self.assertFalse((root / 'two').exists())
+
     def test_sigterm_stops_owned_units_before_unlocking(self):
         self.check_capture_cancellation(signal.SIGTERM)
 
@@ -88,7 +121,7 @@ class RecordingLifecycleTests(unittest.TestCase):
 
     def check_capture_cancellation(self, signum):
         real_run = subprocess.run
-        for when in ('launch', 'capture', 'cleanup'):
+        for when in ('launch', 'prefix', 'capture', 'cleanup'):
             with self.subTest(when=when), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 output = root / 'capture'
@@ -107,6 +140,8 @@ class RecordingLifecycleTests(unittest.TestCase):
                     real_run([sys.executable, '-c', script, str(os.getpgrp()), str(int(signum))], **kwargs)
 
                 def run(argv, **kwargs):
+                    if argv[:3] == ['systemctl', '--user', 'show']:
+                        return subprocess.CompletedProcess(argv, 0, stdout='inactive')
                     if argv[0] == 'systemd-run':
                         if argv[-1].endswith('display_ready.py'):
                             display = dict(DISPLAY=':42', INVOCATION_ID='inv', LIBEI_SOCKET='socket',
@@ -122,6 +157,11 @@ class RecordingLifecycleTests(unittest.TestCase):
                             print(argv[-1], file=log)
                     return subprocess.CompletedProcess(argv, 0, stdout='', stderr='')
 
+                def initialize(session, config, environment, output, unit, start):
+                    if when == 'prefix':
+                        start(unit, ['fake-wineboot'])
+                        os.killpg(os.getpgrp(), signum)
+
                 def game_window(display):
                     if when == 'capture':
                         os.killpg(os.getpgrp(), signum)
@@ -136,7 +176,7 @@ class RecordingLifecycleTests(unittest.TestCase):
                             patch.object(recorder, 'sha256', return_value='test'), \
                             patch.object(recorder.subprocess, 'run', side_effect=run), \
                             patch.object(recorder.subprocess, 'check_output', return_value='inv'), \
-                            patch.object(recorder, 'initialize_prefix'), patch.object(recorder, 'GameWindow', game_window):
+                            patch.object(recorder, 'initialize_prefix', initialize), patch.object(recorder, 'GameWindow', game_window):
                         recorder.main()
 
                 child = multiprocessing.get_context('fork').Process(target=record)
@@ -149,7 +189,8 @@ class RecordingLifecycleTests(unittest.TestCase):
                         child.kill()
                     child.join()
                 stops = (root / 'stops').read_text().splitlines()
-                self.assertEqual([unit.split('-')[2] for unit in stops], ['game', 'display'])
+                self.assertEqual([unit.split('-')[2] for unit in stops],
+                                 ['prefix' if when == 'prefix' else 'game', 'display'])
                 with lock.open('a') as contender:
                     fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
@@ -174,6 +215,8 @@ class RecordingLifecycleTests(unittest.TestCase):
                 return write_text(path, data, *args, **kwargs)
 
             def run(argv, **kwargs):
+                if argv[:3] == ['systemctl', '--user', 'show']:
+                    return subprocess.CompletedProcess(argv, 0, stdout='inactive')
                 if argv[0] == 'systemd-run':
                     started.append(next(arg.removeprefix('--unit=') for arg in argv if arg.startswith('--unit=')))
                     if argv[-1].endswith('display_ready.py'):

@@ -36,7 +36,7 @@ python3 scripts/evaluate_skyrim_jump.py freeze \
 
 ## Capture a new campaign
 
-Install LLVM with `clang-cl`, `lld-link` and `llvm-dlltool`, a C compiler, libei development files, libX11, Gamescope, xprop and Tesseract with English data. Start authenticated Steam. Use the exact runtime in [runtime.json](runtime.json) and an installed Proton distribution.
+Install LLVM with `clang-cl`, `lld-link` and `llvm-dlltool`, a C compiler, libei development files, Gamescope with `gamescopectl`, `xdotool` and Tesseract with English data. Start authenticated Steam. Use the exact runtime in [runtime.json](runtime.json) and an installed Proton distribution.
 
 The published acquisition plan pins a particular Whiterun save by hash. Another save requires a separately surveyed plan. Supply the original save, not a numerical artifact from this repository.
 
