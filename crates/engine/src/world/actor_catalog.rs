@@ -100,6 +100,55 @@ impl ActorSpawnPlan {
     }
 }
 
+/// Which authored clips may join a creature's idle sequence, by the clip's file name.
+///
+/// This is part of a stand-in. Retail does not filter by name: the behaviour graph owns which clip
+/// plays when (the dog graph's `PickNewIdle` / `PickNewHead` / `PickNewTail`, the cow graph's
+/// `PickNewIdle`). The name filter only keeps attacks, deaths and transitions out of a loop that
+/// has no graph to sequence them. See [`crate::actor_animation::IdleSequence`].
+#[derive(Debug, Clone, Copy)]
+pub struct IdleNameRule {
+    /// A file name that starts with one of these is a candidate.
+    pub starts_with: &'static [&'static str],
+    /// A file name that contains one of these is a candidate.
+    pub contains: &'static [&'static str],
+    /// A file name that contains one of these is never accepted.
+    pub exclude: &'static [&'static str],
+}
+
+impl IdleNameRule {
+    /// True when the file name of `source` (a `.hkx` key, any case) passes the rule.
+    pub fn accepts(&self, source: &str) -> bool {
+        let file = source.rsplit(['/', '\\']).next().unwrap_or(source);
+        let name = file
+            .rsplit_once('.')
+            .map_or(file, |(stem, _)| stem)
+            .to_ascii_lowercase();
+        let included = self
+            .starts_with
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+            || self.contains.iter().any(|part| name.contains(part));
+        included && !self.exclude.iter().any(|part| name.contains(part))
+    }
+}
+
+/// The clips a creature may show besides its default idle: names that start with `idle` or
+/// contain `_idle`, minus these:
+///
+/// - attacks, deaths, combat poses, get-ups, lie-downs, and the enter and exit transitions (a
+///   looped `idle_enterfeed` is not an idle);
+/// - `idle_a_`: the twelve `idle_A_*` stand idles. Retail disables their root, `BaseIdleRoot`,
+///   with a `GetRandomPercent < 0` condition that never passes, so they are not part of the
+///   reachable stand set (IDLE1 verify report, rule 5).
+pub const VARIED_IDLE_NAMES: IdleNameRule = IdleNameRule {
+    starts_with: &["idle"],
+    contains: &["_idle"],
+    exclude: &[
+        "attack", "death", "combat", "getup", "laydown", "enter", "exit", "idle_a_",
+    ],
+};
+
 #[derive(Resource, Debug, Clone, Default)]
 pub struct ActorCatalog {
     models: HashMap<u32, ActorModel>,
@@ -408,6 +457,42 @@ impl ActorCatalog {
             .join(scene)
             .is_file()
             .then_some(scene.as_str())
+    }
+
+    /// The source keys of the clips one creature may play in turn, the default clip first.
+    ///
+    /// The base is the binding's default clip. The rest are the binding's other clips that pass
+    /// [`VARIED_IDLE_NAMES`], have at least two frames and exist on disk, in catalog order.
+    /// An empty list means the actor has no catalog binding. A single entry means it has nothing
+    /// to vary, so the caller keeps the looping default clip. Part of the stand-in described on
+    /// [`crate::actor_animation::IdleSequence`].
+    pub fn idle_sequence_pool(&self, plan: &ActorSpawnPlan) -> Vec<String> {
+        let Some(row) = self.idle_catalog.find(
+            plan.actor.race_id,
+            plan.actor.sex.as_str(),
+            &plan.scene_path,
+        ) else {
+            return Vec::new();
+        };
+        let Some(root) = self.assets_root.as_ref() else {
+            return Vec::new();
+        };
+        if !root.join(&row.scene).is_file() {
+            return Vec::new();
+        }
+        let mut pool = vec![row.source.clone()];
+        pool.extend(
+            row.clips
+                .iter()
+                .filter(|(source, clip)| {
+                    **source != row.source
+                        && VARIED_IDLE_NAMES.accepts(source)
+                        && clip.frame_count >= 2
+                        && root.join(&clip.scene).is_file()
+                })
+                .map(|(source, _)| source.clone()),
+        );
+        pool
     }
 
     /// The catalog row for a base `NPC_` FormID, if this world has one.
@@ -1240,5 +1325,171 @@ mod tests {
         model.head_model = None;
         let plan = catalog.spawn_plan(&model).unwrap();
         assert!(plan.head.is_none());
+    }
+
+    #[test]
+    fn varied_idle_names_keep_idles_and_drop_attacks_deaths_and_transitions() {
+        for accepted in [
+            "meshes/actors/canine/animations/dog_idle_spice_head1.hkx",
+            "meshes/actors/cow/animations/idle_lookleft.hkx",
+            r"Meshes\Actors\Bear\Animations\IdleShake.HKX",
+            "idlerooting.hkx",
+        ] {
+            assert!(VARIED_IDLE_NAMES.accepts(accepted), "{accepted}");
+        }
+        for rejected in [
+            "meshes/actors/canine/animations/attack1.hkx",
+            "meshes/actors/canine/animations/death.hkx",
+            "meshes/actors/canine/animations/combatidle.hkx",
+            "meshes/actors/cow/animations/getup.hkx",
+            "meshes/actors/cow/animations/idle_laydown.hkx",
+            "meshes/actors/cow/animations/idle_enterfeed.hkx",
+            "meshes/actors/cow/animations/idle_exitfeed.hkx",
+            "meshes/actors/character/animations/idle_A_sway_fastTrans.hkx",
+            "meshes/actors/character/animations/Idle_A_left_longTrans.hkx",
+            "meshes/actors/draugr/animations/mtidle.hkx",
+            "meshes/actors/draugr/animations/walkcycle.hkx",
+            "attack/idle.hkx",
+        ] {
+            // The folder is not part of the name: `attack/idle.hkx` is the file `idle`.
+            let expected = rejected == "attack/idle.hkx";
+            assert_eq!(VARIED_IDLE_NAMES.accepts(rejected), expected, "{rejected}");
+        }
+    }
+
+    /// A creature binding with the given clips: `(source key, frame count, file on disk)`.
+    fn creature_catalog(
+        clips: &[(&str, u32, bool)],
+    ) -> (tempfile::TempDir, ActorCatalog, ActorSpawnPlan) {
+        use shared::actor_idle_catalog::{
+            ActorIdleBinding, ActorIdleCatalog, ActorIdleClip, PATH, VERSION,
+        };
+        let connection = connection();
+        insert_actor(&connection, 77, 13, "male", "body", None, None);
+        insert_part(&connection, 77, "body", "Actors/Custom/body.nif");
+        connection.execute_batch("CREATE TABLE race_animation_sources(race_id INTEGER,sex TEXT,skeleton_nif TEXT,project_hkx TEXT); INSERT INTO race_animation_sources VALUES (13,'male','meshes/custom/skeleton.nif','meshes/custom/project.hkx');").unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let clip_directory = directory.path().join("meshes/actor-idles/clips");
+        std::fs::create_dir_all(&clip_directory).unwrap();
+        let mut map = std::collections::BTreeMap::new();
+        for (index, (source, frames, on_disk)) in clips.iter().enumerate() {
+            let scene = format!("meshes/actor-idles/clips/clip{index}.glb");
+            if *on_disk {
+                std::fs::write(directory.path().join(&scene), b"clip").unwrap();
+            }
+            map.insert(
+                (*source).to_owned(),
+                ActorIdleClip {
+                    scene,
+                    frame_count: *frames,
+                    frames_per_second: 30.0,
+                    motion_frame: Some(1),
+                    bound_tracks: 5,
+                    moving_bound_tracks: 2,
+                    skipped_tracks: Vec::new(),
+                },
+            );
+        }
+        let base = clips[0].0;
+        let binding = ActorIdleBinding {
+            race_id: 13,
+            sex: "male".into(),
+            body_scene: "meshes/actors/custom/body.glb".into(),
+            project: "meshes/custom/project.hkx".into(),
+            skeleton: "meshes/custom/rig.hkx".into(),
+            race_skeleton_nif: "meshes/custom/skeleton.nif".into(),
+            source: base.into(),
+            scene: map[base].scene.clone(),
+            bound_tracks: 5,
+            moving_bound_tracks: 2,
+            skipped_tracks: Vec::new(),
+            clips: map,
+        };
+        let catalog = ActorIdleCatalog {
+            version: VERSION,
+            bindings: vec![binding],
+            ..Default::default()
+        };
+        std::fs::write(
+            directory.path().join(PATH),
+            serde_json::to_vec(&catalog).unwrap(),
+        )
+        .unwrap();
+        let loaded = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+        let plan = loaded.spawn_plan(loaded.get(77).unwrap()).unwrap();
+        (directory, loaded, plan)
+    }
+
+    #[test]
+    fn idle_sequence_pool_filters_clips_and_keeps_the_default_first() {
+        let (_directory, catalog, plan) = creature_catalog(&[
+            ("meshes/custom/mtidle.hkx", 30, true),
+            ("meshes/custom/dog_idle_spice_head1.hkx", 30, true),
+            ("meshes/custom/idle_lookleft.hkx", 30, true),
+            ("meshes/custom/IDLE_Shake.hkx", 30, true),
+            ("meshes/custom/attack1.hkx", 30, true),
+            ("meshes/custom/deathpose.hkx", 30, true),
+            ("meshes/custom/combatidle.hkx", 30, true),
+            ("meshes/custom/idle_enterfeed.hkx", 30, true),
+            ("meshes/custom/idle_static.hkx", 1, true),
+            ("meshes/custom/idle_missing.hkx", 30, false),
+        ]);
+        let pool = catalog.idle_sequence_pool(&plan);
+        assert_eq!(
+            pool[0], "meshes/custom/mtidle.hkx",
+            "the default is the base"
+        );
+        let rest: std::collections::BTreeSet<_> = pool[1..].iter().map(String::as_str).collect();
+        assert_eq!(
+            rest,
+            std::collections::BTreeSet::from([
+                "meshes/custom/IDLE_Shake.hkx",
+                "meshes/custom/dog_idle_spice_head1.hkx",
+                "meshes/custom/idle_lookleft.hkx",
+            ])
+        );
+        assert_eq!(pool.len(), 4, "the base is not listed twice");
+    }
+
+    #[test]
+    fn idle_sequence_pool_is_deterministic_and_seeded_sequences_repeat() {
+        let (_directory, catalog, plan) = creature_catalog(&[
+            ("meshes/custom/mtidle.hkx", 30, true),
+            ("meshes/custom/idle_a.hkx", 30, true),
+            ("meshes/custom/idle_b.hkx", 30, true),
+            ("meshes/custom/idle_c.hkx", 30, true),
+        ]);
+        let first = catalog.idle_sequence_pool(&plan);
+        assert_eq!(first, catalog.idle_sequence_pool(&plan));
+        let play = |reference: u32| {
+            let mut sequence =
+                crate::actor_animation::IdleSequence::new(first.clone(), reference).unwrap();
+            (0..12)
+                .map(|_| {
+                    sequence.advance_for_test();
+                    sequence.current_source().to_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(play(0x000A_91A0), play(0x000A_91A0));
+        assert_ne!(play(0x000A_91A0), play(0x000A_91A1));
+    }
+
+    #[test]
+    fn idle_sequence_pool_falls_back_to_the_default_clip_when_nothing_matches() {
+        let (_directory, catalog, plan) = creature_catalog(&[
+            ("meshes/custom/mtidle.hkx", 30, true),
+            ("meshes/custom/attack1.hkx", 30, true),
+            ("meshes/custom/walkcycle.hkx", 30, true),
+        ]);
+        let pool = catalog.idle_sequence_pool(&plan);
+        assert_eq!(pool, vec!["meshes/custom/mtidle.hkx".to_owned()]);
+        assert!(
+            crate::actor_animation::IdleSequence::new(pool, 1).is_none(),
+            "no variety means no sequence: the default clip keeps looping"
+        );
+        let mut elsewhere = plan.clone();
+        elsewhere.actor.race_id = 14;
+        assert!(catalog.idle_sequence_pool(&elsewhere).is_empty());
     }
 }

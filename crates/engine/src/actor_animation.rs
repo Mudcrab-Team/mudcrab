@@ -103,6 +103,113 @@ struct IdlePlayback {
     repeat: bool,
 }
 
+/// A creature's stand-in for the retail behaviour graph's idle variety.
+///
+/// **This is a placeholder, not the retail rule.** Retail plays `ActionIdle` and the actor's
+/// behaviour graph picks the clips. The verified IDLE1 retail findings (verify report, section 6 and
+/// rule 10) read the graph data: the dog head layer (6 states), the dog tail layer (4 states) and
+/// the cow tail wag (3 states) each re-pick with equal weights when their clip ends. The clips run
+/// 1.0 to 5.0 s, so the time between picks is the clip length and no separate timer exists. Retail
+/// blends those layers over a base loop at the same time. Mudcrab plays one clip at a time, so this
+/// component folds the layers into one sequence:
+///
+/// - The actor starts on its catalog default clip, the base. Every clip plays once, to its end. No
+///   timer decides when to change.
+/// - When a clip finishes, [`advance_idle_sequences`] picks the next clip from the pool with equal
+///   weights. The pool is the base plus the catalog clips accepted by
+///   `crate::world::actor_catalog::VARIED_IDLE_NAMES`. The pick may be the clip that just finished,
+///   as it may be on the retail tail layers.
+/// - The pick comes from a small generator seeded by the placed reference's FormID. The same
+///   reference always plays the same sequence, whatever the frame rate.
+///
+/// Not done here, on purpose: the look, call, sit, lie-down, feed and forage variants of dogs and
+/// cows. Retail takes those from the engine's `IDLE` tree (a depth-first first-match walk with
+/// conditions, `GetRandomPercent` draws and a replay-delay list), not from the graph. That is a
+/// follow-up. Humans are a later step too: the engine walks the `ActionIdle` tree for them and the
+/// real leaf set is unresolved.
+///
+/// An actor with fewer than two pool clips gets no `IdleSequence` and keeps looping its default
+/// clip, exactly as before.
+#[derive(Component, Debug, Clone)]
+pub struct IdleSequence {
+    pool: Vec<String>,
+    current: usize,
+    state: u64,
+}
+
+impl IdleSequence {
+    /// A sequence over `pool` (source keys, the base clip first) for one placed reference.
+    ///
+    /// Returns `None` when `pool` has fewer than two clips, so there is nothing to vary.
+    pub fn new(pool: Vec<String>, reference_form_id: u32) -> Option<Self> {
+        (pool.len() >= 2).then_some(Self {
+            pool,
+            current: 0,
+            // A fixed salt keeps FormID 0 away from the generator's all-zero state.
+            state: u64::from(reference_form_id) ^ 0x1D1E_5EED_0000_0000,
+        })
+    }
+
+    /// The source key of the clip that is playing now.
+    pub fn current_source(&self) -> &str {
+        &self.pool[self.current]
+    }
+
+    /// The position of the playing clip in the pool, and the pool size.
+    pub fn position(&self) -> (usize, usize) {
+        (self.current, self.pool.len())
+    }
+
+    /// SplitMix64: one 64-bit step of a small, well-mixed generator.
+    fn next_random(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Test hook for sibling modules: [`Self::advance`] without a running player.
+    #[cfg(test)]
+    pub(crate) fn advance_for_test(&mut self) {
+        self.advance();
+    }
+
+    /// Moves to the next clip: uniform over the whole pool, the finished clip included.
+    fn advance(&mut self) -> &str {
+        self.current = (self.next_random() % self.pool.len() as u64) as usize;
+        &self.pool[self.current]
+    }
+}
+
+/// Asks for the next clip of every [`IdleSequence`] whose current clip has finished.
+///
+/// A new request replaces the player, so this waits until the previous request has loaded
+/// (`Without<ActorClips>`) and the new player exists.
+fn advance_idle_sequences(
+    mut commands: Commands,
+    mut sequences: Query<
+        (Entity, &Actor, &mut IdleSequence, &AnimationPlayer),
+        Without<ActorClips>,
+    >,
+) {
+    for (entity, actor, mut sequence, player) in &mut sequences {
+        if !player.all_finished() {
+            continue;
+        }
+        let source = sequence.advance().to_owned();
+        debug!(
+            base_form_id = actor.base_form_id,
+            %source,
+            "idle sequence: next clip"
+        );
+        commands.entity(entity).insert(AuthoredIdleRequest {
+            source,
+            repeat: false,
+        });
+    }
+}
+
 type PendingIdleRequests<'w, 's> = Query<
     'w,
     's,
@@ -281,6 +388,7 @@ type PendingActorAnimations<'w, 's> = Query<
         &'static ActorClips,
         &'static Actor,
         Option<&'static IdlePlayback>,
+        Option<&'static IdleSequence>,
     ),
     (With<ActorBodyReady>, Without<AnimationPlayer>),
 >;
@@ -310,7 +418,7 @@ fn start_actor_animations(
     pending: PendingActorAnimations,
     mut graphs: ResMut<Assets<AnimationGraph>>,
 ) {
-    for (actor, clips, actor_data, playback) in &pending {
+    for (actor, clips, actor_data, playback, sequence) in &pending {
         let form_id = format_args!("{:08X}", actor_data.base_form_id);
         let [idle_state, walk_state, run_state] =
             Gait::ALL.map(|gait| asset_server.load_state(clips.handle(gait).id()));
@@ -376,7 +484,8 @@ fn start_actor_animations(
         let mut player = AnimationPlayer::default();
         let mut transitions = AnimationTransitions::new();
         let active = transitions.play(&mut player, idle_node, Duration::ZERO);
-        if playback.is_none_or(|playback| playback.repeat) {
+        // A sequence plays each clip once, so it can see the clip finish and pick the next.
+        if sequence.is_none() && playback.is_none_or(|playback| playback.repeat) {
             active.repeat();
         }
         commands
@@ -425,7 +534,12 @@ impl Plugin for ActorAnimationPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(mark_actor_body_ready).add_systems(
             Update,
-            (select_authored_idle, start_actor_animations).chain(),
+            (
+                advance_idle_sequences,
+                select_authored_idle,
+                start_actor_animations,
+            )
+                .chain(),
         );
     }
 }
@@ -1351,6 +1465,226 @@ mod tests {
         assert!(
             durations[&Gait::Walk] < durations[&Gait::Idle],
             "the walk clip is shorter than idle: {durations:?}"
+        );
+    }
+
+    fn pool(count: usize) -> Vec<String> {
+        (0..count).map(|index| format!("clip{index}")).collect()
+    }
+
+    #[test]
+    fn idle_sequence_needs_at_least_two_clips() {
+        assert!(IdleSequence::new(pool(0), 1).is_none());
+        assert!(IdleSequence::new(pool(1), 1).is_none());
+        assert!(IdleSequence::new(pool(2), 1).is_some());
+    }
+
+    #[test]
+    fn idle_sequence_starts_on_the_base_and_stays_inside_the_pool() {
+        for reference in [0, 1, 0x13475, 0xA91A0, u32::MAX] {
+            let mut sequence = IdleSequence::new(pool(5), reference).unwrap();
+            assert_eq!(sequence.position(), (0, 5));
+            assert_eq!(sequence.current_source(), "clip0");
+            for _ in 0..200 {
+                sequence.advance();
+                let (current, size) = sequence.position();
+                assert!(current < size, "reference {reference:#x}");
+            }
+        }
+    }
+
+    #[test]
+    fn idle_sequence_picks_with_equal_weights_and_may_repeat_a_clip() {
+        let mut sequence = IdleSequence::new(pool(4), 0x23A92).unwrap();
+        let mut counts = [0_u32; 4];
+        let mut repeats = 0;
+        let mut previous = 0;
+        for _ in 0..4000 {
+            sequence.advance();
+            let current = sequence.position().0;
+            counts[current] += 1;
+            repeats += u32::from(current == previous);
+            previous = current;
+        }
+        // 1000 expected per clip; a fair generator stays well inside 15 % of that.
+        for count in counts {
+            assert!((850..=1150).contains(&count), "unequal weights: {counts:?}");
+        }
+        // Retail's tail layers can pick the clip that just ended: about a quarter of the draws.
+        assert!((800..=1200).contains(&repeats), "repeats: {repeats}");
+    }
+
+    #[test]
+    fn idle_sequence_is_reproducible_and_reaches_every_clip() {
+        let run = |reference| {
+            let mut sequence = IdleSequence::new(pool(4), reference).unwrap();
+            (0..64)
+                .map(|_| {
+                    sequence.advance();
+                    sequence.position().0
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(run(0x23A92), run(0x23A92));
+        assert_ne!(run(0x23A92), run(0x23A8A));
+        let seen: HashSet<_> = run(0x23A92).into_iter().collect();
+        assert_eq!(seen.len(), 4, "every clip of the pool is reached: {seen:?}");
+    }
+
+    #[test]
+    fn a_finished_clip_asks_for_the_next_clip_once_and_never_loops() {
+        let (_directory, mut app) = fixture_app();
+        let actor = app
+            .world_mut()
+            .spawn((
+                Actor::new(
+                    0x23A92,
+                    0x131EE,
+                    ActorSex::Male,
+                    crate::actors::ActorResolution::Body,
+                ),
+                IdleSequence::new(pool(3), 0x23A92).unwrap(),
+                // A player with nothing playing counts as finished.
+                AnimationPlayer::default(),
+            ))
+            .id();
+        app.update();
+        let sequence = app.world().get::<IdleSequence>(actor).unwrap();
+        let request = app.world().get::<AuthoredIdleRequest>(actor).unwrap();
+        assert_ne!(
+            sequence.position().0,
+            0,
+            "the pick is not the clip that finished"
+        );
+        assert_eq!(request.source, sequence.current_source());
+        assert!(!request.repeat, "each clip plays to its end");
+    }
+
+    /// Plays a creature's idle sequence for a simulated minute (no window, no GPU) and prints the
+    /// clip changes. Run it with the pack that has the idle catalog:
+    /// `MUDCRAB_IDLE_SEQUENCE_ASSETS=<pack> cargo test -p engine --lib idle_sequence_plays -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "requires MUDCRAB_IDLE_SEQUENCE_ASSETS, a pack with the actor idle catalog"]
+    fn idle_sequence_plays_several_clips_in_a_minute() {
+        use crate::world::actor_catalog::ActorCatalog;
+        let assets =
+            std::path::PathBuf::from(std::env::var_os("MUDCRAB_IDLE_SEQUENCE_ASSETS").unwrap());
+        let seconds: f64 = std::env::var("MUDCRAB_IDLE_SEQUENCE_SECONDS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(60.0);
+        let catalog = ActorCatalog::open(&assets.join("skyrim_world.db"));
+        let mut app = retail_app(&assets);
+        app.insert_resource(catalog.clone());
+        let mut most_distinct = 0;
+        // Base NPC_ FormIDs of a dog, a cow, a bear and a draugr; each is also its reference id.
+        for (name, form_id) in [
+            ("dog", 0x23A92_u32),
+            ("cow", 0x23A90),
+            ("bear", 0x23A8A),
+            ("draugr", 0x1FB8F),
+        ] {
+            let plan = catalog
+                .spawn_plan(
+                    catalog
+                        .get(form_id)
+                        .expect("the creature is in the catalog"),
+                )
+                .unwrap();
+            let pool = catalog.idle_sequence_pool(&plan);
+            let Some(sequence) = IdleSequence::new(pool.clone(), form_id) else {
+                println!(
+                    "IDLE_SEQUENCE {name}: pool of {} clip(s), nothing to vary",
+                    pool.len()
+                );
+                continue;
+            };
+            let scene = catalog
+                .idle_scene(&plan)
+                .expect("the default clip exists")
+                .to_owned();
+            let body =
+                app.world()
+                    .resource::<AssetServer>()
+                    .add(WorldAsset::new(body_world_from_glb(
+                        &assets.join(&plan.scene_path),
+                    )));
+            let clips = ActorClips::load_idle(app.world().resource::<AssetServer>(), &scene);
+            let actor = app
+                .world_mut()
+                .spawn((
+                    plan.actor,
+                    clips,
+                    WorldAssetRoot(body),
+                    ActorIdleLibrary {
+                        body_scene: plan.scene_path.clone(),
+                    },
+                    sequence,
+                ))
+                .id();
+            app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                Duration::ZERO,
+            ));
+            wait_until(&mut app, "the base idle player", |app| {
+                app.world().get::<AnimationPlayer>(actor).is_some()
+            });
+            let step = Duration::from_secs_f64(1.0 / 30.0);
+            let mut elapsed = 0.0;
+            let mut played = vec![(
+                0.0,
+                app.world()
+                    .get::<IdleSequence>(actor)
+                    .unwrap()
+                    .current_source()
+                    .to_owned(),
+            )];
+            println!("IDLE_SEQUENCE {name}: pool of {} clips", pool.len());
+            println!("IDLE_SEQUENCE {name} t=0.00 {}", played[0].1);
+            let deadline = Instant::now() + Duration::from_secs(120);
+            while elapsed < seconds {
+                assert!(
+                    Instant::now() < deadline,
+                    "the {name} sequence stalled at {elapsed:.1} s"
+                );
+                // Time stands still while a new clip loads, so a slow disk cannot skip a clip.
+                let ready = {
+                    let world = app.world();
+                    world.get::<ActorClips>(actor).is_none()
+                        && world.get::<AnimationPlayer>(actor).is_some()
+                };
+                app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(if ready {
+                    step
+                } else {
+                    Duration::ZERO
+                }));
+                app.update();
+                if ready {
+                    elapsed += step.as_secs_f64();
+                } else {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                let current = app
+                    .world()
+                    .get::<IdleSequence>(actor)
+                    .unwrap()
+                    .current_source();
+                if played.last().is_some_and(|(_, last)| last != current) {
+                    println!("IDLE_SEQUENCE {name} t={elapsed:.2} {current}");
+                    played.push((elapsed, current.to_owned()));
+                }
+            }
+            let distinct: HashSet<_> = played.iter().map(|(_, source)| source.as_str()).collect();
+            println!(
+                "IDLE_SEQUENCE {name}: {} clip changes, {} distinct clips in {elapsed:.0} s",
+                played.len() - 1,
+                distinct.len()
+            );
+            most_distinct = most_distinct.max(distinct.len());
+            app.world_mut().entity_mut(actor).despawn();
+        }
+        assert!(
+            most_distinct >= 3,
+            "no creature showed three different idles in {seconds} s"
         );
     }
 }
