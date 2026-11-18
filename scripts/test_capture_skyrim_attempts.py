@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import fcntl
 from functools import partial
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+from threading import Barrier
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -21,7 +23,7 @@ import capture_skyrim_jump as v3
 import capture_skyrim_jump_inputs as v4
 import skyrim_capture_attempts as attempts
 from verify_skyrim_jump_inputs import verify
-from skyrim_capture_attempts import record_attempt, recover_attempts, save_manifest
+from skyrim_capture_attempts import claim_private_output, record_attempt, recover_attempts, save_manifest
 
 
 def campaign(module, root, frame_cap=None):
@@ -63,6 +65,117 @@ def install_fake_recorder(module, root, fake_recorder):
 
 
 class CaptureAttemptTests(unittest.TestCase):
+    def test_only_one_corpus_claims_an_unused_private_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            private = root / 'private'
+            private.mkdir()
+            corpora = [root / 'a', root / 'b']
+            for corpus in corpora:
+                corpus.mkdir()
+            start = Barrier(2)
+
+            def claim(corpus):
+                start.wait()
+                try:
+                    claim_private_output(private, corpus)
+                    return corpus
+                except ValueError:
+                    return None
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                winners = [result for result in pool.map(claim, corpora) if result is not None]
+            self.assertEqual(len(winners), 1)
+            claim_private_output(private, winners[0])
+
+    def test_foreign_private_attempt_is_rejected_before_capture_or_evidence_retention(self):
+        for module in (v3, v4):
+            with self.subTest(module=module.__name__), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                argv, _ = campaign(module, root)
+                other = argv.copy()
+                other[other.index('--corpus') + 1] = str(root / 'other')
+                fixtures = []
+
+                def recorder(command, **kwargs):
+                    fixtures.append(Path(command[command.index('--fixture') + 1]))
+                    output = Path(command[command.index('--output') + 1])
+                    output.mkdir()
+                    (output / 'trace.bin').write_bytes(b'private trace from original campaign')
+                    with patch('sys.argv', other), self.assertRaisesRegex(ValueError, 'another corpus'):
+                        module.main()
+                    return 1
+
+                with patch('sys.argv', argv), patch.object(module, 'run_recorder', side_effect=recorder), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(RuntimeError, 'Capture failed'):
+                        module.main()
+                    fixtures[0].write_bytes(b'preserved fixture')
+                    with self.assertRaisesRegex(RuntimeError, 'Capture failed'):
+                        module.main()
+                self.assertEqual(len(set(fixtures)), 2)
+                self.assertEqual(fixtures[0].read_bytes(), b'preserved fixture')
+                self.assertFalse((root / 'other/manifest.json').exists())
+                self.assertFalse(list((root / 'other/traces').glob('*')))
+                attempts = json.loads((root / 'corpus/manifest.json').read_bytes())['attempts']
+                self.assertEqual([row['attempt'] for row in attempts], [1, 2])
+                if module is v4:
+                    self.assertEqual(gzip.decompress((root / 'corpus' / attempts[0]['path']).read_bytes()),
+                                     b'private trace from original campaign')
+
+                # An unmarked, older private directory must also keep its old files.
+                private = root / 'private'
+                (private / '.capture-corpus').unlink()
+                with patch('sys.argv', other), patch.object(module, 'run_recorder') as record, \
+                        self.assertRaisesRegex(ValueError, 'use a fresh private directory'):
+                    module.main()
+                record.assert_not_called()
+                self.assertFalse((root / 'other/manifest.json').exists())
+                # Existing attempts in the caller's manifest also cannot establish private ownership.
+                before = (root / 'corpus/manifest.json').read_bytes()
+                with patch('sys.argv', argv), patch.object(module, 'run_recorder') as record, \
+                        self.assertRaisesRegex(ValueError, 'use a fresh private directory'):
+                    module.main()
+                self.assertFalse((private / '.capture-corpus').is_symlink())
+                self.assertEqual((root / 'corpus/manifest.json').read_bytes(), before)
+                record.assert_not_called()
+
+    def test_unidentified_pending_attempt_never_adopts_a_matching_private_filename(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stale = root / 'baseline-attempt-1'
+            stale.mkdir()
+            (stale / 'trace.bin').write_bytes(b'unrelated trace')
+            manifest = dict(runs=[], attempts=[dict(id='baseline', attempt=1, status='pending')])
+            path = root / 'manifest.json'
+            save_manifest(path, manifest)
+            before = path.read_bytes()
+            with patch.object(v4, 'retain_failure') as retain, self.assertRaisesRegex(ValueError, 'private output path'):
+                recover_attempts(path, manifest, root, retain)
+            retain.assert_not_called()
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_preexisting_next_attempt_path_never_becomes_failed_evidence(self):
+        for module in (v3, v4):
+            with self.subTest(module=module.__name__), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                argv, _ = campaign(module, root)
+                private, corpus = root / 'private', root / 'corpus'
+                private.mkdir()
+                corpus.mkdir()
+                claim_private_output(private, corpus)
+                label = 'baseline' if module is v4 else 'train-60hz-1x-1'
+                stale = private / f'{label}-attempt-1'
+                stale.mkdir()
+                (stale / 'trace.bin').write_bytes(b'unrelated trace')
+                with patch('sys.argv', argv), patch.object(module, 'run_recorder') as record, \
+                        self.assertRaisesRegex(FileExistsError, 'attempt path already exists'):
+                    module.main()
+                record.assert_not_called()
+                self.assertEqual((stale / 'trace.bin').read_bytes(), b'unrelated trace')
+                self.assertFalse((corpus / 'manifest.json').exists())
+                self.assertFalse(list((corpus / 'traces').glob('*')))
+
     def test_failure_waits_for_independent_native_writer_and_retries_unknown_state(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -459,8 +572,8 @@ with (root / 'session/.recording.lock').open('a') as session:
             snapshots = []
             original_write = v4.write
 
-            def interrupt_adoption(path, value):
-                original_write(path, value)
+            def interrupt_adoption(path, value, **kwargs):
+                original_write(path, value, **kwargs)
                 if path.name.endswith('-receipt.json'):
                     snapshots.append(manifest_path.read_bytes())
                     raise KeyboardInterrupt()
@@ -518,6 +631,10 @@ with (root / 'session/.recording.lock').open('a') as session:
                     kwargs['stdout'].write('new attempt log\n')
                     return 1
 
+                # Resume in a new private directory, while recovering the exact previous recording.
+                previous = root / 'private'
+                (previous / '.capture-corpus').unlink()
+                argv[argv.index('--private-output') + 1] = str(root / 'new-private')
                 with patch('sys.argv', argv), patch.object(module, 'run_recorder', retry), \
                         contextlib.redirect_stdout(io.StringIO()):
                     with self.assertRaises(RuntimeError):
@@ -528,6 +645,8 @@ with (root / 'session/.recording.lock').open('a') as session:
                 self.assertNotIn('status', ledger[0])
                 self.assertEqual(log.read_bytes(), original_log)
                 self.assertEqual((first['output'] / 'trace.bin').read_bytes(), b'partial trace')
+                if module is v4:
+                    self.assertEqual(gzip.decompress((root / 'corpus' / ledger[0]['path']).read_bytes()), b'partial trace')
 
     def test_adoption_rejects_failed_proofs_false_cadence_and_wrong_fixtures(self):
         reference = v4.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'

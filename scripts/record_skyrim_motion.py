@@ -135,7 +135,10 @@ def initialize_prefix(session, config, environment, output, unit, start):
         raise RuntimeError('Wine Documents escapes the isolated session')
     documents.mkdir(parents=True, exist_ok=True)
     (documents / 'Saves').mkdir(exist_ok=True)
-    shutil.copy2(config['source_save'], documents / 'Saves/MudcrabFixture.ess')
+    copied_save = documents / 'Saves/MudcrabFixture.ess'
+    shutil.copy2(config['source_save'], copied_save)
+    if sha256(copied_save) != config['source_save_sha256']:
+        raise ValueError('Copied save differs from the prepared source save')
     archives = ', '.join('Skyrim - ' + name + '.bsa' for name in
                          ['Misc', 'Shaders', 'Interface', 'Animations', 'Meshes0', 'Meshes1', 'Sounds'])
     textures = ', '.join('Skyrim - ' + name + '.bsa' for name in ['Voices_en0'] + [f'Textures{i}' for i in range(9)])
@@ -259,6 +262,10 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
             command += ['--setenv=' + k + '=' + v for k, v in environment.items()]
         if cwd:
             command += ['--working-directory=' + str(cwd)]
+        # The client locates the executable before the service manager expands dollars in argv.
+        if '$' in argv[0]:
+            argv = ['/bin/sh', '-c', 'exec "$@"', 'sh', *argv]
+        argv = [arg.replace('$', '$$') for arg in argv]
         # A terminal interrupt must spare the client until it confirms unit ownership.
         interruptible = False
         try:

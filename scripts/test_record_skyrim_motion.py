@@ -74,6 +74,20 @@ class ScreenshotOwnershipTests(unittest.TestCase):
 
 
 class RecordingLifecycleTests(unittest.TestCase):
+    def test_copied_save_must_match_the_prepared_save(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory)
+            source = session / 'source.ess'
+            source.write_bytes(b'prepared save')
+            config = dict(proton='proton', source_save=source, source_save_sha256=recorder.sha256(source))
+            def copy_changed_save(_source, destination):
+                destination.write_bytes(b'different save')
+            with patch.object(recorder.subprocess, 'check_output', return_value='ActiveState=active\nSubState=exited\nExecMainStatus=0'), \
+                    patch.object(recorder, 'stop_owned_services'), \
+                    patch.object(recorder.shutil, 'copy2', side_effect=copy_changed_save):
+                with self.assertRaisesRegex(ValueError, 'Copied save'):
+                    recorder.initialize_prefix(session, config, {}, session, 'prefix', lambda *args, **kwargs: None)
+
     def test_documents_link_is_checked_before_creating_directories(self):
         with tempfile.TemporaryDirectory() as directory:
             session = Path(directory) / 'session'

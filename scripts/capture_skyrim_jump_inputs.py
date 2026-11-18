@@ -15,8 +15,8 @@ from functools import partial
 from analyze_skyrim_jump_inputs import analyze_rows, decode_bytes, f32
 from publish_skyrim_evidence import public_value
 from record_skyrim_motion import session_units, unit_stopped, verify_trace
-from skyrim_capture_attempts import (corpus_lock, record_attempt, recover_attempts, run_recorder,
-                                     save_manifest, verify_retained_trace)
+from skyrim_capture_attempts import (claim_private_output, corpus_lock, private_attempt_paths, record_attempt,
+                                     recover_attempts, run_recorder, save_manifest, verify_retained_trace)
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ['scripts/publish_skyrim_evidence.py', 'scripts/record_skyrim_motion.py', 'scripts/capture_skyrim_jump_inputs.py',
@@ -31,8 +31,9 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def write(path, value):
-    path.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
+def write(path, value, *, exclusive=False):
+    with path.open('x' if exclusive else 'w') as output:
+        output.write(json.dumps(value, indent=2, allow_nan=False) + '\n')
 
 
 def read_capture_sources(path):
@@ -56,6 +57,10 @@ def control_prediction(baseline, condition):
     setting = condition.get('jump_height_min', inputs['jump_height_min'])
     raw_scale = (round(condition['reference_scale'] * 100) if 'reference_scale' in condition
                  else inputs['reference_u16'])
+    if 'jump_height_min' in condition and setting == inputs['jump_height_min']:
+        raise ValueError('Requested jump height already matches baseline')
+    if 'reference_scale' in condition and raw_scale == inputs['reference_u16']:
+        raise ValueError('Requested reference scale already matches baseline')
     reference = f32(raw_scale * inputs['reference_unit'])
     scale = f32(reference * inputs['npc_race_factor'])
     argument = f32(scale * setting)
@@ -171,6 +176,8 @@ def main():
         parser.error('Prepared recorder source differs')
     if session['build']['extension_sha256'] != digest(ROOT / 'tools/skyrim-recorder/jump_inputs.h'):
         parser.error('Prepared extension source differs')
+    args.corpus = args.corpus.resolve()
+    args.private_output = args.private_output.resolve()
     args.private_output.mkdir(parents=True, exist_ok=True)
     args.corpus.mkdir(parents=True, exist_ok=True)
     with corpus_lock(args.corpus) as lock_fd:
@@ -187,6 +194,7 @@ def main():
         validate_campaign_session(manifest['runs'], session_sha256, tools)
         for run in manifest['runs']:
             verify_retained_trace(args.corpus, run)
+        claim_private_output(args.private_output, args.corpus)
         source_bytes = {name: (ROOT / name).read_bytes() for name in SOURCES}
         archive_path = args.corpus / 'capture-source.zip'
         if archive_path.exists():
@@ -215,17 +223,15 @@ def main():
                 parser.error(f'Collect declared conditions in plan order; next is {next_condition}')
             attempt = 1 + sum(row['id'] == name for row in manifest['attempts'])
             adopted = name == 'baseline' and args.adopt_baseline
-            output = args.adopt_baseline if adopted else args.private_output / f'{name}-attempt-{attempt}'
+            output, inputs = private_attempt_paths(args.private_output, name, attempt, adopted)
             fixture = dict(plan['fixture'], **{k: v for k, v in condition.items() if k != 'id'})
-            fixture_path = args.private_output / (name + '.json')
-            write(fixture_path, fixture)
+            fixture_path = inputs / (name + '.json')
             prediction = None
             if name != 'baseline':
                 baseline = next((r for r in manifest['runs'] if r['id'] == 'baseline'), None)
                 if baseline is None:
                     parser.error('Collect and accept baseline before controls')
                 prediction = control_prediction(baseline['result'], condition)
-                write(args.private_output / (name + '-prediction.json'), prediction)
             command = [sys.executable, str(ROOT / 'scripts/record_skyrim_motion.py'), 'run',
                        '--session', str(session_dir), '--output', str(output.resolve()),
                        '--fixture', str(fixture_path.resolve()), '--frame-cap', str(plan['frame_cap']),
@@ -234,7 +240,11 @@ def main():
                        'command': command, 'prediction_before_capture': prediction, 'adopted': bool(adopted)}
             with record_attempt(manifest_path, manifest, name, attempt, output, partial(retain_failure, args.corpus),
                                 private_session=session_dir) as attempt_row:
-                write(args.private_output / f'{name}-attempt-{attempt}-receipt.json', receipt)
+                inputs.mkdir()
+                write(fixture_path, fixture, exclusive=True)
+                if prediction is not None:
+                    write(inputs / (name + '-prediction.json'), prediction, exclusive=True)
+                write(inputs / f'{name}-attempt-{attempt}-receipt.json', receipt, exclusive=True)
                 print(f'Recording {name}, attempt {attempt}', flush=True)
                 exit_code = 0
                 if not adopted:

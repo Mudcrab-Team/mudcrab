@@ -8,8 +8,8 @@ from pathlib import Path
 import sys
 
 import evaluate_skyrim_jump as evaluator
-from skyrim_capture_attempts import (corpus_lock, record_attempt, recover_attempts, run_recorder,
-                                     save_manifest, verify_retained_trace)
+from skyrim_capture_attempts import (claim_private_output, corpus_lock, private_attempt_paths, record_attempt,
+                                     recover_attempts, run_recorder, save_manifest, verify_retained_trace)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -18,9 +18,10 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def write(path, value):
+def write(path, value, *, exclusive=False):
     data = (json.dumps(value, indent=2, allow_nan=False) + '\n').encode()
-    path.write_bytes(data)
+    with path.open('xb' if exclusive else 'wb') as output:
+        output.write(data)
     return evaluator.digest(data)
 
 
@@ -68,6 +69,8 @@ def main():
         validate_frozen(frozen_bytes, session)
     if session['build']['source_sha256'] != digest(ROOT / 'tools/skyrim-recorder/probe.cpp'):
         parser.error('Prepared recorder source differs; prepare the session again')
+    args.corpus = args.corpus.resolve()
+    args.private_output = args.private_output.resolve()
     args.private_output.mkdir(parents=True, exist_ok=True)
     args.corpus.mkdir(parents=True, exist_ok=True)
     with corpus_lock(args.corpus) as lock_fd:
@@ -79,14 +82,15 @@ def main():
                    'sources': {name: digest(ROOT / name) for name in sources},
                    'frozen_sha256': evaluator.digest(frozen_bytes) if frozen_bytes is not None else None}
         receipt_path = args.corpus / (args.split + '-capture.json')
+        manifest_path = args.corpus / 'manifest.json'
+        manifest = (json.loads(manifest_path.read_text()) if manifest_path.exists() else
+                    {'schema': 1, 'runtime_sha256': plan['runtime_sha256'], 'runs': [], 'attempts': []})
+        claim_private_output(args.private_output, args.corpus)
         if receipt_path.exists():
             if json.loads(receipt_path.read_text()) != receipt:
                 parser.error('capture source, plan, session or frozen model changed; use a new corpus')
         else:
             save_manifest(receipt_path, receipt)
-        manifest_path = args.corpus / 'manifest.json'
-        manifest = (json.loads(manifest_path.read_text()) if manifest_path.exists() else
-                    {'schema': 1, 'runtime_sha256': plan['runtime_sha256'], 'runs': [], 'attempts': []})
         recover_attempts(manifest_path, manifest, args.private_output)
         conditions = plan['training' if args.split == 'train' else 'heldout']
         for repeat in range(1, plan['repeats'] + 1):
@@ -97,15 +101,16 @@ def main():
                     verify_retained_trace(args.corpus, accepted)
                     continue
                 attempt = 1 + sum(row['id'] == name for row in manifest['attempts'])
-                output = args.private_output / f'{name}-attempt-{attempt}'
+                output, inputs = private_attempt_paths(args.private_output, name, attempt)
                 fixture = dict(plan['fixture'], time_multiplier=condition['time_multiplier'])
-                fixture_path = args.private_output / (name + '.json')
-                expected_fixture = write(fixture_path, fixture)
+                fixture_path = inputs / (name + '.json')
                 command = [sys.executable, str(ROOT / 'scripts/record_skyrim_motion.py'), 'run',
                            '--session', str(session_dir), '--output', str(output.resolve()),
                            '--fixture', str(fixture_path.resolve()), '--frame-cap', str(condition['frame_cap']),
                            '--ocr-prefix', str(args.ocr_prefix.resolve())]
                 with record_attempt(manifest_path, manifest, name, attempt, output) as attempt_row:
+                    inputs.mkdir()
+                    expected_fixture = write(fixture_path, fixture, exclusive=True)
                     print(f'Recording {name}, attempt {attempt}', flush=True)
                     with Path(str(output) + '.log').open('x') as log:
                         exit_code = run_recorder(command, stdout=log, attempt=attempt_row, lock_fd=lock_fd)

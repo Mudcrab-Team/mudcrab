@@ -116,6 +116,17 @@ class JumpInputsProofTests(unittest.TestCase):
         self.assertEqual(reference['reference_u16'], 125)
         self.assertEqual(reference['setter_argument'], f32(f32(1.25 * f32(1.03)) * 76))
 
+    def test_control_requires_a_measured_change_from_baseline(self):
+        baseline = analyze_rows(input_rows())
+        for condition in ({'jump_height_min': 76}, {'reference_scale': 1.0}):
+            with self.subTest(condition=condition), self.assertRaisesRegex(ValueError, 'matches baseline'):
+                control_prediction(baseline, condition)
+
+    def test_setter_observer_can_emit_after_launch(self):
+        rows = input_rows()
+        rows[0]['qpc'] = rows[2]['qpc'] + 2
+        self.assertEqual(analyze_rows(rows)['status'], 'passed')
+
     def test_v4_decoder_requires_its_own_version_and_complete_record(self):
         rows = recording()
         rows[0].update(text=HEADER, code=4)

@@ -75,8 +75,7 @@ def analyze_rows(rows):
     require(v[0] == v[12], 'Jump setting changed across setter')
     require(all(v[i] == w[i] for i in (0, 1, 2, 3, 4, 5, 6, 11, 13, 14, 16, 17, 18, 19, 20, 21, 22)),
             'Loaded inputs changed between setter and launch')
-    require(setter['qpc'] <= launch['qpc'] and setter['sample'] <= launch['sample'],
-            'Setter did not precede launch')
+    require(setter['sample'] <= launch['sample'], 'Setter sample follows launch')
     reference = f32(v[1] * v[22])
     npc = f32(v[5 + int(v[3])] * v[4])
     scale = f32(reference * npc)

@@ -22,6 +22,33 @@ def corpus_lock(corpus):
         yield lock.fileno()
 
 
+def claim_private_output(private, corpus):
+    """Bind a campaign's private directory before inspecting any previous attempts."""
+    owner = private / '.capture-corpus'
+    if not owner.is_symlink():
+        if any(private.glob('*-attempt-*')):
+            raise ValueError(f'Private output contains unclaimed attempts: {private}; use a fresh private directory')
+        try:
+            owner.symlink_to(corpus.resolve(), target_is_directory=True)
+        except FileExistsError:
+            pass  # A competing corpus may have installed its claim.
+    if not owner.is_symlink() or owner.readlink() != corpus.resolve():
+        raise ValueError(f'Private output belongs to another corpus: {private}')
+
+
+def private_attempt_paths(private, name, number, adopted=None):
+    if not name or Path(name).name != name or name in ('.', '..'):
+        raise ValueError(f'Invalid private attempt name: {name!r}')
+    label = f'{name}-attempt-{number}'
+    output = private / label
+    inputs = private / (label + '.inputs')
+    reserved = (inputs,) if adopted else (inputs, output, private / (label + '.log'))
+    for path in reserved:
+        if os.path.lexists(path):
+            raise FileExistsError(f'Private attempt path already exists: {path}')
+    return (adopted or output), inputs
+
+
 def run_recorder(command, *, stdout, attempt, lock_fd):
     """Forward campaign cancellation and reap the recorder while the corpus is locked."""
     cancellation = None
@@ -104,6 +131,8 @@ def recover_attempts(path, manifest, private_output, retain=None):
         if any(run['id'] == row['id'] for run in manifest['runs']):
             row['exit_code'] = 0
         else:
+            if retain and 'private_output' not in row:
+                raise ValueError(f"Pending attempt {row['id']} lacks its recorded private output path")
             row.setdefault('recorder_exit_code', row.get('exit_code'))
             row['exit_code'] = -1
             output = (Path(row['private_output']) if 'private_output' in row else
