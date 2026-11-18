@@ -3405,6 +3405,31 @@ mod tests {
     }
 
     #[test]
+    fn authored_multibound_overrides_do_not_acquire_geometric_room_membership() {
+        let mut unrestricted = reference(0x2001, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        unrestricted.flags |= 0x8000_0000;
+        let mut assigned = unrestricted.clone();
+        assigned.form_id = 0x2002;
+        assigned.subrecords.push((b"XMBR".to_vec(), word(0x1001)));
+        let (conn, _) = export_rooms(vec![
+            interior_cell(0x100),
+            room(0x1001, 0x100, [0.0; 3], [0.0; 3], [100.0; 3], vec![]),
+            unrestricted,
+            assigned,
+            reference(0x2003, 0x100, 0x500, [0.0; 3], [0.0; 3]),
+        ]);
+        assert!(
+            rooms_of(&conn, 0x2001).is_empty(),
+            "NONE stays unrestricted"
+        );
+        assert!(
+            rooms_of(&conn, 0x2002).is_empty(),
+            "authored targets bypass geometric membership too"
+        );
+        assert_eq!(rooms_of(&conn, 0x2003), vec![(0x1001, 1)]);
+    }
+
+    #[test]
     fn a_rotated_room_is_tested_in_its_own_frame() {
         // Long along local X (half 100), narrow along local Y (half 10). Turned a quarter
         // turn about Z, the long side lies along world Y.
