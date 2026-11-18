@@ -15,38 +15,60 @@ retail value table can show that. Keep the two claims apart in every report.
 
 ## 1. Does a change need this skill?
 
-Run this from the checkout, with `BASE` set to the sync commit in section 6:
+Set `BASE` to the commit you compare with. For a pull request, that is its merge base with
+`main`. For a maintenance pass, it is the sync commit in section 6. Then run:
 
 ```sh
+BASE="$(git merge-base origin/main HEAD)"   # or the sync commit
 git diff --name-only "$BASE"...HEAD -- crates/retail-rules .agents/skills/verify-retail-rules
 git grep -n "retail_rules::" -- crates/engine crates/converter
 ```
 
 The skill applies when the first command lists a file, or when a change edits a call site that
 the second command lists. A call site that stops calling the crate and computes a rule itself is
-a coverage loss. Report it.
+a coverage loss. Report it. Read the diff, then use section 3 to find the harnesses and unit
+tests for each changed function.
 
 ## 2. Commands
 
-Kani is pinned to **0.68.0**. Install it once per machine:
+Kani is pinned to **0.68.0**. Install it once per machine (about 0.8 GiB: the Kani bundle in
+`~/.kani` and one pinned nightly toolchain):
 
 ```sh
 cargo install --locked kani-verifier --version 0.68.0
 cargo kani setup
 ```
 
-Run the proofs and the unit tests. In a Mudcrab checkout with shared storage, run Kani through
-the workspace entrypoint, so the build uses a leased directory and not a `target/` in the
-worktree (see `AGENTS.md`). The entrypoint does not accept `cargo kani` directly, so use `exec`:
+In a Mudcrab checkout with shared storage, run every build through the workspace entrypoint
+(see `AGENTS.md`), so it uses a leased directory and not a `target/` in the worktree. Use
+`scripts/workspace.py` when the checkout has it. Otherwise use the installed copy:
 
 ```sh
-WS="$(git rev-parse --path-format=absolute --git-common-dir)/../.mudcrab-local/bin/workspace.py"
-python3 "$WS" exec --isolated verify-retail-rules -- cargo kani -p retail-rules
-python3 "$WS" cargo test --locked -p retail-rules
+WS=scripts/workspace.py
+[ -f "$WS" ] || WS="$(git rev-parse --path-format=absolute --git-common-dir)/../.mudcrab-local/bin/workspace.py"
+export CARGO_BUILD_JOBS=4
+LOG="${TMPDIR:-/tmp}/retail-rules-kani.log"   # outside the worktree
+# The entrypoint does not accept `cargo kani`, so wrap it with `exec`.
+python3 "$WS" exec --isolated verify-retail-rules --needed-gib 3 -- cargo kani -p retail-rules 2>&1 | tee "$LOG"
+python3 "$WS" cargo --needed-gib 3 test --locked -p retail-rules --no-fail-fast
 ```
 
+A build of this crate needs well
+under 1 GiB, so `--needed-gib 3` is a safe estimate. The entrypoint still refuses to start when
+free space is below the 40 GiB reserve; then free space or ask the owner of the machine, and do
+not lower the reserve. Follow the machine's build gates in `AGENTS.md`, such as load limits.
+
 Without shared storage (for example in CI), run `cargo kani -p retail-rules` and
-`cargo test -p retail-rules`. To run one harness, add `--harness <name>`.
+`cargo test -p retail-rules --no-fail-fast`. To run only some harnesses, add `--harness <name>`
+once for each. A full Kani run takes about 2 to 5 minutes; `reference_scale_uses_the_retail_grouping`
+is most of it.
+
+Kani output is long. Read the result with:
+
+```sh
+grep -E "^Checking harness|VERIFICATION:|Complete -" "$LOG"
+grep -B1 -A2 "Status: FAILURE" "$LOG"
+```
 
 A good run prints `VERIFICATION:- SUCCESSFUL` for every harness and ends with
 `Complete - N successfully verified harnesses, 0 failures, N total.` A cover harness also prints
@@ -55,12 +77,12 @@ treat it as a failure of that harness's purpose and read section 4.
 
 ## 3. Coverage record
 
-| File | Function | Rule | Harnesses |
-|---|---|---|---|
-| `crates/retail-rules/src/scale.rs` | `sex_index`, `sex_index_of_form_type`, `npc_sex_index` | RF-NPC-005 | `sex_index_is_acbs_bit_zero`, `a_female_npc_gets_the_female_height`; retail rows in `tests/data/RF-NPC-005.tsv` |
-| `crates/retail-rules/src/scale.rs` | `race_height`, `npc_scale` | RF-NPC-004 | `missing_race_gives_the_npc_height`, `missing_npc_height_gives_the_race_height`, `missing_race_and_npc_height_give_one`, `sex_index_selects_the_race_height`, `finite_inputs_in_range_give_a_finite_scale`, `large_finite_heights_can_overflow` (cover) |
-| `crates/retail-rules/src/scale.rs` | `stored_reference_scale`, `reference_scale`, `retail_reference_scale` | RF-REFR-002, RF-CC-004 (same product) | `reference_scale_uses_the_retail_grouping`, `grouping_changes_the_last_bit` (cover), `a_reference_without_an_npc_base_keeps_its_scale`, `stored_scale_is_monotonic`, `one_hundred_percent_is_exactly_one`, `finite_inputs_in_range_give_a_finite_scale` |
-| `crates/retail-rules/src/placement.rs` | `reference_rotation` | RF-REFR-001 | `the_heading_is_always_kept`, `an_actor_reference_drops_x_and_y`, `any_other_reference_keeps_every_angle` |
+| File | Function | Rule | Kani harnesses | Unit tests and retail rows |
+|---|---|---|---|---|
+| `crates/retail-rules/src/scale.rs` | `sex_index`, `sex_index_of_form_type`, `npc_sex_index` | RF-NPC-005 | `sex_index_is_acbs_bit_zero`, `a_female_npc_gets_the_female_height` | `sex_index_reads_acbs_bit_zero_for_an_npc_only`; `rf_npc_005_sex_index_matches_every_retail_row` (24 rows, `tests/data/RF-NPC-005.tsv`) |
+| `crates/retail-rules/src/scale.rs` | `race_height`, `npc_scale` | RF-NPC-004 | `missing_race_gives_the_npc_height`, `missing_npc_height_gives_the_race_height`, `missing_race_and_npc_height_give_one`, `sex_index_selects_the_race_height`, `finite_inputs_in_range_give_a_finite_scale`, `large_finite_heights_can_overflow` (cover) | `npc_scale_table` |
+| `crates/retail-rules/src/scale.rs` | `stored_reference_scale`, `reference_scale`, `retail_reference_scale` | RF-REFR-002, RF-CC-004 (same product) | `reference_scale_uses_the_retail_grouping`, `grouping_changes_the_last_bit` (cover), `a_reference_without_an_npc_base_keeps_its_scale`, `stored_scale_is_monotonic`, `one_hundred_percent_is_exactly_one`, `finite_inputs_in_range_give_a_finite_scale` | `stored_percent_table`, `every_stored_percent_is_close_to_its_exact_value_and_monotonic`, `reference_scale_keeps_the_retail_grouping`, `reference_scale_multiplies_only_for_an_npc_base` |
+| `crates/retail-rules/src/placement.rs` | `reference_rotation` | RF-REFR-001 | `the_heading_is_always_kept`, `an_actor_reference_drops_x_and_y`, `any_other_reference_keeps_every_angle` | `an_actor_reference_keeps_only_its_heading`, `any_other_reference_keeps_all_three_angles` |
 
 Bounds and assumptions:
 
@@ -90,10 +112,13 @@ Bounds and assumptions:
 
 ## 4. A failure: real bug or modelling error?
 
-1. Read the counterexample. Get concrete values with
-   `cargo kani -p retail-rules --harness <name> -Z concrete-playback --concrete-playback=print`.
-   This prints a unit test. Run it as an ordinary test to replay the failure on the real code. Do
-   not commit the generated test unless it adds a useful regression case.
+1. Read the counterexample. Add `--harness <name> -Z concrete-playback --concrete-playback=print`
+   to the Kani command in section 2. Kani prints a unit test whose `concrete_vals` are the input
+   values, in the order of the harness's `kani::any()` calls, with a comment that shows each value.
+   Replay them on the real code: call the function under test with those values in an ordinary
+   `#[test]` on a scratch branch, or use an existing unit test that already fails. Do not commit
+   the replay unless it adds a useful regression case. If you may not edit the checkout, say that
+   the replay is unverified.
 2. Compare each input and the output with the registry row the harness cites.
    - The code gives a value that the rule does not allow: **real bug.** Report the harness, the
      inputs, the expected and actual values (as `f32` bits), and the commit that caused it. Do not
