@@ -286,7 +286,8 @@ class Workspace:
         self.cleanup_step("recover interrupted deletions", self.recover_interrupted)
         # Serialize capacity checks + selection, but keep the build lease for the entire command.
         selected = None
-        with lease(self.root / "locks" / "allocation.lock"):
+        # Another launch can hold this lock while it scans build usage. Wait for it.
+        with lease(self.root / "locks" / "allocation.lock", wait=30.0):
             self.preflight(needed_gib)
             for path in self.candidates(label, key):
                 # A short wait lets a dry run's momentary probe of the same lock finish.
@@ -300,6 +301,7 @@ class Workspace:
             if selected is None:
                 raise ValueError("Build slots are busy. Reuse the running build or retry after it finishes; do not create another target directory")
             path, lock = selected
+            existed = True  # Becomes false only after the first check below finds no directory.
             try:
                 if (path.is_symlink() or (path / "build.json").is_symlink()
                         or (path.exists() and not (path / "build.json").is_file())):
@@ -320,6 +322,11 @@ class Workspace:
                     marker["deliverable"] = (not retire) or (existed and previous.get("deliverable") is not False)
                 write_json(path / "build.json", marker)
             except BaseException:
+                if not existed and path.is_dir() and not path.is_symlink():
+                    try:
+                        path.rmdir()  # Only an empty directory that this call created.
+                    except OSError:
+                        pass
                 lock.__exit__(None, None, None)
                 raise
         try:
@@ -331,7 +338,10 @@ class Workspace:
             env["MUDCRAB_STORAGE"] = str(self.root)
             print(f"CARGO_TARGET_DIR={env['CARGO_TARGET_DIR']}", file=sys.stderr, flush=True)
             result = subprocess.run(command, cwd=self.repo, env=env).returncode
-            write_json(path / "build.json", {**read_json(path / "build.json"), "last_used": time.time()})
+            try:
+                write_json(path / "build.json", {**read_json(path / "build.json"), "last_used": time.time()})
+            except (OSError, ValueError) as exc:  # Keep the build and the child's exit status.
+                print(f"workspace: could not update the build marker: {exc}", file=sys.stderr)
             try:
                 if self.build_usage() > float(os.environ.get("MUDCRAB_BUILD_BUDGET_GIB", BUILD_BUDGET_GIB)) * GIB:
                     print("Build storage exceeds budget; prune idle builds before the next build.", file=sys.stderr)
@@ -361,7 +371,7 @@ class Workspace:
             return
         self.warn_label_cap(path)
         if result != 0:
-            return  # A failing build is evidence. Nothing is retired or superseded.
+            return  # Keep a failing build to inspect. Nothing is retired or superseded.
         if retire:
             # Only a passing check or test replaces older heads. A build, run or exec never does:
             # keeping two heads side by side is how one compares them.
@@ -842,7 +852,7 @@ class Workspace:
             if read_json(manifest).get(gate) is not True:
                 raise ValueError(f"Pack has not passed its {gate} gate: {manifest}")
             hashes[filename] = digest(manifest)
-        with lease(self.root / "locks" / "registry.lock"):
+        with lease(self.root / "locks" / "registry.lock", wait=10.0):
             registry_path = self.root / "packs.json"
             registry = read_json(registry_path) if registry_path.exists() else {}
             entry = {"path": str(path), "manifests": hashes}
@@ -864,8 +874,12 @@ class Workspace:
         source = Path(__file__).resolve()
         policy = self.repo / "AGENTS.md"
         guide = self.repo / "docs/contributing/storage.md"
-        for origin, name in ((source, "workspace.py"), (policy, "AGENTS.md"), (guide, "storage.md")):
+        # Copy workspace.py last, so a missing source file cannot leave a half-updated install.
+        for origin, name in ((policy, "AGENTS.md"), (guide, "storage.md"), (source, "workspace.py")):
             destination = self.root / "bin" / name
+            if not origin.is_file():
+                print(f"workspace: install skipped {name}: {origin} does not exist", file=sys.stderr)
+                continue
             if origin != destination:
                 temporary = destination.with_suffix(".tmp")
                 shutil.copyfile(origin, temporary)

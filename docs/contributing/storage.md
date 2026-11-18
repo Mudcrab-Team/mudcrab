@@ -46,8 +46,9 @@ foreground campaign instead of its individual builds:
 python3 scripts/workspace.py exec --isolated phase2 -- pwsh -File scripts/phase2-profile.ps1
 ```
 
-The PowerShell acceptance and visual-baseline runners use the same entrypoint. They retain
-their existing ephemeral output paths on CI. `capture-lod-phase1.sh` leases itself automatically.
+The PowerShell acceptance and visual-baseline runners and `capture-lod-phase1.sh` do not call
+this entrypoint themselves. Wrap the whole campaign with `exec --isolated`, as shown above.
+They keep their existing ephemeral output paths on CI.
 Managed campaigns put reports under shared `evidence/`. Do not detach background processes
 from a leased command; keep the parent alive until every child using its build directory exits.
 
@@ -145,7 +146,7 @@ directory is removed.
 
 | Rule | When | What is removed |
 | --- | --- | --- |
-| On success | `cargo --isolated LABEL check`, `clippy`, `fmt`, `test` or `nextest run` exits 0 | That isolated build. Not after a failure (a failed build is evidence). Not if the directory holds a result (see below). |
+| On success | `cargo --isolated LABEL check`, `clippy`, `fmt`, `test` or `nextest run` exits 0 | That isolated build. Not after a failure: the tool keeps that build so you can inspect it, but a later passing check or test of the same label can supersede it after 30 minutes. Copy any evidence you need to `evidence/`. Not if the directory holds a result (see below). |
 | Superseded | A passing check or test (the rules above) ends | Older heads of the same checkout and label that hold no result and were idle for 30 minutes. A `build`, `run` or `exec` never supersedes anything, so A/B comparisons keep both builds. |
 | Slot incremental | A slot command ends and `target/*/incremental` totals more than 8 GiB | Only `target/<profile>/incremental`. Never `deps`, `build`, binaries or `build.json`. Cargo recreates it, so the next build in that slot is slower. The delete runs while the slot lease is held. |
 
@@ -184,7 +185,7 @@ a pending receipt, contains a symlink, contains a mount point or any entry on an
 (`st_dev`), is itself a mount point, lacks a valid `build.json` (including a finite `last_used`),
 or sits outside `<storage>/builds`. The same checks run for `prune --apply`, the trim and the crash
 recovery. Whole slots are only removed by `prune` with an age (7 days by default), never by the
-automatic rules. Packs, `scratch/` and `evidence/` are never touched.
+automatic rules. The tool never deletes anything in `packs/`, `scratch/` or `evidence/`. It only adds receipts to `evidence/`.
 
 A pending receipt is any `<storage>/evidence/<task>/build-receipt.json` with
 `{"state": "pending", "builds": ["isolated-..."]}` (any state other than `"final"` counts).

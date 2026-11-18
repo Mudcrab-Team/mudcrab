@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -19,6 +20,10 @@ SPEC.loader.exec_module(workspace)
 
 class WorkspaceTests(unittest.TestCase):
     def setUp(self):
+        # The tests must not depend on the free space of the host disk.
+        reserve = patch.dict(os.environ, {"MUDCRAB_RESERVE_GIB": "0"})
+        reserve.start()
+        self.addCleanup(reserve.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.base = Path(self.temporary.name).resolve()
@@ -329,6 +334,71 @@ with module.lease(pathlib.Path(sys.argv[2])):
         with self.assertRaisesRegex(ValueError, "hook manager"):
             self.ws.install_git_hook()
         self.assertFalse(hook.exists())
+
+
+    def hold_briefly(self, name, seconds=0.6):
+        """Hold a lease from a helper thread, so the caller must wait for it."""
+        held = threading.Event()
+        def hold():
+            with workspace.lease(self.store / "locks" / name):
+                held.set()
+                time.sleep(seconds)
+        thread = threading.Thread(target=hold)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.assertTrue(held.wait(5))
+
+    def test_a_second_launch_waits_for_the_allocation_lock(self):
+        self.hold_briefly("allocation.lock")
+        result, observed = self.run_build()
+        self.assertEqual(result, 0)
+        self.assertEqual(len(observed), 1)
+
+    def test_pack_registration_waits_for_the_registry_lock(self):
+        pack = self.base / "waiting pack"
+        pack.mkdir()
+        (pack / "conversion-manifest.json").write_text('{"complete": true}')
+        (pack / "integration-report.json").write_text('{"passed": true}')
+        self.hold_briefly("registry.lock")
+        self.ws.register_pack("waiting", pack)
+        self.assertEqual(self.ws.pack_path("waiting"), pack.resolve())
+
+    def test_a_failed_first_marker_write_leaves_no_directory(self):
+        original = workspace.write_json
+        def fail(path, data):
+            if path.name == "build.json":
+                raise OSError("disk full")
+            return original(path, data)
+        with patch.object(workspace, "write_json", side_effect=fail):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.run_build("fresh")
+        self.assertEqual([p.name for p in (self.store / "builds").iterdir()], [])
+        result, _ = self.run_build("fresh")
+        self.assertEqual(result, 0)
+
+    def test_a_failed_final_marker_update_keeps_the_exit_status(self):
+        original = workspace.write_json
+        calls = []
+        def fail_second(path, data):
+            calls.append(path.name)
+            if path.name == "build.json" and calls.count("build.json") == 2:
+                raise OSError("disk full")
+            return original(path, data)
+        with patch.object(workspace, "write_json", side_effect=fail_second):
+            result, _ = self.run_build("campaign", returncode=37)
+        self.assertEqual(result, 37)
+        self.assertEqual(len(list((self.store / "builds").iterdir())), 1)
+
+    def test_install_skips_a_missing_agent_file_and_copies_the_tool_last(self):
+        guide = self.repo / "docs/contributing/storage.md"
+        guide.parent.mkdir(parents=True)
+        guide.write_text("guide")
+        self.assertFalse((self.repo / "AGENTS.md").exists())
+        self.ws.install()
+        installed = self.store / "bin"
+        self.assertEqual((installed / "storage.md").read_text(), "guide")
+        self.assertTrue((installed / "workspace.py").is_file())
+        self.assertFalse((installed / "AGENTS.md").exists())
 
 
 if __name__ == "__main__":
