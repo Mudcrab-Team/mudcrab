@@ -4439,9 +4439,10 @@ mod tests {
         );
     }
     /// With no distance limit the sun's shadows reach the grid the streamer draws, whichever way the
-    /// camera faces, and the shader's view of them is usable: far bounds that increase (the shader takes the first bound a
-    /// fragment is inside, so a bound out of order hands everything beyond it to a cascade that
-    /// cannot see it) and a near clamp below the first far bound. The two near distances are Bevy's
+    /// camera faces, and the shader's view of them is usable: far bounds that increase (the shader
+    /// takes the first bound a fragment is inside, so a bound out of order hands everything beyond
+    /// it to a cascade that cannot see it) and a near clamp below the first far bound. The two near
+    /// distances are Bevy's
     /// defaults read in metres; the last is this engine's drawn grid.
     #[test]
     fn the_sun_shadows_cover_the_drawn_grid() {
@@ -4523,6 +4524,41 @@ mod tests {
     /// Retail's `fShadowDistance` is the default (`RF-LIGHT-GPU-017`): the default config's last
     /// cascade ends at 8000, well inside the grid fit of about 23,200, and the Ultra value 10000 is
     /// reachable with the existing 1.25 step of the shadow-distance multiplier.
+    /// The 8000 default is measured from the camera, so the overhead captures state their own
+    /// distance (`config::ACCEPTANCE_SCREENSHOT_SUN_SHADOW_DISTANCE`): the acceptance camera, 20,000
+    /// units above the ground, still has its ground inside the last cascade, and so does the
+    /// benchmark camera 6,000 units up. A plain run stays at the retail default.
+    #[test]
+    fn overhead_capture_scenarios_keep_their_sun_shadows() {
+        let play = EngineConfig::run_from_args(["--headless".to_owned()]);
+        let acceptance = EngineConfig::run_from_args([
+            "--acceptance-screenshot".to_owned(),
+            "acceptance.png".to_owned(),
+        ]);
+        let benchmark = EngineConfig::run_from_args(
+            [
+                "--streaming-benchmark-route-speed",
+                "100",
+                "--benchmark-duration",
+                "5",
+            ]
+            .map(str::to_owned),
+        );
+        assert_eq!(play.sun_shadow_distance_limit, Some(8_000.0));
+        for (name, config) in [("acceptance", &acceptance), ("benchmark", &benchmark)] {
+            let height = camera_offset(config).y;
+            let last = sun_shadow_cascades(config).bounds[3];
+            assert!(
+                last > height + crate::world::components::CELL_SIZE,
+                "{name}: the ground under a camera {height} up is inside the last cascade ({last})"
+            );
+            assert!(
+                last > sun_shadow_cascades(&play).bounds[3],
+                "{name} reaches further than play's 8000"
+            );
+        }
+    }
+
     #[test]
     fn the_default_sun_shadow_distance_is_retails_8000() {
         let config = EngineConfig::default();

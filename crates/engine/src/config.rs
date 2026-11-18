@@ -420,6 +420,72 @@ pub const RETAIL_SUN_SHADOW_DISTANCE: f32 = 8_000.0;
 /// shadow-distance multiplier" setting, so a player reaches it without editing an INI.
 pub const RETAIL_ULTRA_SUN_SHADOW_DISTANCE: f32 = 10_000.0;
 
+/// The sun-shadow distance `--acceptance-screenshot` pins: `None`, the range fitted to the drawn
+/// grid (about 23,200 units at the default radius, `app::sun_shadow_cascades`).
+///
+/// The retail default ([`RETAIL_SUN_SHADOW_DISTANCE`]) is measured from the camera, and this
+/// scenario's camera is 20,000 units above the ground (`app::camera_offset`), so 8000 would put the
+/// whole ground outside every cascade and the capture would show no sun shadows. Pinning `None`
+/// keeps the scenario's images comparable with the ones taken before the default changed. An
+/// `[Display] fShadowDistance` from `--ini` still replaces it.
+pub const ACCEPTANCE_SCREENSHOT_SUN_SHADOW_DISTANCE: Option<f32> = None;
+
+/// The sun-shadow distance `--streaming-benchmark-route-speed` pins: `None` (the grid fit).
+///
+/// Its camera is 6,000 units above the ground, so a limit of 8000 would keep about 5,300 units of
+/// horizontal reach and change the shadow pass the benchmark measures. `None` keeps the baselines
+/// in `docs/roadmap/02-profiling.md` comparable.
+pub const STREAMING_BENCHMARK_SUN_SHADOW_DISTANCE: Option<f32> = None;
+
+/// The sun-shadow distance the scripted-camera captures pin (`--shots`, `--matched-route`,
+/// `--route`, `--auto-fly-speed`): `None` (the grid fit), so a reference capture shows the shadows
+/// it showed before the default changed.
+pub const CAMERA_SCRIPT_SUN_SHADOW_DISTANCE: Option<f32> = None;
+
+/// The sun-shadow distance the frame benchmarks pin (`--benchmark-frames`, `--benchmark-duration`,
+/// `--benchmark-jump`, `--benchmark-only`): `None` (the grid fit), so the shadow pass they measure
+/// is the one their baselines were taken with.
+pub const PROFILING_BENCHMARK_SUN_SHADOW_DISTANCE: Option<f32> = None;
+
+/// The scenario the arguments select and the sun-shadow distance it pins, if any.
+///
+/// A plain play session pins nothing and keeps [`RETAIL_SUN_SHADOW_DISTANCE`]. The result is applied
+/// before the `--ini` files, so an explicit `[Display] fShadowDistance` always wins.
+fn reference_scenario_sun_shadow_distance(args: &[String]) -> Option<(&'static str, Option<f32>)> {
+    let has = |flag: &str| args.iter().any(|argument| argument == flag);
+    if has("--acceptance-screenshot") {
+        Some((
+            "acceptance screenshot",
+            ACCEPTANCE_SCREENSHOT_SUN_SHADOW_DISTANCE,
+        ))
+    } else if has("--streaming-benchmark-route-speed") {
+        Some((
+            "streaming benchmark",
+            STREAMING_BENCHMARK_SUN_SHADOW_DISTANCE,
+        ))
+    } else if ["--shots", "--matched-route", "--route", "--auto-fly-speed"]
+        .into_iter()
+        .any(has)
+    {
+        Some(("camera script", CAMERA_SCRIPT_SUN_SHADOW_DISTANCE))
+    } else if [
+        "--benchmark-frames",
+        "--benchmark-duration",
+        "--benchmark-jump",
+        "--benchmark-only",
+    ]
+    .into_iter()
+    .any(has)
+    {
+        Some((
+            "profiling benchmark",
+            PROFILING_BENCHMARK_SUN_SHADOW_DISTANCE,
+        ))
+    } else {
+        None
+    }
+}
+
 impl Default for EngineConfig {
     /// Start with the standard engine settings and optional profiling diagnostics disabled.
     fn default() -> Self {
@@ -989,6 +1055,11 @@ impl EngineConfig {
             return Ok(ConfigAction::Version);
         }
         let mut config = Self::default();
+        // A reference capture or benchmark states its own sun-shadow distance, so its baseline does
+        // not move with the retail default. `--ini` is applied after it and still wins.
+        if let Some((_scenario, distance)) = reference_scenario_sun_shadow_distance(&args) {
+            config.sun_shadow_distance_limit = distance;
+        }
         let mut ini = SkyrimIni::default();
         for pair in args.windows(2) {
             if pair[0] == "--ini" {
@@ -3517,6 +3588,68 @@ mod tests {
         ]);
         assert!(missing.headless, "a missing file is reported and skipped");
         assert_eq!(missing.terrain_lod, TerrainLodDistances::default());
+    }
+
+    /// Play keeps retail's 8000; each reference capture or benchmark states its own distance, and an
+    /// INI `fShadowDistance` wins over both.
+    #[test]
+    fn a_reference_scenario_pins_its_sun_shadow_distance_over_the_default() {
+        assert_eq!(
+            run_config(&["--headless"]).sun_shadow_distance_limit,
+            Some(RETAIL_SUN_SHADOW_DISTANCE),
+            "play keeps the retail default"
+        );
+        for (name, arguments, pinned) in [
+            (
+                "acceptance screenshot",
+                &["--acceptance-screenshot", "shot.png"][..],
+                ACCEPTANCE_SCREENSHOT_SUN_SHADOW_DISTANCE,
+            ),
+            (
+                "streaming benchmark",
+                &[
+                    "--streaming-benchmark-route-speed",
+                    "100",
+                    "--benchmark-duration",
+                    "5",
+                ][..],
+                STREAMING_BENCHMARK_SUN_SHADOW_DISTANCE,
+            ),
+            (
+                "camera script",
+                &["--shots", "shots.json"][..],
+                CAMERA_SCRIPT_SUN_SHADOW_DISTANCE,
+            ),
+            (
+                "profiling benchmark",
+                &["--benchmark-frames", "10"][..],
+                PROFILING_BENCHMARK_SUN_SHADOW_DISTANCE,
+            ),
+        ] {
+            let args: Vec<String> = arguments.iter().map(|a| (*a).to_owned()).collect();
+            assert_eq!(
+                reference_scenario_sun_shadow_distance(&args).map(|(scenario, _)| scenario),
+                Some(name)
+            );
+            assert_eq!(
+                run_config(arguments).sun_shadow_distance_limit,
+                pinned,
+                "{name} pins its own distance"
+            );
+            assert_ne!(
+                pinned,
+                Some(RETAIL_SUN_SHADOW_DISTANCE),
+                "{name} does not take the play default"
+            );
+        }
+
+        // An explicit INI value replaces the scenario's, as it replaces the default.
+        let directory = tempfile::tempdir().unwrap();
+        let ini = directory.path().join("SkyrimPrefs.ini");
+        std::fs::write(&ini, "[Display]\nfShadowDistance=9000\n").unwrap();
+        let ini = ini.display().to_string();
+        let config = run_config(&["--acceptance-screenshot", "shot.png", "--ini", &ini]);
+        assert_eq!(config.sun_shadow_distance_limit, Some(9_000.0));
     }
 
     /// Lights are opt-in: the flag is off unless it is given, so the default run - and every
