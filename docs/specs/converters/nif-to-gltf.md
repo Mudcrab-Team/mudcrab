@@ -284,7 +284,9 @@ A few retail shapes store a NaN or infinite half-float UV in one vertex (the Whi
 `WRGuardHouse01:48` has one in 1,095 vertices). The reader used to remove the whole `TEXCOORD_0`
 attribute for such a shape, so every vertex sampled one texel and the surface drew as a flat colour.
 It now replaces each non-finite component with zero, keeps the attribute and logs the count.
-Retail draws the triangles around such a vertex wrongly too; the rest of the mapping is intact.
+This is an engineering guard, not a retail rule: the retail look of the triangles around such a vertex
+was not traced (no row in the retail registry), and zero is only the neutral value. Those triangles can
+show a stretched strip of texture; the rest of the mapping is intact.
 Mesh contract `non-finite-uv-repair-v1` records this change; it changes the `nif` proof only, so a
 normal conversion rebuilds meshes an earlier converter wrote. 21 meshes of the retail game change.
 

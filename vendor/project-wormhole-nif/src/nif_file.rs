@@ -1423,7 +1423,11 @@ fn normalize_vertex_influences(
 /// A few retail NIFs store a NaN or infinite half-float in one vertex. Dropping the whole UV
 /// attribute for that shape (the previous behaviour) leaves every vertex sampling one texel, so a
 /// textured wall renders as a flat colour. Zeroing only the bad components keeps the rest of the
-/// mapping; the affected triangles are as wrong as the game draws them.
+/// mapping.
+///
+/// This is an engineering guard, not a retail rule: how the retail renderer draws a NaN texture
+/// coordinate was not traced (Direct3D 11 leaves the sampler result undefined), and zero is only
+/// the neutral value. Triangles that use a repaired vertex can show a stretched strip of texture.
 pub fn sanitize_non_finite_uvs(uvs: &mut [glam::Vec2]) -> usize {
     let mut repaired = 0;
     for uv in uvs {
