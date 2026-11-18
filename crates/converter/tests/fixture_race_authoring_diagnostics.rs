@@ -3,7 +3,7 @@
 mod common;
 
 use converter::{AssetPipeline, config::RecordReader};
-use dummy_content::layout;
+use dummy_content::{inhouse_items as items, layout};
 use rusqlite::Connection;
 use std::{fs, path::Path};
 
@@ -27,7 +27,7 @@ fn record(tag: &[u8; 4], id: u32, fields: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
     bytes
 }
 
-/// Adds two broken races, one valid race, and two NPC users of the first bad race.
+/// Adds two broken races, their NPC users, and a neighboring creature with an authored body.
 fn generate(data: &Path) {
     layout::prepare_directory(data, false).unwrap();
     layout::generate(
@@ -57,9 +57,24 @@ fn generate(data: &Path) {
         0x0803,
         &[
             (b"EDID", b"ReadableNeighbor\0"),
+            (b"WNAM", &0x0821u32.to_le_bytes()),
+            (b"DATA", &items::race_data(false)),
             (b"MNAM", b""),
             (b"ANAM", b"generated.nif\0"),
+            (b"NAM3", b""),
+            (b"MNAM", b""),
+            (b"MODL", b"Actors/Fixture/Creature.hkx\0"),
         ],
+    ));
+    bytes.extend(items::npc(0x0813, 0x0803, false));
+    bytes.extend(items::skin_armor(0x0821, &[0x0822]));
+    // Slot 30 represents a whole body here because the race has a creature project.
+    bytes.extend(items::armature(
+        0x0822,
+        0x0803,
+        1,
+        Some("generated.nif"),
+        None,
     ));
     for id in [0x0811, 0x0812] {
         bytes.extend(record(
@@ -106,7 +121,37 @@ async fn broken_race_authoring_publishes_neighbors_and_persisted_omissions() {
     let count: u32 = db.query_row("SELECT count FROM projection_omission_stats WHERE category='race_unreadable_authoring'", [], |row| row.get(0)).unwrap();
     assert_eq!(count, 2, "NPC users must not multiply a race omission");
     let authored: (Option<String>, Option<String>) = db.query_row("SELECT skeleton_nif,project_hkx FROM race_animation_sources WHERE race_id=2051 AND sex='male'", [], |row| Ok((row.get(0)?,row.get(1)?))).unwrap();
-    assert_eq!(authored, (Some("meshes/generated.nif".into()), None));
+    assert_eq!(
+        authored,
+        (
+            Some("meshes/generated.nif".into()),
+            Some("meshes/actors/fixture/creature.hkx".into()),
+        )
+    );
+    let body: Vec<(u32, u32, String, String, String, u32)> = db
+        .prepare(
+            "SELECT m.race_id, m.skin_armo_id, m.resolution, p.slot, p.model_path, p.armature_race_id \
+             FROM actor_models m JOIN actor_model_parts p ON p.npc_id=m.id WHERE m.id=2067",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        body,
+        vec![(
+            0x0803,
+            0x0821,
+            "body".into(),
+            "body".into(),
+            "generated.nif".into(),
+            0x0803
+        )],
+        "the valid creature's skin chain still resolves to a published body part"
+    );
     let retained: u32 = db
         .query_row(
             "SELECT count(*) FROM records WHERE form_id IN (2049,2050,2051)",
@@ -143,7 +188,7 @@ async fn broken_race_authoring_publishes_neighbors_and_persisted_omissions() {
     assert!(manifest["failures"].as_object().unwrap().is_empty());
 }
 
-/// Standalone actor-model consumers receive the same RACE error once, with its details.
+/// Standalone actor-model consumers get every RACE error, including races without NPC users.
 #[test]
 fn actor_catalog_retains_unique_race_authoring_errors() {
     let directory = tempfile::tempdir().unwrap();
@@ -154,8 +199,13 @@ fn actor_catalog_retains_unique_race_authoring_errors() {
         .map(|record| (record.form_id, record))
         .collect();
     let catalog = converter::actor_models::resolve_actor_models(&records, &Default::default());
-    assert_eq!(catalog.race_authoring_errors.len(), 1);
+    assert_eq!(
+        catalog.race_authoring_errors.len(),
+        2,
+        "one catalog diagnostic per bad RACE, even with no NPC users"
+    );
     assert!(catalog.race_authoring_errors[&0x0801].contains("no sex selector"));
+    assert!(catalog.race_authoring_errors[&0x0802].contains("utf-8"));
     assert_eq!(
         catalog
             .models
