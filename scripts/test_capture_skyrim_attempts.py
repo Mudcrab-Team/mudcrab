@@ -276,13 +276,16 @@ with (root / 'session/.recording.lock').open('a') as session:
     def test_selected_conditions_must_follow_plan_order_before_recording(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            argv, _ = campaign(v4, root)
+            argv, session = campaign(v4, root)
             plan_path = Path(argv[argv.index('--plan') + 1])
             plan = json.loads(plan_path.read_text())
             corpus = root / 'corpus'
             corpus.mkdir()
             reference = v4.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4/manifest.json'
             baseline = json.loads(reference.read_text())['runs'][0]
+            baseline['receipt']['session_sha256'] = v4.digest(root / 'session/session.json')
+            baseline['proof'].update(dll_sha256=session['build']['dll_sha256'], input_sha256=session['input_sha256'],
+                                     proton_sha256=session['proton_sha256'])
             manifest = dict(schema=1, profile='jump-inputs-v4', plan_sha256=v4.digest(plan_path),
                             runtime_sha256=plan['runtime_sha256'], runs=[baseline], attempts=[])
             (corpus / 'manifest.json').write_text(json.dumps(manifest))

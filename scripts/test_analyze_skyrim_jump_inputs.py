@@ -310,6 +310,48 @@ class CaptureResumeTests(unittest.TestCase):
                         verify(corpus, plan)
 
 
+    def test_resume_rejects_a_changed_prepared_session_before_dispatch(self):
+        reference = capture.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
+        baseline = json.loads((reference / 'manifest.json').read_bytes())['runs'][0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            argv, session = campaign(capture, root)
+            adopted = root / 'adopted'
+            adopted.mkdir()
+            raw = gzip.decompress((reference / baseline['path']).read_bytes())
+            (adopted / 'trace.bin').write_bytes(raw)
+            capture.write(adopted / 'proof.json', dict(baseline['proof'], session=session,
+                          trace_sha256=hashlib.sha256(raw).hexdigest(),
+                          runner_sha256=capture.digest(capture.ROOT / 'scripts/record_skyrim_motion.py')))
+            with patch('sys.argv', argv + ['--adopt-baseline', str(adopted)]):
+                capture.main()
+            path = root / 'corpus/manifest.json'
+            checkpoint = path.read_bytes()
+            session['proton_sha256'] = 'a' * 64
+            capture.write(root / 'session/session.json', session)
+            argv[argv.index('--condition') + 1] = 'setting-64'
+            with patch('sys.argv', argv), patch.object(capture, 'run_recorder', return_value=1) as recorder:
+                with self.assertRaisesRegex(ValueError, 'session or tool identity'):
+                    capture.main()
+                recorder.assert_not_called()
+            self.assertEqual(path.read_bytes(), checkpoint)
+
+    def test_offline_verification_rejects_mixed_session_and_tool_hashes(self):
+        reference = capture.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
+        plan = capture.ROOT / 'tools/skyrim-recorder/fixtures/jump-inputs-v4.json'
+        with tempfile.TemporaryDirectory() as directory:
+            corpus = Path(directory)
+            for name in ('capture-source.zip', 'traces'):
+                (corpus / name).symlink_to(reference / name)
+            for section, key in [('receipt', 'session_sha256'), ('proof', 'dll_sha256'),
+                                 ('proof', 'input_sha256'), ('proof', 'proton_sha256')]:
+                with self.subTest(key=key):
+                    manifest = json.loads((reference / 'manifest.json').read_bytes())
+                    manifest['runs'][1][section][key] = 'a' * 64
+                    capture.write(corpus / 'manifest.json', manifest)
+                    with self.assertRaisesRegex(ValueError, 'session or tool identity'):
+                        verify(corpus, plan)
+
     def test_missing_failed_attempt_breaks_ledger_continuity(self):
         reference = capture.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
         plan = capture.ROOT / 'tools/skyrim-recorder/fixtures/jump-inputs-v4.json'

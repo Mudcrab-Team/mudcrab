@@ -9,7 +9,8 @@ import zipfile
 
 from analyze_skyrim_jump_inputs import analyze_rows, decode, require
 from publish_skyrim_evidence import source_digest
-from capture_skyrim_jump_inputs import ROOT, SOURCES, control_prediction, digest, validate_capture_proof
+from capture_skyrim_jump_inputs import (ROOT, SOURCES, control_prediction, digest, validate_campaign_session,
+                                        validate_capture_proof)
 
 LEGACY_CAPTURE_SHA256 = '6e85fa44b471005a5179a88fb220d4a1c12e8ab6341cadc640250d93ebc8d9ad'
 LEGACY_SOURCES = set(SOURCES) - {'scripts/publish_skyrim_evidence.py', 'scripts/skyrim_capture_attempts.py'}
@@ -37,7 +38,9 @@ def verify(corpus, plan_path):
             accepted += 1
             next_attempt = 1
     require(accepted == len(conditions), 'Attempt ledger is incomplete')
-    baseline = manifest['runs'][0]['result']
+    baseline_run = manifest['runs'][0]
+    validate_campaign_session(manifest['runs'], baseline_run['receipt']['session_sha256'], baseline_run['proof'])
+    baseline = baseline_run['result']
     with zipfile.ZipFile(corpus / 'capture-source.zip') as archive:
         captured_sources = {name: archive.read(name) for name in archive.namelist()}
     capture = 'scripts/capture_skyrim_jump_inputs.py'

@@ -32,6 +32,14 @@ def write(path, value):
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
 
 
+def validate_campaign_session(runs, session_sha256, expected_proof):
+    for run in runs:
+        if (run['receipt']['session_sha256'] != session_sha256 or
+                any(run['proof'][key] != expected_proof[key]
+                    for key in ('dll_sha256', 'input_sha256', 'proton_sha256'))):
+            raise ValueError(f"Capture session or tool identity differs for {run['id']}")
+
+
 def control_prediction(baseline, condition):
     inputs = baseline['inputs']
     setting = condition.get('jump_height_min', inputs['jump_height_min'])
@@ -109,6 +117,10 @@ def main():
                      'runtime_sha256': plan['runtime_sha256'], 'runs': [], 'attempts': []})
         if manifest['plan_sha256'] != plan_hash:
             parser.error('Declared plan changed; use a new corpus')
+        session_sha256 = hashlib.sha256(session_bytes).hexdigest()
+        tools = {'dll_sha256': session['build']['dll_sha256'], 'input_sha256': session['input_sha256'],
+                 'proton_sha256': session['proton_sha256']}
+        validate_campaign_session(manifest['runs'], session_sha256, tools)
         source_bytes = {name: (ROOT / name).read_bytes() for name in SOURCES}
         archive_path = args.corpus / 'capture-source.zip'
         if archive_path.exists():
@@ -154,7 +166,7 @@ def main():
                        '--session', str(session_dir), '--output', str(output.resolve()),
                        '--fixture', str(fixture_path.resolve()), '--frame-cap', str(plan['frame_cap']),
                        '--ocr-prefix', str(args.ocr_prefix.resolve())]
-            receipt = {'session_sha256': hashlib.sha256(session_bytes).hexdigest(), 'sources': sources,
+            receipt = {'session_sha256': session_sha256, 'sources': sources,
                        'command': command, 'prediction_before_capture': prediction, 'adopted': bool(adopted)}
             with record_attempt(manifest_path, manifest, name, attempt, output, partial(retain_failure, args.corpus)) as attempt_row:
                 write(args.private_output / f'{name}-attempt-{attempt}-receipt.json', receipt)
@@ -204,8 +216,7 @@ def main():
                                     'source_save_unchanged', 'frame_cap_request', 'dxvk_config', 'ini', 'fixture_sha256')}
                     public_proof['camera_cadence'] = cadence
                     public_proof.update(exe_sha256=session['exe_sha256'], source_save_sha256=session['source_save_sha256'],
-                                        dll_sha256=session['build']['dll_sha256'], input_sha256=session['input_sha256'],
-                                        proton_sha256=session['proton_sha256'])
+                                        **tools)
                 except Exception as error:
                     retain_failure(args.corpus, output, attempt_row,
                                    {'phase': 'v4-input-proof', 'error': f'{type(error).__name__}: {error}'})
