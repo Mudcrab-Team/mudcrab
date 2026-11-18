@@ -106,12 +106,12 @@ struct IdlePlayback {
 /// A creature's stand-in for the retail behaviour graph's idle variety.
 ///
 /// **This is a placeholder, not the retail rule.** Retail plays `ActionIdle` and the actor's
-/// behaviour graph picks the clips. The verified IDLE1 retail findings (verify report, section 6 and
-/// rule 10) read the graph data: the dog head layer (6 states), the dog tail layer (4 states) and
-/// the cow tail wag (3 states) each re-pick with equal weights when their clip ends. The clips run
-/// 1.0 to 5.0 s, so the time between picks is the clip length and no separate timer exists. Retail
-/// blends those layers over a base loop at the same time. Mudcrab plays one clip at a time, so this
-/// component folds the layers into one sequence:
+/// behaviour graph picks the clips (RF-IDLE-005). The graph data is verified: the dog head layer
+/// (6 states) and tail layer (4 states) re-pick with equal weights when their clip ends
+/// (RF-IDLE-018), and so does the cow tail wag (3 states, RF-IDLE-019). The clips run 1.0 to 5.0 s,
+/// so the time between picks is the clip length and no separate timer exists. Retail blends those
+/// layers over a base loop at the same time. Mudcrab plays one clip at a time, so this component
+/// folds the layers into one sequence:
 ///
 /// - The actor starts on its catalog default clip, the base. Every clip plays once, to its end. No
 ///   timer decides when to change.
@@ -123,10 +123,11 @@ struct IdlePlayback {
 ///   reference always plays the same sequence, whatever the frame rate.
 ///
 /// Not done here, on purpose: the look, call, sit, lie-down, feed and forage variants of dogs and
-/// cows. Retail takes those from the engine's `IDLE` tree (a depth-first first-match walk with
-/// conditions, `GetRandomPercent` draws and a replay-delay list), not from the graph. That is a
-/// follow-up. Humans are a later step too: the engine walks the `ActionIdle` tree for them and the
-/// real leaf set is unresolved.
+/// cows. Retail takes those from the engine's `IDLE` tree (RF-IDLE-020): a depth-first first-match
+/// walk with conditions (RF-IDLE-006), `GetRandomPercent` draws (RF-IDLE-004) and a replay-delay
+/// list (RF-IDLE-007), not from the graph. That is a follow-up. Humans are a later step too: the
+/// engine walks the `ActionIdle` tree for them (RF-IDLE-022) and their graph has no random
+/// re-pick (RF-IDLE-023).
 ///
 /// An actor with fewer than two pool clips gets no `IdleSequence` and keeps looping its default
 /// clip, exactly as before.

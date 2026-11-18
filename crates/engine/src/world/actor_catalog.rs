@@ -105,7 +105,8 @@ impl ActorSpawnPlan {
 /// This is part of a stand-in. Retail does not filter by name: the behaviour graph owns which clip
 /// plays when (the dog graph's `PickNewIdle` / `PickNewHead` / `PickNewTail`, the cow graph's
 /// `PickNewIdle`). The name filter only keeps attacks, deaths and transitions out of a loop that
-/// has no graph to sequence them. See [`crate::actor_animation::IdleSequence`].
+/// has no graph to sequence them (RF-IDLE-018, RF-IDLE-019). See
+/// [`crate::actor_animation::IdleSequence`].
 #[derive(Debug, Clone, Copy)]
 pub struct IdleNameRule {
     /// A file name that starts with one of these is a candidate.
@@ -140,7 +141,7 @@ impl IdleNameRule {
 ///   looped `idle_enterfeed` is not an idle);
 /// - `idle_a_`: the twelve `idle_A_*` stand idles. Retail disables their root, `BaseIdleRoot`,
 ///   with a `GetRandomPercent < 0` condition that never passes, so they are not part of the
-///   reachable stand set (IDLE1 verify report, rule 5).
+///   reachable stand set (RF-IDLE-021).
 pub const VARIED_IDLE_NAMES: IdleNameRule = IdleNameRule {
     starts_with: &["idle"],
     contains: &["_idle"],
