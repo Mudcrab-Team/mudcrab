@@ -1059,7 +1059,13 @@ mod tests {
             )
             .unwrap();
         let mut app = App::new();
-        app.init_resource::<Assets<Mesh>>()
+        // The room blend reads the real clock; one update is longer than its three seconds, so a
+        // room crossing completes in the frame it happens in.
+        app.add_plugins(bevy::time::TimePlugin)
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_secs(4),
+            ))
+            .init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<SkyMaterial>>()
             .init_resource::<SkyPalette>()
             .init_resource::<CameraSpace>()

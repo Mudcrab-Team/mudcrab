@@ -32,9 +32,15 @@ repository; ask in #264 for a row. This spec states each fact it relies on.
    supplies the colour source (directional, DALC, fog colours) and the whole fog: near, far,
    power and max (RF-LIGHT-CPU-023). The cell's inherit bits do not apply to a room, so a
    template without a fog ramp gives a room without fog. Only the rotation stays the cell's.
-   Retail follows the current room through the portal system and blends over 3.0 s
-   (RF-LIGHT-CPU-024, RF-LIGHT-CPU-025). Mudcrab uses the camera position and switches at once;
-   the blend is a follow-up. The record-to-extra-0x77 link is a medium-confidence name lead.
+   Retail follows the current room through the portal system; Mudcrab uses the camera position
+   (RF-LIGHT-CPU-026), staying in the room it is in while the point is still inside it. A room
+   change blends over `fRoomLightingTransitionDuration` = 3.0 s with `w = (3 - 2t) t^2`
+   (RF-LIGHT-CPU-024): directional colour, the six DALC colours, both fog colours and fog near,
+   far, power and max (RF-LIGHT-CPU-025). A room change while a blend runs waits for it to end. A
+   cell change (a door) applies the new cell at once. A side with no fog ramp stands for retail's
+   far clamp of 163,840, so fog fades in or out. Not blended: the key-light rotation (the cell's),
+   the light fade (reported only) and the room image space (`room_bounds` has no image-space
+   column yet). The record-to-extra-0x77 link is a medium-confidence name lead.
 5. **Key light**: the same `DirectionalLight` entity as the exterior sun (retail uses one light
    node, RF-LIGHT-CPU-011).
    - Colour `Color::srgb_u8(directional)`, the same conversion as the exterior sun.
