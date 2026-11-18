@@ -45,21 +45,15 @@ pub fn recover_plugin_paths(paths: &[PathBuf]) -> Result<(Vec<PathBuf>, Vec<Stri
         .iter()
         .map(|name| shared::form_key::NamedFormKey::new(name, 1).is_err())
         .collect();
-    if !skipped.iter().any(|skip| *skip) {
+    let Some(index) = skipped.iter().position(|&skip| skip) else {
         return Ok((paths.to_vec(), Vec::new()));
-    }
+    };
     let invalid_count = skipped.iter().filter(|skip| **skip).count();
-    let first = names
-        .iter()
-        .zip(&skipped)
-        .find(|(_, skip)| **skip)
-        .map(|(name, _)| {
-            name.chars()
-                .take(80)
-                .map(|c| if c.is_control() { ' ' } else { c })
-                .collect::<String>()
-        })
-        .expect("at least one invalid name");
+    let first: String = names[index]
+        .chars()
+        .take(80)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
     let metadata = paths
         .iter()
         .zip(&skipped)
@@ -175,9 +169,8 @@ impl FormKeyOrder {
                 .find_map(|(tag, data)| {
                     (tag == b"HEDR")
                         .then(|| {
-                            data.get(..4).map(|word| {
-                                f32::from_le_bytes(word.try_into().expect("four bytes"))
-                            })
+                            data.first_chunk::<4>()
+                                .map(|&word| f32::from_le_bytes(word))
                         })
                         .flatten()
                 });
@@ -208,13 +201,19 @@ impl FormKeyOrder {
         let table = PluginTable::fresh(rows.clone())?;
         let order: Vec<_> = rows
             .iter()
-            .map(|(name, _)| table.id(name).expect("allocated name"))
-            .collect();
+            .map(|(name, _)| {
+                table
+                    .id(name)
+                    .ok_or_else(|| eyre!("unallocated plugin: {name}"))
+            })
+            .collect::<Result<_>>()?;
         let mut priority = HashMap::new();
         let mut identity_order = HashMap::new();
         let (mut full_count, mut light_count) = (0, 0);
         for (at, &id) in order.iter().enumerate() {
-            let entry = table.entry(id).expect("allocated id");
+            let entry = table
+                .entry(id)
+                .ok_or_else(|| eyre!("missing plugin entry for supplier {at}"))?;
             for master in &entry.facts.masters {
                 ensure!(
                     table
@@ -284,13 +283,25 @@ impl FormKeyOrder {
         self.resolve(supplier, raw, ZeroPolicy::Null)
     }
 
-    /// Count out-of-range occurrences without changing the persisted diagnostic/event formats.
-    pub(crate) fn note_projection(&self, supplier: usize, raw: u32) {
-        let Some(entry) = self
-            .order
+    /// Find a supplier by its load-order position and check the table entry.
+    pub(crate) fn supplier_entry(
+        &self,
+        supplier: usize,
+    ) -> Option<&shared::plugin_table::PluginEntry> {
+        self.order
             .get(supplier)
             .and_then(|&id| self.table.entry(id))
-        else {
+    }
+
+    /// Identify an observation even if its supplier is missing from the identity context.
+    fn supplier_name(&self, supplier: usize) -> &str {
+        self.supplier_entry(supplier)
+            .map_or("<unknown supplier>", |entry| entry.display_name.as_str())
+    }
+
+    /// Count out-of-range occurrences without changing the persisted diagnostic/event formats.
+    pub(crate) fn note_projection(&self, supplier: usize, raw: u32) {
+        let Some(entry) = self.supplier_entry(supplier) else {
             return;
         };
         if (raw >> 24) as usize > entry.facts.masters.len() {
@@ -356,11 +367,7 @@ impl FormKeyOrder {
         field: Option<&str>,
         occurrence: u64,
     ) -> bool {
-        let Some(entry) = self
-            .order
-            .get(supplier)
-            .and_then(|&id| self.table.entry(id))
-        else {
+        let Some(entry) = self.supplier_entry(supplier) else {
             return false;
         };
         if (raw >> 24) as usize <= entry.facts.masters.len() {
@@ -400,7 +407,7 @@ impl FormKeyOrder {
         let mut warnings: Vec<_> = counts.get(&std::thread::current().id()).into_iter().flat_map(|entries| entries.iter())
             .map(|(&supplier, &(count, first))| format!(
                 "warning: {}: LegacyTypedReaderProjection kept NULL for {count} native self FormKey link occurrence(s) (first source: {first:08X})",
-                self.table.entry(self.order[supplier]).expect("allocated supplier").display_name))
+                self.supplier_name(supplier)))
             .collect()
         ;
         let losses = self
@@ -409,8 +416,10 @@ impl FormKeyOrder {
             .unwrap_or_else(|poison| poison.into_inner());
         if let Some(entries) = losses.get(&std::thread::current().id()) {
             for (&(supplier, category), sites) in entries {
-                let first = sites.first().expect("nonempty projection sites").3;
-                warnings.push(format!("warning: {}: LegacyTypedReaderProjection {category} for {} native FormKey occurrence(s) (first source: {first:08X})", self.table.entry(self.order[supplier]).expect("allocated supplier").display_name, sites.len()));
+                let Some(&(_, _, _, first)) = sites.first() else {
+                    continue;
+                };
+                warnings.push(format!("warning: {}: LegacyTypedReaderProjection {category} for {} native FormKey occurrence(s) (first source: {first:08X})", self.supplier_name(supplier), sites.len()));
             }
         }
         warnings
@@ -425,7 +434,7 @@ impl FormKeyOrder {
         counts.get(&std::thread::current().id()).into_iter().flat_map(|entries| entries.iter())
             .map(|(&supplier, &(count, first))| format!(
                 "warning: {}: {count} FormID occurrence(s) past the original master list resolved to self (first: {first:08X})",
-                self.table.entry(self.order[supplier]).expect("allocated supplier").display_name))
+                self.supplier_name(supplier)))
             .collect()
     }
 

@@ -87,11 +87,16 @@ impl EsmParser {
         let mut settings = GameSettingIdentities::default();
         for (priority, path) in paths.iter().enumerate() {
             let mut sources = HashMap::<FormKey, (u32, bool)>::new();
-            let name = &order
-                .table
-                .entry(order.order[priority])
-                .expect("allocated supplier")
-                .display_name;
+            let Some(supplier) = order.supplier_entry(priority) else {
+                let warning = format!(
+                    "warning: {}: missing FormKey supplier; plugin skipped",
+                    path.display()
+                );
+                eprintln!("{warning}");
+                summaries.push(warning);
+                continue;
+            };
+            let name = &supplier.display_name;
             let (native, parser_warnings) = parse_plugin_file_with_warnings(path)?;
             summaries.extend(parser_warnings);
             for mut source in native {
@@ -157,24 +162,16 @@ impl EsmParser {
                     // Keep the same field-level recovery as legacy publication, with native words.
                     source.subrecords = checked.subrecords;
                 }
-                // from_facts allocates every supplier and requires all original masters to precede it.
-                if let Some(key) = key {
-                    let projected = (raw >> 24) as usize
-                        > order
-                            .table
-                            .entry(order.order[priority])
-                            .expect("supplier")
-                            .facts
-                            .masters
-                            .len();
-                    if let Some(&(earlier, earlier_projected)) = sources.get(&key)
-                        && earlier != raw
-                        && (projected || earlier_projected)
-                    {
-                        warnings.skipped_record(name, &source, raw,
-                            format!("records {earlier:08X} and {raw:08X} resolve to the same key; an out-of-range master index would replace another record"));
-                        continue;
-                    }
+                // from_facts requires all original masters to precede their supplier.
+                let projected = (raw >> 24) as usize > supplier.facts.masters.len();
+                if let Some(key) = key
+                    && let Some(&(earlier, earlier_projected)) = sources.get(&key)
+                    && earlier != raw
+                    && (projected || earlier_projected)
+                {
+                    warnings.skipped_record(name, &source, raw,
+                        format!("records {earlier:08X} and {raw:08X} resolve to the same key; an out-of-range master index would replace another record"));
+                    continue;
                 }
                 let source_key = key;
                 if source.record_type == *b"GMST" {
@@ -229,14 +226,6 @@ impl EsmParser {
                 };
                 // Admission is complete. Tombstones reserve the pre-canonical source key too.
                 if let Some(source_key) = source_key {
-                    let projected = (raw >> 24) as usize
-                        > order
-                            .table
-                            .entry(order.order[priority])
-                            .expect("allocated supplier")
-                            .facts
-                            .masters
-                            .len();
                     sources.insert(source_key, (raw, projected));
                 }
                 if source.is_deleted() {

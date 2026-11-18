@@ -3,7 +3,10 @@ use crate::esm::{
     exporter::{create_tables, validate_inhouse_record},
     records::RawRecord,
 };
-use color_eyre::{Result, eyre::WrapErr};
+use color_eyre::{
+    Result,
+    eyre::{WrapErr, eyre},
+};
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 use std::{
@@ -322,11 +325,15 @@ impl EsmParser {
                         Err(shared::legacy_id_view::LegacyError::LightLocalTooWide(_))
                             if !strict =>
                         {
-                            let key = key.expect("non-null wide key");
+                            let key = key.ok_or_else(|| {
+                                eyre!("wide light FormID {raw:08X} has no identity")
+                            })?;
                             let owner = &identities
                                 .table
                                 .entry(key.plugin())
-                                .expect("owner")
+                                .ok_or_else(|| {
+                                    eyre!("wide light FormID {raw:08X} has no allocated owner")
+                                })?
                                 .normalized_name;
                             warnings.truncated(owner, raw);
                             Ok(legacy.to_legacy_u32(shared::form_key::FormKey::new(

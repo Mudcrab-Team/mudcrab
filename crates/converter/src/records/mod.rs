@@ -642,10 +642,9 @@ fn read_plugins_with_prepared(
         "load-order snapshot changed after identity allocation"
     );
     for (priority, metadata) in order.metadata.iter().enumerate() {
-        let entry = identities
-            .table()
-            .entry(identities.plugin_order()[priority])
-            .expect("allocated supplier");
+        let entry = identities.supplier_entry(priority).ok_or_else(|| {
+            color_eyre::eyre::eyre!("load-order snapshot has no allocated supplier {priority}")
+        })?;
         color_eyre::eyre::ensure!(
             entry.normalized_name
                 == crate::esm::load_order::normalize_plugin_name(&order.names[priority])
