@@ -242,6 +242,8 @@ pub struct EngineConfig {
     pub unload_radius: i32,
     /// Optional upper bound for sun-shadow cascades from `[Display] fShadowDistance`.
     pub sun_shadow_distance_limit: Option<f32>,
+    /// Sun-shadow stepping and the reserved retail transition duration; see `sun-shadows.md`.
+    pub sun_shadow: crate::sun_shadow::SunShadowSettings,
     /// Optional sun bearing clockwise from north and elevation above the horizon, in degrees.
     pub sun_position: Option<(f32, f32)>,
     /// Initial game hour; deterministic captures freeze at this hour. The default is the retail
@@ -414,6 +416,7 @@ impl Default for EngineConfig {
             stream_radius: 2,
             unload_radius: 3,
             sun_shadow_distance_limit: None,
+            sun_shadow: crate::sun_shadow::SunShadowSettings::default(),
             sun_position: None,
             game_hour: crate::sun::RETAIL_GAME_HOUR, // GLOB 0x38 `GameHour` = 8.0 in the pack
             timescale: 20.0,
