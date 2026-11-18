@@ -283,7 +283,7 @@
   ],
   "reader_sources": {
     "crates/converter/src/esm/exporter.rs": "3ceb3d675dababba619b62589e76e20435c328254d7b55ca859d579b8c76d6be",
-    "crates/engine/src/app.rs": "24d0dfdf94339f7365a1693c11c0c1eb8684b9592632217f0ee2a36033e29c0f",
+    "crates/engine/src/app.rs": "daaf285b8dbba60b8f99cabc75da3b65103f268de4b7db613627cf9eda76ac05",
     "crates/engine/src/bin/world-inspect.rs": "861f7a36b9494f9d72bee16c44047e98db0ec139ea8d5b511e80a9e4196e1185",
     "crates/engine/src/bug_report/snapshot.rs": "5b13eda93385a5d89331c1017f6141ed89895fe6f79346fac0a11b192fa476b8",
     "crates/engine/src/cell_commands.rs": "4ad49ebfd4b2f536eccfd69cb4f0252c7f8591fc165b0a6c4e266d940971a6d0",
