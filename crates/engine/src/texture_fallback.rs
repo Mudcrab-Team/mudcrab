@@ -1,9 +1,10 @@
 //! A record of every surface that may render with a stand-in for a texture.
 //!
 //! The renderer never fails a draw for a missing texture. A material with no base-colour image
-//! draws its flat base colour (white), a primitive with no UV set samples one texel, and a
-//! terrain layer with no diffuse image draws Bevy's stand-in image. Each of those looks like
-//! "a white building" and none of them raises an error, so an in-game miss could stay silent.
+//! draws its flat base colour (white), a primitive with no UV set skips its base-colour sample
+//! (Bevy 0.19) and draws the base colour, and a terrain layer with no diffuse image draws Bevy's
+//! stand-in image. Each of those looks like "a white building" and none of them raises an error,
+//! so an in-game miss could stay silent.
 //!
 //! [`record`] is called where the engine meets such a surface while it loads the model. It logs
 //! the first sighting of each (kind, mesh, slot) at `warn` level and counts it, so the log names
@@ -25,8 +26,8 @@ use bevy::log::warn;
 pub enum FallbackKind {
     /// A lighting material with no base-colour image: the surface draws its flat colour.
     UntexturedMaterial,
-    /// A primitive whose material has a texture but whose mesh has no `TEXCOORD_0`: every pixel
-    /// samples the same texel.
+    /// A primitive whose material has a texture but whose mesh has no `TEXCOORD_0`: the base-colour
+    /// sample is skipped and the surface draws its base colour.
     PrimitiveWithoutUvs,
     /// A terrain layer whose texture set has no converted diffuse image.
     LandTextureWithoutImage,

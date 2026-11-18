@@ -1,6 +1,6 @@
 # Texture audit
 
-The texture audit finds every surface of a converted pack that cannot reach the renderer with its texture. The renderer never fails a draw for this: a material with no base-colour image draws flat white, a primitive with no UVs samples one texel, and a terrain layer with no diffuse draws Bevy's stand-in image. The audit and a baseline make those cases visible and keep their count from growing.
+The texture audit finds every surface of a converted pack that cannot reach the renderer with its texture. The renderer never fails a draw for this: a material with no base-colour image draws flat white, a primitive with no UVs skips its base-colour sample (Bevy 0.19) and draws the base colour, and a terrain layer with no diffuse draws Bevy's stand-in image. The audit and a baseline make those cases visible and keep their count from growing.
 
 ## What it checks
 

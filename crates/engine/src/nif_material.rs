@@ -302,7 +302,8 @@ fn effect_palette_material(
 ///
 /// A lighting material with no base-colour image draws its flat colour. Skin and face tint
 /// materials are exempt: the actor systems supply their images at runtime. A primitive with a
-/// textured material and no `TEXCOORD_0` samples one texel of that texture.
+/// textured material and no `TEXCOORD_0` skips that texture's sample (Bevy 0.19) and draws the
+/// base colour.
 fn texture_fallbacks(
     material: &gltf::Material<'_>,
     has_uvs: bool,
@@ -1417,7 +1418,7 @@ mod tests {
             )
             .is_empty()
         );
-        // A textured material on a primitive with no UVs samples one texel.
+        // A textured material on a primitive with no UVs skips its texture sample.
         let mut textured = lighting("default");
         textured["pbrMetallicRoughness"] = serde_json::json!({"baseColorTexture": {"index": 0}});
         assert_eq!(

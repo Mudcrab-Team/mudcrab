@@ -57,8 +57,8 @@ pub enum Cause {
     SlotUnreferenced,
     /// The authored path cannot be turned into a texture key (bad extension, absolute path).
     UnparseablePath,
-    /// A primitive uses a textured material but has no `TEXCOORD_0`, so every pixel samples one
-    /// texel of the texture.
+    /// A primitive uses a textured material but has no `TEXCOORD_0`. Bevy 0.19 then skips the
+    /// base-colour sample, so the surface draws its base colour.
     PrimitiveWithoutUvs,
     /// A texture set (TXST) or water path names no converted texture.
     TextureSetUnresolved,
