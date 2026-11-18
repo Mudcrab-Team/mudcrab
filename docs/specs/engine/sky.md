@@ -90,8 +90,12 @@ comparison; the output correction does not validate those assumptions.
   unfogged. The water reflection camera is a `FogCamera` too: retail's screen-space reflection is reasoned (an inference from RF-WATER-009 and
   RF-WATER-011, not traced) to read the already-fogged frame, and the water surface is fogged once more
   as part of the main view.
-- **Interiors.** An interior cell has no weather, so `CameraSpace::Interior` takes the fog off
-  every `FogCamera`, as it hides the dome.
+- **Interiors.** An interior cell has no weather, so `CameraSpace::Interior` hides the dome and
+  takes the weather fog off every `FogCamera`. In sky modes 1 and 2 `apply_fog` gives each
+  `FogCamera` the cell's own fog (`InteriorFog`, `docs/specs/engine/interior-environment.md`):
+  Bevy linear fog from the cell's near and far and near colour, with max as a cap. A cell without
+  a fog ramp, and the one mode 3 interior, have no fog. The fog switch still applies; the fog
+  density multiplier does not.
 - **Range.** The visibility distance is longer than the default camera far plane, so terrain is
   hazed rather than swallowed inside the streamed ring, and the dome's transparent band keeps
   the horizon line itself soft. Tune `FOG_VISIBILITY` first; tune tints only after that.

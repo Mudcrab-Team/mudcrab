@@ -243,7 +243,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         ))
     };
     // Authored lighting, weather, climate and image space, when the database has them (#269).
-    // Read only; the sun consumes climate timing and GMST settings from this catalog.
+    // Read only. The sun consumes climate timing and GMST settings from this catalog, and
+    // InteriorEnvironmentPlugin applies the authored interior lighting from it (RF-LIGHT-CPU-010).
     let environment = runtime_data.as_ref().map(|_| {
         crate::world::environment::EnvironmentCatalog::open(
             &config.assets_dir.join("skyrim_world.db"),
@@ -377,6 +378,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         app.insert_resource(WinitSettings::continuous());
     }
     let render_asset_budget = upload_budget(&config);
+    let room_culling = crate::room_culling::RoomCullingPlugin::from_config(&config);
     // The run fingerprint is measurement data: an ordinary play session neither builds one nor
     // pays for the startup system that reads it.
     let records_measurements = crate::fingerprint::records_measurements(&config);
@@ -452,6 +454,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .add_plugins(crate::actor_drive::ActorDrivePlugin)
         .add_plugins(crate::actor_head::ActorHeadPlugin)
         .add_plugins(crate::actor_outfit::ActorOutfitPlugin)
+        .add_plugins(room_culling)
         .add_systems(PostUpdate, keep_windows_hidden)
         .add_systems(Update, crate::sun::update_sun)
         .add_systems(Update, crate::background_window::hold_focus_with_the_user)
@@ -494,7 +497,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     }
     if let Some((database, catalog, cache, ground_height, spawn_ground_height)) = runtime_data {
         if let Some(environment) = environment {
-            app.insert_resource(environment);
+            app.insert_resource(environment)
+                .add_plugins(crate::world::environment::interior::InteriorEnvironmentPlugin);
         }
         if let Some(actor_catalog) = actor_catalog {
             app.insert_resource(actor_catalog);
@@ -561,8 +565,14 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         app.add_systems(Startup, setup_world);
         app.add_systems(Startup, setup_synthetic_benchmark);
     }
-    if !app.world().resource::<EngineConfig>().no_render_diagnostics {
-        app.add_plugins(RenderDiagnosticsPlugin);
+    match render_diagnostics_off_reason(
+        app.world().resource::<EngineConfig>(),
+        cfg!(target_os = "macos"),
+    ) {
+        Some(reason) => info!(reason, "GPU render diagnostics are off"),
+        None => {
+            app.add_plugins(RenderDiagnosticsPlugin);
+        }
     }
     if app.world().resource::<EngineConfig>().stdin_console && !shots_active {
         app.add_plugins(crate::capture_frame::CaptureFramePlugin);
@@ -657,6 +667,24 @@ fn finished(exit: &AppExit) -> Result<()> {
         AppExit::Error(code) => Err(color_eyre::eyre::eyre!(
             "the run failed (exit code {code:?})"
         )),
+    }
+}
+
+/// Why Bevy's GPU timing recorder (`RenderDiagnosticsPlugin`) stays off, or `None` when it runs.
+///
+/// A hidden window on macOS never acquires a drawable and never presents, so nothing paces the
+/// frames. Bevy's recorder keeps one Metal counter sample buffer for each frame that is still in
+/// flight and has no limit. When the GPU falls behind the CPU, the buffers can grow until Metal
+/// refuses the allocation ("Cannot allocate sample buffer") and the device is lost. This is the
+/// likely cause; the live buffer count at a failure is not measured. Any new macOS capture mode
+/// that does not present must also return a reason here.
+fn render_diagnostics_off_reason(config: &EngineConfig, macos: bool) -> Option<&'static str> {
+    if config.no_render_diagnostics {
+        Some("--no-render-diagnostics")
+    } else if macos && config.hidden_window {
+        Some("hidden window on macOS never presents, so Metal counter sample buffers could pile up")
+    } else {
+        None
     }
 }
 
@@ -2529,6 +2557,7 @@ fn setup_world(
             ..default()
         },
         sun_shadow_cascades(&config),
+        crate::world::environment::interior::WorldSun,
         RenderLayers::from_layers(LIGHT_LAYERS),
         Transform::from_rotation(sun_rotation(
             &config,
@@ -3068,6 +3097,38 @@ struct ScreenshotCaptureState {
 
 #[cfg(test)]
 mod tests {
+    /// Hidden macOS runs skip Bevy's GPU timing recorder. Visible runs, other platforms and the
+    /// existing flag keep their behaviour.
+    #[test]
+    fn render_diagnostics_are_off_only_for_the_flag_or_a_hidden_macos_window() {
+        let hidden = EngineConfig {
+            hidden_window: true,
+            ..EngineConfig::default()
+        };
+        let visible = EngineConfig::default();
+        let flagged = EngineConfig {
+            no_render_diagnostics: true,
+            ..EngineConfig::default()
+        };
+        let hidden_and_flagged = EngineConfig {
+            hidden_window: true,
+            no_render_diagnostics: true,
+            ..EngineConfig::default()
+        };
+
+        assert!(render_diagnostics_off_reason(&hidden, true).is_some());
+        assert!(render_diagnostics_off_reason(&visible, true).is_none());
+        assert!(render_diagnostics_off_reason(&flagged, true).is_some());
+        assert!(render_diagnostics_off_reason(&flagged, false).is_some());
+        assert_eq!(
+            render_diagnostics_off_reason(&hidden_and_flagged, true),
+            Some("--no-render-diagnostics")
+        );
+        // Linux and Windows present in a hidden window, so they are unchanged.
+        assert!(render_diagnostics_off_reason(&hidden, false).is_none());
+        assert!(render_diagnostics_off_reason(&visible, false).is_none());
+    }
+
     /// A `--route` file shares the camera with neither `--shots` nor `--matched-route`. The refusal
     /// comes before the shots file is read, so the file names here need not exist.
     #[test]

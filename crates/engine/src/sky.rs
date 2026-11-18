@@ -19,6 +19,7 @@ use crate::world::database::CellKey;
 use bevy::{
     asset::{RenderAssetUsages, embedded_asset},
     camera::visibility::NoFrustumCulling,
+    ecs::{schedule::ScheduleConfigs, system::ScheduleSystem},
     light::NotShadowCaster,
     mesh::{Indices, MeshVertexBufferLayoutRef, PrimitiveTopology},
     pbr::{
@@ -451,16 +452,7 @@ impl Plugin for SkyPlugin {
             .init_resource::<crate::underwater::UnderwaterState>()
             .add_systems(
                 PostUpdate,
-                (
-                    spawn_sky_domes,
-                    follow_sky_cameras,
-                    crate::underwater::update_underwater_state,
-                    apply_sky,
-                    sync_water_sky,
-                    apply_fog,
-                )
-                    .chain()
-                    .before(TransformSystems::Propagate),
+                sky_systems().before(TransformSystems::Propagate),
             );
     }
 }
@@ -610,6 +602,22 @@ fn apply_sky(
     }
 }
 
+/// The sky systems in order. `apply_fog` reads `InteriorFog`, which `EnvironmentSet` writes in
+/// the same schedule, so it runs after that set: a door or room crossing changes the fog in the
+/// same frame as the light. The order of the rest is main's (underwater state, then sky, then the
+/// water's copy of the sky).
+fn sky_systems() -> ScheduleConfigs<ScheduleSystem> {
+    (
+        spawn_sky_domes,
+        follow_sky_cameras,
+        crate::underwater::update_underwater_state,
+        apply_sky,
+        sync_water_sky,
+        apply_fog.after(crate::world::environment::interior::EnvironmentSet),
+    )
+        .chain()
+}
+
 /// Points every exterior water material at the sky the camera sees, so the water reflects the dome
 /// as it is now (the weather's colours and the player's brightness). Only a material whose sky
 /// differs is written.
@@ -635,16 +643,17 @@ fn sync_water_sky(
     }
 }
 
-/// Gives every [`FogCamera`] the weather's distance fog, and takes it away inside an interior,
-/// where there is no weather and nothing far enough away to hide. The fog's colour and its
-/// density only change when the palette does, so the component is written then and left alone
-/// otherwise.
+/// Gives every [`FogCamera`] the weather's distance fog outside. Inside an interior it gives the
+/// cell fog of sky modes 1 and 2 (`InteriorFog`), or no fog when there is none. Under water it
+/// gives neither (RF-WATER-031). The component is written only when the wanted fog differs from
+/// the camera's.
 fn apply_fog(
     mut commands: Commands,
     palette: Res<SkyPalette>,
     space: Res<CameraSpace>,
     cameras: Query<(Entity, Option<&DistanceFog>), With<FogCamera>>,
     settings: Option<Res<crate::settings::RenderingSettings>>,
+    interior_fog: Option<Res<crate::world::environment::interior::InteriorFog>>,
     underwater: Res<crate::underwater::UnderwaterState>,
 ) {
     let fog_on = settings.as_deref().is_none_or(|settings| settings.fog);
@@ -662,6 +671,11 @@ fn apply_fog(
             let visibility = fog_visibility(palette.fog_density_scale, user_multiplier);
             Some(fog_with_visibility(&scaled, visibility))
         }
+        // Sky modes 1 and 2 fog an interior with the cell's own fog (RF-LIGHT-CPU-013).
+        (CameraSpace::Interior, true) => interior_fog
+            .as_deref()
+            .and_then(|fog| fog.0)
+            .map(|fog| fog.distance_fog()),
         _ => None,
     };
     for (camera, current) in &cameras {
@@ -977,6 +991,120 @@ mod tests {
                 (spawn_sky_domes, follow_sky_cameras, apply_sky, apply_fog).chain(),
             );
         app
+    }
+
+    /// `apply_fog` reads `InteriorFog`, which `apply_interior_lighting` writes, so the two
+    /// conflict. Only an ordering edge keeps the fog from lagging a frame behind the light, and a
+    /// behavioural test cannot tell the edge from a lucky executor order. This test builds the
+    /// schedule and fails if any pair of systems is unordered while both touch `InteriorFog`.
+    /// (System names are hidden without Bevy's `debug` feature, so the resource identifies them.)
+    #[test]
+    fn systems_that_touch_interior_fog_are_ordered() {
+        use crate::world::environment::interior::{InteriorEnvironmentPlugin, InteriorFog};
+        let mut app = App::new();
+        app.add_plugins(InteriorEnvironmentPlugin).add_systems(
+            PostUpdate,
+            sky_systems().before(TransformSystems::Propagate),
+        );
+        let fog = app.world().component_id::<InteriorFog>().unwrap();
+        // `initialize` creates resources of its own, so the schedules leave the world first.
+        let mut schedules = app
+            .world_mut()
+            .remove_resource::<bevy::ecs::schedule::Schedules>()
+            .unwrap();
+        let schedule = schedules.get_mut(PostUpdate).unwrap();
+        schedule.initialize(app.world_mut()).unwrap();
+        let unordered = schedule
+            .graph()
+            .conflicting_systems()
+            .0
+            .iter()
+            .filter(|(_, _, resources)| resources.contains(&fog))
+            .count();
+        assert_eq!(unordered, 0, "systems that touch InteriorFog are unordered");
+    }
+
+    /// `apply_fog` reads the `InteriorFog` that `EnvironmentSet` writes in the same schedule:
+    /// with both plugins' systems, one door crossing (exterior to a fogged interior) and one room
+    /// crossing (into a room template with other fog colours) each fog the camera in the same
+    /// frame.
+    #[test]
+    fn interior_fog_applies_in_the_frame_the_environment_changes() {
+        interior_fog_crossing_frames();
+    }
+
+    fn interior_fog_crossing_frames() {
+        use crate::streaming::ActiveSpace;
+        use crate::world::components::StreamingCamera;
+        use crate::world::environment::{EnvironmentCatalog, interior::InteriorEnvironmentPlugin};
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS room_bounds (
+                     ref_id INTEGER PRIMARY KEY, cell_id INTEGER NOT NULL,
+                     pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,
+                     rot_x REAL NOT NULL, rot_y REAL NOT NULL, rot_z REAL NOT NULL,
+                     half_x REAL NOT NULL, half_y REAL NOT NULL, half_z REAL NOT NULL,
+                     lighting_template_id INTEGER, image_space_id INTEGER,
+                     flags INTEGER NOT NULL DEFAULT 0);
+                 INSERT INTO cell_environment(cell_id,data_flags) VALUES(77,1);
+                 INSERT INTO cell_lighting(cell_id,xcll_size,inherit_flags,fog_near_r,
+                    fog_near_g,fog_near_b,fog_near,fog_far,fog_max)
+                 VALUES(77,92,0,31,52,46,100.0,4000.0,1.0);
+                 INSERT INTO lighting_templates(id,fog_near_r,fog_near_g,fog_near_b)
+                 VALUES(88,7,8,9);
+                 INSERT INTO room_bounds(ref_id,cell_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,
+                    half_x,half_y,half_z,lighting_template_id)
+                 VALUES(99,77,1000,0,0,0,0,0,100,100,100,88);",
+            )
+            .unwrap();
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<SkyMaterial>>()
+            .init_resource::<SkyPalette>()
+            .init_resource::<CameraSpace>()
+            .init_resource::<crate::underwater::UnderwaterState>()
+            .insert_resource(EnvironmentCatalog::from_connection(&connection))
+            .init_resource::<ActiveSpace>();
+        app.add_plugins(InteriorEnvironmentPlugin).add_systems(
+            PostUpdate,
+            sky_systems().before(TransformSystems::Propagate),
+        );
+        let camera = app
+            .world_mut()
+            .spawn((FogCamera, StreamingCamera, Transform::default()))
+            .id();
+        app.update();
+        let linear = |app: &App| match app
+            .world()
+            .get::<DistanceFog>(camera)
+            .map(|f| (f.color, &f.falloff))
+        {
+            Some((color, FogFalloff::Linear { start, end })) => Some((color, *start, *end)),
+            _ => None,
+        };
+        assert_eq!(linear(&app), None, "the exterior has weather fog");
+        // Door crossing, as `door_crossing::switch_space` writes it.
+        app.world_mut().resource_mut::<ActiveSpace>().interior = Some(77);
+        *app.world_mut().resource_mut::<CameraSpace>() = CameraSpace::Interior;
+        app.update();
+        assert_eq!(
+            linear(&app),
+            Some((Color::srgb_u8(31, 52, 46), 100.0, 4000.0)),
+            "cell fog in the crossing frame"
+        );
+        // Room crossing: the camera enters room 99 (Creation x 1000, engine x 1000).
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation = Vec3::new(1000.0, 0.0, 0.0);
+        app.update();
+        assert_eq!(
+            linear(&app),
+            Some((Color::srgb_u8(7, 8, 9), 100.0, 4000.0)),
+            "room fog colour in the crossing frame"
+        );
     }
 
     fn only_dome(app: &mut App) -> (Entity, SkyDome, Transform, Visibility) {

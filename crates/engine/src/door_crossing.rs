@@ -75,6 +75,10 @@ const SETTLE_FRAMES: u32 = 2;
 
 pub struct DoorCrossingPlugin;
 
+/// Door transitions and their queued scene switches must precede scene environment consumers.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct DoorCrossingSet;
+
 impl Plugin for DoorCrossingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DoorCrossing>()
@@ -82,7 +86,7 @@ impl Plugin for DoorCrossingPlugin {
             .add_message::<TeleportPlayer>()
             .add_systems(Startup, spawn_fade_overlay)
             // After the streaming chain in `Update`, so the pending counts are this frame's.
-            .add_systems(PostUpdate, drive_door_crossing);
+            .add_systems(PostUpdate, drive_door_crossing.in_set(DoorCrossingSet));
     }
 }
 
@@ -1019,6 +1023,16 @@ mod tests {
         app_with_extra(door, |_| {})
     }
 
+    fn app_with_environment(
+        door: LoadDoor,
+        environment: crate::world::environment::EnvironmentCatalog,
+    ) -> (App, Entity) {
+        app_with_extra(door, |app| {
+            app.insert_resource(environment)
+                .add_plugins(crate::world::environment::interior::InteriorEnvironmentPlugin);
+        })
+    }
+
     fn app_with_extra(door: LoadDoor, extra: impl FnOnce(&mut App)) -> (App, Entity) {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()));
@@ -1619,6 +1633,83 @@ mod tests {
             teleports[0].position,
             creation_to_bevy(Vec3::new(100.0, 200.0, 300.0))
         );
+    }
+
+    #[test]
+    fn crossing_and_timed_out_landing_switch_scene_environment_in_the_scene_switch_frame() {
+        check_crossing_switches_scene_environment(false);
+    }
+
+    #[test]
+    fn crossing_and_failed_cell_switch_scene_environment_in_the_scene_switch_frame() {
+        check_crossing_switches_scene_environment(true);
+    }
+
+    fn check_crossing_switches_scene_environment(fail_destination: bool) {
+        use crate::world::environment::{EnvironmentCatalog, interior::SceneEnvironment};
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO cell_environment(cell_id,data_flags) VALUES(77,1);
+             INSERT INTO cell_lighting(cell_id,xcll_size,inherit_flags,
+                ambient_r,ambient_g,ambient_b,directional_r,directional_g,directional_b,
+                directional_rotation_xy,directional_rotation_z,directional_fade)
+             VALUES(77,92,0,10,20,30,40,50,60,90,30,0.5);",
+            )
+            .unwrap();
+        let (mut app, _) = app_with_environment(
+            interior_door(),
+            EnvironmentCatalog::from_connection(&connection),
+        );
+        let exterior_rotation = Quat::from_rotation_y(0.4);
+        let sun = app
+            .world_mut()
+            .spawn((
+                DirectionalLight::default(),
+                crate::world::environment::interior::WorldSun,
+                Transform::from_rotation(exterior_rotation),
+            ))
+            .id();
+        press_e(&mut app);
+        let mut saw_interior = false;
+        let mut saw_restore = false;
+        for _ in 0..300 {
+            app.update();
+            let cell = app.world().resource::<ActiveSpace>().interior;
+            let scene = app.world().resource::<SceneEnvironment>();
+            assert_eq!(
+                scene.interior.as_ref().map(|lighting| lighting.cell_id),
+                cell
+            );
+            if cell.is_some() {
+                saw_interior = true;
+                assert_eq!(
+                    scene.interior.as_ref().unwrap().lighting.directional,
+                    Some([40, 50, 60])
+                );
+                // RF-LIGHT-CPU-012: rotation XY 90, Z 30. Creation travel = (cos90 cos30,
+                // -sin90 cos30, sin30) = (0, -0.8660254, 0.5). Engine (x, z, -y) =
+                // (0, 0.5, 0.8660254).
+                let rays = app.world().get::<Transform>(sun).unwrap().rotation * Vec3::NEG_Z;
+                assert!(rays.distance(Vec3::new(0.0, 0.5, 0.866_025_4)) < 1.0e-5);
+                if fail_destination {
+                    app.world_mut()
+                        .resource_mut::<StreamingWorld>()
+                        .set_failed_for_test(CellKey::Interior(77));
+                }
+            } else if saw_interior {
+                // The real failure or timeout path queues the exterior restoration.
+                saw_restore = true;
+                assert!(scene.show_sky && scene.use_sky_lighting);
+                assert_eq!(
+                    app.world().get::<Transform>(sun).unwrap().rotation,
+                    exterior_rotation
+                );
+                break;
+            }
+        }
+        assert!(saw_interior && saw_restore);
     }
 
     #[test]
