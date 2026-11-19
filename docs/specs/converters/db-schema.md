@@ -543,8 +543,9 @@ Rules beyond the ones above:
 `world::environment::EnvironmentCatalog` (cell lighting, worldspace environment, lighting
 templates, weathers with their colours and directional ambient, image spaces, climate weather
 lists). A table that is missing or lacks a column the reader needs loads as empty, with one log
-line. Nothing renders from the catalog yet: the hard-coded `SkyrimClear` lighting in `sky.rs` is
-unchanged.
+line. The clock sun reads climate timing from it, and interiors in sky modes 1 and 2 take their
+key light, ambient and fog from `cell_lighting`, `lighting_templates`, `image_spaces` and
+`room_bounds` (`docs/specs/engine/interior-environment.md`).
 
 | Case | Converter writes | Engine |
 |---|---|---|

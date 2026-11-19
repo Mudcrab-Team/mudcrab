@@ -1,10 +1,7 @@
 //! CPU validation of the production grass shader with locked Bevy imports.
 //!
-//! Reads downloaded WGSL sources under Cargo's registry in `CARGO_HOME`, or the
-//! standard user `.cargo` directory. No custom environment variable is required.
-//! Missing sources are errors, never skipped tests or mock imports. These tests
-//! require the unpacked `bevy_pbr`, `bevy_render`, and `bevy_core_pipeline`
-//! crates that a normal Cargo dependency fetch/build supplies.
+//! Reads WGSL from the workspace's vendored crates and the locked Cargo registry
+//! crates supplied by a normal dependency fetch/build. Missing sources fail validation.
 //! This checks WGSL semantics; GPU pipeline layouts and visual fidelity need separate evidence.
 
 use naga_oil::compose::{
@@ -29,7 +26,7 @@ type Sources = HashMap<String, (PathBuf, String)>;
 fn index_sources(directory: &Path, sources: &mut Sources) {
     let mut entries: Vec<_> = std::fs::read_dir(directory)
         .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()))
-        .map(|entry| entry.expect("registry directory entry").path())
+        .map(|entry| entry.expect("shader source directory entry").path())
         .collect();
     entries.sort();
     for path in entries {
@@ -76,8 +73,8 @@ fn registry_roots() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Read one package's locked version with either checkout line ending.
-fn locked_crate_directory(lock: &str, name: &str) -> String {
+/// Read a vendored path or a versioned registry directory from the lockfile.
+fn locked_crate_directory(lock: &str, name: &str, vendor: &Path) -> PathBuf {
     let marker = format!("name = \"{name}\"");
     let package = lock
         .split("[[package]]")
@@ -87,25 +84,55 @@ fn locked_crate_directory(lock: &str, name: &str) -> String {
         .lines()
         .find_map(|line| line.trim().strip_prefix("version = \"")?.strip_suffix('"'))
         .expect("locked Bevy version");
-    format!("{name}-{version}")
-}
-
-#[test]
-fn locked_bevy_version_discovery_accepts_lf_and_crlf() {
-    let lock = "[[package]]\nname = \"bevy_pbr_macros\"\nversion = \"1.2.3\"\n\n\
-                [[package]]\nname = \"bevy_pbr\"\nversion = \"4.5.6\"\n";
-    for lock in [lock.to_owned(), lock.replace('\n', "\r\n")] {
-        assert_eq!(locked_crate_directory(&lock, "bevy_pbr"), "bevy_pbr-4.5.6");
+    let source = package
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("source = \"")?.strip_suffix('"'));
+    match source {
+        None => vendor.join(name),
+        Some(source) if source.starts_with("registry+") => {
+            PathBuf::from(format!("{name}-{version}"))
+        }
+        Some(source) => panic!("unsupported locked source for {name}: {source}"),
     }
 }
 
-/// Load one coherent registry's real dependencies once, failing clearly if they are absent.
+/// Resolve both local and registry paths with either checkout line ending.
+#[test]
+fn locked_bevy_source_discovery_accepts_lf_and_crlf() {
+    let lock = r#"[[package]]
+name = "bevy_pbr_macros"
+version = "1.2.3"
+
+[[package]]
+name = "bevy_pbr"
+version = "4.5.6"
+
+[[package]]
+name = "bevy_core_pipeline"
+version = "4.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#;
+    let vendor = Path::new("vendor");
+    for lock in [lock.to_owned(), lock.replace('\n', "\r\n")] {
+        assert_eq!(
+            locked_crate_directory(&lock, "bevy_pbr", vendor),
+            vendor.join("bevy_pbr")
+        );
+        assert_eq!(
+            locked_crate_directory(&lock, "bevy_core_pipeline", vendor),
+            PathBuf::from("bevy_core_pipeline-4.5.7")
+        );
+    }
+}
+
+/// Load real dependencies from vendor and one registry, failing if sources are absent.
 fn real_sources() -> &'static Sources {
     static SOURCES: OnceLock<Sources> = OnceLock::new();
     SOURCES.get_or_init(|| {
         let lock = include_str!("../../../Cargo.lock");
+        let vendor = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor");
         let crates = ["bevy_pbr", "bevy_render", "bevy_core_pipeline"]
-            .map(|name| locked_crate_directory(lock, name));
+            .map(|name| locked_crate_directory(lock, name, &vendor));
         let roots = registry_roots();
         for root in &roots {
             let entries = match std::fs::read_dir(root) {
@@ -119,23 +146,23 @@ fn real_sources() -> &'static Sources {
                 .collect();
             registries.sort();
             for registry in registries {
-                if crates
-                    .iter()
-                    .all(|name| registry.join(name).join("src").is_dir())
-                {
+                // Joining an absolute vendor path keeps it outside the registry.
+                let directories = crates
+                    .each_ref()
+                    .map(|path| registry.join(path).join("src"));
+                if directories.iter().all(|directory| directory.is_dir()) {
                     let mut sources = Sources::new();
-                    for name in &crates {
-                        index_sources(&registry.join(name).join("src"), &mut sources);
+                    for directory in &directories {
+                        index_sources(directory, &mut sources);
                     }
                     return sources;
                 }
             }
         }
         panic!(
-            "real Bevy WGSL sources unavailable: require {crates:?} together in a Cargo \
-             registry/src/<registry> directory; searched {roots:?}. Fetch/build the locked \
-             dependencies with Cargo; preserve their unpacked sources when running tests. \
-             No shader validation was skipped."
+            "real Bevy WGSL sources unavailable: require paths {crates:?} with one Cargo \
+             registry/src/<registry> directory; searched {roots:?}. Check the vendor tree \
+             and fetch/build the locked registry dependencies with Cargo."
         );
     })
 }
