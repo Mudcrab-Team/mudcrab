@@ -1458,7 +1458,8 @@ and cell-child groups. Its record header supports the compression flag. Its plac
 unused FormIDs owned by the same plugin.
 
 Supported `REFR` fields are `EDID`, `NAME`, `DATA`, `XSCL`, `XESP`, `XMBR`, and the marker fields
-`XPRM`, `XRMR`, `XLRM`, `XPOD`, `LNAM`, and `INAM`. A door can also carry an `XTEL` field.
+`XPRM`, `XRMR`, `XLRM`, `XPOD`, `LNAM`, and `INAM`. A room marker can carry one 12-byte `XMBO`.
+On import its three extents must match the first 12 bytes of `XPRM`. A door can also carry an `XTEL` field.
 Static primitives, actor references, scripts, new base records, exterior changes, and other
 `CELL` fields require a normal conversion.
 
