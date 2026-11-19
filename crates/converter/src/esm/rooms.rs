@@ -591,6 +591,8 @@ fn room_link_metadata_is_complete<'a>(
 ///
 /// Reads parsed subrecords only, never the stored blob. Writes `contained = 1` membership rows
 /// (the object's pivot is inside the box); `add_overlap_rows` adds the rest after integration.
+/// References with missing or short 24-byte DATA have no usable placement and cannot become
+/// room boxes, portals or pivot memberships. The exporter reports those omissions once.
 pub fn export_room_graph(
     tx: &Transaction<'_>,
     master: &HashMap<u32, RawRecord>,
@@ -612,6 +614,9 @@ pub(crate) fn export_room_graph_with_sources(
         .iter()
         .filter(|(_, record)| {
             is_placed(&record.record_type)
+                && SubrecordView::new(&record.subrecords)
+                    .find(b"DATA")
+                    .is_some_and(|data| data.len() >= 24)
                 && record
                     .cell_form_id
                     .is_some_and(|cell| interior_cells.contains(&cell))
