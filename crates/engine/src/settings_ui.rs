@@ -366,7 +366,7 @@ fn menu_actions(
                 if drawing_before != (settings.indirect_drawing, settings.occlusion_culling) {
                     file.note_drawing_selection();
                 }
-                file.status = "Changed for this session. Choose Save to keep settings.".into();
+                file.status = "Changed. Settings marked restart apply on the next start; other changes apply now. Choose Save to keep settings.".into();
             }
             MenuAction::CollisionDebug => {
                 if let Some(debug) = debug.as_deref_mut() {
@@ -575,7 +575,8 @@ fn group_note(group: &str) -> Option<&'static str> {
     match group {
         "Culling and drawing" => Some(
             "Room culling applies to interiors. Occlusion culling needs depth prepass \
-             and indirect drawing; enabling it enables both.",
+             and indirect drawing; enabling it enables both. Drawing and occlusion changes \
+             require Save and a restart. Active occlusion keeps depth prepass on until restart.",
         ),
         "Image" => Some(
             "HDR composition stays on. Material colors, texture tiling, and per-water factors \
