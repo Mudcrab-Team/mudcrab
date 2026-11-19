@@ -587,8 +587,16 @@ fn rv_a_runtime_invariant_actual_target_nulling_preserves_candidate_validation()
             .collect::<Vec<_>>(),
         [0x880, SELF_TEXTURE, 0, 0, 0]
     );
-    assert_eq!(result.diagnostics["localizedpatch.esp"].skipped_records, 0);
-    assert!(result.diagnostics["localizedpatch.esp"].invalid_links >= 6);
+    let diagnostics = &result.diagnostics["localizedpatch.esp"];
+    assert_eq!(diagnostics.skipped_records, 0);
+    assert_eq!(diagnostics.skipped_fields, 0);
+    assert_eq!(diagnostics.invalid_links, 7);
+    assert!(
+        diagnostics
+            .warning_summary_lines("localizedpatch.esp")
+            .iter()
+            .any(|line| line.contains("cleared RACE movement links"))
+    );
 }
 
 /// Actual text/localization export preserves valid overrides and both native/runtime layer views.

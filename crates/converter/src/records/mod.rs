@@ -302,8 +302,10 @@ pub struct PluginDiagnostics {
     pub(crate) deferred_link_events: Option<Vec<decoder::DeferredLinkEvent>>,
 }
 
+const RACE_MOVEMENT_LINK_WARNING: &str = "race_movement_link_warning";
+
 impl PluginDiagnostics {
-    /// Summarize omitted records, fields and unexpected subrecords as bounded warnings.
+    /// Summarize discarded data and movement link recovery as bounded warnings.
     pub(crate) fn warning_summary_lines(&self, plugin: &str) -> Vec<String> {
         let mut lines = Vec::new();
         if let Some(warning) = self.first_by_category.get("input") {
@@ -318,6 +320,11 @@ impl PluginDiagnostics {
                 self.skipped_records,
                 self.skipped_fields,
                 self.unexpected_subrecords
+            ));
+        }
+        if let Some(example) = self.first_by_category.get(RACE_MOVEMENT_LINK_WARNING) {
+            lines.push(format!(
+                "warning: {plugin}: in-house reader cleared RACE movement links (first: {example})"
             ));
         }
         lines
@@ -383,7 +390,18 @@ impl PluginDiagnostics {
         }
         self.event_log.append(&context, category, &example);
         let key = DiagnosticSummaryKey::new(&context, category, &example);
-        self.remember_summary(summary_category, key, diagnostics::bounded_summary(example));
+        let example = diagnostics::bounded_summary(example);
+        if category == "link"
+            && context.record_type == Some(*b"RACE")
+            && context.field.as_deref().is_some_and(|field| {
+                let tag = field.split('[').next().unwrap_or(field);
+                crate::esm::is_race_movement_link(tag.as_bytes())
+            })
+        {
+            // Warning severity is independent of the cleared-link counter and journal category.
+            self.remember_summary(RACE_MOVEMENT_LINK_WARNING, key.clone(), example.clone());
+        }
+        self.remember_summary(summary_category, key, example);
     }
 
     /// Keep category and global examples under the same total order, without changing counts.

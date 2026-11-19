@@ -624,12 +624,7 @@ fn remap(
                 None => false,
             }
         {
-            let movement = match diagnostics.event_context.record_type.as_ref() {
-                Some(b"DOBJ") => tag == "DNAM",
-                Some(b"RACE") => crate::esm::is_race_movement_link(tag.as_bytes()),
-                _ => false,
-            };
-            if movement {
+            if diagnostics.event_context.record_type == Some(*b"DOBJ") && tag == "DNAM" {
                 let reason = format!(
                     "{tag} optional FormID {value:08X} exceeds master list and its self target is absent"
                 );
@@ -1890,6 +1885,9 @@ fn merge_new_diagnostics(
             _ => target.invalid_links += count,
         }
         target.merge_summary_category(&resolved, category);
+        if category == "link" {
+            target.merge_summary_category(&resolved, super::RACE_MOVEMENT_LINK_WARNING);
+        }
     }
 }
 
@@ -3432,13 +3430,12 @@ pub(crate) fn validate_targets_with_prepared(
             }
             field.canonical_bytes = bytes;
         }
-        if (diagnostics.invalid_links != 0 || diagnostics.skipped_fields != 0)
+        if diagnostics.invalid_links != 0
             && let Some(plugin) = plugin
         {
             let target = result.diagnostics.entry(plugin).or_default();
             target.event_log.merge_from(&diagnostics.event_log);
             target.invalid_links += diagnostics.invalid_links;
-            target.skipped_fields += diagnostics.skipped_fields;
             target.merge_summaries(&diagnostics);
         }
     }
@@ -3545,13 +3542,12 @@ impl TargetValidation<'_> {
                         })
                     });
                 if !allowed {
-                    self.diagnostics
-                        .note(if race_movement { "field" } else { "link" }, || {
-                            format!(
-                                "{} link {:08X} is absent or has a disallowed target type",
-                                field.name, *id
-                            )
-                        });
+                    self.diagnostics.note("link", || {
+                        format!(
+                            "{} link {:08X} is absent or has a disallowed target type",
+                            field.name, *id
+                        )
+                    });
                     *id = 0;
                     if bytes.len() == 4 {
                         self.nulls.push(base..base + 4);
