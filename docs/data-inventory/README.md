@@ -5,13 +5,50 @@ behavioral evidence separate. No state implies the next. `source_*` means an exp
 source annotation, not a test result. `unknown` never means unused. A declared table is
 not evidence that any row was published.
 
-The checked-in [report](report.md) and [JSON](inventory.json) contain the reviewed source
-inventory and small light/water/movement traces. Their schema status is `not_extracted`
-because this committed view is source-only. The Rust extraction test passed locally;
-[validation.md](validation.md) records the retained report and identities. Applicable CI
-runs upload the full emitted-schema report as the `world-data-inventory` artifact.
-[fixture-report.md](fixture-report.md) demonstrates the same table/column report using
-disposable synthetic SQLite fixtures.
+The report and the JSON are **generated, not committed**. CI and `inventory.py` write
+`inventory.json` and `report.md` into this folder, and `.gitignore` keeps them out of commits.
+They hold small light/water/movement traces, a source-only view and fingerprints of reader
+source files. CI uploads them as the `world-data-inventory-source` artifact. The Rust `test`
+job uploads the full emitted-schema report as the `world-data-inventory` artifact. The schema
+status of the source-only view is `not_extracted`.
+[validation.md](validation.md) is a dated log of earlier local runs. Its fingerprints are
+history, not current values. [fixture-report.md](fixture-report.md) demonstrates the same
+table/column report using disposable synthetic SQLite fixtures.
+
+## What is committed, and what is generated
+
+The gate keeps one purpose: a change that adds or changes a database table, a column or a
+record reader needs a reviewed disposition. Only the reviewed, stable facts are committed:
+
+| File | Content | Changes when |
+|---|---|---|
+| `tools/world_data_inventory/dispositions.json` | Human dispositions: owner, reason, states and anchors per table and traced field | A person classifies a table or field |
+| `tools/world_data_inventory/reviewed-surface.json` | One line per reviewed record reader (call-site key and hash of its SQL) and one line per reviewed `table.column` | A reader or a column is added, changed or removed |
+
+The key of a reader holds the file path, the method, a hash of the call expression and an
+occurrence number. It holds no line number and no hash of the whole file. The SQL hash
+catches a changed constant behind an unchanged call.
+
+These are generated, never committed, and gitignored: `docs/data-inventory/inventory.json`,
+`docs/data-inventory/report.md` and the old `tools/world_data_inventory/reviewed-sources.json`.
+They hold fingerprints of the converter, shared and engine source files. A source edit that
+adds no table, column or reader changes **no committed file**. The tool refuses to run if
+git tracks one of the generated files.
+
+## Migrating a branch that has the old committed files
+
+Main no longer holds the three generated files. A branch that edited one of them gets a
+modify/delete conflict, or an old text conflict, on the next merge. The fix is the same for
+every branch. Delete the three files and commit:
+
+```sh
+git rm -qf --ignore-unmatch -- docs/data-inventory/inventory.json docs/data-inventory/report.md tools/world_data_inventory/reviewed-sources.json && git commit --no-edit
+```
+
+During a rebase, run the `git rm` part, then `git rebase --continue`. Do not take main's
+copy and do not re-add the files. Then run `python3 -B tools/world_data_inventory/inventory.py --check`.
+If your branch adds, changes or removes a record reader, the check lists it. Review the
+dispositions, run `inventory.py --review-sources` and commit `reviewed-surface.json`.
 
 ## Generate and check
 
@@ -24,9 +61,13 @@ python3 -B tools/world_data_inventory/inventory.py --check
 ```
 
 The scripts CI job runs both commands when inventory, converter/shared, engine source,
-or workflow files change. The Rust test job runs
-`world::database::inventory_tests::world_data_inventory_extraction` in its normal suite
-and retains its extraction, JSON inventory and Markdown report as `world-data-inventory`.
+or workflow files change. `--check` always enforces the committed `reviewed-surface.json`
+against the tree, then regenerates `inventory.json` and `report.md`. A missing generated
+file is created and a stale one is overwritten. The Rust test job runs
+`world::database::inventory_tests::world_data_inventory_extraction` in its normal suite.
+That test also checks every emitted `table.column` against `reviewed-surface.json`, and
+uploads its extraction, JSON inventory and Markdown report as `world-data-inventory`, also
+after a failure.
 
 For local executable extraction, read the storage guide and discover the shared paths
 first. Use the installed wrapper when this checkout lacks `scripts/workspace.py`:
@@ -71,26 +112,58 @@ relevant evidence; they do not assert that those tests ran in this task. All oth
 fields have explicit deferred/provenance policies; BLOBs have an opaque disposition.
 Named external stores remain separate from SQL accounting.
 
-The source guard is intentionally conservative. It hashes converter/shared producers,
-candidate SQL readers and annotated evidence, including new files. Changes require
-review even when only an unrelated function changed. This prevents a source-only CI
-check from silently accepting new columns without executing Rust. The Rust test also
-rejects unknown emitted tables, missing annotated fields, replay mismatches, broken
-anchors and selected mapping/dependency drift. It does not demand a reader for every
-future gameplay table.
+The committed gate is deliberately narrow, so it stays stable. The scripts job checks every
+record reader that the lexical scan finds: a new reader, a reader whose SQL changed, or a
+removed reader fails until `reviewed-surface.json` lists it. The Rust test checks every
+emitted column the same way, and rejects unknown emitted tables, missing annotated fields,
+replay mismatches, broken anchors and selected mapping/dependency drift. It does not demand
+a reader for every future gameplay table. A new column in an existing table fails in the Rust
+`test` job, not in the scripts job, because only the extraction sees the columns.
 
-After reviewing changed projections and updating dispositions/anchors:
+The fingerprint of the converter, shared and engine sources is still computed, but only as a
+derived value. It binds an extraction to one checkout and appears in the generated files.
+Unlike the earlier committed `reviewed-sources.json`, it is not compared with a committed copy.
+
+**What the gate no longer covers.** Taylor accepted this trade-off to stop the conflicts.
+The maintainers should know its size:
+
+- 24 of the 88 reviewed readers have a `null` SQL hash. Their SQL is a variable, a `format!`
+  result, or a constant from another file. Only the text of the call expression is reviewed.
+  For such a reader, the tool also hashes the same-file string constants that the call names
+  or interpolates (`{COLS}`). A constant in another file, or a variable that is built
+  elsewhere, is not covered. An edit to it changes no committed file.
+- The composed-query extraction covers the 75 `ReferenceQuery` variants only. It does not
+  cover the other `null` readers.
+- An edit to converter or shared projection code (the `decoded`, `preserved` and `projected`
+  states) no longer gates anything. A column change that it causes is still caught in the Rust
+  `test` job.
+- An edit to an `evidence` or `sink` file that makes a disposition false no longer gates
+  anything while its anchor text exists. `validate_refs` checks only that the anchor string
+  is in the file.
+- A new column dependency of an existing column through a `null` reader is not gated. The
+  generated report records `prepare_dependencies`, but no committed baseline compares them.
+
+After reviewing a new or changed reader and updating dispositions/anchors:
 
 ```sh
 python3 -B tools/world_data_inventory/inventory.py --review-sources
 python3 -B tools/world_data_inventory/inventory.py --check
 ```
 
-Review the fingerprint and report diffs. Do not use regeneration to substitute for
-classification review. An emitted extraction can also be analyzed with
-`inventory.py --extraction /path/to/extraction.json --output /path/to/report`.
-Its source commit and reviewed-source hash identify the evidence; it is not transferable
-to another checkout just because the world schema version matches.
+For a new table or column, classify the table in `dispositions.json` first. Then take an
+extraction: run the Rust extraction test with `WORLD_DATA_INVENTORY_OUTPUT` set to a
+task-owned folder (it keeps `extraction.json` even when the check fails), or download
+`extraction.json` from the failed CI run's `world-data-inventory` artifact. Then run:
+
+```sh
+python3 -B tools/world_data_inventory/inventory.py --review-sources --extraction /path/to/extraction.json
+```
+
+Review the diff of `reviewed-surface.json` and `dispositions.json`. Do not use regeneration
+to substitute for classification review. An emitted extraction can also be analyzed with
+`inventory.py --extraction /path/to/extraction.json --output /path/to/report`. Its source
+commit and source fingerprint identify the evidence; it is not transferable to another
+checkout just because the world schema version matches.
 
 ## Evidence limits and next instrumentation
 
