@@ -527,9 +527,7 @@ impl RoomGraph {
                 pending.push((other, seen.clone()));
             }
         }
-        let unbounded = visibility
-            .pop()
-            .expect("outside node allocated with the rooms");
+        let unbounded = visibility.pop()?;
         Some(CellVisibility {
             rooms: visibility,
             unbounded,
