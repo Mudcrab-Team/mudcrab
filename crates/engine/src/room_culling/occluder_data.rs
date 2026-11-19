@@ -1,6 +1,6 @@
 //! Optional, source-versioned occluder facts. Unsupported ownership and state never hide meshes.
 
-use super::{PortalSide, RoomGraph, occlusion::Occluder};
+use super::{PortalSide, RoomGraph, assignment::master_side, occlusion::Occluder};
 use rusqlite::{Connection, Result};
 use std::collections::HashMap;
 
@@ -33,8 +33,8 @@ pub(super) fn has_occluders(conn: &Connection, cell: u32) -> Result<bool> {
     )
 }
 
-/// Both incoming and outgoing XORDs matter: a disabled or missing endpoint
-/// must not leave its neighbor acting as a verified standalone plane.
+/// Retail renders both members of isolated one-way and reciprocal pairs. Record each
+/// authored edge at both endpoints so a disabled or missing peer also disables its neighbor.
 fn plane_neighbors(conn: &Connection) -> Result<HashMap<u32, Option<u32>>> {
     let verified_column: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('room_occluder_links') WHERE name='single_target_verified')",
@@ -70,7 +70,12 @@ fn plane_neighbors(conn: &Connection) -> Result<HashMap<u32, Option<u32>>> {
     Ok(neighbors)
 }
 
-pub(super) fn load(conn: &Connection, cell: u32, graph: &RoomGraph) -> Result<Vec<Occluder>> {
+pub(super) fn load(
+    conn: &Connection,
+    cell: u32,
+    graph: &RoomGraph,
+    room_index: &HashMap<u32, usize>,
+) -> Result<Vec<Occluder>> {
     if !supported(conn)? || !graph.supports_unbounded {
         return Ok(Vec::new());
     }
@@ -152,7 +157,11 @@ pub(super) fn load(conn: &Connection, cell: u32, graph: &RoomGraph) -> Result<Ve
         // than one master would require reproducing native handle/hash iteration order.
         occluder.owner = match graph.rooms_containing(occluder.center).as_slice() {
             [] if target.is_none() => PortalSide::Unbounded,
-            [room] if target.is_none_or(|id| graph.rooms[*room].ref_id == id) => {
+            [room]
+                if target.is_none_or(|id| {
+                    master_side(id, room_index, &authored.masters) == PortalSide::Room(*room)
+                }) =>
+            {
                 PortalSide::Room(*room)
             }
             _ => continue,

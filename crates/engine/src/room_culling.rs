@@ -168,7 +168,7 @@ pub struct RoomCullLegacyExempt;
 
 /// Ownership persists until the reference moves or its cell root is replaced.
 #[derive(Default)]
-pub struct RoomAssignmentCache(HashMap<(u32, Entity, Entity), assignment::CachedAssignment>);
+pub struct RoomAssignmentCache(HashMap<Entity, assignment::CachedAssignment>);
 
 pub fn assignment_follows_transform(record_type: Option<&str>) -> bool {
     matches!(
@@ -377,6 +377,15 @@ impl Portal {
             ],
             rooms,
         }
+    }
+
+    fn has_valid_aperture(&self) -> bool {
+        self.center().is_finite()
+            && self.corners.iter().enumerate().all(|(i, &corner)| {
+                let next = self.corners[(i + 1) % 4] - corner;
+                let previous = self.corners[(i + 3) % 4] - corner;
+                next.try_normalize().is_some() && previous.cross(next).try_normalize().is_some()
+            })
     }
 
     fn center(&self) -> Vec3 {
@@ -1023,12 +1032,12 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
                     half,
                     [side(9)?, side(10)?],
                 ),
-                half.iter().all(|value| value.is_finite() && *value >= 0.0),
+                half.iter().all(|value| value.is_finite() && *value > 0.0),
             ))
         })?;
         for portal in rows {
             let (portal, valid) = portal?;
-            graph.incomplete |= !valid || portal.corners.iter().any(|point| !point.is_finite());
+            graph.incomplete |= !valid || !portal.has_valid_aperture();
             graph.portals.push(portal);
         }
     }
@@ -1054,7 +1063,13 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
         }
     }
     if graph.supports_unbounded {
-        graph.authored = assignment::load(connection, cell_id, &graph.rooms, &mut graph.portals)?;
+        graph.authored = assignment::load(
+            connection,
+            cell_id,
+            &graph.rooms,
+            &room_index,
+            &mut graph.portals,
+        )?;
     }
     if graph.authored.is_some() {
         graph.links.clear();
@@ -1122,7 +1137,7 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
             }
         }
     }
-    graph.occluders = occluder_data::load(connection, cell_id, &graph)?;
+    graph.occluders = occluder_data::load(connection, cell_id, &graph, &room_index)?;
     Ok(graph)
 }
 
@@ -1363,7 +1378,7 @@ pub fn cull_room_views(
     mut state: ResMut<RoomCullingState>,
     config: Option<Res<EngineConfig>>,
     settings: Option<Res<crate::settings::RenderingSettings>>,
-    roots: Query<&GlobalTransform, With<StreamedCellRoot>>,
+    roots: Query<&GlobalTransform, InteriorRoot>,
     mut views: Query<
         (
             &GlobalTransform,
@@ -1377,7 +1392,19 @@ pub fn cull_room_views(
     >,
     mesh_bounds: Query<(&Aabb, &GlobalTransform), Without<NoFrustumCulling>>,
     reference_bounds: Query<(&ExpectedModelBounds, &GlobalTransform)>,
-    reference_transforms: Query<(&GlobalTransform, Option<&Transform>)>,
+    changed_references: Query<
+        (Entity, &GlobalTransform, Option<&Transform>),
+        (
+            With<FormId>,
+            Or<(
+                Added<FormId>,
+                Changed<Transform>,
+                Changed<GlobalTransform>,
+                Changed<ChildOf>,
+            )>,
+        ),
+    >,
+    live_references: Query<(), (With<FormId>, With<GlobalTransform>)>,
     parents: Query<&ChildOf>,
     ids: Query<&FormId>,
     exemptions: Query<(
@@ -1395,13 +1422,45 @@ pub fn cull_room_views(
     cells.sort_unstable();
     let mut culled = 0;
     let mut main_view = None;
-    assignments.0.retain(|&(cell, root, reference), _| {
-        state
-            .graphs
-            .get(&cell)
-            .is_some_and(|loaded| loaded.root == root)
-            && reference_transforms.get(reference).is_ok()
+    assignments.0.retain(|&reference, cached| {
+        roots.contains(cached.root) && live_references.contains(reference)
     });
+    // A reference can move and return while its meshes are off screen or its graph is loading.
+    // Observe placements before visiting cameras. Resolve ownership lazily when a mesh is listed.
+    if !roots.is_empty() {
+        for (reference, global, local) in &changed_references {
+            let Some((root, root_transform)) = parents
+                .iter_ancestors(reference)
+                .take(32)
+                .find_map(|entity| roots.get(entity).ok().map(|world| (entity, world)))
+            else {
+                assignments.0.remove(&reference);
+                continue;
+            };
+            // Streamed references are direct cell children. Their local placement survives rebases.
+            let transform = local
+                .filter(|_| parents.get(reference).is_ok_and(|p| p.parent() == root))
+                .map_or_else(
+                    || root_transform.affine().inverse() * global.affine(),
+                    Transform::compute_affine,
+                );
+            let cached = assignments
+                .0
+                .entry(reference)
+                .or_insert(assignment::CachedAssignment {
+                    root,
+                    transform,
+                    moved: false,
+                    owners: None,
+                });
+            if cached.transform != transform || cached.root != root {
+                cached.root = root;
+                cached.transform = transform;
+                cached.moved = true;
+                cached.owners = None;
+            }
+        }
+    }
     for (camera_transform, projection, room_near, camera, is_main, mut visible) in &mut views {
         if camera.is_some_and(|camera| !camera.is_active) {
             continue;
@@ -1506,44 +1565,32 @@ pub fn cull_room_views(
                     if !authored.has_rule(form_id) {
                         return true;
                     }
-                    let Ok((matrix, local)) = reference_transforms.get(reference) else {
+                    let Some(cached) = assignments
+                        .0
+                        .get_mut(&reference)
+                        .filter(|c| c.root == loaded.root)
+                    else {
                         return true;
                     };
-                    // Streamed references are direct cell children. Their local placement avoids
-                    // root-composition rounding on initial attachment and later origin rebases.
-                    let transform = local
-                        .filter(|_| {
-                            parents
-                                .get(reference)
-                                .is_ok_and(|parent| parent.parent() == loaded.root)
-                        })
-                        .map_or_else(
-                            || local_from_world * matrix.affine(),
-                            Transform::compute_affine,
-                        );
-                    let assigned = assignments
-                        .0
-                        .entry((*cell, loaded.root, reference))
-                        .or_insert_with(|| assignment::CachedAssignment {
-                            transform,
-                            owners: authored.initial_owners(
+                    let owners = cached.owners.get_or_insert_with(|| {
+                        if cached.moved {
+                            authored.owners(
                                 form_id,
-                                transform,
+                                Some(cached.transform),
                                 &loaded.graph.rooms,
                                 &loaded.graph.portals,
-                            ),
-                        });
-                    if transform != assigned.transform {
-                        assigned.transform = transform;
-                        assigned.owners = authored.owners(
-                            form_id,
-                            Some(transform),
-                            &loaded.graph.rooms,
-                            &loaded.graph.portals,
-                        );
-                    }
+                            )
+                        } else {
+                            authored.initial_owners(
+                                form_id,
+                                cached.transform,
+                                &loaded.graph.rooms,
+                                &loaded.graph.portals,
+                            )
+                        }
+                    });
                     return assignment::draws(
-                        &assigned.owners,
+                        owners,
                         &loaded.graph.portals,
                         &volumes,
                         bounds.as_ref(),
@@ -1908,6 +1955,15 @@ mod tests {
         let graph = load_room_graph(&connection, 7).unwrap();
         assert_eq!(graph.occluders.len(), 1);
         assert_eq!(graph.occluders[0].owner, PortalSide::Room(0));
+        connection
+            .execute_batch(
+                "INSERT INTO room_reference_rules VALUES(500,7,'target',2);
+            UPDATE room_occluders SET target_ref=2;",
+            )
+            .unwrap();
+        let graph = load_room_graph(&connection, 7).unwrap();
+        assert_eq!(graph.occluders.len(), 1);
+        assert_eq!(graph.occluders[0].owner, PortalSide::Room(0));
         insert_room(&connection, 3, 7, [100.0, 0.0, 0.0]);
         connection
             .execute_batch("UPDATE room_bounds SET flags=256 WHERE ref_id=3")
@@ -2137,6 +2193,67 @@ mod tests {
                 "an unchanged named target must survive the initial root and later rebases"
             );
         }
+    }
+
+    #[test]
+    fn unlisted_named_reference_rechecks_ownership_after_returning_to_spawn() {
+        let db = authored_database();
+        insert_room(&db, 1, 7, [0.0; 3]);
+        insert_room(&db, 2, 7, [100.0, 0.0, 0.0]);
+        db.execute_batch(
+            "INSERT INTO \"references\"(id,cell_id,base_form_id) VALUES(2,7,99);
+            INSERT INTO room_reference_rules VALUES(2,7,'target',2);
+            INSERT INTO room_model_bounds VALUES(99,0,0,-5,0.1);",
+        )
+        .unwrap();
+        let graph = load_room_graph(&db, 7).unwrap();
+        let mut scene = scene();
+        scene
+            .app
+            .world_mut()
+            .resource_mut::<RoomCullingState>()
+            .graphs
+            .get_mut(&7)
+            .unwrap()
+            .graph = graph;
+        let reference = scene
+            .app
+            .world()
+            .get::<ChildOf>(scene.far)
+            .unwrap()
+            .parent();
+        scene
+            .app
+            .world_mut()
+            .entity_mut(reference)
+            .insert((Transform::IDENTITY, GlobalTransform::IDENTITY));
+        scene.app.add_systems(Update, cull_room_views);
+        scene.app.world_mut().run_schedule(Update);
+        assert!(
+            !mesh_list(&scene.app, scene.camera).contains(&scene.far),
+            "initial named attachment owns the mesh"
+        );
+        // Bevy omits this mesh from the view during both changes.
+        for placement in [Transform::from_xyz(40.0, 0.0, 0.0), Transform::IDENTITY] {
+            scene
+                .app
+                .world_mut()
+                .entity_mut(reference)
+                .insert((placement, GlobalTransform::from(placement)));
+            scene.app.world_mut().run_schedule(Update);
+        }
+        scene
+            .app
+            .world_mut()
+            .get_mut::<VisibleEntities>(scene.camera)
+            .unwrap()
+            .get_mut(TypeId::of::<Mesh3d>())
+            .push(scene.far);
+        scene.app.world_mut().run_schedule(Update);
+        assert!(
+            mesh_list(&scene.app, scene.camera).contains(&scene.far),
+            "movement returns the mesh to its visible geometric owner"
+        );
     }
 
     #[test]
@@ -2885,6 +3002,29 @@ mod tests {
                     .is_none()
             );
             assert!(!load_room_graph(&connection, 8).unwrap().incomplete);
+        }
+    }
+
+    #[test]
+    fn empty_or_collapsed_portals_fall_back_to_full_cell_visibility() {
+        let db = authored_database();
+        insert_room(&db, 1, 7, [0.0; 3]);
+        db.execute_batch("INSERT INTO room_portals VALUES(10,7,0,20,0,0,0,0,4,4,1,NULL,0,1)")
+            .unwrap();
+        for (x, width, height) in [
+            (0.0, 0.0, 0.0),
+            (0.0, 4.0, 0.0),
+            (1.0e20, 4.0, 4.0),
+            (0.0, f32::INFINITY, 4.0),
+        ] {
+            db.execute(
+                "UPDATE room_portals SET pos_x=?1,half_x=?2,half_z=?3",
+                rusqlite::params![x, width, height],
+            )
+            .unwrap();
+            let graph = load_room_graph(&db, 7).unwrap();
+            assert!(graph.incomplete);
+            assert!(reached_rooms(&graph, Vec3::ZERO, clip_from_local()).is_none());
         }
     }
 

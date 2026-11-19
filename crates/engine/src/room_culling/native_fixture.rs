@@ -266,7 +266,13 @@ fn overlapping_starts_match_both_retail_renders() {
                 .rooms
                 .push(Room::from_creation(id, room.center, [0.; 3], room.half));
         }
-        let index = |id| capture.order.iter().position(|&form| form == id).unwrap();
+        let indices: HashMap<_, _> = capture
+            .order
+            .into_iter()
+            .enumerate()
+            .map(|(i, id)| (id, i))
+            .collect();
+        let index = |id| indices[&id];
         for portal in &fixture.portals {
             graph.portals.push(Portal::from_creation(
                 portal.id,
@@ -277,7 +283,7 @@ fn overlapping_starts_match_both_retail_renders() {
             ));
         }
         graph.authored =
-            assignment::load(&connection, 7, &graph.rooms, &mut graph.portals).unwrap();
+            assignment::load(&connection, 7, &graph.rooms, &indices, &mut graph.portals).unwrap();
         assert!(graph.authored.as_ref().unwrap().complete);
         assert_eq!(graph.rooms_containing(lookup), capture.starts.map(index));
         let visible = graph.visibility_volumes(eye, lookup, clip).unwrap();

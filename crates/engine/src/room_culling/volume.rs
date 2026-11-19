@@ -208,11 +208,17 @@ impl VisibilityVolume {
             return Some(self.clone());
         }
         let near = normalized(clip.row(3) - clip.row(2));
+        // An orthographic eye plane is parallel to the near plane even under cell-root shear.
+        // The render-near plane remains part of the mesh volume.
+        let eye_plane = near
+            .filter(|_| clip.row(3).truncate() == Vec3::ZERO)
+            .map(|plane| plane.truncate().extend(-plane.truncate().dot(camera)));
         let ordinary = self
             .planes
             .iter()
             .copied()
-            .filter(|plane| Some(*plane) != near);
+            .filter(|plane| Some(*plane) != near)
+            .chain(eye_plane);
         let polygon = clip_aperture(corners, ordinary).or_else(|| {
             let (portal, view) = authored?;
             if clip.row(3).truncate() == Vec3::ZERO || !portal.admits_projected_eye(view) {
@@ -390,6 +396,27 @@ mod tests {
                 "mesh testing still applies the near plane"
             );
         }
+    }
+
+    #[test]
+    fn orthographic_apertures_are_clipped_at_the_eye() {
+        let eye = Vec3::new(3.0, 0.0, 20.0);
+        let clip = Mat4::orthographic_rh(-10.0, 10.0, -10.0, 10.0, 100.0, 16.0)
+            * Mat4::from_translation(-eye);
+        let camera = VisibilityVolume::camera(clip).unwrap();
+        assert!(
+            camera
+                .through_portal(&portal(eye + Vec3::Z * 20.0, Quat::IDENTITY), eye, clip)
+                .is_none()
+        );
+
+        let tilted = portal(eye, Quat::from_rotation_y(std::f32::consts::FRAC_PI_4));
+        let through = camera.through_portal(&tilted, eye, clip).unwrap();
+        assert!(through.intersects(&bounds(eye + Vec3::new(0.5, 0.0, -30.0), Vec3::splat(0.01))));
+        assert!(!through.intersects(&bounds(
+            eye + Vec3::new(-0.5, 0.0, -30.0),
+            Vec3::splat(0.01)
+        )));
     }
 
     #[test]

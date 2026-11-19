@@ -39,8 +39,10 @@ pub(super) enum Owner {
 }
 
 pub(super) struct CachedAssignment {
+    pub root: Entity,
     pub transform: Affine3A,
-    pub owners: Vec<Owner>,
+    pub moved: bool,
+    pub owners: Option<Vec<Owner>>,
 }
 
 impl Assignments {
@@ -215,10 +217,23 @@ pub(super) fn draws(
     })
 }
 
+pub(super) fn master_side(
+    id: u32,
+    indices: &HashMap<u32, usize>,
+    masters: &[Option<usize>],
+) -> PortalSide {
+    indices
+        .get(&id)
+        .and_then(|&i| masters[i])
+        .map(PortalSide::Room)
+        .unwrap_or(PortalSide::Unknown)
+}
+
 pub(super) fn load(
     conn: &Connection,
     cell: u32,
     rooms: &[Room],
+    indices: &HashMap<u32, usize>,
     portals: &mut [Portal],
 ) -> rusqlite::Result<Option<Assignments>> {
     let supported: bool = conn.query_row(
@@ -259,24 +274,12 @@ pub(super) fn load(
         })
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let masters = joined_masters(&authored);
-    let indices: HashMap<_, _> = rooms
-        .iter()
-        .enumerate()
-        .map(|(i, room)| (room.ref_id, i))
-        .collect();
     let mut joined = vec![Vec::new(); rooms.len()];
     for (index, master) in masters.iter().enumerate() {
         if let Some(master) = master {
             joined[*master].push(index);
         }
     }
-    let side_for_id = |id| {
-        indices
-            .get(&id)
-            .and_then(|&i| masters[i])
-            .map(PortalSide::Room)
-            .unwrap_or(PortalSide::Unknown)
-    };
     for portal in portals.iter_mut() {
         for side in &mut portal.rooms {
             if let PortalSide::Room(index) = *side {
@@ -299,7 +302,7 @@ pub(super) fn load(
                 "none" => Rule::None,
                 "target" => Rule::Target(
                     row.get::<_, Option<u32>>(2)?
-                        .map(side_for_id)
+                        .map(|id| master_side(id, indices, &masters))
                         .unwrap_or(PortalSide::Unknown),
                 ),
                 _ => Rule::Unknown,
