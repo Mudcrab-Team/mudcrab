@@ -88,7 +88,7 @@
 //!   or an animated door outside `spawn_cell` inserts `RoomCullExempt` on the reference entity;
 //! - a mesh whose own entity, or whose reference, has a `RigidBody` that moves
 //!   (`Dynamic`, `KinematicPositionBased` or `KinematicVelocityBased`), except an authored
-//!   reference root with a known source sphere. Moving child meshes still stay drawn.
+//!   reference root, which follows its assignment rule. Moving child meshes still stay drawn.
 //!   `Fixed` bodies, which static collision uses, are culled normally.
 //!
 //! Streamed actors and doors receive the exemption when their reference root is spawned.
@@ -199,10 +199,7 @@ pub fn assignment_follows_transform(record_type: Option<&str>) -> bool {
     )
 }
 
-/// Whether a base record type (the `records.record_type` of a reference's base object) is one
-/// room culling must not hide: actors and their leveled lists, doors, activators, and the
-/// inventory records that become loose, physics-driven objects when placed. Mudcrab keeps
-/// these types visible as a precaution. Retail has no record-type exemption list.
+/// Types exempt in legacy graphs. Authored graphs classify movable roots using their assignment rules.
 pub fn exempt_record_type(record_type: Option<&str>) -> bool {
     matches!(
         record_type,
@@ -225,6 +222,20 @@ pub fn exempt_record_type(record_type: Option<&str>) -> bool {
                 | "WEAP"
         )
     )
+}
+
+pub(crate) fn mark_reference_exemptions(
+    entity: &mut bevy::ecs::system::EntityCommands,
+    record_type: Option<&str>,
+    has_override: bool,
+) {
+    let movable = assignment_follows_transform(record_type);
+    if movable || has_override {
+        entity.insert(RoomCullLegacyExempt);
+    }
+    if !movable && exempt_record_type(record_type) {
+        entity.insert(RoomCullExempt);
+    }
 }
 
 /// Opt-in marker for a camera, other than the main one, that culls by room (a portal view).
@@ -1471,7 +1482,7 @@ mod tests {
     }
 
     #[test]
-    fn an_initial_named_target_does_not_require_legacy_stored_bounds() {
+    fn a_named_activator_without_a_sphere_attaches_until_it_moves() {
         let connection = authored_database();
         insert_room(&connection, 1, 7, [0.0; 3]);
         insert_room(&connection, 2, 7, [0.0, 25.0, 0.0]);
@@ -1507,6 +1518,12 @@ mod tests {
                 Transform::IDENTITY,
                 GlobalTransform::IDENTITY,
             ));
+        mark_reference_exemptions(
+            &mut scene.app.world_mut().commands().entity(reference),
+            Some("ACTI"),
+            true,
+        );
+        scene.app.world_mut().flush();
         scene.app.world_mut().entity_mut(scene.far).insert((
             Aabb::from_min_max(-Vec3::splat(0.5), Vec3::splat(0.5)),
             GlobalTransform::from_translation(Vec3::new(0.0, 0.0, -25.0)),

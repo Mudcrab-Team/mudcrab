@@ -1407,10 +1407,10 @@ one, or multiple touched physical portals as ordinary-space, portal-shared, or c
 ownership. Portal sharing uses the native sphere test, and each child mesh tests the resulting
 volume with its current affine AABB. Ambiguous overlapping masters retain all possible owners;
 native runtime handle/hash order is not reconstructed from FormIDs. Automatic assignment keeps unknown bounds visible. A valid initial named target assigns directly
-without requiring a source sphere. `NONE`, unsupported transforms, actors, and doors remain drawn. Supported `ACTI` references, including
-static web activators, use authored assignment when source bounds are available and reclassify
-on supported root-transform changes. Activators remain exempt with legacy data or unsupported
-assignment bounds. Named-target neighboring-room priority and specialized/forced native assignment
+without requiring a source sphere. `NONE`, unsupported transforms, actors, and doors remain drawn. Activators (`ACTI`), including static webs,
+stay visible in legacy graphs. A valid named target attaches an activator to its room at the
+authored placement, even without a source sphere. Automatic attachment and reassignment after
+movement keep an activator visible when its bounds are unknown. Named-target neighboring-room priority and specialized/forced native assignment
 paths are not fully reproduced.
 
 Legacy `reference_rooms` rows remain for compatibility. Multibound-flagged references are omitted
