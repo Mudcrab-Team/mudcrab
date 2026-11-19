@@ -20,7 +20,7 @@ def record(name, form_id, data):
 
 
 def plugin():
-    header = subrecord("HEDR", struct.pack("<fII", 1.7, len(CASES), 0x804))
+    header = subrecord("HEDR", struct.pack("<fII", 1.7, len(CASES) + 1, 0x800 + len(CASES)))
     header += subrecord("CNAM", b"Mudcrab parity probes\0")
     header += subrecord("MAST", b"Skyrim.esm\0") + subrecord("DATA", bytes(8))
     quests = bytearray()
@@ -31,6 +31,7 @@ def plugin():
         vmad += struct.pack("<BHHH", 2, 0, 0, 0)  # version, fragments, filename length, aliases
         data = subrecord("EDID", encoded + b"\0") + subrecord("VMAD", vmad)
         data += subrecord("DNAM", struct.pack("<HBBII", 1, 50, 0, 0, 0))
+        data += subrecord("NEXT", b"") + subrecord("ANAM", struct.pack("<I", 0))
         quests += record("QUST", 0x01000800 + index, data)
     group = struct.pack("<4sI4siHHI", b"GRUP", len(quests) + 24, b"QUST", 0, 0, 0, 0)
     return record("TES4", 0, header) + group + quests
@@ -50,6 +51,10 @@ def prepare(game, pex, prefix_template, output):
         raise ValueError("Output inside the prefix template is not allowed")
     if output.exists():
         raise ValueError("Use a fresh output directory; an existing game/profile is never modified")
+    scripts = [pex / f"{name}.pex" for name in (*CASES, "MCParityParent", "MCParityGrand")]
+    for script in scripts:
+        if not script.is_file():
+            raise ValueError(f"Missing required PEX fixture: {script.name}")
     output.mkdir(parents=True, mode=0o700)
     target = output / "game"
     data = target / "Data"
@@ -60,9 +65,8 @@ def prepare(game, pex, prefix_template, output):
         if item.is_file() and (item.suffix.lower() == ".bsa" or item.name in
                               ("Skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm", "Dragonborn.esm")):
             (data / item.name).symlink_to(item)
-    for item in pex.glob("MCParity*.pex"):
+    for item in scripts:
         shutil.copy2(item, data / "Scripts" / item.name)
-    assert len(list((data / "Scripts").glob("*.pex"))) == 6
     (data / "MCParity.esp").write_bytes(plugin())
     (target / "steam_appid.txt").write_text("489830\n")
     (target / "MCParityStart.txt").write_text("coc QASmoke\n")

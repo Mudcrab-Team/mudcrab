@@ -380,7 +380,7 @@ async fn old_script_abi_rebuilds_only_scripts_even_with_legacy_configuration() {
     rebuild_old_script_abi(1).await;
 }
 
-/// The immediately preceding emitter ABI also rebuilds with saved legacy settings.
+/// ABI-2 scripts rebuild with saved legacy settings.
 #[tokio::test]
 async fn abi_two_scripts_regenerate_case_insensitive_helpers() {
     rebuild_old_script_abi(2).await;

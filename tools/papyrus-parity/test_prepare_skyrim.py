@@ -18,6 +18,15 @@ class PreparationTests(unittest.TestCase):
         template.mkdir()
         return game, pex, template
 
+    def test_stale_script_cannot_replace_required_fixture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            game, pex, template = self.inputs(root)
+            (pex / "MCParityGrand.pex").rename(pex / "MCParityStale.pex")
+            with self.assertRaisesRegex(ValueError, "MCParityGrand.pex"):
+                prepare(game, pex, template, root / "session")
+            self.assertFalse((root / "session").exists())
+
     def test_output_inside_template_is_rejected_before_copying(self):
         with tempfile.TemporaryDirectory() as directory:
             game, pex, template = self.inputs(Path(directory))

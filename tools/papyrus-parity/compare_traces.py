@@ -85,7 +85,11 @@ if __name__ == "__main__":
     except (OSError, UnicodeError, ValueError, KeyError) as error:
         result = {"status": "incomplete", "error": str(error)}
     result["raw_log_sha256"] = hashlib.sha256(raw).hexdigest() if raw is not None else None
-    args.output.write_text(json.dumps(result, indent=2) + "\n")
+    try:
+        with args.output.open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(result, indent=2) + "\n")
+    except OSError as error:
+        parser.exit(2, f"Cannot create comparison output: {error}\n")
     print(json.dumps({"status": result["status"], "cases":
         {k: v["status"] for k, v in result.get("cases", {}).items()}}, indent=2))
     raise SystemExit(0 if result["status"] == "match" else 2 if result["status"] == "incomplete" else 1)

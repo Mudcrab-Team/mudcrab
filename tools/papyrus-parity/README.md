@@ -54,7 +54,7 @@ Wait until each of the four case names has exactly one `begin` and one `done` ma
 
 ## Run the current converter and compare
 
-Run from the repository root:
+Run from the repository root. Both commands require a new output filename for each run.
 
 ```sh
 cargo run --locked -p converter --example papyrus_parity -- "$PEX" "$AUDIT/luau.json"

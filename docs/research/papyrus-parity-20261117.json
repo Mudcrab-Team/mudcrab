@@ -1,6 +1,6 @@
 {
   "date": "2026-11-17",
-  "scope": "One fresh Skyrim run; per-case trace order only",
+  "scope": "Per-quest trace order from the original and corrected-plugin captures",
   "base_commit": "3d5d3ebb5aa73a4afb11231180d84b8b34a5d6d0",
   "skyrim_version": "1.7.104.0",
   "compiler": {
@@ -253,7 +253,7 @@
   "validation": {
     "state_regressions_passed": 9,
     "comparator_controls_passed": 8,
-    "profile_preparation_regressions_passed": 4,
+    "profile_preparation_regressions_passed": 5,
     "snapshot_isolation_regressions_passed": 1,
     "failing_before": "pex_parent_dispatch_preserves_receiver_and_defining_class: active-state ancestry assertion",
     "excluded_trial": "First unguarded capture rejected because OnInit ran twice per quest",
@@ -262,5 +262,36 @@
       "No production Utility::Wait provider or scheduler added",
       "No save/load or concurrent reentry campaign"
     ]
+  },
+  "corrected_plugin_capture": {
+    "date": "2026-11-19",
+    "game_exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "plugin_sha256": "193e6c785fc37344c627ee0815981760a52bfd76b9c4385cc085487cde76b75a",
+    "raw_log_sha256": "f1f1f427f0b7323b99a1827fb94e9636459eaef57d6ae897e4ee9b09257c25c6",
+    "pex_sha256_matches_original": true,
+    "helper_sha256": "96506e191b0fc42b0d2c59599cc16d8bf7211fef6604eaef614e2801e7c4403a",
+    "case_results": {
+      "inheritance": {
+        "markers": 9,
+        "retail_matches_original": true,
+        "status": "match"
+      },
+      "nested_end": {
+        "markers": 9,
+        "retail_matches_original": true,
+        "status": "match"
+      },
+      "nested_begin": {
+        "markers": 7,
+        "retail_matches_original": true,
+        "status": "match"
+      },
+      "latent": {
+        "markers": 6,
+        "retail_matches_original": true,
+        "status": "unsupported_native"
+      }
+    },
+    "probe_only_wait_adapter_matches": true
   }
 }

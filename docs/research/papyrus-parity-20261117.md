@@ -15,7 +15,7 @@ The live comparison found and fixed one dispatch bug. Skyrim searches the active
 | Nested call from `OnBeginState` | The inner transition leaves the object in its new state when the outer begin handler returns. | Complete trace matches. | Complete trace matches. |
 | Latent call | `Inner` suspends at `Utility.Wait`; it logs completion and returns 42 before `Outer` continues. | Stops at unregistered `Utility::Wait`. | Still stops at unregistered `Utility::Wait`. |
 
-The reference is one complete, fresh-game capture of the four guarded quest scripts. Order is compared separately per quest. The quests initialize concurrently, so their global interleaving is not an expectation. No elapsed-time or scheduling-fairness claim is made.
+The table uses the original fresh-game capture of the four guarded quest scripts. A second capture with the corrected quest plugin reproduced every marker. Order is compared separately per quest. The quests initialize concurrently, so their global interleaving is not an expectation. No elapsed-time or scheduling-fairness claim is made.
 
 ## Inheritance lookup needed two passes
 
@@ -35,7 +35,7 @@ The fixture has three classes, with the child initially in `Ready`. It distingui
 
 The existing `pex_parent_dispatch_preserves_receiver_and_defining_class` regression expected the incorrect child-first fallback. Its expectation now follows the native observation, and it also covers the grandparent-state counterexample. The corrected expectation failed before the runtime change. All nine tests in `papyrus_states` pass afterward, including lifecycle-error isolation and script-cache rebuild checks.
 
-The converter already writes the current runtime helper into publication output. Metadata reconstruction also hashes the helper's actual bytes. This change does not alter the emitted calling convention or bump the script ABI. Existing asset packs need a conversion or metadata rebuild to receive the changed helper.
+The runtime helper ships in each converted pack. Script ABI 4 makes both normal conversion and `--reuse-assets` upgrade packs containing the ABI 3 helper. With matching source data, the metadata rebuild regenerates scripts and installs the corrected helper while retaining verified meshes and textures.
 
 ## Nested state transitions matched the observed re-entry
 
@@ -106,6 +106,8 @@ The focused lookup regression failed before the fix at the active-state ancestry
 
 The final native comparison matches inheritance and both nested-state traces. It intentionally remains a nonzero comparison because the primary latent case is unsupported. The probe-only adapter matches its ordering separately.
 
-Review follow-up strengthens the probe adapter check to require one wait token with argument 0.5 and the exact pre-resume trace. The runner now converts and hashes a private PEX snapshot. Profile preparation rejects output inside its template, checks copied directory ancestry before writing, and replaces copied configuration-file symlinks. Eight comparator controls, four profile-preparation regressions, and one snapshot-isolation test cover these paths. The new Python controls failed before the fixes. The original native capture remains unchanged.
+On November 19, a fresh Skyrim run used the corrected plugin with five counted items in its header (four quests and one group). Each quest now ends with an empty `NEXT` marker and a zero `ANAM` next-alias ID. The executable and all six PEX hashes matched the original run. The per-quest traces reproduced all 31 markers, including the return value 42 after the wait. The `corrected_plugin_capture` entry in the evidence JSON pins the new plugin and raw log separately from the November 17 capture.
+
+The probe adapter check requires one wait token with argument 0.5 and the exact pre-resume trace. The runner converts and hashes a private PEX snapshot. Profile preparation requires all six named fixtures, rejects output inside its template, checks copied directory ancestry before writing, and replaces copied configuration-file symlinks. The scripts CI job runs eight comparator controls and five profile-preparation regressions. A Rust test covers snapshot isolation. Both evidence writers refused an output path aliased to an input in a CLI check.
 
 This is a bounded parity result for these programs and Skyrim 1.7.104.0. It does not cover inherited instance-variable initialization, properties, arbitrary state combinations, concurrency, persistence, menu/game-time waits, cancellation, or the full Papyrus native API. No full workspace or in-engine Mudcrab gameplay run was performed.

@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
+    io::Write,
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -151,11 +152,9 @@ fn main() -> Result<()> {
         "helper_sha256": format!("{:x}", Sha256::digest(RUNTIME.as_bytes())),
         "pex_sha256": pex_hashes,
         "cases": cases, "probe_only_wait_adapter": adapter});
-    fs::write(
-        Path::new(&args[1]),
-        serde_json::to_string_pretty(&result)? + "\n",
-    )?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    let json = serde_json::to_string_pretty(&result)?;
+    writeln!(fs::File::create_new(&args[1])?, "{json}")?;
+    println!("{json}");
     Ok(())
 }
 
