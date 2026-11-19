@@ -22,7 +22,7 @@ jobs:
           # This file is the source of truth for types, scopes and acronyms;
           # docs/contributing/writing-prs.md describes the rule and links here.
           TYPES='feat|fix|perf|refactor|style|revert|build|docs|test|chore|ci'
-          SCOPES='converter|engine|launcher|shared|mo2|dummy-content|ci|scripts|release|deps|nif|converters|streaming|lod-experiment'
+          SCOPES='converter|engine|launcher|shared|mo2|dummy-content|retail-rules|ci|scripts|release|deps|nif|converters|streaming|lod-experiment'
           # Domain terms that may start the description in capitals.
           ACRONYMS='NIF|LOD|BSA|ESM|ESP|ESL|DDS|MO2|TES4|TES5|NPC|GPU|CPU|PBR|BC1|BC7|HDR|UV|UI|API|CLI|JSON|PNG|SQL'
           # Type, optional scope, optional '!' for breaking changes, then a lowercase
