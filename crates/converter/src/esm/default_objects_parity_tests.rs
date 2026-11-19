@@ -91,13 +91,17 @@ fn named_movement_type(id: u32, name: Option<&str>, speeds: [f32; 8]) -> Vec<u8>
 }
 
 fn default_objects(pairs: &[(&[u8; 4], u32)]) -> Vec<u8> {
+    default_objects_at(DEFAULT_OBJECTS, pairs)
+}
+
+fn default_objects_at(id: u32, pairs: &[(&[u8; 4], u32)]) -> Vec<u8> {
     let dnam: Vec<u8> = pairs
         .iter()
         .flat_map(|(key, target)| [key.as_slice(), &target.to_le_bytes()].concat())
         .collect();
     record(
         b"DOBJ",
-        DEFAULT_OBJECTS,
+        id,
         &[sub(b"EDID", b"DefaultObjectManager\0"), sub(b"DNAM", &dnam)].concat(),
     )
 }
@@ -276,4 +280,118 @@ fn a_later_plugin_that_nulls_a_key_removes_the_default_in_both_readers() {
         [text("DMRN", DEFAULT_MT), text("DMSW", CREATURE_MT)],
         "the null link removes DMWL; DMRN and DMSW survive; the zero key adds no row"
     );
+}
+
+#[test]
+fn both_readers_merge_default_objects_by_resolved_owner() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        ["Skyrim.esm", "Update.esm", "Owner.esp", "Patch.esp"].map(|name| root.path().join(name));
+    let base = [
+        header(1, &[]),
+        top(b"MOVT", &[movement_type(DEFAULT_MT, "Base_MT", RETAIL)]),
+    ]
+    .concat();
+    fs::write(&paths[0], base).unwrap();
+    fs::write(&paths[1], header(1, &["Skyrim.esm"])).unwrap();
+    let owner = [
+        header(0, &["Skyrim.esm"]),
+        top(
+            b"MOVT",
+            &[
+                movement_type(0x0100_0800, "Owner_Walk_MT", RETAIL),
+                movement_type(0x0100_0801, "Owner_Run_MT", RETAIL),
+            ],
+        ),
+        // Local selector 7 is past Owner.esp's master list and resolves to self.
+        top(
+            b"DOBJ",
+            &[default_objects_at(
+                0x0700_0831,
+                &[
+                    (b"DMWL", 0x0700_0800),
+                    (b"DMRN", 0x0100_0800),
+                    (b"DX01", 0x0100_0881), // An inherited link with no winning target.
+                ],
+            )],
+        ),
+    ]
+    .concat();
+    fs::write(&paths[2], owner).unwrap();
+    let patch = [
+        header(0, &["Skyrim.esm", "Owner.esp"]),
+        // Selector 1 names Owner.esp, which occupies slot 2 in the load order.
+        top(
+            b"DOBJ",
+            &[default_objects_at(
+                0x0100_0831,
+                &[(b"DMRN", 0x0100_0801), (b"DMSW", DEFAULT_MT)],
+            )],
+        ),
+        top(
+            b"RACE",
+            &[record(
+                b"RACE",
+                0x0200_0900,
+                &[
+                    sub(b"EDID", b"PatchedRace\0"),
+                    sub(b"WKMV", &0x0100_0800u32.to_le_bytes()),
+                    sub(b"RNMV", &0x0100_0881u32.to_le_bytes()),
+                ]
+                .concat(),
+            )],
+        ),
+    ]
+    .concat();
+    fs::write(&paths[3], patch).unwrap();
+
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let database = root.path().join(format!("{reader:?}.db"));
+        let conversion = EsmParser::convert_plugins_with_reader_and_schemas(
+            &paths,
+            &database,
+            reader,
+            root.path(),
+            crate::config::DEFAULT_LANGUAGE,
+            None,
+        )
+        .unwrap();
+        let conn = Connection::open(database).unwrap();
+        let text = |key: &str, id| vec![Value::Text(key.into()), Value::Integer(id)];
+        assert_eq!(
+            rows(
+                &conn,
+                "SELECT key, form_id FROM default_objects ORDER BY key"
+            ),
+            [
+                text("DMRN", 0x0200_0801),
+                text("DMSW", 0x0003_580D),
+                text("DMWL", 0x0200_0800),
+            ],
+            "{reader:?}: DOBJ override must merge by resolved owner and retain the inherited walk slot"
+        );
+        assert_eq!(
+            rows(
+                &conn,
+                "SELECT form_id, load_order FROM records WHERE record_type='DOBJ'"
+            ),
+            [vec![Value::Integer(0x0200_0831), Value::Integer(3)]]
+        );
+        assert_eq!(
+            rows(
+                &conn,
+                "SELECT walk_movt_id, run_movt_id FROM race_movement_links WHERE id=50333952"
+            ),
+            [vec![Value::Integer(0x0200_0800), Value::Null]],
+            "{reader:?}: present movement link resolves and absent one becomes NULL"
+        );
+        assert!(
+            conversion
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("DNAM") && warning.contains("02000881")),
+            "{reader:?}: inherited dangling DNAM must warn: {:?}",
+            conversion.warnings,
+        );
+    }
 }
