@@ -39,37 +39,25 @@ struct Block<'a> {
 /// A skin can use a bind-pose bound only if its bones have no independent motion.
 pub(crate) fn skin_pose_is_fixed(path: &Path, bytes: &[u8], blocks: &[NifBlock]) -> Result<bool> {
     let (mut data, header) = crate::mesh::parse_skyrim_header(bytes, path)?;
-    // A skin's joint list can include unused bones. Treat each entry as potentially weighted
-    // because Skyrim can store the influences in the geometry or skin partition.
-    let bone_blocks: HashSet<_> = blocks
-        .iter()
-        .flat_map(|block| match block {
-            NifBlock::NiSkinInstance(skin) => skin.bones.as_slice(),
-            NifBlock::BsDismemberSkinInstance(skin) => skin.skin_instance.bones.as_slice(),
-            NifBlock::BSSkinInstance(skin) => skin.bones.as_slice(),
-            _ => &[],
-        })
-        .copied()
-        .filter(|&index| index != u32::MAX)
-        .collect();
+    let motion_targets = skin_motion_targets(blocks);
     let string = |index: u32| {
         header
             .strings
             .get(index as usize)
             .map(|name| name.0.as_str())
     };
-    let mut bone_names: HashSet<_> = bone_blocks
+    let mut target_names: HashSet<_> = motion_targets
         .iter()
         .filter_map(|&index| blocks.get(index as usize)?.as_node().ok())
         .filter_map(|node| string(node.av.object.name))
         .collect();
     for block in blocks {
         if let NifBlock::NiDefaultAVObjectPalette(palette) = block {
-            bone_names.extend(
+            target_names.extend(
                 palette
                     .objs
                     .iter()
-                    .filter(|entry| bone_blocks.contains(&entry.index))
+                    .filter(|entry| motion_targets.contains(&entry.index))
                     .map(|entry| entry.name.0.as_str()),
             );
         }
@@ -84,19 +72,19 @@ pub(crate) fn skin_pose_is_fixed(path: &Path, bytes: &[u8], blocks: &[NifBlock])
         let kind = header
             .get_block_type(index)
             .map_err(|_| color_eyre::eyre::eyre!("invalid NIF block type"))?;
-        if !bone_blocks.is_empty() {
-            let moves_bone = match (kind, blocks.get(index)) {
+        if !motion_targets.is_empty() {
+            let moves_skin = match (kind, blocks.get(index)) {
                 ("NiTransformController" | "NiKeyframeController", _) => {
                     NiTimeController::parse(raw)
                         .ok()
-                        .is_none_or(|(_, controller)| bone_blocks.contains(&controller.target))
+                        .is_none_or(|(_, controller)| motion_targets.contains(&controller.target))
                 }
                 (_, Some(NifBlock::NiMultiTargetTransformController(controller))) => {
-                    bone_blocks.contains(&controller.parent.target)
+                    motion_targets.contains(&controller.parent.target)
                         || controller
                             .extra_targets
                             .iter()
-                            .any(|target| bone_blocks.contains(target))
+                            .any(|target| motion_targets.contains(target))
                 }
                 // A manager can supply a target by name even when the multi-target slot is null.
                 (_, Some(NifBlock::NiControllerSequence(sequence))) => {
@@ -104,13 +92,13 @@ pub(crate) fn skin_pose_is_fixed(path: &Path, bytes: &[u8], blocks: &[NifBlock])
                         matches!(
                             string(track.controller_type),
                             Some("NiTransformController" | "NiKeyframeController")
-                        ) && string(track.node_name).is_some_and(|name| bone_names.contains(name))
+                        ) && string(track.node_name).is_some_and(|name| target_names.contains(name))
                     })
                 }
                 ("NiMultiTargetTransformController" | "NiControllerSequence", _) => true,
                 _ => false,
             };
-            if moves_bone {
+            if moves_skin {
                 return Ok(false);
             }
         }
@@ -124,19 +112,67 @@ pub(crate) fn skin_pose_is_fixed(path: &Path, bytes: &[u8], blocks: &[NifBlock])
                 return Ok(false);
             }
             let mass = f32_at(raw, BODY_MASS)?;
+            let motion = raw[BODY_MOTION_SYSTEM];
+            let quality = raw[BODY_QUALITY_TYPE];
             // Automatic quality can resolve to a moving body; it cannot prove a fixed bind pose.
             if !mass.is_finite()
-                || raw[BODY_MOTION_SYSTEM] == MOTION_SYSTEM_KEYFRAMED
-                || (raw[BODY_QUALITY_TYPE] == 0
-                    && SIMULATED_MOTION_SYSTEMS.contains(&raw[BODY_MOTION_SYSTEM]))
-                || classify(raw[BODY_MOTION_SYSTEM], raw[BODY_QUALITY_TYPE], mass)
-                    != BodyKind::Fixed
+                || matches!(motion, MOTION_SYSTEM_KEYFRAMED | MOTION_SYSTEM_CHARACTER)
+                || quality == QUALITY_TYPE_CHARACTER
+                || (quality == 0 && SIMULATED_MOTION_SYSTEMS.contains(&motion))
+                || classify(motion, quality, mass) != BodyKind::Fixed
             {
                 return Ok(false);
             }
         }
     }
     Ok(true)
+}
+
+fn skin_motion_targets(blocks: &[NifBlock]) -> HashSet<u32> {
+    let mut parents = vec![None; blocks.len()];
+    for (index, block) in blocks.iter().enumerate() {
+        if let Ok(node) = block.as_node() {
+            for &child in &node.children {
+                if let Some(parent) = parents.get_mut(child as usize) {
+                    // Mesh-local joint binding also uses the first parent in block order.
+                    parent.get_or_insert(index as u32);
+                }
+            }
+        }
+    }
+
+    let mut targets = HashSet::new();
+    let mut visited = HashSet::new();
+    for block in blocks {
+        let (root, bones) = match block {
+            NifBlock::NiSkinInstance(skin) => (skin.skeleton_root, &skin.bones),
+            NifBlock::BsDismemberSkinInstance(skin) => {
+                (skin.skin_instance.skeleton_root, &skin.skin_instance.bones)
+            }
+            NifBlock::BSSkinInstance(skin) => (skin.skeleton_root, &skin.bones),
+            _ => continue,
+        };
+        // Skyrim may store influences in the geometry or skin partition, so treat every
+        // joint listed by the instance as potentially weighted.
+        for &bone in bones.iter().filter(|&&bone| bone != u32::MAX) {
+            let mut target = bone;
+            while visited.insert((root, target)) {
+                targets.insert(target);
+                if target == root {
+                    break;
+                }
+                let Some(parent) = parents.get(target as usize).copied().flatten() else {
+                    break;
+                };
+                // The placing reference owns the scene root's transform.
+                if parent == crate::mesh::NIF_ROOT_BLOCK {
+                    break;
+                }
+                target = parent;
+            }
+        }
+    }
+    targets
 }
 
 pub fn from_nif(path: &Path, nif: &NifFile) -> Result<CollisionAsset> {
@@ -263,6 +299,8 @@ pub(crate) fn from_nif_bytes(path: &Path, nif: &NifFile, bytes: &[u8]) -> Result
 /// stabilized) and thin box. Keyframed, fixed, character and invalid are not simulated.
 const SIMULATED_MOTION_SYSTEMS: [u8; 6] = [1, 2, 3, 4, 5, 8];
 const MOTION_SYSTEM_KEYFRAMED: u8 = 6;
+const MOTION_SYSTEM_CHARACTER: u8 = 9;
+const QUALITY_TYPE_CHARACTER: u8 = 8;
 /// Qualities of a body that moves and collides: debris, moving, critical, bullet.
 const MOVING_QUALITY_TYPES: [u8; 4] = [3, 4, 5, 6];
 

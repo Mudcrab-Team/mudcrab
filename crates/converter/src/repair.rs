@@ -9,7 +9,7 @@ use crate::{
     check::{CheckMode, CheckProblem, check_output},
     config::{PipelineConfig, TextureEncoder},
     integration::finalize_world_database_with_sources,
-    mesh::MeshConverter,
+    mesh::{MeshConverter, NifSnapshot},
     pipeline::{
         collect_texture_semantics, installed_archive_owners, mo2_archive_is_active,
         mo2_installed_archive_owners, non_mo2_archive_is_active, plugin_paths,
@@ -1099,16 +1099,19 @@ fn attempt(
         let source = sources
             .get(key)
             .ok_or_else(|| color_eyre::eyre::eyre!("winning source is missing: {key}"))?;
-        let mut source_hash = verified_source_hash(source, key, verified)?;
         let (asset_kind, ext, target_ext) =
             kind(key).ok_or_else(|| color_eyre::eyre::eyre!("unsupported repair target: {key}"))?;
+        let nif = (ext == "nif")
+            .then(|| NifSnapshot::read(&source.path))
+            .transpose()?;
+        let mut source_hash = verified_source_hash(source, key, verified, nif.as_ref())?;
         let output = canonical_asset_path(key, asset_kind, target_ext)?;
         let target = checked_destination(staged, &output)?;
-        if ext == "nif" {
+        if let Some(nif) = &nif {
             let skeletons =
                 skeletons.get_or_init(|| crate::mesh::SkeletonIndex::from_sources(mesh_sources));
             let skeleton_key =
-                crate::mesh::resolve_skeleton_with_index(Path::new(key), mesh_sources, skeletons);
+                crate::mesh::resolve_skeleton_from_snapshot(Path::new(key), nif, skeletons);
             let mut unresolved_skin = None;
             let skeleton = match skeleton_key {
                 crate::mesh::SkeletonResolution::Skeleton(path) => {
@@ -1129,12 +1132,14 @@ fn attempt(
                             )
                         })?;
                     source_hash.push(':');
+                    let dependency = skeletons.read_source(&path)?;
                     source_hash.push_str(&verified_source_hash(
                         dependency_source,
                         dependency_key,
                         verified,
+                        Some(&dependency),
                     )?);
-                    Some(dependency_source.path.as_path())
+                    Some(dependency)
                 }
                 crate::mesh::SkeletonResolution::SelfContained => None,
                 crate::mesh::SkeletonResolution::Unresolved { best_coverage } => {
@@ -1146,14 +1151,14 @@ fn attempt(
                     None
                 }
             };
-            MeshConverter::convert_nif_to_glb_with_skin_resolution(
-                &source.path,
+            MeshConverter::convert_nif_snapshot(
+                nif,
                 &target,
-                skeleton,
+                skeleton.as_ref(),
                 unresolved_skin.as_deref(),
             )?;
             MeshConverter::glb_texture_dependencies(&target)?;
-            if MeshConverter::is_geometry_template(&source.path)? {
+            if nif.is_geometry_template()? {
                 manifest.excluded_inputs.insert(key.into(), "Geometryless overlay template; standalone mesh is empty, runtime overlays are not implemented".into());
                 report.excluded += 1;
             } else {
@@ -1245,6 +1250,7 @@ fn verified_source_hash(
     source: &Source,
     key: &str,
     verified: &mut BTreeSet<PathBuf>,
+    snapshot: Option<&NifSnapshot<'_>>,
 ) -> Result<String> {
     if let Some((archive, expected)) = &source.archive
         && !verified.contains(archive)
@@ -1256,7 +1262,10 @@ fn verified_source_hash(
         );
         verified.insert(archive.clone());
     }
-    let hash = hash_file(&source.path)?;
+    let hash = match snapshot {
+        Some(nif) => nif.hash().to_owned(),
+        None => hash_file(&source.path)?,
+    };
     if let Some(expected) = &source.expected_hash {
         ensure!(hash == *expected, "ingestion blob hash mismatch for {key}");
     }
@@ -1814,14 +1823,14 @@ mod tests {
         };
         fs::write(&blob, "modified skeleton").unwrap();
         assert!(
-            verified_source_hash(&source, "skeleton", &mut BTreeSet::new())
+            verified_source_hash(&source, "skeleton", &mut BTreeSet::new(), None)
                 .unwrap_err()
                 .to_string()
                 .contains("blob hash mismatch")
         );
         fs::write(&archive, "modified archive").unwrap();
         assert!(
-            verified_source_hash(&source, "skeleton", &mut BTreeSet::new())
+            verified_source_hash(&source, "skeleton", &mut BTreeSet::new(), None)
                 .unwrap_err()
                 .to_string()
                 .contains("archive changed")

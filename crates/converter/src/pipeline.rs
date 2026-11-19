@@ -34,7 +34,7 @@ use crate::{
             publish_chunk, read_cached_heights, terrain_jobs, validate_chunk_members,
         },
     },
-    mesh::MeshConverter,
+    mesh::{MeshConverter, NifSnapshot},
     progress::{AssetOutcome, ProgressEvent, ProgressStage},
     script::ScriptConverter,
     texture::{TextureConverter, TextureEncoding, TextureSemantic, publish_ktx2_file},
@@ -2327,9 +2327,17 @@ impl ConversionBatch<'_> {
                         let target = staging_root.join(&target_rel);
 
                         // Dependencies come from the merged winners below, not physical neighbors.
-                        let source_hash = hash_file(&source);
-                        let mut hash = match source_hash {
-                            Ok(h) => h,
+                        let snapshot = (source_kind == "nif")
+                            .then(|| NifSnapshot::read(&source))
+                            .transpose();
+                        let (nif, mut hash) = match snapshot.and_then(|nif| {
+                            let hash = match &nif {
+                                Some(nif) => nif.hash().to_owned(),
+                                None => hash_file(&source)?,
+                            };
+                            Ok((nif, hash))
+                        }) {
+                            Ok(input) => input,
                             Err(err) => {
                                 let (err, fatal) = match remove_invalid_staged_output(&target) {
                                     Ok(()) => (err, false),
@@ -2364,20 +2372,41 @@ impl ConversionBatch<'_> {
                         }
 
                         let mut unresolved_skin = None;
-                        let skeleton = if source_kind == "nif" {
-                            let resolution = crate::mesh::resolve_skeleton_with_index(
-                                &relative,
-                                &mesh_sources,
-                                skeleton_index
-                                    .as_ref()
-                                    .expect("a nif batch always builds a skeleton index"),
+                        let skeleton = if let Some(nif) = &nif {
+                            let skeletons = skeleton_index
+                                .as_ref()
+                                .expect("a nif batch always builds a skeleton index");
+                            let resolution = crate::mesh::resolve_skeleton_from_snapshot(
+                                &relative, nif, skeletons,
                             );
                             match resolution {
-                                crate::mesh::SkeletonResolution::Skeleton(key) => skeleton_index
-                                    .as_ref()
-                                    .and_then(|index| index.source_for(&key))
-                                    .map(Path::to_path_buf)
-                                    .or(Some(key)),
+                                crate::mesh::SkeletonResolution::Skeleton(dependency_key) => {
+                                    match skeletons.read_source(&dependency_key) {
+                                        Ok(dependency) => {
+                                            hash.push(':');
+                                            hash.push_str(dependency.hash());
+                                            Some(dependency)
+                                        }
+                                        Err(err) => {
+                                            let (err, fatal) =
+                                                match remove_invalid_staged_output(&target) {
+                                                    Ok(()) => (err, false),
+                                                    Err(remove_error) => (remove_error, true),
+                                                };
+                                            let _ = outcome_tx.send((
+                                                index,
+                                                key,
+                                                hash,
+                                                target_rel,
+                                                relative.clone(),
+                                                Err(err),
+                                                target,
+                                                fatal,
+                                            ));
+                                            return;
+                                        }
+                                    }
+                                }
                                 crate::mesh::SkeletonResolution::SelfContained => None,
                                 crate::mesh::SkeletonResolution::Unresolved { best_coverage } => {
                                     hash.push_str(crate::mesh::UNRESOLVED_SKIN_HASH_SUFFIX);
@@ -2392,34 +2421,6 @@ impl ConversionBatch<'_> {
                         } else {
                             None
                         };
-                        if source_kind == "nif"
-                            && let Some(dependency) = &skeleton
-                        {
-                            match hash_file(dependency) {
-                                Ok(dep_hash) => {
-                                    hash.push(':');
-                                    hash.push_str(&dep_hash);
-                                }
-                                Err(err) => {
-                                    let (err, fatal) = match remove_invalid_staged_output(&target) {
-                                        Ok(()) => (err, false),
-                                        Err(remove_error) => (remove_error, true),
-                                    };
-                                    let _ = outcome_tx.send((
-                                        index,
-                                        key,
-                                        hash,
-                                        target_rel,
-                                        relative.clone(),
-                                        Err(err),
-                                        target,
-                                        fatal,
-                                    ));
-                                    return;
-                                }
-                            }
-                        }
-
                         if source_kind == "nif"
                             && let Some(suffix) =
                                 crate::mesh::volcanic_normal_cache_suffix(&key, &source_textures)
@@ -2562,14 +2563,12 @@ impl ConversionBatch<'_> {
                                             )
                                             .map(|_| ())
                                         }
-                                        "nif" => {
-                                            MeshConverter::convert_nif_to_glb_with_skin_resolution(
-                                                &source,
-                                                &target,
-                                                skeleton.as_deref(),
-                                                unresolved_skin.as_deref(),
-                                            )
-                                        }
+                                        "nif" => MeshConverter::convert_nif_snapshot(
+                                            nif.as_ref().expect("NIF input was read"),
+                                            &target,
+                                            skeleton.as_ref(),
+                                            unresolved_skin.as_deref(),
+                                        ),
                                         "pex" => {
                                             ScriptConverter::convert_pex_to_luau(&source, &target)
                                         }

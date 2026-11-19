@@ -2687,6 +2687,11 @@ fn authored_room_link_counts_keep_only_mismatched_cells_incomplete() {
             links.extend(sub(b"INAM", &0u32.to_le_bytes()));
         }
         links.extend(sub(b"XLRM", &target.to_le_bytes()).repeat(link_count));
+        let sibling_link = [
+            sub(b"XRMR", &[1, 0, 1, 0]),
+            sub(b"XLRM", &first_room.to_le_bytes()),
+        ]
+        .concat();
         [
             record(b"CELL", id, 0, sub(b"DATA", &[1, 0])),
             group(
@@ -2695,7 +2700,7 @@ fn authored_room_link_counts_keep_only_mismatched_cells_incomplete() {
                 group(
                     9,
                     id,
-                    [room(first_room, links), room(target, vec![])].concat(),
+                    [room(first_room, links), room(target, sibling_link)].concat(),
                 ),
             ),
         ]
@@ -2728,6 +2733,9 @@ fn authored_room_link_counts_keep_only_mismatched_cells_incomplete() {
 
             let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
             let conn = rusqlite::Connection::open(db).unwrap();
+            assert!(conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM room_links WHERE room_ref=0x801 AND linked_ref=0x800)", [], |row| row.get::<_, bool>(0)
+            ).unwrap());
             let states = conn
                 .prepare("SELECT cell_id,complete FROM room_graph_cells ORDER BY cell_id")
                 .unwrap()
