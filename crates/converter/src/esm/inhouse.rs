@@ -1180,7 +1180,7 @@ fn convert_plugins_with_text_sources_report_impl(
             plugin_paths,
             &unresolved_fields,
             &terrain_offsets,
-            &decoded.records,
+            &decoded,
         )?;
     } else {
         export_inhouse_record_archive_to_db(&conn, &master, &order, plugin_paths)?;
@@ -1279,15 +1279,6 @@ fn convert_plugins_with_text_sources_report_impl(
         )?;
         for cell in damage.affected_cells(&master) {
             incomplete.execute([cell])?;
-        }
-        for record in decoded.records.values() {
-            if super::is_placed_record_type(&record.record_type)
-                && (!record.payload_complete
-                    || record.rejected_fields.contains(b"XLRM")
-                    || record.rejected_fields.contains(b"XRMR"))
-            {
-                incomplete.execute([record.cell_form_id])?;
-            }
         }
         tx.execute(
             "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES ('visibility_version',2)",
@@ -2671,6 +2662,7 @@ mod runtime_move_tests {
                     ..Default::default()
                 },
             )]),
+            ..Default::default()
         };
         let raw_pointer = decoded.records[&id].raw_payload.as_ptr();
         let history_pointer = decoded.history.as_ptr();

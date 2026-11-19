@@ -8,10 +8,10 @@
 //! Design and byte layouts: `docs/research/interior-room-graph-converter.md`.
 
 use crate::esm::{extractors::SubrecordView, records::RawRecord};
-use crate::records::DecodedRecord;
+use crate::records::{DecodedRecord, ReadResult};
 use rusqlite::{Connection, OptionalExtension, Result, Transaction, params};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 
 /// `RoomMarker` base form in `Skyrim.esm`, which is always load-order slot 0.
@@ -108,9 +108,10 @@ pub(crate) fn restore_portal_endpoint_provenance<'a>(
         "UPDATE room_portals SET unbounded_a=(room_a IS NULL AND ?3), unbounded_b=(room_b IS NULL AND ?4) WHERE ref_id=?1 AND pair_index=?2",
     )?;
     let mut incomplete = conn.prepare_cached(
-        "UPDATE room_graph_cells SET complete=0 WHERE cell_id IN
-         (SELECT cell_id FROM room_portals WHERE ref_id=?1 AND
-          (?2 OR (room_a IS NULL AND NOT unbounded_a) OR (room_b IS NULL AND NOT unbounded_b)))",
+        "INSERT INTO room_graph_cells(cell_id,complete)
+         SELECT DISTINCT cell_id,0 FROM room_portals WHERE ref_id=?1 AND
+          (?2 OR (room_a IS NULL AND NOT unbounded_a) OR (room_b IS NULL AND NOT unbounded_b))
+         ON CONFLICT(cell_id) DO UPDATE SET complete=0",
     )?;
     for (id, source) in sources {
         if clear.execute([id])? == 0 {
@@ -221,7 +222,7 @@ pub struct RoomGraphReport {
     pub non_box_rooms_skipped: u64,
     /// Portal markers without an `XPRM` (no size); they get no row.
     pub portals_without_size_skipped: u64,
-    /// Room or portal markers with a non-finite size, position or rotation; they get no row.
+    /// Markers skipped for invalid geometry or ambiguous portal fields.
     pub invalid_markers_skipped: u64,
     /// Objects in a cell with rooms whose pivot is in no room box.
     pub objects_in_no_room: u64,
@@ -521,10 +522,10 @@ fn u32_at(data: &[u8], offset: usize) -> Option<u32> {
         .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")))
 }
 
-fn transform_of(view: &SubrecordView<'_>) -> Option<([f32; 3], [f32; 3])> {
-    let data = view.get_f32_slice(b"DATA")?;
-    let data = data.get(..6)?;
-    Some(([data[0], data[1], data[2]], [data[3], data[4], data[5]]))
+fn transform_of(data: &[u8]) -> Option<([f32; 3], [f32; 3])> {
+    let (words, _) = data.first_chunk::<24>()?.as_chunks::<4>();
+    let [x, y, z, rx, ry, rz] = std::array::from_fn(|index| f32::from_le_bytes(words[index]));
+    Some(([x, y, z], [rx, ry, rz]))
 }
 
 fn is_placed(record_type: &[u8; 4]) -> bool {
@@ -533,7 +534,7 @@ fn is_placed(record_type: &[u8; 4]) -> bool {
 
 pub(super) enum RoomLinkSources<'a> {
     Legacy(&'a HashMap<u32, RoomLinkLayout>),
-    Typed(&'a HashMap<u32, DecodedRecord>),
+    Typed(&'a ReadResult),
 }
 
 #[derive(Clone, Default)]
@@ -752,6 +753,18 @@ fn project_room_graph(
     let mut link_anomalies: BTreeMap<&str, (RoomLinkAnomalies, String)> = BTreeMap::new();
     let mut incomplete = HashSet::new();
     incomplete.extend(damaged_placement_cells.into_iter().flatten().copied());
+    if let Some(RoomLinkSources::Typed(decoded)) = &sources {
+        incomplete.extend(&decoded.damaged_cell_groups);
+        // A winning placement can lose fields before reaching the runtime projection.
+        incomplete.extend(decoded.records.values().filter_map(|record| {
+            (is_placed(&record.record_type)
+                && (!record.payload_complete
+                    || record.rejected_fields.contains(b"XLRM")
+                    || record.rejected_fields.contains(b"XRMR")))
+            .then_some(record.cell_form_id)
+            .flatten()
+        }));
+    }
     let mut ordered: Vec<(&u32, &RawRecord)> = records
         .iter()
         .filter(|(_, record)| {
@@ -787,7 +800,8 @@ fn project_room_graph(
             Some(RoomLinkSources::Legacy(layouts)) => {
                 layouts.get(&form_id).cloned().unwrap_or_default()
             }
-            Some(RoomLinkSources::Typed(records)) => records
+            Some(RoomLinkSources::Typed(decoded)) => decoded
+                .records
                 .get(&form_id)
                 .map(RoomLinkLayout::from_decoded)
                 .unwrap_or_default(),
@@ -837,7 +851,7 @@ fn project_room_graph(
             report.non_box_rooms_skipped += 1;
             continue;
         }
-        let Some((position, rotation)) = transform_of(&view) else {
+        let Some((position, rotation)) = view.find(b"DATA").and_then(transform_of) else {
             incomplete.insert(cell);
             report.invalid_markers_skipped += 1;
             continue;
@@ -921,17 +935,34 @@ fn project_room_graph(
         }
         let cell = record.cell_form_id.unwrap_or(0);
         let view = SubrecordView::new(&record.subrecords);
-        let Some(xprm) = view.find(b"XPRM") else {
+        let source = match &sources {
+            Some(RoomLinkSources::Typed(decoded)) => decoded.records.get(&form_id),
+            _ => None,
+        };
+        let unique_geometry = |tag: &[u8; 4]| {
+            if let Some(source) = source {
+                return source.unique_source_subrecord(tag);
+            }
+            let mut fields = view.find_all(tag);
+            let data = fields.next()?;
+            fields.next().is_none().then_some(data)
+        };
+        if view.find(b"XPRM").is_none() {
             incomplete.insert(cell);
             report.portals_without_size_skipped += 1;
             continue;
-        };
-        if xprm.len() != 32 || u32_at(xprm, 28) != Some(SHAPE_PORTAL) {
+        }
+        let Some(xprm) = unique_geometry(b"XPRM")
+            .filter(|data| data.len() == 32 && u32_at(data, 28) == Some(SHAPE_PORTAL))
+        else {
             incomplete.insert(cell);
             report.invalid_markers_skipped += 1;
             continue;
-        }
-        let Some((position, rotation)) = transform_of(&view) else {
+        };
+        let Some((position, rotation)) = unique_geometry(b"DATA")
+            .filter(|data| data.len() == 24)
+            .and_then(transform_of)
+        else {
             incomplete.insert(cell);
             report.invalid_markers_skipped += 1;
             continue;
@@ -943,8 +974,8 @@ fn project_room_graph(
             .chain(&position)
             .chain(&rotation)
             .all(|v| v.is_finite())
-            || half_x < 0.0
-            || half_z < 0.0
+            || half_x <= 0.0
+            || half_z <= 0.0
         {
             incomplete.insert(cell);
             report.invalid_markers_skipped += 1;
@@ -1015,6 +1046,14 @@ fn project_room_graph(
     let mut insert = tx.prepare_cached(
         "INSERT OR IGNORE INTO reference_rooms(reference_id, room_ref, contained) VALUES (?1, ?2, 1)",
     )?;
+    let mut certify = tx.prepare_cached("INSERT INTO room_graph_cells VALUES (?1,?2)")?;
+    let certificate_cells: BTreeSet<_> = rooms_by_cell
+        .keys()
+        .chain(incomplete.intersection(interior_cells))
+        .collect();
+    for cell in certificate_cells {
+        certify.execute((cell, !incomplete.contains(cell)))?;
+    }
     for (&cell, rooms) in &rooms_by_cell {
         if refresh {
             let mut placements = tx.prepare_cached(
@@ -1032,10 +1071,6 @@ fn project_room_graph(
                 write_pivot_rows(&mut insert, rooms, row.get(0)?, position)?;
             }
         }
-        tx.execute(
-            "INSERT INTO room_graph_cells VALUES (?1,?2)",
-            params![cell, !incomplete.contains(&cell)],
-        )?;
     }
     if !refresh {
         for (&form_id, record) in ordered {

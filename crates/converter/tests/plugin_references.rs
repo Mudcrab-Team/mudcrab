@@ -2226,6 +2226,98 @@ fn conflicting_portal_occurrences_keep_both_readers_conservative() {
 }
 
 #[test]
+fn portal_geometry_requires_one_valid_transform_and_positive_aperture() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let aperture = |x: f32, z: f32| {
+        let mut shape = vec![0; 32];
+        shape[..4].copy_from_slice(&x.to_le_bytes());
+        shape[8..12].copy_from_slice(&z.to_le_bytes());
+        shape[28..].copy_from_slice(&3u32.to_le_bytes());
+        sub(b"XPRM", &shape)
+    };
+    let transform = sub(b"DATA", &[0; 24]);
+    let aperture_valid = aperture(40.0, 60.0);
+    let mut source = Vec::new();
+    let cases = [
+        ("valid", transform.clone(), aperture_valid.clone()),
+        (
+            "duplicate transform",
+            [transform.clone(), sub(b"DATA", &[1; 24])].concat(),
+            aperture_valid.clone(),
+        ),
+        (
+            "duplicate aperture",
+            transform.clone(),
+            [aperture_valid.clone(), aperture(80.0, 90.0)].concat(),
+        ),
+        (
+            "malformed duplicate aperture",
+            transform.clone(),
+            [aperture_valid.clone(), sub(b"XPRM", &[0; 4])].concat(),
+        ),
+        ("missing transform", Vec::new(), aperture_valid.clone()),
+        (
+            "short transform",
+            sub(b"DATA", &[0; 20]),
+            aperture_valid.clone(),
+        ),
+        ("missing aperture", transform.clone(), Vec::new()),
+        ("zero width", transform.clone(), aperture(0.0, 60.0)),
+        ("zero height", transform, aperture(40.0, 0.0)),
+    ];
+    for (index, (_, transform, aperture)) in cases.iter().enumerate() {
+        let cell = 0x900 + index as u32;
+        let room = 0x800 + index as u32 * 3;
+        let ends = [room.to_le_bytes(), (room + 1).to_le_bytes()].concat();
+        source.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
+        source.extend(placement_group(
+            cell,
+            [
+                placement_marker(room, 0x1f, Vec::new()),
+                placement_marker_at(room + 1, 0x1f, 500.0, Vec::new()),
+                record(
+                    b"REFR",
+                    room + 2,
+                    0,
+                    [
+                        sub(b"NAME", &0x20u32.to_le_bytes()),
+                        transform.clone(),
+                        aperture.clone(),
+                        sub(b"XPOD", &ends),
+                    ]
+                    .concat(),
+                ),
+            ]
+            .concat(),
+        ));
+    }
+    plugin(&data, "Skyrim.esm", &[], 1, source);
+    for typed in [false, true] {
+        let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+        let conn = rusqlite::Connection::open(db).unwrap();
+        for (index, (case, _, _)) in cases.iter().enumerate() {
+            let cell = 0x900 + index as u32;
+            let (complete, portals): (bool, u32) = conn
+                .query_row(
+                    "SELECT complete,(SELECT count(*) FROM room_portals WHERE cell_id=?1)
+                     FROM room_graph_cells WHERE cell_id=?1",
+                    [cell],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            let valid = *case == "valid";
+            assert_eq!(
+                (complete, portals),
+                (valid, u32::from(valid)),
+                "typed={typed}, {case}"
+            );
+        }
+    }
+}
+
+#[test]
 fn failed_room_link_remapping_keeps_both_readers_conservative() {
     for typed in [false, true] {
         let valid = 0x801u32.to_le_bytes();
@@ -2933,6 +3025,86 @@ fn incomplete_placed_payloads_keep_their_cells_open() {
                 assert!(complete(0x901), "a healthy neighbor must remain complete");
             }
         }
+    }
+}
+
+#[test]
+fn damaged_groups_and_roomless_placements_keep_negative_certificates() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let cell = |id| record(b"CELL", id, 0, sub(b"DATA", &[1, 0]));
+    let room = |id| placement_marker(id, 0x1f, Vec::new());
+    let truncated_group = |kind, label| {
+        let mut bytes = group(kind, label, vec![0]);
+        bytes.pop();
+        bytes
+    };
+    let mut torn_placement = placement(0x802, 0x999, 0, 0.0, Vec::new());
+    torn_placement.extend(b"XL");
+    let size = (torn_placement.len() - 24) as u32;
+    torn_placement[4..8].copy_from_slice(&size.to_le_bytes());
+    plugin(
+        &data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"STAT", 0x999, 0, sub(b"EDID", b"RoomlessStatic\0")),
+            cell(0x900),
+            group(
+                6,
+                0x900,
+                [group(9, 0x900, room(0x800)), truncated_group(9, 0x900)].concat(),
+            ),
+            cell(0x901),
+            placement_group(0x901, room(0x801)),
+            cell(0x902),
+            group(0, u32::from_le_bytes(*b"CELL"), truncated_group(6, 0x902)),
+            cell(0x903),
+            placement_group(0x903, torn_placement),
+            cell(0x904),
+            placement_group(0x904, placement(0x803, 0x999, 0, 0.0, Vec::new())),
+        ]
+        .concat(),
+    );
+    for typed in [false, true] {
+        let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+        let conn = rusqlite::Connection::open(db).unwrap();
+        assert!(conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM [references] WHERE cell_id=0x904 AND base_form_id=0x999)",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap());
+        let mut stmt = conn
+            .prepare(
+                "SELECT cell_id,complete,(SELECT count(*) FROM room_bounds WHERE cell_id=g.cell_id)
+                 FROM room_graph_cells g ORDER BY cell_id",
+            )
+            .unwrap();
+        let certificates = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, u32>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            certificates,
+            [
+                (0x900, false, 1),
+                (0x901, true, 1),
+                (0x902, false, 0),
+                (0x903, false, 0)
+            ],
+            "typed={typed}"
+        );
     }
 }
 const PLACEMENT_CELL_A: u32 = 0x900;
@@ -4162,4 +4334,50 @@ fn native_new_cell_and_placement_ids_cannot_reuse_an_earlier_edit() {
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("FormID belongs to a CELL"));
     assert!(placement_certificate(&db, cell));
+}
+
+#[test]
+fn a_short_child_header_uncertifies_only_its_own_interior() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let mut records = Vec::new();
+    for (cell, room) in [(0x900, 0x800), (0x901, 0x810)] {
+        records.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
+        let mut children = placement_marker(room, 0x1f, Vec::new());
+        if cell == 0x900 {
+            children.extend(b"REFR");
+        }
+        records.extend(placement_group(cell, children));
+    }
+    plugin(&data, "Skyrim.esm", &[], 1, records);
+    for typed in [false, true] {
+        let path = export_room_review_fixture(&data, &dir.path().join("bundle"), typed);
+        let db = rusqlite::Connection::open(path).unwrap();
+        assert!(!placement_certificate(&db, 0x900), "typed={typed}");
+        assert!(placement_certificate(&db, 0x901), "typed={typed}");
+    }
+}
+
+#[test]
+fn malformed_placed_base_keeps_its_known_cell_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    let damaged = record(b"REFR", 0x810, 0, sub(b"NAME", &[1, 2, 3]));
+    room_graph_review_fixture_with_fields(&data, None, None, vec![damaged]);
+    let db = rusqlite::Connection::open(export_room_review_fixture(
+        &data,
+        &dir.path().join("bundle"),
+        false,
+    ))
+    .unwrap();
+    assert!(!placement_certificate(&db, 0x900));
+    let admitted: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM records WHERE form_id=0x810)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!admitted);
 }
