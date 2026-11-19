@@ -221,8 +221,7 @@ pub fn exempt_record_type(record_type: Option<&str>) -> bool {
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct RoomCullingView;
 
-/// Retail opens portals within 5 Creation units. Mudcrab allows 8 to keep the doorway open
-/// when the camera leans into an edge-on aperture.
+/// Mudcrab keeps portals within 8 Creation units open when the camera leans into an edge-on aperture.
 const PORTAL_OPEN_DISTANCE: f32 = 8.0;
 
 /// The owner cache is emptied past this many entries, which drops the despawned meshes in it.
