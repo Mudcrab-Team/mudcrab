@@ -2505,6 +2505,11 @@ fn provenance(output: &Path) -> serde_json::Value {
 /// result reuses every kind.
 #[tokio::test]
 async fn script_abi_bump_rebuilds_only_scripts_and_reuses_the_rest() {
+    check_script_abi_upgrade(1).await;
+    check_script_abi_upgrade(3).await;
+}
+
+async fn check_script_abi_upgrade(source_abi: u32) {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");
     let source = directory.path().join("source");
@@ -2512,7 +2517,7 @@ async fn script_abi_bump_rebuilds_only_scripts_and_reuses_the_rest() {
     let again = directory.path().join("again");
     generate(&data);
     convert(&data, &source).await;
-    let originals = age_source(&source, &data, 1, None);
+    let originals = age_source(&source, &data, source_abi, None);
     let aged_manifest = hash_file(&source.join("conversion-manifest.json")).unwrap();
     let manifest = ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
     let kept: Vec<_> = manifest
@@ -2569,7 +2574,7 @@ async fn script_abi_bump_rebuilds_only_scripts_and_reuses_the_rest() {
         assert_eq!(entry.output_hash, hash_bytes(bytes));
     }
     let record = provenance(&output);
-    assert_eq!(record["source_script_abi"], 1);
+    assert_eq!(record["source_script_abi"], source_abi);
     assert_eq!(record["script_abi"], converter::script::SCRIPT_ABI_VERSION);
     assert_eq!(record["asset_kinds"]["pex"]["action"], "rebuilt");
     assert_eq!(record["asset_kinds"]["nif"]["action"], "reused");
@@ -2586,7 +2591,7 @@ async fn script_abi_bump_rebuilds_only_scripts_and_reuses_the_rest() {
     for script in originals.keys() {
         assert_eq!(
             fs::read(source.join(script)).unwrap(),
-            b"-- script ABI 1 marker\n"
+            format!("-- script ABI {source_abi} marker\n").as_bytes()
         );
     }
 

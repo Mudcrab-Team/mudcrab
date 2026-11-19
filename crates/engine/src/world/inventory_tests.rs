@@ -205,6 +205,12 @@ fn world_data_inventory_extraction() {
     let output = std::env::var_os("WORLD_DATA_INVENTORY_OUTPUT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| temporary.path().join("report"));
+    // Keep the extraction even when the check below fails. A reviewer needs it to run
+    // `inventory.py --review-sources --extraction` for a new table or column.
+    if std::env::var_os("WORLD_DATA_INVENTORY_OUTPUT").is_some() {
+        fs::create_dir_all(&output).unwrap();
+        fs::copy(&input, output.join("extraction.json")).unwrap();
+    }
     let result = Command::new(python)
         .arg(root.join("tools/world_data_inventory/inventory.py"))
         .args(["--extraction"])
@@ -220,7 +226,4 @@ fn world_data_inventory_extraction() {
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
     );
-    if std::env::var_os("WORLD_DATA_INVENTORY_OUTPUT").is_some() {
-        fs::copy(input, output.join("extraction.json")).unwrap();
-    }
 }
