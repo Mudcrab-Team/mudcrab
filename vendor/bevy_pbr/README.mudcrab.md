@@ -37,7 +37,7 @@ Every Mudcrab comment starts with `mudcrab:`, so `grep -rn "mudcrab:" src` lists
 
 ## Updating or removing this copy
 
-Drop this directory and the `bevy_pbr` entry in the root `[patch.crates-io]` when a Bevy release
+Drop this directory and the `bevy_pbr` entry in the root `[patch.crates-io]` only when **every** carried change is gone. The three upstream fixes below can leave on their own, but the Mudcrab-only hunks (the retail sun shadow fade in `src/render/shadows.wgsl`, the receiver-only fog shadow in `src/render/pbr_functions.wgsl`, and the `prev_weight_at` bound) are not in Bevy: keep them, or port them to the new Bevy source, before this copy is removed. Each hunk's own removal condition is in the "Removal rule" column of [`../BEVY_PATCHES.md`](../BEVY_PATCHES.md). The upstream part: drop the matching hunks when a Bevy release
 that Mudcrab uses contains `bevyengine/bevy#26504`, `#26095` and `#26588`, or equivalent fixes (each can go on its own). If Bevy lands a different
 change, take Bevy's version. Keep the `prev_weight_at` bound only if Bevy does not fix that read.
 After any change run `cargo test --locked -p engine` and the Metal shader-validation run in

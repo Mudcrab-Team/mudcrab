@@ -1113,15 +1113,18 @@ mod shadow_policy_tests {
         let (mut in_chunk, mut elsewhere) = (0, 0);
         for mesh in meshes {
             let entity = world.entity(mesh);
-            let shadowed =
-                !entity.contains::<NotShadowCaster>() && !entity.contains::<NotShadowReceiver>();
+            let casts = !entity.contains::<NotShadowCaster>();
+            let receives = !entity.contains::<NotShadowReceiver>();
             let top = top_of(world, mesh);
             if top == chunk {
                 in_chunk += 1;
-                assert!(!shadowed, "an object chunk mesh casts or receives");
+                // Both markers, not either one: the mesh neither casts nor receives.
+                assert!(!casts, "an object chunk mesh still casts");
+                assert!(!receives, "an object chunk mesh still receives");
             } else if top == other {
                 elsewhere += 1;
-                assert!(shadowed, "a mesh outside an object chunk lost its shadows");
+                assert!(casts, "a mesh outside an object chunk lost its caster");
+                assert!(receives, "a mesh outside an object chunk lost its receiver");
             }
         }
         assert_eq!((in_chunk, elsewhere), (1, 1), "both scenes spawned a mesh");
