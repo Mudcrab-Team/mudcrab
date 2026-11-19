@@ -4098,7 +4098,8 @@ fn room_placement_command_updates_skyrim_and_native_occluders() {
         &native,
         serde_json::json!({"edits":[{"op":"put","id":0xff00_0800u32,
         "cell":PLACEMENT_CELL_A,"base":23,"position":[0,0,0],
-        "shape":{"kind":"plane","half_width":8,"half_height":8}}]})
+        "shape":{"kind":"plane","half_width":8,"half_height":8},
+        "links":[0,0,0x0100_0800u32,0],"ownership":{"kind":"target","room":0x800}}]})
         .to_string(),
     )
     .unwrap();
@@ -4114,6 +4115,23 @@ fn room_placement_command_updates_skyrim_and_native_occluders() {
         )
         .unwrap()
     };
+    let proof = db
+        .query_row(
+            "SELECT l.link_index,l.linked_ref,l.single_target_verified,r.target_ref
+         FROM room_occluder_links l JOIN room_reference_rules r ON r.reference_id=l.ref_id
+         WHERE l.ref_id=0xff000800 AND r.assignment='target'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, u32>(1)?,
+                    row.get::<_, bool>(2)?,
+                    row.get::<_, u32>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(proof, (2, 0x0100_0800, true, 0x800));
     assert_eq!(count(), 2);
     fs::write(
         &native,
