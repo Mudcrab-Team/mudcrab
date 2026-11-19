@@ -996,7 +996,8 @@ fn project_room_graph(
         if pairs > 1 {
             report.portals_with_extra_pairs += 1;
         }
-        if !xpod.len().is_multiple_of(8) {
+        let truncated = !xpod.len().is_multiple_of(8);
+        if truncated {
             report.portals_with_trailing_xpod_bytes += 1;
             incomplete.insert(cell);
         }
@@ -1015,8 +1016,8 @@ fn project_room_graph(
         };
         for pair in 0..pairs.max(1) {
             let (room_a, room_b) = (side(pair, 0), side(pair, 4));
-            let outside_a = pair < pairs && u32_at(xpod, pair * 8) == Some(0);
-            let outside_b = pair < pairs && u32_at(xpod, pair * 8 + 4) == Some(0);
+            let outside_a = !truncated && u32_at(xpod, pair * 8) == Some(0);
+            let outside_b = !truncated && u32_at(xpod, pair * 8 + 4) == Some(0);
             if (room_a.is_none() && !outside_a) || (room_b.is_none() && !outside_b) {
                 incomplete.insert(cell);
             }
