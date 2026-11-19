@@ -75,7 +75,7 @@ The issue remains referenced rather than automatically closed because the table 
 
 ## Reproduce the implementation checks
 
-Use the repository's pinned Rust toolchain and Python 3.11 or newer. Run from the repository root and choose fresh output paths.
+Run these commands on Linux or in WSL with the repository's pinned Rust toolchain and Python 3.11 or newer. Run from the repository root and choose fresh output paths.
 
 ```sh
 python3 -B scripts/verify_skyrim_jump_inputs.py --output /tmp/jump-inputs.json
@@ -90,4 +90,4 @@ python3 -B scripts/report_skyrim_jump_runtime.py --output /tmp/jump-comparison.h
 
 The input verifier and production held-out replay are also CI checks. The [native recorder guide](../../tools/skyrim-recorder/README.md) gives fresh-capture commands and the operator-owned executable/save requirements. No game executable, save, or game asset is included in this evidence package.
 
-The [validation record](evidence/skyrim-physics-221/implementation/validation.md) retains exact local commands, results, source hashes, compressed logs and environment limitations. Its portable recheck verifies the saved before/after evidence independently of executing Rust again.
+The [validation record](evidence/skyrim-physics-221/implementation/validation.md) retains exact local commands, results, source hashes, compressed logs and environment limitations. The [historical recheck](evidence/skyrim-physics-221/implementation/recheck.py) runs on Linux or in WSL and verifies the saved before/after evidence independently of executing Rust again.

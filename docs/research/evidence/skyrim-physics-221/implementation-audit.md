@@ -2,19 +2,19 @@
 
 Reviewed by gpt-6.1-sol (xhigh), 2026-11-06. This is a fresh, same-family evidence/trail review. Other model-family providers were unavailable. It does not satisfy an independent different-family review and is not the sol-loop production-code review.
 
-Scope: implementation report, player movement record map, implementation decision log, saved baseline/current artifacts, v4 campaign/report/receipts/archive/traces, and the prepare/score/report tooling. I read the show-me-your-work skill and T3 runtime adapter. I did not edit repository files, run Cargo, launch the game, commit, push, comment externally, or spawn agents. All audit outputs are under /tmp.
+Scope: implementation report, player movement record map, implementation decision log, saved baseline/current artifacts, v4 campaign/report/receipts/archive/traces, and the prepare/score/report tooling. I read the show-me-your-work skill and T3 runtime adapter. I did not edit repository files, run Cargo, launch the game, commit, push, comment externally, or spawn agents.
 
 Verdict: no blocker in the core jump evidence. Before/after numbers, input isolation, acquisition provenance and chart are reproducible. One small source-linkage correction was identified in the light paragraph; the parent accepted it and is adding the missing identity/caller bytes. Full repository verification and PR readiness are outside this verdict and were unfinished at audit time.
 
 ## Rechecks
 
-Run from the repository root:
+From the repository root on Linux or in WSL, run the [committed recheck](implementation/recheck.py).
 
 ```sh
-python3 -B /tmp/mudcrab-221-evidence-recheck.py
+python3 -B docs/research/evidence/skyrim-physics-221/implementation/recheck.py
 ```
 
-The audit-owned script is retained at that path. Its complete successful output is `/tmp/mudcrab-221-evidence-recheck.json`. It imports the committed evidence tools, asserts their saved results against recomputation, checks source/archive/input/prediction hashes, independently derives the headless metrics using native float32 subtraction, resolves local Markdown links, and regenerates the chart to `/tmp/mudcrab-221-audit-comparison.html`. No Rust code is executed by this recheck.
+The replay and headless metrics can be compared with the [original audit output](implementation/validation/evidence-recheck.json). Archive and chart hashes identify the files in each checkout, and link counts reflect the documentation at that revision. The script rescores saved predictions, checks archive and receipt hashes, recomputes headless metrics, regenerates the chart in memory and checks the report links. The [validation record](implementation/validation.md) also gives the command that runs the production Rust replay.
 
 | Check | Result |
 | --- | --- |
@@ -38,17 +38,11 @@ The current headless export explicitly reports synthetic unit-actor height 76. I
 
 The v4 accepted runs use measured player CALL `0x6752ba` and ten archived source hashes each. Their memory controls preserve NPC/race fields while separately changing setting and reference scale. The repeat restores baseline. Both failed traces retain verified raw hashes and failure reasons: readiness interruption, then the missing player setter path. Their incomplete Python pre-capture receipts are explicitly disclosed and neither is accepted input evidence. Source receipts are checked against `capture-source.zip`, not mutable current acquisition tools.
 
-## Trail and transcript check
+## Evidence trail
 
-I used only the scoped T3 thread:
+The [implementation decisions](implementation-decisions.tsv) and [design](implementation-design.md) record the baseline, selected approach and same-family review limitation. The [native input manifest](../../../../tools/skyrim-recorder/reference/jump-inputs-v4/manifest.json) records the two failed attempts, the independent controls and the baseline repeat.
 
-<t3-thread://v2/0fda66cb-6d5a-49c9-8939-da3e4c009f6c/8c19d7fd-676a-4db0-90d7-9162bb5472b8>
-
-Run ordinal 3 is the implementation run. Message positions 336–389 establish the user's `$poteto-mode $full-stop implement issue #221` request, open/unmerged PR boundary, baseline revision and resolved-height plan. Positions 419–573 corroborate live-input-first sequencing, the readiness failure, missing player setter path, baseline source/results, controls, repeat and 155 Python checks. Positions 590–676 corroborate package provenance, CI integration, 102 focused physics tests, 12/12 replay, synthetic-profile distinction and eight final jump checks. Position 717 accurately reports the Python-version-specific schema failure and CI-Python recheck rather than claiming every local test passed. Activity positions 478–482 show the old source/build before production edits; positions 490–494 corroborate full-stop loading and baseline commands. These reads were scoped to the named thread, not unrelated history.
-
-All seven current implementation decision rows map to real decisions/actions and supporting artifacts or logs. The design candidates named by row 3 exist under `/tmp/mudcrab-221-implementation-design/{a,b,c}/candidate.md`; the committed design preserves the selected shape and same-family limitation. The failed acquisition pivots are retained in the manifest and referenced by rows 5–6. I found no invented successful run, silently removed failed native attempt, or undocumented change of scoring gate.
-
-I read the supplied tool-output logs. They corroborate baseline replay/headless success, intentional first-step failure before implementation, first-step success afterward, 102 physics tests (3 ignored), eight final jump tests (2 ignored), 12/12 current replay, current headless success and 155 Python tests. The final v3/v4 build logs identify emitted DLLs; the final input static output equals its saved static artifact. This audit did not independently rebuild DLLs or rerun executable disassembly. Temporary test logs are local evidence; the parent still needs the planned committed final validation record for a remote PR reader.
+The [baseline result](implementation/baseline/result.json), [first-step failure](implementation/baseline/first-step-failure.txt) and [updated result](implementation/current/result.json) document the change in replay behavior. The [validation receipt](implementation/validation/receipt.json) and [validation record](implementation/validation.md) identify the commands and logs for the builds, focused tests and subsequent workspace checks. The original audit reviewed build evidence without independently rebuilding the native DLLs or rerunning disassembly.
 
 ## Specific should-fix
 

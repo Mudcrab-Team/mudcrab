@@ -96,6 +96,16 @@ class RetainedEvidenceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'Pinned evidence identity changed: .*train-capture'):
                     replay.prepare()
 
+    def test_prepare_only_cannot_satisfy_heldout_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'replay'
+            with patch.object(sys, 'argv', ['replay', '--output', str(output),
+                                            '--prepare-only', '--require-heldout-pass']):
+                with self.assertRaises(SystemExit) as error:
+                    replay.main()
+            self.assertEqual(error.exception.code, 2)
+            self.assertFalse(output.exists())
+
     def test_existing_replay_directory_preserves_its_results(self):
         with tempfile.TemporaryDirectory() as directory:
             receipt = Path(directory) / 'result.json'

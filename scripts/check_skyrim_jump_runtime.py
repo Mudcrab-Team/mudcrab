@@ -263,9 +263,10 @@ def score(output, observations):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True, help='new directory for this replay')
-    parser.add_argument('--prepare-only', action='store_true')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--prepare-only', action='store_true')
+    mode.add_argument('--require-heldout-pass', action='store_true')
     parser.add_argument('--test-binary', type=Path, help='existing engine library test executable; skips Cargo')
-    parser.add_argument('--require-heldout-pass', action='store_true')
     args = parser.parse_args()
     destination = args.output.resolve()
     try:

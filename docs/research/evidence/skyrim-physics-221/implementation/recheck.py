@@ -70,12 +70,12 @@ assert verified==historical_result
 summary['native_inputs']={'status':verified['status'],'accepted':len(verified['runs']),'attempts':verified['attempts'],'failed':len(verified['failed_attempts']),'archive_sha256':sha((corpus/'capture-source.zip').read_bytes())}
 assert all(row['launch_prediction_error']==0 for row in verified['runs'])
 chart=r.render()
-assert chart==(directory/'comparison.html').read_text()
+assert chart==(directory/'comparison.html').read_text(encoding='utf-8')
 summary['chart_sha256']=sha(chart.encode())
 links={}
 for filename in ['docs/research/skyrim-physics-221-implementation.md','docs/player-movement-record-map.md','docs/research/evidence/skyrim-physics-221/implementation/baseline/README.md','tools/skyrim-recorder/reference/jump-inputs-v4/implementation-inputs.md']:
  path=root/filename
- local=[link for link in re.findall(r'\[[^\]]*\]\(([^)]+)\)',path.read_text()) if '://' not in link and not link.startswith('#')]
+ local=[link for link in re.findall(r'\[[^\]]*\]\(([^)]+)\)',path.read_text(encoding='utf-8')) if '://' not in link and not link.startswith('#')]
  assert all((path.parent/link.split('#')[0]).exists() for link in local)
  links[filename]=len(local)
 summary['resolving_local_links']=links

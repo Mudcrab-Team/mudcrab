@@ -42,7 +42,7 @@ python3 -B scripts/check_skyrim_jump_runtime.py \
   --output /tmp/jump-production-fresh --require-heldout-pass
 ```
 
-The [portable audit recheck](recheck.py) retains the evidence reviewer's verification logic with only the repository-root lookup and output destinations made portable. It verifies saved hashes, independent rescoring, input isolation, raw headless metrics, native input controls, chart regeneration and local report links. Its [recorded output](validation/evidence-recheck.json) is retained. It does not execute Rust; the last command does.
+Run the [audit recheck](recheck.py) on Linux or in WSL. Its native-input verifier imports the recorder helpers, which use POSIX file locking. It verifies saved hashes, independent rescoring, input isolation, raw headless metrics, native input controls, chart regeneration and local report links. Its [recorded output](validation/evidence-recheck.json) is retained. It does not execute Rust; the last command does.
 
 The original evidence audit checked bounded RTTI, vtable, CALL and `.pdata` observations. Their [published structural summary](../light-radius-construction.txt) now omits copied instruction listings and executable byte strings; the publication mapping identifies that derivative. The published extraction command was rerun against the pinned executable. Rebuilt recorder DLLs are not claimed to be byte-identical to captured DLLs; capture provenance uses the archived source bytes and original receipts.
 
@@ -69,7 +69,7 @@ The final [158-test Python run](validation/attempt-accounting-after.log.gz) pass
 
 The [review response](../review-2026-11-10.md) records the new findings, corrections and focused verification. Earlier receipts and counts above remain historical. The [publication mapping](../publication.json) binds their original hashes to sanitized public files, including nested archives and logs. It does not turn a sanitized derivative into the original acquisition bytes. The numerical traces, frozen model and evaluator are unchanged.
 
-Both production source snapshots are now archived. The portable recheck validates historical evidence against those archives; CI separately executes the current production transition against pinned recordings. Fresh capture proofs qualify achieved camera cadence and retain failed controls. The ordinary Rust suite also reads one committed native trace.
+Both production source snapshots are now archived. The recheck validates historical evidence against those archives; CI separately executes the current production transition against pinned recordings. Fresh capture proofs qualify achieved camera cadence and retain failed controls. The ordinary Rust suite also reads one committed native trace.
 
 
 ## New-head CI corrections, 2026-11-10
