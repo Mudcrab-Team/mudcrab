@@ -614,9 +614,6 @@ pub(crate) fn export_room_graph_with_sources(
         .iter()
         .filter(|(_, record)| {
             is_placed(&record.record_type)
-                && SubrecordView::new(&record.subrecords)
-                    .find(b"DATA")
-                    .is_some_and(|data| data.len() >= 24)
                 && record
                     .cell_form_id
                     .is_some_and(|cell| interior_cells.contains(&cell))
@@ -834,6 +831,13 @@ pub(crate) fn export_room_graph_with_sources(
         }
         report.portals += 1;
     }
+
+    // Marker validation above needs to see missing transforms to flag incomplete cells.
+    ordered.retain(|(_, record)| {
+        SubrecordView::new(&record.subrecords)
+            .find(b"DATA")
+            .is_some_and(|data| data.len() >= 24)
+    });
 
     // Assignment rules are independent of geometric membership and survive missing models.
     for &(&id, record) in &ordered {
