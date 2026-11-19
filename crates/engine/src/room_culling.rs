@@ -84,7 +84,7 @@
 //! preserves the incoming visibility volume because room boxes need not bound their meshes.
 //! An edge to a portal-less room instead triggers the whole-cell fallback above.
 //!
-//! Authored graphs disable these edges and the portal-less-room heuristic. They use the authored
+//! The unique authored walk disables these edges and the portal-less-room heuristic. They use the authored
 //! master/slave resolution instead. See `docs/research/skyrim-native-culling.md`.
 //!
 //! # What is never culled by its room
@@ -810,9 +810,7 @@ impl RoomGraph {
             if self.unresolved_link_rooms.contains(&room) {
                 return None;
             }
-            // Open halls can expose rooms across uncovered box gaps. Keep their conservative
-            // fallback until authored joins and room assignment are available.
-            if self.authored.is_none() && room != room_count && !has_portal[room] {
+            if room != room_count && !has_portal[room] {
                 return None;
             }
             let local = &occlusion.at(room)?.volume;
@@ -3088,6 +3086,48 @@ mod tests {
         let graph = chain(doorway(11, Vec3::new(0.0, 0.0, -30.0), 3.0, [1, 2]));
         let reached = reached_rooms(&graph, Vec3::ZERO, clip_from_local()).unwrap();
         assert_eq!(reached, vec![true, true, true]);
+    }
+
+    #[test]
+    fn duplicate_authored_portals_keep_a_portal_less_start_open() {
+        let db = authored_database();
+        for id in 1..=3 {
+            insert_room(&db, id, 7, [0.0, 30.0 * (id - 1) as f32, 0.0]);
+        }
+        let mut graph = load_room_graph(&db, 7).unwrap();
+        let gate = doorway(10, Vec3::new(0.0, 0.0, -45.0), 2.0, [1, 2]);
+        graph.portals.push(gate.clone());
+        assert!(!reached_rooms(&graph, Vec3::ZERO, clip_from_local()).unwrap()[1]);
+        graph.portals.push(gate);
+        assert!(reached_rooms(&graph, Vec3::ZERO, clip_from_local()).is_none());
+    }
+
+    #[test]
+    fn close_portal_only_counts_shadows_in_the_camera_aperture() {
+        let clip = Mat4::perspective_infinite_reverse_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1);
+        let view = PortalView::new(Vec3::ZERO, Vec3::ZERO, clip);
+        let portal = doorway(10, Vec3::new(0.0, 0.0, -7.0), 10.0, [0, 1]);
+        for (x, expected) in [(8.0, false), (2.0, true)] {
+            let mut volume = VisibilityVolume::camera(clip).unwrap();
+            let plane = occlusion::Occluder::from_creation(
+                1,
+                3,
+                [x, 6.0, 0.0],
+                [0.0; 3],
+                [0.25, 0.0, 0.25],
+                1.0,
+                PortalSide::Room(0),
+            )
+            .unwrap();
+            volume.add_occluder(
+                1,
+                plane
+                    .shadow_in(&occlusion::View::new(Vec3::ZERO, clip).unwrap())
+                    .unwrap(),
+            );
+            let (_, shadowed) = volume.cross_portal(&portal, &view, true).unwrap();
+            assert_eq!(shadowed, expected);
+        }
     }
 
     #[test]

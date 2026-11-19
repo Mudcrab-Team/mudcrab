@@ -1,6 +1,10 @@
 //! Path-local inclusion and exclusion volumes. Separate portal paths form a union.
 
-use bevy::{camera::primitives::Aabb, math::Affine3A, prelude::*};
+use bevy::{
+    camera::primitives::Aabb,
+    math::{Affine3A, DVec3, DVec4},
+    prelude::*,
+};
 use std::{collections::BTreeMap, sync::Arc};
 
 use super::{PORTAL_OPEN_DISTANCE, Portal, PortalView, occlusion::OcclusionVolume};
@@ -99,16 +103,17 @@ pub(super) fn orthographic_forward(clip: Mat4) -> Option<Vec3> {
 }
 
 pub(super) fn clip_aperture(
-    corners: &[Vec3],
-    planes: impl Iterator<Item = Vec4>,
-) -> Option<Vec<Vec3>> {
+    corners: &[DVec3],
+    planes: impl Iterator<Item = impl Into<DVec4>>,
+) -> Option<Vec<DVec3>> {
     let mut polygon = corners.to_vec();
     for plane in planes {
+        let plane = plane.into();
         let mut clipped = Vec::with_capacity(polygon.len() + 1);
         for (index, &a) in polygon.iter().enumerate() {
             let b = polygon[(index + 1) % polygon.len()];
-            let da = plane.truncate().dot(a) + plane.w + PLANE_EPSILON;
-            let db = plane.truncate().dot(b) + plane.w + PLANE_EPSILON;
+            let da = plane.truncate().dot(a) + plane.w + f64::from(PLANE_EPSILON);
+            let db = plane.truncate().dot(b) + plane.w + f64::from(PLANE_EPSILON);
             if da >= 0.0 {
                 clipped.push(a);
             }
@@ -217,8 +222,19 @@ impl VisibilityVolume {
             }) {
                 return None;
             }
-            let aperture = clip_aperture(corners, self.inherited_planes().chain(eye_plane))?;
-            let shadowed = authored && self.aperture_is_shadowed(&aperture);
+            let aperture = clip_aperture(
+                &corners.map(|p| p.as_dvec3()),
+                self.inherited_planes().chain(eye_plane),
+            )?;
+            // The close doorway stays open even outside the frustum, but only its
+            // visible portion can make the first authored crossing speculative.
+            let shadowed = authored
+                && !self.exclusions.is_empty()
+                && clip_aperture(
+                    &aperture,
+                    self.planes[..CAMERA_PLANE_COUNT - 1].iter().copied(),
+                )
+                .is_some_and(|visible| self.aperture_is_shadowed(&visible));
             return Some((self.clone(), shadowed));
         }
         self.clip_portal(
@@ -229,7 +245,7 @@ impl VisibilityVolume {
         )
     }
 
-    fn aperture_is_shadowed(&self, polygon: &[Vec3]) -> bool {
+    fn aperture_is_shadowed(&self, polygon: &[DVec3]) -> bool {
         self.exclusions
             .values()
             .any(|shadow| shadow.intersects_aperture(polygon))
@@ -258,17 +274,19 @@ impl VisibilityVolume {
             .copied()
             .filter(|plane| Some(*plane) != near)
             .chain(eye_plane);
-        let polygon = clip_aperture(corners, ordinary).or_else(|| {
+        let precise_corners = corners.map(|p| p.as_dvec3());
+        let polygon = clip_aperture(&precise_corners, ordinary).or_else(|| {
             let (portal, view) = authored?;
             if clip.row(3).truncate() == Vec3::ZERO || !portal.admits_projected_eye(view) {
                 return None;
             }
             // The ordinary-view exception still has to pass each inherited aperture.
-            clip_aperture(corners, self.inherited_planes())
+            clip_aperture(&precise_corners, self.inherited_planes())
         })?;
         let shadowed = authored.is_some() && self.aperture_is_shadowed(&polygon);
         // When the complete aperture projects in front of the eye, keep its actual edges.
         // Baking screen edges into the next aperture would override the native admission above.
+        let clipped;
         let polygon = if authored.is_some()
             && clip.row(3).truncate() != Vec3::ZERO
             && corners
@@ -277,7 +295,8 @@ impl VisibilityVolume {
         {
             corners.as_slice()
         } else {
-            &polygon
+            clipped = polygon.into_iter().map(|p| p.as_vec3()).collect::<Vec<_>>();
+            &clipped
         };
         if polygon.len() < 3 || !polygon.iter().all(|point| point.is_finite()) {
             return Some((self.clone(), shadowed));
