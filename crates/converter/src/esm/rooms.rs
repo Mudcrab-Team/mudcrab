@@ -743,6 +743,8 @@ pub(super) fn refresh_placement_cells(
     tx: &Transaction<'_>,
     cells: &HashSet<u32>,
     changed: &HashSet<u32>,
+    layouts: &HashMap<u32, RoomLinkLayout>,
+    plugin_names: &[String],
 ) -> Result<Vec<u32>> {
     let mut incomplete = HashSet::new();
     let mut previous_outside = HashMap::new();
@@ -800,20 +802,24 @@ pub(super) fn refresh_placement_cells(
         }
         for sql in [
             "DELETE FROM reference_rooms WHERE room_ref IN (SELECT ref_id FROM room_bounds WHERE cell_id=?1)",
-            "DELETE FROM room_links WHERE room_ref IN (SELECT ref_id FROM room_bounds WHERE cell_id=?1)",
-            "DELETE FROM room_bounds WHERE cell_id=?1",
             "DELETE FROM room_portals WHERE cell_id=?1",
             "DELETE FROM room_graph_cells WHERE cell_id=?1",
         ] {
             tx.prepare_cached(sql)?.execute([cell])?;
         }
     }
+    for &id in changed {
+        tx.prepare_cached("DELETE FROM room_links WHERE room_ref=?1")?
+            .execute([id])?;
+        tx.prepare_cached("DELETE FROM room_bounds WHERE ref_id=?1")?
+            .execute([id])?;
+    }
     project_room_graph(
         tx,
         &records,
         cells,
-        None,
-        &[],
+        Some(RoomLinkSources::Legacy(layouts)),
+        plugin_names,
         Some(&incomplete),
         Some(&PlacementRefresh {
             changed,
@@ -839,7 +845,7 @@ fn project_room_graph(
     tx: &Transaction<'_>,
     master: &HashMap<u32, RawRecord>,
     interior_cells: &HashSet<u32>,
-    sources: Option<&HashMap<u32, DecodedRecord>>,
+    sources: Option<RoomLinkSources<'_>>,
     plugin_names: &[String],
     damaged_placement_cells: Option<&HashSet<u32>>,
     refresh: Option<&PlacementRefresh<'_>>,
@@ -865,10 +871,18 @@ fn project_room_graph(
             .unwrap_or(0)
     };
 
-    // Rooms first: portals and links refer to them.
-    let mut rooms_by_cell: BTreeMap<u32, Vec<Room>> = BTreeMap::new();
+    // Keep unchanged room geometry and links exactly as the source reader published them.
+    let mut rooms_by_cell = BTreeMap::new();
+    if refresh.is_some() {
+        for &cell in interior_cells {
+            rooms_by_cell.extend(stored_room_boxes(tx, Some(cell))?);
+        }
+    }
     for &(&form_id, record) in &ordered {
-        if &record.record_type != b"REFR" || base_of(record) != ROOM_MARKER_BASE {
+        if &record.record_type != b"REFR"
+            || base_of(record) != ROOM_MARKER_BASE
+            || refresh.is_some_and(|refresh| !refresh.changed.contains(&form_id))
+        {
             continue;
         }
         let cell = record.cell_form_id.unwrap_or(0);
@@ -1225,9 +1239,6 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
 /// `finalize_world_database` has read the converted models. Safe to run again: it replaces
 /// every `contained = 0` row. Returns the number of rows written.
 pub fn add_overlap_rows(conn: &mut Connection) -> Result<u64> {
-    if !table_exists(conn, "room_bounds")? || !table_exists(conn, "reference_rooms")? {
-        return Ok(0);
-    }
     let tx = conn.transaction()?;
     let written = refresh_overlap_rows(&tx)?;
     tx.commit()?;
@@ -1236,7 +1247,37 @@ pub fn add_overlap_rows(conn: &mut Connection) -> Result<u64> {
 
 /// Refresh the published overlap memberships from the current bounds within a transaction.
 pub(crate) fn refresh_overlap_rows(tx: &Transaction<'_>) -> Result<u64> {
+    if !table_exists(tx, "room_bounds")? || !table_exists(tx, "reference_rooms")? {
+        return Ok(0);
+    }
     write_overlap_rows(tx, None)
+}
+
+fn stored_room_boxes(tx: &Transaction<'_>, cell: Option<u32>) -> Result<BTreeMap<u32, Vec<Room>>> {
+    let mut rooms_by_cell: BTreeMap<u32, Vec<Room>> = BTreeMap::new();
+    {
+        let mut statement = tx.prepare(
+            "SELECT ref_id, cell_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, half_x, half_y, half_z FROM room_bounds WHERE ?1 IS NULL OR cell_id=?1 ORDER BY ref_id",
+        )?;
+        let rows = statement.query_map([cell], |row| {
+            let f = |index: usize| row.get::<_, f32>(index);
+            Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, u32>(1)?,
+                [f(2)?, f(3)?, f(4)?],
+                [f(5)?, f(6)?, f(7)?],
+                [f(8)?, f(9)?, f(10)?],
+            ))
+        })?;
+        for row in rows {
+            let (ref_id, cell, position, rotation, half) = row?;
+            rooms_by_cell.entry(cell).or_default().push(Room {
+                ref_id,
+                shape: RoomBox::new(position, rotation, half),
+            });
+        }
+    }
+    Ok(rooms_by_cell)
 }
 
 fn write_overlap_rows(tx: &Transaction<'_>, cell: Option<u32>) -> Result<u64> {
@@ -1267,29 +1308,7 @@ fn write_overlap_rows(tx: &Transaction<'_>, cell: Option<u32>) -> Result<u64> {
     if !has_rooms || !has_bounds {
         return Ok(0);
     }
-    let mut rooms_by_cell: BTreeMap<u32, Vec<Room>> = BTreeMap::new();
-    {
-        let mut statement = tx.prepare(
-            "SELECT ref_id, cell_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, half_x, half_y, half_z FROM room_bounds WHERE ?1 IS NULL OR cell_id=?1 ORDER BY ref_id",
-        )?;
-        let rows = statement.query_map([cell], |row| {
-            let f = |index: usize| row.get::<_, f32>(index);
-            Ok((
-                row.get::<_, u32>(0)?,
-                row.get::<_, u32>(1)?,
-                [f(2)?, f(3)?, f(4)?],
-                [f(5)?, f(6)?, f(7)?],
-                [f(8)?, f(9)?, f(10)?],
-            ))
-        })?;
-        for row in rows {
-            let (ref_id, cell, position, rotation, half) = row?;
-            rooms_by_cell.entry(cell).or_default().push(Room {
-                ref_id,
-                shape: RoomBox::new(position, rotation, half),
-            });
-        }
-    }
+    let rooms_by_cell = stored_room_boxes(tx, cell)?;
     if cell.is_none() {
         tx.execute("DELETE FROM reference_rooms WHERE contained = 0", [])?;
     }

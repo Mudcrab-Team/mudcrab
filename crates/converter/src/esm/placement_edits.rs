@@ -8,7 +8,7 @@ use super::{
     load_order::{LoadOrder, normalize_plugin_name},
     records::RawRecord,
     remap_record_form_ids,
-    rooms::{PORTAL_MARKER_BASE, ROOM_MARKER_BASE, refresh_placement_cells},
+    rooms::{PORTAL_MARKER_BASE, ROOM_MARKER_BASE, RoomLinkLayout, refresh_placement_cells},
     types::ArchivedRecordData,
 };
 use crate::{cache::hash_bytes, check::WORLD_DATABASE_FILE_NAME, records::source_identity};
@@ -19,7 +19,11 @@ use color_eyre::{
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use serde::Deserialize;
 use shared::{asset_lock::AssetLock, records::MULTIBOUND_REFERENCE_FLAG};
-use std::{collections::HashSet, fs, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::Path,
+};
 
 const LAYER_TABLES: &str = "
     CREATE TABLE IF NOT EXISTS room_placement_layers (
@@ -167,12 +171,17 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
             params![layer, id, edit.source_id, edit.record.is_deleted()],
         )?;
     }
-    let certified_cells = refresh_placement_cells(&tx, &cells, &changed)?;
+    let layouts = edits
+        .into_iter()
+        .filter_map(|edit| edit.room_links.map(|layout| (edit.record.form_id, layout)))
+        .collect::<HashMap<_, _>>();
+    let certified_cells =
+        refresh_placement_cells(&tx, &cells, &changed, &layouts, std::slice::from_ref(&name))?;
     tx.commit()?;
     let mut affected_cells = cells.into_iter().collect::<Vec<_>>();
     affected_cells.sort_unstable();
     Ok(PlacementEditReport {
-        changed_references: edits.len(),
+        changed_references: changed.len(),
         affected_cells,
         certified_cells,
     })
@@ -182,6 +191,7 @@ struct Edit {
     source_id: u32,
     record: RawRecord,
     owns_new_id: bool,
+    room_links: Option<RoomLinkLayout>,
 }
 
 fn plugin_edits(
@@ -255,6 +265,10 @@ fn plugin_edits(
         if !record.is_deleted() {
             validate_room_field_tags(&record.subrecords)?;
         }
+        let room_links = SubrecordView::new(&record.subrecords)
+            .get_form_id(b"NAME")
+            .filter(|id| id & 0x00ff_ffff == ROOM_MARKER_BASE)
+            .map(|_| RoomLinkLayout::from_raw(&record));
         record.load_order = priority as u32;
         remap_record_form_ids(
             &mut record,
@@ -267,6 +281,7 @@ fn plugin_edits(
         edits.push(Edit {
             source_id,
             record,
+            room_links,
             owns_new_id: (source_id >> 24) as usize == metadata.masters.len(),
         });
     }
@@ -530,6 +545,7 @@ impl NativeEdit {
         Ok(Edit {
             source_id: id,
             record,
+            room_links: None,
             owns_new_id: id >= NATIVE_FORM_START,
         })
     }
