@@ -31,7 +31,7 @@ Subrecords on a marker reference, besides the usual `NAME` and `DATA` (position,
 | `XPRM` | 32 | `float[3]` half-extents, `float[3]` colour/255, `float` unknown (0.2 room, 0.25 portal), `u32` shape (1 box, 2 sphere, 3 portal box) | every room, 2,611 portals |
 | `XMBO` | 12 | `float[3]`, equal to `XPRM[0..12]` on every room (the Creation Kit rejects a mismatch) | every room |
 | `XPOD` | 8 per pair | array of (origin, destination) `u32` FormID pairs (xEdit 4.1.5f defs, `wbArray` of a two-FormID struct): the rooms on either side; the masters only have one pair | 2,592 portals (121 with the second id 0, 20 without `XPOD`) |
-| `XRMR` | 4 | `u8` count of `XLRM` that follow, `u8` flags, `u16` unknown (0 or 1) | 1,991 rooms |
+| `XRMR` | 4 | little-endian `u16` with the `XLRM` count in bits 0–13 and two flags in bits 14–15, `u16` unknown (0 or 1) | 1,991 rooms |
 | `LNAM` | 4 | `u32` FormID: lighting template for the room | follows `XRMR` when flag `0x80` is set |
 | `INAM` | 4 | `u32` FormID: image space for the room | follows `XRMR` when flag `0x40` is set |
 | `XLRM` | 4 | `u32` FormID of another room in the same cell | 1,965 links |

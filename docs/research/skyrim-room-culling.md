@@ -171,8 +171,8 @@ between distinct known spaces. Any unknown portal endpoint also triggers the who
 it may conceal connectivity that conversion could not recover. Authored unbounded endpoints are
 known spaces and do not trigger this fallback. Regression fixtures cover these cases.
 
-Touching or overlapping boxes still add conservative connectivity. Between rooms with portals the
-walk clips to the destination box's projected rectangle. This is an engine heuristic, not verified
+Touching or overlapping boxes still add conservative connectivity. Across an overlap edge, the walk carries
+the incoming visibility volume into the destination unchanged so overhanging meshes remain visible. This is an engine heuristic, not verified
 Skyrim behavior. A graph made entirely of portal-bearing rooms can still have coverage gaps;
 synthetic tests and sampled image comparisons do not prove all interiors safe. Authored joined
 bounds, exact assignment, and original-engine comparisons remain research work.
