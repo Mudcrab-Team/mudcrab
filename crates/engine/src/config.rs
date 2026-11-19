@@ -4444,7 +4444,7 @@ mod tests {
 
     /// Locate the command or parser declaration that owns this particular option literal.
     /// Argument lists in the native capture scripts continue on the next line after a comma.
-    fn native_tool_owns_option(script: &str, flag: &str) -> bool {
+    fn native_tool_owns_option(script: &str, flag: &str, path: &std::path::Path) -> bool {
         let offset = flag.as_ptr() as usize - script.as_ptr() as usize;
         let mut lines = script[..offset].rsplit('\n');
         let current = lines.next().unwrap_or_default();
@@ -4461,6 +4461,10 @@ mod tests {
                 break;
             }
             start = previous;
+        }
+        if path.ends_with("test_check_skyrim_jump_runtime.py") {
+            return matches!(flag, "--prepare-only" | "--require-heldout-pass")
+                && start.contains("patch.object(sys, 'argv', ['replay',");
         }
         [
             ".add_argument(",
@@ -4641,6 +4645,7 @@ mod tests {
                                 | "analyze_skyrim_jump_inputs.py"
                                 | "test_analyze_skyrim_jump_inputs.py"
                                 | "check_skyrim_jump_runtime.py"
+                                | "test_check_skyrim_jump_runtime.py"
                                 | "verify_skyrim_jump_inputs.py"
                                 | "report_skyrim_jump.py"
                         ) && matches!(
@@ -4680,7 +4685,7 @@ mod tests {
                                 | "--unit"
                                 | "--description"
                                 | "--working-directory"
-                        ) && native_tool_owns_option(scanned, flag)
+                        ) && native_tool_owns_option(scanned, flag, path)
                     });
             if NON_ENGINE_FLAGS.contains(&flag)
                 || observation_option
@@ -4982,6 +4987,7 @@ mod tests {
     #[test]
     fn native_jump_tool_options_do_not_become_engine_options() {
         let native = std::path::Path::new("record_skyrim_motion.py");
+        let replay_test = std::path::Path::new("test_check_skyrim_jump_runtime.py");
         assert_eq!(
             checked_script_engine_flags(
                 "cmd = ['systemd-run',  # recorder scope\n    '--collect']",
@@ -4998,6 +5004,8 @@ mod tests {
         );
         for (text, path) in [
             ("engine --unknown-engine-option", native),
+            ("cmd = ['engine',\n    '--prepare-only']", replay_test),
+            ("engine --require-heldout-pass", replay_test),
             (
                 "run.add_argument('--session')\nengine --session fixture",
                 native,
