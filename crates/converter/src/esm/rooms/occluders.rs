@@ -12,6 +12,25 @@ pub(super) struct Exported {
     pub incomplete_cells: HashSet<u32>,
 }
 
+fn primitive(data: &[u8]) -> Option<(u32, [f32; 3])> {
+    let (words, tail) = data.as_chunks::<4>();
+    let [x, y, z, _, _, _, _, shape] = words else {
+        return None;
+    };
+    if !tail.is_empty() {
+        return None;
+    }
+    let half = [*x, *y, *z].map(f32::from_le_bytes);
+    let shape = u32::from_le_bytes(*shape);
+    let valid = half.iter().all(|value| value.is_finite())
+        && match shape {
+            1 => half.iter().all(|&value| value > 0.0),
+            3 => half[0] > 0.0 && half[1] >= 0.0 && half[2] > 0.0,
+            _ => false,
+        };
+    valid.then_some((shape, half))
+}
+
 pub(super) fn export(tx: &Transaction<'_>, records: &[(&u32, &RawRecord)]) -> Result<Exported> {
     let mut result = Exported::default();
     for &(&id, record) in records {
@@ -41,16 +60,10 @@ pub(super) fn export(tx: &Transaction<'_>, records: &[(&u32, &RawRecord)]) -> Re
                 }
             }
         }
-        let Some(primitive) = view.find(b"XPRM").filter(|data| data.len() == 32) else {
+        let Some((shape, half)) = view.find(b"XPRM").and_then(primitive) else {
             result.invalid += 1;
             continue;
         };
-        let shape = u32_at(primitive, 28).unwrap();
-        let half = [
-            f32_at(primitive, 0).unwrap(),
-            f32_at(primitive, 4).unwrap(),
-            f32_at(primitive, 8).unwrap(),
-        ];
         let Some((position, rotation)) = transform_of(&view) else {
             result.invalid += 1;
             continue;
@@ -64,17 +77,10 @@ pub(super) fn export(tx: &Transaction<'_>, records: &[(&u32, &RawRecord)]) -> Re
             result.invalid += 1;
             continue;
         };
-        let valid_half = match shape {
-            1 => half.iter().all(|&value| value > 0.0),
-            3 => half[0] > 0.0 && half[1] >= 0.0 && half[2] > 0.0,
-            _ => false,
-        };
-        if !valid_half
-            || !half
-                .iter()
-                .chain(&position)
-                .chain(&rotation)
-                .all(|value| value.is_finite())
+        if !position
+            .iter()
+            .chain(&rotation)
+            .all(|value| value.is_finite())
             || !view.find(b"DATA").is_some_and(|data| data.len() == 24)
         {
             result.invalid += 1;
@@ -175,29 +181,20 @@ pub(crate) fn restore_source_provenance<'a>(
         let shape = source(b"XPRM");
         let placement = source(b"DATA");
         let scale = source(b"XSCL");
-        let valid = shape.is_some_and(|data| {
-            if data.len() != 32 {
-                return false;
-            }
-            let half = [0, 4, 8].map(|offset| f32_at(data, offset).unwrap());
-            half.iter().all(|value| value.is_finite())
-                && match u32_at(data, 28) {
-                    Some(1) => half.iter().all(|&value| value > 0.0),
-                    Some(3) => half[0] > 0.0 && half[1] >= 0.0 && half[2] > 0.0,
-                    _ => false,
-                }
-        }) && placement.is_some_and(|data| {
-            data.len() == 24
-                && data
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .all(|bytes| f32::from_le_bytes(*bytes).is_finite())
-        }) && (!present(b"XSCL")
-            || scale.is_some_and(|data| {
-                data.len() == 4
-                    && f32_at(data, 0).is_some_and(|value| value.is_finite() && value > 0.0)
-            }));
+        let valid = shape.and_then(primitive).is_some()
+            && placement.is_some_and(|data| {
+                data.len() == 24
+                    && data
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .all(|bytes| f32::from_le_bytes(*bytes).is_finite())
+            })
+            && (!present(b"XSCL")
+                || scale.is_some_and(|data| {
+                    data.len() == 4
+                        && f32_at(data, 0).is_some_and(|value| value.is_finite() && value > 0.0)
+                }));
         if !valid {
             removed += conn.execute("DELETE FROM room_occluders WHERE ref_id=?1", [id])?;
         }
