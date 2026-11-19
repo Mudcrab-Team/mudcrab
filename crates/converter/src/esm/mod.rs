@@ -368,10 +368,6 @@ impl EsmParser {
                                 })?
                                 .normalized_name;
                             let packed = pack_wide_light(key)?;
-                            color_eyre::eyre::ensure!(
-                                field || !admitted_exact_lights.contains(&packed),
-                                "wide light FormID {raw:08X} would collide with exact record {packed:08X}"
-                            );
                             warnings.truncated(owner, raw);
                             Ok(packed)
                         }
@@ -416,6 +412,12 @@ impl EsmParser {
                             cell_cache::validate_inhouse_land(&record)?;
                         }
                     }
+                    // Reject a surviving header collision after the usual remap diagnostics.
+                    color_eyre::eyre::ensure!(
+                        wide_light.is_none() || !admitted_exact_lights.contains(&record.form_id),
+                        "wide light FormID {source_id:08X} would collide with exact record {:08X}",
+                        record.form_id
+                    );
                     Ok(())
                 });
                 if let Err(error) = admission {
