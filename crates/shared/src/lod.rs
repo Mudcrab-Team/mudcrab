@@ -218,6 +218,19 @@ pub fn chunk_payload_path(key: ChunkKey) -> String {
     )
 }
 
+/// Payload path of an object LOD chunk: a separate file beside the terrain chunk of the same key
+/// (`lod/<world>/<tier>/objects_<x>_<y>.glb`), listed in the additive `lod_object_chunks` table.
+/// Terrain chunk files, rows and hashes are unaffected by object LOD.
+pub fn object_chunk_payload_path(key: ChunkKey) -> String {
+    format!(
+        "lod/{:08x}/{}/objects_{}_{}.glb",
+        key.worldspace_id,
+        key.tier.side_cells(),
+        key.anchor.x,
+        key.anchor.y
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,5 +351,15 @@ mod tests {
         let other = ChunkKey::new(0x3c, LodTier::Tier8, ChunkAnchor::new(2, -1));
         assert_eq!(chunk_payload_path(other), "lod/0000003c/8/cell_2_-1.glb");
         assert_ne!(chunk_payload_path(key), chunk_payload_path(other));
+    }
+
+    #[test]
+    fn object_chunk_payload_paths_never_collide_with_terrain_paths() {
+        let key = ChunkKey::new(0x3c, LodTier::Tier16, ChunkAnchor::new(2, -1));
+        assert_eq!(
+            object_chunk_payload_path(key),
+            "lod/0000003c/16/objects_2_-1.glb"
+        );
+        assert_ne!(object_chunk_payload_path(key), chunk_payload_path(key));
     }
 }

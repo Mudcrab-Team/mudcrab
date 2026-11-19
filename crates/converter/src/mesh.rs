@@ -392,6 +392,13 @@ impl MeshConverter {
         open_nif_resilient(path).map(|(_, diagnostics, _)| diagnostics)
     }
 
+    /// Parses NIF bytes for inspection and returns the blocks with their diagnostics. Unknown
+    /// block types stay [`NifBlock::Unhandled`] and are counted in the diagnostics; `label` only
+    /// names the source in errors. Used by the retail LOD reader, which reads archive bytes.
+    pub fn parse_nif_bytes(bytes: &[u8], label: &Path) -> Result<(NifFile, NifParseDiagnostics)> {
+        open_nif_resilient_bytes(bytes, label).map(|(nif, diagnostics, _)| (nif, diagnostics))
+    }
+
     /// Checks source eligibility before reusing an existing converted artifact.
     pub fn validate_nif_for_conversion(path: &Path) -> Result<()> {
         open_nif_for_conversion(path).map(|_| ())
@@ -1572,7 +1579,15 @@ fn open_nif_resilient(
     path: &Path,
 ) -> Result<(NifFile, NifParseDiagnostics, Vec<NifShapeMaterial>)> {
     let bytes = fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
-    let (mut data, header) = parse_skyrim_header(&bytes, path)?;
+    open_nif_resilient_bytes(&bytes, path)
+}
+
+/// [`open_nif_resilient`] over bytes already in memory; `path` only labels errors.
+fn open_nif_resilient_bytes(
+    bytes: &[u8],
+    path: &Path,
+) -> Result<(NifFile, NifParseDiagnostics, Vec<NifShapeMaterial>)> {
+    let (mut data, header) = parse_skyrim_header(bytes, path)?;
     let block_count = usize::try_from(header.block_count)
         .wrap_err_with(|| format!("NIF block count is out of range in {}", path.display()))?;
     ensure!(

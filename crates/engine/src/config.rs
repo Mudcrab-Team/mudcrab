@@ -137,6 +137,56 @@ impl TerrainLodDistances {
         Some(LodTier::Tier4)
     }
 
+    /// The object LOD (`.bto`) tier retail draws for `cell`, or `None` when the block is dropped
+    /// (RF-LOD-004, RF-LOD-005 in `registry.md`; the verified REA report).
+    ///
+    /// Retail walks the block tree from level 32, and at every node it visits it first applies the
+    /// outer gate: a node whose box distance is at or beyond `fBlockMaximumDistance` releases its
+    /// data, and `nama` does not scale that gate. A node that passes then splits into its four
+    /// children while its box distance is under its split distance: level 32 always splits (it
+    /// holds no object mesh), level 16 under `fBlockLevel1Distance` x sqrt(`nama`) and level 8
+    /// under `fBlockLevel0Distance` x sqrt(`nama`) (retail compares the squared distance with the
+    /// squared setting times `nama`). Level 4 never splits. A child is checked only after its
+    /// parent splits, so the gate is applied to the level-16 block, to its level-8 child and to the
+    /// level-4 block in turn. `nama` is the worldspace multiplier: 1.0 for Tamriel, 0.25 for
+    /// Whiterun, Markarth, Windhelm and Alftand. With a large `nama` a split distance can exceed
+    /// the outer gate, which is why the gate must be checked for each visited block.
+    ///
+    /// Terrain uses a different rule ([`Self::terrain_tier`]); the two share only the block box.
+    /// The same engineering guard applies: the camera position is the centre of its cell. Retail
+    /// flag 0x8000 (blocks touching the large-reference square always split, RF-LOD-006) is not
+    /// implemented.
+    pub fn object_tier(
+        &self,
+        camera: IVec2,
+        cell: IVec2,
+        origin: IVec2,
+        nama: f32,
+    ) -> Option<LodTier> {
+        let scale = f64::from(nama.max(0.0)).sqrt();
+        let split = |distance: f32| f64::from(distance) * scale;
+        let maximum = f64::from(self.block_maximum_distance);
+        let distance = |level| f64::from(Self::terrain_block_distance(camera, cell, origin, level));
+        if distance(16) >= maximum {
+            return None;
+        }
+        if distance(16) >= split(self.block_level1_distance) {
+            return Some(LodTier::Tier16);
+        }
+        // The level-16 block splits: its level-8 child is visited next.
+        if distance(8) >= maximum {
+            return None;
+        }
+        if distance(8) >= split(self.block_level0_distance) {
+            return Some(LodTier::Tier8);
+        }
+        // The level-8 block splits: the level-4 block is a leaf and still passes the gate.
+        if distance(4) >= maximum {
+            return None;
+        }
+        Some(LodTier::Tier4)
+    }
+
     /// The Chebyshev cell radius around the camera's cell within which `tier` chunks can be
     /// drawn, used to query, keep and drop chunks. Tier 4 draws in blocks of level 8 that are
     /// split, so it reaches the level-8 split distance plus the 8 cells of the block. Tier 8
@@ -290,6 +340,10 @@ pub struct EngineConfig {
     /// Off by default: the report's summary is what acceptance reads; the series is for choosing
     /// run lengths and spotting drift within a run.
     pub benchmark_frame_times: Option<PathBuf>,
+    /// `--walk-camera-trace <file>`: write one CSV row per rendered frame with the frame time,
+    /// the physics ticks run, the body, the blended spring input and the WALK camera position.
+    /// Off by default. A diagnostic for stair-climb jitter (#511, #619).
+    pub walk_camera_trace: Option<PathBuf>,
     /// `--run-label <text>`: names an automated run in its window title, e.g. a benchmark's
     /// variant and round ([`EngineConfig::window_title`]).
     pub run_label: Option<String>,
@@ -427,6 +481,7 @@ impl Default for EngineConfig {
             benchmark_jump: None,
             benchmark_output: PathBuf::from("benchmark-report.json"),
             benchmark_frame_times: None,
+            walk_camera_trace: None,
             run_label: None,
             accept_min_fps: 60.0,
             accept_p95_ms: 16.67,
@@ -531,6 +586,7 @@ Benchmark and profiling:
   --benchmark-output <file>             benchmark report path (default: benchmark-report.json)
   --frame-budget-ms <ms>                frame time the report counts frames over (default: 6.25, 160 fps)
   --benchmark-frame-times [<file>]      write every measured frame time to this CSV file
+  --walk-camera-trace <file>            write the WALK camera, body and frame time of every frame to this CSV file
   --run-label [<text>]                  name the run in the window title
   --synthetic-instances <count>         instances in the synthetic benchmark (default: 250000)
   --accept-min-fps <fps>                fail the run below this average frame rate (default: 60)
@@ -1055,6 +1111,13 @@ impl EngineConfig {
                         "a MiB size that fits bytes, 0 to disable",
                         args.next(),
                     )?;
+                }
+                "--walk-camera-trace" => {
+                    config.walk_camera_trace = Some(take_value(
+                        "--walk-camera-trace",
+                        "a file path for the per-frame WALK camera trace",
+                        args.next(),
+                    )?);
                 }
                 "--streaming-costs" => {
                     config.streaming_costs = Some(take_value(
@@ -1931,6 +1994,30 @@ mod tests {
         ("footprint_guard.py", "--log"),
         ("test_footprint_guard.py", "--limit-gib"),
         ("test_footprint_guard.py", "--log"),
+        // workspace.py owns its storage CLI and forwards Cargo and Git options. It
+        // never launches the engine, so its flags are not engine options.
+        ("workspace.py", "--apply"),
+        ("workspace.py", "--artifact-dir"),
+        ("workspace.py", "--get"),
+        ("workspace.py", "--git-common-dir"),
+        ("workspace.py", "--git-hook"),
+        ("workspace.py", "--isolated"),
+        ("workspace.py", "--needed-gib"),
+        ("workspace.py", "--older-than-days"),
+        ("workspace.py", "--out-dir"),
+        ("workspace.py", "--path-format"),
+        ("workspace.py", "--repo"),
+        ("workspace.py", "--root"),
+        ("workspace.py", "--show-toplevel"),
+        ("workspace.py", "--target-dir"),
+        ("workspace.py", "--build-plan"),
+        ("workspace.py", "--keep"),
+        ("workspace.py", "--keep-days"),
+        ("workspace.py", "--isolated-ttl-hours"),
+        ("workspace.py", "--message-format"),
+        ("workspace.py", "--no-run"),
+        ("workspace.py", "--open"),
+        ("workspace.py", "--timings"),
     ];
 
     /// Flags consumed by Cargo, Git, `world-inspect`, the dynamic loader,
@@ -3269,6 +3356,18 @@ mod tests {
         }
     }
 
+    /// The WALK camera trace is off by default and needs a file.
+    #[test]
+    fn the_walk_camera_trace_is_off_by_default_and_takes_a_file() {
+        assert_eq!(run_config(&[]).walk_camera_trace, None);
+        assert_eq!(
+            run_config(&["--walk-camera-trace", "stairs.csv"]).walk_camera_trace,
+            Some(PathBuf::from("stairs.csv"))
+        );
+        let error = parse_error(&["--walk-camera-trace", "--lights"]).to_string();
+        assert!(error.contains("--walk-camera-trace"), "{error}");
+    }
+
     /// A shots path left out does not swallow the next option, and it is an error rather than a
     /// silent fallback: continuing would run the engine interactively, a mode nobody asked for.
     #[test]
@@ -3846,6 +3945,7 @@ mod tests {
             "--max-upload-mib-per-frame",
             "--run-label",
             "--benchmark-frame-times",
+            "--walk-camera-trace",
             "--screenshot-camera-offset",
             "--lights",
             "--physics-fixture",
@@ -4636,6 +4736,77 @@ mod tests {
         // Outer reach: 250,000 x 1.5 = 375,000 units from the cell's own box.
         assert_eq!(tier(92), Some(LodTier::Tier16));
         assert_eq!(tier(93), None);
+    }
+
+    /// RF-LOD-004 for Tamriel (NAMA 1.0) with the High defaults: objects split at 35,000 and
+    /// 70,000 units and are dropped at 250,000. Camera cell 0, origin 0, cells to the east.
+    #[test]
+    fn object_tier_follows_the_retail_object_distances() {
+        let high = TerrainLodDistances::default();
+        let tier =
+            |x: i32, nama: f32| high.object_tier(IVec2::ZERO, IVec2::new(x, 0), IVec2::ZERO, nama);
+        // Block [0, 8) holds the camera: level 4.
+        assert_eq!(tier(7, 1.0), Some(LodTier::Tier4));
+        // Block [8, 16) is 30,720 away, under 35,000: still level 4.
+        assert_eq!(tier(12, 1.0), Some(LodTier::Tier4));
+        // Block [16, 24) is 63,488 away: past 35,000 so level 8, under 70,000 so not level 16.
+        assert_eq!(tier(20, 1.0), Some(LodTier::Tier8));
+        // Block [32, 48) is 129,024 away: past 70,000, so level 16 draws.
+        assert_eq!(tier(40, 1.0), Some(LodTier::Tier16));
+        // The level-16 block [96, 112) is 391,168 away: dropped beyond 250,000.
+        assert_eq!(tier(100, 1.0), None);
+        // The last level-16 block under 250,000: [48, 64) is 194,560 away, kept; [64, 80) is
+        // 260,096 away, dropped.
+        assert_eq!(tier(60, 1.0), Some(LodTier::Tier16));
+        assert_eq!(tier(70, 1.0), None);
+        // NAMA 0.25 (Whiterun) halves the split distances to 17,500 and 35,000 and leaves the
+        // outer cut alone: block [16, 24) is now past 35,000, so level 16 draws.
+        assert_eq!(tier(20, 0.25), Some(LodTier::Tier16));
+        assert_eq!(tier(70, 0.25), None);
+    }
+
+    /// RF-LOD-004: the outer gate applies to every visited block, not only the level-16 one, and
+    /// `nama` never scales it.
+    #[test]
+    fn object_tier_applies_the_outer_cut_to_each_visited_block() {
+        let high = TerrainLodDistances::default();
+        // NAMA 16 scales the split distances by 4: level 16 splits under 280,000 and level 8 under
+        // 140,000. Cell (63, 47) from camera cell (0, 0): its level-16 block is 233,453 units away
+        // (under 280,000, so it splits), its level-8 child 279,025 away (past 250,000). The child
+        // is dropped; before the per-block gate it drew as tier 8.
+        let far = high.object_tier(IVec2::ZERO, IVec2::new(63, 47), IVec2::ZERO, 16.0);
+        assert_eq!(far, None);
+        // With NAMA 1.0 the level-16 block (233,453 away, inside 250,000) does not split, so it
+        // draws as tier 16: only the larger NAMA reaches the level-8 child.
+        assert_eq!(
+            high.object_tier(IVec2::ZERO, IVec2::new(63, 47), IVec2::ZERO, 1.0),
+            Some(LodTier::Tier16)
+        );
+
+        // The level-4 leaf is gated too. With NAMA 100 both blocks above it split (levels 16 and 8
+        // split under 700,000 and 350,000). LOD origin -3 puts the level-8 block at [61, 69) and
+        // the level-4 blocks at [61, 65) and [65, 69): from camera cell 0 the level-16 and level-8
+        // blocks are 247,808 units away (inside 250,000) and the level-4 block holding cell 66 is
+        // 264,192 away (outside).
+        let origin = IVec2::new(-3, 0);
+        let tier = |x: i32, distances: &TerrainLodDistances| {
+            distances.object_tier(IVec2::ZERO, IVec2::new(x, 0), origin, 100.0)
+        };
+        assert_eq!(tier(62, &high), Some(LodTier::Tier4));
+        assert_eq!(tier(66, &high), None);
+
+        // The cut is "at or beyond": a block exactly 247,808 units away is dropped, one unit more
+        // reach keeps it. NAMA does not move it.
+        let at = TerrainLodDistances {
+            block_maximum_distance: 247_808.0,
+            ..high
+        };
+        assert_eq!(tier(62, &at), None);
+        let past = TerrainLodDistances {
+            block_maximum_distance: 247_809.0,
+            ..high
+        };
+        assert_eq!(tier(62, &past), Some(LodTier::Tier4));
     }
 
     /// Tiers 4 and 8 no longer reach 1.5 times too far: the old rule gave cells 12 and 25 for the
