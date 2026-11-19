@@ -3123,21 +3123,83 @@ fn write_acceptance_screenshot(image: Image, path: &Path) -> Result<()> {
 
     let format = image::ImageFormat::from_path(path)?;
     let rgb = crate::shots::decode_shot(image).map_err(color_eyre::eyre::Error::msg)?;
-    let parent = path
+    // Choose the format from the requested name, then publish beside the link's target.
+    let target = if path.is_symlink() {
+        path.canonicalize()
+            .wrap_err_with(|| format!("cannot resolve screenshot symlink {}", path.display()))?
+    } else {
+        path.to_owned()
+    };
+    let parent = target
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
+
+    #[cfg(unix)]
+    let (mut file, previous_mode) = {
+        use std::os::unix::fs::PermissionsExt;
+        let mut builder = tempfile::Builder::new();
+        let mode = match target.metadata() {
+            Ok(meta) => meta.is_file().then(|| meta.permissions().mode() & 0o777),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // As with File::create, the process umask applies to a new screenshot.
+                builder.permissions(fs::Permissions::from_mode(0o666));
+                None
+            }
+            Err(e) => return Err(e.into()),
+        };
+        (builder.tempfile_in(parent)?, mode)
+    };
+    #[cfg(not(unix))]
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    let mut writer = BufWriter::new(file.as_file_mut());
-    rgb.write_to(&mut writer, format)?;
-    writer.flush()?;
-    drop(writer);
-    file.persist(path)?;
+
+    {
+        let mut writer = BufWriter::new(file.as_file_mut());
+        rgb.write_to(&mut writer, format)?;
+        writer.flush()?;
+    }
+    #[cfg(unix)]
+    if let Some(mode) = previous_mode {
+        use std::os::unix::fs::PermissionsExt;
+        file.as_file()
+            .set_permissions(fs::Permissions::from_mode(mode))?;
+    }
+    file.persist(target)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn acceptance_screenshot_follows_links_and_preserves_access_modes() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let dir = tempfile::tempdir().unwrap();
+        let target_dir = dir.path().join("frames");
+        fs::create_dir(&target_dir).unwrap();
+        let reference = target_dir.join("reference");
+        fs::File::create(&reference).unwrap();
+        let target = target_dir.join("frame.png");
+        write_acceptance_screenshot(Image::default(), &target).unwrap();
+        assert_eq!(
+            target.metadata().unwrap().permissions().mode(),
+            reference.metadata().unwrap().permissions().mode()
+        );
+
+        fs::write(&target, b"old frame").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+        let link = dir.path().join("latest.png");
+        symlink("frames/frame.png", &link).unwrap();
+        write_acceptance_screenshot(Image::default(), &link).unwrap();
+        assert_eq!(fs::read_link(&link).unwrap(), Path::new("frames/frame.png"));
+        assert!(image::open(&target).is_ok());
+        assert_eq!(
+            target.metadata().unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+    }
+
     /// Hidden macOS runs skip Bevy's GPU timing recorder. Visible runs, other platforms and the
     /// existing flag keep their behaviour.
     #[test]

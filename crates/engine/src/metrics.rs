@@ -2062,6 +2062,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn failed_screenshot_rename_cleans_up_and_fails_the_report() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("acceptance.png");
+        fs::create_dir(&path).unwrap();
+        let mut app = acceptance_report_app(
+            directory.path(),
+            Some(&path),
+            std::time::Duration::from_secs(11),
+        );
+        deliver_acceptance_screenshot(&mut app, &path);
+        let entries: Vec<_> = fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert!(path.is_dir());
+        assert_eq!(entries, [path]);
+        assert!(!matches!(
+            *app.world().resource::<AcceptanceCapture>(),
+            AcceptanceCapture::Saved
+        ));
+        app.update();
+        assert_eq!(app.should_exit(), Some(AppExit::error()));
+        let report = written_report(directory.path());
+        assert_eq!(report["thresholds"]["screenshot_captured"], false);
+        assert_eq!(report["passed"], false);
+    }
+
     /// `--accept-frame-pass-bar` is off by default, so a 40 ms hitch is reported and does not fail
     /// the run. With the flag the same window misses the bar (one frame over twice the 6.25 ms
     /// budget) and the run fails, with the gate named in the report.
