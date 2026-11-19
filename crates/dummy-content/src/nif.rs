@@ -168,7 +168,7 @@ pub fn static_switch(shape: &StaticShape<'_>, flags: u16, selector: i32) -> Resu
         &mut second,
         RootTransform {
             translation: [1000.0, 0.0, 0.0],
-            rotation: IDENTITY_ROTATION.as_flattened().try_into().unwrap(),
+            rotation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
             scale: 1.0,
         },
     );
