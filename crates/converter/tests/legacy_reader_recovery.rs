@@ -4,6 +4,7 @@ use rusqlite::Connection;
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 fn sub(tag: &[u8; 4], bytes: &[u8]) -> Vec<u8> {
@@ -69,6 +70,125 @@ fn ids(conn: &Connection) -> Vec<u32> {
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap()
+}
+
+#[test]
+fn coderabbit_718_warns_once_for_rejected_filename() {
+    const CHILD: &str = "MUDCRAB_TEST_WARN_ONCE_FOR_REJECTED_FILENAME";
+    if std::env::var_os(CHILD).is_some() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = [
+            dir.path().join("Rejected.esp\u{2003}"),
+            plugin(dir.path(), "Accepted.esm", &[], 1, Vec::new()),
+        ];
+        let (native, writer) =
+            EsmParser::convert_form_key_plugins(&paths, &dir.path().join("world.db")).unwrap();
+        assert_eq!(native.warnings.len(), 1);
+        assert_eq!(
+            writer,
+            converter::esm::form_key_merge::LegacyWriterOutcome::Published
+        );
+        return;
+    }
+    let child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "coderabbit_718_warns_once_for_rejected_filename",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&child.stderr);
+    assert!(child.status.success(), "{stderr}");
+    assert_eq!(
+        stderr.matches("skipped 1 invalid plugin name(s)").count(),
+        1,
+        "the same rejected filename should emit one warning: {stderr}"
+    );
+}
+
+#[test]
+fn coderabbit_718_implicit_strings_root_uses_first_accepted_plugin() {
+    let dir = tempfile::tempdir().unwrap();
+    let rejected = dir.path().join("rejected");
+    let accepted = dir.path().join("accepted");
+    let localized = dir.path().join("localized");
+    for path in [&rejected, &accepted, &localized] {
+        fs::create_dir(path).unwrap();
+    }
+    for (root, text) in [(&rejected, b"Wrong\0"), (&accepted, b"Right\0")] {
+        let strings = root.join("Strings");
+        fs::create_dir(&strings).unwrap();
+        let bank = [
+            1u32.to_le_bytes().as_slice(),
+            &(text.len() as u32).to_le_bytes(),
+            &1u32.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            text,
+        ]
+        .concat();
+        fs::write(strings.join("Patch_English.strings"), bank).unwrap();
+    }
+    let paths = [
+        rejected.join("Rejected.esp\u{2003}"),
+        plugin(&accepted, "Base.esm", &[], 1, Vec::new()),
+        plugin(
+            &localized,
+            "Patch.esp",
+            &["Base.esm"],
+            0x80,
+            record(
+                b"CLAS",
+                0x0100_0800,
+                0,
+                [sub(b"EDID", b"Class\0"), sub(b"FULL", &1u32.to_le_bytes())].concat(),
+            ),
+        ),
+    ];
+    let db = dir.path().join("world.db");
+    EsmParser::convert_plugins(&paths, &db).unwrap();
+    let conn = Connection::open(db).unwrap();
+    assert_eq!(
+        fields(&conn, 0x0100_0800, b"FULL"),
+        [b"Right\0".to_vec()],
+        "fallback text should come from the first accepted plugin's directory"
+    );
+}
+
+#[test]
+fn coderabbit_718_exact_light_record_survives_wide_collisions() {
+    for (wide_first, flags) in [(false, 0), (true, 0), (false, 0x20), (true, 0x20)] {
+        let dir = tempfile::tempdir().unwrap();
+        let exact = record(b"STAT", 0x0840, 0, sub(b"EDID", b"Exact\0"));
+        let wide = record(b"STAT", 0x1840, flags, sub(b"EDID", b"Wide\0"));
+        let collision = if wide_first {
+            [wide, exact]
+        } else {
+            [exact, wide]
+        };
+        let fallback = record(b"STAT", 0x1841, 0, sub(b"EDID", b"Fallback\0"));
+        let path = plugin(
+            dir.path(),
+            "Light.esl",
+            &[],
+            0x201,
+            [collision.concat(), fallback].concat(),
+        );
+        let db = dir.path().join("world.db");
+        EsmParser::convert_plugins(&[path], &db).unwrap();
+        let conn = Connection::open(db).unwrap();
+        assert_eq!(ids(&conn), [0xfe00_0840, 0xfe00_0841]);
+        assert_eq!(
+            fields(&conn, 0xfe00_0840, b"EDID"),
+            [b"Exact\0".to_vec()],
+            "the exact light record should win (wide_first={wide_first}, flags={flags:#x})"
+        );
+        assert_eq!(
+            fields(&conn, 0xfe00_0841, b"EDID"),
+            [b"Fallback\0".to_vec()]
+        );
+    }
 }
 
 #[test]
