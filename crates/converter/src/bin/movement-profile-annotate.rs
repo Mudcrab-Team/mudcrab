@@ -60,11 +60,12 @@ fn annotate(path: &Path) -> Result<()> {
         [],
         |row| row.get(0),
     )?;
-    create_tables(&conn)?;
-    export_to_db(&conn, &records)?;
+    let exported = create_tables(&conn).and_then(|()| export_to_db(&conn, &records));
+    // Restore the absence on failure too: `create_tables` commits before the export runs.
     if !had_default_objects {
-        conn.execute("DROP TABLE default_objects", [])?;
+        conn.execute("DROP TABLE IF EXISTS default_objects", [])?;
     }
+    exported?;
     Ok(())
 }
 
@@ -266,6 +267,21 @@ mod tests {
             .unwrap();
         annotate(&old_path).unwrap();
         assert!(!has_table(&old_path), "the tool created default_objects");
+        // An export that fails still leaves the table absent.
+        let (_bad, bad_path) = package_with_races(&[(0x0001_3746, 0x0003_580D)]);
+        let connection = Connection::open(&bad_path).unwrap();
+        connection
+            .execute("DROP TABLE default_objects", [])
+            .unwrap();
+        insert_record(
+            &connection,
+            0x000C_EFCF,
+            "MOVT",
+            &[(*b"EDID", b"Broken\0".to_vec()), (*b"SPED", vec![1, 2, 3])],
+        );
+        drop(connection);
+        assert!(annotate(&bad_path).is_err());
+        assert!(!has_table(&bad_path), "a failed run left default_objects");
         // A package that has the rows keeps them.
         let (_new, new_path) = package_with_races(&[(0x0001_3746, 0x0003_580D)]);
         Connection::open(&new_path)
