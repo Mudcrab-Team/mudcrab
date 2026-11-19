@@ -993,14 +993,12 @@ async fn assert_repair_agrees_with_batch(has_covering_skeleton: bool) {
         manifest(&output).entries[BODY_KEY].source_hash,
         expected_hash
     );
-    if has_covering_skeleton {
-        let mut fresh = config.clone();
-        fresh.output_dir = root.path().join("fresh");
-        assert!(publish(&fresh).await.complete);
-        let fresh_body = fresh.output_dir.join(BODY_OUTPUT);
-        check_body(&fresh_body);
-        assert_eq!(fs::read(fresh_body).unwrap(), repaired_bytes);
-    }
+    let mut fresh = config.clone();
+    fresh.output_dir = root.path().join("fresh");
+    assert!(publish(&fresh).await.complete);
+    let fresh_body = fresh.output_dir.join(BODY_OUTPUT);
+    check_body(&fresh_body);
+    assert_eq!(fs::read(fresh_body).unwrap(), repaired_bytes);
 }
 
 /// Preserve block boundaries while making the first shape's shader reference out of range.

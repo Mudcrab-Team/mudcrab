@@ -5504,10 +5504,12 @@ mod tests {
         let input = directory.path().join("rotation.nif");
         fs::write(&input, static_nif()).unwrap();
         let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let root = nif.blocks[0].as_node().unwrap().clone();
         for rotation in [
             Mat3::from_diagonal(Vec3::new(-1.0, 1.0, 1.0)),
             Mat3::from_cols(Vec3::X, Vec3::new(0.25, 1.0, 0.0), Vec3::Z),
         ] {
+            nif.blocks[0] = NifBlock::BSFadeNode(root.clone());
             let NifBlock::BSTriShape(shape) = &mut nif.blocks[1] else {
                 unreachable!()
             };
@@ -5516,7 +5518,47 @@ mod tests {
             assert_eq!(model.static_meshes.len(), 1);
             assert!(model.to_glb("rotation".into()).is_ok());
             assert!(room_bounds::source_sphere(&nif).is_none());
+            nif.blocks[0] =
+                NifBlock::BSOrderedNode(project_wormhole_nif::nif_block::BSOrderedNode {
+                    node: root.clone(),
+                    alpha_sort_bound: [0.0, 0.0, 0.0, 100.0],
+                    static_bound: 1,
+                });
+            assert!(room_bounds::source_sphere(&nif).is_none());
         }
+    }
+
+    #[test]
+    fn authored_shape_sphere_must_enclose_the_exported_quad() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("quad.nif");
+        let output = input.with_extension("glb");
+        let mut bytes = static_nif();
+        let (data, header) = parse_skyrim_header(&bytes, &input).unwrap();
+        // BSTriShape's authored radius follows its 72-byte AV object and sphere center.
+        let radius_offset = bytes.len() - data.len() + header.block_size_index[0] as usize + 84;
+        let [enclosing, undersized] = [2.0f32, 0.25].map(|radius| {
+            bytes[radius_offset..radius_offset + 4].copy_from_slice(&radius.to_le_bytes());
+            fs::write(&input, &bytes).unwrap();
+            MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+            fs::read(&output).unwrap()
+        });
+        let mut enclosing_json = glb_json_from_bytes(&enclosing).unwrap();
+        let undersized_json = glb_json_from_bytes(&undersized).unwrap();
+        let sphere = enclosing_json["extras"]
+            .as_object_mut()
+            .unwrap()
+            .remove("mudcrabRoomSphere")
+            .unwrap();
+        assert_eq!(sphere["radius"], 2.0);
+        assert!(undersized_json["extras"]["mudcrabRoomSphere"].is_null());
+        for key in ["nodes", "meshes", "accessors", "scenes"] {
+            assert_eq!(enclosing_json[key], undersized_json[key]);
+        }
+        assert_eq!(
+            gltf::binary::Glb::from_slice(&enclosing).unwrap().bin,
+            gltf::binary::Glb::from_slice(&undersized).unwrap().bin
+        );
     }
 
     #[test]
