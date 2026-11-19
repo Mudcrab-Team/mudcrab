@@ -4312,7 +4312,7 @@ fn fresh_interior_with_a_malformed_occluder_rolls_back_and_can_be_retried() {
 
     let replace = |shape: u32| {
         let mut primitive = [0u8; 32];
-        for extent in primitive[..12].chunks_exact_mut(4) {
+        for extent in primitive[..12].as_chunks_mut::<4>().0 {
             extent.copy_from_slice(&10f32.to_le_bytes());
         }
         primitive[28..].copy_from_slice(&shape.to_le_bytes());
