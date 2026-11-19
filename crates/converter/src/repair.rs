@@ -1110,7 +1110,7 @@ fn attempt(
         if let Some(nif) = &nif {
             let skeletons =
                 skeletons.get_or_init(|| crate::mesh::SkeletonIndex::from_sources(mesh_sources));
-            let skeleton_key =
+            let (skeleton_key, uses_rig) =
                 crate::mesh::resolve_skeleton_from_snapshot(Path::new(key), nif, skeletons);
             let mut unresolved_skin = None;
             let skeleton = match skeleton_key {
@@ -1132,7 +1132,7 @@ fn attempt(
                             )
                         })?;
                     source_hash.push(':');
-                    let dependency = skeletons.read_source(&path)?;
+                    let dependency = skeletons.read_source(&path, uses_rig)?;
                     source_hash.push_str(&verified_source_hash(
                         dependency_source,
                         dependency_key,

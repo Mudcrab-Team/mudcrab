@@ -2372,12 +2372,13 @@ impl ConversionBatch<'_> {
                             let skeletons = skeleton_index
                                 .as_ref()
                                 .expect("a nif batch always builds a skeleton index");
-                            let resolution = crate::mesh::resolve_skeleton_from_snapshot(
-                                &relative, nif, skeletons,
-                            );
+                            let (resolution, uses_rig) =
+                                crate::mesh::resolve_skeleton_from_snapshot(
+                                    &relative, nif, skeletons,
+                                );
                             match resolution {
                                 crate::mesh::SkeletonResolution::Skeleton(dependency_key) => {
-                                    match skeletons.read_source(&dependency_key) {
+                                    match skeletons.read_source(&dependency_key, uses_rig) {
                                         Ok(dependency) => {
                                             hash.push(':');
                                             hash.push_str(dependency.hash());

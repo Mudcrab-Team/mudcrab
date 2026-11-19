@@ -77,7 +77,11 @@ pub(crate) fn nif_unrepaired_source_hash(path: &Path) -> Result<String> {
     match resolution {
         SkeletonResolution::Skeleton(dependency) => {
             hash.push(':');
-            hash.push_str(index.read_source(&dependency)?.hash());
+            hash.push_str(
+                index
+                    .read_source(&dependency, declares_skin_type(&diagnostics))?
+                    .hash(),
+            );
         }
         SkeletonResolution::Unresolved { .. } => hash.push_str(UNRESOLVED_SKIN_HASH_SUFFIX),
         SkeletonResolution::SelfContained => {}
@@ -185,7 +189,7 @@ impl MeshConverter {
         let (resolution, index) = find_skeleton_for_nif(nif_path, &parsed.0, &parsed.1);
         let (skeleton, unresolved_skin) = match &resolution {
             SkeletonResolution::Skeleton(path) if declares_skin_type(&parsed.1) => {
-                (Some(index.read_source(path)?), None)
+                (Some(index.read_source(path, true)?), None)
             }
             SkeletonResolution::Unresolved { best_coverage } => (
                 None,
@@ -2945,6 +2949,12 @@ impl SkeletonEntry {
 
 type DirectoryJoints = BTreeMap<String, Option<PathBuf>>;
 
+#[derive(Default)]
+struct DirectoryEvidence {
+    members: BTreeMap<PathBuf, (String, BTreeSet<String>)>,
+    union: Arc<DirectoryJoints>,
+}
+
 /// Node-name sets for every skeleton in a source set, plus cached directory
 /// joint unions. Build once and share it across a parallel conversion.
 pub struct SkeletonIndex {
@@ -2953,7 +2963,7 @@ pub struct SkeletonIndex {
     skeleton_union: BTreeSet<String>,
     /// Non-skeleton NIF sources grouped by logical directory, for the union.
     dir_meshes: BTreeMap<String, Vec<PathBuf>>,
-    directory_unions: Mutex<BTreeMap<String, Arc<DirectoryJoints>>>,
+    directory_unions: Mutex<BTreeMap<String, Arc<Mutex<DirectoryEvidence>>>>,
 }
 
 impl SkeletonIndex {
@@ -2991,6 +3001,10 @@ impl SkeletonIndex {
                     .or_default()
                     .push(source.clone());
             }
+        }
+        for paths in dir_meshes.values_mut() {
+            paths.sort_unstable();
+            paths.dedup();
         }
         Self::from_entries(entries, dir_meshes)
     }
@@ -3042,34 +3056,30 @@ impl SkeletonIndex {
         self.by_key.get(key).map(|index| &self.entries[*index])
     }
 
-    pub(crate) fn read_source(&self, key: &Path) -> Result<NifSnapshot<'_>> {
+    pub(crate) fn read_source(&self, key: &Path, used_for_export: bool) -> Result<NifSnapshot<'_>> {
         let entry = self.get(&normalize_path_key(key)).ok_or_else(|| {
             color_eyre::eyre::eyre!("resolved skeleton {} has no indexed source", key.display())
         })?;
         let source = NifSnapshot::read(&entry.source)?;
         ensure!(
-            entry.source_hash.as_deref() == Some(source.hash()),
+            !used_for_export || entry.source_hash.as_deref() == Some(source.hash()),
             "skeleton {} changed during rig resolution",
             entry.source.display()
         );
         Ok(source)
     }
 
-    /// Records where joints occur so ranking can exclude the mesh being resolved.
-    fn directory_union(
-        &self,
-        mesh_dir: &str,
-        mesh_source: &Path,
-        mesh_joints: &BTreeSet<String>,
-    ) -> Arc<DirectoryJoints> {
-        let cache = || {
-            self.directory_unions
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-        };
-        if let Some(union) = cache().get(mesh_dir) {
-            return Arc::clone(union);
-        }
+    /// Reuse parsed joint names only while their source bytes match. Each directory
+    /// publishes one union, independent of which worker first needed a tie-break.
+    fn directory_union(&self, mesh_dir: &str, mesh_source: &Path) -> Arc<DirectoryJoints> {
+        let directory = self
+            .directory_unions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(mesh_dir.to_owned())
+            .or_default()
+            .clone();
+        let mut evidence = directory.lock().unwrap_or_else(|e| e.into_inner());
         let sources: Vec<PathBuf> = match self.dir_meshes.get(mesh_dir) {
             Some(paths) => paths.clone(),
             None => mesh_source
@@ -3086,18 +3096,32 @@ impl SkeletonIndex {
                 })
                 .collect(),
         };
-        let mut union = DirectoryJoints::new();
-        for source in sources {
-            let sibling_joints;
-            let joints = if source == mesh_source {
-                mesh_joints
-            } else {
-                let Ok((nif, _, _)) = open_nif_for_conversion(&source) else {
-                    continue;
-                };
-                sibling_joints = nif.legacy_skin_joint_names();
-                &sibling_joints
+        let mut members = BTreeMap::new();
+        let mut changed = false;
+        for path in sources {
+            let Ok(snapshot) = NifSnapshot::read(&path) else {
+                continue;
             };
+            let member = match evidence.members.remove(&path) {
+                Some(member) if member.0 == snapshot.hash() => member,
+                _ => {
+                    changed = true;
+                    let joints = snapshot
+                        .parse()
+                        .map(|(nif, _, _)| nif.legacy_skin_joint_names())
+                        .unwrap_or_default();
+                    (snapshot.hash().to_owned(), joints)
+                }
+            };
+            members.insert(path, member);
+        }
+        changed |= !evidence.members.is_empty();
+        evidence.members = members;
+        if !changed {
+            return Arc::clone(&evidence.union);
+        }
+        let mut union = DirectoryJoints::new();
+        for (source, (_, joints)) in &evidence.members {
             for name in joints
                 .iter()
                 .filter(|name| self.skeleton_union.contains(*name))
@@ -3105,7 +3129,7 @@ impl SkeletonIndex {
                 union
                     .entry(name.clone())
                     .and_modify(|owner| {
-                        if owner.as_ref().is_some_and(|owner| owner != &source) {
+                        if owner.as_ref().is_some_and(|owner| owner != source) {
                             *owner = None;
                         }
                     })
@@ -3113,7 +3137,7 @@ impl SkeletonIndex {
             }
         }
         let union = Arc::new(union);
-        cache().insert(mesh_dir.to_owned(), Arc::clone(&union));
+        evidence.union = Arc::clone(&union);
         union
     }
 }
@@ -3273,7 +3297,11 @@ fn resolve_against(
         let mesh_mirror = location
             .as_ref()
             .and_then(|location| location.mirror.as_deref());
-        let union = index.directory_union(mesh_dir, mesh_source, joints);
+        let union = if full.len() > 1 {
+            index.directory_union(mesh_dir, mesh_source)
+        } else {
+            Arc::default()
+        };
         let rank = |entry| {
             rank_key(
                 entry,
@@ -3365,27 +3393,37 @@ pub fn resolve_skeleton(
                 .map(|(_, source)| source)
         });
     match mesh_source.and_then(|source| NifSnapshot::read(source).ok()) {
-        Some(source) => resolve_skeleton_from_snapshot(relative, &source, &index),
+        Some(source) => resolve_skeleton_from_snapshot(relative, &source, &index).0,
         None => resolve_without_joints(&skeleton_candidates(&key_path), &index, skeleton_key),
     }
 }
 
-/// Resolves a winning skeleton after enforcing the source mesh eligibility checks.
+/// The flag distinguishes a rig used for geometry from a static mesh’s receipt-only dependency.
 pub(crate) fn resolve_skeleton_from_snapshot(
     relative: &Path,
     source: &NifSnapshot<'_>,
     index: &SkeletonIndex,
-) -> SkeletonResolution {
+) -> (SkeletonResolution, bool) {
     let key = normalize_path_key(relative);
     let candidates = skeleton_candidates(Path::new(&key));
     let Ok((nif, diagnostics, _)) = source.parse() else {
-        return resolve_without_joints(&candidates, index, skeleton_key);
+        return (
+            resolve_without_joints(&candidates, index, skeleton_key),
+            true,
+        );
     };
     let joints = nif.legacy_skin_joint_names();
-    if !declares_skin_type(&diagnostics) || joints.is_empty() {
-        return resolve_without_joints(&candidates, index, skeleton_key);
+    let uses_rig = declares_skin_type(&diagnostics);
+    if !uses_rig || joints.is_empty() {
+        return (
+            resolve_without_joints(&candidates, index, skeleton_key),
+            uses_rig,
+        );
     }
-    resolve_against(&key, source.path, &candidates, index, &joints, skeleton_key)
+    (
+        resolve_against(&key, source.path, &candidates, index, &joints, skeleton_key),
+        true,
+    )
 }
 
 fn skeleton_candidates(nif_path: &Path) -> Vec<PathBuf> {
@@ -3744,18 +3782,94 @@ mod tests {
         MeshConverter::convert_nif_with_local_resolution(&source, &standalone).unwrap();
         assert_eq!(fs::read(standalone).unwrap(), expected);
         assert_eq!(
-            resolve_skeleton_from_snapshot(&relative, &source, &index),
+            resolve_skeleton_from_snapshot(&relative, &source, &index).0,
             SkeletonResolution::Skeleton(skeleton_key.clone()),
         );
-        let external = index.read_source(&skeleton_key).unwrap();
+        let external = index.read_source(&skeleton_key, true).unwrap();
         fs::write(&skeleton, static_nif()).unwrap();
-        assert!(index.read_source(&skeleton_key).is_err());
+        assert!(index.read_source(&skeleton_key, true).is_err());
+        let static_mesh = NifSnapshot::read(&input).unwrap();
+        let mut local_sources = sources.clone();
+        let neighbor = relative.with_file_name("skeleton.nif");
+        local_sources.insert(neighbor.clone(), skeleton.clone());
+        fs::write(&skeleton, &skeleton_bytes).unwrap();
+        let local_index = SkeletonIndex::from_sources(&local_sources);
+        fs::write(&skeleton, static_nif()).unwrap();
+        let (resolution, uses_rig) =
+            resolve_skeleton_from_snapshot(&relative, &static_mesh, &local_index);
+        assert_eq!(resolution, SkeletonResolution::Skeleton(neighbor.clone()));
+        assert!(!uses_rig);
+        let receipt = local_index.read_source(&neighbor, uses_rig).unwrap();
+        assert_eq!(receipt.hash(), crate::cache::hash_bytes(&static_nif()));
+
         assert_eq!(source.hash(), crate::cache::hash_bytes(&mesh_bytes));
         assert_eq!(external.hash(), crate::cache::hash_bytes(&skeleton_bytes));
 
         let indexed = directory.path().join("indexed.glb");
         MeshConverter::convert_nif_snapshot(&source, &indexed, Some(&external), None).unwrap();
         assert_eq!(fs::read(indexed).unwrap(), expected);
+    }
+
+    #[test]
+    fn directory_rig_ranking_refreshes_changed_siblings_and_reuses_unchanged_evidence() {
+        use dummy_content::nif::{LegacySkin, SkinInstanceKind, legacy_skinned_shape};
+        let dir = tempfile::tempdir().unwrap();
+        let skin = legacy_skinned_shape(&LegacySkin {
+            name: "Skin",
+            instance_kind: SkinInstanceKind::Plain,
+            bone_transforms: [([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0); 2],
+            palette: &[1, 0],
+            weights: &[[0.75, 0.25, 0.0, 0.0]; 4],
+            with_geometry: true,
+            joint_override: None,
+        })
+        .unwrap();
+        let rename = |name: &[u8; 5]| {
+            let mut bytes = skin.clone();
+            let at = bytes.windows(5).position(|s| s == b"Bone1").unwrap();
+            bytes[at..at + 5].copy_from_slice(name);
+            bytes
+        };
+        let a = PathBuf::from("meshes/actors/test/a.nif");
+        let b = a.with_file_name("b.nif");
+        let x = PathBuf::from("meshes/actors/external/x/skeleton.nif");
+        let y = PathBuf::from("meshes/actors/external/y/skeleton.nif");
+        let mut sources = BTreeMap::new();
+        for (key, bytes) in [
+            (&a, rename(b"WingX")),
+            (&b, rename(b"Bone0")),
+            (&x, rename(b"WingX")),
+            (&y, rename(b"WingY")),
+        ] {
+            let path = dir.path().join(key);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, bytes).unwrap();
+            sources.insert(key.clone(), path);
+        }
+        let index = SkeletonIndex::from_sources(&sources);
+        let a_snapshot = NifSnapshot::read(&sources[&a]).unwrap();
+        let b_snapshot = NifSnapshot::read(&sources[&b]).unwrap();
+        let pick = || resolve_skeleton_from_snapshot(&b, &b_snapshot, &index).0;
+        assert_eq!(pick(), SkeletonResolution::Skeleton(x.clone()));
+        let union = || index.directory_union("meshes/actors/test", &sources[&b]);
+        let cached = union();
+        assert!(Arc::ptr_eq(&cached, &union()));
+        fs::write(&sources[&a], rename(b"WingY")).unwrap();
+        assert_eq!(
+            resolve_skeleton_from_snapshot(&a, &a_snapshot, &index).0,
+            SkeletonResolution::Skeleton(x)
+        );
+        assert_eq!(pick(), SkeletonResolution::Skeleton(y.clone()));
+        assert!(!Arc::ptr_eq(&cached, &union()));
+        // Historical ranking counts Bone0 in both candidates. WingY breaks the tie.
+        assert_eq!(
+            nif_unrepaired_source_hash(&sources[&b]).unwrap(),
+            format!(
+                "{}:{}",
+                b_snapshot.hash(),
+                crate::cache::hash_file(&sources[&y]).unwrap()
+            )
+        );
     }
 
     /// A single-shape NIF whose shape node scale is replaced after generation. A scale of
