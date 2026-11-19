@@ -1357,7 +1357,7 @@ Columns and rules:
   `visibility_version = 2` additionally marks graphs whose outside endpoints have verified
   source provenance. The typed reader publishes this marker and the flags in the source-data
   transaction. Until that transaction commits, the runtime uses legacy fallback behavior.
-- **`room_link_anomalies`** counts markers with `XRMR` header, field order, or link count anomalies for each
+- **`room_link_anomalies`** counts markers with invalid headers, misplaced fields, mismatched counts, or unresolved `XLRM` slots for each
   supplying plugin. The lowest affected marker FormID and its cell are stored with the count.
   Each plugin has one warning with that count and example. `integration-report.json` shows
   the counts under `room_graph.room_link_anomalies`.
