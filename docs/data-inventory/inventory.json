@@ -862,7 +862,7 @@
     {
       "expression": "\"SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='movement_types')\"",
       "id": "crates/engine/src/physics.rs::query_row::2a7cf2b52de9c35b::1",
-      "line": 116,
+      "line": 121,
       "method": "query_row",
       "path": "crates/engine/src/physics.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -872,7 +872,7 @@
     {
       "expression": "\"SELECT race_id FROM npcs WHERE id=7\"",
       "id": "crates/engine/src/physics.rs::query_row::f34d36791d723a2f::1",
-      "line": 124,
+      "line": 129,
       "method": "query_row",
       "path": "crates/engine/src/physics.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -882,7 +882,7 @@
     {
       "expression": "\"SELECT record_type FROM records WHERE form_id=?1\"",
       "id": "crates/engine/src/physics.rs::query_row::831222200458694b::1",
-      "line": 127,
+      "line": 132,
       "method": "query_row",
       "path": "crates/engine/src/physics.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -892,7 +892,7 @@
     {
       "expression": "\"SELECT walk_movt_id, run_movt_id FROM race_movement_links WHERE id=?1\"",
       "id": "crates/engine/src/physics.rs::query_row::0c8387bdf614135e::1",
-      "line": 138,
+      "line": 143,
       "method": "query_row",
       "path": "crates/engine/src/physics.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -902,7 +902,7 @@
     {
       "expression": "\"SELECT m.editor_id, m.left_walk, m.left_run, m.right_walk, m.right_run, \\\n                    m.forward_walk, m.forward_run, m.back_walk, m.back_run, \\\n                    COALESCE(p.name, '<unknown plugin>') \\\n             FROM movement_types m LEFT JOIN plugins p ON p.id=m.load_order \\\n             WHERE m.id=?1\"",
       "id": "crates/engine/src/physics.rs::query_row::9bade66fdf0e81ef::1",
-      "line": 151,
+      "line": 156,
       "method": "query_row",
       "path": "crates/engine/src/physics.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1451,7 +1451,7 @@
     }
   ],
   "reviewed_at_commit": "b6e20c6f046a45bdf5d0e5ad9c8d1a4d72a736bd",
-  "reviewed_source_guard_sha256": "a5510fca9bd85d3442cee8482e19e4966156b31338a42879cbfb5a375de2314c",
+  "reviewed_source_guard_sha256": "4e13c7ed96531d6647f2e63428620796f3332a3ef61c92732d48359cdf165f97",
   "schema_status": "not_extracted",
   "schemas": {},
   "stores": {
