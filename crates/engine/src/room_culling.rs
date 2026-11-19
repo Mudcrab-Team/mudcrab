@@ -166,7 +166,8 @@ pub fn assignment_follows_transform(record_type: Option<&str>) -> bool {
 
 /// Whether a base record type (the `records.record_type` of a reference's base object) is one
 /// room culling must not hide: actors and their leveled lists, doors, activators, and the
-/// inventory records that become loose, physics-driven objects when placed.
+/// inventory records that become loose, physics-driven objects when placed. Mudcrab keeps
+/// these types visible as a precaution. Retail has no record-type exemption list.
 pub fn exempt_record_type(record_type: Option<&str>) -> bool {
     matches!(
         record_type,
@@ -195,16 +196,8 @@ pub fn exempt_record_type(record_type: Option<&str>) -> bool {
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct RoomCullingView;
 
-/// A doorway closer than this to the camera counts as fully open, in Creation units (about 70 per
-/// metre, so 8 is roughly 11 cm).
-///
-/// The camera has Bevy's default 0.1 near plane, so a doorway further than that from the camera
-/// still projects to something meaningful and the polygon clipping handles it. The
-/// margin is for the camera standing in or touching the doorway, where the rectangle is edge-on or
-/// straddles the lens and a projected rectangle is numerically unreliable. It is also a few units
-/// of slack for marker placement. Too large a value only draws more (the walk stays conservative);
-/// 8 covers the player's body leaning into a doorway without opening doorways the player is
-/// clearly beside. The image comparison against a real interior is where to retune it.
+/// Retail opens portals within 5 Creation units. Mudcrab allows 8 to keep the doorway open
+/// when the camera leans into an edge-on aperture.
 const PORTAL_OPEN_DISTANCE: f32 = 8.0;
 
 /// The owner cache is emptied past this many entries, which drops the despawned meshes in it.
