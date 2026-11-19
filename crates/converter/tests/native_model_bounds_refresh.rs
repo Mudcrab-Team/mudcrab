@@ -105,7 +105,9 @@ fn installed_native_winners_refresh_all_matching_bases_and_room_ownership_inputs
         .unwrap();
     let result = run_refresh(&root, &["meshes/fern.glb"]);
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("overlap update failure"));
+    let error = String::from_utf8_lossy(&result.stderr);
+    assert!(error.contains("overlap update failure"), "{error}");
+    assert!(error.contains("Keep the pack offline"), "{error}");
     assert_winner(Some(-10.0), Some(-9.0), Some(100));
     connection
         .execute_batch("DROP TRIGGER fail_overlap")
