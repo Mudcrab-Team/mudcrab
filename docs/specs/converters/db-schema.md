@@ -1422,8 +1422,10 @@ Columns and rules:
 
 The tables are derived data: a full load-order export clears and rebuilds them from the winning
 records on every conversion, like the grass tables. Subsets without placed references, including
-movement annotation, leave the graph alone. A subset that replaces a placed reference clears its
-membership and marks its previous and new cells incomplete until a full export rebuilds the graph.
+movement annotation, leave the graph alone. The low-level subset exporter reprojects edited
+occluders. For ordinary placed references it clears membership and marks the previous and new
+cells incomplete. The placement command described below rebuilds room ownership for its supported
+edits in the same transaction.
 A subset that changes or removes an existing base model also deletes that base's source sphere
 and marks every referencing cell incomplete in the same transaction. An unchanged model retains
 its sphere and cell completeness. A full room export restores completeness after rebuilding.
@@ -1509,10 +1511,10 @@ conversion or earlier placement imports. Existing FormID slots stay stable. The 
 bases are existing `STAT` records and Skyrim's room, portal, and occlusion markers. A `CELL` record can
 identify an existing interior for its children. Its fields are ignored. Supported `REFR` fields
 are `EDID`, `NAME`, `DATA`, `XSCL`, `XESP`, `XMBR`, and the room and portal marker fields
-`XPRM`, `XRMR`, `XLRM`, `XPOD`, `LNAM`, and `INAM`. Static primitives, actor references, doors,
+`XPRM`, `XRMR`, `XLRM`, `XPOD`, `XORD`, `LNAM`, and `INAM`. Static primitives, actor references, doors,
 scripts, new base records, new cells, and exterior changes require a normal conversion.
 
-`--native` accepts an `edits` array. `put` adds or replaces a static placement, and `delete`
+`--native` accepts an `edits` array. `put` adds or replaces a static placement or occluder, and `delete`
 removes a placement by `id`. Use numeric runtime FormIDs from the target pack. For a new native
 placement, choose an unused ID from `0xFF000001` through `0xFFFFFFFF`. Position uses Creation
 units. Rotation uses radians and defaults to `[0, 0, 0]`. Scale defaults to `1`. Ownership
@@ -1546,8 +1548,10 @@ One transaction updates runtime `references`, the edited ownership rules, and th
 and legacy memberships of affected cells. Moves refresh both the source and destination cells.
 The command uses the model bounds already in the pack. A cell retains certification only if it
 was certified before the edit and its refreshed graph passes validation. Unknown assignments and
-unverified portal endpoints retain their conservative behavior. A full conversion is required to
-establish certification for a previously incomplete or uncertified cell.
+unverified portal endpoints retain their conservative behavior. An existing incomplete cell requires a full conversion
+to establish certification. When an occluder first reaches a roomless interior with no
+certificate, the exporter checks its stored Skyrim placements for earlier room, portal, or
+occlusion markers before establishing a certificate.
 
 The original conversion's canonical `records`, `formid_map`, source history, and reports remain
 available for inspection. `room_placement_layers` retains the exact imported file and checksum.
