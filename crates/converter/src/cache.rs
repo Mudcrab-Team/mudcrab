@@ -477,6 +477,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "ordered-node-loader-room-spheres",
     "snapshot-and-keyframed-skin-room-spheres",
     "animated-skin-bone-room-spheres",
+    "animated-skin-ancestor-and-character-room-spheres",
     "switch-value-and-multibound-room-spheres",
     "skin-ancestor-room-spheres",
     "initial-switch-scene",

@@ -73,12 +73,6 @@ impl Assignments {
             .any(|&index| rooms[index].contains(point))
     }
 
-    pub(super) fn has_source_bound(&self, id: u32) -> bool {
-        self.rules
-            .get(&id)
-            .is_some_and(|rule| rule.sphere.is_some())
-    }
-
     pub(super) fn owners(
         &self,
         id: u32,
@@ -360,7 +354,7 @@ mod tests {
             .unwrap();
         for id in [0x0004_2177, 0x0004_2178, 0x0005_A22A] {
             assert!(
-                authored.has_source_bound(id),
+                authored.rules[&id].sphere.is_some(),
                 "missing model sphere for {id:08X}"
             );
             assert_eq!(

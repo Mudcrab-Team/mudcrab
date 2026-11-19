@@ -12,7 +12,7 @@ use crate::{
 };
 use rusqlite::{Connection, Result, Statement, ToSql, Transaction, params};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     path::PathBuf,
     str::from_utf8,
 };
@@ -405,6 +405,7 @@ struct ExportOptions<'a> {
     trusted_portal_nulls: bool,
     /// Typed export counts room link occurrences in winning source payloads.
     decoded_records: Option<&'a HashMap<u32, DecodedRecord>>,
+    damaged_placement_cells: Option<&'a HashSet<u32>>,
 }
 
 /// Export selected records without changing existing provenance. Grass records
@@ -424,6 +425,7 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
             scalar_scripts: false,
             trusted_portal_nulls: true,
             decoded_records: None,
+            damaged_placement_cells: None,
         },
     )
 }
@@ -449,6 +451,7 @@ pub fn export_to_db_with_load_order(
             scalar_scripts: false,
             trusted_portal_nulls: true,
             decoded_records: None,
+            damaged_placement_cells: None,
         },
     )
 }
@@ -462,6 +465,7 @@ pub(super) fn export_plugins_to_db(
     order: &LoadOrder,
     plugin_paths: &[PathBuf],
     unresolved_fields: &HashMap<u32, BTreeSet<usize>>,
+    damaged_placement_cells: &HashSet<u32>,
 ) -> Result<()> {
     export_records(
         conn,
@@ -475,6 +479,7 @@ pub(super) fn export_plugins_to_db(
             scalar_scripts: false,
             trusted_portal_nulls: true,
             decoded_records: None,
+            damaged_placement_cells: Some(damaged_placement_cells),
         },
     )
 }
@@ -501,6 +506,7 @@ pub(crate) fn export_inhouse_to_db(
             scalar_scripts: true,
             trusted_portal_nulls: false,
             decoded_records: Some(decoded_records),
+            damaged_placement_cells: None,
         },
     )
 }
@@ -525,6 +531,7 @@ pub(crate) fn export_inhouse_record_archive_to_db(
             scalar_scripts: true,
             trusted_portal_nulls: false,
             decoded_records: None,
+            damaged_placement_cells: None,
         },
     )
 }
@@ -657,6 +664,7 @@ fn export_records(
         scalar_scripts,
         trusted_portal_nulls,
         decoded_records,
+        damaged_placement_cells,
     } = options;
     conn.set_prepared_statement_cache_capacity(64);
     let tx = conn.unchecked_transaction()?;
@@ -846,6 +854,7 @@ fn export_records(
             _ if super::is_placed_record_type(&record.record_type) => {
                 let cell_id = record.cell_form_id.unwrap_or(0);
                 if order.is_none() {
+                    crate::esm::rooms::invalidate_subset_occluder_links(&tx, canonical_record)?;
                     // A subset cannot rebuild the cell graph. Empty membership alone would mean
                     // unbounded space in a versioned graph, so invalidate both affected cells.
                     tx.prepare_cached(
@@ -1060,7 +1069,7 @@ fn export_records(
     // export owns them, so the movement annotator's subset export leaves them alone, and
     // diagnostic archives defer them. The emittance pass holds every reference and the records
     // their XEMI names, and may run on a database older than `emittance_id`.
-    if runtime_views && order.is_some() {
+    if runtime_views && let Some(order) = order {
         insert_actor_models(&tx, master)?;
         let (authoring, unreadable) = race_authoring_rows(master);
         for (id, error) in unreadable {
@@ -1075,6 +1084,9 @@ fn export_records(
             master,
             &interior_cells,
             decoded_records,
+            Some(order),
+            damaged_placement_cells,
+            &mut omissions,
         )?;
         if !trusted_portal_nulls {
             // Canonical nulls need their source provenance. Keep legacy-safe semantics until
@@ -3733,6 +3745,32 @@ mod tests {
     }
 
     #[test]
+    fn a_nonzero_missing_endpoint_invalidates_only_its_cell() {
+        let (conn, _) = export_rooms(vec![
+            interior_cell(0x100),
+            interior_cell(0x200),
+            room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            room(0x2001, 0x200, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            portal(0x3001, 0x100, Some((0x1001, 0))),
+            portal(0x3002, 0x200, Some((0x2001, 0x1001))),
+        ]);
+        let complete = |cell: u32| {
+            conn.query_row(
+                "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
+                [cell],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap()
+        };
+        assert!(complete(0x100));
+        assert!(!complete(0x200));
+        let invalid = [word(0x1001), word(0x0900_1234)].concat();
+        rooms::restore_portal_endpoint_provenance(&conn, [(0x3001, Some(invalid.as_slice()))])
+            .unwrap();
+        assert!(!complete(0x100));
+    }
+
+    #[test]
     fn endpoint_migration_keeps_legacy_nulls_unknown() {
         let conn = old_shape_database();
         create_tables(&conn).unwrap();
@@ -4233,6 +4271,52 @@ mod tests {
                 .unwrap();
             assert!(unrelated);
         }
+    }
+
+    #[test]
+    fn subset_occluder_changes_invalidate_old_and_new_cross_cell_targets() {
+        let occluder = |id, cell, target| {
+            let mut extra = vec![(b"XPRM", xprm([10.0; 3], 3))];
+            if let Some(target) = target {
+                extra.push((b"XORD", [word(0), word(target), word(0), word(0)].concat()));
+            }
+            marker(
+                id,
+                cell,
+                rooms::OCCLUSION_MARKER_BASE,
+                [0.0; 3],
+                [0.0; 3],
+                extra,
+            )
+        };
+        let (conn, _) = export_rooms(vec![
+            interior_cell(0x100),
+            interior_cell(0x200),
+            interior_cell(0x300),
+            interior_cell(0x400),
+            occluder(0x1001, 0x100, Some(0x2001)),
+            occluder(0x2001, 0x200, None),
+            occluder(0x3001, 0x300, None),
+            occluder(0x4001, 0x400, None),
+        ]);
+        let complete = |cell| {
+            conn.query_row(
+                "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
+                [cell],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap()
+        };
+        assert!([0x100, 0x200, 0x300, 0x400].into_iter().all(complete));
+        export_to_db(
+            &conn,
+            &HashMap::from([(0x1001, occluder(0x1001, 0x100, Some(0x3001)))]),
+        )
+        .unwrap();
+        for cell in [0x100, 0x200, 0x300] {
+            assert!(!complete(cell), "cell {cell:08X} stayed complete");
+        }
+        assert!(complete(0x400));
     }
 
     #[test]

@@ -66,7 +66,10 @@ differ substantially from their source poses and receive no source-sphere assign
 
 The retail activator `FXcobwebRoundWall01ACT` (base form `0001EEB9`) has placements
 in Bleak Falls Temple, Cronvangr Broodlair, and Honningbrew Basement. Its model,
-`Effects/FXcobwebRoundWall01.nif`, has SHA-256
+`Effects/FXcobwebRoundWall01.nif`, is a 40,221-byte member of `Skyrim - Meshes0.bsa` in the tested Steam
+app 489830 build 24914197 (archive SHA-256
+`f3de11a1fcbd8b3e9582d5981be815c2c5f160f5be21044479e318de8a5183e9`).
+The unpacked member and the archived corpus input both hash to
 `467aedb10d5c8913f463de55df50be9dc07e64692119734ca1ba00c4fa9a55de`.
 Its root controller manager (block 3) lists the `partB` and `partA` sequences (blocks 5
 and 13). Both target `bone01` by name through a `NiMultiTargetTransformController`

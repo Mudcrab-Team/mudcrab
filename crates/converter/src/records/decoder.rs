@@ -453,6 +453,11 @@ pub(crate) fn framed_source_subrecords(payload: &[u8]) -> Option<Vec<([u8; 4], &
     framed.complete.then_some(framed.fields)
 }
 
+/// Retain framed occurrences before a damaged boundary for partial source projections.
+pub(crate) fn framed_source_prefix(payload: &[u8]) -> Vec<([u8; 4], &[u8])> {
+    subrecords(payload, &mut PluginDiagnostics::default(), 0).fields
+}
+
 /// Frame subrecords with XXXX lengths; an unrecoverable boundary drops only this remainder.
 fn subrecords<'a>(
     payload: &'a [u8],

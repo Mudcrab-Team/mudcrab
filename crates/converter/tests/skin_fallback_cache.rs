@@ -72,6 +72,13 @@ fn partial_skeleton() -> Vec<u8> {
     bytes
 }
 
+fn covering_skeleton() -> Vec<u8> {
+    let mut bytes = legacy_skinned_shapes(&[skin("CoveringRig")]).unwrap();
+    let root = blocks(&bytes)[0].1;
+    bytes[root..root + 4].copy_from_slice(&0u32.to_le_bytes());
+    bytes
+}
+
 /// Generate all dependencies, including the two texture names used by the skin writer.
 fn prepare_data(data: &Path) {
     layout::prepare_directory(data, false).unwrap();
@@ -736,11 +743,7 @@ async fn warm_cache_tracks_self_contained_unresolved_and_back() {
     assert_eq!(publish(&config).await.converted, 0);
 
     // A complete selected rig keeps the established content dependency proof.
-    let mut covering = legacy_skinned_shapes(&[skin("CoveringRig")]).unwrap();
-    let root_block = blocks(&covering)[0].1;
-    // A skeleton needs a named root; the mesh writer deliberately uses NULL_REF there.
-    covering[root_block..root_block + 4].copy_from_slice(&0u32.to_le_bytes());
-    fs::write(&skeleton, covering).unwrap();
+    fs::write(&skeleton, covering_skeleton()).unwrap();
     assert_eq!(
         find_skeleton(&body),
         SkeletonResolution::Skeleton(skeleton.clone())
@@ -885,6 +888,15 @@ async fn assert_repair_rejects_stale_contract(contracts: &[&str]) {
 /// Current-contract repair uses the same unresolved proof and retains both rigid shapes.
 #[tokio::test]
 async fn repair_current_contract_unresolved_mesh_preserves_geometry_and_warm_proof() {
+    assert_repair_agrees_with_batch(false).await;
+}
+
+#[tokio::test]
+async fn repair_and_batch_use_the_same_external_rig() {
+    assert_repair_agrees_with_batch(true).await;
+}
+
+async fn assert_repair_agrees_with_batch(has_covering_skeleton: bool) {
     let root = tempfile::tempdir().unwrap();
     let data = root.path().join("Data");
     prepare_data(&data);
@@ -893,7 +905,12 @@ async fn repair_current_contract_unresolved_mesh_preserves_geometry_and_warm_pro
     fs::write(data.join("meshes/healthy.nif"), body_fixture()).unwrap();
     let skeleton = data.join("meshes/actors/other/skeleton.nif");
     fs::create_dir_all(skeleton.parent().unwrap()).unwrap();
-    fs::write(&skeleton, partial_skeleton()).unwrap();
+    let skeleton_bytes = if has_covering_skeleton {
+        covering_skeleton()
+    } else {
+        partial_skeleton()
+    };
+    fs::write(&skeleton, skeleton_bytes).unwrap();
     let body = data.join(BODY_KEY);
     fs::write(&body, b"broken NIF awaiting repair").unwrap();
     let output = root.path().join("modern");
@@ -905,18 +922,27 @@ async fn repair_current_contract_unresolved_mesh_preserves_geometry_and_warm_pro
     let neighbor = fs::read(output.join("meshes/generated.glb")).unwrap();
     fs::write(&body, body_fixture()).unwrap();
     let resolution = find_skeleton(&body);
-    assert!(
-        matches!(resolution, SkeletonResolution::Unresolved { best_coverage } if (best_coverage - 0.5).abs() < 1e-6),
-        "{resolution:?}"
-    );
+    let suffix = if has_covering_skeleton {
+        assert_eq!(resolution, SkeletonResolution::Skeleton(skeleton.clone()));
+        hash_file(&skeleton).unwrap()
+    } else {
+        assert!(
+            matches!(resolution, SkeletonResolution::Unresolved { best_coverage } if (best_coverage - 0.5).abs() < 1e-6),
+            "{resolution:?}"
+        );
+        "skin-resolution:unresolved".to_owned()
+    };
     let before = pack_bytes(&output);
     let preview = repair_failed(&config, false).unwrap();
     assert!(!preview.published);
     assert_eq!(preview.converted, 1);
     assert!(preview.failures.is_empty(), "{:?}", preview.failures);
-    assert_body(&preview.directory.join("assets").join(BODY_OUTPUT), false);
+    assert_body(
+        &preview.directory.join("assets").join(BODY_OUTPUT),
+        has_covering_skeleton,
+    );
     let preview_manifest = manifest(&preview.directory.join("assets"));
-    let expected_hash = format!("{}:skin-resolution:unresolved", hash_file(&body).unwrap());
+    let expected_hash = format!("{}:{suffix}", hash_file(&body).unwrap());
     assert_eq!(
         preview_manifest.entries[BODY_KEY].source_hash,
         expected_hash
@@ -929,7 +955,7 @@ async fn repair_current_contract_unresolved_mesh_preserves_geometry_and_warm_pro
     assert!(applied.published);
     assert_eq!(applied.converted, 1);
     assert!(applied.failures.is_empty(), "{:?}", applied.failures);
-    assert_body(&output.join(BODY_OUTPUT), false);
+    assert_body(&output.join(BODY_OUTPUT), has_covering_skeleton);
     let repaired = manifest(&output);
     assert!(repaired.complete);
     assert!(repaired.failures.is_empty());

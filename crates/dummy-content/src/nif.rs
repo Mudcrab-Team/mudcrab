@@ -333,7 +333,52 @@ pub fn legacy_skinned_shape_with_transform_track(
         true,
         SkinNormals::Authored,
         false,
-        Some(target),
+        SkinFixtureExtra::Track(target),
+    )
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SkinController {
+    Direct,
+    MultiTarget,
+    NamedTrack,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SkinControllerTarget {
+    Ancestor,
+    Unrelated,
+    AboveSkinRoot,
+}
+
+/// Generates a skin with a non-joint ancestor and a separate branch for controller tests.
+pub fn legacy_skinned_shape_with_controller(
+    spec: &LegacySkin<'_>,
+    controller: SkinController,
+    target: SkinControllerTarget,
+) -> Result<Vec<u8>> {
+    legacy_skinned_shape_with_shader(
+        spec,
+        LegacyShapeKind::Plain,
+        true,
+        SkinNormals::Authored,
+        false,
+        SkinFixtureExtra::Controller(controller, target),
+    )
+}
+
+/// Adds a rigid body block without linking it to a collision object.
+pub fn legacy_skinned_shape_with_unattached_body(
+    spec: &LegacySkin<'_>,
+    body: &BoxBody<'_>,
+) -> Result<Vec<u8>> {
+    legacy_skinned_shape_with_shader(
+        spec,
+        LegacyShapeKind::Plain,
+        false,
+        SkinNormals::Authored,
+        false,
+        SkinFixtureExtra::Body(body),
     )
 }
 
@@ -491,7 +536,7 @@ pub fn legacy_skin_tint_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
         false,
         SkinNormals::ModelSpaceMap,
         true,
-        None,
+        SkinFixtureExtra::None,
     )
 }
 
@@ -501,7 +546,14 @@ fn legacy_skinned_shape_with(
     nested: bool,
     normals: SkinNormals,
 ) -> Result<Vec<u8>> {
-    legacy_skinned_shape_with_shader(spec, kind, nested, normals, false, None)
+    legacy_skinned_shape_with_shader(spec, kind, nested, normals, false, SkinFixtureExtra::None)
+}
+
+enum SkinFixtureExtra<'a> {
+    None,
+    Track(SkinTrackTarget),
+    Controller(SkinController, SkinControllerTarget),
+    Body(&'a BoxBody<'a>),
 }
 
 fn legacy_skinned_shape_with_shader(
@@ -510,7 +562,7 @@ fn legacy_skinned_shape_with_shader(
     nested: bool,
     normals: SkinNormals,
     skin_tint: bool,
-    transform_track: Option<SkinTrackTarget>,
+    extra: SkinFixtureExtra<'_>,
 ) -> Result<Vec<u8>> {
     validate_skin(spec)?;
 
@@ -658,7 +710,41 @@ fn legacy_skinned_shape_with_shader(
     )?);
     block_types.push("BSShaderTextureSet");
 
-    if let Some(target) = transform_track {
+    let controller = match extra {
+        SkinFixtureExtra::None => None,
+        SkinFixtureExtra::Body(body) => {
+            validate_body(body)?;
+            blocks.push(rigid_body(body, NULL_REF));
+            block_types.push("bhkRigidBody");
+            None
+        }
+        SkinFixtureExtra::Track(target) => {
+            let (name, block) = match target {
+                SkinTrackTarget::Root => (0, 0),
+                SkinTrackTarget::Ancestor => (3, 2),
+                SkinTrackTarget::Bone => (2, bone1),
+            };
+            Some((SkinController::NamedTrack, name, block))
+        }
+        SkinFixtureExtra::Controller(kind, target) => {
+            let outer = u32::try_from(blocks.len())?;
+            let unrelated = outer + 1;
+            let mut children = vec![outer, unrelated];
+            children.extend(shape_block);
+            blocks[0] = fade_node(&children);
+            blocks[instance_block as usize][8..12].copy_from_slice(&bone0.to_le_bytes());
+            blocks.extend([bone_node_with_children(4, &[bone0]), bone_node(5)]);
+            block_types.extend(["NiNode", "NiNode"]);
+            strings.extend(["OuterParent", "Unrelated"]);
+            let (name, block) = match target {
+                SkinControllerTarget::Ancestor => (3, 2),
+                SkinControllerTarget::Unrelated => (5, unrelated),
+                SkinControllerTarget::AboveSkinRoot => (4, outer),
+            };
+            Some((kind, name, block))
+        }
+    };
+    if let Some((kind, target_name_index, target_block_index)) = controller {
         let manager_index = u32::try_from(blocks.len())?;
         blocks[0][..4].copy_from_slice(&0u32.to_le_bytes()); // named scene root
         blocks[0][8..12].copy_from_slice(&manager_index.to_le_bytes());
@@ -667,12 +753,7 @@ fn legacy_skinned_shape_with_shader(
         let palette_index = manager_index + 3;
         let interpolator_index = manager_index + 4;
         let data_index = manager_index + 5;
-        let (target_name_index, target_block_index) = match target {
-            SkinTrackTarget::Root => (0, 0),
-            SkinTrackTarget::Ancestor => (3, 2), // NestedParent sits between Bone0 and Bone1.
-            SkinTrackTarget::Bone => (2, bone1),
-        };
-        let controller_name = u32::try_from(strings.len())?;
+        let transform_type = u32::try_from(strings.len())?;
         strings.extend(["NiTransformController", "FixtureSequence"]);
 
         let time_controller = |next, flags| {
@@ -693,13 +774,30 @@ fn legacy_skinned_shape_with_shader(
         }
 
         let mut controller = time_controller(NULL_REF, 0x6c);
-        push_u16(&mut controller, 2);
-        push_u32(&mut controller, NULL_REF);
-        push_u32(&mut controller, NULL_REF);
+        let controller_type = match kind {
+            SkinController::Direct => {
+                controller[22..26].copy_from_slice(&target_block_index.to_le_bytes());
+                push_u32(&mut controller, interpolator_index);
+                "NiTransformController"
+            }
+            SkinController::MultiTarget | SkinController::NamedTrack => {
+                push_u16(&mut controller, 2);
+                push_u32(&mut controller, NULL_REF);
+                push_u32(
+                    &mut controller,
+                    if matches!(kind, SkinController::MultiTarget) {
+                        target_block_index
+                    } else {
+                        NULL_REF
+                    },
+                );
+                "NiMultiTargetTransformController"
+            }
+        };
 
         let mut sequence = Vec::new();
         for value in [
-            controller_name + 1,
+            transform_type + 1,
             1,
             1,
             interpolator_index,
@@ -708,13 +806,12 @@ fn legacy_skinned_shape_with_shader(
             push_u32(&mut sequence, value);
         }
         sequence.push(0); // track priority
-        for value in [
-            target_name_index,
-            NULL_REF,
-            controller_name,
-            NULL_REF,
-            NULL_REF,
-        ] {
+        let track_name = if matches!(kind, SkinController::NamedTrack) {
+            target_name_index
+        } else {
+            NULL_REF
+        };
+        for value in [track_name, NULL_REF, transform_type, NULL_REF, NULL_REF] {
             push_u32(&mut sequence, value);
         }
         push_f32(&mut sequence, 1.0); // weight
@@ -760,7 +857,7 @@ fn legacy_skinned_shape_with_shader(
         ]);
         block_types.extend([
             "NiControllerManager",
-            "NiMultiTargetTransformController",
+            controller_type,
             "NiControllerSequence",
             "NiDefaultAVObjectPalette",
             "NiTransformInterpolator",

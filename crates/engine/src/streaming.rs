@@ -1901,23 +1901,16 @@ fn spawn_cell(
             if let Some(bounds) = bounds.zip(model_bounds) {
                 entity.insert(bounds);
             }
-            // Authored multibound policies and movable references override stored room membership.
-            let loose = crate::room_culling::assignment_follows_transform(
+            crate::room_culling::mark_reference_exemptions(
+                &mut entity,
                 reference.base_record_type.as_deref(),
+                reference.has_multibound_override,
             );
-            if reference.has_multibound_override || loose {
-                entity.insert(crate::room_culling::RoomCullLegacyExempt);
-            }
             if reference.named_room_target {
                 entity.insert(crate::room_culling::NamedRoomAssignment::Initial {
                     root,
                     placement: transform.compute_affine(),
                 });
-            }
-            if !loose
-                && crate::room_culling::exempt_record_type(reference.base_record_type.as_deref())
-            {
-                entity.insert(crate::room_culling::RoomCullExempt);
             }
             if let Some(plan) = &actor_plan {
                 entity.insert(plan.actor);
@@ -11038,9 +11031,10 @@ mod tests {
 
     #[test]
     fn only_named_room_targets_track_the_streamed_placement() {
-        use crate::room_culling::NamedRoomAssignment;
+        use crate::room_culling::{NamedRoomAssignment, RoomCullExempt, RoomCullLegacyExempt};
 
         let mut named = lit_reference(1, None, None);
+        named.base_record_type = Some("ACTI".to_owned());
         named.named_room_target = true;
         let mut unrestricted = lit_reference(2, None, None);
         unrestricted.has_multibound_override = true;
@@ -11048,6 +11042,8 @@ mod tests {
         let app = spawn_reference_cell_app(vec![named, unrestricted, automatic], false);
         let world = app.world();
         let reference = reference_entity(&app, 1);
+        assert!(world.get::<RoomCullLegacyExempt>(reference).is_some());
+        assert!(world.get::<RoomCullExempt>(reference).is_none());
         let Some(NamedRoomAssignment::Initial { root, placement }) = world.get(reference) else {
             panic!("streamed named target did not retain its original placement");
         };

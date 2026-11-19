@@ -390,8 +390,8 @@ fn operator_limit_matches_retail_marker_visibility() {
         if let Some(occluder) = case.occluder {
             assert_eq!(graph.occluders.len(), 1);
             assert_eq!(
-                graph.occluders[0].owner,
-                PortalSide::Room(room(occluder.owner))
+                graph.occluders[&PortalSide::Room(room(occluder.owner))].len(),
+                1
             );
         }
         let eye = runtime(case.eye);

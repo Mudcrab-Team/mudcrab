@@ -182,7 +182,7 @@ and shear even though native assignment transforms require a uniform scale. Miss
 skip aperture filtering but retain the unreached-space test.
 
 Legacy graphs retain pivot/overlap candidates, conservative box/portal sharing, open links,
-touching-box edges, and reached-portal-less-room fallbacks. Loose items and authored overrides retain
+touching-box edges that preserve the incoming visibility volume, and reached-portal-less-room fallbacks. Loose items and authored overrides retain
 legacy exemptions. The normal converter refreshes both room metadata and source-sphere GLBs; no
 feature flag or global database schema bump is added. Lights and shadow lists remain independent.
 

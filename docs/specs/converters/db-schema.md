@@ -1218,7 +1218,7 @@ CREATE TABLE IF NOT EXISTS room_bounds (       -- one row per interior RoomMarke
     half_x REAL NOT NULL, half_y REAL NOT NULL, half_z REAL NOT NULL, -- XPRM[0..12]
     lighting_template_id INTEGER,              -- LNAM, NULL when absent
     image_space_id INTEGER,                    -- INAM, NULL when absent
-    flags INTEGER NOT NULL DEFAULT 0           -- XRMR flags byte | (XRMR u16 << 8), kept raw
+    flags INTEGER NOT NULL DEFAULT 0           -- XRMR byte 1 | (second XRMR word << 8), kept raw
 );
 CREATE INDEX IF NOT EXISTS idx_room_bounds_cell ON room_bounds(cell_id);
 
@@ -1292,6 +1292,12 @@ CREATE TABLE IF NOT EXISTS room_graph_stats (  -- report counters and version ma
     name TEXT PRIMARY KEY,
     value INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS room_link_anomalies (
+    plugin TEXT PRIMARY KEY,
+    count INTEGER NOT NULL,
+    first_marker INTEGER NOT NULL,
+    first_cell INTEGER NOT NULL
+);
 ```
 
 Columns and rules:
@@ -1308,16 +1314,18 @@ Columns and rules:
   facts to agree with the unique containing room before using a named plane.
   `has_links` remains true for malformed `XORD`, including after remapping.
 - **`room_occluder_links`** preserves nonzero linked FormIDs from complete 16-byte `XORD`
-  occurrences. Slots are numbered `occurrence * 4 + slot`, without asserting the historical
-  edge names. All four FormIDs are remapped. A trusted conversion sets `single_target_verified`
-  on the remapped edge when the original record has exactly one complete `XORD` with one
-  nonzero slot. An isolated one-way or reciprocal pair can then cast two independent
-  shadows if both endpoints are eligible planes with the same owner. The default is zero
-  for existing rows. Edges survive skipped geometry so a missing peer disables the pair. Malformed occurrences have no
-  link rows. They preserve `has_links` when the source has valid geometry and set the cell's
-  `complete` flag to false. A full trusted runtime export publishes
-  `room_graph_stats.occlusion_version = 1` in the in-house source-data transaction.
-  Legacy and untrusted canonical exports omit this marker.
+  occurrences. `link_index` is `occurrence * 4 + slot` using the original source position,
+  including gaps for earlier malformed occurrences. All four FormIDs are remapped. Links
+  remain when the converter skips source geometry, so a linked target cannot become an
+  independent occluder. An unreadable occurrence sets the source cell's `complete` flag to
+  false. In-house exports also clear that flag for unresolved FormIDs. A full in-house export
+  publishes `occlusion_version = 1` and `occlusion_links_verified = 1` in `room_graph_stats`.
+  These markers let the loader keep unrelated occluders in a complete cell that contains an
+  all-null `XORD`. Subset exports invalidate cells that contain an old or new link target.
+  Legacy exports omit both markers.
+  A single complete source `XORD` with exactly one nonzero slot sets `single_target_verified`
+  on its resolved edge. Existing rows default to zero. Isolated one-way and reciprocal pairs of
+  eligible planes with a common owner may each cast independent shadows.
 - **`room_bounds`**: the box is centred on the marker's position and oriented by its rotation
   (the same Euler convention as any reference, `shared::coordinates`). `half_*` are the `XPRM`
   half-extents in the room's own frame. `lighting_template_id` (`LNAM`) and `image_space_id`
@@ -1354,7 +1362,8 @@ Columns and rules:
   zero-based `link_index`, with no synthesized mirror rows. Migration adds the column with zero defaults; only a fresh export
   publishes the authored-assignment version. The target is retained even if no room row exists.
   Both readers compare the lower 14 bits of the first `XRMR` word with the number of source
-  `XLRM` occurrences before deduplication. A count mismatch or repeated header marks the cell incomplete.
+  `XLRM` occurrences before deduplication. A count mismatch, a malformed or repeated header,
+  or links without a header mark the cell incomplete.
   In authored mode, `XRMR[2] != 0` marks a master (`(flags >> 8) & 255` in `room_bounds`).
   An unlinked marker is also a master. Slaves resolve linked masters, preferring direct masters
   before recursive links and traversing reverse source order. Explicit masters install missing
@@ -1363,6 +1372,8 @@ Columns and rules:
   The room is the union of its primary and joined bounds; gaps are not filled by an enclosing box.
   Malformed or unresolved `XLRM` occurrences keep the cell incomplete in both readers,
   including fields rejected before typed canonical publication.
+  The legacy reader also marks the cell incomplete when it skips a damaged placement with a
+  known parent cell and no usable version supplies that placement.
   Legacy graphs continue treating links as open visibility edges.
 - **`reference_rooms`**: written for every placed object (`REFR`, `ACHR`, `ACRE`, `PGRE`,
   `PMIS`) in an interior cell that has at least one room, except the room and portal markers
@@ -1394,6 +1405,9 @@ Columns and rules:
   `visibility_version = 2` additionally marks graphs whose outside endpoints have verified
   source provenance. The typed reader publishes this marker and the flags in the source-data
   transaction. Until that transaction commits, the runtime uses legacy fallback behavior.
+- **`room_link_anomalies`** counts markers with `XRMR` header or linked-count anomalies for each
+  supplying plugin. The lowest affected marker FormID and its cell are stored with the count.
+  `integration-report.json` shows these rows under `room_graph.room_link_anomalies`.
 
 The tables are derived data: a full load-order export clears and rebuilds them from the winning
 records on every conversion, like the grass tables. Subsets without placed references, including
@@ -1443,10 +1457,10 @@ one, or multiple touched physical portals as ordinary-space, portal-shared, or c
 ownership. Portal sharing uses the native sphere test, and each child mesh tests the resulting
 volume with its current affine AABB. Ambiguous overlapping masters retain all possible owners;
 native runtime handle/hash order is not reconstructed from FormIDs. Automatic assignment keeps unknown bounds visible. A valid initial named target assigns directly
-without requiring a source sphere. `NONE`, unsupported transforms, actors, and doors remain drawn. Supported `ACTI` references, including
-static web activators, use authored assignment when source bounds are available and reclassify
-on supported root-transform changes. Activators remain exempt with legacy data or unsupported
-assignment bounds. Named-target neighboring-room priority and specialized/forced native assignment
+without requiring a source sphere. `NONE`, unsupported transforms, actors, and doors remain drawn. Activators (`ACTI`), including static webs,
+stay visible in legacy graphs. A valid named target attaches an activator to its room at the
+authored placement, even without a source sphere. Automatic attachment and reassignment after
+movement keep an activator visible when its bounds are unknown. Named-target neighboring-room priority and specialized/forced native assignment
 paths are not fully reproduced.
 
 The `switch-value-and-multibound-room-spheres` mesh contract includes the initially selected child of a switch with the active-child bound flag, empty value-node attachment points, and oriented boxes referenced by multibound nodes. The `initial-switch-scene` contract preserves the switch transform and links only the initially selected branch’s geometry into the exported scene. When the switch hides every mesh, the converter marks the GLB with `extras.mudcrabInactiveSwitch`. Pack repair and reuse accept the meshless scene. The static keeps `bounds_valid=0` and has no `room_model_bounds` row. The `skin-ancestor-room-spheres` contract withholds the bind-pose sphere when a transform controller moves a joint through a non-root ancestor. A missing or unsupported bound remains unknown. The [Gallows Rock comparison](../../research/skyrim-culling-rea-parity.md#gallows-rock-west-doorway) checks the resulting room assignments against retail.
@@ -1848,6 +1862,8 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 | `light_short_data` | `LIGH` whose `DATA` is shorter than the 20 bytes the row needs: no `lights` row | data loss |
 | `grass_unusable_data` | `GRAS` with missing or short `DATA`: unavailable scalar columns NULL, readable scalar prefix/model/identity retained | data loss |
 | `reference_unusable_data` | Placed record with missing or short `DATA`: no placement or spatial row; canonical record retained | data loss |
+| `occluder_unusable_geometry` | PlaneMarker with unusable geometry has no occluder row | data loss |
+| `occluder_unusable_links` | PlaneMarker with a malformed `XORD` or unresolved target leaves its cell incomplete | data loss |
 | `lighting_template_unusable_data` | `LGTM` with missing or unsupported-size `DATA`: DATA lighting columns NULL, other fields retained | data loss |
 | `emittance_target_absent` | `XEMI` target not in the load order, or deleted: no `emittance` row | fallback |
 | `emittance_light_unusable_data` | `XEMI` target `LIGH` without a usable `DATA`: no `emittance` row | fallback |

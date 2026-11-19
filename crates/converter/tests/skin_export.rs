@@ -3,11 +3,12 @@
 
 use converter::mesh::{MeshConverter, SkeletonResolution, find_skeleton};
 use dummy_content::nif::{
-    BodyShape, BoxBody, DYNAMIC_POSITION_OFFSET, LegacySkin, SkinInstanceKind, SkinNormals,
-    StaticShape, legacy_dynamic_skinned_shape, legacy_dynamic_skinned_shape_with_normals,
-    legacy_lod_skinned_shape, legacy_nested_skinned_shape, legacy_skinned_shape,
-    legacy_skinned_shape_with_normals, legacy_skinned_shape_with_transform_track, static_shape,
-    static_shape_with_bodies,
+    BodyShape, BoxBody, DYNAMIC_POSITION_OFFSET, LegacySkin, SkinController, SkinControllerTarget,
+    SkinInstanceKind, SkinNormals, StaticShape, legacy_dynamic_skinned_shape,
+    legacy_dynamic_skinned_shape_with_normals, legacy_lod_skinned_shape,
+    legacy_nested_skinned_shape, legacy_skinned_shape, legacy_skinned_shape_with_controller,
+    legacy_skinned_shape_with_normals, legacy_skinned_shape_with_transform_track,
+    legacy_skinned_shape_with_unattached_body, static_shape, static_shape_with_bodies,
 };
 use serde_json::Value;
 use std::{
@@ -514,6 +515,75 @@ fn transform_track_on_a_skin_bone_or_its_ancestor_omits_the_room_sphere() {
     assert!(ancestor_track.json["extras"]["mudcrabRoomSphere"].is_null());
     assert_eq!(root_track.bin, bone_track.bin);
     assert_eq!(root_track.bin, ancestor_track.bin);
+}
+
+#[test]
+fn controllers_on_joint_ancestors_omit_the_room_sphere() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("skin.nif");
+    let output = input.with_extension("glb");
+    let skin = spec(
+        SkinInstanceKind::Plain,
+        &SHUFFLED_PALETTE,
+        &WEIGHTS,
+        true,
+        None,
+    );
+
+    for controller in [
+        SkinController::Direct,
+        SkinController::MultiTarget,
+        SkinController::NamedTrack,
+    ] {
+        for (target, fixed) in [
+            (SkinControllerTarget::Ancestor, false),
+            (SkinControllerTarget::Unrelated, true),
+            (SkinControllerTarget::AboveSkinRoot, true),
+        ] {
+            fs::write(
+                &input,
+                legacy_skinned_shape_with_controller(&skin, controller, target).unwrap(),
+            )
+            .unwrap();
+            MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+            let glb = read_glb(&output);
+            assert_skinned_primitives(&glb);
+            assert_eq!(
+                glb.json["extras"]["mudcrabRoomSphere"].is_object(),
+                fixed,
+                "{controller:?} on {target:?}",
+            );
+        }
+    }
+}
+
+#[test]
+fn character_controller_body_omits_the_room_sphere() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("skin.nif");
+    let output = input.with_extension("glb");
+    let skin = spec(
+        SkinInstanceKind::Plain,
+        &SHUFFLED_PALETTE,
+        &WEIGHTS,
+        true,
+        None,
+    );
+    let mut body = dummy_content::nif::fixed_box_body("body");
+
+    for (motion, quality, fixed) in [(7, 1, true), (9, 8, false)] {
+        body.motion_system = motion;
+        body.quality_type = quality;
+        fs::write(
+            &input,
+            legacy_skinned_shape_with_unattached_body(&skin, &body).unwrap(),
+        )
+        .unwrap();
+        MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+        let glb = read_glb(&output);
+        assert_skinned_primitives(&glb);
+        assert_eq!(glb.json["extras"]["mudcrabRoomSphere"].is_object(), fixed);
+    }
 }
 
 #[test]

@@ -22,8 +22,9 @@
 //! unbounded space. Each path carries its exclusions through later portals; alternative paths
 //! remain a union. A mesh is excluded only when its affine AABB's enclosing sphere is fully
 //! inside a shadow. Isolated pairs of source-verified planes cast independent shadows.
-//! Budget widening retains the destination's local occluders. Stateful shapes, complex links,
-//! unverified overrides, and ambiguously assigned primitives remain inactive.
+//! Portal budget widening retains the destination's local occluders. If a reached owner exceeds
+//! the remaining view shadow budget, that cell uses portal culling alone. Stateful shapes,
+//! complex links, unverified overrides, and ambiguously assigned primitives remain inactive.
 //!
 //! Versioned graphs distinguish rooms, authored unbounded endpoints, and unknown endpoints. A
 //! lookup point outside every room starts in unbounded space when the authored graph is complete.
@@ -97,7 +98,7 @@
 //!   or an animated door outside `spawn_cell` inserts `RoomCullExempt` on the reference entity;
 //! - a mesh whose own entity, or whose reference, has a `RigidBody` that moves
 //!   (`Dynamic`, `KinematicPositionBased` or `KinematicVelocityBased`), except an authored
-//!   reference root with a known source sphere. Moving child meshes still stay drawn.
+//!   reference root, which follows its assignment rule. Moving child meshes still stay drawn.
 //!   `Fixed` bodies, which static collision uses, are culled normally.
 //!
 //! Streamed actors and doors receive the exemption when their reference root is spawned.
@@ -160,6 +161,9 @@ use std::{
     path::PathBuf,
 };
 
+// Bound shadow construction across resident interiors and the exclusions carried by any path.
+const MAX_VIEW_OCCLUDERS: usize = 64;
+
 /// Marks a placed reference that room culling must never hide, such as an actor or animated door.
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct RoomCullExempt;
@@ -198,10 +202,7 @@ pub fn assignment_follows_transform(record_type: Option<&str>) -> bool {
     )
 }
 
-/// Whether a base record type (the `records.record_type` of a reference's base object) is one
-/// room culling must not hide: actors and their leveled lists, doors, activators, and the
-/// inventory records that become loose, physics-driven objects when placed. Mudcrab keeps
-/// these types visible as a precaution. Retail has no record-type exemption list.
+/// Types exempt in legacy graphs. Authored graphs classify movable roots using their assignment rules.
 pub fn exempt_record_type(record_type: Option<&str>) -> bool {
     matches!(
         record_type,
@@ -226,6 +227,20 @@ pub fn exempt_record_type(record_type: Option<&str>) -> bool {
     )
 }
 
+pub(crate) fn mark_reference_exemptions(
+    entity: &mut bevy::ecs::system::EntityCommands,
+    record_type: Option<&str>,
+    has_override: bool,
+) {
+    let movable = assignment_follows_transform(record_type);
+    if movable || has_override {
+        entity.insert(RoomCullLegacyExempt);
+    }
+    if !movable && exempt_record_type(record_type) {
+        entity.insert(RoomCullExempt);
+    }
+}
+
 /// Opt-in marker for a camera, other than the main one, that culls by room (a portal view).
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct RoomCullingView;
@@ -243,8 +258,7 @@ impl RoomCullingNear {
     }
 }
 
-/// Retail opens portals within 5 Creation units. Mudcrab allows 8 to keep the doorway open
-/// when the camera leans into an edge-on aperture.
+/// Mudcrab keeps portals within 8 Creation units open when the camera leans into an edge-on aperture.
 const PORTAL_OPEN_DISTANCE: f32 = 8.0;
 
 /// The owner cache is emptied past this many entries, which drops the despawned meshes in it.
@@ -288,7 +302,7 @@ impl Room {
 }
 
 /// A portal side distinguishes authored outside space from unresolved conversion data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PortalSide {
     Room(usize),
     Unbounded,
@@ -531,7 +545,7 @@ pub struct Membership {
 #[derive(Debug, Clone, Default)]
 pub struct RoomGraph {
     pub(crate) authored: Option<assignment::Assignments>,
-    pub(crate) occluders: Vec<occlusion::Occluder>,
+    pub(crate) occluders: HashMap<PortalSide, Vec<occlusion::Occluder>>,
     /// Full export with authored endpoint provenance and complete reference identities.
     pub supports_unbounded: bool,
     /// The cell lacks positive export completeness or contains invalid geometry.
@@ -590,11 +604,58 @@ impl PortalProgramSize {
     }
 }
 
-#[derive(Clone, Default)]
 struct RoomOcclusion {
-    shadows: Vec<(u32, std::sync::Arc<occlusion::OcclusionVolume>)>,
+    volume: VisibilityVolume,
     program: PortalProgramSize,
     owns_markers: bool,
+}
+
+struct ViewOcclusion<'a> {
+    graph: &'a RoomGraph,
+    full: &'a RoomOcclusion,
+    view: Option<occlusion::View>,
+    remaining: &'a mut usize,
+    rooms: HashMap<PortalSide, RoomOcclusion>,
+    overflowed: bool,
+}
+
+impl ViewOcclusion<'_> {
+    fn at(&mut self, room: usize) -> Option<&RoomOcclusion> {
+        let side = if room == self.graph.rooms.len() {
+            PortalSide::Unbounded
+        } else {
+            PortalSide::Room(room)
+        };
+        let (Some(view), Some(candidates)) = (&self.view, self.graph.occluders.get(&side)) else {
+            return Some(self.full);
+        };
+        let local = match self.rooms.entry(side) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                // Charge every candidate, including shapes that fail view checks.
+                let Some(remaining) = self.remaining.checked_sub(candidates.len()) else {
+                    self.overflowed = true;
+                    return None;
+                };
+                *self.remaining = remaining;
+                let mut volume = self.full.volume.clone();
+                let mut program = PortalProgramSize::default();
+                for occluder in candidates {
+                    if let Some(shadow) = occluder.shadow_in(view) {
+                        let (records, plane_sets) = occluder.program_size();
+                        program.append(records, plane_sets);
+                        volume.add_occluder(occluder.ref_id, shadow);
+                    }
+                }
+                entry.insert(RoomOcclusion {
+                    volume,
+                    program,
+                    owns_markers: true,
+                })
+            }
+        };
+        Some(local)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -605,6 +666,13 @@ enum PortalVisit {
 }
 
 impl RoomGraph {
+    fn add_occluder(&mut self, occluder: occlusion::Occluder) {
+        self.occluders
+            .entry(occluder.owner)
+            .or_default()
+            .push(occluder);
+    }
+
     /// Indices of the rooms whose box holds a cell-local point, in table order.
     pub fn rooms_containing(&self, point: Vec3) -> Vec<usize> {
         if let Some(authored) = &self.authored {
@@ -629,13 +697,13 @@ impl RoomGraph {
     ///
     /// Only the unique authored walk starts at `room_point`. Portal and occluder geometry
     /// always use the actual camera position.
-    fn visibility_volumes(
+    fn visibility_volumes_with_budget(
         &self,
         camera: Vec3,
         room_point: Vec3,
         clip_from_local: Mat4,
+        shadow_budget: &mut usize,
     ) -> Option<CellVisibility> {
-        let full = VisibilityVolume::camera(clip_from_local)?;
         let room_count = self.rooms.len();
         if (room_count == 0 && self.occluders.is_empty()) || self.incomplete {
             return None;
@@ -646,21 +714,6 @@ impl RoomGraph {
             return None;
         }
         let outside = room_count;
-        let mut occlusion = vec![RoomOcclusion::default(); room_count + 1];
-        for occluder in &self.occluders {
-            let Some(owner) = occluder.owner.index(room_count) else {
-                continue;
-            };
-            let local = &mut occlusion[owner];
-            local.owns_markers = true;
-            if let Some(shadow) = occluder.shadow(camera, clip_from_local) {
-                let (records, plane_sets) = occluder.program_size();
-                local.program.append(records, plane_sets);
-                local
-                    .shadows
-                    .push((occluder.ref_id, std::sync::Arc::new(shadow)));
-            }
-        }
         let mut doorways = vec![Vec::new(); room_count + 1];
         for (index, portal) in self.portals.iter().enumerate() {
             let [Some(a), Some(b)] = portal.rooms.map(|side| side.index(room_count)) else {
@@ -689,9 +742,45 @@ impl RoomGraph {
             }
             starts.push(outside);
         }
-        if authored_walk {
-            return self.walk_authored_portals(&starts, &doorways, &occlusion, &full, &view);
+        let full = RoomOcclusion {
+            volume: VisibilityVolume::camera(clip_from_local)?,
+            program: PortalProgramSize::default(),
+            owns_markers: false,
+        };
+        let mut occlusion = ViewOcclusion {
+            graph: self,
+            full: &full,
+            view: (!self.occluders.is_empty())
+                .then(|| occlusion::View::new(camera, clip_from_local))
+                .flatten(),
+            remaining: shadow_budget,
+            rooms: HashMap::new(),
+            overflowed: false,
+        };
+        let walk = |occlusion: &mut ViewOcclusion<'_>| {
+            if authored_walk {
+                self.walk_authored_portals(&starts, &doorways, occlusion, &view)
+            } else {
+                self.walk_legacy_portals(&starts, &doorways, occlusion, &view)
+            }
+        };
+        let visibility = walk(&mut occlusion);
+        if occlusion.overflowed {
+            // Shadows affect authored portal visits and inheritance before mesh tests.
+            occlusion.view = None;
+            return walk(&mut occlusion);
         }
+        visibility
+    }
+
+    fn walk_legacy_portals(
+        &self,
+        starts: &[usize],
+        doorways: &[Vec<(usize, usize)>],
+        occlusion: &mut ViewOcclusion<'_>,
+        view: &PortalView,
+    ) -> Option<CellVisibility> {
+        let room_count = self.rooms.len();
         let mut linked: Vec<Vec<usize>> = vec![Vec::new(); room_count + 1];
         for &(a, b) in &self.links {
             if a != b && a < room_count && b < room_count {
@@ -713,26 +802,26 @@ impl RoomGraph {
             .map(|_| RoomVisibility::default())
             .collect();
         let mut pending: Vec<_> = starts
-            .into_iter()
-            .map(|room| (room, full.clone()))
+            .iter()
+            .map(|&room| (room, occlusion.full.volume.clone()))
             .collect();
-        while let Some((room, arriving)) = pending.pop() {
+        while let Some((room, mut arriving)) = pending.pop() {
             if self.unresolved_link_rooms.contains(&room) {
                 return None;
             }
             // Open halls can expose rooms across uncovered box gaps. Keep their conservative
             // fallback until authored joins and room assignment are available.
-            if self.authored.is_none() && room != outside && !has_portal[room] {
+            if self.authored.is_none() && room != room_count && !has_portal[room] {
                 return None;
             }
-            let arriving = arriving.with_occluders(&occlusion[room].shadows);
-            let local = full.with_occluders(&occlusion[room].shadows);
-            let Some(seen) = visibility[room].insert(arriving, &local) else {
+            let local = &occlusion.at(room)?.volume;
+            arriving.extend_occluders(local);
+            let Some(seen) = visibility[room].insert(arriving, local) else {
                 continue;
             };
             for &(portal_index, other) in &doorways[room] {
                 if let Some((through, _)) =
-                    seen.cross_portal(&self.portals[portal_index], &view, false)
+                    seen.cross_portal(&self.portals[portal_index], view, false)
                 {
                     pending.push((other, through));
                 }
@@ -753,10 +842,10 @@ impl RoomGraph {
         &self,
         starts: &[usize],
         doorways: &[Vec<(usize, usize)>],
-        occlusion: &[RoomOcclusion],
-        full: &VisibilityVolume,
+        occlusion: &mut ViewOcclusion<'_>,
         view: &PortalView,
     ) -> Option<CellVisibility> {
+        let full = &occlusion.full.volume;
         let mut visibility: Vec<_> = (0..doorways.len())
             .map(|_| RoomVisibility::for_authored_portals(self.portals.len()))
             .collect();
@@ -765,8 +854,9 @@ impl RoomGraph {
         let mut pending = VecDeque::new();
         // Retail drains each start before seeding the next one, sharing portal visits across walks.
         for &start in starts {
-            visibility[start].seed(full.with_occluders(&occlusion[start].shadows));
-            programs[start] = occlusion[start].program;
+            let local = occlusion.at(start)?;
+            visibility[start].seed(local.volume.clone());
+            programs[start] = local.program;
             if programs[start].records != 0 {
                 programs[start].append(2, 0);
             }
@@ -782,36 +872,35 @@ impl RoomGraph {
                     let drop_inherited = other < self.rooms.len()
                         && programs[other].records == 0
                         && incoming.records >= PortalProgramSize::INHERIT_LIMIT;
-                    let local = &occlusion[other];
-                    let fallback = full.with_occluders(&local.shadows);
-                    let mut admitted = false;
+                    let mut crossings = source
+                        .volumes()
+                        .iter()
+                        .filter_map(|path| path.cross_portal(portal, view, true))
+                        .peekable();
+                    if crossings.peek().is_none() {
+                        continue;
+                    }
+                    let local = occlusion.at(other)?;
                     let mut changed = false;
                     let first_visit = visits[index] == PortalVisit::Unseen;
-                    for path in source.volumes() {
-                        let Some((through, shadowed)) = path.cross_portal(portal, view, true)
-                        else {
-                            continue;
-                        };
+                    for (mut through, shadowed) in crossings {
                         // A shadow outside the admitted aperture does not make this crossing speculative.
                         if !shadowed {
                             visits[index] = PortalVisit::Crossed;
                         } else if visits[index] == PortalVisit::Unseen {
                             visits[index] = PortalVisit::Speculative;
                         }
-                        admitted = true;
                         if other != start && !drop_inherited {
-                            changed |= destination
-                                .insert(through.with_occluders(&local.shadows), &fallback)
-                                .is_some();
+                            through.extend_occluders(&local.volume);
+                            changed |= destination.insert(through, &local.volume).is_some();
                         }
                     }
-                    if admitted && other != start {
+                    if other != start {
                         if drop_inherited
-                            && let Some((through, _)) = full.cross_portal(portal, view, true)
+                            && let Some((mut through, _)) = full.cross_portal(portal, view, true)
                         {
-                            changed |= destination
-                                .insert(through.with_occluders(&local.shadows), &fallback)
-                                .is_some();
+                            through.extend_occluders(&local.volume);
+                            changed |= destination.insert(through, &local.volume).is_some();
                         }
                         if first_visit {
                             let inherited = if drop_inherited {
@@ -829,6 +918,17 @@ impl RoomGraph {
             }
         }
         CellVisibility::from_spaces(visibility)
+    }
+
+    #[cfg(test)]
+    fn visibility_volumes(
+        &self,
+        camera: Vec3,
+        room_point: Vec3,
+        clip_from_local: Mat4,
+    ) -> Option<CellVisibility> {
+        let mut shadow_budget = MAX_VIEW_OCCLUDERS;
+        self.visibility_volumes_with_budget(camera, room_point, clip_from_local, &mut shadow_budget)
     }
 
     /// Whether any membership volume intersects this mesh, or its policy exempts it.
@@ -1126,7 +1226,9 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
             }
         }
     }
-    graph.occluders = occluder_data::load(connection, cell_id, &graph, &room_index)?;
+    for occluder in occluder_data::load(connection, cell_id, &graph, &room_index)? {
+        graph.add_occluder(occluder);
+    }
     Ok(graph)
 }
 
@@ -1456,6 +1558,7 @@ pub fn cull_room_views(
             projection.get_clip_from_view() * camera_transform.to_matrix().inverse();
         let eye = camera_transform.translation();
         let room_point = room_near.map_or(eye, |near| near.world_point(camera_transform));
+        let mut shadow_budget = MAX_VIEW_OCCLUDERS;
         for cell in &cells {
             let loaded = &state.graphs[cell];
             let Ok(root) = roots.get(loaded.root) else {
@@ -1464,10 +1567,11 @@ pub fn cull_room_views(
             let world_from_local = root.to_matrix();
             let local_from_world = root.affine().inverse();
             let camera_local = local_from_world.transform_point3(eye);
-            let Some(volumes) = loaded.graph.visibility_volumes(
+            let Some(volumes) = loaded.graph.visibility_volumes_with_budget(
                 camera_local,
                 local_from_world.transform_point3(room_point),
                 clip_from_world * world_from_local,
+                &mut shadow_budget,
             ) else {
                 continue;
             };
@@ -1494,11 +1598,6 @@ pub fn cull_room_views(
                     return true;
                 };
                 // Re-read every frame: a body can be added after the mesh spawns.
-                let has_bound = loaded
-                    .graph
-                    .authored
-                    .as_ref()
-                    .is_some_and(|authored| authored.has_source_bound(form_id));
                 // Authored rules and source spheres supply ownership independently.
                 let exempted = |entity| {
                     exemptions
@@ -1510,7 +1609,7 @@ pub fn cull_room_views(
                                     && loaded.graph.authored.is_none())
                                 || (legacy && loaded.graph.authored.is_none())
                                 || (body.is_some_and(|body| body_moves(*body))
-                                    && (entity != reference || !has_bound))
+                                    && (entity != reference || loaded.graph.authored.is_none()))
                         })
                 };
                 let mut ancestor = entity;
@@ -1839,7 +1938,7 @@ mod tests {
             let graph = load_room_graph(&connection, 7).unwrap();
             assert!(graph.rooms.is_empty());
             assert_eq!(graph.occluders.len(), 1);
-            assert_eq!(graph.occluders[0].owner, PortalSide::Unbounded);
+            assert_eq!(graph.occluders[&PortalSide::Unbounded].len(), 1);
             let mut scene = scene_with(root, root);
             scene
                 .app
@@ -1871,6 +1970,93 @@ mod tests {
             assert!(listed.contains(&scene.loose), "unowned geometry fails open");
             assert!(mesh_list(&scene.app, scene.light).contains(&scene.far));
         }
+    }
+
+    #[test]
+    fn a_roomless_cell_keeps_meshes_visible_when_its_shadow_budget_overflows() {
+        let connection = occluder_database();
+        let single = load_room_graph(&connection, 7).unwrap();
+        let insert_off_axis_planes = |first_id, last_id| {
+            connection
+                .execute(
+                    "WITH RECURSIVE ids(ref_id) AS (
+                       VALUES(?1) UNION ALL SELECT ref_id + 1 FROM ids WHERE ref_id < ?2
+                     )
+                     INSERT INTO room_occluders
+                     SELECT ref_id,7,3,1000,20,0,0,0,0,8,0,8,1,0,0,0,NULL FROM ids",
+                    [first_id, last_id],
+                )
+                .unwrap();
+        };
+        insert_off_axis_planes(501, 500 + MAX_VIEW_OCCLUDERS - 1);
+        let graph = load_room_graph(&connection, 7).unwrap();
+        let bounds = MeshBounds::transformed(
+            &Aabb::from_min_max(-Vec3::splat(0.2), Vec3::splat(0.2)),
+            bevy::math::Affine3A::from_translation(Vec3::new(0.0, 0.0, -40.0)),
+        )
+        .unwrap();
+        let mut shadow_budget = MAX_VIEW_OCCLUDERS;
+        let visible = graph
+            .visibility_volumes_with_budget(
+                Vec3::ZERO,
+                Vec3::ZERO,
+                clip_from_local(),
+                &mut shadow_budget,
+            )
+            .unwrap();
+        assert!(!visible.unbounded.intersects(Some(&bounds)));
+        let visible = single
+            .visibility_volumes_with_budget(
+                Vec3::ZERO,
+                Vec3::ZERO,
+                clip_from_local(),
+                &mut shadow_budget,
+            )
+            .unwrap();
+        assert!(
+            visible.unbounded.intersects(Some(&bounds)),
+            "another cell in the same view shares the exhausted budget"
+        );
+
+        insert_off_axis_planes(500 + MAX_VIEW_OCCLUDERS, 5499);
+        let visible = load_room_graph(&connection, 7)
+            .unwrap()
+            .visibility_volumes(Vec3::ZERO, Vec3::ZERO, clip_from_local())
+            .unwrap();
+        assert!(visible.unbounded.intersects(Some(&bounds)));
+    }
+
+    #[test]
+    fn all_null_occluder_links_keep_other_occluders_available() {
+        let connection = occluder_database();
+        connection
+            .execute_batch(
+                "INSERT INTO room_occluders VALUES(501,7,3,0,40,0,0,0,0,8,0,8,1,0,0,0,NULL);
+             UPDATE room_occluders SET has_links=1 WHERE ref_id=500;",
+            )
+            .unwrap();
+        assert!(
+            load_room_graph(&connection, 7)
+                .unwrap()
+                .occluders
+                .is_empty()
+        );
+        connection
+            .execute(
+                "INSERT INTO room_graph_stats VALUES ('occlusion_links_verified',1)",
+                [],
+            )
+            .unwrap();
+        let graph = load_room_graph(&connection, 7).unwrap();
+        assert_eq!(
+            graph
+                .occluders
+                .values()
+                .flatten()
+                .map(|shape| shape.ref_id)
+                .collect::<Vec<_>>(),
+            [501]
+        );
     }
 
     #[test]
@@ -1920,7 +2106,10 @@ mod tests {
                  INSERT INTO room_occluders VALUES(501,7,3,8,20,0,0,0,0,8,0,8,1,0,0,1,NULL);
                  INSERT INTO room_occluder_links VALUES(500,1,501,1),(501,3,500,1);"
             ).unwrap();
-            assert_eq!(load_room_graph(&db, 7).unwrap().occluders.len(), 2);
+            assert_eq!(
+                load_room_graph(&db, 7).unwrap().occluders[&PortalSide::Unbounded].len(),
+                2
+            );
             db.execute_batch(change).unwrap();
             assert!(
                 load_room_graph(&db, 7).unwrap().occluders.is_empty(),
@@ -1942,7 +2131,7 @@ mod tests {
         assert!(occluders().is_empty());
         db.execute_batch("INSERT INTO room_reference_rules VALUES(500,7,'target',1)")
             .unwrap();
-        assert_eq!(occluders()[0].owner, PortalSide::Room(0));
+        assert_eq!(occluders()[&PortalSide::Room(0)].len(), 1);
         db.execute_batch(
             "UPDATE room_reference_rules SET target_ref=2; UPDATE room_occluders SET target_ref=2;",
         )
@@ -1964,7 +2153,7 @@ mod tests {
             .unwrap();
         let graph = load_room_graph(&connection, 7).unwrap();
         assert_eq!(graph.occluders.len(), 1);
-        assert_eq!(graph.occluders[0].owner, PortalSide::Room(0));
+        assert_eq!(graph.occluders[&PortalSide::Room(0)].len(), 1);
         connection
             .execute_batch(
                 "INSERT INTO room_reference_rules VALUES(500,7,'target',2);
@@ -1973,7 +2162,7 @@ mod tests {
             .unwrap();
         let graph = load_room_graph(&connection, 7).unwrap();
         assert_eq!(graph.occluders.len(), 1);
-        assert_eq!(graph.occluders[0].owner, PortalSide::Room(0));
+        assert_eq!(graph.occluders[&PortalSide::Room(0)].len(), 1);
         insert_room(&connection, 3, 7, [100.0, 0.0, 0.0]);
         connection
             .execute_batch("UPDATE room_bounds SET flags=256 WHERE ref_id=3")
@@ -2011,7 +2200,7 @@ mod tests {
     }
 
     #[test]
-    fn an_initial_named_target_does_not_require_legacy_stored_bounds() {
+    fn a_named_activator_without_a_sphere_attaches_until_it_moves() {
         let connection = authored_database();
         insert_room(&connection, 1, 7, [0.0; 3]);
         insert_room(&connection, 2, 7, [0.0, 25.0, 0.0]);
@@ -2037,20 +2226,72 @@ mod tests {
             .get::<ChildOf>(scene.far)
             .unwrap()
             .parent();
+        let root = scene.app.world().resource::<RoomCullingState>().graphs[&7].root;
         scene
             .app
             .world_mut()
             .entity_mut(reference)
             .remove::<ExpectedModelBounds>()
-            .insert(GlobalTransform::IDENTITY);
+            .insert((
+                RigidBody::Dynamic,
+                Transform::IDENTITY,
+                GlobalTransform::IDENTITY,
+                NamedRoomAssignment::Initial {
+                    root,
+                    placement: Affine3A::IDENTITY,
+                },
+            ));
+        mark_reference_exemptions(
+            &mut scene.app.world_mut().commands().entity(reference),
+            Some("ACTI"),
+            true,
+        );
+        scene.app.world_mut().flush();
         scene.app.world_mut().entity_mut(scene.far).insert((
             Aabb::from_min_max(-Vec3::splat(0.5), Vec3::splat(0.5)),
             GlobalTransform::from_translation(Vec3::new(0.0, 0.0, -25.0)),
         ));
-        run_cull(&mut scene.app);
+        scene.app.add_systems(Update, cull_room_views);
+        scene.app.world_mut().run_schedule(Update);
         assert!(
             !mesh_list(&scene.app, scene.camera).contains(&scene.far),
             "an explicit initial target supplies ownership without geometric memberships or spheres"
+        );
+        assert!(mesh_list(&scene.app, scene.camera).contains(&scene.near));
+        scene
+            .app
+            .insert_resource(crate::settings::RenderingSettings {
+                room_culling: false,
+                ..Default::default()
+            });
+        scene.app.world_mut().entity_mut(reference).insert((
+            Transform::from_xyz(1.0, 0.0, 0.0),
+            GlobalTransform::from_xyz(1.0, 0.0, 0.0),
+        ));
+        // The far mesh is absent from the list during this move.
+        scene.app.world_mut().run_schedule(Update);
+        scene
+            .app
+            .world_mut()
+            .entity_mut(reference)
+            .insert((Transform::IDENTITY, GlobalTransform::IDENTITY));
+        scene.app.world_mut().run_schedule(Update);
+        scene
+            .app
+            .world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .room_culling = true;
+        scene
+            .app
+            .world_mut()
+            .get_mut::<VisibleEntities>(scene.camera)
+            .unwrap()
+            .get_mut(TypeId::of::<Mesh3d>())
+            .push(scene.far);
+        scene.app.world_mut().run_schedule(Update);
+        assert!(
+            mesh_list(&scene.app, scene.camera).contains(&scene.far),
+            "a moved root without a source sphere stays visible after returning to its original placement"
         );
     }
 
@@ -2751,7 +2992,7 @@ mod tests {
             membership: HashMap::new(),
             authored: None,
             supports_unbounded: false,
-            occluders: Vec::new(),
+            occluders: HashMap::new(),
         }
     }
 
@@ -2805,7 +3046,7 @@ mod tests {
     #[test]
     fn occluder_exclusions_follow_their_portal_path_into_later_rooms() {
         let mut graph = chain(doorway(11, Vec3::new(0.0, 0.0, -30.0), 3.0, [1, 2]));
-        graph.occluders.push(
+        graph.add_occluder(
             occlusion::Occluder::from_creation(
                 500,
                 3,
@@ -2838,6 +3079,55 @@ mod tests {
             .visibility_volumes(Vec3::ZERO, Vec3::ZERO, clip_from_local())
             .unwrap();
         assert!(visible.rooms[2].intersects(Some(&bounds)));
+    }
+
+    #[test]
+    fn only_reached_owners_spend_the_shadow_budget() {
+        let mut graph = chain(side_doorway(11, Vec3::new(10.0, 0.0, -12.0), 1.5, [1, 2]));
+        let add_plane = |graph: &mut RoomGraph, id, owner, depth| {
+            graph.add_occluder(
+                occlusion::Occluder::from_creation(
+                    id,
+                    3,
+                    [0.0, depth, 0.0],
+                    [0.0; 3],
+                    [2.0, 0.0, 2.0],
+                    1.0,
+                    PortalSide::Room(owner),
+                )
+                .unwrap(),
+            );
+        };
+        add_plane(&mut graph, 500, 1, 20.0);
+        for id in 0..MAX_VIEW_OCCLUDERS as u32 {
+            add_plane(&mut graph, 1000 + id, 2, 40.0);
+        }
+        let bounds = |x| {
+            MeshBounds::transformed(
+                &Aabb::from_min_max(-Vec3::splat(0.2), Vec3::splat(0.2)),
+                bevy::math::Affine3A::from_translation(Vec3::new(x, 0.0, -25.0)),
+            )
+            .unwrap()
+        };
+        let visible = graph
+            .visibility_volumes(Vec3::ZERO, Vec3::ZERO, clip_from_local())
+            .unwrap();
+        assert!(!visible.rooms[2].is_reached());
+        assert!(!visible.rooms[1].intersects(Some(&bounds(0.0))));
+
+        graph.portals[1] = doorway(11, Vec3::new(0.0, 0.0, -30.0), 3.0, [1, 2]);
+        let visible = graph
+            .visibility_volumes(Vec3::ZERO, Vec3::ZERO, clip_from_local())
+            .unwrap();
+        assert!(visible.rooms[2].is_reached());
+        assert!(
+            visible.rooms[1].intersects(Some(&bounds(0.0))),
+            "overflow also drops the shadows already added in an earlier room"
+        );
+        assert!(
+            !visible.rooms[1].intersects(Some(&bounds(9.0))),
+            "the doorway still narrows the portal volume"
+        );
     }
 
     #[test]
@@ -3078,7 +3368,7 @@ mod tests {
                 .visibility_volumes(Vec3::ZERO, Vec3::ZERO, clip_from_local())
                 .is_none()
         );
-        graph.occluders.push(
+        graph.add_occluder(
             occlusion::Occluder::from_creation(
                 500,
                 3,
@@ -3333,7 +3623,7 @@ mod tests {
             membership: HashMap::new(),
             authored: None,
             supports_unbounded: false,
-            occluders: Vec::new(),
+            occluders: HashMap::new(),
         };
         graph.membership.insert(
             1,
@@ -3751,8 +4041,9 @@ mod tests {
                 PortalSide::Room(2),
             )
             .unwrap();
-            assert!(disjoint.shadow(Vec3::ZERO, clip_from_local()).is_some());
-            graph.occluders.push(disjoint);
+            let view = occlusion::View::new(Vec3::ZERO, clip_from_local()).unwrap();
+            assert!(disjoint.shadow_in(&view).is_some());
+            graph.add_occluder(disjoint);
             let disjoint = graph
                 .visibility_volumes(Vec3::ZERO, Vec3::ZERO, clip_from_local())
                 .unwrap();
@@ -3761,7 +4052,7 @@ mod tests {
 
             // A shadow in C covers only the left route. Its speculative crossing must leave
             // the wide exit available when the clear right-hand contribution reaches C.
-            graph.occluders.push(
+            graph.add_occluder(
                 occlusion::Occluder::from_creation(
                     20,
                     3,
@@ -3777,6 +4068,27 @@ mod tests {
                 .visibility_volumes(Vec3::ZERO, Vec3::ZERO, clip_from_local())
                 .unwrap();
             assert_eq!(markers(&shadowed, 3), [false, false, true]);
+
+            // E is reached after C's shadow changes the wide exit's visit state.
+            // Overflow must replay the portal walk to recover the same paths as the clear walk.
+            for id in 100..100 + MAX_VIEW_OCCLUDERS as u32 {
+                graph.add_occluder(
+                    occlusion::Occluder::from_creation(
+                        id,
+                        3,
+                        [1000.0, 70.0, 0.0],
+                        [0.0; 3],
+                        [2.0, 0.0, 2.0],
+                        1.0,
+                        PortalSide::Room(4),
+                    )
+                    .unwrap(),
+                );
+            }
+            let overflow = graph
+                .visibility_volumes(Vec3::ZERO, Vec3::ZERO, clip_from_local())
+                .unwrap();
+            assert_eq!(markers(&overflow, 3), markers(&visible, 3));
         }
     }
 
@@ -4236,7 +4548,7 @@ mod tests {
         let graph = RoomGraph {
             authored: None,
             supports_unbounded: false,
-            occluders: Vec::new(),
+            occluders: HashMap::new(),
             rooms: vec![
                 room(1, Vec3::ZERO, 10.0),
                 room(2, Vec3::new(0.0, 0.0, -20.0), 10.0),
@@ -4613,7 +4925,7 @@ mod tests {
             membership: HashMap::new(),
             authored: None,
             supports_unbounded: false,
-            occluders: Vec::new(),
+            occluders: HashMap::new(),
             rooms: rooms.clone(),
         };
         let reached = reached_rooms(&graph, Vec3::ZERO, clip_from_local()).unwrap();
@@ -4739,7 +5051,7 @@ mod tests {
             membership: HashMap::new(),
             authored: None,
             supports_unbounded: false,
-            occluders: Vec::new(),
+            occluders: HashMap::new(),
             rooms,
         }
     }
@@ -4937,7 +5249,7 @@ mod tests {
             membership: HashMap::new(),
             authored: None,
             supports_unbounded: false,
-            occluders: Vec::new(),
+            occluders: HashMap::new(),
         };
         assert_eq!(
             graph.overlaps,
@@ -4986,7 +5298,7 @@ mod tests {
             membership: HashMap::new(),
             authored: None,
             supports_unbounded: false,
-            occluders: Vec::new(),
+            occluders: HashMap::new(),
         };
         assert_eq!(
             graph.overlaps,

@@ -85,9 +85,11 @@ pub(super) fn load(
     if !authored.complete || authored.masters.iter().any(Option::is_none) {
         return Ok(Vec::new());
     }
-    // Unknown link framing could conceal an incoming pair on any other plane in this cell.
+    // Source-verified exports mark cells with unusable XORD incomplete. Older exports
+    // could clear a non-null link and leave the cell complete.
     let unknown_links: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM room_occluders o WHERE o.cell_id=?1 AND o.has_links<>0 \
+        "SELECT NOT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='occlusion_links_verified' AND value=1) \
+         AND EXISTS(SELECT 1 FROM room_occluders o WHERE o.cell_id=?1 AND o.has_links<>0 \
          AND NOT EXISTS(SELECT 1 FROM room_occluder_links l WHERE l.ref_id=o.ref_id))",
         [cell],
         |row| row.get(0),

@@ -177,7 +177,7 @@ fn retail_portal_fixture_comparison() {
         "graph": {
             "rooms": graph.rooms.len(),
             "portals": graph.portals.len(),
-            "occluders": graph.occluders.len(),
+            "occluders": graph.occluders.values().map(Vec::len).sum::<usize>(),
             "links": graph.links.len(),
             "overlaps": graph.overlaps.len(),
         },

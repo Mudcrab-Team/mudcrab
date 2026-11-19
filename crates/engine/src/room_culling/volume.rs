@@ -1,7 +1,7 @@
 //! Path-local inclusion and exclusion volumes. Separate portal paths form a union.
 
 use bevy::{camera::primitives::Aabb, math::Affine3A, prelude::*};
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use super::{PORTAL_OPEN_DISTANCE, Portal, PortalView, occlusion::OcclusionVolume};
 
@@ -78,7 +78,7 @@ impl MeshBounds {
 #[derive(Clone, Debug)]
 pub(super) struct VisibilityVolume {
     planes: Vec<Vec4>,
-    exclusions: Vec<(u32, Arc<OcclusionVolume>)>,
+    exclusions: BTreeMap<u32, Arc<OcclusionVolume>>,
 }
 
 fn normalized(plane: Vec4) -> Option<Vec4> {
@@ -147,19 +147,23 @@ impl VisibilityVolume {
             .collect();
         planes.map(|planes| Self {
             planes,
-            exclusions: Vec::new(),
+            exclusions: BTreeMap::new(),
         })
     }
 
+    pub(super) fn add_occluder(&mut self, id: u32, shadow: OcclusionVolume) {
+        self.exclusions
+            .entry(id)
+            .or_insert_with(|| Arc::new(shadow));
+    }
+
     /// Occluders belong to this contributing path, not to the union of every room path.
-    pub(super) fn with_occluders(&self, shadows: &[(u32, Arc<OcclusionVolume>)]) -> Self {
-        let mut volume = self.clone();
-        for (id, shadow) in shadows {
-            if !volume.exclusions.iter().any(|(existing, _)| existing == id) {
-                volume.exclusions.push((*id, Arc::clone(shadow)));
-            }
+    pub(super) fn extend_occluders(&mut self, local: &Self) {
+        for (&id, shadow) in &local.exclusions {
+            self.exclusions
+                .entry(id)
+                .or_insert_with(|| Arc::clone(shadow));
         }
-        volume
     }
 
     pub(super) fn intersects(&self, bounds: &MeshBounds) -> bool {
@@ -174,8 +178,8 @@ impl VisibilityVolume {
                 || bounds.sphere_radius().is_none_or(|radius| {
                     !self
                         .exclusions
-                        .iter()
-                        .any(|(_, shadow)| shadow.contains_sphere(bounds.center, radius))
+                        .values()
+                        .any(|shadow| shadow.contains_sphere(bounds.center, radius))
                 }))
     }
 
@@ -184,8 +188,8 @@ impl VisibilityVolume {
         self.planes.iter().all(|plane| other.planes.contains(plane))
             && self
                 .exclusions
-                .iter()
-                .all(|(id, _)| other.exclusions.iter().any(|(other_id, _)| other_id == id))
+                .keys()
+                .all(|id| other.exclusions.contains_key(id))
     }
 
     #[cfg(test)]
@@ -229,8 +233,8 @@ impl VisibilityVolume {
 
     fn aperture_is_shadowed(&self, polygon: &[Vec3]) -> bool {
         self.exclusions
-            .iter()
-            .any(|(_, shadow)| shadow.intersects_aperture(polygon))
+            .values()
+            .any(|shadow| shadow.intersects_aperture(polygon))
     }
 
     fn clip_portal(
@@ -470,8 +474,9 @@ mod tests {
             super::super::PortalSide::Unbounded,
         )
         .unwrap();
-        let occluded =
-            full.with_occluders(&[(10, Arc::new(shape.shadow(Vec3::ZERO, clip()).unwrap()))]);
+        let mut occluded = full.clone();
+        let view = super::super::occlusion::View::new(Vec3::ZERO, clip()).unwrap();
+        occluded.add_occluder(10, shape.shadow_in(&view).unwrap());
         let mesh = bounds(Vec3::new(0.0, 0.0, -30.0), Vec3::splat(0.5));
         assert!(!occluded.intersects(&mesh));
         let mut visible = RoomVisibility::default();
