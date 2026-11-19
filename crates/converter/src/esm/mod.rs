@@ -74,6 +74,52 @@ struct LegacyPluginMerge {
     room_link_layouts: HashMap<u32, rooms::RoomLinkLayout>,
 }
 
+/// A rejected override may name a different cell from its retained predecessor.
+/// A later usable record or deletion supersedes damage with a proven identity.
+#[derive(Default)]
+struct PlacementDamage {
+    cells_by_reference: HashMap<Option<u32>, HashSet<u32>>,
+}
+
+impl PlacementDamage {
+    fn reject(
+        &mut self,
+        id: Option<u32>,
+        source_cell: Option<u32>,
+        plugin: usize,
+        order: &load_order::LoadOrder,
+    ) {
+        if let Some(cell) = source_cell
+            .and_then(|raw| {
+                crate::records::source_identity::header_runtime_id(b"CELL", raw, plugin, order)
+            })
+            .filter(|&cell| cell != 0)
+        {
+            self.cells_by_reference
+                .entry(id.filter(|&id| id != 0))
+                .or_default()
+                .insert(cell);
+        }
+    }
+
+    fn accepted(&mut self, id: u32) {
+        self.cells_by_reference.remove(&Some(id));
+    }
+
+    fn affected_cells(self, winners: &HashMap<u32, RawRecord>) -> HashSet<u32> {
+        let mut cells = HashSet::new();
+        for (id, rejected) in self.cells_by_reference {
+            cells.extend(rejected);
+            if let Some(earlier) = id.and_then(|id| winners.get(&id))
+                && is_placed_record_type(&earlier.record_type)
+            {
+                cells.extend(earlier.cell_form_id);
+            }
+        }
+        cells
+    }
+}
+
 /// Populate the common plugin metadata contract without allocating each complete input.
 fn insert_plugins(conn: &Connection, plugin_paths: &[PathBuf]) -> Result<()> {
     let mut statement = conn.prepare_cached(
@@ -259,7 +305,7 @@ impl EsmParser {
         order: &load_order::LoadOrder,
     ) -> Result<LegacyPluginMerge> {
         let mut merged = HashMap::new();
-        let mut damaged_placements = HashMap::new();
+        let mut damaged_placements = PlacementDamage::default();
         let mut room_link_layouts = HashMap::new();
         let mut summaries = Vec::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
@@ -292,6 +338,7 @@ impl EsmParser {
                         .get_form_id(b"NAME")
                         .is_some_and(|base| base & 0x00ff_ffff == rooms::ROOM_MARKER_BASE))
                 .then(|| rooms::RoomLinkLayout::from_raw(&record));
+                let source_cell = record.cell_form_id;
                 let admission = remap_record_form_ids(
                     &mut record,
                     &order.names[priority],
@@ -309,6 +356,15 @@ impl EsmParser {
                     }
                     Ok(())
                 });
+                if (admission.is_err() || damaged) && is_placed_record_type(&record.record_type) {
+                    let id = crate::records::source_identity::header_runtime_id(
+                        &record.record_type,
+                        source_id,
+                        priority,
+                        order,
+                    );
+                    damaged_placements.reject(id, source_cell, priority, order);
+                }
                 if let Err(error) = admission {
                     warnings.skipped_record(
                         &order.names[priority],
@@ -333,13 +389,6 @@ impl EsmParser {
                     }
                 }
                 if damaged {
-                    // Like the typed reader, keep a usable predecessor over a torn override.
-                    // Otherwise the placement's cell cannot certify its graph until it is replaced.
-                    if !merged.contains_key(&record.form_id)
-                        && let Some(cell) = record.cell_form_id
-                    {
-                        damaged_placements.insert(record.form_id, cell);
-                    }
                     continue;
                 }
                 if record.record_type == *b"GMST" {
@@ -379,7 +428,7 @@ impl EsmParser {
                     continue;
                 }
                 sources.insert(remapped_source_id, (source_id, out_of_range));
-                damaged_placements.remove(&record.form_id);
+                damaged_placements.accepted(record.form_id);
                 room_link_layouts.remove(&record.form_id);
                 if let Some(layout) = room_link_layout {
                     room_link_layouts.insert(record.form_id, layout);
@@ -393,6 +442,7 @@ impl EsmParser {
         }
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
+        let damaged_cells = damaged_placements.affected_cells(&merged);
         Ok(LegacyPluginMerge {
             conversion: RecordConversion {
                 records: merged,
@@ -400,7 +450,7 @@ impl EsmParser {
                 notices,
                 phases: BTreeMap::new(),
             },
-            damaged_cells: damaged_placements.into_values().collect(),
+            damaged_cells,
             room_link_layouts,
         })
     }
@@ -890,7 +940,16 @@ fn remap_record_form_ids(
                 let value = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
                 // Keep valid payload bytes, but publish null for an invalid FormID rather
                 // than retaining a plugin-local value or guessing its owner.
-                let resolved = match remap_with_validation(value, true) {
+                let resolved = match remap_with_validation(value, true).and_then(|resolved| {
+                    color_eyre::eyre::ensure!(
+                        resolved != 0
+                            || value == 0
+                            || record_type != *b"REFR"
+                            || tag.as_slice() != b"XPOD",
+                        "non-null portal endpoint resolved to zero"
+                    );
+                    Ok(resolved)
+                }) {
                     Ok(resolved) => resolved,
                     Err(error) => {
                         warnings.skipped_optional(
