@@ -1243,8 +1243,8 @@ Columns and rules:
   half-extents in the room's own frame. `lighting_template_id` (`LNAM`) and `image_space_id`
   (`INAM`) are decoded for the lighting work in #129-#135; nothing in the engine uses them yet.
 - **`room_portals`**: a portal's doorway is the marker's local X-Z rectangle (normal along local
-  +Y); `half_x`/`half_z` are its half-width and half-height. A portal marker without `XPRM`
-  has no size and gets no row. `XPOD` is an array of 8-byte (origin, destination) FormID pairs
+  +Y); `half_x`/`half_z` are its half-width and half-height. The converter requires a 32-byte `XPRM` with shape 3.
+  A missing or malformed primitive gets no portal row and marks its cell incomplete. `XPOD` is an array of 8-byte (origin, destination) FormID pairs
   (xEdit 4.1.5f defs, `Core/wbDefinitionsTES5.pas`: `wbArray(XPOD, 'Portal Data',
   wbStruct('References', [wbFormIDCk('Origin', [REFR, NULL]), wbFormIDCk('Destination',
   [REFR, NULL])]))`), so a portal gets **one row per pair**, numbered by `pair_index` from 0

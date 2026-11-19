@@ -18,6 +18,7 @@ pub const ROOM_MARKER_BASE: u32 = 0x1F;
 pub const PORTAL_MARKER_BASE: u32 = 0x20;
 /// `XPRM` shape value of a box room.
 const SHAPE_BOX: u32 = 1;
+const SHAPE_PORTAL: u32 = 3;
 
 /// Tables created by `create_tables` so an older reused database gains them.
 pub const ROOM_TABLES_SQL: &str = r#"
@@ -605,11 +606,16 @@ pub fn export_room_graph(
         }
         let cell = record.cell_form_id.unwrap_or(0);
         let view = SubrecordView::new(&record.subrecords);
-        let Some(xprm) = view.find(b"XPRM").filter(|data| data.len() >= 12) else {
+        let Some(xprm) = view.find(b"XPRM") else {
             incomplete.insert(cell);
             report.portals_without_size_skipped += 1;
             continue;
         };
+        if xprm.len() != 32 || u32_at(xprm, 28) != Some(SHAPE_PORTAL) {
+            incomplete.insert(cell);
+            report.invalid_markers_skipped += 1;
+            continue;
+        }
         let Some((position, rotation)) = transform_of(&view) else {
             incomplete.insert(cell);
             report.invalid_markers_skipped += 1;

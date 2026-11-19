@@ -3,6 +3,8 @@
 The engine uses the converted room graph automatically, without an enable flag. Room culling
 is on by default; the Graphics settings panel can disable it immediately and save that preference.
 Missing tables, unread graphs and incomplete traversal data leave extra geometry drawn.
+An older pack without per-cell completeness records can hide rooms behind a portal its exporter
+skipped. A full rebuild flags that cell so the engine keeps its meshes visible.
 This policy uses Skyrim's authored room and portal records, but does not claim exact replication
 of Skyrim's traversal.
 
