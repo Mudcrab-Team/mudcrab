@@ -286,7 +286,6 @@ fn a_ledge_beyond_the_cast_length_still_falls() {
 fn a_jump_still_leaves_the_ground_and_lands_once() {
     let mut app = app_with_ticks();
     settle(&mut app, Vec3::new(0.0, 60.0, Z));
-    let tuning = MovementTuning::default();
     app.insert_resource(WalkIntent {
         wish_dir: Vec3::ZERO,
         target_speed: 0.0,
@@ -299,11 +298,9 @@ fn a_jump_still_leaves_the_ground_and_lands_once() {
         apex = apex.max(headless::player_pose(&mut app).0.y - ground);
     }
     let ticks = std::mem::take(&mut app.world_mut().resource_mut::<Ticks>().0);
-    let expected = tuning.jump_height.creation().abs();
-    assert!(
-        (apex - expected).abs() <= 0.15 * expected,
-        "jump apex {apex:.1}, expected about {expected:.1}"
-    );
+    // The retained 60 Hz headless run with the default 76-unit height rose 71.48 units.
+    assert!((apex - 71.48).abs() < 0.5, "sampled jump apex {apex:.2}");
+    assert!((ticks.last().unwrap().state.jump_apex() - apex).abs() < 0.1);
     assert!(
         ticks.iter().any(|tick| tick.state.airborne),
         "a jump is the air state"

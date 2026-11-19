@@ -10,7 +10,7 @@ use bevy::{
 use bevy_rapier3d::prelude::*;
 use color_eyre::{
     Result,
-    eyre::{WrapErr, ensure},
+    eyre::{WrapErr, bail, ensure},
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use shared::{collision::CollisionBody, records::ArchivedRecordData};
@@ -336,12 +336,18 @@ fn load_player_jump_height(conn: &Connection, race_id: u32) -> Result<JumpHeight
     let acbs = player.required(b"ACBS", 24)?;
     let female = u32::from_le_bytes(acbs[..4].try_into()?) & 1 != 0;
     let template_flags = u16::from_le_bytes(acbs[18..20].try_into()?);
-    if let Some(template) = player.field(b"TPLT")? {
-        ensure!(template.len() == 4, "Player NPC_ TPLT must be four bytes");
-        let template = u32::from_le_bytes(template.try_into()?);
-        ensure!(
-            template == 0 || template_flags == 0,
-            "Player NPC_ uses unsupported active template inheritance ({template:08X}, flags={template_flags:04X})"
+    let template = player
+        .field(b"TPLT")?
+        .map(|bytes| bytes.try_into().map(u32::from_le_bytes))
+        .transpose()
+        .wrap_err("Player NPC_ TPLT must be four bytes")?;
+    const USE_TRAITS: u16 = 0x0001;
+    if template_flags & USE_TRAITS != 0 {
+        let template = template.filter(|id| *id != 0).ok_or_else(|| {
+            color_eyre::eyre::eyre!("Player NPC_ sets Use Traits but has no nonzero TPLT")
+        })?;
+        bail!(
+            "Player NPC_ inherits traits from TPLT {template:08X}; inherited jump inputs are unsupported"
         );
     }
     // Raw RNAM may be file-relative. Its normalized identity comes from npcs.
@@ -1287,6 +1293,42 @@ mod tests {
                     error.contains(&format!("DATA length {size} is unsupported")),
                     "{error}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn packaged_jump_only_requires_local_traits() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        for (flags, template, expected_error) in [
+            (0x0100_u16, Some(99_u32), None),
+            (0x0001, None, Some("has no nonzero TPLT")),
+            (0x0001, Some(0), Some("has no nonzero TPLT")),
+            (0x0101, Some(99), Some("inherits traits from TPLT 00000063")),
+        ] {
+            rewrite_jump_record(&conn, 7, |record| {
+                let acbs = record
+                    .subrecords
+                    .iter_mut()
+                    .find(|field| field.tag == *b"ACBS")
+                    .unwrap();
+                acbs.data[18..20].copy_from_slice(&flags.to_le_bytes());
+                record.subrecords.retain(|field| field.tag != *b"TPLT");
+                if let Some(id) = template {
+                    record.subrecords.push(shared::records::ArchivedSubRecord {
+                        tag: *b"TPLT",
+                        data: id.to_le_bytes().to_vec(),
+                    });
+                }
+            });
+            let result = MovementTuning::from_world_database(&path);
+            if let Some(message) = expected_error {
+                let error = format!("{:#}", result.unwrap_err());
+                assert!(error.contains(message), "{error}");
+            } else {
+                assert_eq!(result.unwrap().jump_height.creation(), 150.0);
             }
         }
     }
@@ -4706,6 +4748,48 @@ mod simulation_tests {
                 .any(|t| (t.translation.x - spawn.x) > 100.0)
         };
         assert!(moved, "walk capsule did not advance under run intent");
+    }
+
+    #[test]
+    fn jump_gravity_and_apex_follow_the_highest_resolved_position() {
+        let tuning = MovementTuning::default();
+        let mut state = WalkState::default();
+        integrate_walk(
+            &mut state,
+            &WalkIntent {
+                jump_pressed: true,
+                ..default()
+            },
+            &tuning,
+            PHYSICS_TIMESTEP,
+            ResolvedWalk {
+                y: 100.0,
+                grounded: true,
+            },
+        );
+        // Each sample is the position returned by collision resolution on the preceding tick.
+        for (y, gravity_multiplier, apex) in [
+            (104.0, 1.0, 4.0),
+            (104.0, 1.35, 4.0),
+            (101.0, 1.35, 4.0),
+            (103.0, 1.35, 4.0),
+            (105.0, 1.0, 5.0),
+        ] {
+            let before = state.vertical_velocity();
+            integrate_walk(
+                &mut state,
+                &WalkIntent::default(),
+                &tuning,
+                PHYSICS_TIMESTEP,
+                ResolvedWalk { y, grounded: false },
+            );
+            let expected_drop = 9.81 * 69.99125 * PHYSICS_TIMESTEP * gravity_multiplier;
+            assert!(
+                (before - state.vertical_velocity() - expected_drop).abs() < 0.001,
+                "resolved y={y}"
+            );
+            assert_eq!(state.jump_apex(), apex, "resolved y={y}");
+        }
     }
 
     #[test]
