@@ -2728,6 +2728,10 @@ fn room_link_anomalies_reach_both_readers_integration_reports() {
         None,
         None,
         vec![
+            marker(
+                0x805,
+                [sub(b"XRMR", &[1, 0, 0, 0]), sub(b"XLRM", &[0; 4])].concat(),
+            ),
             marker(0x806, sub(b"XRMR", &[1, 0, 0, 0])),
             marker(0x804, sub(b"XRMR", &[0, 0, 0, 0]).repeat(2)),
         ],
@@ -2764,11 +2768,11 @@ fn room_link_anomalies_reach_both_readers_integration_reports() {
         let report: serde_json::Value =
             serde_json::from_slice(&fs::read(output.join("integration-report.json")).unwrap())
                 .unwrap();
-        assert_eq!(report["room_graph"]["rooms"], 4);
+        assert_eq!(report["room_graph"]["rooms"], 5);
         assert_eq!(
             report["room_graph"]["room_link_anomalies"],
             serde_json::json!({
-                "skyrim.esm": {"count": 2, "first_marker": 0x804, "first_cell": 0x900},
+                "skyrim.esm": {"count": 3, "first_marker": 0x804, "first_cell": 0x900},
                 "patch.esp": {"count": 1, "first_marker": 0x801, "first_cell": 0x900},
             }),
             "typed={typed}: attribute winning overrides to the supplying plugin"

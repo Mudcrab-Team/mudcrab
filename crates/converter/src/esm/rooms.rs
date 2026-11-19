@@ -905,7 +905,14 @@ fn project_room_graph(
         // occurrence, the remaining IDs cannot be assigned to their source slots by ordinal.
         let matching_occurrences = links.clone().count() == layout.four_byte_links;
         let anomaly = layout.anomaly.as_deref().or_else(|| {
-            (!matching_occurrences).then_some("lost a four-byte XLRM occurrence during decoding")
+            if !matching_occurrences {
+                Some("lost a four-byte XLRM occurrence during decoding")
+            } else {
+                links
+                    .clone()
+                    .any(|id| id == 0)
+                    .then_some("has an unresolved XLRM target")
+            }
         });
         if let Some(anomaly) = anomaly {
             incomplete.insert(cell);
