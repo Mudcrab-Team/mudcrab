@@ -1380,7 +1380,7 @@ makes that cell incomplete, so the runtime draws the whole cell. Negative room o
 unbounded traversal. The engine keeps the full cell visible whenever its completeness row or the table itself is
 missing. A full room export enables portal clipping in cells verified as complete.
 In a versioned graph, the engine reads the cell's `references.id` values to distinguish known
-unbounded references from references belonging to other cells or unknown runtime objects.
+placements from references belonging to other cells or unknown runtime objects.
 
 Authored assignment metadata:
 
@@ -1500,7 +1500,8 @@ take precedence over the per-object rules. Other renderer visibility checks stil
 | Missing, invalid, or foreign portal endpoint | NULL without verified outside provenance | retain the cell |
 | Object in several rooms | several `contained = 1` rows | always retained by geometric membership |
 | Object in no room, legacy graph | no `contained = 1` row | always retained |
-| Known object in no room, complete versioned graph | no `contained = 1` row | retained when a visible candidate volume passes its mesh-bound test; candidates come from unbounded space, overlap rooms, and portal sharing |
+| Object without geometric membership in a roomed cell | no `reference_rooms` rows | retain for ordinary view culling |
+| Known object overlapping rooms in a complete versioned graph | overlap rows only | retained when a visible candidate volume passes its mesh-bound test; candidates come from unbounded space, overlap rooms, and portal sharing |
 | Camera outside every room | n/a | retain the cell, including possible gaps between bounds |
 | Non-box room shape in a new conversion | skipped, counted; cell marked incomplete | retain the cell |
 | Exterior markers | not written | out of scope (#106) |

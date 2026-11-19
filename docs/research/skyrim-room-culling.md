@@ -112,8 +112,7 @@ Mudcrab keeps whole-cell rendering when the camera is outside every room, includ
 graphs, because gaps between bounds are not verified outside space. From a containing room,
 versioned graphs can traverse an authored outside endpoint through its portal aperture. Legacy
 NULL endpoints cannot distinguish authored outside from invalid links. Unknown references remain
-drawn. This conservative camera-start policy differs from the traced native null-room traversal;
-it does not change versioned object membership to draw every unassigned reference.
+drawn. This conservative camera-start policy differs from the traced native null-room traversal.
 
 Its dropped-object warning also shows why a reference's original placement is insufficient for
 moving objects. Actors and animated categories remain exempt. Supported loose objects now
@@ -167,6 +166,8 @@ no duplicate render submissions are inserted. AABBs support rotation, negative/n
 and shear even though native assignment transforms require a uniform scale. Missing mesh bounds
 skip aperture filtering but retain the unreached-space test.
 
+In roomed cells, empty geometric membership leaves the mesh eligible for ordinary view culling.
+Authored automatic assignment to unbounded space requires a usable model sphere.
 Legacy graphs retain pivot/overlap candidates, conservative box/portal sharing, open links,
 touching-box edges that preserve the incoming visibility volume, and reached-portal-less-room fallbacks. Loose items and authored overrides retain
 legacy exemptions. The normal converter refreshes both room metadata and source-sphere GLBs; no
