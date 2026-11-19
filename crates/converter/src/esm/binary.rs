@@ -33,11 +33,14 @@ pub fn parse_plugin_metadata(path: &Path) -> Result<PluginMetadata> {
 /// Bound TES4 decoding before extracting the master dependency list.
 fn parse_plugin_metadata_inner(path: &Path) -> Result<PluginMetadata> {
     let reader = EsmReader::open(path)?;
-    let data = reader.as_slice();
+    plugin_metadata_from_bytes(reader.as_slice())
+}
+
+pub(super) fn plugin_metadata_from_bytes(data: &[u8]) -> Result<PluginMetadata> {
     let (rest, header) =
         parse_record_header(data).map_err(|error| eyre!("failed to parse TES4 header: {error}"))?;
     if &header.type_tag != b"TES4" || header.data_size as usize > rest.len() {
-        return Err(eyre!("invalid TES4 record in {}", path.display()));
+        return Err(eyre!("invalid TES4 record"));
     }
     let payload = &rest[..header.data_size as usize];
     let decoded = if header.flags & FLAG_COMPRESSED != 0 {
@@ -405,8 +408,18 @@ pub(super) fn parse_plugin_file_with_warnings(
 /// Keep header checks and local recovery unchanged while returning their bounded summary.
 fn parse_plugin_file_inner(path: &Path, visit: impl FnMut(ParsedRecord)) -> Result<Vec<String>> {
     let reader = EsmReader::open(path)?;
-    let data = reader.as_slice();
+    parse_plugin_bytes(
+        reader.as_slice(),
+        &path.file_name().unwrap_or_default().to_string_lossy(),
+        visit,
+    )
+}
 
+pub(super) fn parse_plugin_bytes(
+    data: &[u8],
+    name: &str,
+    visit: impl FnMut(ParsedRecord),
+) -> Result<Vec<String>> {
     let (after_header, header) =
         parse_record_header(data).map_err(|e| eyre!("Failed to parse record header: {e}"))?;
     if &header.type_tag != b"TES4" {
@@ -438,9 +451,7 @@ fn parse_plugin_file_inner(path: &Path, visit: impl FnMut(ParsedRecord)) -> Resu
         &mut warnings,
         visit,
     );
-    let summaries = warnings.report(&path.file_name().unwrap_or_default().to_string_lossy());
-
-    Ok(summaries)
+    Ok(warnings.report(name))
 }
 
 /// Parses REFR payload for Position and Base Form ID pointers
