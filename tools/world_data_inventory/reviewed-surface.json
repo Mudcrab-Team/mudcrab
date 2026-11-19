@@ -632,6 +632,7 @@
     "room_occluder_links.link_index",
     "room_occluder_links.linked_ref",
     "room_occluder_links.ref_id",
+    "room_occluder_links.single_target_verified",
     "room_occluders.cell_id",
     "room_occluders.half_x",
     "room_occluders.half_y",
