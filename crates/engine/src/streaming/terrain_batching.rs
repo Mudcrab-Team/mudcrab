@@ -44,6 +44,12 @@ const BATCH_SIDE_CELLS: i32 = 2;
 #[derive(Component)]
 pub(crate) struct LodTerrainBatch;
 
+/// A render mesh this module spawned for LOD terrain: a batch, or the fallback quadrant drawn
+/// while a batch uploads. The land shadow policy (`super::apply_land_shadow_policy`) finds terrain
+/// through it, since these meshes carry no coverage component.
+#[derive(Component)]
+pub(crate) struct LandMesh;
+
 #[derive(Component)]
 pub(crate) struct PendingLodTerrainBatching {
     pub(super) source: Handle<WorldAsset>,
@@ -543,6 +549,7 @@ fn spawn_render_mesh(
     bounds: Option<Aabb>,
 ) -> Entity {
     let mut entity = commands.spawn((
+        LandMesh,
         NoAutoAabb,
         Mesh3d(mesh),
         MeshMaterial3d(state.material.clone()),
@@ -2146,6 +2153,19 @@ mod tests {
             assert!(batch.fallback_entities.iter().all(|&fallback| {
                 *app.world().get::<Visibility>(fallback).unwrap() == Visibility::Inherited
             }));
+            // `spawn_render_mesh` tags the batch and every fallback, so the land shadow policy
+            // finds them whichever order the source flags arrived in.
+            for entity in batch
+                .fallback_entities
+                .iter()
+                .copied()
+                .chain([batch.entity])
+            {
+                assert!(
+                    app.world().entity(entity).contains::<LandMesh>(),
+                    "a LOD terrain render mesh lacks LandMesh"
+                );
+            }
         }
         assert_eq!(
             *app.world().get::<Visibility>(entity).unwrap(),

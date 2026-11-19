@@ -294,7 +294,7 @@
     "crates/engine/src/physics/carry.rs": "bcdf4496e8fe9d9c33030300b8edba358fc552e67a2c1949a44c3338c5029776",
     "crates/engine/src/room_culling.rs": "3dde125149eec693ed8ae1bb749561b33b4f05af980a991343ae44fbc494ba2c",
     "crates/engine/src/route.rs": "cdc3ddbb93ce2b350fef3479c941ba00d2b588113b8e365b7efdd48f40728c66",
-    "crates/engine/src/streaming.rs": "f87ea56ded6efd1033c9dbd4a91f2da486e28e9ea276fb3f861406072c323934",
+    "crates/engine/src/streaming.rs": "0cb14b3cd67a595dfb1069689dd6d7d2a293328b1a72a6ca7278c9a87a2e0bd6",
     "crates/engine/src/streaming/collision_placement_probe.rs": "403aa8bc33e3a8e8bb2cd59ab7cc7c7d6d87af9b1e19a1e406a51db17e068f90",
     "crates/engine/src/streaming/lod.rs": "c6668c2953d8b9787b08188e611d19544802bc822ed47bbc2472ddc1a9e57214",
     "crates/engine/src/terrain_merge/mod.rs": "739dc101a22d5a037d7cd1a7d6baaf71b84e419315f412d192b7824cbbc8f5c2",
