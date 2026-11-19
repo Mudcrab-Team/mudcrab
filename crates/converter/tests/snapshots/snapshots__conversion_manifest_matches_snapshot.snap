@@ -80,7 +80,7 @@ expression: manifest
   },
   "asset_configuration_hashes": {
     "dds": "1495cf3ec0f02a297c0bf31210e650b2c41df7f8b5e2bdda71f0a65f84b9db65",
-    "nif": "458063e1c1c7a39d3998be733b27a5cf3ee29c709912812dabe9f999c98fb12a",
+    "nif": "7af00890d93232fbe47849217de48e0770133a9ebc2b09ac83e432877db7336e",
     "pex": "cf13370688eb7906eb315807a3ff9fff826e24c65351c5a229f96d2d2ea85a7f"
   },
   "complete": true,

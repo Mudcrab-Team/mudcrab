@@ -1101,41 +1101,33 @@ fn attempt(
             .ok_or_else(|| color_eyre::eyre::eyre!("winning source is missing: {key}"))?;
         let (asset_kind, ext, target_ext) =
             kind(key).ok_or_else(|| color_eyre::eyre::eyre!("unsupported repair target: {key}"))?;
-        let nif = (ext == "nif")
-            .then(|| NifSnapshot::read(&source.path))
+        let skeletons = (ext == "nif").then(|| {
+            skeletons.get_or_init(|| crate::mesh::SkeletonIndex::from_sources(mesh_sources))
+        });
+        let nif = skeletons
+            .map(|index| index.input_snapshot(Path::new(key), &source.path))
             .transpose()?;
-        let mut source_hash = verified_source_hash(source, key, verified, nif.as_ref())?;
+        let mut source_hash = verified_source_hash(source, key, verified, nif.as_deref())?;
         let output = canonical_asset_path(key, asset_kind, target_ext)?;
         let target = checked_destination(staged, &output)?;
-        if let Some(nif) = &nif {
-            let skeletons =
-                skeletons.get_or_init(|| crate::mesh::SkeletonIndex::from_sources(mesh_sources));
-            let (skeleton_key, uses_rig) =
+        if let (Some(nif), Some(skeletons)) = (&nif, skeletons) {
+            let resolution =
                 crate::mesh::resolve_skeleton_from_snapshot(Path::new(key), nif, skeletons);
             let mut unresolved_skin = None;
-            let skeleton = match skeleton_key {
-                crate::mesh::SkeletonResolution::Skeleton(path) => {
-                    // The resolver returns the normalized key, while archive
-                    // keys keep their original case.
-                    let (dependency_key, dependency_source) = sources
-                        .get_key_value(path.to_string_lossy().as_ref())
-                        .or_else(|| {
-                            sources.iter().find(|(candidate, _)| {
-                                crate::mesh::normalize_path_key(Path::new(candidate.as_str()))
-                                    == crate::mesh::normalize_path_key(&path)
-                            })
-                        })
-                        .ok_or_else(|| {
+            let skeleton = match resolution {
+                crate::mesh::SkeletonResolution::Skeleton(entry) => {
+                    let dependency_key = entry.path.to_string_lossy();
+                    let dependency_source =
+                        sources.get(dependency_key.as_ref()).ok_or_else(|| {
                             color_eyre::eyre::eyre!(
-                                "resolved skeleton {} has no winning source",
-                                path.display()
+                                "resolved skeleton {dependency_key} has no winning source"
                             )
                         })?;
                     source_hash.push(':');
-                    let dependency = skeletons.read_source(&path, uses_rig)?;
+                    let dependency = entry.snapshot()?;
                     source_hash.push_str(&verified_source_hash(
                         dependency_source,
-                        dependency_key,
+                        &dependency_key,
                         verified,
                         Some(&dependency),
                     )?);
@@ -1154,7 +1146,7 @@ fn attempt(
             MeshConverter::convert_nif_snapshot(
                 nif,
                 &target,
-                skeleton.as_ref(),
+                skeleton.as_deref(),
                 unresolved_skin.as_deref(),
             )?;
             MeshConverter::glb_texture_dependencies(&target)?;
@@ -1250,7 +1242,7 @@ fn verified_source_hash(
     source: &Source,
     key: &str,
     verified: &mut BTreeSet<PathBuf>,
-    snapshot: Option<&NifSnapshot<'_>>,
+    snapshot: Option<&NifSnapshot>,
 ) -> Result<String> {
     if let Some((archive, expected)) = &source.archive
         && !verified.contains(archive)
@@ -1678,8 +1670,7 @@ mod tests {
         let archive = root.path().join("source.bsa");
         fs::write(&archive, "archive provenance fixture").unwrap();
         let key = "meshes/actors/character/armor/body.nif";
-        // Archive keys keep their authored case; the resolver answers with a
-        // normalized key, so the lookup must not depend on matching spelling.
+        // Candidate lookup is case-insensitive, but provenance uses this exact archive key.
         let skeleton_key = "meshes/actors/character/Character Assets/skeleton.nif";
         let skeleton = Source {
             path: blob.clone(),

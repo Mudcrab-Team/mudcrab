@@ -34,7 +34,7 @@ use crate::{
             publish_chunk, read_cached_heights, terrain_jobs, validate_chunk_members,
         },
     },
-    mesh::{MeshConverter, NifSnapshot},
+    mesh::MeshConverter,
     progress::{AssetOutcome, ProgressEvent, ProgressStage},
     script::ScriptConverter,
     texture::{TextureConverter, TextureEncoding, TextureSemantic, publish_ktx2_file},
@@ -2158,8 +2158,7 @@ impl ConversionBatch<'_> {
                 ))
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
-        // Parsing every skeleton once per run keeps the per-mesh resolution
-        // cheap; only the directory-union cache inside needs a lock.
+        // One rig snapshot is shared by all NIF workers, including cache-hit checks.
         let skeleton_index =
             (source_kind == "nif").then(|| crate::mesh::SkeletonIndex::from_sources(&mesh_sources));
         let source_textures = texture_source_keys(self.staging, files);
@@ -2327,8 +2326,9 @@ impl ConversionBatch<'_> {
                         let target = staging_root.join(&target_rel);
 
                         // Dependencies come from the merged winners below, not physical neighbors.
-                        let snapshot = (source_kind == "nif")
-                            .then(|| NifSnapshot::read(&source))
+                        let snapshot = skeleton_index
+                            .as_ref()
+                            .map(|skeletons| skeletons.input_snapshot(&relative, &source))
                             .transpose();
                         let (nif, mut hash) = match snapshot.and_then(|nif| {
                             let hash = match &nif {
@@ -2376,13 +2376,12 @@ impl ConversionBatch<'_> {
                             let skeletons = skeleton_index
                                 .as_ref()
                                 .expect("a nif batch always builds a skeleton index");
-                            let (resolution, uses_rig) =
-                                crate::mesh::resolve_skeleton_from_snapshot(
-                                    &relative, nif, skeletons,
-                                );
+                            let resolution = crate::mesh::resolve_skeleton_from_snapshot(
+                                &relative, nif, skeletons,
+                            );
                             match resolution {
-                                crate::mesh::SkeletonResolution::Skeleton(dependency_key) => {
-                                    match skeletons.read_source(&dependency_key, uses_rig) {
+                                crate::mesh::SkeletonResolution::Skeleton(entry) => {
+                                    match entry.snapshot() {
                                         Ok(dependency) => {
                                             hash.push(':');
                                             hash.push_str(dependency.hash());
@@ -2568,7 +2567,7 @@ impl ConversionBatch<'_> {
                                             MeshConverter::convert_nif_snapshot(
                                                 snapshot,
                                                 &target,
-                                                skeleton.as_ref(),
+                                                skeleton.as_deref(),
                                                 unresolved_skin.as_deref(),
                                             )
                                         }

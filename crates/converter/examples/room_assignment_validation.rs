@@ -127,7 +127,10 @@ fn validate_private_assets(assets: &Path) -> Result<()> {
         "private capture preparation requires Unix hard-link validation"
     );
     let absolute = std::path::absolute(assets)?;
-    for path in absolute.ancestors() {
+    // A trailing slash makes symlink_metadata follow the last directory link on Unix.
+    let mut path = PathBuf::new();
+    for component in absolute.components() {
+        path.push(component);
         ensure!(
             !path.is_symlink(),
             "fixture assets follow a symlink: {}",
@@ -473,6 +476,25 @@ mod tests {
             validate_private_assets(&alias.join("assets")).is_err(),
             "an indirect link must be rejected before the receipt or database is opened"
         );
+        let fixture_alias = physical.join("fixture-alias");
+        std::os::unix::fs::symlink(&assets, &fixture_alias).unwrap();
+        let receipt = assets.join("room-assignment-preparation.json");
+        fs::write(&receipt, b"previous receipt").unwrap();
+        for path in [fixture_alias.clone(), fixture_alias.join("")] {
+            let args = [
+                physical.display().to_string(),
+                path.display().to_string(),
+                "7".into(),
+            ];
+            assert!(
+                run(&args)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("follow a symlink")
+            );
+            assert_eq!(fs::read(&receipt).unwrap(), b"previous receipt");
+        }
+        assert!(validate_private_assets(&assets.join("")).is_ok());
         assert_eq!(
             fs::read(assets.join("skyrim_world.db")).unwrap(),
             b"independent database"
@@ -634,20 +656,42 @@ mod tests {
             joint_override: None,
         };
         let mesh = legacy_skinned_shape(&spec).unwrap();
+        let mut sibling = mesh.clone();
+        let name = sibling
+            .windows(5)
+            .position(|name| name == b"Bone1")
+            .unwrap();
+        sibling[name..name + 5].copy_from_slice(b"Extra");
         spec.with_geometry = false;
+        spec.name = "Extra";
         let mut winner = legacy_skinned_shape(&spec).unwrap();
         let (body, header) = NifHeader::parse(&winner).unwrap();
         let root_start = winner.len() - body.len();
         let first_bone = root_start + header.block_size_index[0] as usize;
         winner[root_start..root_start + 4].copy_from_slice(&0u32.to_le_bytes());
         winner[first_bone + 16..first_bone + 20].copy_from_slice(&17.0f32.to_le_bytes());
+        // Both rigs cover Body. Only the later-sorting rig also names the sibling's Extra joint.
+        let mut alternate = winner.clone();
+        let name = alternate
+            .windows(5)
+            .position(|name| name == b"Extra")
+            .unwrap();
+        alternate[name..name + 5].copy_from_slice(b"Other");
+        alternate[first_bone + 16..first_bone + 20].copy_from_slice(&7.0f32.to_le_bytes());
+        let sibling_path = "meshes/actors/selected/sibling.nif";
+        let alternate_path = "meshes/rigs/another/skeleton.nif";
         let model = "meshes/actors/selected/body.nif";
-        let skeleton = "meshes/actors/other/skeleton.nif";
+        let skeleton = "meshes/rigs/other/skeleton.nif";
         fs::write(data.join("Later Extra.esp"), b"disabled plugin").unwrap();
         for (name, entries) in [
             (
                 "Skyrim - Meshes.bsa",
-                vec![Entry::new(model, &mesh), Entry::new(skeleton, b"shadowed")],
+                vec![
+                    Entry::new(model, &mesh),
+                    Entry::new(skeleton, b"shadowed"),
+                    Entry::new(sibling_path, &sibling),
+                    Entry::new(alternate_path, &alternate),
+                ],
             ),
             ("Later.bsa", vec![Entry::new(skeleton, &winner)]),
             (
@@ -661,7 +705,7 @@ mod tests {
         let plugins = ["Skyrim.esm".into(), "Later.esp".into()];
         let (sources, count) =
             prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
-        assert_eq!(count, 2);
+        assert_eq!(count, 4);
         assert_eq!(fs::read(sources.path().join(skeleton)).unwrap(), winner);
         convert_capture_models(sources.path(), &assets, &models).unwrap();
         let output = assets.join(model).with_extension("glb");
@@ -687,6 +731,12 @@ mod tests {
         assert_eq!(fs::read(&output).unwrap(), captured);
         MeshConverter::convert_nif_to_glb_with_skeleton(&sources.path().join(model), &output, None)
             .unwrap();
-        assert_eq!(bone_translation(&fs::read(output).unwrap()), [0.0; 3]);
+        assert_eq!(bone_translation(&fs::read(&output).unwrap()), [0.0; 3]);
+        fs::remove_file(sources.path().join(sibling_path)).unwrap();
+        convert_capture_models(sources.path(), &assets, &models).unwrap();
+        assert_eq!(
+            bone_translation(&fs::read(output).unwrap()),
+            [7.0, 0.0, 0.0]
+        );
     }
 }
