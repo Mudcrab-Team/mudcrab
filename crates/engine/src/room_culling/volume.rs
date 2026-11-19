@@ -3,7 +3,7 @@
 use bevy::{camera::primitives::Aabb, math::Affine3A, prelude::*};
 use std::sync::Arc;
 
-use super::occlusion::OcclusionVolume;
+use super::{PORTAL_OPEN_DISTANCE, Portal, PortalView, occlusion::OcclusionVolume};
 
 // These are conservative work limits, not Skyrim's operator budget. Overflow widens the room
 // to the camera frustum with local exclusions and propagates that wider volume.
@@ -97,7 +97,10 @@ pub(super) fn orthographic_forward(clip: Mat4) -> Option<Vec3> {
     (-clip.inverse().z_axis.truncate()).try_normalize()
 }
 
-fn clip_aperture(corners: &[Vec3; 4], planes: impl Iterator<Item = Vec4>) -> Option<Vec<Vec3>> {
+pub(super) fn clip_aperture(
+    corners: &[Vec3],
+    planes: impl Iterator<Item = Vec4>,
+) -> Option<Vec<Vec3>> {
     let mut polygon = corners.to_vec();
     for plane in planes {
         let mut clipped = Vec::with_capacity(polygon.len() + 1);
@@ -120,6 +123,15 @@ fn clip_aperture(corners: &[Vec3; 4], planes: impl Iterator<Item = Vec4>) -> Opt
     Some(polygon)
 }
 
+fn orthographic_eye_plane(clip: Mat4, eye: Vec3) -> Option<Vec4> {
+    if clip.row(3).truncate() != Vec3::ZERO {
+        return None;
+    }
+    // The eye plane stays parallel to render near even under cell-root shear.
+    let normal = normalized(clip.row(3) - clip.row(2))?.truncate();
+    Some(normal.extend(-normal.dot(eye)))
+}
+
 impl VisibilityVolume {
     pub(super) fn camera(clip_from_local: Mat4) -> Option<Self> {
         let (x, y, z, w) = (
@@ -137,10 +149,6 @@ impl VisibilityVolume {
             planes,
             exclusions: Vec::new(),
         })
-    }
-
-    pub(super) fn has_exclusions(&self) -> bool {
-        !self.exclusions.is_empty()
     }
 
     /// Occluders belong to this contributing path, not to the union of every room path.
@@ -180,21 +188,49 @@ impl VisibilityVolume {
                 .all(|(id, _)| other.exclusions.iter().any(|(other_id, _)| other_id == id))
     }
 
-    pub(super) fn through_portal(
-        &self,
-        corners: &[Vec3; 4],
-        camera: Vec3,
-        clip: Mat4,
-    ) -> Option<Self> {
+    #[cfg(test)]
+    fn through_portal(&self, corners: &[Vec3; 4], camera: Vec3, clip: Mat4) -> Option<Self> {
         self.clip_portal(corners, camera, clip, None)
+            .map(|(volume, _)| volume)
     }
 
-    pub(super) fn through_authored_portal(
+    pub(super) fn cross_portal(
         &self,
-        portal: &super::Portal,
-        view: &super::PortalView,
-    ) -> Option<Self> {
-        self.clip_portal(&portal.corners, view.eye, view.clip, Some((portal, view)))
+        portal: &Portal,
+        view: &PortalView,
+        authored: bool,
+    ) -> Option<(Self, bool)> {
+        if portal.distance_to(view.eye) <= PORTAL_OPEN_DISTANCE {
+            let corners = &portal.corners;
+            let eye_plane = orthographic_eye_plane(view.clip, view.eye);
+            if eye_plane.is_some_and(|plane| {
+                corners
+                    .iter()
+                    .all(|&corner| plane.truncate().dot(corner - view.eye) < 0.0)
+            }) {
+                return None;
+            }
+            let shadowed = authored
+                && !self.exclusions.is_empty()
+                && match eye_plane {
+                    Some(plane) => clip_aperture(corners, std::iter::once(plane))
+                        .is_none_or(|aperture| self.aperture_is_shadowed(&aperture)),
+                    None => self.aperture_is_shadowed(corners),
+                };
+            return Some((self.clone(), shadowed));
+        }
+        self.clip_portal(
+            &portal.corners,
+            view.eye,
+            view.clip,
+            authored.then_some((portal, view)),
+        )
+    }
+
+    fn aperture_is_shadowed(&self, polygon: &[Vec3]) -> bool {
+        self.exclusions
+            .iter()
+            .any(|(_, shadow)| shadow.intersects_aperture(polygon))
     }
 
     fn clip_portal(
@@ -202,17 +238,18 @@ impl VisibilityVolume {
         corners: &[Vec3; 4],
         camera: Vec3,
         clip: Mat4,
-        authored: Option<(&super::Portal, &super::PortalView)>,
-    ) -> Option<Self> {
+        authored: Option<(&Portal, &PortalView)>,
+    ) -> Option<(Self, bool)> {
         if !corners.iter().all(|point| point.is_finite()) {
-            return Some(self.clone());
+            return Some((
+                self.clone(),
+                authored.is_some() && !self.exclusions.is_empty(),
+            ));
         }
         let near = normalized(clip.row(3) - clip.row(2));
         // An orthographic eye plane is parallel to the near plane even under cell-root shear.
         // The render-near plane remains part of the mesh volume.
-        let eye_plane = near
-            .filter(|_| clip.row(3).truncate() == Vec3::ZERO)
-            .map(|plane| plane.truncate().extend(-plane.truncate().dot(camera)));
+        let eye_plane = orthographic_eye_plane(clip, camera);
         let ordinary = self
             .planes
             .iter()
@@ -227,6 +264,7 @@ impl VisibilityVolume {
             // The ordinary-view exception still has to pass each inherited aperture.
             clip_aperture(corners, self.planes[5..].iter().copied())
         })?;
+        let shadowed = authored.is_some() && self.aperture_is_shadowed(&polygon);
         // When the complete aperture projects in front of the eye, keep its actual edges.
         // Baking screen edges into the next aperture would override the native admission above.
         let polygon = if authored.is_some()
@@ -240,7 +278,7 @@ impl VisibilityVolume {
             &polygon
         };
         if polygon.len() < 3 || !polygon.iter().all(|point| point.is_finite()) {
-            return Some(self.clone());
+            return Some((self.clone(), shadowed));
         }
         let center = polygon.iter().copied().sum::<Vec3>() / polygon.len() as f32;
         let mut through = self.clone();
@@ -266,7 +304,7 @@ impl VisibilityVolume {
             .normalize_or_zero();
         let forward = if clip.row(3).truncate() == Vec3::ZERO {
             let Some(forward) = orthographic_forward(clip) else {
-                return Some(self.clone());
+                return Some((self.clone(), shadowed));
             };
             forward
         } else {
@@ -278,7 +316,7 @@ impl VisibilityVolume {
         if normal.length_squared() > 0.0 {
             through.planes.push(normal.extend(-normal.dot(corners[0])));
         }
-        Some(through)
+        Some((through, shadowed))
     }
 }
 

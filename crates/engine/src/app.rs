@@ -2588,6 +2588,12 @@ fn setup_world(
     );
 }
 
+#[cfg(test)]
+pub(crate) fn add_test_world_camera(app: &mut App) {
+    app.insert_resource(EngineConfig::default())
+        .add_systems(Startup, setup_world);
+}
+
 fn initial_camera_ground_height(
     config: &EngineConfig,
     database_path: &std::path::Path,

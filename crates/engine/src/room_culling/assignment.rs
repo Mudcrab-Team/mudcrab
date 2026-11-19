@@ -41,8 +41,7 @@ pub(super) enum Owner {
 pub(super) struct CachedAssignment {
     pub root: Entity,
     pub transform: Affine3A,
-    pub moved: bool,
-    pub owners: Option<Vec<Owner>>,
+    pub owners: Vec<Owner>,
 }
 
 impl Assignments {

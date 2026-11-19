@@ -29,6 +29,10 @@ pub(super) struct OcclusionVolume {
 }
 
 impl OcclusionVolume {
+    pub(super) fn intersects_aperture(&self, polygon: &[Vec3]) -> bool {
+        super::volume::clip_aperture(polygon, self.planes.iter().copied()).is_some()
+    }
+
     /// Crossing any shadow boundary keeps the sphere visible.
     pub(super) fn contains_sphere(&self, center: Vec3, radius: f32) -> bool {
         center.is_finite()
