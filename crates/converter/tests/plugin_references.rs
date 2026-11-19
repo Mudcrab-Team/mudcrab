@@ -2014,7 +2014,7 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
     let output = dir.path().join("bundle");
     converter::esm::inhouse::export_record_bundle_typed(&data, &order, &output, &[]).unwrap();
     let conn = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
-    for (id, outside) in [(0x801, true), (0x802, false), (0x803, false), (0x804, true)] {
+    for (id, outside) in [(0x801, true), (0x802, false), (0x803, false)] {
         let actual: (Option<u32>, bool) = conn
             .query_row(
                 "SELECT room_b,unbounded_b FROM room_portals WHERE ref_id=?1",
@@ -2024,6 +2024,28 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
             .unwrap();
         assert_eq!(actual, (None, outside));
     }
+    let pairs = conn
+        .prepare(
+            "SELECT pair_index,room_a,unbounded_a,room_b,unbounded_b
+             FROM room_portals WHERE ref_id=0x804 ORDER BY pair_index",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, usize>(0)?,
+                row.get::<_, Option<u32>>(1)?,
+                row.get::<_, bool>(2)?,
+                row.get::<_, Option<u32>>(3)?,
+                row.get::<_, bool>(4)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        pairs,
+        [(0, None, true, None, true), (1, None, false, None, true)]
+    );
     assert_eq!(
         conn.query_row(
             "SELECT value FROM room_graph_stats WHERE name='visibility_version'",

@@ -3694,6 +3694,32 @@ mod tests {
     }
 
     #[test]
+    fn a_nonzero_missing_endpoint_invalidates_only_its_cell() {
+        let (conn, _) = export_rooms(vec![
+            interior_cell(0x100),
+            interior_cell(0x200),
+            room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            room(0x2001, 0x200, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            portal(0x3001, 0x100, Some((0x1001, 0))),
+            portal(0x3002, 0x200, Some((0x2001, 0x1001))),
+        ]);
+        let complete = |cell: u32| {
+            conn.query_row(
+                "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
+                [cell],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap()
+        };
+        assert!(complete(0x100));
+        assert!(!complete(0x200));
+        let invalid = [word(0x1001), word(0x0900_1234)].concat();
+        rooms::restore_portal_endpoint_provenance(&conn, [(0x3001, Some(invalid.as_slice()))])
+            .unwrap();
+        assert!(!complete(0x100));
+    }
+
+    #[test]
     fn endpoint_migration_keeps_legacy_nulls_unknown() {
         let conn = old_shape_database();
         create_tables(&conn).unwrap();

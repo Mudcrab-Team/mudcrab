@@ -125,17 +125,17 @@ pub(crate) fn restore_portal_endpoint_provenance<'a>(
         "UPDATE room_portals SET unbounded_a=(room_a IS NULL AND ?3), unbounded_b=(room_b IS NULL AND ?4) WHERE ref_id=?1 AND pair_index=?2",
     )?;
     let mut incomplete = conn.prepare_cached(
-        "UPDATE room_graph_cells SET complete=0 WHERE cell_id IN \
-         (SELECT cell_id FROM room_portals WHERE ref_id=?1)",
+        "UPDATE room_graph_cells SET complete=0 WHERE cell_id IN
+         (SELECT cell_id FROM room_portals WHERE ref_id=?1 AND
+          (?2 OR (room_a IS NULL AND NOT unbounded_a) OR (room_b IS NULL AND NOT unbounded_b)))",
     )?;
     for (id, source) in sources {
         if clear.execute([id])? == 0 {
             continue;
         }
-        if let Some(source) =
-            source.filter(|bytes| !bytes.is_empty() && bytes.len().is_multiple_of(8))
-        {
-            for (index, pair) in source.as_chunks::<8>().0.iter().enumerate() {
+        let pairs = source.filter(|bytes| !bytes.is_empty() && bytes.len().is_multiple_of(8));
+        if let Some(bytes) = pairs {
+            for (index, pair) in bytes.as_chunks::<8>().0.iter().enumerate() {
                 set.execute(params![
                     id,
                     index as i64,
@@ -143,10 +143,8 @@ pub(crate) fn restore_portal_endpoint_provenance<'a>(
                     u32_at(pair, 4) == Some(0)
                 ])?;
             }
-        } else {
-            // Canonical adaptation can retain only one of conflicting source occurrences.
-            incomplete.execute([id])?;
         }
+        incomplete.execute(params![id, pairs.is_none()])?;
     }
     Ok(())
 }
@@ -803,15 +801,17 @@ pub(crate) fn export_room_graph_with_sources(
         if pairs == 0 {
             incomplete.insert(cell);
         }
-        let side = |pair: usize, offset: usize| {
-            u32_at(xpod, pair * 8 + offset)
-                .filter(|_| pair < pairs)
-                .filter(|id| {
-                    *id != 0
-                        && rooms_by_cell
-                            .get(&cell)
-                            .is_some_and(|rooms| rooms.iter().any(|room| room.ref_id == *id))
-                })
+        let mut side = |pair: usize, offset: usize| {
+            let id = u32_at(xpod, pair * 8 + offset).filter(|&id| pair < pairs && id != 0)?;
+            if rooms_by_cell
+                .get(&cell)
+                .is_some_and(|rooms| rooms.iter().any(|room| room.ref_id == id))
+            {
+                Some(id)
+            } else {
+                incomplete.insert(cell);
+                None
+            }
         };
         for pair in 0..pairs.max(1) {
             let (room_a, room_b) = (side(pair, 0), side(pair, 4));

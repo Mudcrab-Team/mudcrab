@@ -72,10 +72,10 @@ impl Assignments {
             .any(|&index| rooms[index].contains(point))
     }
 
-    pub(super) fn has_source_bound(&self, id: u32) -> bool {
+    pub(super) fn has_named_target(&self, id: u32) -> bool {
         self.rules
             .get(&id)
-            .is_some_and(|rule| rule.sphere.is_some())
+            .is_some_and(|rule| matches!(rule.rule, Rule::Target(PortalSide::Room(_))))
     }
 
     pub(super) fn owners(
