@@ -239,6 +239,7 @@ pub(super) enum ParsedRecord {
     Usable(RawRecord),
     /// A placed record with a known header and parent cell but no usable payload.
     DamagedPlacement(RawRecord),
+    DamagedCellGroup(u32),
 }
 
 fn parse_group_inner(
@@ -268,6 +269,9 @@ fn parse_group_inner(
                 "trailing {} bytes in bounded record frame",
                 curr.len(),
             ));
+            if let Some(cell) = current_cell {
+                visit(ParsedRecord::DamagedCellGroup(cell));
+            }
             curr = &[];
             continue;
         }
@@ -278,35 +282,33 @@ fn parse_group_inner(
                 curr = &[];
                 continue;
             };
-            let group_data_size = group.data_size as usize;
-            if group_data_size < 24 {
-                warnings.skipped(format!("invalid GRUP size {}", group.data_size));
+            let cell_child = matches!(group.group_type, 6 | 8 | 9 | 10).then_some(group.label);
+            let content_size = (group.data_size as usize).checked_sub(24);
+            let Some((group_content, siblings)) =
+                content_size.and_then(|size| rest.split_at_checked(size))
+            else {
+                warnings.skipped(match content_size {
+                    Some(size) => format!(
+                        "truncated GRUP payload: expected {size}, got {}",
+                        rest.len()
+                    ),
+                    None => format!("invalid GRUP size {}", group.data_size),
+                });
+                for cell in [current_cell, cell_child].into_iter().flatten() {
+                    visit(ParsedRecord::DamagedCellGroup(cell));
+                }
                 curr = &[];
                 continue;
-            }
-            let content_size = group_data_size - 24;
-            if content_size > rest.len() {
-                warnings.skipped(format!(
-                    "truncated GRUP payload: expected {content_size}, got {}",
-                    rest.len()
-                ));
-                curr = &[];
-                continue;
-            }
-            let group_content = &rest[..content_size];
-
-            let next_cell = match group.group_type {
-                6 | 8 | 9 | 10 => Some(group.label),
-                _ => current_cell,
             };
+
             let next_worldspace = match group.group_type {
                 1 => Some(group.label),
                 _ => current_worldspace,
             };
 
-            parents.push((&rest[content_size..], current_cell, current_worldspace));
+            parents.push((siblings, current_cell, current_worldspace));
             curr = group_content;
-            current_cell = next_cell;
+            current_cell = cell_child.or(current_cell);
             current_worldspace = next_worldspace;
         } else {
             let Ok((rest, header)) = parse_record_header(curr) else {
@@ -395,7 +397,7 @@ pub fn parse_plugin_file(path: &Path) -> Result<Vec<RawRecord>> {
     Ok(records)
 }
 
-/// Keep usable records and known damaged placements in source order.
+/// Keep usable records and known placement or cell-group damage in source order.
 pub(super) fn parse_plugin_file_with_warnings(
     path: &Path,
 ) -> Result<(Vec<ParsedRecord>, Vec<String>)> {

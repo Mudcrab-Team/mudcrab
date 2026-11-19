@@ -785,7 +785,7 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
                     half,
                     [side(9)?, side(10)?],
                 ),
-                half.iter().all(|value| value.is_finite() && *value >= 0.0),
+                half.iter().all(|value| value.is_finite() && *value > 0.0),
             ))
         })?;
         for portal in rows {
@@ -1978,7 +1978,7 @@ mod tests {
     }
 
     #[test]
-    fn portal_clipping_requires_a_positive_completeness_row_for_this_cell() {
+    fn portal_clipping_requires_a_complete_cell_and_a_positive_aperture() {
         let connection = database();
         insert_room(&connection, 1, 7, [0.0; 3]);
         insert_room(&connection, 2, 7, [0.0, 50.0, 0.0]);
@@ -2017,6 +2017,15 @@ mod tests {
             .execute("UPDATE room_graph_cells SET complete=1 WHERE cell_id=7", [])
             .unwrap();
         assert!(!draws_mesh(), "the verified cell clips to its aperture");
+        for half in [(0.0, 2.0), (1.0, 0.0)] {
+            connection
+                .execute("UPDATE room_portals SET half_x=?1,half_z=?2", half)
+                .unwrap();
+            assert!(
+                draws_mesh(),
+                "a certified old pack with extent {half:?} must draw the mesh"
+            );
+        }
     }
 
     #[test]

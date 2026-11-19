@@ -24,7 +24,7 @@ use schema_format::Schema;
 use serde::{Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
     sync::OnceLock,
 };
@@ -517,6 +517,8 @@ pub struct ReadResult {
     pub overrides: HashMap<u32, Vec<RecordSource>>,
     /// Physical header provenance includes accepted, deleted and rejected versions.
     pub history: Vec<history::HistoryEntry>,
+    /// Runtime cell IDs whose source child groups could not be read.
+    pub(crate) damaged_cell_groups: HashSet<u32>,
 }
 
 /// Lazily parse the schema already validated by the build script.
@@ -628,7 +630,7 @@ fn read_plugins_with_prepared(
                 .borrow_mut()
                 .push(history::header_entry(header, order, index));
         };
-        scanner::scan_plugin(path, &mut diagnostics, observe, |scanned, diagnostics| {
+        let receive = |scanned: scanner::ScannedRecord, diagnostics: &mut PluginDiagnostics| {
             let offset = scanned.source_record_offset;
             let context = decoder::Context {
                 order,
@@ -894,7 +896,13 @@ fn read_plugins_with_prepared(
                     deferred_predecessors.remove(&id);
                 }
             }
-        })?;
+        };
+        let damaged_cell_groups = scanner::scan_plugin(path, &mut diagnostics, observe, receive)?;
+        result.damaged_cell_groups.extend(
+            damaged_cell_groups.into_iter().filter_map(|label| {
+                source_identity::header_runtime_id(b"CELL", label, index, order)
+            }),
+        );
         result.history.extend(history.into_inner());
         result.diagnostics.insert(name.clone(), diagnostics);
     }

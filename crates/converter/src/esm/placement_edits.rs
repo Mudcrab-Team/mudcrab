@@ -549,6 +549,12 @@ fn apply_edit(
     require_interior(tx, cell)?;
     validate_room_fields(tx, &record.subrecords, allow_doors)?;
     let view = SubrecordView::new(&record.subrecords);
+    if let Some(bounds) = view.find(b"XMBO") {
+        ensure!(
+            view.find(b"XPRM").and_then(|data| data.get(..12)) == Some(bounds),
+            "XMBO extents disagree with XPRM"
+        );
+    }
     let mut transforms = view.find_all(b"DATA");
     let transform = transforms
         .next()
@@ -590,6 +596,13 @@ fn validate_room_fields(
         .map(u32::from_le_bytes)
         .filter(|_| bases.next().is_none())
         .ok_or_else(|| color_eyre::eyre::eyre!("placement requires one base FormID"))?;
+    let mut marker_bounds = view.find_all(b"XMBO");
+    if let Some(bounds) = marker_bounds.next() {
+        ensure!(
+            base == ROOM_MARKER_BASE && bounds.len() == 12 && marker_bounds.next().is_none(),
+            "XMBO requires one 12-byte room marker extent"
+        );
+    }
     let mut is_door = false;
     if !matches!(base, ROOM_MARKER_BASE | PORTAL_MARKER_BASE) {
         ensure!(
@@ -623,6 +636,7 @@ fn validate_room_field_tags(subrecords: &[(Vec<u8>, Vec<u8>)]) -> Result<()> {
                     | b"DATA"
                     | b"XSCL"
                     | b"XMBR"
+                    | b"XMBO"
                     | b"XPRM"
                     | b"XRMR"
                     | b"XLRM"

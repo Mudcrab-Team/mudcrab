@@ -306,6 +306,7 @@ impl EsmParser {
     ) -> Result<LegacyPluginMerge> {
         let mut merged = HashMap::new();
         let mut damaged_placements = PlacementDamage::default();
+        let mut damaged_cells = HashSet::new();
         let mut room_link_layouts = HashMap::new();
         let mut summaries = Vec::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
@@ -324,6 +325,12 @@ impl EsmParser {
                 let (mut record, damaged) = match candidate {
                     ParsedRecord::Usable(record) => (record, false),
                     ParsedRecord::DamagedPlacement(record) => (record, true),
+                    ParsedRecord::DamagedCellGroup(label) => {
+                        damaged_cells.extend(crate::records::source_identity::header_runtime_id(
+                            b"CELL", label, priority, order,
+                        ));
+                        continue;
+                    }
                 };
                 record.load_order = priority as u32;
                 let source_id = record.form_id;
@@ -442,7 +449,7 @@ impl EsmParser {
         }
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
-        let damaged_cells = damaged_placements.affected_cells(&merged);
+        damaged_cells.extend(damaged_placements.affected_cells(&merged));
         Ok(LegacyPluginMerge {
             conversion: RecordConversion {
                 records: merged,
