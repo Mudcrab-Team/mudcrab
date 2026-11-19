@@ -101,6 +101,8 @@ const MAIN_CORE_TABLES: &[&str] = &[
     "room_link_anomalies",
     "room_links",
     "room_model_bounds",
+    "room_placement_edits",
+    "room_placement_layers",
     "room_portals",
     "room_reference_rules",
     "schema_info",

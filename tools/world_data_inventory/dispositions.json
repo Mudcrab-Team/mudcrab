@@ -926,6 +926,16 @@
       "owner": "Mudcrab maintainers (#298; room culling #188)",
       "reason": "Authored room-assignment projection. Field-level semantic tracing is deferred; prepared query dependencies remain separate."
     },
+    "room_placement_edits": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#745)",
+      "reason": "Post-conversion placement import maps runtime FormIDs to their supplying layer, original FormID and deletion state."
+    },
+    "room_placement_layers": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#745)",
+      "reason": "Post-conversion placement import retains exact source files and the plugin headers needed to preserve FormID slots across imports."
+    },
     "room_portals": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
