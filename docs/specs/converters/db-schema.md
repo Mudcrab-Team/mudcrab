@@ -1452,7 +1452,8 @@ Authored assignment metadata:
   staged GLB winner. Missing or unreadable winners clear the validity flag and prior sphere.
   For native GLBs installed in a private runtime copy of a pack, close the engine and run
   `room-model-bounds-refresh <assets-dir> <meshes/path.glb>...` after replacing or removing the
-  files. List each changed lowercase runtime path. Native GLBs can supply a sphere in the same
+  files. If the refresh fails, keep the pack offline until it succeeds or you restore the previous GLBs.
+  List each changed lowercase runtime path. Native GLBs can supply a sphere in the same
   version 1 root extra. The command updates all matching base forms and geometric room overlaps
   in one SQLite transaction. Keep the original conversion pack for manifest verification and
   later Skyrim conversion or repair.

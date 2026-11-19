@@ -2,7 +2,7 @@
 
 use color_eyre::{
     Result,
-    eyre::{ensure, eyre},
+    eyre::{WrapErr, ensure, eyre},
 };
 use std::path::PathBuf;
 
@@ -18,7 +18,9 @@ fn main() -> Result<()> {
         })
         .collect::<Result<Vec<_>>>()?;
     ensure!(!paths.is_empty(), "{usage}");
-    let report = converter::integration::refresh_native_model_bounds(&root, &paths)?;
+    let report = converter::integration::refresh_native_model_bounds(&root, &paths).wrap_err(
+        "Keep the pack offline until the refresh succeeds or you restore the previous GLBs",
+    )?;
     for (model, error) in report.unbounded_models {
         eprintln!("model has no usable bounds {model}: {error}");
     }
