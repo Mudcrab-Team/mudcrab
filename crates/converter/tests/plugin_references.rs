@@ -3227,13 +3227,17 @@ fn placement(id: u32, base: u32, flags: u32, x: f32, extra: Vec<u8>) -> Vec<u8> 
 }
 
 fn placement_marker(id: u32, base: u32, extra: Vec<u8>) -> Vec<u8> {
+    placement_marker_at(id, base, 0.0, extra)
+}
+
+fn placement_marker_at(id: u32, base: u32, x: f32, extra: Vec<u8>) -> Vec<u8> {
     let mut bounds = [0; 32];
     for offset in [0, 4, 8] {
         bounds[offset..offset + 4].copy_from_slice(&100f32.to_le_bytes());
     }
     let kind: u32 = if base == 0x1f { 1 } else { 3 };
     bounds[28..].copy_from_slice(&kind.to_le_bytes());
-    placement(id, base, 0, 0.0, [sub(b"XPRM", &bounds), extra].concat())
+    placement(id, base, 0, x, [sub(b"XPRM", &bounds), extra].concat())
 }
 
 fn placement_group(cell: u32, placements: Vec<u8>) -> Vec<u8> {
@@ -3669,4 +3673,443 @@ fn later_placement_edits_preserve_the_original_room_link_order() {
     );
     assert_eq!(outgoing(), 0);
     assert!(!placement_certificate(&db, PLACEMENT_CELL_A));
+}
+
+fn authored_cell(id: u32, extra: Vec<u8>) -> Vec<u8> {
+    record(
+        b"CELL",
+        id,
+        0,
+        [
+            sub(b"EDID", b"FreshInterior\0"),
+            sub(b"FULL", b"Fresh Interior\0"),
+            sub(b"DATA", &[1, 0]),
+            extra,
+        ]
+        .concat(),
+    )
+}
+
+fn assert_created_interior(
+    db: &rusqlite::Connection,
+    cell: u32,
+    room_a: u32,
+    room_b: u32,
+    portal: u32,
+    object: u32,
+) {
+    assert_eq!(
+        db.query_row(
+            "SELECT interior_name,full_name,worldspace_id,grid_x,grid_y,data_flags
+             FROM cells JOIN cell_environment ON cell_id=id WHERE id=?1",
+            [cell],
+            |row| Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<u32>>(2)?,
+                row.get::<_, Option<i32>>(3)?,
+                row.get::<_, Option<i32>>(4)?,
+                row.get::<_, u16>(5)?,
+            )),
+        )
+        .unwrap(),
+        (
+            "FreshInterior".into(),
+            "Fresh Interior".into(),
+            None,
+            None,
+            None,
+            1
+        )
+    );
+    assert_eq!(
+        db.prepare("SELECT ref_id,pos_x FROM room_bounds WHERE cell_id=?1 ORDER BY ref_id")
+            .unwrap()
+            .query_map([cell], |row| Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, f32>(1)?
+            )))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap(),
+        [(room_a, -100.0), (room_b, 100.0)]
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT ref_id,room_a,room_b,unbounded_a,unbounded_b FROM room_portals WHERE cell_id=?1",
+            [cell],
+            |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?, row.get::<_, u32>(2)?,
+                     row.get::<_, bool>(3)?, row.get::<_, bool>(4)?)),
+        )
+        .unwrap(),
+        (portal, room_a, room_b, false, false)
+    );
+    assert_eq!(
+        placement_rules(db, cell),
+        [(object, "target".into(), Some(room_a))]
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT base_form_id,is_exterior,contained FROM [references]
+             JOIN reference_rooms ON id=reference_id WHERE id=?1 AND cell_id=?2 AND room_ref=?3",
+            (object, cell, room_a),
+            |row| Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, bool>(1)?,
+                row.get::<_, bool>(2)?
+            )),
+        )
+        .unwrap(),
+        (PLACEMENT_STAT, false, true)
+    );
+    assert!(placement_certificate(db, cell));
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM records WHERE form_id=?1 OR cell_id=?1",
+            [cell],
+            |row| row.get::<_, u32>(0),
+        )
+        .unwrap(),
+        0,
+    );
+}
+
+#[test]
+fn plugin_placement_import_creates_and_certifies_a_light_interior() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    let (cell, a, b, portal, object) = (
+        0x0100_0900u32,
+        0x0100_0901u32,
+        0x0100_0902u32,
+        0x0100_0903,
+        0x0100_0904,
+    );
+    let source = plugin(
+        dir.path(),
+        "Fresh.esl",
+        &["Skyrim.esm"],
+        0x200,
+        group(
+            0,
+            u32::from_le_bytes(*b"CELL"),
+            group(
+                2,
+                0,
+                group(
+                    3,
+                    0,
+                    [
+                        authored_cell(cell, sub(b"XCLL", &[0; 92])),
+                        placement_group(
+                            cell,
+                            [
+                                placement_marker_at(a, 0x1f, -100.0, Vec::new()),
+                                placement_marker_at(b, 0x1f, 100.0, Vec::new()),
+                                placement_marker(
+                                    portal,
+                                    0x20,
+                                    sub(b"XPOD", &[a.to_le_bytes(), b.to_le_bytes()].concat()),
+                                ),
+                                placement(
+                                    object,
+                                    PLACEMENT_STAT,
+                                    0,
+                                    -50.0,
+                                    sub(b"XMBR", &a.to_le_bytes()),
+                                ),
+                            ]
+                            .concat(),
+                        ),
+                    ]
+                    .concat(),
+                ),
+            ),
+        ),
+    );
+    assert_placement_import(
+        run_placement_import(&assets, "--plugin", &source),
+        "Applied 4 room placements in 1 cells (1 created, 1 certified)",
+    );
+    assert_created_interior(
+        &db,
+        0xfe00_0900,
+        0xfe00_0901,
+        0xfe00_0902,
+        0xfe00_0903,
+        0xfe00_0904,
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT xcll_size FROM cell_lighting WHERE cell_id=0xfe000900",
+            [],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        92,
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT source_form_id FROM room_placement_edits WHERE form_id=0xfe000900",
+            [],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        cell,
+    );
+    let followup = plugin(
+        dir.path(),
+        "FreshDecor.esp",
+        &["Skyrim.esm", "Fresh.esl"],
+        0,
+        [
+            record(b"CELL", cell, 0, Vec::new()),
+            placement_group(
+                cell,
+                placement(0x0200_0800, PLACEMENT_STAT, 0, -70.0, Vec::new()),
+            ),
+        ]
+        .concat(),
+    );
+    assert_placement_import(
+        run_placement_import(&assets, "--plugin", &followup),
+        "Applied 1 room placements in 1 cells (1 certified)",
+    );
+    assert!(placement_certificate(&db, 0xfe00_0900));
+    assert_placement_import(
+        run_placement_import(&assets, "--plugin", &source),
+        "Applied 0 room placements in 0 cells (0 certified)",
+    );
+}
+
+#[test]
+fn native_placement_import_creates_and_certifies_rooms_and_a_portal() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    let cell = 0xff00_0001u32;
+    let (a, b, portal, object) = (cell + 1, cell + 2, cell + 3, cell + 4);
+    let source = dir.path().join("fresh.json");
+    let native = serde_json::json!({
+        "cells": [{"id": cell,"editor_id":"FreshInterior","full_name":"Fresh Interior"}],
+        "edits": [
+            {"op":"put","id":object,"cell":cell,"base":PLACEMENT_STAT,"position":[-50,0,0],
+             "ownership":{"kind":"target","room":a}},
+            {"op":"put_portal","id":portal,"cell":cell,"position":[0,0,0],
+             "half_extents":[30,60],"endpoints":[a,b]},
+            {"op":"put_room","id":b,"cell":cell,"position":[100,0,0],"half_extents":[100,100,100]},
+            {"op":"put_room","id":a,"cell":cell,"position":[-100,0,0],"half_extents":[100,100,100],
+             "links":[b]},
+        ],
+    });
+    fs::write(&source, serde_json::to_vec(&native).unwrap()).unwrap();
+    assert_placement_import(
+        run_placement_import(&assets, "--native", &source),
+        "Applied 4 room placements in 1 cells (1 created, 1 certified)",
+    );
+    assert_created_interior(&db, cell, a, b, portal, object);
+    assert_eq!(
+        db.query_row(
+            "SELECT linked_ref,half_x,half_z FROM room_links JOIN room_portals ON ref_id=?2
+             WHERE room_ref=?1",
+            (a, portal),
+            |row| Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, f32>(1)?,
+                row.get::<_, f32>(2)?
+            )),
+        )
+        .unwrap(),
+        (b, 30.0, 60.0),
+    );
+    assert_placement_import(
+        run_placement_import(&assets, "--native", &source),
+        "Applied 0 room placements in 0 cells (0 certified)",
+    );
+}
+
+#[test]
+fn plugin_placement_import_rejects_unsupported_cells_and_keeps_an_incomplete_graph_uncertified() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    let (cell, room, portal) = (0x0100_0900, 0x0100_0901u32, 0x0100_0902);
+    for (bad, diagnostic) in [
+        (
+            authored_cell(cell + 1, sub(b"XCLC", &[0; 8])),
+            "unsupported CELL field XCLC",
+        ),
+        (
+            authored_cell(0x0100_1000, Vec::new()),
+            "invalid record FormID",
+        ),
+        (
+            placement_group(cell, placement_marker(cell, 0x1f, Vec::new())),
+            "already in use",
+        ),
+        (
+            placement_group(cell, placement_marker(0x800, 0x1f, Vec::new())),
+            "new source-owned FormID",
+        ),
+        (
+            placement_group(cell, placement_marker(room, 0x1f, sub(b"XPRM", &[0; 32]))),
+            "unsupported primitive",
+        ),
+    ] {
+        let source = plugin(
+            dir.path(),
+            "Partial.esl",
+            &["Skyrim.esm"],
+            0x200,
+            [authored_cell(cell, Vec::new()), bad].concat(),
+        );
+        let result = run_placement_import(&assets, "--plugin", &source);
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains(diagnostic));
+        assert!(
+            !db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM cells WHERE id=0xfe000900)
+                     OR EXISTS(SELECT 1 FROM cell_environment WHERE cell_id=0xfe000900)
+                     OR EXISTS(SELECT 1 FROM sqlite_schema WHERE name='room_placement_layers')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap()
+        );
+    }
+
+    let source = plugin(
+        dir.path(),
+        "Partial.esl",
+        &["Skyrim.esm"],
+        0x200,
+        [
+            authored_cell(cell, Vec::new()),
+            placement_group(
+                cell,
+                [
+                    placement_marker(room, 0x1f, Vec::new()),
+                    placement_marker(
+                        portal,
+                        0x20,
+                        sub(
+                            b"XPOD",
+                            &[room.to_le_bytes(), 0x9900_0001u32.to_le_bytes()].concat(),
+                        ),
+                    ),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    );
+    assert_placement_import(
+        run_placement_import(&assets, "--plugin", &source),
+        "Applied 2 room placements in 1 cells (1 created, 0 certified)",
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT complete,unbounded_a,unbounded_b FROM room_graph_cells JOIN room_portals USING(cell_id)
+             WHERE cell_id=0xfe000900",
+            [],
+            |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?, row.get::<_, bool>(2)?)),
+        )
+        .unwrap(),
+        (false, false, false),
+    );
+    let replacement = plugin(
+        dir.path(),
+        "RepairPortal.esp",
+        &["Skyrim.esm", "Partial.esl"],
+        0,
+        placement_group(
+            cell,
+            placement_marker(
+                portal,
+                0x20,
+                sub(b"XPOD", &[room.to_le_bytes(), [0; 4]].concat()),
+            ),
+        ),
+    );
+    assert_placement_import(
+        run_placement_import(&assets, "--plugin", &replacement),
+        "Applied 1 room placements in 1 cells (0 certified)",
+    );
+    assert!(!placement_certificate(&db, 0xfe00_0900));
+    assert!(placement_certificate(&db, PLACEMENT_CELL_A));
+}
+
+#[test]
+fn native_new_cell_and_placement_ids_cannot_reuse_an_earlier_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    let used = 0xff00_0001u32;
+    let cell = used + 1;
+    let room = used + 2;
+    let source = dir.path().join("edits.json");
+    let put = |id, cell| {
+        serde_json::json!({
+            "op":"put","id":id,"cell":cell,"base":PLACEMENT_STAT,"position":[0,0,0],
+        })
+    };
+    let run = |value| {
+        fs::write(&source, serde_json::to_vec(&value).unwrap()).unwrap();
+        run_placement_import(&assets, "--native", &source)
+    };
+    assert_placement_import(
+        run(serde_json::json!({"edits":[put(used, PLACEMENT_CELL_A)]})),
+        "Applied 1 room placements in 1 cells (1 certified)",
+    );
+    assert_placement_import(
+        run(serde_json::json!({"edits":[{"op":"delete","id":used}]})),
+        "Applied 1 room placements in 1 cells (1 certified)",
+    );
+
+    let room_edit = serde_json::json!({
+        "op":"put_room","id":room,"cell":cell,"position":[0,0,0],"half_extents":[100,100,100],
+    });
+    let create = |id| serde_json::json!({"id":id,"editor_id":"FreshInterior"});
+    for value in [
+        serde_json::json!({"cells":[create(used)]}),
+        serde_json::json!({"cells":[create(cell)],"edits":[room_edit.clone(), put(used, cell)]}),
+        serde_json::json!({"cells":[create(cell)],"edits":[room_edit.clone(), put(cell, cell)]}),
+    ] {
+        let result = run(value);
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("already in use"));
+        assert_eq!(
+            db.query_row(
+                "SELECT (SELECT count(*) FROM room_placement_layers),
+                        (SELECT count(*) FROM room_placement_edits),
+                        EXISTS(SELECT 1 FROM cells WHERE id=?1),
+                        EXISTS(SELECT 1 FROM [references] WHERE id=?2 OR cell_id=?1)",
+                (cell, room),
+                |row| Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, u32>(1)?,
+                    row.get::<_, bool>(2)?,
+                    row.get::<_, bool>(3)?
+                )),
+            )
+            .unwrap(),
+            (2, 2, false, false),
+        );
+    }
+    db.execute("INSERT INTO room_graph_cells VALUES (?1,0)", [cell])
+        .unwrap();
+    let result = run(serde_json::json!({"cells":[create(cell)]}));
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("already has associated data"));
+    db.execute("DELETE FROM room_graph_cells WHERE cell_id=?1", [cell])
+        .unwrap();
+    assert_placement_import(
+        run(serde_json::json!({"cells":[create(cell)],"edits":[room_edit, put(used + 3, cell)]})),
+        "Applied 2 room placements in 1 cells (1 created, 1 certified)",
+    );
+    let result = run(serde_json::json!({"edits":[put(cell, PLACEMENT_CELL_A)]}));
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("FormID belongs to a CELL"));
+    assert!(placement_certificate(&db, cell));
 }
