@@ -567,7 +567,8 @@ fn character_controller_body_omits_the_room_sphere() {
     );
     let mut body = dummy_content::nif::fixed_box_body("body");
 
-    for (motion, quality, fixed) in [(7, 1, true), (9, 8, false)] {
+    for (motion, quality, fixed) in [(7, 1, true), (9, 1, false), (7, 8, false)] {
+        body.transform = (motion == 9).then_some(([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]));
         body.motion_system = motion;
         body.quality_type = quality;
         fs::write(
@@ -575,6 +576,18 @@ fn character_controller_body_omits_the_room_sphere() {
             legacy_skinned_shape_with_unattached_body(&skin, &body).unwrap(),
         )
         .unwrap();
+        let tag = if body.transform.is_some() {
+            "bhkRigidBodyT"
+        } else {
+            "bhkRigidBody"
+        };
+        assert_eq!(
+            MeshConverter::inspect_nif(&input)
+                .unwrap()
+                .block_types
+                .get(tag),
+            Some(&1)
+        );
         MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
         let glb = read_glb(&output);
         assert_skinned_primitives(&glb);
