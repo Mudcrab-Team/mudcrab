@@ -1,0 +1,82 @@
+{
+  "executable_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "checks": [
+    {
+      "fact": "player_setter_call",
+      "rva": "0x6752ba",
+      "verified": true
+    },
+    {
+      "fact": "player_setting_load",
+      "rva": "0x675284",
+      "verified": true
+    },
+    {
+      "fact": "player_scale_call",
+      "rva": "0x67528f",
+      "verified": true
+    },
+    {
+      "fact": "player_product",
+      "rva": "0x675297",
+      "verified": true
+    },
+    {
+      "fact": "setter_call",
+      "rva": "0x7cf269",
+      "verified": true
+    },
+    {
+      "fact": "setter_rcx_xmm1_leaf",
+      "rva": "0x10645e0",
+      "verified": true
+    },
+    {
+      "fact": "jump_setting_load",
+      "rva": "0x7cf220",
+      "verified": true
+    },
+    {
+      "fact": "reference_scale_call",
+      "rva": "0x7cf22d",
+      "verified": true
+    },
+    {
+      "fact": "reference_unsigned_short",
+      "rva": "0x2e6f34",
+      "verified": true
+    },
+    {
+      "fact": "npc_type_guard",
+      "rva": "0x2e6f58",
+      "verified": true
+    },
+    {
+      "fact": "race_pointer",
+      "rva": "0x3c65ca",
+      "verified": true
+    },
+    {
+      "fact": "sex_index",
+      "rva": "0x3afeb0",
+      "verified": true
+    },
+    {
+      "fact": "race_height_pair",
+      "rva": "0x3c65ed",
+      "verified": true
+    },
+    {
+      "fact": "npc_height_product",
+      "rva": "0x3c65f6",
+      "verified": true
+    }
+  ],
+  "setter_target_rva": "0x10645e0",
+  "abi": "Windows x64 void(controller* RCX, float XMM1)",
+  "constants": {
+    "reference_unit": 0.009999999776482582,
+    "game_to_havok": 0.014287499710917473
+  },
+  "scope": "Static consumers and ABI only. Live values require separate v4 captures."
+}
