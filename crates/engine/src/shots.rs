@@ -1516,7 +1516,7 @@ impl ShotsRun {
 /// `image` is taken by value because `Image::try_into_dynamic` consumes it (bevy_image 0.19.0,
 /// `image_texture_conversion.rs:168`); the observer only has a borrow of the event, so it clones,
 /// as Bevy's own `save_to_disk` does (`screenshot.rs:137`).
-fn decode_shot(image: Image) -> Result<image::RgbImage, String> {
+pub(crate) fn decode_shot(image: Image) -> Result<image::RgbImage, String> {
     Ok(image
         .try_into_dynamic()
         .map_err(|error| format!("the captured image could not be understood: {error}"))?
