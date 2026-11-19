@@ -1381,6 +1381,74 @@ space must still be reached. Portal-shared geometry can use either endpoint's vi
 
 ---
 
+#### Edit room placements after conversion
+
+`converter apply-room-placements` updates a private, offline asset directory with the current
+world database schema and `visibility_version = 2`. The command takes the pack's exclusive lock.
+
+```sh
+converter apply-room-placements path/to/assets --plugin Decorations.esp
+converter apply-room-placements path/to/assets --native decorations.json
+```
+
+`--plugin` appends a placement-only `.esp`, `.esm`, or `.esl` to the original load order. The
+pack must retain the in-house reader's plugin headers. Masters can come from conversion or earlier
+placement imports. The command preserves existing FormID slots and accepts new references, full
+overrides, moves, and deleted `REFR` headers for existing interiors. It accepts existing `STAT`
+bases and Skyrim's room and portal markers. A `CELL` record can identify an existing interior
+for its children. The command ignores that record's fields.
+
+Supported reference fields are `EDID`, `NAME`, `DATA`, `XSCL`, `XESP`, `XMBR`, `XPRM`,
+`XRMR`, `XLRM`, `XPOD`, `LNAM`, and `INAM`. Static primitives, actor references, doors, scripts,
+new base records, new cells, and exterior changes require a normal conversion.
+
+`--native` accepts an `edits` array. `put` adds or replaces a static placement. `delete` removes
+a placement by `id`. IDs are numeric runtime FormIDs from the target pack. New native placements
+use an unused ID from `0xFF000001` through `0xFFFFFFFF`. Position uses Creation units, rotation
+uses radians and defaults to `[0, 0, 0]`, and scale defaults to `1`. Ownership defaults to
+`{"kind": "auto"}`, which uses geometric membership. Both `none` and `target` set the Multibound
+flag and exempt the reference from room culling. `target` also stores the named room in `XMBR`.
+
+```json
+{
+  "edits": [
+    {
+      "op": "put",
+      "id": 4278190081,
+      "cell": 2304,
+      "base": 2457,
+      "position": [32, 0, 16],
+      "ownership": {"kind": "target", "room": 2048}
+    },
+    {"op": "delete", "id": 2051}
+  ]
+}
+```
+
+One transaction updates runtime `references`, room geometry, and pivot and overlap memberships
+for the affected cells. Moves refresh both the source and destination cells. The projector uses
+the pack's existing model bounds and preserves source-verified portal endpoints. If a portal
+loses a room, that endpoint becomes unknown. The cell keeps certification only if it had a
+certificate before the edit and its refreshed graph passes validation.
+
+`room_placement_layers` retains the exact source file and its checksum. `room_placement_edits`
+maps each edited runtime FormID to its source FormID and records deletions. Imports apply in
+command order, and applying the same source again is a no-op. The original `records`,
+`formid_map`, source history, and conversion reports describe the conversion snapshot. A new
+conversion replaces the edited runtime snapshot. Replay the saved placement sources in their
+original order to reproduce the edits.
+
+#### Refresh bounds from runtime GLBs
+
+Conversion and failed-asset repair read static bounds from the winning staged GLB. Missing
+or unreadable winners clear `bounds_valid` and remove stale overlaps.
+
+`room-model-bounds-refresh <assets-dir> <meshes/path.glb>...` updates a private, offline pack
+after native GLBs are replaced or removed. Each argument gives a changed lowercase runtime path.
+One transaction updates every matching base form and refreshes geometric room overlaps. The
+original conversion pack remains the input for manifest verification and later conversion or
+repair.
+
 ### 16. Reference Emittance Sources (`emittance`)
 
 A NIF shader with `SLSF1_External_Emittance` (bit 29) takes its emission colour from outside the

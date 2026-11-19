@@ -544,6 +544,8 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
         r#"DROP TABLE IF EXISTS record_diagnostics;
         DROP TABLE IF EXISTS inhouse_plugin_masters;
         DROP TABLE IF EXISTS record_overrides;
+        DROP TABLE IF EXISTS room_placement_edits;
+        DROP TABLE IF EXISTS room_placement_layers;
         DROP TABLE IF EXISTS inhouse_schema_addons;
         DROP TABLE IF EXISTS inhouse_unresolved_terrain_textures;
         DROP TABLE IF EXISTS inhouse_terrain_layers;
