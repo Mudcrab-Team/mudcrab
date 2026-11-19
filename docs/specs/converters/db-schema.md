@@ -1285,6 +1285,8 @@ Columns and rules:
 - **`room_links`**: one row per distinct `XLRM` target, retaining the last occurrence's
   zero-based `link_index`, with no synthesized mirror rows. Migration adds the column with zero defaults; only a fresh export
   publishes the authored-assignment version. The target is retained even if no room row exists.
+  Both readers compare the lower 14 bits of the first `XRMR` word with the number of source
+  `XLRM` occurrences before deduplication. A count mismatch or repeated header marks the cell incomplete.
   In authored mode, `XRMR[2] != 0` marks a master (`(flags >> 8) & 255` in `room_bounds`).
   An unlinked marker is also a master. Slaves resolve linked masters, preferring direct masters
   before recursive links and traversing reverse source order. Explicit masters install missing
