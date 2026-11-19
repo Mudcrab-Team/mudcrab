@@ -1046,12 +1046,9 @@ mod tests {
                 &RemapWarnings::default(),
             )
             .unwrap();
-            if retained {
-                assert_eq!(record.subrecords[1], (b"XESP".to_vec(), Vec::new()));
-                assert_eq!(record.subrecords[2], (b"XMBR".to_vec(), Vec::new()));
-            } else {
-                assert_eq!(record.subrecords.len(), 1);
-            }
+            let view = extractors::SubrecordView::new(&record.subrecords);
+            assert_eq!(view.find(b"XMBR"), Some([].as_slice()));
+            assert_eq!(view.find(b"XESP"), retained.then_some([].as_slice()));
         }
     }
 
