@@ -42,6 +42,15 @@ source is unchanged and keeps `MIT OR Apache-2.0`; both upstream license files a
 the [patch notes](vendor/bevy_image/README.mudcrab.md) for the source hash, the exact change and
 the removal criteria.
 
+`vendor/bevy_pbr` is the published `bevy_pbr` 0.19.0 crate plus fixes taken from the open Bevy pull
+requests [bevyengine/bevy#26504](https://github.com/bevyengine/bevy/pull/26504) (morph descriptors),
+[#26095](https://github.com/bevyengine/bevy/pull/26095) and [#26588](https://github.com/bevyengine/bevy/pull/26588),
+and one Mudcrab bound. `vendor/bevy_render` is the published `bevy_render` 0.19.0 crate plus the
+`bevy_render` half of #26095. The crate keeps `MIT OR Apache-2.0` and both upstream license files; the
+changed files keep their upstream license. The ledger [`vendor/BEVY_PATCHES.md`](vendor/BEVY_PATCHES.md)
+lists every carried Bevy change, and the [patch notes](vendor/bevy_pbr/README.mudcrab.md) give the
+source hash and the removal rule.
+
 `vendor/project-wormhole-nif` is a Mudcrab fork of the published `project-wormhole-nif` 0.1.0
 crate (`GPL-3.0-or-later`, the same licence as Mudcrab). Unlike `vendor/bevy_image` it carries
 Mudcrab's own parser changes. See its [fork notes](vendor/project-wormhole-nif/README.mudcrab.md)
@@ -89,3 +98,41 @@ not use the Community Shaders logo or name it as an endorsement.
    under MIT or Apache-2.0 keep that licence and its notice, and need their own row.
 4. Do not port from `features/Upscaling` (NVIDIA Streamline and AMD FidelityFX have their own
    licences), `features/RenderDoc`, or the Community Shaders logo.
+
+## spud
+
+[spud](https://github.com/chasmlol/spud) is another engine that runs Skyrim SE. It is licensed
+under the MIT licence. Mudcrab's object-carrying spring step and its contact-mass scan are a
+step-by-step port of the algorithm in spud's `apply_grab` (`src/physics/world.cpp`, commit
+`e5f2de4b5a612eef3f2cd15e4a84672e9e0a0f1c`), written in Rust from the project's audit of that
+source. No spud code is copied, but the structure follows it closely, so Mudcrab keeps spud's
+notice. The port is in `crates/engine/src/physics/carry.rs` (`spring_step`, `contact_mass_ratio`).
+The constants and the drop rules in that file come from the retail executable where it has them
+(see the module docs and `docs/specs/engine/object-carrying.md`); spud is the secondary source for
+the spring formula only.
+
+The licence notice, from spud's `LICENSE` at that commit:
+
+```
+MIT License
+
+Copyright (c) 2026 spud contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

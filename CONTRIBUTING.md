@@ -112,12 +112,26 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    ```bash
    cargo fmt --all -- --check
    cargo clippy --workspace --all-targets --all-features -- -D warnings
-   cargo nextest run --workspace --all-targets --no-fail-fast --no-tests=warn
+   cargo nextest run --workspace --lib --bins --tests --examples --no-fail-fast --no-tests=warn
    ```
    CI uses [`cargo-nextest`](https://nexte.st) (`cargo install cargo-nextest --locked`); plain
-   `cargo test --workspace --all-targets` runs the same test targets (neither runs doctests; add
-   `cargo test --workspace --doc` for those). CI also runs `cargo audit` and a release-mode
+   `cargo test --workspace --lib --bins --tests --examples` runs the same test targets (neither runs doctests; add
+   `cargo test --workspace --doc` for those). The Linux `clippy` / `test` jobs run for
+   Rust-related changes on PRs and feed `tests_pass`. The same checks run on Windows once a
+   night against `main` (`.github/workflows/windows.yml`; start it by hand from the Actions
+   tab to check a branch). GPU-only tests stay ignored by default; Linux runs the two software Vulkan
+   tests separately. CI also runs `cargo audit` and a release-mode
    performance check; see `.github/workflows/run_tests.yml` for the exact commands.
+
+   CI also counts `.unwrap()`, `.expect(` and `panic!(` in production code (not in `#[cfg(test)]`
+   code, and not in `#[test]` functions). It fails when a crate's count is higher in your pull request
+   than at its base commit, so it judges only the sites you add and needs no upkeep. Prefer returning an
+   error with `?`. To check locally against `main`, add a worktree of it and run
+   `python3 tools/unwrap_ratchet/unwrap_ratchet.py --base-root <that worktree>`. If a new call is
+   justified, run `python3 tools/unwrap_ratchet/unwrap_ratchet.py --update`, commit the changed
+   `tools/unwrap_ratchet/baseline.json` (it also raises `revision`, so the approval shows in the diff even
+   when a number does not change), and explain the reason in the pull request. A baseline that your pull
+   request did not change never raises the limit.
 5. **Submit a Pull Request:**
    - Target the `main` branch and fill in the PR template; [`docs/contributing/writing-prs.md`](docs/contributing/writing-prs.md) shows how to write it so it is quick to review.
    - Link the issue (`Closes #N`), apply the [labels](docs/contributing/labels.md) that fit (if a label there doesn't exist on the repository yet, use the closest one that does; without triage access, name them in the PR instead), and reference any relevant planning docs in `docs/specs/`.

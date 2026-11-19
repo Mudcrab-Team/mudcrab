@@ -57,11 +57,14 @@ pub struct RenderingSettings {
     pub water_reflections: bool,
     pub water_reflection_strength: f32,
     pub water_waves: bool,
+    /// No longer read: the flow-normal tilt had no Skyrim source and was removed (`#299`). The
+    /// field stays so saved settings files keep loading.
     pub water_flow_normals: bool,
     pub wave_scale: f32,
     pub wave_speed: f32,
     pub wave_strength: f32,
     pub cpu_frustum_culling: bool,
+    pub room_culling: bool,
     pub indirect_drawing: bool,
     pub occlusion_culling: bool,
     pub depth_prepass: bool,
@@ -101,6 +104,11 @@ pub struct RenderingSettings {
     pub diagnostic_asset_fallbacks: bool,
     /// [`crate::visual_profile::VisualProfile`] index; read only at startup.
     pub visual_profile: usize,
+    /// Session-only window size from an interactive start shot, in logical points like
+    /// [`WINDOW_SIZES`]. A window control edit or reset returns to the selected preference size;
+    /// this value is never serialized.
+    #[serde(skip)]
+    pub window_size_override: Option<(u32, u32)>,
 }
 
 impl Default for RenderingSettings {
@@ -132,10 +140,11 @@ impl Default for RenderingSettings {
             water_reflection_strength: 1.0,
             water_waves: true,
             water_flow_normals: true,
-            wave_scale: 0.006,
-            wave_speed: 0.15,
+            wave_scale: crate::render::DEFAULT_WAVE_SCALE,
+            wave_speed: crate::render::DEFAULT_WAVE_SPEED,
             wave_strength: crate::render::WAVE_STRENGTH,
             cpu_frustum_culling: true,
+            room_culling: true,
             indirect_drawing: true,
             occlusion_culling: true,
             depth_prepass: true,
@@ -172,6 +181,7 @@ impl Default for RenderingSettings {
             io_threads: config.io_threads,
             diagnostic_asset_fallbacks: config.diagnostic_asset_fallbacks,
             visual_profile: config.visual_profile.index(),
+            window_size_override: None,
         }
     }
 }
@@ -302,11 +312,11 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
     number!(Graphics, "Water", "Water reflection multiplier", water_reflection_strength; 0.0, 1.0, 0.1)
         .when(|s| s.water_reflections),
     toggle!("Water", "Water waves", water_waves),
-    toggle!("Water", "Water flow normals", water_flow_normals),
     number!(Graphics, "Water", "Water wave scale", wave_scale; 0.001, 0.05, 0.001).when(|s| s.water_waves),
     number!(Graphics, "Water", "Water wave speed", wave_speed; 0.0, 2.0, 0.05).when(|s| s.water_waves),
     number!(Graphics, "Water", "Water wave strength", wave_strength; 0.0, 2.0, 0.05).when(|s| s.water_waves),
     toggle!("Culling and drawing", "CPU frustum culling", cpu_frustum_culling),
+    toggle!("Culling and drawing", "Room culling", room_culling),
     toggle!("Culling and drawing", "GPU indirect drawing", indirect_drawing),
     toggle!("Culling and drawing", "GPU occlusion culling", occlusion_culling),
     toggle!("Culling and drawing", "Depth prepass", depth_prepass),
@@ -366,10 +376,10 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
     ),
     number!(Streaming, "Range", "Full-detail radius (cells)", stream_radius; 0.0, 16.0, 1.0),
     number!(Streaming, "Range", "Unload radius (cells)", unload_radius; 0.0, 32.0, 1.0),
-    number!(Streaming, "Terrain level of detail", "Level-4 terrain LOD distance (units)", lod_level0_distance; 0.0, 1_000_000.0, 5000.0),
-    number!(Streaming, "Terrain level of detail", "Level-8 terrain LOD distance (units)", lod_level1_distance; 0.0, 1_000_000.0, 5000.0),
-    number!(Streaming, "Terrain level of detail", "Level-16 terrain LOD distance (units)", lod_maximum_distance; 0.0, 1_000_000.0, 10_000.0),
-    number!(Streaming, "Terrain level of detail", "Terrain LOD distance multiplier", lod_multiplier; 0.0, 4.0, 0.25),
+    number!(Streaming, "Terrain level of detail", "Object LOD level-4 distance (units; unused until object LOD lands)", lod_level0_distance; 0.0, 1_000_000.0, 5000.0),
+    number!(Streaming, "Terrain level of detail", "Object LOD level-8 distance (units; unused until object LOD lands)", lod_level1_distance; 0.0, 1_000_000.0, 5000.0),
+    number!(Streaming, "Terrain level of detail", "Terrain LOD outer reach (units, times the split multiplier)", lod_maximum_distance; 0.0, 1_000_000.0, 10_000.0),
+    number!(Streaming, "Terrain level of detail", "Terrain LOD split multiplier", lod_multiplier; 0.0, 4.0, 0.25),
     number!(Streaming, "Per-frame budgets", "Cell commits per frame", cell_commits; 1.0, 64.0, 1.0),
     number!(Streaming, "Per-frame budgets", "Cell commit budget (ms)", commit_ms; 0.5, 100.0, 0.5),
     number!(Streaming, "Per-frame budgets", "Cell unloads per frame (0 = unlimited)", cell_unloads; 0.0, 128.0, 1.0),
@@ -710,6 +720,24 @@ pub struct SettingsFile {
 }
 
 impl SettingsFile {
+    pub(crate) fn apply_start_shot(
+        &mut self,
+        settings: &mut RenderingSettings,
+        fov_degrees: f32,
+        dimensions: (u32, u32),
+    ) {
+        settings.fov_degrees = fov_degrees;
+        settings.window_mode = 0;
+        settings.window_size_override = Some(dimensions);
+        if !self
+            .launch_overrides
+            .iter()
+            .any(|flag| flag == "--start-shot")
+        {
+            self.launch_overrides.push("--start-shot".into());
+        }
+    }
+
     pub fn session_only() -> Self {
         Self {
             path: None,
@@ -743,7 +771,15 @@ impl SettingsFile {
         self.metal_drawing_default_available = true;
         self.metal_drawing_auto_unowned = true;
         *settings = RenderingSettings::default();
-        self.status = "Defaults restored for this session. Choose Save to keep them.".into();
+        self.status = if self
+            .launch_overrides
+            .iter()
+            .any(|flag| flag == "--start-shot")
+        {
+            "Defaults restored for this session. Save preserves the pre-launch FOV, window mode, and window size.".into()
+        } else {
+            "Defaults restored for this session. Choose Save to keep them.".into()
+        };
     }
 
     pub fn save(&mut self, settings: &RenderingSettings) {
@@ -753,6 +789,8 @@ impl SettingsFile {
                 &self.persisted(settings),
                 self.metal_drawing_auto_unowned,
             ) {
+                Ok(()) if self.launch_overrides.iter().any(|flag| flag == "--start-shot") =>
+                    "Settings saved. IO-thread changes apply after restart. Save preserves the pre-launch FOV, window mode, and window size.".into(),
                 Ok(()) => "Settings saved. IO-thread changes apply after restart.".into(),
                 Err(error) => format!("Could not save settings: {error}"),
             },
@@ -766,7 +804,17 @@ impl SettingsFile {
     /// launch value stays in effect until the next run.
     fn persisted(&self, settings: &RenderingSettings) -> RenderingSettings {
         let mut persisted = settings.clone();
+        persisted.window_size_override = None;
         persisted.take_launch_owned_values(&self.stored, &self.launch_overrides);
+        if self
+            .launch_overrides
+            .iter()
+            .any(|flag| flag == "--start-shot")
+        {
+            persisted.fov_degrees = self.stored.fov_degrees;
+            persisted.window_mode = self.stored.window_mode;
+            persisted.window_size = self.stored.window_size;
+        }
         if self.preserve_unavailable_record_mode && !self.unavailable_record_mode_replaced {
             persisted.color_grade = self.stored.color_grade;
         }
@@ -792,7 +840,7 @@ pub(crate) fn prepare_settings(config: &mut EngineConfig) -> (RenderingSettings,
     prepare_settings_at(config, preferences_path())
 }
 
-fn prepare_settings_at(
+pub(crate) fn prepare_settings_at(
     config: &mut EngineConfig,
     path: Option<PathBuf>,
 ) -> (RenderingSettings, SettingsFile) {
@@ -1058,6 +1106,11 @@ pub(crate) fn apply_render_settings(
     if !preferences_changed {
         return;
     }
+    if previous.as_ref().is_some_and(|previous| {
+        previous.window_size != settings.window_size || previous.window_mode != settings.window_mode
+    }) {
+        settings.window_size_override = None;
+    }
     let old_mode = current_mode
         .as_deref()
         .copied()
@@ -1237,11 +1290,18 @@ pub(crate) fn apply_render_settings(
             };
         }
         if added
-            || previous
-                .as_ref()
-                .is_none_or(|previous| previous.window_size != settings.window_size)
+            || (settings.window_mode == 0
+                && previous.as_ref().is_none_or(|previous| {
+                    previous.window_size != settings.window_size
+                        || previous.window_mode != settings.window_mode
+                        || previous.window_size_override != settings.window_size_override
+                }))
         {
-            let (width, height) = WINDOW_SIZES[settings.window_size];
+            // Both sizes are logical points: the window backend multiplies them by the display
+            // scale factor, so a 2.0 display gets twice as many physical pixels.
+            let (width, height) = settings
+                .window_size_override
+                .unwrap_or(WINDOW_SIZES[settings.window_size]);
             window.resolution.set(width as f32, height as f32);
         }
     }
@@ -1287,7 +1347,7 @@ mod tests {
     fn launch(args: &[String]) -> EngineConfig {
         match EngineConfig::from_args(args.iter().cloned()).unwrap() {
             ConfigAction::Run(config) => *config,
-            ConfigAction::Help => panic!("expected a run"),
+            ConfigAction::Help | ConfigAction::Version => panic!("expected a run"),
         }
     }
 
@@ -1348,6 +1408,105 @@ mod tests {
         app.world_mut()
             .resource_mut::<SettingsFile>()
             .save(&settings);
+    }
+
+    #[test]
+    fn start_shot_reset_reports_preserved_framing() {
+        let mut file = SettingsFile::session_only();
+        let mut settings = RenderingSettings::default();
+        file.restore_defaults(&mut settings);
+        assert_eq!(
+            file.status,
+            "Defaults restored for this session. Choose Save to keep them."
+        );
+        file.apply_start_shot(&mut settings, 60.0, (1920, 1080));
+        file.restore_defaults(&mut settings);
+        assert!(
+            file.status
+                .contains("Save preserves the pre-launch FOV, window mode, and window size")
+        );
+    }
+
+    #[test]
+    fn start_shot_save_reports_preserved_framing() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut file = SettingsFile::session_only();
+        file.path = Some(directory.path().join("settings.json"));
+        let mut settings = RenderingSettings::default();
+        file.save(&settings);
+        assert_eq!(
+            file.status,
+            "Settings saved. IO-thread changes apply after restart."
+        );
+        file.apply_start_shot(&mut settings, 60.0, (1920, 1080));
+        file.save(&settings);
+        assert!(
+            file.status
+                .contains("Save preserves the pre-launch FOV, window mode, and window size")
+        );
+    }
+
+    #[test]
+    fn start_shot_size_is_logical_points_at_any_display_scale() {
+        let (width, height) = (1280, 800);
+        for scale in [1.0_f32, 2.0] {
+            let mut app = App::new();
+            let settings = RenderingSettings {
+                window_size_override: Some((width, height)),
+                ..default()
+            };
+            app.add_plugins(MinimalPlugins)
+                .insert_resource(EngineConfig::default())
+                .insert_resource(settings)
+                .add_systems(Update, apply_render_settings);
+            let window = app
+                .world_mut()
+                .spawn((Window::default(), PrimaryWindow))
+                .id();
+            app.world_mut()
+                .get_mut::<Window>(window)
+                .unwrap()
+                .resolution
+                .set_scale_factor(scale);
+            app.update();
+            let physical = |app: &App| {
+                let resolution = &app.world().get::<Window>(window).unwrap().resolution;
+                assert_eq!(resolution.scale_factor_override(), None);
+                assert_eq!((resolution.width(), resolution.height()), (1280.0, 800.0));
+                (resolution.physical_width(), resolution.physical_height())
+            };
+            // 1280x800 requests 1280x800 logical points: 2560x1600 physical at scale 2.0.
+            let expected = (
+                (width as f32 * scale) as u32,
+                (height as f32 * scale) as u32,
+            );
+            assert_eq!(physical(&app), expected);
+            // A fullscreen round trip keeps the logical size and never forces a scale factor.
+            app.world_mut()
+                .resource_mut::<RenderingSettings>()
+                .window_mode = 1;
+            app.update();
+            app.world_mut()
+                .resource_mut::<RenderingSettings>()
+                .window_mode = 0;
+            app.update();
+            let resolution = &app.world().get::<Window>(window).unwrap().resolution;
+            assert_eq!(resolution.scale_factor_override(), None);
+            // Leaving fullscreen releases the session size for the preference size, also logical.
+            let (preset_width, preset_height) =
+                WINDOW_SIZES[RenderingSettings::default().window_size];
+            assert_eq!(
+                (resolution.width(), resolution.height()),
+                (preset_width as f32, preset_height as f32)
+            );
+            assert_eq!(
+                (resolution.physical_width(), resolution.physical_height()),
+                (
+                    (preset_width as f32 * scale) as u32,
+                    (preset_height as f32 * scale) as u32
+                )
+            );
+        }
     }
 
     #[test]
@@ -2365,6 +2524,32 @@ mod tests {
             file.status
         );
         assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+
+    #[test]
+    fn room_culling_defaults_on_for_old_settings_and_persists_the_menu_choice() {
+        let mut settings: RenderingSettings =
+            serde_json::from_value(serde_json::json!({"cpu_frustum_culling":false})).unwrap();
+        assert_eq!(
+            serde_json::to_value(&settings).unwrap()["room_culling"],
+            true
+        );
+        let control = SETTING_SPECS
+            .iter()
+            .find(|setting| setting.label == "Room culling")
+            .unwrap();
+        control.adjust(&mut settings, 1);
+        assert_eq!(control.value_label(&settings), "Off");
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_settings(&path, &settings).unwrap();
+        let restored: RenderingSettings =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&restored).unwrap()["room_culling"],
+            false
+        );
+        assert!(!restored.cpu_frustum_culling);
     }
 
     #[test]

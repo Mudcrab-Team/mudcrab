@@ -23,9 +23,8 @@
 //! last check: it refuses a cell written twice and a mesh it cannot validate, and either stops
 //! the run — those are wiring bugs, not content.
 //!
-//! The option is off by default (`PipelineConfig::merged_terrain`): the engine half of #215 is
-//! not in place yet, so nothing reads these outputs. When it is off neither the arrays nor the
-//! chunk files are written.
+//! The option is off by default (`PipelineConfig::merged_terrain`). When it is off neither
+//! merged arrays nor chunk files are written; ordinary default images are published independently.
 //!
 //! # What a run keeps for this stage
 //!
@@ -37,7 +36,7 @@
 //! # The default texture
 //!
 //! Entry 0 of the table stands for a cell quadrant with no BTXT (or a null one). With `white`
-//! (the default) that is the array builder's generated 4 x 4 white diffuse; with `skyrim-ini` it
+//! that is the array builder's generated 4 x 4 white diffuse; with `skyrim-ini` (the default) it
 //! is `[Landscape] sDefaultLandDiffuseTexture` and `sDefaultLandNormalTexture` from the
 //! configured Skyrim.ini if a path to one is configured, else the built-in
 //! `textures/landscape/Dirt02.dds` and `Dirt02_N.dds` (which also stand in for a key the ini does
@@ -155,7 +154,7 @@ impl TerrainOptions {
 /// same texture on both sides of the LOD switch distance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TerrainDefaultDiffuse {
-    /// The generated white diffuse: `TerrainDefaultTexture::White`, the default.
+    /// The generated white diffuse, explicitly selected or used as a fallback.
     GeneratedWhite,
     /// The DDS a `skyrim-ini` conversion selected, as a canonical Bethesda path relative to the
     /// converted output root: `vfs/<path>` holds the source.
@@ -185,8 +184,144 @@ impl TerrainDefaultDiffuse {
     }
 }
 
+/// Whether the converter's validated cache contains a null or absent quadrant base.
+/// Low-level callers without a cache still resolve their explicitly requested default.
+pub(crate) fn default_land_is_needed(staging: &Path) -> Result<bool> {
+    let cache_path = staging.join("cell_cache.rkyv");
+    if !cache_path.is_file() {
+        return Ok(true);
+    }
+    let mapping = crate::esm::cell_cache::validate_cell_cache(&cache_path)?;
+    let cache = rkyv::access::<shared::ArchivedCellCache, rkyv::rancor::Error>(&mapping)
+        .wrap_err("invalid published terrain cache")?;
+    Ok(cache.cells.iter().any(|cell| {
+        (0u8..4).any(|quadrant| {
+            !cell.layers.iter().any(|layer| {
+                layer.quadrant == quadrant && layer.is_base && u32::from(layer.texture_form_id) != 0
+            })
+        })
+    }))
+}
+
+/// Publishes the effective default for ordinary terrain before LOD, even with `--no-lod`.
+/// Generated default images are rebuilt from the current DDS bytes, outside ingestion reuse.
+/// A damaged optional texture falls back with an advisory notice, preserving completeness.
+pub(crate) fn publish_default_land(
+    staging: &Path,
+    config: &PipelineConfig,
+    report: &mut PipelineReport,
+) -> Result<()> {
+    let database = staging.join("skyrim_world.db");
+    if !database.is_file() {
+        return Ok(());
+    }
+    let mut options = TerrainOptions::from_config(config);
+    if options.default_texture == TerrainDefaultTexture::SkyrimIni
+        && !default_land_is_needed(staging)?
+    {
+        options.default_texture = TerrainDefaultTexture::White;
+        options.terrain_ini = None;
+    }
+    let defaults = (options.default_texture == TerrainDefaultTexture::SkyrimIni)
+        .then(|| landscape_defaults(options.terrain_ini.as_deref()))
+        .transpose()?;
+    let (requested, warning) = TerrainDefaultDiffuse::resolve(&options)?;
+    if let Some(warning) = warning {
+        report.notices.push(warning);
+    }
+    let mut diffuse = None;
+    let mut normal = None;
+    let mut source = None;
+    if let TerrainDefaultDiffuse::Image(path) = requested {
+        let (_, error) = crate::lod::albedo::LoadedDefault::load(
+            &TerrainDefaultDiffuse::Image(path.clone()),
+            &staging.join("vfs"),
+            &mut crate::lod::albedo::TerrainTextureCache::default(),
+        );
+        if let Some(error) = error {
+            report
+                .notices
+                .push(format!("default land falls back to white: {error}"));
+        } else {
+            let convert = |source: &str, output: &str, encoding| -> Result<()> {
+                let destination = staging.join(output);
+                fs::create_dir_all(destination.parent().unwrap())?;
+                crate::texture::TextureConverter::convert_dds_to_ktx2_with_options(
+                    &staging.join("vfs").join(source),
+                    &destination,
+                    encoding,
+                    config.texture_fallback_quality,
+                    config.texture_uastc_level,
+                    config.texture_zstd_level,
+                )?;
+                Ok(())
+            };
+            let output = "terrain/default-diffuse.ktx2";
+            match convert(&path, output, crate::texture::TextureEncoding::ColorSrgb) {
+                Ok(()) => {
+                    diffuse = Some(output.to_owned());
+                    source = Some(path);
+                    report.artifacts.push(output.into());
+                    let defaults = defaults
+                        .as_ref()
+                        .expect("image default has parsed settings");
+                    match canonical_asset_path(&defaults.normal, AssetKind::Texture, "dds") {
+                        Ok(path) => {
+                            let output = "terrain/default-normal.ktx2";
+                            match convert(
+                                &path,
+                                output,
+                                crate::texture::TextureEncoding::NormalLinear,
+                            ) {
+                                Ok(()) => {
+                                    normal = Some(output.to_owned());
+                                    report.artifacts.push(output.into());
+                                }
+                                Err(error) => report
+                                    .notices
+                                    .push(format!("default land normal omitted: {error:#}")),
+                            }
+                        }
+                        Err(error) => report
+                            .notices
+                            .push(format!("default land normal omitted: {error:#}")),
+                    }
+                }
+                Err(error) => report
+                    .notices
+                    .push(format!("default land falls back to white: {error:#}")),
+            }
+        }
+    }
+    let mut connection = rusqlite::Connection::open(database)?;
+    let transaction = connection.transaction()?;
+    transaction.execute_batch("CREATE TABLE IF NOT EXISTS terrain_default_texture (
+        id INTEGER PRIMARY KEY CHECK(id=0), diffuse_path TEXT, normal_path TEXT, source_diffuse TEXT);
+        DELETE FROM terrain_default_texture;")?;
+    transaction.execute(
+        "INSERT INTO terrain_default_texture VALUES(0,?1,?2,?3)",
+        rusqlite::params![diffuse, normal, source],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// All configured default inputs, including a normal that no LTEX names.
+pub(crate) fn default_land_sources(config: &PipelineConfig) -> Result<Vec<PathBuf>> {
+    if config.terrain_default_texture == TerrainDefaultTexture::White {
+        return Ok(Vec::new());
+    }
+    let defaults = landscape_defaults(config.terrain_ini.as_deref())?;
+    Ok([defaults.diffuse, defaults.normal]
+        .into_iter()
+        .filter_map(|path| canonical_asset_path(&path, AssetKind::Texture, "dds").ok())
+        .map(PathBuf::from)
+        .collect())
+}
+
 /// The built-in `[Landscape]` default diffuse of Skyrim: what a `skyrim-ini` conversion names when
 /// it has no Skyrim.ini, or the ini names no diffuse.
+#[cfg(test)]
 pub(crate) fn builtin_default_diffuse() -> Result<String> {
     canonical_asset_path(DIRT02_DIFFUSE, AssetKind::Texture, "dds")
 }
@@ -1060,6 +1195,202 @@ fn relative_path(root: &Path, path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// Missing defaults do not affect packs with no terrain or only fully painted quadrants.
+    #[test]
+    fn configured_default_land_skips_unused_images() {
+        let root = tempfile::tempdir().unwrap();
+        rusqlite::Connection::open(root.path().join("skyrim_world.db")).unwrap();
+        let mut cache = shared::CellCache {
+            version: shared::CELL_CACHE_VERSION,
+            cells: Vec::new(),
+        };
+        let mut config = PipelineConfig::new(root.path(), root.path().join("out"));
+        config.terrain_default_texture = TerrainDefaultTexture::SkyrimIni;
+        let mut report = PipelineReport::default();
+        for populated in [false, true] {
+            if populated {
+                cache.cells.push(shared::CachedLand {
+                    cell_id: 17,
+                    width: 33,
+                    height: 33,
+                    heights: vec![0.0; 33 * 33],
+                    normals: [0, 0, 127].repeat(33 * 33),
+                    vertex_colors: Vec::new(),
+                    layers: (0..4)
+                        .map(|quadrant| shared::TerrainLayer {
+                            texture_form_id: 19,
+                            quadrant,
+                            layer: 0,
+                            is_base: true,
+                            weights: Vec::new(),
+                        })
+                        .collect(),
+                    water_height: None,
+                    water_type_form_id: None,
+                });
+            }
+            fs::write(
+                root.path().join("cell_cache.rkyv"),
+                rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+            )
+            .unwrap();
+            super::publish_default_land(root.path(), &config, &mut report).unwrap();
+            assert!(report.warnings.is_empty());
+            assert!(report.notices.is_empty());
+            assert!(crate::pipeline::conversion_is_complete(&report));
+            assert!(report.artifacts.is_empty());
+        }
+        cache.cells[0].layers[2].texture_form_id = 0;
+        fs::write(
+            root.path().join("cell_cache.rkyv"),
+            rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+        )
+        .unwrap();
+        super::publish_default_land(root.path(), &config, &mut report).unwrap();
+        assert_eq!(
+            report.notices.len(),
+            1,
+            "a used missing default still produces an advisory"
+        );
+        assert!(report.warnings.is_empty());
+        assert!(crate::pipeline::conversion_is_complete(&report));
+    }
+
+    /// Generated defaults and their database row follow the effective choice on repeated runs.
+    #[test]
+    fn configured_default_land_publication_replaces_white_and_recovers_bad_images() {
+        let root = tempfile::tempdir().unwrap();
+        let staging = root.path();
+        let database = staging.join("skyrim_world.db");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE neighbors(id INTEGER PRIMARY KEY); INSERT INTO neighbors VALUES(17);",
+            )
+            .unwrap();
+        let ini = staging.join("custom.ini");
+        fs::write(&ini,"[Landscape]\nsDefaultLandDiffuseTexture=custom.dds\nsDefaultLandNormalTexture=custom-n.dds\n").unwrap();
+        fs::create_dir_all(staging.join("vfs/textures")).unwrap();
+        let bytes = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::Bc1Unorm, 16, 16),
+            &mut dummy_content::rng::Rng::new(39),
+        )
+        .unwrap();
+        fs::write(staging.join("vfs/textures/custom.dds"), &bytes).unwrap();
+        fs::write(
+            staging.join("vfs/textures/custom-n.dds"),
+            b"bad optional normal",
+        )
+        .unwrap();
+        let mut config = PipelineConfig::new(staging, staging.join("out"));
+        config.terrain_default_texture = TerrainDefaultTexture::White;
+        let mut report = PipelineReport::default();
+        super::publish_default_land(staging, &config, &mut report).unwrap();
+        let read = || {
+            connection.query_row("SELECT diffuse_path,normal_path,source_diffuse FROM terrain_default_texture WHERE id=0",[],
+            |row| Ok((row.get::<_,Option<String>>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,Option<String>>(2)?))).unwrap()
+        };
+        assert_eq!(read(), (None, None, None));
+        config.terrain_default_texture = TerrainDefaultTexture::SkyrimIni;
+        config.terrain_ini = Some(ini);
+        super::publish_default_land(staging, &config, &mut report).unwrap();
+        assert_eq!(
+            read(),
+            (
+                Some("terrain/default-diffuse.ktx2".into()),
+                None,
+                Some("textures/custom.dds".into())
+            )
+        );
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("normal omitted"))
+        );
+        assert!(report.warnings.is_empty());
+        assert!(crate::pipeline::conversion_is_complete(&report));
+        crate::pipeline::validate_artifacts(staging, &report.artifacts, &BTreeMap::new(), 1)
+            .unwrap();
+        let first = fs::read(staging.join("terrain/default-diffuse.ktx2")).unwrap();
+        crate::texture::inspect_ktx2(&first, crate::texture::TextureEncoding::ColorSrgb).unwrap();
+        fs::write(
+            config.terrain_ini.as_ref().unwrap(),
+            "[Landscape]\nsDefaultLandDiffuseTexture=custom.dds\nsDefaultLandNormalTexture=../escape.dds\n",
+        )
+        .unwrap();
+        super::publish_default_land(staging, &config, &mut report).unwrap();
+        assert_eq!(read().0.as_deref(), Some("terrain/default-diffuse.ktx2"));
+        assert_eq!(read().1, None);
+        assert_eq!(
+            report.notices.len(),
+            2,
+            "invalid normal paths are advisory too"
+        );
+        assert!(report.warnings.is_empty());
+        assert!(crate::pipeline::conversion_is_complete(&report));
+        fs::write(
+            staging.join("vfs/textures/custom.dds"),
+            b"bad optional diffuse",
+        )
+        .unwrap();
+        super::publish_default_land(staging, &config, &mut report).unwrap();
+        assert_eq!(read(), (None, None, None));
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("falls back to white"))
+        );
+        assert!(report.warnings.is_empty());
+        assert!(crate::pipeline::conversion_is_complete(&report));
+        fs::write(staging.join("vfs/textures/custom.dds"), bytes).unwrap();
+        super::publish_default_land(staging, &config, &mut report).unwrap();
+        assert_eq!(
+            fs::read(staging.join("terrain/default-diffuse.ktx2")).unwrap(),
+            first
+        );
+        let changed = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::Bc1Unorm, 16, 16),
+            &mut dummy_content::rng::Rng::new(91),
+        )
+        .unwrap();
+        fs::write(staging.join("vfs/textures/custom.dds"), changed).unwrap();
+        super::publish_default_land(staging, &config, &mut report).unwrap();
+        assert_ne!(
+            fs::read(staging.join("terrain/default-diffuse.ktx2")).unwrap(),
+            first,
+            "unchanged settings must not reuse stale default pixels"
+        );
+        config.terrain_default_texture = TerrainDefaultTexture::White;
+        super::publish_default_land(staging, &config, &mut report).unwrap();
+        assert_eq!(read(), (None, None, None));
+        assert!(report.warnings.is_empty());
+        assert!(crate::pipeline::conversion_is_complete(&report));
+        fs::write(
+            config.terrain_ini.as_ref().unwrap(),
+            "[Landscape]\nsDefaultLandDiffuseTexture=../escape.dds\n",
+        )
+        .unwrap();
+        config.terrain_default_texture = TerrainDefaultTexture::SkyrimIni;
+        super::publish_default_land(staging, &config, &mut report).unwrap();
+        assert_eq!(read(), (None, None, None));
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("cannot be resolved"))
+        );
+        assert!(report.warnings.is_empty());
+        assert!(crate::pipeline::conversion_is_complete(&report));
+        assert_eq!(
+            connection
+                .query_row("SELECT id FROM neighbors", [], |row| row.get::<_, u32>(0))
+                .unwrap(),
+            17
+        );
+    }
     use super::*;
     use crate::esm::EsmParser;
 

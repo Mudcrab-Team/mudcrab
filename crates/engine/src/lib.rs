@@ -6,6 +6,9 @@ pub mod actor_outfit;
 pub mod actor_skin_tone;
 pub mod actors;
 pub mod app;
+mod background_window;
+#[cfg(test)]
+mod bevy_source;
 pub mod bug_report;
 mod capture_frame;
 pub mod cell_commands;
@@ -18,6 +21,7 @@ pub mod doors;
 pub mod emittance;
 pub mod extensions;
 pub mod fingerprint;
+mod focus_pause;
 pub mod frame_budget;
 pub mod hdr_probe;
 pub mod indirect_metrics;
@@ -28,6 +32,7 @@ pub mod mesh_preparation_retry;
 pub mod metrics;
 pub mod nif_depth;
 pub mod nif_material;
+pub mod object_materials;
 pub mod pacing;
 pub mod papyrus_runtime;
 pub mod physics;
@@ -38,6 +43,7 @@ pub mod render;
 mod render_teardown;
 pub mod render_timing;
 mod renderer_init;
+pub mod room_culling;
 pub mod route;
 mod scene_evidence;
 pub mod schedule_timing;
@@ -51,14 +57,23 @@ pub mod streaming;
 mod streaming_gpu_metrics;
 mod streaming_preparation;
 mod streaming_trace;
+pub mod sun;
 pub mod swap_bridge;
 pub mod terrain_merge;
 pub mod terrain_upload;
 #[cfg(test)]
 mod test_support;
+pub mod texture_fallback;
 pub mod tone_mapping;
+mod underwater;
+mod underwater_pass;
+#[cfg(test)]
+mod vendored_bevy_patches;
+#[cfg(test)]
+mod vendored_morph_shader;
 pub mod visibility_optimization;
 pub mod visual_profile;
+mod water_depth;
 pub mod world;
 
 pub use app::run;

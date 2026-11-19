@@ -68,6 +68,13 @@
 //! every enabled light that reaches a cluster, so the far ones are switched off rather than paid
 //! for.
 //!
+//! Shadows are a smaller set than the budget: only the [`MAX_SHADOW_CASTING_POINT_LIGHTS`] nearest
+//! of the enabled lights get a cube shadow map, and only when the Point-light shadows setting is
+//! on. See that constant for the retail rule and for the Metal limit the cap keeps the frame under.
+//! The shadow set is not cached with the budget: it is re-ranked among the enabled lights whenever
+//! the camera has moved, so a light that comes nearer takes a shadow at once and the one it
+//! displaces loses it, never more than the cap at a time.
+//!
 //! The choice is cached, and re-made when the camera has moved [`BUDGET_RECHOOSE_DISTANCE`], when a
 //! light has spawned or despawned, or when the set of lights has changed in any other way - a cell
 //! streaming in or out at an equal count ([`LightBudget::chosen`]). Keying the cache on the number
@@ -78,10 +85,10 @@
 //!
 //! A `LIGH` record's attenuation exponent, `FOV` and near clip are not applied: Bevy's point light
 //! decays inverse-square and has neither a cone nor a near clip. Flicker, pulse, `FNAM` fade and
-//! the `DATA` time field are not implemented either - a torch burns steadily. Shadows are off for
-//! every converted light (`PointLight::shadow_maps_enabled` is one cube map per light, which a
-//! 64-light budget cannot afford; the record's own shadow flags are left for later), so a light
-//! also lights the far side of the wall it is mounted on. The reference's `XRDS` radius override *is* applied; see
+//! the `DATA` time field are not implemented either - a torch burns steadily. A light spawns
+//! unshadowed, and only the nearest few are given shadows by the budget (see above); the record's
+//! own shadow flags (`RF-LIGHT-GPU-009`) are left for later, so an unshadowed light also lights
+//! the far side of the wall it is mounted on. The reference's `XRDS` radius override *is* applied; see
 //! [`radius_of`].
 
 use crate::world::{components::StreamingCamera, database::LightRow};
@@ -173,6 +180,65 @@ const HALF_RADIUS_WINDOW: f32 = 225.0 / 256.0;
 /// every enabled light in a cluster it reaches, and the game's spaces hold whole halls of `LIGH`
 /// references, so the far ones are switched off rather than paid for.
 pub const ENABLED_LIGHT_BUDGET: usize = 64;
+
+/// The most point lights that cast shadows at once: the first 4, which is retail's limit.
+///
+/// Retail's lighting pixel shader shadows "the first min(NumShadowLights, 4)" of the point lights
+/// it draws (registry row `RF-LIGHT-GPU-004`, traced from the shader bytecode, confidence high).
+/// The row gives the limit and not the order of the "first", so the engine takes the nearest to
+/// the camera, which is the order of the budget. Retail also shadows only a light whose record
+/// carries a shadow flag (`RF-LIGHT-GPU-009`); this engine does not read that flag yet, so it
+/// shadows the nearest budgeted lights whatever their flags.
+///
+/// The cap is also what keeps a frame under a hard GPU limit. wgpu's Metal backend refuses to open
+/// a new command encoder once 4096 are outstanding and reports the device as lost
+/// ([`METAL_OUTSTANDING_COMMAND_BUFFER_LIMIT`]). Bevy renders every cube face of a shadowing point
+/// light as its own view, and every view opens several encoders (see
+/// [`ENCODERS_PER_POINT_SHADOW_VIEW`]). By that estimate a 64-light budget with shadows on opens
+/// 1,920 encoders per frame, and the encoders of earlier frames still count while the GPU holds
+/// them, so entering a 71-light cell lost the device. With this cap one frame opens
+/// [`shadow_encoder_estimate`]`(4)` = 120.
+pub const MAX_SHADOW_CASTING_POINT_LIGHTS: usize = 4;
+
+/// The number of views Bevy renders for one shadow-casting point light: one per cube face
+/// (`CUBE_MAP_FACES`, which `bevy_pbr` 0.19.0 renders one view for each).
+pub const POINT_SHADOW_VIEWS_PER_LIGHT: usize = bevy::camera::primitives::CUBE_MAP_FACES.len();
+
+/// The command encoders Bevy 0.19 opens for one point-light shadow view in one frame.
+///
+/// Each cube face is a root view that runs the whole `Core3d` schedule, and every render system
+/// that takes a `RenderContext` and records a command opens its own encoder. For a shadow view
+/// that is five systems of `bevy_pbr` 0.19.0: `clear_indirect_parameters_metadata`,
+/// `unpack_bins`, `early_gpu_preprocess`, `early_prepass_build_indirect_parameters` (all in
+/// `render/gpu_preprocess.rs`) and `shared_shadow_pass` (`render/light.rs`). The count is read
+/// from the code, not measured: an estimate used by the guard, which is why the guard keeps a wide
+/// margin ([`SHADOW_ENCODER_WARN_ESTIMATE`]).
+pub const ENCODERS_PER_POINT_SHADOW_VIEW: usize = 5;
+
+/// The limit on outstanding command buffers in wgpu-hal's Metal backend (`wgpu_hal::metal`): the
+/// 4097th is refused with "refusing to create new command buffer; 4097 outstanding command
+/// buffers exceeds the limit of 4096. Treating this as device lost."
+pub const METAL_OUTSTANDING_COMMAND_BUFFER_LIMIT: usize = 4096;
+
+/// The per-frame encoder estimate at which [`warn_on_shadow_encoder_load`] logs an error: a quarter
+/// of the Metal limit. The margin is wide on purpose: encoders from earlier frames stay outstanding
+/// until the GPU finishes them, and [`ENCODERS_PER_POINT_SHADOW_VIEW`] is an estimate. The 64-light
+/// load that lost the device (1,920) is above it; the cap (120) is far below it.
+pub const SHADOW_ENCODER_WARN_ESTIMATE: usize = METAL_OUTSTANDING_COMMAND_BUFFER_LIMIT / 4;
+
+/// The command encoders one frame opens for `lights` shadow-casting point lights, as estimated
+/// from the Bevy code (see [`ENCODERS_PER_POINT_SHADOW_VIEW`]). It leaves out the camera's own
+/// passes and the sun's cascades, which are a handful of encoders in total.
+pub const fn shadow_encoder_estimate(lights: usize) -> usize {
+    lights * POINT_SHADOW_VIEWS_PER_LIGHT * ENCODERS_PER_POINT_SHADOW_VIEW
+}
+
+// The cap must stay far below the warning level: a build that raises it into the danger zone
+// fails here instead of losing the device in a 71-light cell.
+const _: () = assert!(
+    shadow_encoder_estimate(MAX_SHADOW_CASTING_POINT_LIGHTS) < SHADOW_ENCODER_WARN_ESTIMATE,
+    "the shadow-casting light cap puts a frame too close to the Metal command buffer limit"
+);
 
 /// How far the camera moves before the enabled lights are chosen again. Re-choosing is a sort of
 /// every spawned light, so it is not done per frame.
@@ -268,6 +334,15 @@ struct LightBudget {
     /// alone kept a room walked into and stopped in dark until the player moved another
     /// [`BUDGET_RECHOOSE_DISTANCE`].
     chosen: HashSet<Entity>,
+    /// The lights the current selection enabled, nearest first as of `chosen_at`. The shadow set
+    /// is ranked among these.
+    enabled: Vec<Entity>,
+    /// The camera position the shadow set was last ranked at; `None` forces a new ranking.
+    shadow_at: Option<Vec3>,
+    /// The lights that currently have a cube shadow map, nearest first.
+    shadowed: Vec<Entity>,
+    /// Reused by the shadow ranking, so a camera that moves every frame allocates nothing.
+    shadow_scratch: Vec<(Entity, f32)>,
 }
 
 /// Keeps the number of enabled [`SkyrimLight`]s to [`ENABLED_LIGHT_BUDGET`] nearest the camera.
@@ -312,11 +387,58 @@ impl Plugin for LightsPlugin {
                 Update,
                 activate_deferred_lights.after(crate::settings_ui::SettingsUiSet),
             )
-            .add_systems(PostUpdate, budget_lights.after(TransformSystems::Propagate));
+            .add_systems(
+                PostUpdate,
+                (
+                    budget_lights.after(TransformSystems::Propagate),
+                    warn_on_shadow_encoder_load.after(budget_lights),
+                ),
+            );
     }
 }
 
-/// Enables the [`ENABLED_LIGHT_BUDGET`] lights nearest the camera, and hides the rest.
+/// Logs an error when the point lights that cast shadows would open enough command encoders in a
+/// frame to approach the Metal limit ([`SHADOW_ENCODER_WARN_ESTIMATE`]), and says what to do.
+///
+/// [`budget_lights`] keeps its own lights under [`MAX_SHADOW_CASTING_POINT_LIGHTS`], so this fires
+/// only for a shadow-casting `PointLight` that something else adds, or for a raised cap. It counts
+/// every visible `PointLight` and no `SpotLight`. Without it, the
+/// only trace of this failure is a wgpu warning that the engine's default log filter hides, then
+/// a lost device. It logs once for each change of the count, not every frame.
+fn warn_on_shadow_encoder_load(
+    lights: Query<(&PointLight, &InheritedVisibility)>,
+    mut reported: Local<usize>,
+) {
+    let casting = lights
+        .iter()
+        .filter(|(light, visibility)| light.shadow_maps_enabled && visibility.get())
+        .count();
+    let estimate = shadow_encoder_estimate(casting);
+    if estimate < SHADOW_ENCODER_WARN_ESTIMATE {
+        *reported = 0;
+        return;
+    }
+    if *reported == casting {
+        return;
+    }
+    *reported = casting;
+    error!(
+        casting,
+        estimated_encoders_per_frame = estimate,
+        limit = METAL_OUTSTANDING_COMMAND_BUFFER_LIMIT,
+        cap = MAX_SHADOW_CASTING_POINT_LIGHTS,
+        "lights: so many shadow-casting point lights that the Metal command buffer limit may be \
+         reached and the GPU device lost; the Point-light shadows setting controls only Skyrim \
+         lights, so also disable or reduce other shadow-casting lights (spot lights, and lights \
+         owned by other systems)"
+    );
+}
+
+/// Enables the [`ENABLED_LIGHT_BUDGET`] lights nearest the camera, and hides the rest. With the
+/// Point-light shadows setting on, the [`MAX_SHADOW_CASTING_POINT_LIGHTS`] nearest of them also
+/// get cube shadow maps and every other light has them off. The enabled set is cached until the
+/// camera has moved [`BUDGET_RECHOOSE_DISTANCE`] or the set of lights changes; the shadow set is
+/// re-ranked among the enabled lights after every camera move.
 ///
 /// Hidden is the switch: the lights are extracted to the render world only while they are visible
 /// (`bevy_pbr/src/render/light.rs`), and a light set back to `Visibility::Inherited` still goes
@@ -351,13 +473,6 @@ fn budget_lights(
     {
         budget.chosen_at = None;
     }
-    if let Some(settings) = settings.as_deref() {
-        for (_, _, mut light, _) in &mut lights {
-            if light.shadow_maps_enabled != settings.point_light_shadows {
-                light.shadow_maps_enabled = settings.point_light_shadows;
-            }
-        }
-    }
     let Ok(camera) = camera.single() else {
         return;
     };
@@ -375,57 +490,112 @@ fn budget_lights(
         spawned += 1;
         joined |= !budget.chosen.contains(&entity);
     }
-    if !joined
-        && let Some(chosen_at) = budget.chosen_at
-        && budget.chosen.len() == spawned
-        && chosen_at.distance(camera_position) <= BUDGET_RECHOOSE_DISTANCE
-    {
-        return;
-    }
+    let budget_size = settings
+        .as_deref()
+        .map_or(ENABLED_LIGHT_BUDGET, |settings| settings.point_light_budget);
+    let shadow_count = shadow_casting_count(
+        budget_size,
+        settings
+            .as_deref()
+            .is_some_and(|settings| settings.point_light_shadows),
+    );
+    let rechoose = joined
+        || budget.chosen.len() != spawned
+        || budget
+            .chosen_at
+            .is_none_or(|chosen_at| chosen_at.distance(camera_position) > BUDGET_RECHOOSE_DISTANCE);
 
-    let mut ranked: Vec<(Entity, f32)> = lights
-        .iter()
-        .map(|(entity, transform, _, _)| {
-            (
-                entity,
-                transform.translation().distance_squared(camera_position),
-            )
-        })
-        .collect();
-    sort_by_distance(&mut ranked);
-    let enabled: HashSet<Entity> = ranked
-        .iter()
-        .take(
-            settings
-                .as_deref()
-                .map_or(ENABLED_LIGHT_BUDGET, |settings| settings.point_light_budget),
-        )
-        .map(|(entity, _)| *entity)
-        .collect();
-
-    for (entity, _, _, mut visibility) in &mut lights {
-        let wanted = if enabled.contains(&entity) {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        if *visibility != wanted {
-            *visibility = wanted;
+    let mut nearest = None;
+    if rechoose {
+        let mut ranked: Vec<(Entity, f32)> = lights
+            .iter()
+            .map(|(entity, transform, _, _)| {
+                (
+                    entity,
+                    transform.translation().distance_squared(camera_position),
+                )
+            })
+            .collect();
+        sort_by_distance(&mut ranked);
+        budget.enabled.clear();
+        budget
+            .enabled
+            .extend(ranked.iter().take(budget_size).map(|(entity, _)| *entity));
+        let enabled: HashSet<Entity> = budget.enabled.iter().copied().collect();
+        for (entity, _, _, mut visibility) in &mut lights {
+            let wanted = if enabled.contains(&entity) {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+            if *visibility != wanted {
+                *visibility = wanted;
+            }
         }
+        budget.chosen_at = Some(camera_position);
+        budget.chosen = ranked.iter().map(|(entity, _)| *entity).collect();
+        // A new set of enabled lights has a new set of shadows.
+        budget.shadow_at = None;
+        nearest = ranked.first().copied();
     }
-    budget.chosen_at = Some(camera_position);
-    budget.chosen = ranked.iter().map(|(entity, _)| *entity).collect();
-    if let Some((nearest, distance_squared)) = ranked.first()
-        && let Ok((_, _, light, _)) = lights.get(*nearest)
+
+    // The shadow set follows the camera on its own: it is the nearest few of the enabled lights
+    // as of now, not as of the last re-choose. The budget's cache lets the camera move
+    // `BUDGET_RECHOOSE_DISTANCE` before it re-ranks, and a shadow set that waited for it would
+    // leave the light the player walks up to unshadowed while a light it has left behind keeps its
+    // map. The ranking is a sort of at most the enabled budget, and it runs only after a move.
+    if budget.shadow_at != Some(camera_position) {
+        let LightBudget {
+            enabled,
+            shadowed,
+            shadow_scratch,
+            ..
+        } = &mut *budget;
+        shadow_scratch.clear();
+        if shadow_count > 0 {
+            shadow_scratch.extend(enabled.iter().filter_map(|&entity| {
+                let (_, transform, _, _) = lights.get(entity).ok()?;
+                Some((
+                    entity,
+                    transform.translation().distance_squared(camera_position),
+                ))
+            }));
+            sort_by_distance(shadow_scratch);
+            shadow_scratch.truncate(shadow_count);
+        }
+        shadowed.clear();
+        shadowed.extend(shadow_scratch.iter().map(|(entity, _)| *entity));
+        for (entity, _, mut light, _) in &mut lights {
+            let wanted = shadowed.contains(&entity);
+            if light.shadow_maps_enabled != wanted {
+                light.shadow_maps_enabled = wanted;
+            }
+        }
+        budget.shadow_at = Some(camera_position);
+    }
+
+    if let Some((nearest, distance_squared)) = nearest
+        && let Ok((_, _, light, _)) = lights.get(nearest)
     {
         debug!(
             spawned,
-            enabled = enabled.len(),
+            enabled = budget.enabled.len(),
+            shadowed = budget.shadowed.len(),
             nearest_distance = distance_squared.sqrt(),
             nearest_range = light.range,
             nearest_intensity = light.intensity,
             "lights: budget re-chosen"
         );
+    }
+}
+
+/// How many of the nearest lights cast shadows: none when the Point-light shadows setting is off,
+/// otherwise the enabled budget, but never more than [`MAX_SHADOW_CASTING_POINT_LIGHTS`].
+fn shadow_casting_count(budget_size: usize, shadows_on: bool) -> usize {
+    if shadows_on {
+        budget_size.min(MAX_SHADOW_CASTING_POINT_LIGHTS)
+    } else {
+        0
     }
 }
 
@@ -441,6 +611,16 @@ fn sort_by_distance(ranked: &mut [(Entity, f32)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::ecs::schedule::SingleThreadedExecutor;
+    use bevy::log::tracing_subscriber::{
+        Registry,
+        layer::{Layer, SubscriberExt},
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tracing::{Event, Level, Subscriber};
 
     #[test]
     fn resident_deferred_lights_enable_disable_and_reenable_without_reloading() {
@@ -771,7 +951,19 @@ mod tests {
 
     /// A light budgeted around a camera, as `budget_lights` sees them.
     fn budget_app(camera: Vec3, light_positions: impl IntoIterator<Item = Vec3>) -> App {
+        budget_app_with(camera, light_positions, None)
+    }
+
+    /// [`budget_app`] with the rendering settings the budget reads, when a test needs them.
+    fn budget_app_with(
+        camera: Vec3,
+        light_positions: impl IntoIterator<Item = Vec3>,
+        settings: Option<crate::settings::RenderingSettings>,
+    ) -> App {
         let mut app = App::new();
+        if let Some(settings) = settings {
+            app.insert_resource(settings);
+        }
         app.add_plugins((
             MinimalPlugins,
             AssetPlugin::default(),
@@ -965,5 +1157,374 @@ mod tests {
             ENABLED_LIGHT_BUDGET - 1,
             "the light the newcomer displaced is the farthest one"
         );
+    }
+
+    /// The lights that have a cube shadow map, nearest first, as `(x, entity)`.
+    fn shadow_casting_lights(app: &mut App) -> Vec<(f32, Entity)> {
+        let mut query = app
+            .world_mut()
+            .query_filtered::<(Entity, &PointLight, &Transform), With<SkyrimLight>>();
+        let mut casting: Vec<(f32, Entity)> = query
+            .iter(app.world())
+            .filter(|(_, light, _)| light.shadow_maps_enabled)
+            .map(|(entity, _, transform)| (transform.translation.x, entity))
+            .collect();
+        casting.sort_by(|left, right| left.0.total_cmp(&right.0));
+        casting
+    }
+
+    fn shadows_on() -> crate::settings::RenderingSettings {
+        crate::settings::RenderingSettings {
+            point_light_shadows: true,
+            ..default()
+        }
+    }
+
+    /// Bleak Falls Barrow has 71 placed lights. With Point-light shadows on, the budget must not give
+    /// more than the retail limit of them a cube shadow map: 64 cube maps lost the Metal device.
+    #[test]
+    fn the_budget_never_shadows_more_lights_than_the_cap() {
+        const BLEAK_FALLS_BARROW_LIGHTS: usize = 71;
+        let mut app = budget_app_with(
+            Vec3::ZERO,
+            (0..BLEAK_FALLS_BARROW_LIGHTS).map(|index| Vec3::new(100.0 + index as f32, 0.0, 0.0)),
+            Some(shadows_on()),
+        );
+
+        assert_eq!(
+            enabled_lights(&mut app).len(),
+            ENABLED_LIGHT_BUDGET,
+            "the lighting budget is not the shadow cap"
+        );
+        assert_eq!(
+            shadow_casting_lights(&mut app).len(),
+            MAX_SHADOW_CASTING_POINT_LIGHTS,
+            "exactly the cap, not one per enabled light"
+        );
+        assert_eq!(
+            MAX_SHADOW_CASTING_POINT_LIGHTS, 4,
+            "retail: RF-LIGHT-GPU-004"
+        );
+        assert!(
+            shadow_encoder_estimate(shadow_casting_lights(&mut app).len())
+                < SHADOW_ENCODER_WARN_ESTIMATE,
+            "a frame stays far below the Metal command buffer limit"
+        );
+    }
+
+    /// The nearest lights are the ones that cast shadows, whatever order they spawned in, and they
+    /// follow the camera.
+    #[test]
+    fn the_budget_gives_shadows_to_the_nearest_lights_first() {
+        // Spawned far to near, so spawn order is the opposite of the ranking.
+        let mut app = budget_app_with(
+            Vec3::ZERO,
+            (0..20)
+                .rev()
+                .map(|index| Vec3::new(100.0 + 10.0 * index as f32, 0.0, 0.0)),
+            Some(shadows_on()),
+        );
+        let casting: Vec<f32> = shadow_casting_lights(&mut app)
+            .into_iter()
+            .map(|(x, _)| x)
+            .collect();
+        assert_eq!(casting, vec![100.0, 110.0, 120.0, 130.0]);
+
+        // Past `BUDGET_RECHOOSE_DISTANCE` the shadows move with the camera: the lights left
+        // behind lose theirs, so the total never grows past the cap.
+        move_camera(&mut app, Vec3::new(1_000.0, 0.0, 0.0));
+        let casting: Vec<f32> = shadow_casting_lights(&mut app)
+            .into_iter()
+            .map(|(x, _)| x)
+            .collect();
+        assert_eq!(casting, vec![260.0, 270.0, 280.0, 290.0]);
+    }
+
+    /// The cap is a ceiling and not a quota: fewer lights than the cap all cast, and a small
+    /// budget wins over the cap.
+    #[test]
+    fn the_shadow_cap_is_a_ceiling() {
+        let mut app = budget_app_with(
+            Vec3::ZERO,
+            (0..2).map(|index| Vec3::new(100.0 + index as f32, 0.0, 0.0)),
+            Some(shadows_on()),
+        );
+        assert_eq!(shadow_casting_lights(&mut app).len(), 2);
+
+        assert_eq!(shadow_casting_count(1, true), 1);
+        assert_eq!(shadow_casting_count(0, true), 0);
+        assert_eq!(
+            shadow_casting_count(ENABLED_LIGHT_BUDGET, true),
+            MAX_SHADOW_CASTING_POINT_LIGHTS
+        );
+        assert_eq!(
+            shadow_casting_count(256, true),
+            MAX_SHADOW_CASTING_POINT_LIGHTS
+        );
+    }
+
+    /// With the setting off no light casts a shadow, and switching it on and off re-chooses at
+    /// once, without a camera move.
+    #[test]
+    fn point_light_shadows_follow_the_setting() {
+        let mut app = budget_app_with(
+            Vec3::ZERO,
+            (0..10).map(|index| Vec3::new(100.0 + index as f32, 0.0, 0.0)),
+            Some(crate::settings::RenderingSettings::default()),
+        );
+        assert!(shadow_casting_lights(&mut app).is_empty());
+
+        app.world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .point_light_shadows = true;
+        app.update();
+        assert_eq!(
+            shadow_casting_lights(&mut app).len(),
+            MAX_SHADOW_CASTING_POINT_LIGHTS
+        );
+
+        app.world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .point_light_shadows = false;
+        app.update();
+        assert!(shadow_casting_lights(&mut app).is_empty());
+    }
+
+    /// A light that is not a Skyrim light keeps whatever shadow setting its owner gave it.
+    #[test]
+    fn the_shadow_cap_leaves_other_point_lights_alone() {
+        let mut app = budget_app_with(
+            Vec3::ZERO,
+            (0..10).map(|index| Vec3::new(100.0 + index as f32, 0.0, 0.0)),
+            Some(shadows_on()),
+        );
+        let fixture = app
+            .world_mut()
+            .spawn((
+                PointLight {
+                    shadow_maps_enabled: true,
+                    ..default()
+                },
+                Transform::from_translation(Vec3::new(5_000.0, 0.0, 0.0)),
+            ))
+            .id();
+        app.update();
+        assert!(
+            app.world()
+                .entity(fixture)
+                .get::<PointLight>()
+                .unwrap()
+                .shadow_maps_enabled
+        );
+        assert_eq!(
+            shadow_casting_lights(&mut app).len(),
+            MAX_SHADOW_CASTING_POINT_LIGHTS
+        );
+    }
+
+    /// The guard logs for a load near the limit and is silent below it. The estimate is the
+    /// arithmetic the doc comments state: 6 cube faces, 5 encoders each.
+    #[test]
+    fn the_encoder_estimate_flags_the_load_that_lost_the_device() {
+        assert_eq!(shadow_encoder_estimate(4), 120);
+        assert_eq!(shadow_encoder_estimate(64), 1_920);
+        assert!(
+            shadow_encoder_estimate(MAX_SHADOW_CASTING_POINT_LIGHTS) < SHADOW_ENCODER_WARN_ESTIMATE
+        );
+        assert!(
+            shadow_encoder_estimate(ENABLED_LIGHT_BUDGET) >= SHADOW_ENCODER_WARN_ESTIMATE,
+            "the 64-light load that lost the device is above the warning level"
+        );
+    }
+
+    /// The camera moves less than `BUDGET_RECHOOSE_DISTANCE`, so the 64-light selection is cached
+    /// and not re-made. The shadows still go to the four lights nearest the camera now: the light
+    /// walked up to takes one and the one left behind gives it up.
+    #[test]
+    fn shadows_follow_the_camera_inside_the_budget_cache_distance() {
+        let mut app = budget_app_with(
+            Vec3::ZERO,
+            (0..9).map(|index| Vec3::new(100.0 + 10.0 * index as f32, 0.0, 0.0)),
+            Some(shadows_on()),
+        );
+        let xs = |app: &mut App| -> Vec<f32> {
+            shadow_casting_lights(app)
+                .into_iter()
+                .map(|(x, _)| x)
+                .collect()
+        };
+        assert_eq!(xs(&mut app), vec![100.0, 110.0, 120.0, 130.0]);
+
+        move_camera(&mut app, Vec3::new(141.0, 0.0, 0.0));
+        assert_eq!(
+            app.world().resource::<LightBudget>().chosen_at,
+            Some(Vec3::ZERO),
+            "the move is inside the cache distance, so the budget was not re-made"
+        );
+        const { assert!(141.0 < BUDGET_RECHOOSE_DISTANCE) };
+        assert_eq!(
+            xs(&mut app),
+            vec![130.0, 140.0, 150.0, 160.0],
+            "the shadows moved to the four nearest lights"
+        );
+        assert_eq!(
+            enabled_lights(&mut app).len(),
+            9,
+            "and no light was hidden by it"
+        );
+    }
+
+    /// Two lights at the same distance compete for the last shadow of four, and the one with the
+    /// lower entity wins every time, however the camera moves without changing that: the entity
+    /// breaks the tie, so nothing flickers.
+    #[test]
+    fn equidistant_lights_keep_the_same_shadow_when_the_camera_moves() {
+        // Three lights nearer than the rest, then a pair on either side of the camera at the same
+        // distance for the fourth shadow, then one farther. Spawned with the pair first, so the
+        // winner is the one spawned first.
+        let mut app = budget_app_with(
+            Vec3::ZERO,
+            [40.0, -40.0, 10.0, 20.0, -30.0, 100.0].map(|x| Vec3::new(x, 0.0, 0.0)),
+            Some(shadows_on()),
+        );
+        let pair: Vec<Entity> = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<(Entity, &Transform), With<SkyrimLight>>();
+            query
+                .iter(app.world())
+                .filter(|(_, transform)| transform.translation.x.abs() == 40.0)
+                .map(|(entity, _)| entity)
+                .collect()
+        };
+        assert_eq!(pair.len(), 2);
+        let winner = *pair.iter().min().unwrap();
+
+        for step in 0..=5 {
+            // Along y the distances to the pair stay equal to each other.
+            move_camera(&mut app, Vec3::new(0.0, step as f32, 0.0));
+            let casting = shadow_casting_lights(&mut app);
+            assert_eq!(casting.len(), MAX_SHADOW_CASTING_POINT_LIGHTS);
+            let from_pair: Vec<Entity> = casting
+                .iter()
+                .map(|(_, entity)| *entity)
+                .filter(|entity| pair.contains(entity))
+                .collect();
+            assert_eq!(
+                from_pair,
+                vec![winner],
+                "the lower entity of the tied pair has the fourth shadow at step {step}"
+            );
+        }
+    }
+
+    /// Runs `warn_on_shadow_encoder_load` over a world of lights and counts its error logs.
+    struct GuardRun {
+        app: App,
+        errors: Arc<AtomicUsize>,
+    }
+
+    impl GuardRun {
+        fn new() -> Self {
+            let mut app = App::new();
+            // The log is captured per thread, so the system has to run on this one.
+            app.edit_schedule(Update, |schedule| {
+                schedule.set_executor(SingleThreadedExecutor::new());
+            });
+            app.add_systems(Update, warn_on_shadow_encoder_load);
+            Self {
+                app,
+                errors: Arc::default(),
+            }
+        }
+
+        fn spawn(&mut self, count: usize, shadows: bool, visible: bool) -> Vec<Entity> {
+            (0..count)
+                .map(|_| {
+                    self.app
+                        .world_mut()
+                        .spawn((
+                            PointLight {
+                                shadow_maps_enabled: shadows,
+                                ..default()
+                            },
+                            if visible {
+                                InheritedVisibility::VISIBLE
+                            } else {
+                                InheritedVisibility::HIDDEN
+                            },
+                        ))
+                        .id()
+                })
+                .collect()
+        }
+
+        /// One frame, and how many error logs of the guard it produced.
+        fn frame(&mut self) -> usize {
+            let before = self.errors.load(Ordering::Relaxed);
+            let subscriber = Registry::default().with(ErrorCount(self.errors.clone()));
+            tracing::subscriber::with_default(subscriber, || self.app.update());
+            self.errors.load(Ordering::Relaxed) - before
+        }
+    }
+
+    #[derive(Clone)]
+    struct ErrorCount(Arc<AtomicUsize>);
+
+    impl<S: Subscriber> Layer<S> for ErrorCount {
+        fn on_event(
+            &self,
+            event: &Event<'_>,
+            _context: bevy::log::tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let metadata = event.metadata();
+            if *metadata.level() == Level::ERROR && metadata.target() == "engine::lights" {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// The fewest shadow-casting lights whose estimate reaches the warning level.
+    fn lights_at_the_warning_level() -> usize {
+        SHADOW_ENCODER_WARN_ESTIMATE.div_ceil(shadow_encoder_estimate(1))
+    }
+
+    #[test]
+    fn the_guard_counts_only_visible_shadow_casting_lights() {
+        let at_level = lights_at_the_warning_level();
+        let mut run = GuardRun::new();
+        // Plenty of lights that cannot cost an encoder: hidden ones, and visible ones without a
+        // shadow map.
+        run.spawn(at_level + 20, true, false);
+        run.spawn(at_level + 20, false, true);
+        run.spawn(at_level - 1, true, true);
+        assert_eq!(run.frame(), 0, "one light below the level is silent");
+        run.spawn(1, true, true);
+        assert_eq!(run.frame(), 1, "the light that reaches the level warns");
+    }
+
+    #[test]
+    fn the_guard_warns_once_per_crossing_and_again_after_a_drop() {
+        let at_level = lights_at_the_warning_level();
+        let mut run = GuardRun::new();
+        let mut casting = run.spawn(at_level, true, true);
+
+        assert_eq!(run.frame(), 1, "crossing the level warns");
+        assert_eq!(
+            run.frame(),
+            0,
+            "an unchanged count does not repeat the warning"
+        );
+        assert_eq!(run.frame(), 0);
+
+        // Below the level: silent, and the guard forgets the count.
+        run.app.world_mut().despawn(casting.pop().unwrap());
+        assert_eq!(run.frame(), 0);
+        assert_eq!(run.frame(), 0);
+
+        // Crossing again warns again, once.
+        casting.extend(run.spawn(1, true, true));
+        assert_eq!(run.frame(), 1, "the second crossing warns again");
+        assert_eq!(run.frame(), 0, "and only once");
     }
 }

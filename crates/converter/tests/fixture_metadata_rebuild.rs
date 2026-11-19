@@ -14,6 +14,458 @@ const VOLCANIC_GLB: &str = "meshes/landscape/grass/dlc02volcanicashgrass01.glb";
 const VOLCANIC_ORIGINAL: &str = "textures/landscape/grass/volcanicashgrass02_n.dds";
 const VOLCANIC_TARGET: &str = "textures/dlc02/landscape/grass/volcanicashgrass02_n.dds";
 
+/// Reframe the generated plugin with the same valid base in all four quadrants.
+fn paint_every_quadrant(bytes: &[u8]) -> Vec<u8> {
+    use dummy_content::inhouse_magic::subrecord;
+    let mut output = Vec::new();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let header = &bytes[offset..offset + 24];
+        let size = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+        let group = &header[..4] == b"GRUP";
+        let end = offset + if group { size } else { size + 24 };
+        let payload = &bytes[offset + 24..end];
+        let payload = if group {
+            paint_every_quadrant(payload)
+        } else if &header[..4] == b"LAND" {
+            let mut payload = payload.to_vec();
+            // The generated LAND ends in BTXT, naming LTEX 4 in quadrant zero.
+            assert_eq!(&payload[payload.len() - 14..payload.len() - 10], b"BTXT");
+            for quadrant in 1..4 {
+                payload.extend(subrecord(b"BTXT", &[4, 0, 0, 0, quadrant, 0, 0, 0]));
+            }
+            payload
+        } else {
+            payload.to_vec()
+        };
+        let mut header = header.to_vec();
+        header[4..8].copy_from_slice(
+            &u32::try_from(payload.len() + if group { 24 } else { 0 })
+                .unwrap()
+                .to_le_bytes(),
+        );
+        output.extend(header);
+        output.extend(payload);
+        offset = end;
+    }
+    output
+}
+
+/// Pin each reader's established dangling-base projection through real publication.
+async fn dangling_base_publication(reader: converter::config::RecordReader, expected: u32) {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let output = directory.path().join("published");
+    generate(&data);
+    let plugin = data.join("Skyrim.esm");
+    let mut bytes = paint_every_quadrant(&fs::read(&plugin).unwrap());
+    let base = bytes.windows(4).position(|tag| tag == b"BTXT").unwrap();
+    assert_eq!(&bytes[base + 4..base + 6], &8u16.to_le_bytes());
+    bytes[base + 6..base + 10].copy_from_slice(&0x899u32.to_le_bytes());
+    fs::write(plugin, bytes).unwrap();
+    let mut config = common::cpu_lod_config(&data, &output);
+    config.record_reader = reader;
+    config.no_lod = true;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let report = AssetPipeline::run_async(config, tx).await.unwrap();
+    drain.await.unwrap();
+    let mapping =
+        converter::esm::cell_cache::validate_cell_cache(&output.join("cell_cache.rkyv")).unwrap();
+    let cache =
+        rkyv::from_bytes::<converter::shared::CellCache, rkyv::rancor::Error>(&mapping).unwrap();
+    let layers = &cache.cells[0].layers;
+    assert_eq!(layers.len(), 4);
+    assert_eq!(
+        layers
+            .iter()
+            .find(|layer| layer.quadrant == 0 && layer.is_base)
+            .unwrap()
+            .texture_form_id,
+        expected
+    );
+    assert_eq!(
+        layers
+            .iter()
+            .find(|layer| layer.quadrant == 1 && layer.is_base)
+            .unwrap()
+            .texture_form_id,
+        4
+    );
+    let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let diffuse: Option<String> = database
+        .query_row(
+            "SELECT diffuse_path FROM terrain_default_texture WHERE id=0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        diffuse.as_deref(),
+        (expected == 0).then_some("terrain/default-diffuse.ktx2")
+    );
+    let neighbor: u32 = database
+        .query_row(
+            "SELECT COUNT(*) FROM \"references\" WHERE id=4660",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(neighbor, 1);
+    if reader == converter::config::RecordReader::Inhouse {
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("cleared 1 links") && notice.contains("00000899")),
+            "the existing optional-link recovery must be reported: {report:?}"
+        );
+        assert!(report.complete && report.warnings.is_empty(), "{report:?}");
+    } else {
+        assert!(report.complete && report.warnings.is_empty(), "{report:?}");
+        assert!(
+            !report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("00000899")),
+            "legacy preserves unresolved identity without an optional-link recovery notice: {report:?}"
+        );
+    }
+}
+
+/// The in-house reader clears a dangling BTXT to null, which selects the configured default.
+#[tokio::test]
+async fn inhouse_dangling_base_uses_configured_default() {
+    dangling_base_publication(converter::config::RecordReader::Inhouse, 0).await;
+}
+
+/// Legacy keeps a dangling nonzero BTXT, so it does not become a configured null base.
+#[tokio::test]
+async fn legacy_dangling_base_retains_unresolved_identity() {
+    dangling_base_publication(converter::config::RecordReader::Legacy, 0x899).await;
+}
+
+/// Verify complete publication, white default metadata, and an intact neighboring record.
+fn assert_white_rebuild(report: &converter::PipelineReport, output: &Path, needed: bool) {
+    assert!(report.complete, "{report:?}");
+    assert!(report.warnings.is_empty(), "{report:?}");
+    assert!(
+        ConversionManifest::load(&output.join("conversion-manifest.json"))
+            .unwrap()
+            .complete
+    );
+    let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let default: (Option<String>, Option<String>, Option<String>) = database
+        .query_row("SELECT diffuse_path, normal_path, source_diffuse FROM terrain_default_texture WHERE id=0", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap();
+    assert_eq!(default, (None, None, None));
+    let neighbors: u32 = database
+        .query_row(
+            "SELECT COUNT(*) FROM \"references\" WHERE id=4660",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(neighbors, 1);
+    let mapping =
+        converter::esm::cell_cache::validate_cell_cache(&output.join("cell_cache.rkyv")).unwrap();
+    let cache =
+        rkyv::from_bytes::<converter::shared::CellCache, rkyv::rancor::Error>(&mapping).unwrap();
+    assert_eq!(cache.cells.len(), 1);
+    assert_eq!(cache.cells[0].layers.len(), if needed { 1 } else { 4 });
+    let bases: Vec<_> = cache.cells[0]
+        .layers
+        .iter()
+        .map(|layer| (layer.quadrant, layer.texture_form_id))
+        .collect();
+    assert_eq!(
+        bases,
+        if needed {
+            vec![(0, 4)]
+        } else {
+            vec![(0, 4), (1, 4), (2, 4), (3, 4)]
+        }
+    );
+    if needed {
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("falls back to white")),
+            "{:?}",
+            report.notices
+        );
+    } else {
+        assert!(
+            !report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("default land")),
+            "{:?}",
+            report.notices
+        );
+    }
+}
+
+/// Exercise a genuinely unreadable loose default through full metadata publication.
+#[cfg(any(windows, unix))]
+async fn rebuild_with_unreadable_default(needed: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    if !needed {
+        let plugin = data.join("Skyrim.esm");
+        fs::write(&plugin, paint_every_quadrant(&fs::read(&plugin).unwrap())).unwrap();
+    }
+    convert(&data, &source).await;
+    let manifest_hash = hash_file(&source.join("conversion-manifest.json")).unwrap();
+    let default = data.join("textures/landscape/dirt02.dds");
+    // A failed winning loose override must not expose a healthy lower-priority archive.
+    fs::write(
+        data.join("Skyrim - Textures.bsa"),
+        bsa::v105(
+            &[Entry {
+                name: "textures/landscape/dirt02.dds",
+                data: &fs::read(&default).unwrap(),
+            }],
+            bsa::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let Some(unreadable) = block_file_reads(&default) else {
+        return;
+    };
+    assert!(
+        fs::read(&default).is_err(),
+        "fixture must actually deny reads"
+    );
+    let result = rebuild(&data, &source, &output).await;
+    drop(unreadable);
+    assert!(
+        result.is_ok(),
+        "unreadable default aborted metadata rebuild (needed={needed}): {result:?}"
+    );
+    assert_white_rebuild(&result.unwrap(), &output, needed);
+    assert_eq!(
+        hash_file(&source.join("conversion-manifest.json")).unwrap(),
+        manifest_hash
+    );
+}
+
+/// An unused default must never be opened when every quadrant has an authored base.
+#[cfg(any(windows, unix))]
+#[tokio::test]
+async fn metadata_rebuild_default_unused_unreadable_loose_completes() {
+    rebuild_with_unreadable_default(false).await;
+}
+
+/// An unreadable used default falls back to white without losing usable neighboring data.
+#[cfg(any(windows, unix))]
+#[tokio::test]
+async fn metadata_rebuild_default_needed_unreadable_loose_falls_back() {
+    rebuild_with_unreadable_default(true).await;
+}
+
+/// A damaged archive-only default falls back locally without blocking publication.
+#[tokio::test]
+async fn metadata_rebuild_default_changed_archive_falls_back() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    let default = data.join("textures/landscape/dirt02.dds");
+    fs::remove_file(default).unwrap();
+    fs::write(
+        data.join("Skyrim - Textures.bsa"),
+        bsa::v105(
+            &[Entry {
+                name: "textures/landscape/dirt02.dds",
+                data: b"damaged replacement DDS",
+            }],
+            bsa::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let result = rebuild(&data, &source, &output).await;
+    assert!(
+        result.is_ok(),
+        "changed archive default aborted metadata rebuild: {result:?}"
+    );
+    assert_white_rebuild(&result.unwrap(), &output, true);
+}
+
+/// Regenerated default images use current loose or archive bytes, unlike retained LTEX assets.
+#[tokio::test]
+async fn metadata_rebuild_defaults_use_current_bytes() {
+    use converter::texture::{TextureConverter, TextureEncoding};
+    use dummy_content::{dds, rng::Rng};
+    for (archived, change_diffuse) in [(false, false), (false, true), (true, false), (true, true)] {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let source = directory.path().join("source");
+        let output = directory.path().join("rebuilt");
+        generate(&data);
+        convert(&data, &source).await;
+        let manifest_hash = hash_file(&source.join("conversion-manifest.json")).unwrap();
+        let mut expected = Vec::new();
+        let mut replacements = Vec::new();
+        for (name, format, encoding, seed) in [
+            (
+                "dirt02",
+                dds::Format::Bc1Unorm,
+                TextureEncoding::ColorSrgb,
+                281,
+            ),
+            (
+                "dirt02_n",
+                dds::Format::Bc5Unorm,
+                TextureEncoding::NormalLinear,
+                307,
+            ),
+        ] {
+            let relative = format!("textures/landscape/{name}.dds");
+            let original = fs::read(data.join(&relative)).unwrap();
+            let bytes = if name == "dirt02" && !change_diffuse {
+                original.clone()
+            } else {
+                let bytes =
+                    dds::generate(&dds::Spec::new(format, 16, 16), &mut Rng::new(seed)).unwrap();
+                assert_ne!(bytes, original);
+                bytes
+            };
+            let config = common::cpu_lod_config(&data, &output);
+            expected.push(
+                TextureConverter::convert_with_options(
+                    &bytes,
+                    encoding,
+                    config.texture_fallback_quality,
+                    config.texture_uastc_level,
+                    config.texture_zstd_level,
+                )
+                .unwrap(),
+            );
+            if archived {
+                fs::remove_file(data.join(&relative)).unwrap();
+            } else {
+                fs::write(data.join(&relative), &bytes).unwrap();
+            }
+            replacements.push((relative, bytes));
+        }
+        if archived {
+            let entries: Vec<_> = replacements
+                .iter()
+                .map(|(name, data)| Entry { name, data })
+                .collect();
+            fs::write(
+                data.join("Skyrim - Textures.bsa"),
+                bsa::v105(&entries, bsa::Compression::None).unwrap(),
+            )
+            .unwrap();
+        }
+        let report = rebuild(&data, &source, &output).await.unwrap();
+        assert!(report.complete, "{report:?}");
+        assert!(report.warnings.is_empty(), "{report:?}");
+        for (name, bytes) in ["diffuse", "normal"].into_iter().zip(expected) {
+            assert!(
+                output
+                    .join(format!("terrain/default-{name}.ktx2"))
+                    .is_file(),
+                "regenerated default {name} must use the current source (archived={archived})"
+            );
+            assert_eq!(
+                fs::read(output.join(format!("terrain/default-{name}.ktx2"))).unwrap(),
+                bytes
+            );
+        }
+        let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+        let normal: String = database
+            .query_row(
+                "SELECT normal_path FROM terrain_default_texture WHERE id=0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(normal, "terrain/default-normal.ktx2");
+        let neighbor: u32 = database
+            .query_row(
+                "SELECT COUNT(*) FROM \"references\" WHERE id=4660",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(neighbor, 1);
+        assert_eq!(
+            hash_file(&source.join("conversion-manifest.json")).unwrap(),
+            manifest_hash
+        );
+    }
+}
+
+/// A corrupt compressed default entry cannot abort extraction of usable neighboring inputs.
+#[tokio::test]
+async fn metadata_rebuild_default_damaged_compressed_archive_falls_back() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    let default = data.join("textures/landscape/dirt02.dds");
+    let dds = fs::read(&default).unwrap();
+    let mut archive = bsa::v105(
+        &[Entry {
+            name: "textures/landscape/dirt02.dds",
+            data: &dds,
+        }],
+        bsa::Compression::Lz4,
+    )
+    .unwrap();
+    // One SSE folder record (24 bytes), then its length-prefixed NUL-terminated name.
+    let file_record = 36 + 24 + 1 + "textures/landscape".len() + 1;
+    let payload = u32::from_le_bytes(
+        archive[file_record + 12..file_record + 16]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    archive[payload + 4..].fill(0xff);
+    fs::write(data.join("Skyrim - Textures.bsa"), archive).unwrap();
+    fs::remove_file(default).unwrap();
+    let result = rebuild(&data, &source, &output).await;
+    assert!(
+        result.is_ok(),
+        "damaged compressed default aborted metadata rebuild: {result:?}"
+    );
+    assert_white_rebuild(&result.unwrap(), &output, true);
+}
+
+/// Default recovery must not relax source identity checks for an LTEX-required diffuse.
+#[tokio::test]
+async fn metadata_rebuild_default_recovery_keeps_ordinary_sources_strict() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    fs::write(
+        data.join(layout::GENERATED_DIFFUSE_PATH),
+        b"changed ordinary terrain DDS",
+    )
+    .unwrap();
+    let error = rebuild(&data, &source, &output).await.unwrap_err();
+    assert!(
+        format!("{error:#}").contains("retained terrain texture source differs"),
+        "{error:#}"
+    );
+    assert!(!output.exists());
+}
+
 /// A capability dropped during final refresh must affect both published completeness flags.
 #[tokio::test]
 async fn metadata_rebuild_completeness_includes_late_extension_warnings() {
@@ -1601,4 +2053,534 @@ async fn v91_metadata_rebuild_rejects_ambiguous_lod_and_lighting_producers() {
         );
         assert!(!output.exists());
     }
+}
+
+/// The settings proof a producer with script ABI `abi` and reader `identity` recorded.
+/// The fixture's default configuration uses the CPU texture encoder.
+fn combined_hash(config: &PipelineConfig, identity: &serde_json::Value, abi: u32) -> String {
+    assert_eq!(config.texture_encoder, converter::TextureEncoder::Cpu);
+    hash_bytes(
+        &serde_json::to_vec(&serde_json::json!({
+            "schema": converter::cache::CONVERTER_SCHEMA_VERSION,
+            "texture_etc1s_quality": config.texture_fallback_quality,
+            "texture_uastc_level": config.texture_uastc_level,
+            "script_abi_version": abi,
+            "record_reader": identity,
+            "texture_zstd_level": config.texture_zstd_level,
+            "texture_encoder": {"mode": "cpu"},
+        }))
+        .unwrap(),
+    )
+}
+
+/// Replace a file without writing through a hard link.
+fn replace_file(path: &Path, bytes: &[u8]) {
+    fs::remove_file(path).unwrap();
+    fs::write(path, bytes).unwrap();
+}
+
+/// Make `source` look like a pack produced under script ABI `abi`, and optionally decoded
+/// with an earlier base schema. Its scripts become marker bytes that must never survive a
+/// rebuild. Returns the scripts a conversion under the current ABI produced.
+fn age_source(
+    source: &Path,
+    data: &Path,
+    abi: u32,
+    earlier_schema: Option<&str>,
+) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let config = common::cpu_lod_config(data, source.join("unused"));
+    let path = source.join("conversion-manifest.json");
+    let mut manifest = ConversionManifest::load(&path).unwrap();
+    let mut identity: serde_json::Value =
+        serde_json::from_slice(&fs::read(source.join("record-reader.json")).unwrap()).unwrap();
+    assert_eq!(
+        combined_hash(&config, &identity, converter::script::SCRIPT_ABI_VERSION),
+        manifest.configuration_hash,
+        "the test must reproduce the converter's combined proof"
+    );
+    if let Some(digest) = earlier_schema {
+        identity["schema_sha256"] = serde_json::json!(digest);
+        replace_file(
+            &source.join("record-reader.json"),
+            &serde_json::to_vec(&identity).unwrap(),
+        );
+        Connection::open(source.join("skyrim_world.db"))
+            .unwrap()
+            .execute(
+                "UPDATE record_overrides SET schema_sha256=?1 WHERE record_type='TES4'",
+                [digest],
+            )
+            .unwrap();
+    }
+    manifest.configuration_hash = combined_hash(&config, &identity, abi);
+    let mut old_abi = config.clone();
+    old_abi.script_abi_version = abi;
+    manifest.asset_configuration_hashes.insert(
+        "pex".into(),
+        converter::cache::asset_configuration_hash_for_schema(
+            &old_abi,
+            converter::cache::CONVERTER_SCHEMA_VERSION,
+            "pex",
+        )
+        .unwrap(),
+    );
+    let marker = format!("-- script ABI {abi} marker\n");
+    let mut originals = std::collections::BTreeMap::new();
+    for entry in manifest
+        .entries
+        .values_mut()
+        .filter(|entry| entry.output.starts_with("scripts/"))
+    {
+        let script = source.join(&entry.output);
+        originals.insert(entry.output.clone(), fs::read(&script).unwrap());
+        replace_file(&script, marker.as_bytes());
+        entry.output_hash = hash_bytes(marker.as_bytes());
+        entry.output_size = marker.len() as u64;
+    }
+    assert!(!originals.is_empty(), "the fixture has scripts");
+    replace_file(
+        &source.join("scripts/papyrus_runtime.luau"),
+        b"-- runtime for an older script ABI\n",
+    );
+    manifest.save(&path).unwrap();
+    originals
+}
+
+fn provenance(output: &Path) -> serde_json::Value {
+    serde_json::from_slice(&fs::read(output.join("metadata-rebuild.json")).unwrap()).unwrap()
+}
+
+/// A script ABI bump rebuilds only the scripts. Meshes, textures and every neighbor stay the
+/// source's verified bytes, the source pack is not touched, and the next rebuild from the
+/// result reuses every kind.
+#[tokio::test]
+async fn script_abi_bump_rebuilds_only_scripts_and_reuses_the_rest() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    let again = directory.path().join("again");
+    generate(&data);
+    convert(&data, &source).await;
+    let originals = age_source(&source, &data, 1, None);
+    let aged_manifest = hash_file(&source.join("conversion-manifest.json")).unwrap();
+    let manifest = ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
+    let kept: Vec<_> = manifest
+        .entries
+        .values()
+        .filter(|entry| !entry.output.starts_with("scripts/"))
+        .map(|entry| {
+            (
+                entry.output.clone(),
+                hash_file(&source.join(&entry.output)).unwrap(),
+            )
+        })
+        .collect();
+    assert!(
+        kept.iter().any(|(path, _)| path.ends_with(".glb"))
+            && kept.iter().any(|(path, _)| path.ends_with(".ktx2"))
+    );
+
+    let report = rebuild(&data, &source, &output).await.unwrap();
+    assert!(report.complete, "{:?}", report.warnings);
+    assert_eq!(
+        report.converted,
+        originals.len() as u64,
+        "only scripts convert"
+    );
+    for (script, bytes) in &originals {
+        assert_eq!(&fs::read(output.join(script)).unwrap(), bytes, "{script}");
+    }
+    assert_eq!(
+        fs::read(output.join("scripts/papyrus_runtime.luau")).unwrap(),
+        include_bytes!("../../shared/src/papyrus_runtime.luau")
+    );
+    for (relative, hash) in &kept {
+        assert_eq!(
+            &hash_file(&output.join(relative)).unwrap(),
+            hash,
+            "{relative}"
+        );
+    }
+    let rebuilt = ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+    let current_pex = converter::cache::asset_configuration_hash_for_schema(
+        &common::cpu_lod_config(&data, &output),
+        converter::cache::CONVERTER_SCHEMA_VERSION,
+        "pex",
+    )
+    .unwrap();
+    assert_eq!(rebuilt.asset_configuration_hashes["pex"], current_pex);
+    for (script, bytes) in &originals {
+        let entry = rebuilt
+            .entries
+            .values()
+            .find(|entry| &entry.output == script)
+            .unwrap();
+        assert_eq!(entry.output_hash, hash_bytes(bytes));
+    }
+    let record = provenance(&output);
+    assert_eq!(record["source_script_abi"], 1);
+    assert_eq!(record["script_abi"], converter::script::SCRIPT_ABI_VERSION);
+    assert_eq!(record["asset_kinds"]["pex"]["action"], "rebuilt");
+    assert_eq!(record["asset_kinds"]["nif"]["action"], "reused");
+    assert_eq!(record["asset_kinds"]["dds"]["action"], "reused");
+    assert_eq!(
+        record["asset_kinds"]["pex"]["proof"].as_str().unwrap(),
+        current_pex
+    );
+    // The source stays exactly as it was, markers included.
+    assert_eq!(
+        hash_file(&source.join("conversion-manifest.json")).unwrap(),
+        aged_manifest
+    );
+    for script in originals.keys() {
+        assert_eq!(
+            fs::read(source.join(script)).unwrap(),
+            b"-- script ABI 1 marker\n"
+        );
+    }
+
+    // The result is a current pack: the next rebuild reuses every kind, scripts included.
+    let report = rebuild(&data, &output, &again).await.unwrap();
+    assert!(report.complete, "{:?}", report.warnings);
+    assert_eq!(report.converted, 0);
+    let record = provenance(&again);
+    for kind in ["nif", "dds", "pex"] {
+        assert_eq!(record["asset_kinds"][kind]["action"], "reused", "{kind}");
+    }
+    for (script, bytes) in &originals {
+        assert_eq!(&fs::read(again.join(script)).unwrap(), bytes);
+    }
+}
+
+/// A recorded earlier base schema in the pack's lineage no longer refuses the rebuild; the
+/// database is decoded again with the compiled schema. An unlisted digest still refuses.
+#[tokio::test]
+async fn trusted_earlier_schema_digest_is_accepted_and_unknown_digest_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    let again = directory.path().join("again");
+    generate(&data);
+    convert(&data, &source).await;
+    let earlier = "ee7e85d996711c656abcc427fb76496452c7d0e89c1b383abf64a8acd1392d30";
+    // The ABI changed too, as in the registered packs.
+    let originals = age_source(&source, &data, 1, Some(earlier));
+
+    let report = rebuild(&data, &source, &output).await.unwrap();
+    assert!(report.complete, "{:?}", report.warnings);
+    assert_eq!(report.converted, originals.len() as u64);
+    let record = provenance(&output);
+    assert_eq!(record["source_schema_lineage"]["sha256"], earlier);
+    assert_eq!(
+        record["source_schema_lineage"]["produced_by"],
+        "b5259d33a73e"
+    );
+    let reader: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("record-reader.json")).unwrap()).unwrap();
+    assert_eq!(
+        reader["schema_sha256"],
+        hash_bytes(converter::records::SCHEMA_BYTES)
+    );
+    // The retained producer keeps its earlier schema, so a second rebuild still accepts it.
+    assert_eq!(
+        record["retained_asset_record_reader"]["schema_sha256"],
+        earlier
+    );
+    let report = rebuild(&data, &output, &again).await.unwrap();
+    assert!(report.complete, "{:?}", report.warnings);
+    assert_eq!(report.converted, 0);
+
+    let unknown = directory.path().join("unknown-source");
+    convert(&data, &unknown).await;
+    age_source(&unknown, &data, 1, Some(&"ab".repeat(32)));
+    let refused = directory.path().join("unknown-output");
+    let error = rebuild(&data, &unknown, &refused).await.unwrap_err();
+    assert!(
+        format!("{error:?}").contains("diagnostic schema differs from the producing schema"),
+        "{error:?}"
+    );
+    assert!(!refused.exists());
+}
+
+/// A real asset change is never reused or relabeled: a stale mesh proof refuses the rebuild
+/// even when the scripts would also rebuild, and names the kind to regenerate.
+#[tokio::test]
+async fn changed_mesh_proof_still_refuses_alongside_a_script_abi_bump() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    age_source(&source, &data, 1, None);
+    let path = source.join("conversion-manifest.json");
+    let mut manifest = ConversionManifest::load(&path).unwrap();
+    manifest
+        .asset_configuration_hashes
+        .insert("nif".into(), "0".repeat(64));
+    manifest.save(&path).unwrap();
+    let error = rebuild(&data, &source, &output).await.unwrap_err();
+    assert!(
+        format!("{error:?}").contains("mesh output contract"),
+        "{error:?}"
+    );
+    assert!(!output.exists());
+}
+
+/// Rebuilt scripts must come from the sources the package recorded.
+#[tokio::test]
+async fn script_rebuild_refuses_data_scripts_that_differ_from_the_package() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    age_source(&source, &data, 1, None);
+    replace_file(
+        &data.join("scripts/generated.pex"),
+        &dummy_content::pex::minimal("Changed").unwrap(),
+    );
+    let error = rebuild(&data, &source, &output).await.unwrap_err();
+    assert!(
+        format!("{error:?}").contains("script sources in Data differ"),
+        "{error:?}"
+    );
+    assert!(!output.exists());
+}
+
+/// Every mesh or texture refusal names the safe path, its settings, its approval and its cost.
+fn assert_regeneration_note(error: &str) {
+    for needle in [
+        "into an APFS clone of this package",
+        "never into a registered pack",
+        "--texture-encoder gpu --gpu-quality 2",
+        "explicit approval",
+        "65 GiB",
+    ] {
+        assert!(error.contains(needle), "missing {needle:?}: {error}");
+    }
+}
+
+/// Copy a pack tree. Stands in for an APFS clone on the tiny fixture.
+#[cfg(unix)]
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// A stale mesh proof is regenerated by a normal conversion into a clone of the pack. That
+/// conversion converts only the meshes: every texture and script whose own proof still matches
+/// stays the same file, and the source pack is not touched. The metadata rebuild refuses the
+/// same pack and names this path.
+#[cfg(unix)]
+#[tokio::test]
+async fn normal_conversion_into_a_clone_rebuilds_only_the_stale_mesh_kind() {
+    use std::os::unix::fs::MetadataExt;
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let clone = directory.path().join("clone");
+    generate(&data);
+    convert(&data, &source).await;
+    copy_tree(&source, &clone);
+    let path = clone.join("conversion-manifest.json");
+    let mut manifest = ConversionManifest::load(&path).unwrap();
+    manifest
+        .asset_configuration_hashes
+        .insert("nif".into(), "0".repeat(64));
+    manifest.save(&path).unwrap();
+    let by_kind = |manifest: &ConversionManifest, prefix: &str| -> Vec<String> {
+        manifest
+            .entries
+            .values()
+            .filter(|entry| entry.output.starts_with(prefix))
+            .map(|entry| entry.output.clone())
+            .collect()
+    };
+    let (meshes, textures, scripts) = (
+        by_kind(&manifest, "meshes/"),
+        by_kind(&manifest, "textures/"),
+        by_kind(&manifest, "scripts/"),
+    );
+    assert!(!meshes.is_empty() && !textures.is_empty() && !scripts.is_empty());
+    let inodes = |root: &Path, files: &[String]| -> Vec<u64> {
+        files
+            .iter()
+            .map(|file| fs::metadata(root.join(file)).unwrap().ino())
+            .collect()
+    };
+    let before = (
+        inodes(&clone, &meshes),
+        inodes(&clone, &textures),
+        inodes(&clone, &scripts),
+    );
+    let source_manifest = hash_file(&source.join("conversion-manifest.json")).unwrap();
+
+    let refused = rebuild(&data, &clone, &directory.path().join("refused"))
+        .await
+        .unwrap_err();
+    assert_regeneration_note(&format!("{refused:?}"));
+
+    convert(&data, &clone).await;
+    let current = converter::cache::asset_configuration_hash_for_schema(
+        &common::cpu_lod_config(&data, &clone),
+        converter::cache::CONVERTER_SCHEMA_VERSION,
+        "nif",
+    )
+    .unwrap();
+    let rebuilt = ConversionManifest::load(&path).unwrap();
+    assert_eq!(rebuilt.asset_configuration_hashes["nif"], current);
+    assert_eq!(
+        (inodes(&clone, &textures), inodes(&clone, &scripts)),
+        (before.1, before.2),
+        "textures and scripts must stay the clone's files"
+    );
+    assert!(
+        inodes(&clone, &meshes)
+            .iter()
+            .zip(&before.0)
+            .all(|(now, then)| now != then),
+        "every mesh must be converted again"
+    );
+    assert_eq!(
+        hash_file(&source.join("conversion-manifest.json")).unwrap(),
+        source_manifest
+    );
+}
+
+/// Rewrite one manifest field of a pack in place.
+fn edit_manifest(source: &Path, edit: impl FnOnce(&mut ConversionManifest)) {
+    let path = source.join("conversion-manifest.json");
+    let mut manifest = ConversionManifest::load(&path).unwrap();
+    edit(&mut manifest);
+    manifest.save(&path).unwrap();
+}
+
+/// A texture proof that differs refuses on its own, even when the combined proof matches and
+/// the scripts would rebuild. The refusal names the clone-and-convert path.
+#[tokio::test]
+async fn changed_texture_proof_alone_refuses_a_rebuild() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    age_source(&source, &data, 1, None);
+    edit_manifest(&source, |manifest| {
+        manifest
+            .asset_configuration_hashes
+            .insert("dds".into(), "0".repeat(64));
+    });
+    let error = format!("{:?}", rebuild(&data, &source, &output).await.unwrap_err());
+    assert!(error.contains("texture settings"), "{error}");
+    assert_regeneration_note(&error);
+    assert!(!output.exists());
+}
+
+/// A combined proof that differs in any setting besides the script ABI finds no ABI and
+/// refuses, whatever the per-kind proofs say.
+#[tokio::test]
+async fn combined_proof_differing_in_a_non_abi_setting_refuses() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    age_source(&source, &data, 1, None);
+    let config = common::cpu_lod_config(&data, &output);
+    let identity: serde_json::Value =
+        serde_json::from_slice(&fs::read(source.join("record-reader.json")).unwrap()).unwrap();
+    let mut other = config.clone();
+    other.texture_zstd_level += 1;
+    edit_manifest(&source, |manifest| {
+        manifest.configuration_hash = combined_hash(&other, &identity, 1);
+    });
+    let error = format!("{:?}", rebuild(&data, &source, &output).await.unwrap_err());
+    assert!(
+        error.contains("retained asset configuration does not match rebuild settings"),
+        "{error}"
+    );
+    assert!(!output.exists());
+}
+
+/// The lineage path never skips the mesh check: a trusted earlier schema together with a stale
+/// mesh proof still refuses.
+#[tokio::test]
+async fn trusted_earlier_schema_does_not_skip_the_mesh_check() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    let earlier = "ee7e85d996711c656abcc427fb76496452c7d0e89c1b383abf64a8acd1392d30";
+    age_source(&source, &data, 1, Some(earlier));
+    edit_manifest(&source, |manifest| {
+        manifest
+            .asset_configuration_hashes
+            .insert("nif".into(), "0".repeat(64));
+    });
+    let error = format!("{:?}", rebuild(&data, &source, &output).await.unwrap_err());
+    assert!(error.contains("mesh output contract"), "{error}");
+    assert!(!output.exists());
+}
+
+/// A saved configuration cannot name a script ABI newer than the converter emits.
+#[tokio::test]
+async fn saved_script_abi_newer_than_the_converter_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let mut config = common::cpu_lod_config(&data, &output);
+    config.script_abi_version = converter::script::SCRIPT_ABI_VERSION + 1;
+    let error = AssetPipeline::rebuild_metadata_async(config, &source, tx)
+        .await
+        .unwrap_err();
+    drain.await.unwrap();
+    assert!(
+        format!("{error:?}").contains("newer than the ABI"),
+        "{error:?}"
+    );
+    assert!(!output.exists());
+}
+
+/// An output folder inside any asset pack is refused before a lock file or staging folder can
+/// be created there.
+#[tokio::test]
+async fn output_inside_another_pack_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let other = directory.path().join("other");
+    generate(&data);
+    convert(&data, &source).await;
+    convert(&data, &other).await;
+    let output = other.join("rebuilt");
+    let error = format!("{:?}", rebuild(&data, &source, &output).await.unwrap_err());
+    assert!(error.contains("lies inside the asset pack"), "{error}");
+    assert!(!output.exists());
+    let leftovers: Vec<_> = fs::read_dir(&other)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().contains("rebuilt"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
 }

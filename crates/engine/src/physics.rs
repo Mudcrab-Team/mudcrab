@@ -5,7 +5,7 @@ use bevy::{
     ecs::system::{SystemId, SystemParam},
     input::mouse::MouseMotion,
     prelude::*,
-    window::{CursorGrabMode, CursorOptions},
+    window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
 use bevy_rapier3d::prelude::*;
 use color_eyre::{
@@ -16,8 +16,18 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use shared::collision::CollisionBody;
 use std::path::Path;
 
+mod camera_follow;
+mod camera_trace;
+pub mod carry;
+#[cfg(test)]
+mod feel_measure;
 #[cfg(test)]
 mod stair_tests;
+#[cfg(test)]
+mod view_interpolation_tests;
+mod walk_support;
+#[cfg(test)]
+mod walk_support_tests;
 
 use crate::{
     console::{AppConsoleExt, ConsoleCommand, ConsoleState, console_closed},
@@ -67,7 +77,6 @@ pub struct MovementTuning {
     pub slope_climb_degrees: f32,
     pub slope_slide_degrees: f32,
     pub autostep_height: f32,
-    pub ground_snap: f32,
     /// Selected MOVT's left/right/forward/back walk/run speeds, when packaged.
     pub record_speeds: Option<DirectionalMovementSpeeds>,
 }
@@ -94,7 +103,6 @@ impl Default for MovementTuning {
             slope_climb_degrees: 50.0,
             slope_slide_degrees: 55.0,
             autostep_height: 36.0,
-            ground_snap: 12.0,
             record_speeds: None,
         }
     }
@@ -545,13 +553,15 @@ pub(crate) struct PlayerControlsSystems;
 impl Plugin for PlayerControlsPlugin {
     fn build(&self, app: &mut App) {
         register_move_mode_effect(app.world_mut());
-        app.add_plugins(PhysicsCorePlugin)
+        app.add_plugins((PhysicsCorePlugin, crate::focus_pause::FocusPausePlugin))
             .init_resource::<MoveMode>()
             .init_resource::<WalkIntent>()
             .init_resource::<SprintLatch>()
+            .init_resource::<WalkViewPose>()
             .init_resource::<LookIntent>()
             .init_resource::<WalkEntryStatus>()
             .init_resource::<WalkSpawnHold>()
+            .init_resource::<WalkCameraFollowState>()
             .init_resource::<CursorCapture>()
             .add_message::<TeleportPlayer>()
             .add_console_command(toggle_collision_command())
@@ -560,13 +570,16 @@ impl Plugin for PlayerControlsPlugin {
                 (
                     cursor_lifecycle_system,
                     apply_teleport_player,
+                    // The latch must settle before the look system reads it in the same update.
+                    // Not gated by a door crossing: the look system is not gated either, so a
+                    // frozen latch would turn the mouse at the wrong rate after the crossing.
+                    sprint_latch_system,
                     look_input_system,
                     noclip_flight_system.run_if(crate::door_crossing::no_door_crossing),
-                    // Nothing walks during a door crossing: the landing has no collision yet.
+                    // No player wishes during a crossing; safe landing physics settles below.
                     walk_intent_system.run_if(crate::door_crossing::no_door_crossing),
                     toggle_mode_system.run_if(console_closed),
                     walk_camera_follow_system,
-                    sprint_fov_system,
                     overlay_system,
                 )
                     .chain()
@@ -577,11 +590,40 @@ impl Plugin for PlayerControlsPlugin {
                 FixedUpdate,
                 // Input stays paused throughout a crossing. Placement and gravity settle behind
                 // black once destination assets are ready, before the crossing may fade in.
-                (release_walk_spawn_hold, walk_movement_system)
+                (
+                    neutralize_blocked_walk_input,
+                    release_walk_spawn_hold,
+                    walk_movement_system,
+                )
                     .chain()
                     .run_if(crate::door_crossing::walk_physics_allowed)
-                    .run_if(console_closed)
                     .before(PhysicsSet::SyncBackend),
+            )
+            // Not gated: the blend must follow the body through pauses, crossings and the console.
+            .add_systems(
+                FixedUpdate,
+                (
+                    // After the safe placement: a body moved by `release_walk_spawn_hold` must snap the
+                    // view pose, not be blended from the blocked pose.
+                    walk_view_begin_tick
+                        .after(release_walk_spawn_hold)
+                        .before(walk_movement_system),
+                    walk_view_end_tick.after(PhysicsSet::Writeback),
+                ),
+            )
+            // `--walk-camera-trace`: off unless the option names a file.
+            .add_systems(Startup, camera_trace::start_walk_camera_trace)
+            .add_systems(
+                FixedUpdate,
+                camera_trace::count_walk_camera_trace_tick
+                    .after(walk_view_end_tick)
+                    .run_if(resource_exists::<camera_trace::WalkCameraTrace>),
+            )
+            .add_systems(
+                Update,
+                camera_trace::write_walk_camera_trace_row
+                    .after(walk_camera_follow_system)
+                    .run_if(resource_exists::<camera_trace::WalkCameraTrace>),
             );
     }
 }
@@ -599,7 +641,7 @@ impl Plugin for WorldPlayerPlugin {
                 }
                 .disabled(),
             )
-            .init_resource::<HeldTankard>()
+            .add_plugins(carry::CarryPlugin)
             .add_console_command(toggle_collision_geometry_command())
             .add_systems(PostStartup, setup_world_player)
             .add_systems(
@@ -610,18 +652,12 @@ impl Plugin for WorldPlayerPlugin {
             )
             .add_systems(
                 Update,
-                (
-                    world_tankard_input.run_if(console_closed),
-                    move_held_tankard,
-                )
-                    .chain()
+                tankard_spawn_input
+                    .run_if(console_closed)
                     .after(crate::settings_ui::SettingsUiSet),
             );
     }
 }
-
-#[derive(Resource, Default)]
-struct HeldTankard(Option<Entity>);
 
 #[derive(Resource)]
 struct TankardVisuals {
@@ -1643,6 +1679,14 @@ pub struct WalkState {
     pub jump_apex: f32,
     pub jump_time: f32,
     pub jump_active: bool,
+    /// Retail's InAir state (RF-CC-013). False while walking, including while the unsupported cast
+    /// keeps hitting (a step down), so no fall state and no landing begin on a stair tread.
+    pub airborne: bool,
+    /// The height where the air state began (RF-CC-013, retail stores it for fall damage).
+    pub fall_start_height: f32,
+    /// True for the one tick in which support returned after the air state (retail flag 0x80,
+    /// RF-CC-015).
+    pub landed: bool,
 }
 
 /// Upward search budget when entering WALK inside geometry (V8).
@@ -1668,7 +1712,9 @@ pub fn player_controller_bundle(tuning: &MovementTuning) -> impl Bundle {
             // NOTE: upstream Rapier 0.35 manifold-transfer panic (see T4 gate
             // hill test); re-enable with push validation once upgraded.
             apply_impulse_to_dynamic_bodies: false,
-            snap_to_ground: Some(CharacterLength::Absolute(tuning.ground_snap)),
+            // Retail has no ground snap. A step down is the unsupported cast of `walk_support`
+            // (RF-CC-013, RF-CC-014), which keeps the player walking and pulls it onto the surface.
+            snap_to_ground: None,
             ..default()
         },
     )
@@ -1731,6 +1777,18 @@ type WalkBodyQuery<'w, 's> = Query<
     ),
 >;
 
+/// Input ownership never gates gravity or safe placement. Clear stale wishes before fixed ticks,
+/// which run before the Update input sampler, including on menu opening/closing frames.
+fn neutralize_blocked_walk_input(
+    console: Option<Res<ConsoleState>>,
+    menu: Option<Res<crate::settings_ui::SettingsMenuState>>,
+    mut reset: MotionReset,
+) {
+    if !console_closed(console, menu) {
+        reset.clear_input();
+    }
+}
+
 /// Fixed-step walk integration + controller feed (V10, V11, V18).
 pub fn walk_movement_system(
     mode: Res<MoveMode>,
@@ -1756,16 +1814,101 @@ pub fn walk_movement_system(
         controller.translation = None;
         return;
     }
-    let grounded = output.map(|o| o.grounded).unwrap_or(false);
-    integrate_walk(&mut state, &intent, &tuning, PHYSICS_TIMESTEP, grounded);
+    // Rapier's grounded flag stands in for retail's kSupport.
+    let supported = output.map(|o| o.grounded).unwrap_or(false);
+    let rapier = context.single().ok();
+    // Walking state without support: a pending jump skips the unsupported cast, both the hit and
+    // the miss (RF-CC-013), so the state stays walking and the jump launches from it. Without a
+    // pending jump, the cast decides (RF-CC-013): a hit keeps walking and glides (RF-CC-014), a
+    // miss starts the air state.
+    let jump_pending = intent.jump_pressed;
+    let walking_unsupported = !supported && !state.airborne && !state.jump_active;
+    let glide = walking_unsupported
+        && !jump_pending
+        && rapier.as_ref().is_some_and(|context| {
+            walk_support::unsupported_cast_hits(context, entity, &body, capsule, &controller)
+        });
+    let jump_from_walking = walking_unsupported && jump_pending;
+    let previous_vertical = state.vertical_velocity;
+    // RF-CC-015: landing is the first supported step after the air state. It is decided from the
+    // state before this tick's integration, so a jump launched on the same tick keeps it: the
+    // integration clears the old jump and starts the new one.
+    let landing =
+        supported && state.airborne && !(state.jump_active && state.vertical_velocity > 0.0);
+    integrate_walk(
+        &mut state,
+        &intent,
+        &tuning,
+        PHYSICS_TIMESTEP,
+        supported || glide || jump_from_walking,
+    );
     intent.jump_pressed = false;
-    let mut displacement =
-        (state.horizontal_velocity + Vec3::Y * state.vertical_velocity) * PHYSICS_TIMESTEP;
-    if state.grounded
+    state.landed = false;
+    // The tick that launches a jump starts the air state at the launch height (RF-CC-013), before
+    // this tick's displacement. Rapier can keep reporting support for a few ticks after take-off,
+    // so support does not count while the jump is rising (RF-CC-015: landing needs support).
+    // `integrate_walk` sets the jump time to 0 on an accepted launch and adds the step to it on every
+    // later air tick, so this also finds a relaunch on the tick the previous jump lands.
+    let launched = state.jump_active && state.jump_time == 0.0;
+    let rising = state.jump_active && state.vertical_velocity > 0.0;
+    if launched {
+        state.airborne = true;
+        state.fall_start_height = body.translation.y;
+        state.landed = landing;
+    } else if supported && !rising {
+        // RF-CC-015: the first supported step ends the air state and sets the landing flag.
+        state.airborne = false;
+        state.landed = landing;
+    } else if supported {
+        // Still rising right after take-off: the air state continues.
+    } else if glide {
+        // RF-CC-013, RF-CC-014: a hit keeps the walking state; 4 x gravity accelerates the body
+        // onto the surface. No fall state, no fall start height, no landing.
+        state.vertical_velocity =
+            walk_support::glide_vertical_velocity(previous_vertical, PHYSICS_TIMESTEP);
+    } else if !state.airborne {
+        // RF-CC-013: a miss, or a jump launched from a cast hit, starts the air state.
+        state.airborne = true;
+        state.fall_start_height = body.translation.y;
+    }
+    // RF-CC-016, RF-CC-017: on a supported slope the wish lies in the support plane. A cast hit
+    // runs the same walking step (RF-CC-014), so the surface below gives the normal there too.
+    let mut wish = state.horizontal_velocity;
+    if (supported || glide)
         && !state.jump_active
-        && let Ok(context) = context.single()
+        && let Some(context) = rapier.as_ref()
+        && let Some(normal) =
+            walk_support::support_normal(context, entity, &body, &controller, &tuning)
+    {
+        wish = walk_support::slope_velocity(wish, normal, controller.max_slope_climb_angle.cos());
+    }
+    let mut displacement = (wish + Vec3::Y * state.vertical_velocity) * PHYSICS_TIMESTEP;
+    if glide && let Some(context) = rapier.as_ref() {
+        // RF-CC-014: the pull of a cast hit moves the body straight down. Rapier runs the
+        // controller before syncing transforms, so the query pose is overridden as for a step up.
+        let dropped = walk_support::drop_straight_down(
+            context,
+            entity,
+            &body,
+            capsule,
+            &controller,
+            -displacement.y,
+        );
+        if dropped > 0.0 {
+            body.translation.y -= dropped;
+            controller.custom_shape = Some((
+                capsule.clone(),
+                body.rotation.inverse() * (Vec3::NEG_Y * dropped),
+                Quat::IDENTITY,
+            ));
+        }
+        displacement.y = 0.0;
+    }
+    if supported
+        && !state.jump_active
+        && let Some(context) = rapier.as_ref()
         && let Some(rise) = walk_step_rise(
-            &context,
+            context,
             entity,
             &body,
             capsule,
@@ -1911,23 +2054,465 @@ fn walk_step_rise(
     Some(lift)
 }
 
+/// Body position at the previous and the latest fixed tick, used to show the WALK view between ticks.
+///
+/// Physics runs at 60 Hz and a display can run faster. A camera that follows the body only
+/// repeats its position on every frame that ran no tick: on 50% of frames at 120 Hz, 59% at 144 Hz
+/// and 75% at 240 Hz in the controller-feel measurements (`physics/feel_measure.rs`). The view now
+/// shows the point between the previous and the latest tick that matches how far the frame is into
+/// the next tick (`Time<Fixed>::overstep_fraction`).
+///
+/// This is presentation only. The body, its collision and every physics query keep the latest tick
+/// position (the tankard spawn ray, the carry hold point and the door return point read the body,
+/// not this pose). The view trails it by 0 to one tick, at most 16.7 ms. Look rotation is not interpolated, so turning has no
+/// added latency.
+///
+/// The blended position is the input of the first-person follow spring
+/// ([`walk_camera_follow_system`]). Retail needs no blend: its player controller moves once per
+/// rendered frame with that frame's time, and the camera follows that position (RF-PHYS-003,
+/// RF-CAM-018). Mudcrab's WALK controller runs on a fixed 60 Hz tick, so the blend is a Mudcrab
+/// stand-in that gives the spring a position that moves on every frame, as retail's does. Without
+/// it the spring samples a staircase of tick positions and an uneven frame rate aliases into the
+/// view. The long-term fix is a per-frame controller; this blend is not a retail mechanism.
+///
+/// Behaviour source: the Mudcrab controller-feel report, which takes the idea of showing a blend of
+/// the last two tick poses from the spud re-audit (chasmlol/spud, MIT, used as a map). This code is
+/// written from that written description, not from spud source.
+#[derive(Debug, Clone, Copy, Default, Resource)]
+pub struct WalkViewPose {
+    previous: Vec3,
+    latest: Vec3,
+    valid: bool,
+    /// The floating origin the two positions are stored in.
+    origin: Option<IVec2>,
+}
+
+impl WalkViewPose {
+    fn snap(&mut self, position: Vec3) {
+        *self = Self {
+            previous: position,
+            latest: position,
+            valid: true,
+            origin: self.origin,
+        };
+    }
+
+    /// Moves both stored positions into the space of `origin`. A floating-origin rebase moves the
+    /// body by whole cells outside the tick. The streamer subtracts the same displacement from the
+    /// body, so the blend continues across a cell border instead of snapping.
+    fn rebase(&mut self, origin: Option<IVec2>) {
+        if let (Some(old), Some(new)) = (self.origin, origin)
+            && old != new
+        {
+            let displacement = render_origin_displacement(old, new);
+            self.previous -= displacement;
+            self.latest -= displacement;
+        }
+        self.origin = origin;
+    }
+
+    /// Whether `body` is where the last tick left it. Anything else moved the body outside the
+    /// fixed tick (teleport, door arrival, origin rebase, entering WALK): show it where it is.
+    fn follows(&self, body: Vec3) -> bool {
+        self.valid && body == self.latest
+    }
+
+    fn shown(&self, fraction: f32) -> Vec3 {
+        self.previous.lerp(self.latest, fraction.clamp(0.0, 1.0))
+    }
+}
+
+/// Before a tick moves the body: drop a stale pose if something else moved the body since.
+fn walk_view_begin_tick(
+    mut pose: ResMut<WalkViewPose>,
+    render_origin: Option<Res<crate::streaming::RenderOrigin>>,
+    player: Query<&Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
+) {
+    let Ok(body) = player.single() else {
+        return;
+    };
+    pose.rebase(render_origin.as_ref().map(|origin| origin.0));
+    if !pose.follows(body.translation) {
+        pose.snap(body.translation);
+    }
+}
+
+/// After physics wrote the body back: the latest tick becomes the end of the blend.
+fn walk_view_end_tick(
+    mut pose: ResMut<WalkViewPose>,
+    render_origin: Option<Res<crate::streaming::RenderOrigin>>,
+    player: Query<&Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
+) {
+    let Ok(body) = player.single() else {
+        return;
+    };
+    pose.rebase(render_origin.as_ref().map(|origin| origin.0));
+    pose.previous = pose.latest;
+    pose.latest = body.translation;
+    pose.valid = true;
+}
+
+/// State of the first-person camera follow spring between rendered frames.
+#[derive(Debug, Default, Resource)]
+struct WalkCameraFollowState {
+    /// `None` until the first WALK frame, and again after leaving WALK.
+    spring: Option<camera_follow::FollowSpring>,
+    initialized: bool,
+    previous_origin: Option<IVec2>,
+}
+
 /// Camera follows the capsule at eye height; yaw on body, pitch on view (V9).
-pub fn walk_camera_follow_system(
+///
+/// The view position is the eye node plus the retail follow spring's lag (RF-CAM-001 to
+/// RF-CAM-007). It is evaluated once per rendered frame with the frame delta. This system runs in
+/// `Update`, so the spring is not tied to the fixed physics step. The spring itself is
+/// [`camera_follow::follow_spring_step`]. Its input is the body position blended between the last
+/// two ticks ([`WalkViewPose`]), not the latest tick, so it moves on every rendered frame.
+///
+/// Pause also holds a door-staged camera pose until its queued body placement can commit. The
+/// spring state is kept unchanged while it holds.
+#[allow(clippy::too_many_arguments)]
+fn walk_camera_follow_system(
+    virtual_time: Res<Time<Virtual>>,
     mode: Res<MoveMode>,
     tuning: Res<MovementTuning>,
     look: Res<LookIntent>,
+    time: Res<Time>,
+    fixed: Res<Time<Fixed>>,
+    mut pose: ResMut<WalkViewPose>,
+    camera_space: Option<Res<crate::sky::CameraSpace>>,
+    render_origin: Option<Res<crate::streaming::RenderOrigin>>,
+    mut teleports: MessageReader<TeleportPlayer>,
+    crossing: Option<Res<crate::door_crossing::DoorCrossing>>,
+    hold: Option<Res<WalkSpawnHold>>,
+    mut follow: ResMut<WalkCameraFollowState>,
     player: Query<&Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
     mut camera: Query<&mut Transform, With<StreamingCamera>>,
 ) {
+    let mut teleported = false;
+    for _ in teleports.read() {
+        teleported = true;
+    }
+    let space_changed = camera_space
+        .as_ref()
+        .is_some_and(|space| space.is_changed());
+    let current_origin = render_origin.as_ref().map(|origin| origin.0);
+    // A floating-origin rebase shifts the body and the view by whole cells. It is not a retail
+    // event. The spring state is shifted by the same displacement below, so the lag is unchanged.
+    let rebase = follow
+        .previous_origin
+        .zip(current_origin)
+        .filter(|(old, new)| old != new)
+        .map(|(old, new)| render_origin_displacement(old, new));
+    follow.previous_origin = current_origin;
+
+    if virtual_time.is_paused()
+        && crossing
+            .as_ref()
+            .is_some_and(|crossing| crossing.is_active())
+    {
+        return;
+    }
     if *mode != MoveMode::Walk {
+        follow.spring = None;
         return;
     }
     let (Ok(body), Ok(mut view)) = (player.single(), camera.single_mut()) else {
         return;
     };
+    pose.rebase(current_origin);
+    // A reset frame (below) shows the body itself, so the pose is snapped to it: a tick that moved
+    // the body while it settles must not leave the view up to one tick behind. Ordinary frames keep
+    // the blend.
+    let placing = hold.as_ref().is_some_and(|hold| hold.is_active())
+        || crossing
+            .as_ref()
+            .is_some_and(|crossing| crossing.is_active());
+    let reset = teleported || space_changed || placing;
+    if reset || !pose.follows(body.translation) {
+        pose.snap(body.translation);
+    }
+    let feet = pose.shown(fixed.overstep_fraction());
+    let target = feet + Vec3::Y * tuning.eye_height;
+    if !follow.initialized {
+        // The authored startup camera pose is authoritative for the first frame.
+        follow.initialized = true;
+        follow.spring = Some(camera_follow::FollowSpring::at_rest(feet, 0.0));
+        set_walk_camera_rotation(&mut view, body, look.pitch);
+        return;
+    }
+
+    // Engine plumbing, not retail behaviour. A teleport and a camera space change move the body
+    // and the view into a new frame, so the old smoothed point is meaningless there. Retail
+    // reaches the same result for a teleport over 300 units through the snap (RF-CAM-002). A door
+    // crossing and the safe-placement hold place the body without player control. They are
+    // plumbing for Mudcrab-only mechanisms that retail does not have, so the view follows the
+    // body directly until they end. The spring weight carries over. Entering WALK needs no reset:
+    // the spring is `None` outside WALK and starts at rest on the feet.
+    let mut previous = follow
+        .spring
+        .unwrap_or(camera_follow::FollowSpring::at_rest(feet, 0.0));
+    if let Some(displacement) = rebase {
+        // The smoothed point lives in the same render space as the feet. Move it with them.
+        previous.smoothed -= displacement;
+    }
+    let step = if reset {
+        camera_follow::FollowStep {
+            state: camera_follow::FollowSpring::at_rest(feet, previous.weight),
+            lag: Vec3::ZERO,
+        }
+    } else if time.delta_secs() <= 0.0 {
+        // Paused (focus pause, console, a held frame): no time passes, so the spring keeps its
+        // state. A step of zero length would scale the lag by the weight again on every paused
+        // frame, and clear the velocity (the momentum term would be lost on resume).
+        camera_follow::FollowStep {
+            state: previous,
+            lag: previous.smoothed - feet,
+        }
+    } else {
+        camera_follow::follow_spring_step(
+            previous,
+            camera_follow::FollowInput {
+                feet,
+                delta_secs: time.delta_secs(),
+                // RF-CAM-004: the player is controls-driven in normal play. Mudcrab has no
+                // AI-driven player movement.
+                controls_driven: true,
+                // RF-CAMW-001: Mudcrab has no mount state yet, so this stays false.
+                is_on_mount: false,
+                // The engine has no third-person camera. RF-CAM-006: it would get no spring.
+                view: camera_follow::FollowView::FirstPerson,
+            },
+        )
+    };
+    follow.spring = Some(step.state);
+    view.translation = target + step.lag;
+    set_walk_camera_rotation(&mut view, body, look.pitch);
+}
+
+/// The displacement of the floating origin from `old` to `new`, in render-space units. The
+/// streamer subtracts it from the body and the view when it rebases.
+fn render_origin_displacement(old: IVec2, new: IVec2) -> Vec3 {
+    let shift = new - old;
+    Vec3::new(
+        shift.x as f32 * crate::world::components::CELL_SIZE,
+        0.0,
+        -(shift.y as f32) * crate::world::components::CELL_SIZE,
+    )
+}
+
+fn set_walk_camera_rotation(view: &mut Transform, body: &Transform, pitch: f32) {
     let (yaw, _, _) = body.rotation.to_euler(EulerRot::YXZ);
-    view.translation = body.translation + Vec3::Y * tuning.eye_height;
-    view.rotation = Quat::from_euler(EulerRot::YXZ, yaw, look.pitch, 0.0);
+    view.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
+}
+
+#[cfg(test)]
+mod walk_camera_presentation_tests {
+    use super::*;
+
+    #[test]
+    fn camera_placement_resets_drop_the_smoothed_point_and_follow_full_position() {
+        let mut app = headless::fixture_app();
+        let (body, camera) = {
+            let mut bodies = app.world_mut().query_filtered::<Entity, With<PlayerBody>>();
+            let body = bodies.single(app.world()).unwrap();
+            let mut cameras = app
+                .world_mut()
+                .query_filtered::<Entity, With<StreamingCamera>>();
+            (body, cameras.single(app.world()).unwrap())
+        };
+        app.insert_resource(MoveMode::Walk);
+        app.world_mut().run_schedule(Update);
+        for case in 0..4 {
+            {
+                let mut follow = app.world_mut().resource_mut::<WalkCameraFollowState>();
+                follow.initialized = true;
+                follow.spring = Some(camera_follow::FollowSpring::at_rest(Vec3::ZERO, 1.0));
+            }
+            let destination = Vec3::new(500.0 + case as f32 * 100.0, 800.0, -900.0);
+            app.world_mut()
+                .get_mut::<Transform>(body)
+                .unwrap()
+                .translation = destination;
+            match case {
+                0 => {
+                    app.world_mut().write_message(TeleportPlayer {
+                        position: destination,
+                        sampled_ground_y: Some(destination.y),
+                        yaw: 0.4,
+                    });
+                }
+                1 => {
+                    app.insert_resource(crate::sky::CameraSpace::Interior);
+                }
+                2 => {
+                    app.insert_resource(MoveMode::Noclip);
+                    app.world_mut().run_schedule(Update);
+                    app.insert_resource(MoveMode::Walk);
+                }
+                _ => {
+                    // Engine plumbing: the safe-placement hold places the body without control.
+                    app.world_mut().resource_mut::<WalkSpawnHold>().active = true;
+                }
+            }
+            app.world_mut().run_schedule(Update);
+            let position = app.world().get::<Transform>(body).unwrap().translation;
+            let view = app.world().get::<Transform>(camera).unwrap().translation;
+            assert!(
+                view.distance(position + Vec3::Y * MovementTuning::default().eye_height) < 1.0e-3,
+                "reset case {case} retained an old camera coordinate: {view:?} vs {position:?}"
+            );
+            let spring = app
+                .world()
+                .resource::<WalkCameraFollowState>()
+                .spring
+                .expect("the spring is seeded after a reset");
+            assert_eq!(spring.smoothed, position);
+            assert_eq!(spring.velocity, Vec3::ZERO);
+            app.world_mut().resource_mut::<WalkSpawnHold>().active = false;
+        }
+    }
+
+    /// While no time passes (focus pause, console), the follow spring keeps its lag, velocity and
+    /// weight. A zero-length step would scale the lag by the weight on every paused frame.
+    #[test]
+    fn a_paused_frame_keeps_the_follow_spring() {
+        let mut app = headless::fixture_app();
+        let (body, camera) = {
+            let mut bodies = app.world_mut().query_filtered::<Entity, With<PlayerBody>>();
+            let body = bodies.single(app.world()).unwrap();
+            let mut cameras = app
+                .world_mut()
+                .query_filtered::<Entity, With<StreamingCamera>>();
+            (body, cameras.single(app.world()).unwrap())
+        };
+        let eye = Vec3::Y * MovementTuning::default().eye_height;
+        app.insert_resource(MoveMode::Walk);
+        app.insert_resource(crate::streaming::RenderOrigin(IVec2::ZERO));
+        app.world_mut().run_schedule(Update);
+        let feet = Vec3::new(1_000.0, 300.0, -500.0);
+        app.world_mut()
+            .get_mut::<Transform>(body)
+            .unwrap()
+            .translation = feet;
+        // A spring that has not reached full weight, with a lag and a velocity.
+        let running = camera_follow::FollowSpring {
+            smoothed: feet - Vec3::new(20.0, -6.0, 0.0),
+            velocity: Vec3::new(370.0, -100.0, 0.0),
+            weight: 0.5,
+        };
+        {
+            let mut follow = app.world_mut().resource_mut::<WalkCameraFollowState>();
+            follow.initialized = true;
+            follow.spring = Some(running);
+        }
+        for _ in 0..5 {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(std::time::Duration::ZERO);
+            app.world_mut().run_schedule(Update);
+        }
+        let follow = app.world().resource::<WalkCameraFollowState>();
+        assert_eq!(
+            follow.spring,
+            Some(running),
+            "a paused frame changed the spring"
+        );
+        let view = app.world().get::<Transform>(camera).unwrap().translation;
+        let lag = running.smoothed - feet;
+        assert!(
+            (view - (feet + eye + lag)).length() < 1.0e-3,
+            "the paused view moved: view={view:?} expected lag {lag:?}"
+        );
+    }
+
+    /// A floating-origin rebase moves the body, the view and the smoothed point by the same
+    /// displacement. The lag, which is about 20 units while running, must not change in the world
+    /// frame, so the view does not pop forward at a cell border.
+    #[test]
+    fn a_render_origin_rebase_while_running_keeps_the_camera_offset() {
+        let mut app = headless::fixture_app();
+        let (body, camera) = {
+            let mut bodies = app.world_mut().query_filtered::<Entity, With<PlayerBody>>();
+            let body = bodies.single(app.world()).unwrap();
+            let mut cameras = app
+                .world_mut()
+                .query_filtered::<Entity, With<StreamingCamera>>();
+            (body, cameras.single(app.world()).unwrap())
+        };
+        let eye = Vec3::Y * MovementTuning::default().eye_height;
+        app.insert_resource(MoveMode::Walk);
+        app.insert_resource(crate::streaming::RenderOrigin(IVec2::ZERO));
+        app.world_mut().run_schedule(Update);
+        let feet = Vec3::new(1_000.0, 300.0, -500.0);
+        app.world_mut()
+            .get_mut::<Transform>(body)
+            .unwrap()
+            .translation = feet;
+        // A running spring: the smoothed point trails the feet and moves with them.
+        let running = camera_follow::FollowSpring {
+            smoothed: feet - Vec3::new(20.0, 0.0, 0.0),
+            velocity: Vec3::new(370.0, 0.0, 0.0),
+            weight: 1.0,
+        };
+        {
+            let mut follow = app.world_mut().resource_mut::<WalkCameraFollowState>();
+            follow.initialized = true;
+            follow.spring = Some(running);
+        }
+        // A running frame: the fixture's first frame has no elapsed time, and a frame with none is
+        // a paused frame that keeps the spring (see `a_paused_frame_keeps_the_follow_spring`).
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs_f32(PHYSICS_TIMESTEP));
+        // The same frame without a rebase is the control.
+        let delta_secs = app.world().resource::<Time>().delta_secs();
+        let expected = camera_follow::follow_spring_step(
+            running,
+            camera_follow::FollowInput {
+                feet,
+                delta_secs,
+                controls_driven: true,
+                is_on_mount: false,
+                view: camera_follow::FollowView::FirstPerson,
+            },
+        );
+        assert!(
+            expected.lag.x.abs() > 1.0,
+            "the fixture needs a visible lag: {:?}",
+            expected.lag
+        );
+        // The streamer rebases: the origin moves one cell in X and in Y, and the body and the view
+        // are shifted by the displacement.
+        let new_origin = IVec2::new(1, 1);
+        let displacement = render_origin_displacement(IVec2::ZERO, new_origin);
+        assert_ne!(displacement, Vec3::ZERO);
+        app.world_mut()
+            .resource_mut::<crate::streaming::RenderOrigin>()
+            .0 = new_origin;
+        for entity in [body, camera] {
+            app.world_mut()
+                .get_mut::<Transform>(entity)
+                .unwrap()
+                .translation -= displacement;
+        }
+        app.world_mut().run_schedule(Update);
+        let view = app.world().get::<Transform>(camera).unwrap().translation;
+        let shifted_feet = feet - displacement;
+        assert!(
+            (view - (shifted_feet + eye) - expected.lag).length() < 1.0e-3,
+            "the rebase changed the camera offset: view={view:?} lag={:?}",
+            expected.lag
+        );
+        let spring = app
+            .world()
+            .resource::<WalkCameraFollowState>()
+            .spring
+            .unwrap();
+        assert!((spring.smoothed - (shifted_feet + expected.lag)).length() < 1.0e-3);
+        assert_eq!(spring.velocity, expected.state.velocity);
+        assert_eq!(spring.weight, expected.state.weight);
+    }
 }
 
 /// Attempt NOCLIP->WALK at the camera pose; overlap pushes the search upward
@@ -2049,10 +2634,14 @@ type TeleportBodyQuery<'w, 's> = Query<
 
 /// Applies [`TeleportPlayer`]: places the body, zeroes its velocity and walk state, and holds WALK
 /// until bounded destination collision is available. In NOCLIP the body stays disabled and only
-/// the camera moves.
+/// the camera moves. Door placements queued before a pause are retained until world resume;
+/// explicit console teleports outside a crossing remain intentional paused-world edits.
 #[allow(clippy::too_many_arguments)]
 fn apply_teleport_player(
     mut teleports: MessageReader<TeleportPlayer>,
+    mut pending: Local<Option<TeleportPlayer>>,
+    time: Res<Time<Virtual>>,
+    crossing: Option<Res<crate::door_crossing::DoorCrossing>>,
     mut hold: ResMut<WalkSpawnHold>,
     mode: Res<MoveMode>,
     tuning: Res<MovementTuning>,
@@ -2062,7 +2651,14 @@ fn apply_teleport_player(
     mut camera: Query<&mut Transform, (With<StreamingCamera>, Without<PlayerBody>)>,
     mut commands: Commands,
 ) {
-    let Some(teleport) = teleports.read().last().copied() else {
+    let deferred = pending.is_some();
+    if let Some(teleport) = teleports.read().last().copied() {
+        *pending = Some(teleport);
+    }
+    if time.is_paused() && (deferred || crossing.is_some_and(|crossing| crossing.is_active())) {
+        return;
+    }
+    let Some(teleport) = pending.take() else {
         return;
     };
     *hold = WalkSpawnHold::default();
@@ -2118,6 +2714,9 @@ mod walk_tests {
             .insert_resource(SprintLatch::default());
         app.world_mut().spawn((PlayerBody, Transform::default()));
         let sample = |app: &mut App| {
+            app.world_mut()
+                .run_system_once(sprint_latch_system)
+                .unwrap();
             app.world_mut().run_system_once(walk_intent_system).unwrap();
             app.world().resource::<WalkIntent>().target_speed
         };
@@ -2246,10 +2845,7 @@ mod walk_tests {
             (controller.max_slope_climb_angle - tuning.slope_climb_degrees.to_radians()).abs()
                 < 1.0e-6
         );
-        assert_eq!(
-            controller.snap_to_ground,
-            Some(CharacterLength::Absolute(tuning.ground_snap))
-        );
+        assert_eq!(controller.snap_to_ground, None, "retail has no ground snap");
     }
 }
 
@@ -2323,7 +2919,7 @@ pub(crate) mod headless {
 #[cfg(test)]
 mod world_startup_tests {
     use super::*;
-    use bevy::{mesh::MeshPlugin, time::TimeUpdateStrategy};
+    use bevy::{ecs::system::RunSystemOnce, mesh::MeshPlugin, time::TimeUpdateStrategy};
 
     fn world_app() -> App {
         let mut app = App::new();
@@ -2744,8 +3340,9 @@ mod world_startup_tests {
         assert!(!app.world().resource::<WalkSpawnHold>().active);
     }
 
+    /// A live menu owns input but cannot suspend safe fixed-step placement.
     #[test]
-    fn startup_hold_and_walk_pause_with_console_and_door_crossing_guards() {
+    fn pause704_live_menu_releases_spawn_hold_but_unsafe_door_does_not() {
         let mut app = world_app();
         let elapsed = WALK_SPAWN_TIMEOUT_SECONDS - PHYSICS_TIMESTEP * 0.5;
         app.world_mut().resource_mut::<WalkSpawnHold>().elapsed = elapsed;
@@ -2753,22 +3350,325 @@ mod world_startup_tests {
             open: true,
             ..default()
         });
-        tick(&mut app, 1);
-        assert_mode(&mut app, MoveMode::Walk);
-        assert!(app.world().resource::<WalkSpawnHold>().active);
-        assert_eq!(app.world().resource::<WalkSpawnHold>().elapsed, elapsed);
-
-        app.insert_resource(crate::console::ConsoleState::default());
         app.insert_resource(crate::door_crossing::DoorCrossing::holding_for_test());
         tick(&mut app, 1);
-        assert_mode(&mut app, MoveMode::Walk);
-        assert!(app.world().resource::<WalkSpawnHold>().active);
         assert_eq!(app.world().resource::<WalkSpawnHold>().elapsed, elapsed);
-
         app.insert_resource(crate::door_crossing::DoorCrossing::default());
         tick(&mut app, 1);
         assert_mode(&mut app, MoveMode::Noclip);
         assert!(!app.world().resource::<WalkSpawnHold>().active);
+    }
+
+    /// Seed through the public walking system, which owns the integrator's resolved-input API.
+    fn seed_falling_motion(app: &mut App, entity: Entity, jumping: bool) {
+        app.world_mut()
+            .resource_mut::<Time<Fixed>>()
+            .advance_by(std::time::Duration::from_secs_f32(PHYSICS_TIMESTEP));
+        app.world_mut()
+            .entity_mut(entity)
+            .remove::<KinematicCharacterControllerOutput>();
+        if jumping {
+            app.world_mut()
+                .entity_mut(entity)
+                .insert(KinematicCharacterControllerOutput {
+                    grounded: true,
+                    desired_translation: Vec3::ZERO,
+                    effective_translation: Vec3::ZERO,
+                    collisions: Vec::new(),
+                    is_sliding_down_slope: false,
+                });
+            *app.world_mut().resource_mut::<WalkIntent>() = WalkIntent {
+                jump_pressed: true,
+                ..default()
+            };
+            app.world_mut()
+                .run_system_once(walk_movement_system)
+                .unwrap();
+            app.world_mut()
+                .entity_mut(entity)
+                .remove::<KinematicCharacterControllerOutput>();
+        }
+        *app.world_mut().resource_mut::<WalkIntent>() = WalkIntent {
+            wish_dir: if jumping { Vec3::X } else { Vec3::ZERO },
+            target_speed: if jumping { 200.0 } else { 0.0 },
+            ..default()
+        };
+        for _ in 0..if jumping { 120 } else { 6 } {
+            app.world_mut()
+                .run_system_once(walk_movement_system)
+                .unwrap();
+        }
+    }
+
+    /// Exercise the production schedule with stale input and an airborne body.
+    #[test]
+    fn pause704_live_menu_integrates_neutral_input_without_erasing_motion() {
+        let mut app = world_app();
+        app.world_mut().resource_mut::<WalkSpawnHold>().active = false;
+        let entity = body(&mut app);
+        app.world_mut()
+            .get_mut::<Transform>(entity)
+            .unwrap()
+            .translation
+            .y = 2000.0;
+        seed_falling_motion(&mut app, entity, true);
+        *app.world_mut().resource_mut::<WalkIntent>() = WalkIntent {
+            wish_dir: Vec3::Z,
+            target_speed: 300.0,
+            jump_pressed: true,
+        };
+        app.world_mut().resource_mut::<SprintLatch>().0 = true;
+        app.insert_resource(crate::console::ConsoleState {
+            open: true,
+            ..default()
+        });
+        app.insert_resource(CursorCapture::Released);
+        tick(&mut app, 2); // The first fixed tick registers the body with Rapier.
+        let state = app.world().get::<WalkState>(entity).unwrap();
+        let fallen_to = app.world().get::<Transform>(entity).unwrap().translation;
+        let falling_step = app
+            .world()
+            .get::<KinematicCharacterControllerOutput>(entity)
+            .unwrap()
+            .effective_translation
+            .y;
+        assert!(falling_step < 0.0, "menu must not suspend gravity");
+        assert!(state.horizontal_velocity.x > 0.0, "preserve inertia");
+        assert_eq!(state.horizontal_velocity.z, 0.0, "neutral wish");
+        assert!(!app.world().resource::<WalkIntent>().jump_pressed);
+        assert!(!app.world().resource::<SprintLatch>().0);
+        // Focus release must preserve the airborne state on a paused frame.
+        app.insert_resource(crate::console::ConsoleState::default());
+        app.insert_resource(CursorCapture::Captured);
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    focused: false,
+                    ..default()
+                },
+                bevy::window::PrimaryWindow,
+            ))
+            .id();
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        tick(&mut app, 1);
+        assert_eq!(
+            app.world().get::<Transform>(entity).unwrap().translation,
+            fallen_to
+        );
+        assert_eq!(
+            *app.world().resource::<CursorCapture>(),
+            CursorCapture::Released
+        );
+        assert!(!app.world().get::<Window>(window).unwrap().focused);
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = true;
+        tick(&mut app, 1); // Release focus while preserving the earlier manual pause.
+        app.world_mut().resource_mut::<Time<Virtual>>().unpause();
+        tick(&mut app, 1);
+        let resumed_step = app
+            .world()
+            .get::<KinematicCharacterControllerOutput>(entity)
+            .unwrap()
+            .effective_translation
+            .y;
+        assert!(
+            resumed_step <= falling_step,
+            "focus release must preserve falling speed"
+        );
+    }
+
+    /// Paused console edits still synchronize the view when no crossing owns its staged pose.
+    #[test]
+    fn pause704_camera_follows_paused_console_edits_outside_crossings() {
+        let mut app = world_app();
+        let entity = body(&mut app);
+        let position = Vec3::new(123.0, 456.0, 789.0);
+        app.world_mut()
+            .get_mut::<Transform>(entity)
+            .unwrap()
+            .translation = position;
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        app.world_mut()
+            .run_system_once(walk_camera_follow_system)
+            .unwrap();
+        let view = app
+            .world_mut()
+            .query_filtered::<&Transform, With<StreamingCamera>>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(
+            view.translation,
+            position + Vec3::Y * app.world().resource::<MovementTuning>().eye_height
+        );
+    }
+
+    /// Door commands are consumed a frame after space switching; pause can start in between.
+    #[test]
+    fn pause704_queued_door_teleport_survives_message_expiry_without_committing() {
+        let mut app = world_app();
+        app.insert_resource(crate::door_crossing::DoorCrossing::holding_for_test());
+        let entity = body(&mut app);
+        let before = app.world().get::<Transform>(entity).unwrap().translation;
+        let camera = app
+            .world_mut()
+            .query_filtered::<Entity, With<StreamingCamera>>()
+            .single(app.world())
+            .unwrap();
+        // switch_space stages the camera before the next Update consumes the body teleport.
+        let staged_view = Vec3::new(123.0, 626.0, 789.0);
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation = staged_view;
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        app.world_mut().write_message(TeleportPlayer {
+            position: Vec3::new(123.0, 456.0, 789.0),
+            sampled_ground_y: None,
+            yaw: 0.6,
+        });
+        tick(&mut app, 10);
+        assert_eq!(
+            app.world().get::<Transform>(entity).unwrap().translation,
+            before
+        );
+        assert_eq!(
+            app.world().get::<Transform>(camera).unwrap().translation,
+            staged_view,
+            "camera follow must not undo the door's staged view during pause"
+        );
+        app.world_mut().resource_mut::<Time<Virtual>>().unpause();
+        tick(&mut app, 1);
+        let expected = body_and_camera_for_feet(
+            app.world().resource::<MovementTuning>(),
+            Vec3::new(123.0, 456.0, 789.0),
+        )
+        .0;
+        assert_eq!(
+            app.world().get::<Transform>(entity).unwrap().translation,
+            expected
+        );
+    }
+
+    /// Secondary windows never own game focus; opting out releases input while physics runs.
+    #[test]
+    fn pause704_always_active_and_secondary_window_focus() {
+        let mut app = world_app();
+        let primary = app
+            .world_mut()
+            .spawn((Window::default(), PrimaryWindow, CursorOptions::default()))
+            .id();
+        let secondary = app
+            .world_mut()
+            .spawn((
+                Window {
+                    focused: false,
+                    ..default()
+                },
+                CursorOptions::default(),
+            ))
+            .id();
+        app.insert_resource(CursorCapture::Captured);
+        tick(&mut app, 1);
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        assert_eq!(
+            *app.world().resource::<CursorCapture>(),
+            CursorCapture::Captured
+        );
+        assert_eq!(
+            app.world()
+                .get::<CursorOptions>(secondary)
+                .unwrap()
+                .grab_mode,
+            CursorGrabMode::None
+        );
+        assert!(app.world().get::<CursorOptions>(secondary).unwrap().visible);
+        assert_eq!(
+            app.world().get::<CursorOptions>(primary).unwrap().grab_mode,
+            CursorGrabMode::Locked
+        );
+        app.insert_resource(crate::config::EngineConfig {
+            always_active: true,
+            ..default()
+        });
+        app.world_mut().get_mut::<Window>(primary).unwrap().focused = false;
+        let entity = body(&mut app);
+        app.world_mut().resource_mut::<WalkSpawnHold>().active = false;
+        app.world_mut()
+            .get_mut::<Transform>(entity)
+            .unwrap()
+            .translation
+            .y = 2000.0;
+        seed_falling_motion(&mut app, entity, false);
+        tick(&mut app, 1);
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        assert_eq!(
+            *app.world().resource::<CursorCapture>(),
+            CursorCapture::Released
+        );
+        assert!(app.world().get::<Transform>(entity).unwrap().translation.y < 2000.0);
+        app.world_mut()
+            .resource_mut::<crate::config::EngineConfig>()
+            .always_active = false;
+        tick(&mut app, 1);
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
+    }
+
+    /// The first background frame must be paused before the time system runs.
+    #[test]
+    fn pause704_primary_focus_pauses_before_fixed_ticks_and_discards_background_time() {
+        let mut app = world_app();
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    focused: false,
+                    ..default()
+                },
+                bevy::window::PrimaryWindow,
+            ))
+            .id();
+        let before = app.world().resource::<Time<Virtual>>().elapsed();
+        tick(&mut app, 1);
+        assert!(
+            app.world().resource::<Time<Virtual>>().is_paused(),
+            "focus loss must pause"
+        );
+        assert_eq!(app.world().resource::<Time<Virtual>>().elapsed(), before);
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs(90),
+        ));
+        tick(&mut app, 1);
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = true;
+        tick(&mut app, 1);
+        assert_eq!(
+            app.world().resource::<Time<Virtual>>().elapsed(),
+            before,
+            "no resume catch-up"
+        );
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f32(PHYSICS_TIMESTEP),
+        ));
+        tick(&mut app, 1);
+        assert!(app.world().resource::<Time<Virtual>>().elapsed() > before);
+    }
+
+    #[test]
+    fn a_door_crossing_does_not_freeze_the_sprint_latch_under_the_mouse() {
+        // Look input is not paused by a crossing, so the latch it reads must keep updating.
+        let mut app = world_app();
+        app.insert_resource(CursorCapture::Captured);
+        app.insert_resource(crate::door_crossing::DoorCrossing::holding_for_test());
+        app.world_mut().resource_mut::<SprintLatch>().0 = true;
+        let yaw = |app: &App| app.world().resource::<LookIntent>().yaw;
+        let before = yaw(&app);
+        app.world_mut()
+            .write_message(bevy::input::mouse::MouseMotion {
+                delta: Vec2::new(100.0, 0.0),
+            });
+        tick(&mut app, 1);
+        // No movement key is held, so the latch is off and yaw uses the full walk rate.
+        assert!(!app.world().resource::<SprintLatch>().0);
+        assert!((before - yaw(&app) - 100.0 * 0.000_785).abs() < 1.0e-4);
     }
 
     #[test]
@@ -3292,10 +4192,27 @@ mod simulation_tests {
 /// Noclip flight tuning (V6).
 pub const NOCLIP_SPEED: f32 = 900.0;
 pub const NOCLIP_FAST_MULTIPLIER: f32 = 4.0;
-pub const MOUSE_SENSITIVITY: f32 = 0.0025;
-pub const MAX_PITCH_RADIANS: f32 = 1.5533;
-const SPRINT_FOV_BONUS_DEGREES: f32 = 8.0;
-const SPRINT_FOV_HALF_LIFE_SECS: f32 = 0.12;
+/// Retail INI `fMouseHeadingSensitivity` (executable default 0.0125; RF-CAM-010, RF-CAM-011;
+/// scaling at `0x1407aeba0`).
+pub const MOUSE_HEADING_SENSITIVITY: f32 = 0.0125;
+/// Retail INI `fMouseHeadingXScale` (executable default 0.02; RF-CAM-010; `0x1407aeba0`).
+pub const MOUSE_HEADING_X_SCALE: f32 = 0.02;
+/// Retail INI `fMouseHeadingYScale` (executable default 0.85; RF-CAM-011; `0x1407aeba0`).
+pub const MOUSE_HEADING_Y_SCALE: f32 = 0.85;
+/// Retail GMST `fLookingSpeed:Camera` (default 0.1; RF-CAM-011; `0x1408fb2e0`).
+pub const LOOKING_SPEED: f32 = 0.1;
+/// Yaw speed (rad/s) of MOVT `0003580D` NPC_Default_MT, the walk and run movement type: the
+/// SPED rotate-in-place and rotate-while-moving values are all pi (RF-CAM-010, RF-MOVE-003; yaw
+/// at `0x1407a3fd0`). The registered pack keeps the record bytes, not a parsed column.
+pub const ROTATE_SPEED_DEFAULT_MT: f32 = std::f32::consts::PI;
+/// Yaw speed (rad/s) of MOVT `00034D9C` NPC_Sprinting_MT: all three SPED rotate values are pi/2
+/// (RF-MOVE-003, RF-CAM-010; yaw at `0x1407a3fd0`). The registry rates the link from the yaw
+/// factor to the MOVT rotate speed as medium confidence (RF-CAM-010: formula high, factor
+/// source medium).
+pub const ROTATE_SPEED_SPRINTING_MT: f32 = std::f32::consts::FRAC_PI_2;
+/// Standing pitch limit, up and down: +-pi/2 (RF-CAM-012; `0x140693050`). The retail sitting,
+/// mounted and flying limits are not used: the engine has no such states yet.
+pub const MAX_PITCH_RADIANS: f32 = std::f32::consts::FRAC_PI_2;
 const SPEED_DISPLAY_DEADZONE: f32 = 5.0;
 
 /// Sampled look intent (V6, V18).
@@ -3326,13 +4243,39 @@ pub fn clamp_pitch(pitch: f32) -> f32 {
     pitch.clamp(-MAX_PITCH_RADIANS, MAX_PITCH_RADIANS)
 }
 
-/// Sample mouse motion into look intent; uncaptured pointer yields nothing (V6).
-pub fn sample_look_intent(capture: &CursorCapture, mouse_delta: Vec2, intent: &mut LookIntent) {
+/// Mouse yaw in radians per count: `fMouseHeadingSensitivity * fMouseHeadingXScale` times the
+/// movement type's rotate speed. 0.000785 for walk and run, half of that while sprinting
+/// (RF-CAM-010).
+pub fn yaw_radians_per_count(sprinting: bool) -> f32 {
+    let rotate_speed = if sprinting {
+        ROTATE_SPEED_SPRINTING_MT
+    } else {
+        ROTATE_SPEED_DEFAULT_MT
+    };
+    MOUSE_HEADING_SENSITIVITY * MOUSE_HEADING_X_SCALE * rotate_speed
+}
+
+/// Mouse pitch in radians per count: `fMouseHeadingSensitivity * fMouseHeadingYScale *
+/// fLookingSpeed`, 0.0010625 (RF-CAM-011). Retail also multiplies by a zoom ratio, which is 1
+/// outside zoom; the engine has no zoom state.
+pub fn pitch_radians_per_count() -> f32 {
+    MOUSE_HEADING_SENSITIVITY * MOUSE_HEADING_Y_SCALE * LOOKING_SPEED
+}
+
+/// Sample mouse motion into look intent; uncaptured pointer yields nothing (V6). Retail applies
+/// counts directly: no smoothing, no acceleration and no frame-time scaling (RF-CAM-010,
+/// RF-CAM-011).
+pub fn sample_look_intent(
+    capture: &CursorCapture,
+    mouse_delta: Vec2,
+    sprinting: bool,
+    intent: &mut LookIntent,
+) {
     if *capture != CursorCapture::Captured {
         return;
     }
-    intent.yaw -= mouse_delta.x * MOUSE_SENSITIVITY;
-    intent.pitch = clamp_pitch(intent.pitch - mouse_delta.y * MOUSE_SENSITIVITY);
+    intent.yaw -= mouse_delta.x * yaw_radians_per_count(sprinting);
+    intent.pitch = clamp_pitch(intent.pitch - mouse_delta.y * pitch_radians_per_count());
 }
 
 /// Noclip displacement from held keys relative to the view (V6).
@@ -3512,178 +4455,89 @@ fn setup_controlled_player(
     ));
 }
 
-type PickupFilter = Or<(With<DebugTankard>, With<DynamicClutter>)>;
-
-/// Resolve a compound collider child to the authored dynamic-body root.
-fn pickup_root(
-    mut entity: Entity,
-    parents: &Query<&ChildOf>,
-    objects: &Query<(), PickupFilter>,
-) -> Option<Entity> {
-    loop {
-        if objects.get(entity).is_ok() {
-            return Some(entity);
-        }
-        entity = parents.get(entity).ok()?.parent();
-    }
-}
-
-/// T spawns a test tankard; E grabs or drops a tankard or authored dynamic clutter,
-/// only while the cursor is captured. Debug tankards stay in world coordinates and are never
-/// children of a streamed cell; authored bodies keep their streamed-cell parent.
+/// T spawns a test tankard in front of the player, only while the cursor is captured. Carrying
+/// (`E`) is in [`carry`]. Debug tankards stay in world coordinates and are never children of a
+/// streamed cell.
 #[allow(clippy::too_many_arguments)]
-fn world_tankard_input(
+fn tankard_spawn_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     capture: Res<CursorCapture>,
+    mode: Res<MoveMode>,
+    tuning: Res<MovementTuning>,
+    player: Query<&Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
     camera: Query<&Transform, (With<StreamingCamera>, With<ControlledCamera>)>,
     terrain: Query<(), With<TerrainCollider>>,
     tankards: Query<(), With<DebugTankard>>,
-    interactables: Query<(), PickupFilter>,
-    parents: Query<&ChildOf>,
-    player: Query<Entity, With<PlayerBody>>,
     visuals: Option<Res<TankardVisuals>>,
-    mut held: ResMut<HeldTankard>,
     context: ReadRapierContext,
     mut commands: Commands,
 ) {
-    if *capture != CursorCapture::Captured {
+    if *capture != CursorCapture::Captured || !keyboard.just_pressed(KeyCode::KeyT) {
         return;
     }
     let (Ok(camera), Ok(context)) = (camera.single(), context.single()) else {
         return;
     };
-    if keyboard.just_pressed(KeyCode::KeyT)
-        && tankards.iter().count() < MAX_LIVE_TANKARDS
-        && let Some(visuals) = visuals
-    {
-        let horizontal = camera.forward().as_vec3().with_y(0.0).normalize_or_zero();
-        let origin = camera.translation + horizontal * 140.0 + Vec3::Y * 300.0;
-        let is_terrain = |entity| terrain.get(entity).is_ok();
-        if let Some((_, distance)) = context.cast_ray(
-            origin,
-            Vec3::NEG_Y,
-            700.0,
-            true,
-            QueryFilter::default().predicate(&is_terrain),
-        ) {
-            spawn_debug_tankard(
-                &mut commands,
-                &visuals,
-                origin - Vec3::Y * distance + Vec3::Y * 120.0,
-            );
-        }
-    }
-    if !keyboard.just_pressed(KeyCode::KeyE) {
+    if tankards.iter().count() >= MAX_LIVE_TANKARDS {
         return;
     }
-    if let Some(entity) = held.0.take() {
-        if interactables.get(entity).is_ok() {
-            commands
-                .entity(entity)
-                .remove::<(RigidBodyDisabled, ColliderDisabled)>();
-            commands.entity(entity).insert((
-                Velocity::zero(),
-                Sleeping {
-                    sleeping: false,
-                    ..default()
-                },
-            ));
-        }
-        return;
-    }
-    let filter = if let Ok(player) = player.single() {
-        QueryFilter::default().exclude_rigid_body(player)
-    } else {
-        QueryFilter::default()
+    let Some(visuals) = visuals else { return };
+    let horizontal = camera.forward().as_vec3().with_y(0.0).normalize_or_zero();
+    // The ray starts at the eye of the body, not at the blended or lagging view, so the spawn
+    // point does not depend on the display's refresh rate. The body is shifted by a floating-origin
+    // rebase at once, unlike the view pose, which follows on the next sample. In NOCLIP the camera
+    // is authoritative.
+    let eye = match (*mode, player.single()) {
+        (MoveMode::Walk, Ok(body)) => body.translation + Vec3::Y * tuning.eye_height,
+        _ => camera.translation,
     };
-    let selected = context
-        .cast_ray(
-            camera.translation,
-            camera.forward().as_vec3(),
-            240.0,
-            true,
-            filter,
-        )
-        .and_then(|(entity, _)| pickup_root(entity, &parents, &interactables));
-    if let Some(entity) = selected {
-        commands
-            .entity(entity)
-            .insert((RigidBodyDisabled, ColliderDisabled, Velocity::zero()));
-        held.0 = Some(entity);
+    let origin = eye + horizontal * 140.0 + Vec3::Y * 300.0;
+    let is_terrain = |entity| terrain.get(entity).is_ok();
+    if let Some((_, distance)) = context.cast_ray(
+        origin,
+        Vec3::NEG_Y,
+        700.0,
+        true,
+        QueryFilter::default().predicate(&is_terrain),
+    ) {
+        spawn_debug_tankard(
+            &mut commands,
+            &visuals,
+            origin - Vec3::Y * distance + Vec3::Y * 120.0,
+        );
     }
 }
 
-#[allow(clippy::type_complexity)]
-fn move_held_tankard(
-    mut held: ResMut<HeldTankard>,
-    camera: Query<
-        &Transform,
-        (
-            With<StreamingCamera>,
-            With<ControlledCamera>,
-            Without<DebugTankard>,
-            Without<DynamicClutter>,
-        ),
-    >,
-    mut tankards: Query<
-        (&mut Transform, Option<&ChildOf>),
-        (
-            Or<(With<DebugTankard>, With<DynamicClutter>)>,
-            Without<StreamingCamera>,
-        ),
-    >,
-    parents: Query<&GlobalTransform>,
-) {
-    let Some(entity) = held.0 else { return };
-    let (Ok(camera), Ok((mut tankard, parent))) = (camera.single(), tankards.get_mut(entity))
-    else {
-        held.0 = None;
-        return;
-    };
-    let position = camera.translation + camera.forward().as_vec3() * 110.0;
-    tankard.translation = match parent {
-        Some(parent) => {
-            let Ok(transform) = parents.get(parent.parent()) else {
-                return;
-            };
-            transform.affine().inverse().transform_point3(position)
-        }
-        None => position,
-    };
-}
-
+/// Release cursor/input ownership without altering the physical walking state.
 #[allow(clippy::too_many_arguments)]
 fn cursor_lifecycle_system(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     keyboard: Res<ButtonInput<KeyCode>>,
-    windows: Query<&Window>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     mut capture: ResMut<CursorCapture>,
-    mut cursor_options: Query<&mut CursorOptions>,
-    mut intent: ResMut<WalkIntent>,
-    mut sprint: ResMut<SprintLatch>,
-    mut states: Query<&mut WalkState>,
-    mut controllers: Query<&mut KinematicCharacterController>,
+    mut cursor_options: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    mut motion: MotionReset,
     console: Option<Res<ConsoleState>>,
     menu: Option<Res<crate::settings_ui::SettingsMenuState>>,
 ) {
     // Focus loss or F3 releases; click recaptures (V6). The console and settings menu own capture
     // while open and on their closing frame; the cursor options below still follow that state.
-    let focused = windows.iter().all(|window| window.focused);
+    let focused = windows.single().map_or(true, |window| window.focused);
     let reporting_capture = console
         .as_ref()
         .is_some_and(|console| console.capture_suppressed);
     let console_owns_capture = console
         .is_some_and(|console| console.open || console.closing || console.capture_suppressed)
         || menu.is_some_and(|menu| menu.blocks_gameplay());
-    if reporting_capture {
+    if reporting_capture || !focused {
         *capture = CursorCapture::Released;
-        clear_motion_state(&mut intent, &mut sprint, &mut states, &mut controllers);
+        motion.clear_input();
     }
     if !console_owns_capture {
         if !focused || keyboard.just_pressed(KeyCode::F3) {
             if *capture == CursorCapture::Captured {
                 *capture = CursorCapture::Released;
-                clear_motion_state(&mut intent, &mut sprint, &mut states, &mut controllers);
+                motion.clear_input();
             }
         } else if mouse_buttons.just_pressed(MouseButton::Left)
             && *capture == CursorCapture::Released
@@ -3703,6 +4557,8 @@ fn cursor_lifecycle_system(
 
 fn look_input_system(
     capture: Res<CursorCapture>,
+    mode: Res<MoveMode>,
+    sprint: Res<SprintLatch>,
     mut mouse_motion: MessageReader<MouseMotion>,
     mut intent: ResMut<LookIntent>,
 ) {
@@ -3710,7 +4566,9 @@ fn look_input_system(
     for motion in mouse_motion.read() {
         delta += motion.delta;
     }
-    sample_look_intent(&capture, delta, &mut intent);
+    // Only WALK has a sprinting movement type; NOCLIP flight uses the default one.
+    let sprinting = *mode == MoveMode::Walk && sprint.0;
+    sample_look_intent(&capture, delta, sprinting, &mut intent);
 }
 
 fn noclip_flight_system(
@@ -3745,6 +4603,34 @@ fn noclip_flight_system(
     );
 }
 
+/// WASD movement input as (strafe, forward-back), each -1, 0 or 1; opposite keys cancel.
+fn movement_keys(keyboard: &ButtonInput<KeyCode>) -> Vec2 {
+    Vec2::new(
+        (keyboard.pressed(KeyCode::KeyD) as i8 - keyboard.pressed(KeyCode::KeyA) as i8) as f32,
+        (keyboard.pressed(KeyCode::KeyS) as i8 - keyboard.pressed(KeyCode::KeyW) as i8) as f32,
+    )
+}
+
+/// Updates the sprint latch. It runs before [`look_input_system`], so the mouse yaw of an
+/// update uses the sprint state of that same update (RF-CAM-010).
+fn sprint_latch_system(
+    mode: Res<MoveMode>,
+    capture: Res<CursorCapture>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut sprint: ResMut<SprintLatch>,
+    player: Query<(), (With<PlayerBody>, Without<StreamingCamera>)>,
+) {
+    if *mode != MoveMode::Walk || *capture != CursorCapture::Captured || player.single().is_err() {
+        sprint.0 = false;
+        return;
+    }
+    if movement_keys(&keyboard) == Vec2::ZERO {
+        sprint.0 = false;
+    } else if keyboard.just_pressed(KeyCode::AltLeft) || keyboard.just_pressed(KeyCode::AltRight) {
+        sprint.0 = !sprint.0;
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // Bevy system parameters are supplied independently.
 fn walk_intent_system(
     mode: Res<MoveMode>,
@@ -3753,36 +4639,35 @@ fn walk_intent_system(
     tuning: Res<MovementTuning>,
     look: Res<LookIntent>,
     mut intent: ResMut<WalkIntent>,
-    mut sprint: ResMut<SprintLatch>,
+    sprint: Res<SprintLatch>,
     mut player: Query<&mut Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
+    held: Option<Res<carry::HeldObject>>,
+    carry_tuning: Option<Res<carry::CarryTuning>>,
 ) {
     if *mode != MoveMode::Walk || *capture != CursorCapture::Captured {
-        sprint.0 = false;
         return;
     }
     let Ok(mut body) = player.single_mut() else {
-        sprint.0 = false;
         return;
     };
     // Yaw moves body, pitch moves view (V9).
     body.rotation = Quat::from_axis_angle(Vec3::Y, look.yaw);
     let forward = Vec3::new(-look.yaw.sin(), 0.0, -look.yaw.cos());
     let right = Vec3::new(look.yaw.cos(), 0.0, -look.yaw.sin());
-    let strafe = Vec2::new(
-        (keyboard.pressed(KeyCode::KeyD) as i8 - keyboard.pressed(KeyCode::KeyA) as i8) as f32,
-        (keyboard.pressed(KeyCode::KeyS) as i8 - keyboard.pressed(KeyCode::KeyW) as i8) as f32,
-    );
+    let strafe = movement_keys(&keyboard);
     let wish = (right * strafe.x - forward * strafe.y).normalize_or_zero();
     let slow = keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
     let moving = wish.length_squared() > 0.0;
-    if !moving {
-        sprint.0 = false;
-    } else if keyboard.just_pressed(KeyCode::AltLeft) || keyboard.just_pressed(KeyCode::AltRight) {
-        sprint.0 = !sprint.0;
-    }
     intent.wish_dir = wish;
+    // Holding a body over `fZKeyHeavyWeight` makes the run speed equal the walk speed (the same
+    // block as over-encumbrance, `RF-CARRY-012`). Sprint is not traced and is left unchanged.
+    let heavy = held
+        .as_deref()
+        .and_then(|held| held.held)
+        .zip(carry_tuning.as_deref())
+        .is_some_and(|(held, carry)| carry.blocks_running(held.mass));
     intent.target_speed = if moving {
-        tuning.target_speed(strafe, slow, sprint.0)
+        tuning.target_speed(strafe, slow || heavy, sprint.0)
     } else {
         0.0
     };
@@ -4011,211 +4896,10 @@ fn actual_walk_speed(output: Option<&KinematicCharacterControllerOutput>) -> f32
     }
 }
 
-fn exponential_fov_step(current: f32, target: f32, delta_secs: f32) -> f32 {
-    let remaining = (-delta_secs / SPRINT_FOV_HALF_LIFE_SECS).exp2();
-    target + (current - target) * remaining
-}
-
-fn sprint_fov_system(
-    mode: Res<MoveMode>,
-    sprint: Res<SprintLatch>,
-    time: Res<Time>,
-    player: Query<Option<&KinematicCharacterControllerOutput>, With<PlayerBody>>,
-    mut camera: Query<&mut Projection, (With<StreamingCamera>, With<ControlledCamera>)>,
-    settings: Option<Res<crate::settings::RenderingSettings>>,
-) {
-    let Ok(mut projection) = camera.single_mut() else {
-        return;
-    };
-    let Projection::Perspective(perspective) = &mut *projection else {
-        return;
-    };
-    let base_fov = settings
-        .as_deref()
-        .map_or(PerspectiveProjection::default().fov, |settings| {
-            settings.fov_degrees.to_radians()
-        });
-    let moving = actual_walk_speed(player.single().ok().flatten()) > 1.0;
-    let target_fov = if *mode == MoveMode::Walk && sprint.0 && moving {
-        base_fov + SPRINT_FOV_BONUS_DEGREES.to_radians()
-    } else {
-        base_fov
-    };
-    perspective.fov = exponential_fov_step(perspective.fov, target_fov, time.delta_secs());
-}
-
 #[cfg(test)]
 mod noclip_tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
-
-    #[test]
-    fn authored_compound_clutter_grab_uses_parent_space_and_wakes_on_drop() {
-        let mut app = headless::fixture_app();
-        app.init_resource::<HeldTankard>();
-        app.insert_resource(CursorCapture::Captured);
-        let parent = app
-            .world_mut()
-            .spawn((
-                Transform::from_xyz(500.0, 0.0, 0.0),
-                GlobalTransform::default(),
-            ))
-            .id();
-        let body = app
-            .world_mut()
-            .spawn((
-                DynamicClutter {
-                    max_linear_velocity: 2000.0,
-                    max_angular_velocity: 20.0,
-                },
-                RigidBody::Dynamic,
-                Velocity::zero(),
-                Sleeping {
-                    sleeping: true,
-                    ..default()
-                },
-                Transform::from_xyz(0.0, 200.0, -160.0),
-                GlobalTransform::default(),
-                ChildOf(parent),
-            ))
-            .id();
-        app.world_mut().spawn((
-            Collider::cuboid(10.0, 10.0, 10.0),
-            clutter_collision_groups(),
-            Transform::default(),
-            GlobalTransform::default(),
-            ChildOf(body),
-        ));
-        let camera = app
-            .world_mut()
-            .query_filtered::<Entity, With<ControlledCamera>>()
-            .single(app.world())
-            .unwrap();
-        *app.world_mut()
-            .entity_mut(camera)
-            .get_mut::<Transform>()
-            .unwrap() = Transform::from_xyz(500.0, 200.0, 0.0);
-        app.update();
-        app.insert_resource(CursorCapture::Captured);
-        *app.world_mut()
-            .entity_mut(camera)
-            .get_mut::<Transform>()
-            .unwrap() = Transform::from_xyz(500.0, 200.0, 0.0);
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::KeyE);
-        app.world_mut()
-            .run_system_once(world_tankard_input)
-            .unwrap();
-        assert_eq!(app.world().resource::<HeldTankard>().0, Some(body));
-        assert!(app.world().entity(body).contains::<RigidBodyDisabled>());
-        app.world_mut()
-            .entity_mut(camera)
-            .get_mut::<Transform>()
-            .unwrap()
-            .translation
-            .x += 40.0;
-        app.world_mut().run_system_once(move_held_tankard).unwrap();
-        let position = app
-            .world()
-            .entity(body)
-            .get::<Transform>()
-            .unwrap()
-            .translation;
-        assert!(
-            position.abs_diff_eq(Vec3::new(40.0, 200.0, -110.0), 0.01),
-            "{position:?}"
-        );
-        {
-            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-            keys.release(KeyCode::KeyE);
-            keys.clear();
-            keys.press(KeyCode::KeyE);
-        }
-        app.world_mut()
-            .run_system_once(world_tankard_input)
-            .unwrap();
-        assert_eq!(app.world().resource::<HeldTankard>().0, None);
-        assert!(!app.world().entity(body).contains::<RigidBodyDisabled>());
-        assert!(!app.world().entity(body).get::<Sleeping>().unwrap().sleeping);
-        for _ in 0..10 {
-            app.update();
-        }
-        assert!(
-            app.world()
-                .entity(body)
-                .get::<Transform>()
-                .unwrap()
-                .translation
-                .y
-                < position.y
-        );
-    }
-
-    #[test]
-    fn sprint_fov_interpolation_is_exponential_and_returns_to_base() {
-        let base = PerspectiveProjection::default().fov;
-        let sprint = base + SPRINT_FOV_BONUS_DEGREES.to_radians();
-        let mut at_30_hz = base;
-        let mut at_120_hz = base;
-        for _ in 0..30 {
-            at_30_hz = exponential_fov_step(at_30_hz, sprint, 1.0 / 30.0);
-        }
-        for _ in 0..120 {
-            at_120_hz = exponential_fov_step(at_120_hz, sprint, 1.0 / 120.0);
-        }
-        assert!((at_30_hz - at_120_hz).abs() < 0.0001);
-        assert!((at_30_hz - sprint).abs() < 0.001);
-        for _ in 0..60 {
-            at_30_hz = exponential_fov_step(at_30_hz, base, 1.0 / 60.0);
-        }
-        assert!((at_30_hz - base).abs() < 0.001);
-    }
-
-    #[test]
-    fn sprint_fov_changes_only_the_controlled_camera_during_actual_motion() {
-        let mut app = App::new();
-        app.insert_resource(MoveMode::Walk)
-            .insert_resource(SprintLatch(true))
-            .insert_resource(Time::<()>::default());
-        app.world_mut()
-            .resource_mut::<Time<()>>()
-            .advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
-        let base = PerspectiveProjection::default().fov;
-        let controlled = app
-            .world_mut()
-            .spawn((
-                StreamingCamera,
-                ControlledCamera,
-                Projection::Perspective(PerspectiveProjection::default()),
-            ))
-            .id();
-        let unrelated = app
-            .world_mut()
-            .spawn(Projection::Perspective(PerspectiveProjection::default()))
-            .id();
-        app.world_mut().spawn((
-            PlayerBody,
-            KinematicCharacterControllerOutput {
-                grounded: true,
-                desired_translation: Vec3::ZERO,
-                effective_translation: Vec3::new(0.0, 0.0, -10.0),
-                collisions: Vec::new(),
-                is_sliding_down_slope: false,
-            },
-        ));
-        app.world_mut().run_system_once(sprint_fov_system).unwrap();
-        let fov = |app: &App, entity| match app.world().get::<Projection>(entity).unwrap() {
-            Projection::Perspective(perspective) => perspective.fov,
-            _ => panic!("expected perspective camera"),
-        };
-        let widened = fov(&app, controlled);
-        assert!(widened > base);
-        assert_eq!(fov(&app, unrelated), base);
-        app.insert_resource(MoveMode::Noclip);
-        app.world_mut().run_system_once(sprint_fov_system).unwrap();
-        assert!(fov(&app, controlled) < widened);
-    }
 
     #[test]
     fn collision_debug_keeps_shapes_crossing_view_plane() {
@@ -4277,18 +4961,169 @@ mod noclip_tests {
 
     #[test]
     fn pitch_clamps_inside_bounded_range() {
+        // RF-CAM-012: the standing limit is +-pi/2.
+        assert_eq!(MAX_PITCH_RADIANS, std::f32::consts::FRAC_PI_2);
         assert_eq!(clamp_pitch(5.0), MAX_PITCH_RADIANS);
         assert_eq!(clamp_pitch(-5.0), -MAX_PITCH_RADIANS);
         assert_eq!(clamp_pitch(0.3), 0.3);
     }
 
     #[test]
+    fn mouse_yaw_per_count_follows_retail_rates() {
+        // RF-CAM-010: 0.0125 * 0.02 * pi = 0.000785 rad per count walking and running,
+        // 0.0125 * 0.02 * pi / 2 = 0.0003925 sprinting.
+        assert!((yaw_radians_per_count(false) - 0.000_785).abs() < 1.0e-6);
+        assert!((yaw_radians_per_count(true) - 0.000_392_5).abs() < 1.0e-6);
+        assert!((yaw_radians_per_count(true) * 2.0 - yaw_radians_per_count(false)).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn mouse_pitch_per_count_follows_retail_rate() {
+        // RF-CAM-011: 0.0125 * 0.85 * 0.1 = 0.0010625 rad per count.
+        assert!((pitch_radians_per_count() - 0.001_062_5).abs() < 1.0e-7);
+    }
+
+    #[test]
+    fn sampled_counts_turn_by_the_retail_rates() {
+        let mut intent = LookIntent::default();
+        sample_look_intent(
+            &CursorCapture::Captured,
+            Vec2::new(100.0, 200.0),
+            false,
+            &mut intent,
+        );
+        assert!((intent.yaw + 100.0 * 0.000_785).abs() < 1.0e-4);
+        assert!((intent.pitch + 200.0 * 0.001_062_5).abs() < 1.0e-4);
+        let mut sprinting = LookIntent::default();
+        sample_look_intent(
+            &CursorCapture::Captured,
+            Vec2::new(100.0, 0.0),
+            true,
+            &mut sprinting,
+        );
+        assert!((sprinting.yaw + 100.0 * 0.000_392_5).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn sampled_pitch_stops_at_plus_or_minus_ninety_degrees() {
+        let mut intent = LookIntent::default();
+        sample_look_intent(
+            &CursorCapture::Captured,
+            Vec2::new(0.0, 1.0e6),
+            false,
+            &mut intent,
+        );
+        assert_eq!(intent.pitch, -std::f32::consts::FRAC_PI_2);
+        sample_look_intent(
+            &CursorCapture::Captured,
+            Vec2::new(0.0, -2.0e6),
+            false,
+            &mut intent,
+        );
+        assert_eq!(intent.pitch, std::f32::consts::FRAC_PI_2);
+    }
+
+    #[test]
+    fn look_input_system_has_no_smoothing_or_frame_time_scaling() {
+        // RF-CAM-010, RF-CAM-011: the same counts give the same rotation at any frame time.
+        let turn = |frame_secs: f32, mode: MoveMode, sprinting: bool| {
+            let mut app = App::new();
+            app.add_message::<bevy::input::mouse::MouseMotion>()
+                .insert_resource(CursorCapture::Captured)
+                .insert_resource(mode)
+                .insert_resource(SprintLatch(sprinting))
+                .insert_resource(LookIntent::default())
+                .insert_resource(Time::<()>::default());
+            app.world_mut()
+                .resource_mut::<Time<()>>()
+                .advance_by(std::time::Duration::from_secs_f32(frame_secs));
+            app.world_mut()
+                .write_message(bevy::input::mouse::MouseMotion {
+                    delta: Vec2::new(1.0, 1.0),
+                });
+            app.world_mut().run_system_once(look_input_system).unwrap();
+            let look = app.world().resource::<LookIntent>();
+            (look.yaw, look.pitch)
+        };
+        let fast = turn(1.0 / 240.0, MoveMode::Walk, false);
+        let slow = turn(1.0 / 20.0, MoveMode::Walk, false);
+        assert_eq!(fast, slow);
+        assert!((fast.0 + 0.000_785).abs() < 1.0e-6);
+        assert!((fast.1 + 0.001_062_5).abs() < 1.0e-7);
+        // Sprinting halves yaw only, and only in WALK.
+        let sprint = turn(1.0 / 60.0, MoveMode::Walk, true);
+        assert!((sprint.0 + 0.000_392_5).abs() < 1.0e-6);
+        assert_eq!(sprint.1, fast.1);
+        assert_eq!(turn(1.0 / 60.0, MoveMode::Noclip, true), fast);
+    }
+
+    #[test]
+    fn the_first_update_of_a_sprint_change_uses_that_updates_yaw_rate() {
+        use bevy::input::mouse::MouseMotion;
+        let mut app = App::new();
+        app.add_message::<MouseMotion>()
+            .insert_resource(MoveMode::Walk)
+            .insert_resource(CursorCapture::Captured)
+            .insert_resource(ButtonInput::<KeyCode>::default())
+            .insert_resource(SprintLatch::default())
+            .insert_resource(LookIntent::default())
+            .add_systems(Update, (sprint_latch_system, look_input_system).chain());
+        app.world_mut().spawn((PlayerBody, Transform::default()));
+        let update_with_counts = |app: &mut App| {
+            let before = app.world().resource::<LookIntent>().yaw;
+            app.world_mut().write_message(MouseMotion {
+                delta: Vec2::new(100.0, 0.0),
+            });
+            app.update();
+            before - app.world().resource::<LookIntent>().yaw
+        };
+        // Sprint starts (Alt pressed with W held) in this update: half rate at once.
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::KeyW);
+            keys.press(KeyCode::AltLeft);
+        }
+        let starting = update_with_counts(&mut app);
+        assert!(
+            (starting - 100.0 * 0.000_392_5).abs() < 1.0e-4,
+            "{starting}"
+        );
+        // Sprint continues.
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        let continuing = update_with_counts(&mut app);
+        assert!(
+            (continuing - 100.0 * 0.000_392_5).abs() < 1.0e-4,
+            "{continuing}"
+        );
+        // The last movement key is released in this update: full rate at once.
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear();
+            keys.release(KeyCode::KeyW);
+        }
+        let stopping = update_with_counts(&mut app);
+        assert!((stopping - 100.0 * 0.000_785).abs() < 1.0e-4, "{stopping}");
+    }
+
+    #[test]
     fn uncaptured_pointer_yields_no_look_intent() {
         let mut intent = LookIntent::default();
-        sample_look_intent(&CursorCapture::Released, Vec2::new(40.0, 20.0), &mut intent);
+        sample_look_intent(
+            &CursorCapture::Released,
+            Vec2::new(40.0, 20.0),
+            false,
+            &mut intent,
+        );
         assert_eq!(intent.yaw, 0.0);
         assert_eq!(intent.pitch, 0.0);
-        sample_look_intent(&CursorCapture::Captured, Vec2::new(40.0, 20.0), &mut intent);
+        sample_look_intent(
+            &CursorCapture::Captured,
+            Vec2::new(40.0, 20.0),
+            false,
+            &mut intent,
+        );
         assert!(intent.yaw < 0.0);
         assert!(intent.pitch < 0.0);
     }
@@ -4394,9 +5229,8 @@ mod gate_tests {
     }
 
     #[test]
-    fn riverwood_tankard_spawn_pickup_and_drop() {
+    fn riverwood_tankard_spawns_on_the_terrain() {
         let mut app = headless::fixture_app();
-        app.init_resource::<HeldTankard>();
         let visuals = {
             let world = app.world_mut();
             world.resource_scope(|world, mut meshes: Mut<Assets<Mesh>>| {
@@ -4476,7 +5310,7 @@ mod gate_tests {
             "fixture terrain ray must hit; nearest={any_hit:?}, ground={ground:?}"
         );
         app.world_mut()
-            .run_system_once(world_tankard_input)
+            .run_system_once(tankard_spawn_input)
             .unwrap();
         let spawned = {
             let mut query = app
@@ -4499,64 +5333,9 @@ mod gate_tests {
             .get::<Transform>()
             .unwrap()
             .translation;
-        app.world_mut()
-            .entity_mut(camera)
-            .get_mut::<Transform>()
-            .unwrap()
-            .look_at(spawned_pose, Vec3::Y);
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::KeyE);
-        app.world_mut()
-            .run_system_once(world_tankard_input)
-            .unwrap();
-        assert_eq!(app.world().resource::<HeldTankard>().0, Some(spawned.0));
         assert!(
-            app.world()
-                .entity(spawned.0)
-                .contains::<RigidBodyDisabled>()
-        );
-        assert!(app.world().entity(spawned.0).contains::<ColliderDisabled>());
-        app.world_mut()
-            .entity_mut(camera)
-            .get_mut::<Transform>()
-            .unwrap()
-            .translation
-            .x += 100.0;
-        app.world_mut().run_system_once(move_held_tankard).unwrap();
-        let held_pose = app
-            .world()
-            .entity(spawned.0)
-            .get::<Transform>()
-            .unwrap()
-            .translation;
-        assert!(held_pose.x > 90.0, "held tankard did not follow the view");
-        {
-            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-            keys.release(KeyCode::KeyE);
-            keys.clear();
-            keys.press(KeyCode::KeyE);
-        }
-        app.world_mut()
-            .run_system_once(world_tankard_input)
-            .unwrap();
-        assert_eq!(app.world().resource::<HeldTankard>().0, None);
-        assert!(
-            !app.world()
-                .entity(spawned.0)
-                .contains::<RigidBodyDisabled>()
-        );
-        assert!(!app.world().entity(spawned.0).contains::<ColliderDisabled>());
-        app.update();
-        let dropped_pose = app
-            .world()
-            .entity(spawned.0)
-            .get::<Transform>()
-            .unwrap()
-            .translation;
-        assert!(
-            (dropped_pose - held_pose).length() < 10.0,
-            "drop teleported tankard: {held_pose:?} -> {dropped_pose:?}"
+            spawned_pose.y > 0.0 && spawned_pose.is_finite(),
+            "spawned tankard pose {spawned_pose:?}"
         );
     }
 

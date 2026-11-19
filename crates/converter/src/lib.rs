@@ -24,12 +24,14 @@ pub mod progress;
 pub mod reader_diff;
 pub mod records;
 pub mod repair;
+mod reuse;
 pub mod script;
 pub mod streaming_costs;
 pub mod terrain_arrays;
 pub mod terrain_chunks;
 pub mod terrain_pipeline;
 pub mod texture;
+pub mod texture_audit;
 pub mod texture_gpu;
 mod texture_ktx2;
 
