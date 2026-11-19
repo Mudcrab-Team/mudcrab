@@ -1,0 +1,102 @@
+{
+  "retail": {
+    "base1": {
+      "changed": 0,
+      "mean_abs_rgb": 0.0,
+      "luma_correlation": 1.0,
+      "luma_stddev": 13.829,
+      "colors": 995,
+      "image_sha256": "ba006c4d2253a5248ecc425a84b0d1ab03e432bc82374a018f9c19ebf959b690"
+    },
+    "scale-down": {
+      "changed": 1600,
+      "mean_abs_rgb": 32.4558,
+      "luma_correlation": -0.15549,
+      "luma_stddev": 0.2,
+      "colors": 5,
+      "image_sha256": "04691fbbef78759e8b16969cc20809d3cf572840a35ca23c0c6885418295eb84"
+    },
+    "scale-back": {
+      "changed": 1485,
+      "mean_abs_rgb": 1.0604,
+      "luma_correlation": 0.99506,
+      "luma_stddev": 13.684,
+      "colors": 1023,
+      "image_sha256": "3fc1eda6255d41de16f7061f05e9f5cfe3592c2cd60edf4dbdf17dd64823ba25"
+    },
+    "scale-down-000c4a50": {
+      "changed": 1468,
+      "mean_abs_rgb": 1.1098,
+      "luma_correlation": 0.99418,
+      "luma_stddev": 13.625,
+      "colors": 1002,
+      "image_sha256": "d616701be8504baddffa39564d5a00ddc8451a8a2b7b8689b3874ba1d9ad6dca"
+    },
+    "scale-back-000c4a50": {
+      "changed": 1490,
+      "mean_abs_rgb": 1.1454,
+      "luma_correlation": 0.99401,
+      "luma_stddev": 13.557,
+      "colors": 1001,
+      "image_sha256": "e15b76a5ed20549d44c8ddb9068009fb8f708e009b5b03af61398a500b7d399f"
+    },
+    "scale-down-000c4a65": {
+      "changed": 1600,
+      "mean_abs_rgb": 32.4565,
+      "luma_correlation": -0.17044,
+      "luma_stddev": 0.199,
+      "colors": 5,
+      "image_sha256": "0c2b7c4773027528311b84ed0e6a578ab6a62b46ef52be9b35acda57183a2654"
+    },
+    "scale-back-000c4a65": {
+      "changed": 1468,
+      "mean_abs_rgb": 1.0327,
+      "luma_correlation": 0.99555,
+      "luma_stddev": 13.798,
+      "colors": 1031,
+      "image_sha256": "389c360175add7a5b4370078e59cf8593c9e308bdf9ff6822716d14c4c7a9026"
+    }
+  },
+  "live_shape": [
+    -772.0,
+    1405.0,
+    736.0,
+    181.0576629638672
+  ],
+  "min_sphere_margin": 67.96628201007843,
+  "mesh_box_margin": -41.90541830078183,
+  "mudcrab": {
+    "baseline": [
+      {
+        "pose": "Katariah-NONE-floor",
+        "mode": "on",
+        "drawn": 58,
+        "listed": 153,
+        "sha256": "5d6fdd91990eddaf8e45453ef74015f36bd1847483b3d305fa433b2a5bb5a7c4"
+      },
+      {
+        "pose": "Katariah-named-floor",
+        "mode": "on",
+        "drawn": 39,
+        "listed": 255,
+        "sha256": "6574a52a64fe5de1a25bf4870edbc6ebe6fae42ef679cbaad41958c54c47bbe1"
+      }
+    ],
+    "intervention": [
+      {
+        "pose": "Katariah-NONE-floor",
+        "mode": "on",
+        "drawn": 58,
+        "listed": 153,
+        "sha256": "5d6fdd91990eddaf8e45453ef74015f36bd1847483b3d305fa433b2a5bb5a7c4"
+      },
+      {
+        "pose": "Katariah-named-floor",
+        "mode": "on",
+        "drawn": 40,
+        "listed": 255,
+        "sha256": "3977ddd69719ba9f647f21e210071745dcec6ae9b73c516f3a737d0b24a643b3"
+      }
+    ]
+  }
+}

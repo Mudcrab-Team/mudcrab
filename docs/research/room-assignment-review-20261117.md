@@ -93,7 +93,8 @@ the existing retail images were not rerun for subset conversion.
 
 ## Katariah wall control, 2026-11-19
 
-The integrated traversal still hides a drawable wall in the upper-right corner of the named-floor view.
+Skyrim draws carved wood from wall `000C4A65` in the upper-right corner of the named-floor view.
+The original Mudcrab run omits this wall at the final drawable visibility test.
 At the NONE-floor pose, room culling removes 95 main-camera meshes and leaves the entire PNG identical.
 
 | Settled camera pose | Meshes with room culling | Meshes without room culling |
@@ -117,11 +118,28 @@ count from 39 to 40 and reproduced the exposed off-control patch exactly.
 For that intervention, change only the wall's `room_reference_rules.assignment` from `auto` to
 `none` in the displaced-wall copy. The same patch matched at a second lighting setting
 (`--lights --color-grade off`). Admitting the other nearby wall, `000C4A65`, left 1,571 of the
-1,600 pixels different from the exposed off control under that setting. The intervention identifies
-the Mudcrab placement responsible for the sampled detail. Skyrim's placement identity and the
-reason its visibility differs remain open.
+1,600 pixels different from the exposed off control under that setting. This intervention identifies the surface exposed in the modified Mudcrab scene.
 
 ![Katariah named-floor view and enlarged upper-right corner across the retail and Mudcrab controls](evidence/room-review-20261117/katariah-wedge-control.jpg)
 
 The orange box marks the measured patch. The Mudcrab panels use the second lighting setting and
 three times the captured RGB values for legibility. Pixel comparisons use the original PNGs.
+
+
+### Retail wall identification
+
+In Skyrim SE 1.7.104, shrinking `000C4A65` to 10% at the original pose removed the wood grain in
+two trials. Restoring its scale brought the grain back both times. Shrinking `000C4A50` left the
+grain visible. The camera, projection and viewport matched across captures, and the live node
+sphere confirmed each scale change. Luminance standard deviation in the 40 × 40 patch went from
+13.83 to 0.20 in both target trials, then returned to 13.68 and 13.80. The negative control
+measured 13.63. [Capture hashes and measurements](evidence/room-review-20261117/katariah-retail-wall-control.json)
+
+Both engines reached the wall's room, `0006EE1E`, from camera room `0006EE50`. At portal
+`0006EF37` the Skyrim drawable's sphere extends 67.97 Creation units into the accepted half-space.
+Mudcrab tests the transformed mesh box, which falls 41.91 units short of the same plane.
+Bypassing that final filter for `000C4A65` in the normal Mudcrab pack restored the wood, with
+40 of 255 meshes drawn. The NONE-floor image stayed byte-identical. This identifies a difference
+in drawable bounds for this static, single-shape mesh. Both runs already reach its room.
+
+![Katariah retail wall scale and restore controls alongside Mudcrab crops](evidence/room-review-20261117/katariah-retail-wall-control.png)
