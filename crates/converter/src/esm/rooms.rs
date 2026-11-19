@@ -8,6 +8,7 @@
 //! Design and byte layouts: `docs/research/interior-room-graph-converter.md`.
 
 use crate::esm::{extractors::SubrecordView, records::RawRecord};
+use crate::records::DecodedRecord;
 use rusqlite::{Connection, OptionalExtension, Result, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -537,6 +538,53 @@ fn is_placed(record_type: &[u8; 4]) -> bool {
     super::is_placed_record_type(record_type)
 }
 
+fn room_link_metadata_is_complete<'a>(
+    form_id: u32,
+    cell: u32,
+    fields: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
+) -> bool {
+    let mut header = None;
+    let mut actual = 0;
+    for (tag, data) in fields {
+        match tag {
+            b"XRMR" => {
+                if header.replace(data).is_some() {
+                    eprintln!(
+                        "warning: room marker {form_id:08X} in cell {cell:08X} has repeated XRMR headers"
+                    );
+                    return false;
+                }
+            }
+            b"XLRM" => actual += 1,
+            _ => {}
+        }
+    }
+    let declared = match header {
+        // The native loader masks the two lighting and image-space flags off the count.
+        Some(&[low, high, _, _]) => usize::from(u16::from_le_bytes([low, high]) & 0x3fff),
+        Some(_) => {
+            eprintln!(
+                "warning: room marker {form_id:08X} in cell {cell:08X} has a malformed XRMR header"
+            );
+            return false;
+        }
+        None if actual == 0 => return true,
+        None => {
+            eprintln!(
+                "warning: room marker {form_id:08X} in cell {cell:08X} has {actual} XLRM entries without an XRMR header"
+            );
+            return false;
+        }
+    };
+    if declared != actual {
+        eprintln!(
+            "warning: room marker {form_id:08X} in cell {cell:08X} has {actual} XLRM entries but XRMR declares {declared}"
+        );
+        return false;
+    }
+    true
+}
+
 /// Rebuilds the room tables from the merged records. `interior_cells` are the CELL records
 /// with no worldspace and no grid position; markers elsewhere are ignored.
 ///
@@ -546,6 +594,15 @@ pub fn export_room_graph(
     tx: &Transaction<'_>,
     master: &HashMap<u32, RawRecord>,
     interior_cells: &HashSet<u32>,
+) -> Result<RoomGraphReport> {
+    export_room_graph_with_sources(tx, master, interior_cells, None)
+}
+
+pub(crate) fn export_room_graph_with_sources(
+    tx: &Transaction<'_>,
+    master: &HashMap<u32, RawRecord>,
+    interior_cells: &HashSet<u32>,
+    sources: Option<&HashMap<u32, DecodedRecord>>,
 ) -> Result<RoomGraphReport> {
     clear(tx)?;
     let mut report = RoomGraphReport::default();
@@ -606,12 +663,32 @@ pub fn export_room_graph(
             incomplete.insert(cell);
             continue;
         }
-        let mut headers = record.subrecords.iter().filter(|(tag, _)| tag == b"XRMR");
-        let header = headers.next().map(|(_, data)| data);
-        if headers.next().is_some() || header.is_some_and(|data| data.len() != 4) {
+        // The typed projection can lack rejected occurrences, so count its source fields.
+        let links_complete = match sources.and_then(|sources| sources.get(&form_id)) {
+            Some(source) => source.framed_source_subrecords().is_some_and(|fields| {
+                room_link_metadata_is_complete(
+                    form_id,
+                    cell,
+                    fields.iter().map(|(tag, data)| (tag.as_slice(), *data)),
+                )
+            }),
+            None => room_link_metadata_is_complete(
+                form_id,
+                cell,
+                record
+                    .subrecords
+                    .iter()
+                    .map(|(tag, data)| (tag.as_slice(), data.as_slice())),
+            ),
+        };
+        if !links_complete {
             incomplete.insert(cell);
         }
-        let flags = header
+        let flags = record
+            .subrecords
+            .iter()
+            .find(|(tag, _)| tag == b"XRMR")
+            .map(|(_, data)| data)
             .filter(|data| data.len() == 4)
             .map(|data| {
                 i64::from(data[1]) | (i64::from(u16::from_le_bytes([data[2], data[3]])) << 8)
