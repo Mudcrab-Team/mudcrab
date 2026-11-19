@@ -1,8 +1,8 @@
 //! Records the plugin rows and fields that runtime projections leave out (#297).
 //!
-//! Runtime projections skip a record when its data cannot supply a row.
-//! Each skip is counted here under a stable category, with a bounded sample of FormIDs, and
-//! stored in the optional tables of `docs/specs/converters/db-schema.md` §18. The stored counts
+//! Runtime projections omit unusable rows or fields without inventing authored values.
+//! Each omission is counted here under a stable category, with a bounded sample of FormIDs, and
+//! stored in the optional tables of `docs/specs/converters/db-schema.md` §19. The stored counts
 //! reach `integration-report.json` and the conversion's warnings or notices, including when a
 //! metadata rebuild or a cached database republishes the snapshot.
 
@@ -31,6 +31,12 @@ pub enum OmissionCategory {
     LightMissingData,
     /// A `LIGH` whose `DATA` is too short for the row's required fields gets no `lights` row.
     LightShortData,
+    /// A GRAS with missing or short DATA keeps its readable scalars and identity/model.
+    GrassUnusableData,
+    /// A placed record without a readable DATA transform keeps only its canonical row.
+    ReferenceUnusableData,
+    /// An LGTM with missing or unsupported DATA keeps its other fields but no DATA lighting.
+    LightingTemplateUnusableData,
     /// A RACE whose animation authoring cannot be read has no animation source rows.
     RaceUnreadableAuthoring,
     /// An `XEMI` target that is not in the load order, or is deleted.
@@ -51,6 +57,9 @@ impl OmissionCategory {
         match self {
             Self::LightMissingData => "light_missing_data",
             Self::LightShortData => "light_short_data",
+            Self::GrassUnusableData => "grass_unusable_data",
+            Self::ReferenceUnusableData => "reference_unusable_data",
+            Self::LightingTemplateUnusableData => "lighting_template_unusable_data",
             Self::RaceUnreadableAuthoring => "race_unreadable_authoring",
             Self::EmittanceTargetAbsent => "emittance_target_absent",
             Self::EmittanceLightUnusableData => "emittance_light_unusable_data",
@@ -64,9 +73,12 @@ impl OmissionCategory {
     /// emittance target keeps the model's own emission, the documented fallback.
     pub fn severity(self) -> Severity {
         match self {
-            Self::LightMissingData | Self::LightShortData | Self::RaceUnreadableAuthoring => {
-                Severity::DataLoss
-            }
+            Self::LightMissingData
+            | Self::LightShortData
+            | Self::GrassUnusableData
+            | Self::ReferenceUnusableData
+            | Self::LightingTemplateUnusableData
+            | Self::RaceUnreadableAuthoring => Severity::DataLoss,
             Self::EmittanceTargetAbsent
             | Self::EmittanceLightUnusableData
             | Self::EmittanceRegionNoWeather

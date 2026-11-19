@@ -180,7 +180,7 @@ pub(crate) fn conversion_is_complete(report: &PipelineReport) -> bool {
     report.skipped == 0 && report.warnings.is_empty()
 }
 
-/// One line per projection omission category (#297): a lost runtime row warns, so the run is
+/// One line per projection omission category (#297): a lost runtime row or field warns, so the run is
 /// incomplete; an unresolved emittance target keeps the model's emission and is only noted.
 pub(crate) fn report_projection_omissions(
     report: &mut PipelineReport,
