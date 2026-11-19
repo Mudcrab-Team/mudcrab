@@ -15,6 +15,7 @@ use crate::{
 use bevy::{
     asset::{AssetLoadError, LoadState, RecursiveDependencyLoadState, io::AssetReaderError},
     gltf::GltfAssetLabel,
+    light::{NotShadowCaster, NotShadowReceiver},
     mesh::{Indices, PrimitiveTopology, VertexAttributeValues},
     prelude::*,
     tasks::{IoTaskPool, Task, block_on},
@@ -232,6 +233,36 @@ impl LodChunkFailure {
         Self {
             class: LodChunkFailureClass::Terminal,
             reason: reason.into(),
+        }
+    }
+}
+
+/// LOD land neither receives nor casts the sun shadow (`RF-SHADER-013`, `RF-SHADER-014`): its
+/// lighting shader keys carry neither the sun-mask bits nor the mask sampler, and no code or data
+/// gives LOD a cast bit. It is lit by `saturate(N.L) * sun colour`, ambient and fog only. The same
+/// markers also take LOD out of the point and spot light shadows, which matches retail: LOD
+/// neither casts nor receives any shadow. Near terrain, including the LOD-edge blend, does
+/// receive, and is not touched here.
+///
+/// LOD land never casts, even with `[Display] bDrawLandShadows=1`: that setting is retail's cast
+/// bit for near land only (`RF-SHADER-011`), and no code or data gives LOD a cast bit.
+///
+/// A LOD chunk's quadrant node carries the [`TerrainCoverage`] and its single primitive child
+/// carries the mesh, which draws until the chunk is batched. The loader attaches the markers to
+/// that child once, when it validates the chunk and gives the node its coverage, so nothing scans
+/// the world for LOD meshes afterwards. The generated batches and their fallbacks get them where
+/// they are spawned (`terrain_batching::spawn_render_mesh`).
+fn unshadow_lod_primitives(
+    node: Entity,
+    children: &Query<&Children>,
+    mesh_handles: &Query<&Mesh3d>,
+    commands: &mut Commands,
+) {
+    for child in children.get(node).into_iter().flat_map(|c| c.iter()) {
+        if mesh_handles.contains(child) {
+            commands
+                .entity(child)
+                .insert((NotShadowCaster, NotShadowReceiver));
         }
     }
 }
@@ -824,6 +855,7 @@ pub(super) fn track_lod_readiness(
             commands
                 .entity(*patch)
                 .insert((*coverage, TerrainSurfaceReady, Visibility::Hidden));
+            unshadow_lod_primitives(*patch, &children, &mesh_handles, &mut commands);
         }
         commands.entity(entity).insert(Visibility::Inherited);
         commands.entity(entity).remove::<PendingLodChunk>();
@@ -3667,5 +3699,66 @@ mod tests {
                 "an unloaded cell falls back to its LOD land"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod shadow_policy_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    /// Runs the loader's marking for `node` in a world.
+    fn unshadow(world: &mut World, node: Entity) {
+        world
+            .run_system_once(
+                move |children: Query<&Children>,
+                      mesh_handles: Query<&Mesh3d>,
+                      mut commands: Commands| {
+                    unshadow_lod_primitives(node, &children, &mesh_handles, &mut commands);
+                },
+            )
+            .unwrap();
+    }
+
+    fn unshadowed(world: &World, entity: Entity) -> bool {
+        let entity = world.entity(entity);
+        entity.contains::<NotShadowCaster>() && entity.contains::<NotShadowReceiver>()
+    }
+
+    /// `RF-SHADER-013` and `RF-SHADER-014`, in the real layout: a quadrant node with a coverage
+    /// and a primitive child with the mesh. The child loses both shadows; the node and anything
+    /// that is not a mesh child are not touched.
+    #[test]
+    fn the_lod_primitive_child_neither_receives_nor_casts() {
+        let mut world = World::new();
+        let node = world
+            .spawn(TerrainCoverage {
+                grid: IVec2::ZERO,
+                quadrant: 0,
+                tier: Some(LodTier::Tier8),
+            })
+            .id();
+        let primitive = world.spawn((Mesh3d(Handle::default()), ChildOf(node))).id();
+        let other_child = world.spawn(ChildOf(node)).id();
+        // A mesh under a different node (a building, or near terrain) is not touched.
+        let other_node = world.spawn_empty().id();
+        let elsewhere = world
+            .spawn((Mesh3d(Handle::default()), ChildOf(other_node)))
+            .id();
+        unshadow(&mut world, node);
+        assert!(unshadowed(&world, primitive));
+        assert!(!world.entity(other_child).contains::<NotShadowCaster>());
+        assert!(!world.entity(node).contains::<NotShadowCaster>());
+        assert!(!world.entity(elsewhere).contains::<NotShadowCaster>());
+        assert!(!world.entity(elsewhere).contains::<NotShadowReceiver>());
+    }
+
+    /// A node without children is fine.
+    #[test]
+    fn a_node_without_children_is_a_no_op() {
+        let mut world = World::new();
+        let node = world.spawn_empty().id();
+        unshadow(&mut world, node);
+        assert!(!world.entity(node).contains::<NotShadowCaster>());
     }
 }

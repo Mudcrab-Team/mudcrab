@@ -571,6 +571,9 @@ fn spawn_render_mesh(
     if state.no_frustum_culling {
         entity.insert(NoFrustumCulling);
     }
+    // LOD land neither receives nor casts the sun shadow (RF-SHADER-013, RF-SHADER-014), and this
+    // function spawns only LOD terrain: the batches and the fallbacks drawn while one uploads.
+    entity.insert((NotShadowCaster, NotShadowReceiver));
     entity.id()
 }
 
@@ -2146,6 +2149,20 @@ mod tests {
             assert!(batch.fallback_entities.iter().all(|&fallback| {
                 *app.world().get::<Visibility>(fallback).unwrap() == Visibility::Inherited
             }));
+            // `spawn_render_mesh` makes LOD land neither cast nor receive the sun shadow
+            // (RF-SHADER-013, RF-SHADER-014): the batch entity and every fallback.
+            for entity in batch
+                .fallback_entities
+                .iter()
+                .copied()
+                .chain([batch.entity])
+            {
+                let entity = app.world().entity(entity);
+                assert!(
+                    entity.contains::<NotShadowCaster>() && entity.contains::<NotShadowReceiver>(),
+                    "a LOD terrain render mesh casts or receives"
+                );
+            }
         }
         assert_eq!(
             *app.world().get::<Visibility>(entity).unwrap(),

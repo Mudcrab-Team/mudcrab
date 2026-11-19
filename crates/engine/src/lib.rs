@@ -58,6 +58,7 @@ mod streaming_gpu_metrics;
 mod streaming_preparation;
 mod streaming_trace;
 pub mod sun;
+pub mod sun_shadow_fade;
 pub mod swap_bridge;
 pub mod terrain_merge;
 pub mod terrain_upload;
@@ -71,6 +72,8 @@ mod underwater_pass;
 mod vendored_bevy_patches;
 #[cfg(test)]
 mod vendored_morph_shader;
+#[cfg(test)]
+mod vendored_shadow_shader;
 pub mod visibility_optimization;
 pub mod visual_profile;
 mod water_depth;

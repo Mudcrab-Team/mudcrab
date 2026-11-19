@@ -34,9 +34,10 @@ use crate::{
 };
 use bevy::{
     gltf::GltfAssetLabel,
+    light::{NotShadowCaster, NotShadowReceiver},
     prelude::*,
     tasks::{IoTaskPool, Task, block_on},
-    world_serialization::{WorldAsset, WorldAssetRoot},
+    world_serialization::{WorldAsset, WorldAssetRoot, WorldInstanceReady},
 };
 use shared::lod::{ChunkKey, LodTier};
 use std::{
@@ -194,6 +195,36 @@ impl LodObjects {
             let mut chunks = std::mem::take(&mut self.checked);
             chunks.sort_by_key(|chunk| chunk.key);
             self.chunks = chunks;
+        }
+    }
+}
+
+/// LOD objects neither receive nor cast the sun shadow (`RF-SHADER-013`, `RF-SHADER-014`): their
+/// lighting shader keys have no sun-mask bits and the shipped LOD files have no cast flag. Every
+/// mesh of an object chunk gets both markers when its scene is ready.
+pub(super) fn unshadow_object_chunk(
+    ready: On<WorldInstanceReady>,
+    roots: Query<(), With<LodObjectRoot>>,
+    children: Query<&Children>,
+    meshes: Query<(), With<Mesh3d>>,
+    mut commands: Commands,
+) {
+    if roots.contains(ready.entity) {
+        unshadow_chunk_meshes(ready.entity, &children, &meshes, &mut commands);
+    }
+}
+
+fn unshadow_chunk_meshes(
+    root: Entity,
+    children: &Query<&Children>,
+    meshes: &Query<(), With<Mesh3d>>,
+    commands: &mut Commands,
+) {
+    for descendant in children.iter_descendants(root) {
+        if meshes.contains(descendant) {
+            commands
+                .entity(descendant)
+                .insert((NotShadowCaster, NotShadowReceiver));
         }
     }
 }
@@ -972,5 +1003,127 @@ mod tests {
         );
         // The runtime controls are optional: the rig has none, as many headless tests do.
         assert!(rig.app.world().get_resource::<StreamingRuntime>().is_none());
+    }
+}
+
+#[cfg(test)]
+mod shadow_policy_tests {
+    use super::*;
+    use bevy::{
+        asset::{AssetApp, AssetPlugin},
+        ecs::system::RunSystemOnce,
+        world_serialization::WorldSerializationPlugin,
+    };
+    use shared::lod::ChunkAnchor;
+
+    /// An object chunk's meshes, however deep, neither receive nor cast; a mesh elsewhere does both.
+    #[test]
+    fn object_lod_meshes_neither_receive_nor_cast() {
+        let mut world = World::new();
+        let root = world.spawn_empty().id();
+        let node = world.spawn(ChildOf(root)).id();
+        let deep = world.spawn((Mesh3d(Handle::default()), ChildOf(node))).id();
+        let shallow = world.spawn((Mesh3d(Handle::default()), ChildOf(root))).id();
+        let other_root = world.spawn_empty().id();
+        let elsewhere = world
+            .spawn((Mesh3d(Handle::default()), ChildOf(other_root)))
+            .id();
+        world
+            .run_system_once(
+                move |children: Query<&Children>,
+                      meshes: Query<(), With<Mesh3d>>,
+                      mut commands: Commands| {
+                    unshadow_chunk_meshes(root, &children, &meshes, &mut commands);
+                },
+            )
+            .unwrap();
+        for mesh in [deep, shallow] {
+            let mesh = world.entity(mesh);
+            assert!(mesh.contains::<NotShadowCaster>() && mesh.contains::<NotShadowReceiver>());
+        }
+        let elsewhere = world.entity(elsewhere);
+        assert!(!elsewhere.contains::<NotShadowCaster>());
+        assert!(!elsewhere.contains::<NotShadowReceiver>());
+    }
+    /// A converted scene as the loader builds one: a root, a node and a mesh primitive below it.
+    fn scene_with_mesh() -> World {
+        let mut world = World::new();
+        let root = world
+            .spawn((Name::new("scene_root"), Transform::default()))
+            .id();
+        let node = world
+            .spawn((Name::new("node"), Transform::default(), ChildOf(root)))
+            .id();
+        world.spawn((
+            Mesh3d(Handle::default()),
+            Transform::default(),
+            ChildOf(node),
+        ));
+        world
+    }
+
+    /// The root of the hierarchy that `entity` belongs to.
+    fn top_of(world: &World, mut entity: Entity) -> Entity {
+        while let Some(parent) = world.get::<ChildOf>(entity) {
+            entity = parent.parent();
+        }
+        entity
+    }
+
+    /// The registration the plugin makes, driven through the real world-instance spawner: a ready
+    /// object chunk scene (a `LodObjectRoot`) has every mesh unshadowed, and a scene that is not
+    /// an object chunk keeps casting and receiving.
+    #[test]
+    fn the_registered_observer_unshadows_object_chunks_and_nothing_else() {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            WorldSerializationPlugin,
+        ))
+        .init_asset::<Mesh>()
+        .init_asset::<Image>()
+        .init_asset::<StandardMaterial>()
+        .register_type::<ChildOf>()
+        .register_type::<Children>()
+        .register_type::<GlobalTransform>()
+        .register_type::<Mesh3d>()
+        .register_type::<Name>()
+        .register_type::<Transform>();
+        crate::streaming::register_lod_shadow_policy(&mut app);
+        let assets = app.world().resource::<AssetServer>().clone();
+        let chunk_scene = assets.add(WorldAsset::new(scene_with_mesh()));
+        let other_scene = assets.add(WorldAsset::new(scene_with_mesh()));
+        // The `Loaded` events are applied in the asset schedule, before the spawner reads them.
+        app.update();
+        let key = ChunkKey::new(60, LodTier::Tier16, ChunkAnchor::new(6, 5));
+        let chunk = app
+            .world_mut()
+            .spawn((LodObjectRoot { key }, WorldAssetRoot(chunk_scene)))
+            .id();
+        let other = app.world_mut().spawn(WorldAssetRoot(other_scene)).id();
+        for _ in 0..4 {
+            app.update();
+        }
+        let world = app.world_mut();
+        let meshes: Vec<Entity> = world
+            .query_filtered::<Entity, With<Mesh3d>>()
+            .iter(world)
+            .collect();
+        let (mut in_chunk, mut elsewhere) = (0, 0);
+        for mesh in meshes {
+            let entity = world.entity(mesh);
+            let shadowed =
+                !entity.contains::<NotShadowCaster>() && !entity.contains::<NotShadowReceiver>();
+            let top = top_of(world, mesh);
+            if top == chunk {
+                in_chunk += 1;
+                assert!(!shadowed, "an object chunk mesh casts or receives");
+            } else if top == other {
+                elsewhere += 1;
+                assert!(shadowed, "a mesh outside an object chunk lost its shadows");
+            }
+        }
+        assert_eq!((in_chunk, elsewhere), (1, 1), "both scenes spawned a mesh");
     }
 }
