@@ -74,20 +74,20 @@ fn header(flags: u32, masters: &[&str]) -> Vec<u8> {
 
 /// A `MOVT` with the given eight directional speeds and the three rotation rates.
 fn movement_type(id: u32, name: &str, speeds: [f32; 8]) -> Vec<u8> {
+    named_movement_type(id, Some(name), speeds)
+}
+
+/// Like [`movement_type`], with no editor ID when `name` is `None`.
+fn named_movement_type(id: u32, name: Option<&str>, speeds: [f32; 8]) -> Vec<u8> {
     let sped: Vec<u8> = speeds
         .into_iter()
         .chain([std::f32::consts::PI; 3])
         .flat_map(f32::to_le_bytes)
         .collect();
-    record(
-        b"MOVT",
-        id,
-        &[
-            sub(b"EDID", format!("{name}\0").as_bytes()),
-            sub(b"SPED", &sped),
-        ]
-        .concat(),
-    )
+    let edid = name.map_or_else(Vec::new, |name| {
+        sub(b"EDID", format!("{name}\0").as_bytes())
+    });
+    record(b"MOVT", id, &[edid, sub(b"SPED", &sped)].concat())
 }
 
 fn default_objects(pairs: &[(&[u8; 4], u32)]) -> Vec<u8> {
