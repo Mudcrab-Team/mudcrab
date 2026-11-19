@@ -109,16 +109,16 @@ pub(crate) fn restore_portal_endpoint_provenance<'a>(
     )?;
     let mut incomplete = conn.prepare_cached(
         "UPDATE room_graph_cells SET complete=0 WHERE cell_id IN
-         (SELECT cell_id FROM room_portals WHERE ref_id=?1)",
+         (SELECT cell_id FROM room_portals WHERE ref_id=?1 AND
+          (?2 OR (room_a IS NULL AND NOT unbounded_a) OR (room_b IS NULL AND NOT unbounded_b)))",
     )?;
     for (id, source) in sources {
         if clear.execute([id])? == 0 {
             continue;
         }
-        if let Some(source) =
-            source.filter(|bytes| !bytes.is_empty() && bytes.len().is_multiple_of(8))
-        {
-            for (index, pair) in source.as_chunks::<8>().0.iter().enumerate() {
+        let pairs = source.filter(|bytes| !bytes.is_empty() && bytes.len().is_multiple_of(8));
+        if let Some(bytes) = pairs {
+            for (index, pair) in bytes.as_chunks::<8>().0.iter().enumerate() {
                 set.execute(params![
                     id,
                     index as i64,
@@ -126,16 +126,9 @@ pub(crate) fn restore_portal_endpoint_provenance<'a>(
                     u32_at(pair, 4) == Some(0)
                 ])?;
             }
-        } else {
-            incomplete.execute([id])?;
         }
+        incomplete.execute(params![id, pairs.is_none()])?;
     }
-    conn.execute(
-        "UPDATE room_graph_cells SET complete=0 WHERE cell_id IN
-         (SELECT cell_id FROM room_portals WHERE (room_a IS NULL AND unbounded_a=0)
-          OR (room_b IS NULL AND unbounded_b=0))",
-        [],
-    )?;
     Ok(())
 }
 
