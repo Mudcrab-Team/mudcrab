@@ -240,8 +240,9 @@ order, and named/NONE/automatic rules. The native instruction probe checks 1,617
 with 36 saved boundary cases also tested in Rust.
 
 [The authored-assignment validation record](room-authored-assignment-20261115.json) retains 78
-final native captures using a private four-cell dataset, 989 freshly converted models, 860 source-
-sphere GLBs, and 2,799 base records with source spheres. The main comparison has 72 captures at
+Mudcrab captures from November 15, before the later source-bounds fixes. That build used a
+private four-cell dataset with 989 converted models, 860 source-sphere GLBs, and 2,799 base
+records with source spheres. The main comparison has 72 captures at
 12 poses, three alternating repetitions per mode, and all nine cross-mode image pairings. Eight
 views have zero persistent differing pixels at threshold 8. Abandoned Prison has one sequence
 pixel; six additional fresh-process captures match at that pose, supporting a capture-history
