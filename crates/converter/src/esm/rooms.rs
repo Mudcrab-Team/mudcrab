@@ -18,7 +18,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 
 mod occluders;
-pub(super) use occluders::invalidate_subset_links as invalidate_subset_occluder_links;
+pub(super) use occluders::update_subset as update_subset_occluders;
+pub use occluders::{NativeOccluderChange, NativeOccluderShape, apply_native_occluders};
 
 /// `RoomMarker` base form in `Skyrim.esm`, which is always load-order slot 0.
 pub const ROOM_MARKER_BASE: u32 = 0x1F;
@@ -1283,6 +1284,7 @@ fn project_room_graph(
         .keys()
         .copied()
         .chain(occluders.cells)
+        .chain(incomplete.intersection(interior_cells).copied())
         .collect();
     for cell in cells {
         let dangling: bool = dangling_links.query_row([cell], |row| row.get(0))?;
