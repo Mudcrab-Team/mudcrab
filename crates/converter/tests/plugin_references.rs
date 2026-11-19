@@ -1635,6 +1635,7 @@ fn load_order_export_writes_the_room_graph_with_remapped_marker_ids() {
                             [500.0, 0.0, 0.0],
                             [
                                 sub(b"XPRM", &xprm([100.0; 3], 1)),
+                                sub(b"XRMR", &[1, 0xc0, 1, 0]),
                                 sub(b"LNAM", &word(0x0100_0A00)),
                                 sub(b"INAM", &word(0x0100_0A01)),
                                 sub(b"XLRM", &word(0x0100_0801)),
@@ -2376,6 +2377,96 @@ fn ambiguous_room_headers_keep_both_readers_conservative() {
 }
 
 #[test]
+fn authored_room_link_counts_keep_only_mismatched_cells_incomplete() {
+    let cell = |id, first_room: u32, header: Option<[u8; 4]>, link_count| {
+        let mut shape = vec![0; 32];
+        for offset in [0, 4, 8] {
+            shape[offset..offset + 4].copy_from_slice(&100f32.to_le_bytes());
+        }
+        shape[28..32].copy_from_slice(&1u32.to_le_bytes());
+        let room = |room_id, extra: Vec<u8>| {
+            record(
+                b"REFR",
+                room_id,
+                0,
+                [
+                    sub(b"NAME", &0x1Fu32.to_le_bytes()),
+                    sub(b"DATA", &[0; 24]),
+                    sub(b"XPRM", &shape),
+                    extra,
+                ]
+                .concat(),
+            )
+        };
+        let target = first_room + 1;
+        let mut links = header.map_or_else(Vec::new, |bytes| sub(b"XRMR", &bytes));
+        if header.is_some_and(|bytes| bytes[1] == 0xc0) {
+            links.extend(sub(b"LNAM", &0u32.to_le_bytes()));
+            links.extend(sub(b"INAM", &0u32.to_le_bytes()));
+        }
+        links.extend(sub(b"XLRM", &target.to_le_bytes()).repeat(link_count));
+        [
+            record(b"CELL", id, 0, sub(b"DATA", &[1, 0])),
+            group(
+                6,
+                id,
+                group(
+                    9,
+                    id,
+                    [room(first_room, links), room(target, vec![])].concat(),
+                ),
+            ),
+        ]
+        .concat()
+    };
+
+    let mut failures = Vec::new();
+    for typed in [false, true] {
+        for (header, link_count, expected) in [
+            (Some([1, 0, 0, 0]), 0, false),
+            (Some([0, 0, 0, 0]), 1, false),
+            (None, 1, false),
+            (Some([0, 1, 0, 0]), 0, false),
+            (Some([0, 1, 0, 0]), 256, true),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let data = directory.path().join("Data");
+            fs::create_dir_all(&data).unwrap();
+            plugin(
+                &data,
+                "Skyrim.esm",
+                &[],
+                1,
+                [
+                    cell(0x900, 0x800, header, link_count),
+                    cell(0x901, 0x810, Some([2, 0xc0, 1, 0]), 2),
+                ]
+                .concat(),
+            );
+
+            let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+            let conn = rusqlite::Connection::open(db).unwrap();
+            let states = conn
+                .prepare("SELECT cell_id,complete FROM room_graph_cells ORDER BY cell_id")
+                .unwrap()
+                .query_map([], |row| {
+                    Ok((row.get::<_, u32>(0)?, row.get::<_, bool>(1)?))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            if states != [(0x900, expected), (0x901, true)] {
+                failures.push(format!(
+                    "typed={typed}, header={header:?}, XLRM count={link_count}: \
+                     expected completeness {expected} and true, got {states:?}"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
 fn failed_room_link_remapping_keeps_both_readers_conservative() {
     for typed in [false, true] {
         for link in [None, Some(0x801), Some(0x0900_0801)] {
@@ -2654,5 +2745,100 @@ fn incomplete_placed_payloads_keep_their_cells_open() {
             );
             assert!(complete(0x901), "a healthy neighbor must remain complete");
         }
+    }
+}
+
+#[test]
+fn malformed_portal_primitives_only_disable_their_own_cells() {
+    fn primitive(shape: u32) -> Vec<u8> {
+        let mut bytes: Vec<_> = [40.0f32, 1.0, 60.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        bytes.resize(28, 0);
+        bytes.extend(shape.to_le_bytes());
+        bytes
+    }
+    fn cell(id: u32, aperture: &[u8]) -> Vec<u8> {
+        let room_id = id + 1;
+        let marker = |id, base: u32, shape: &[u8], extra: Vec<u8>| {
+            record(
+                b"REFR",
+                id,
+                0,
+                [
+                    sub(b"NAME", &base.to_le_bytes()),
+                    sub(b"DATA", &[0; 24]),
+                    sub(b"XPRM", shape),
+                    extra,
+                ]
+                .concat(),
+            )
+        };
+        let room = marker(room_id, 0x1f, &primitive(1), Vec::new());
+        let portal = marker(
+            id + 2,
+            0x20,
+            aperture,
+            sub(
+                b"XPOD",
+                &[room_id.to_le_bytes(), 0u32.to_le_bytes()].concat(),
+            ),
+        );
+        [
+            record(b"CELL", id, 0, sub(b"DATA", &[1, 0])),
+            group(6, id, group(9, id, [room, portal].concat())),
+        ]
+        .concat()
+    }
+    for typed in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        fs::create_dir(&data).unwrap();
+        plugin(
+            &data,
+            "Skyrim.esm",
+            &[],
+            1,
+            [
+                cell(0x800, &primitive(3)[..12]),
+                cell(0x810, &primitive(1)),
+                cell(0x820, &primitive(3)),
+            ]
+            .concat(),
+        );
+        let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let skipped: u32 = conn
+            .query_row(
+                "SELECT value FROM room_graph_stats WHERE name='invalid_markers_skipped'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(skipped, 2, "typed={typed}");
+        let mut stmt = conn
+            .prepare(
+                "SELECT cell_id, complete, half_x, half_z
+                 FROM room_graph_cells LEFT JOIN room_portals USING (cell_id)
+                 ORDER BY cell_id",
+            )
+            .unwrap();
+        let cells: Vec<(u32, bool, Option<f32>, Option<f32>)> = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            cells,
+            [
+                (0x800, false, None, None),
+                (0x810, false, None, None),
+                (0x820, true, Some(40.0), Some(60.0))
+            ],
+            "typed={typed}"
+        );
     }
 }

@@ -441,16 +441,16 @@ pub(crate) fn unique_source_subrecord<'a>(
     payload: &'a [u8],
     signature: &[u8; 4],
 ) -> Option<&'a [u8]> {
-    let framed = subrecords(payload, &mut PluginDiagnostics::default(), 0);
-    if !framed.complete {
-        return None;
-    }
-    let mut matching = framed
-        .fields
+    let mut matching = framed_source_subrecords(payload)?
         .into_iter()
         .filter(|(tag, _)| tag == signature);
     let (_, bytes) = matching.next()?;
     matching.next().is_none().then_some(bytes)
+}
+
+pub(crate) fn framed_source_subrecords(payload: &[u8]) -> Option<Vec<([u8; 4], &[u8])>> {
+    let framed = subrecords(payload, &mut PluginDiagnostics::default(), 0);
+    framed.complete.then_some(framed.fields)
 }
 
 /// Frame subrecords with XXXX lengths; an unrecoverable boundary drops only this remainder.
