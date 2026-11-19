@@ -2233,6 +2233,12 @@ mod tests {
     #[test]
     fn a_reached_room_with_a_dropped_link_draws_the_whole_cell() {
         let connection = database();
+        connection
+            .execute_batch(
+                "CREATE TABLE room_graph_cells (cell_id INTEGER PRIMARY KEY, complete INTEGER NOT NULL);
+                 INSERT INTO room_graph_cells VALUES (7,1);",
+            )
+            .unwrap();
         insert_room(&connection, 1, 7, [0.0; 3]);
         insert_room(&connection, 2, 7, [0.0, 60.0, 0.0]);
         insert_room(&connection, 3, 8, [0.0, 120.0, 0.0]);
