@@ -1508,6 +1508,12 @@ mod tests {
             "an explicit initial target supplies ownership without geometric memberships or spheres"
         );
         assert!(mesh_list(&scene.app, scene.camera).contains(&scene.near));
+        scene
+            .app
+            .insert_resource(crate::settings::RenderingSettings {
+                room_culling: false,
+                ..Default::default()
+            });
         scene.app.world_mut().entity_mut(reference).insert((
             Transform::from_xyz(1.0, 0.0, 0.0),
             GlobalTransform::from_xyz(1.0, 0.0, 0.0),
@@ -1519,6 +1525,12 @@ mod tests {
             .world_mut()
             .entity_mut(reference)
             .insert((Transform::IDENTITY, GlobalTransform::IDENTITY));
+        scene.app.world_mut().run_schedule(Update);
+        scene
+            .app
+            .world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .room_culling = true;
         scene
             .app
             .world_mut()
