@@ -4160,6 +4160,38 @@ fn assert_created_interior(
 }
 
 #[test]
+fn fresh_interior_with_a_malformed_occluder_keeps_its_incomplete_certificate() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    let cell = 0x0100_0900;
+    let source = plugin(
+        dir.path(),
+        "FreshPlane.esp",
+        &["Skyrim.esm"],
+        0,
+        [
+            authored_cell(cell, Vec::new()),
+            placement_group(
+                cell,
+                [
+                    placement_marker(cell + 1, 0x1f, Vec::new()),
+                    placement(cell + 2, 23, 0, 0.0, sub(b"XPRM", &[0; 31])),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    );
+    assert_placement_import(
+        run_placement_import(&assets, "--plugin", &source),
+        "Applied 2 room placements in 1 cells (1 created, 0 certified)",
+    );
+    assert!(!placement_certificate(&db, cell));
+    assert_eq!(db.query_row("SELECT (SELECT count(*) FROM room_bounds WHERE cell_id=?1), (SELECT count(*) FROM room_occluders WHERE cell_id=?1)", [cell], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?))).unwrap(), (1, 0));
+}
+
+#[test]
 fn plugin_placement_import_creates_and_certifies_a_light_interior() {
     let dir = tempfile::tempdir().unwrap();
     let assets = converted_placement_fixture(dir.path());
@@ -4496,6 +4528,37 @@ fn native_new_cell_and_placement_ids_cannot_reuse_an_earlier_edit() {
     let result = run(serde_json::json!({"edits":[put(cell, PLACEMENT_CELL_A)]}));
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("FormID belongs to a CELL"));
+    use converter::esm::rooms::{
+        NativeOccluderChange, NativeOccluderShape, apply_native_occluders,
+    };
+    let plane = |id| NativeOccluderChange::Upsert {
+        id,
+        cell_id: cell,
+        position: [0.; 3],
+        rotation: [0.; 3],
+        shape: NativeOccluderShape::Plane {
+            half_width: 8.,
+            half_height: 8.,
+        },
+    };
+    let unused = used + 4;
+    for occupied in [used, cell] {
+        let error = apply_native_occluders(&db, &[plane(unused), plane(occupied)]).unwrap_err();
+        assert!(error.to_string().contains("occupied native occluder ID"));
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM room_occluders WHERE ref_id=?1",
+                [unused],
+                |row| row.get::<_, u32>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+    apply_native_occluders(&db, &[plane(unused)]).unwrap();
+    let result = run(serde_json::json!({"cells":[create(unused)]}));
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("already in use"));
     assert!(placement_certificate(&db, cell));
 }
 

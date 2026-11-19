@@ -77,6 +77,7 @@ pub fn apply_native_occluders(conn: &Connection, changes: &[NativeOccluderChange
     {
         return Err(invalid_input("native occluders require a source-verified world database"));
     }
+    let has_placement_edits = crate::esm::rooms::table_exists(&tx, "room_placement_edits")?;
     let mut master = HashMap::new();
     for &change in changes {
         let mut record = RawRecord {
@@ -131,10 +132,14 @@ pub fn apply_native_occluders(conn: &Connection, changes: &[NativeOccluderChange
         let id = record.form_id;
         if id <= 0xff00_0000
             || tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM records WHERE form_id=?1) OR EXISTS(SELECT 1 FROM [references] WHERE id=?1)",
+                "SELECT EXISTS(SELECT 1 FROM records WHERE form_id=?1) OR EXISTS(SELECT 1 FROM [references] WHERE id=?1)
+                 OR EXISTS(SELECT 1 FROM cells WHERE id=?1)",
                 [id],
                 |row| row.get::<_, bool>(0),
             )?
+            || has_placement_edits && tx.prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM room_placement_edits WHERE form_id=?1)",
+            )?.query_row([id], |row| row.get::<_, bool>(0))?
         {
             return Err(invalid_input(format!(
                 "invalid or occupied native occluder ID {id:08X}"
