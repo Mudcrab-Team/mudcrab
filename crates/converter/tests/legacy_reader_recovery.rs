@@ -72,40 +72,46 @@ fn ids(conn: &Connection) -> Vec<u32> {
         .unwrap()
 }
 
-#[test]
-fn coderabbit_718_warns_once_for_rejected_filename() {
-    const CHILD: &str = "MUDCRAB_TEST_WARN_ONCE_FOR_REJECTED_FILENAME";
-    if std::env::var_os(CHILD).is_some() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = [
-            dir.path().join("Rejected.esp\u{2003}"),
-            plugin(dir.path(), "Accepted.esm", &[], 1, Vec::new()),
-        ];
-        let (native, writer) =
-            EsmParser::convert_form_key_plugins(&paths, &dir.path().join("world.db")).unwrap();
-        assert_eq!(native.warnings.len(), 1);
-        assert_eq!(
-            writer,
-            converter::esm::form_key_merge::LegacyWriterOutcome::Published
-        );
-        return;
+fn capture_test_stderr(test_name: &str, run: impl FnOnce()) -> Option<String> {
+    const CHILD: &str = "MUDCRAB_TEST_CAPTURE_STDERR";
+    if std::env::var(CHILD).is_ok_and(|name| name == test_name) {
+        run();
+        return None;
     }
     let child = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "coderabbit_718_warns_once_for_rejected_filename",
-            "--nocapture",
-        ])
-        .env(CHILD, "1")
+        .args(["--exact", test_name, "--nocapture"])
+        .env(CHILD, test_name)
         .output()
         .unwrap();
-    let stderr = String::from_utf8_lossy(&child.stderr);
+    let stderr = String::from_utf8_lossy(&child.stderr).into_owned();
     assert!(child.status.success(), "{stderr}");
-    assert_eq!(
-        stderr.matches("skipped 1 invalid plugin name(s)").count(),
-        1,
-        "the same rejected filename should emit one warning: {stderr}"
-    );
+    Some(stderr)
+}
+
+#[test]
+fn coderabbit_718_warns_once_for_rejected_filename() {
+    if let Some(stderr) =
+        capture_test_stderr("coderabbit_718_warns_once_for_rejected_filename", || {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = [
+                dir.path().join("Rejected.esp\u{2003}"),
+                plugin(dir.path(), "Accepted.esm", &[], 1, Vec::new()),
+            ];
+            let (native, writer) =
+                EsmParser::convert_form_key_plugins(&paths, &dir.path().join("world.db")).unwrap();
+            assert_eq!(native.warnings.len(), 1);
+            assert_eq!(
+                writer,
+                converter::esm::form_key_merge::LegacyWriterOutcome::Published
+            );
+        })
+    {
+        assert_eq!(
+            stderr.matches("skipped 1 invalid plugin name(s)").count(),
+            1,
+            "the same rejected filename should emit one warning: {stderr}"
+        );
+    }
 }
 
 #[test]
@@ -158,6 +164,27 @@ fn coderabbit_718_implicit_strings_root_uses_first_accepted_plugin() {
 
 #[test]
 fn coderabbit_718_exact_light_record_survives_wide_collisions() {
+    if let Some(stderr) = capture_test_stderr(
+        "coderabbit_718_exact_light_record_survives_wide_collisions",
+        check_exact_light_record_survives_wide_collisions,
+    ) {
+        assert_eq!(
+            stderr
+                .lines()
+                .filter(
+                    |line| line.contains("skipped 1 unusable record candidate(s)")
+                        && line.contains(
+                            "wide light FormID 00001840 would collide with exact record FE000840"
+                        )
+                )
+                .count(),
+            4,
+            "each colliding record or tombstone should emit a skip warning: {stderr}"
+        );
+    }
+}
+
+fn check_exact_light_record_survives_wide_collisions() {
     for (wide_first, flags) in [(false, 0), (true, 0), (false, 0x20), (true, 0x20)] {
         let dir = tempfile::tempdir().unwrap();
         let exact = record(b"STAT", 0x0840, 0, sub(b"EDID", b"Exact\0"));
@@ -187,6 +214,49 @@ fn coderabbit_718_exact_light_record_survives_wide_collisions() {
         assert_eq!(
             fields(&conn, 0xfe00_0841, b"EDID"),
             [b"Fallback\0".to_vec()]
+        );
+    }
+}
+
+#[test]
+fn coderabbit_718_corrupt_exact_light_record_allows_wide_fallback() {
+    if let Some(stderr) = capture_test_stderr(
+        "coderabbit_718_corrupt_exact_light_record_allows_wide_fallback",
+        || {
+            for wide_first in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let exact = record(b"STAT", 0x0840, 0x40000, vec![0]);
+                let wide = record(b"STAT", 0x1840, 0, sub(b"EDID", b"Fallback\0"));
+                let candidates = if wide_first {
+                    [wide, exact]
+                } else {
+                    [exact, wide]
+                };
+                let path = plugin(dir.path(), "Light.esl", &[], 0x201, candidates.concat());
+                let db = dir.path().join("world.db");
+                EsmParser::convert_plugins(&[path], &db).unwrap();
+                let conn = Connection::open(db).unwrap();
+                assert_eq!(
+                    ids(&conn),
+                    [0xfe00_0840],
+                    "the corrupt exact record should leave a usable fallback (wide_first={wide_first})"
+                );
+                assert_eq!(
+                    fields(&conn, 0xfe00_0840, b"EDID"),
+                    [b"Fallback\0".to_vec()]
+                );
+            }
+        },
+    ) {
+        assert_eq!(
+            stderr
+                .lines()
+                .filter(|line| line.starts_with("warning:")
+                    && line.contains("STAT 00000840:")
+                    && line.contains("compressed"))
+                .count(),
+            2,
+            "the corrupt exact record should be reported in either order: {stderr}"
         );
     }
 }
