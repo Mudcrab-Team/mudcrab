@@ -166,8 +166,9 @@ impl MovementTuning {
             .query_row(
                 "SELECT m.editor_id, m.left_walk, m.left_run, m.right_walk, m.right_run, \
                     m.forward_walk, m.forward_run, m.back_walk, m.back_run, \
-                    COALESCE(p.name, '<unknown plugin>') \
-             FROM movement_types m LEFT JOIN plugins p ON p.priority=m.load_order \
+                    COALESCE((SELECT MIN(p.name) FROM plugins p WHERE p.priority=m.load_order \
+                              HAVING COUNT(*)=1), '<unknown plugin>') \
+             FROM movement_types m \
              WHERE m.id=?1",
                 params![NPC_DEFAULT_MOVT_FORM_ID],
                 |row| {
@@ -355,8 +356,9 @@ fn load_player_jump_height(conn: &Connection, race_id: u32) -> Result<JumpHeight
         .field(b"DATA")?
         .ok_or_else(|| color_eyre::eyre::eyre!("RACE {race_id:08X} lacks DATA heights"))?;
     ensure!(
-        data.len() >= 24,
-        "RACE {race_id:08X} DATA is too short for heights"
+        matches!(data.len(), 124 | 128 | 164),
+        "RACE {race_id:08X} DATA length {} is unsupported; expected 124, 128, or 164 bytes",
+        data.len()
     );
     let heights = [
         f32::from_le_bytes(data[16..20].try_into()?),
@@ -1238,6 +1240,54 @@ mod tests {
                     .creation(),
                 setting * (0.8_f32 * 1.2_f32)
             );
+        }
+    }
+
+    #[test]
+    fn ambiguous_movt_priority_keeps_speeds_without_attributing_a_plugin() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        conn.execute("UPDATE plugins SET priority=1 WHERE priority=0", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE movement_types SET load_order=1 WHERE id=?1",
+            [NPC_DEFAULT_MOVT_FORM_ID],
+        )
+        .unwrap();
+        let tuning = MovementTuning::from_world_database(&path).unwrap();
+        assert_eq!((tuning.walk_speed, tuning.run_speed), (80.1, 370.0));
+        assert_eq!(
+            tuning.record_speeds.unwrap().source,
+            "MOVT 0003580D NPC_Default_MT (<unknown plugin>)"
+        );
+    }
+
+    #[test]
+    fn packaged_jump_requires_a_supported_race_data_layout() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        for size in [124, 128, 164, 24, 123, 129] {
+            rewrite_jump_record(&conn, 0x0200_0811, |record| {
+                record
+                    .subrecords
+                    .iter_mut()
+                    .find(|field| field.tag == *b"DATA")
+                    .unwrap()
+                    .data
+                    .resize(size, 0);
+            });
+            let result = MovementTuning::from_world_database(&path);
+            if matches!(size, 124 | 128 | 164) {
+                assert_eq!(result.unwrap().jump_height.creation(), 150.0);
+            } else {
+                let error = format!("{:#}", result.unwrap_err());
+                assert!(
+                    error.contains(&format!("DATA length {size} is unsupported")),
+                    "{error}"
+                );
+            }
         }
     }
 
