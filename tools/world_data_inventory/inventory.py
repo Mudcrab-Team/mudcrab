@@ -189,11 +189,16 @@ def scan_queries(root):
             start = tokens[i + 2][2]
             end = tokens[j][2] if j < len(tokens) else len(source)
             expression = source[start:end].strip()
+            # Same-file string constants that a dynamic call names or interpolates (`{COLS}`). Their text is
+            # part of the reader's reviewed identity, so an edit to such a constant is reviewed too.
+            names = {t[1] for t in arg if t[0] == "code"} | {n for t in arg if t[0] == "string"
+                                                            for n in re.findall(r"\{([A-Za-z_][A-Za-z_0-9]*)\}", t[1])}
+            referenced = [constants[name] for name in sorted(names) if name in constants]
             key = f"{path.relative_to(root).as_posix()}::{method}::{digest(expression)[:16]}"
             occurrences[key] = occurrences.get(key, 0) + 1
             queries.append({"id": f"{key}::{occurrences[key]}", "path": path.relative_to(root).as_posix(),
                             "line": source.count("\n", 0, tokens[i][2]) + 1,
-                            "method": method, "expression": expression, "sql": sql,
+                            "method": method, "expression": expression, "sql": sql, "constants": referenced,
                             "status": "literal" if sql is not None and method != "execute_batch" else "unknown",
                             "reason": "Bounded lexical candidate scan; receiver types are not resolved."})
     return queries
@@ -488,8 +493,13 @@ def reader_surface(queries):
 
     The key holds the file path, method, a hash of the call expression and an occurrence number. It holds no
     line number and no hash of the whole file, so an unrelated edit leaves it unchanged. The SQL hash catches a
-    changed constant or literal. `None` marks a dynamic query that the scan cannot resolve."""
-    return {q["id"]: None if q["sql"] is None else digest(q["sql"])[:16] for q in queries}
+    changed constant or literal. For a dynamic query, the hash covers the same-file string constants it names or interpolates.
+    `None` marks a dynamic query with no such constant: its SQL is not reviewed, only its call expression."""
+    def identity(query):
+        if query["sql"] is not None:
+            return digest(query["sql"])[:16]
+        return digest("\0".join(query["constants"]))[:16] if query["constants"] else None
+    return {q["id"]: identity(q) for q in queries}
 
 
 def emitted_columns(extraction):

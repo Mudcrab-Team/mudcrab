@@ -184,6 +184,13 @@ class CommittedSurface(unittest.TestCase):
             reader.write_text('const SQL: &str = "SELECT falloff FROM lights";\nfn a(db: &Connection) { db.prepare(SQL); }\n', encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "changed reader"):
                 run_tool(root, here, "--check")
+            # A dynamic reader that interpolates a same-file constant: an edit of the constant is reviewed.
+            reader.write_text('const COLS: &str = "radius";\nfn a(db: &Connection) { db.prepare(&format!("SELECT {COLS} FROM lights")); }\n', encoding="utf-8")
+            run_tool(root, here, "--review-sources")
+            run_tool(root, here, "--check")
+            reader.write_text('const COLS: &str = "radius,falloff";\nfn a(db: &Connection) { db.prepare(&format!("SELECT {COLS} FROM lights")); }\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "changed reader"):
+                run_tool(root, here, "--check")
             # A removed reader is a change too, so the committed list stays exact.
             reader.write_text("fn nothing() {}\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "no longer exists"):

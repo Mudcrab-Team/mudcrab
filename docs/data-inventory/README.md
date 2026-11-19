@@ -123,8 +123,25 @@ a reader for every future gameplay table. A new column in an existing table fail
 The fingerprint of the converter, shared and engine sources is still computed, but only as a
 derived value. It binds an extraction to one checkout and appears in the generated files.
 Unlike the earlier committed `reviewed-sources.json`, it is not compared with a committed copy.
-A dynamic SQL string that is built outside the scanned call (`format!`) is therefore covered
-by the composed-query extraction, not by a file hash.
+
+**What the gate no longer covers.** Taylor accepted this trade-off to stop the conflicts.
+The maintainers should know its size:
+
+- 24 of the 88 reviewed readers have a `null` SQL hash. Their SQL is a variable, a `format!`
+  result, or a constant from another file. Only the text of the call expression is reviewed.
+  For such a reader, the tool also hashes the same-file string constants that the call names
+  or interpolates (`{COLS}`). A constant in another file, or a variable that is built
+  elsewhere, is not covered. An edit to it changes no committed file.
+- The composed-query extraction covers the 75 `ReferenceQuery` variants only. It does not
+  cover the other `null` readers.
+- An edit to converter or shared projection code (the `decoded`, `preserved` and `projected`
+  states) no longer gates anything. A column change that it causes is still caught in the Rust
+  `test` job.
+- An edit to an `evidence` or `sink` file that makes a disposition false no longer gates
+  anything while its anchor text exists. `validate_refs` checks only that the anchor string
+  is in the file.
+- A new column dependency of an existing column through a `null` reader is not gated. The
+  generated report records `prepare_dependencies`, but no committed baseline compares them.
 
 After reviewing a new or changed reader and updating dispositions/anchors:
 
