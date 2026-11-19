@@ -2502,6 +2502,7 @@ mod tests {
 
     #[test]
     fn unlisted_named_reference_rechecks_ownership_after_returning_to_spawn() {
+        AsyncComputeTaskPool::get_or_init(Default::default);
         let db = authored_database();
         insert_room(&db, 1, 7, [0.0; 3]);
         insert_room(&db, 2, 7, [100.0, 0.0, 0.0]);
