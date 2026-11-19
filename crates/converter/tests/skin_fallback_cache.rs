@@ -951,6 +951,13 @@ async fn repair_current_contract_unresolved_mesh_preserves_geometry_and_warm_pro
         manifest(&output).entries[BODY_KEY].source_hash,
         expected_hash
     );
+    let mut fresh = config.clone();
+    fresh.output_dir = root.path().join("fresh");
+    assert!(publish(&fresh).await.complete);
+    assert_eq!(
+        fs::read(fresh.output_dir.join(BODY_OUTPUT)).unwrap(),
+        repaired_bytes
+    );
 }
 
 /// Preserve block boundaries while making the first shape's shader reference out of range.

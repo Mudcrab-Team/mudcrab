@@ -1,7 +1,7 @@
 //! Retain the source spheres used by native static-reference room assignment.
 
 use project_wormhole_nif::{nif_block::NifBlock, nif_file::NifFile};
-use project_wormhole_shared::glam::{Affine3A, Mat3, Vec3};
+use project_wormhole_shared::glam::{Affine3A, Mat3, Mat4, Quat, Vec3};
 use shared::room_assignment::ModelSphere;
 
 /// Unsupported node types stay unknown instead of becoming an AABB approximation.
@@ -54,7 +54,13 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
             {
                 return None;
             }
-            parent * Affine3A::from_mat3_translation(rotation * local_scale, av.translation.0.0)
+            let rotation = Quat::from_mat3(&rotation).normalize();
+            parent
+                * Affine3A::from_scale_rotation_translation(
+                    Vec3::splat(local_scale),
+                    rotation,
+                    av.translation.0.0,
+                )
         };
         let scale = scale * local_scale;
         let basis = Mat3::from(world.matrix3);
@@ -130,4 +136,62 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
     )?;
     sphere.center = shared::coordinates::creation_to_runtime_vector(sphere.center);
     (sphere.radius > 0.0).then_some(sphere)
+}
+
+/// A native bound is usable only when it also covers the emitted render pose.
+pub(super) fn encloses_scene(glb: &[u8], sphere: ModelSphere) -> bool {
+    scene_fits(glb, sphere).unwrap_or(false)
+}
+
+fn scene_fits(glb: &[u8], sphere: ModelSphere) -> Option<bool> {
+    let chunks = gltf::binary::Glb::from_slice(glb).ok()?;
+    let gltf = gltf::Gltf::from_slice(&chunks.json).ok()?;
+    let scene = gltf.default_scene()?;
+    let blob = chunks.bin.as_deref()?;
+    let buffer = |buffer: gltf::Buffer<'_>| (buffer.index() == 0).then_some(blob);
+    let mut visited = vec![false; gltf.nodes().len()];
+    let center = Vec3::from_array(sphere.center).as_dvec3();
+    let mut pending: Vec<_> = scene
+        .nodes()
+        .map(|node| (node, Affine3A::IDENTITY))
+        .collect();
+    let mut seen_position = false;
+    while let Some((node, parent)) = pending.pop() {
+        let gltf::scene::Transform::Decomposed {
+            translation,
+            rotation,
+            scale,
+        } = node.transform()
+        else {
+            return None;
+        };
+        let world = parent
+            * Affine3A::from_scale_rotation_translation(
+                Vec3::from_array(scale),
+                Quat::from_array(rotation),
+                Vec3::from_array(translation),
+            );
+        if !world.is_finite() || visited[node.index()] || node.skin().is_some() {
+            return None;
+        }
+        visited[node.index()] = true;
+        pending.extend(node.children().map(|child| (child, world)));
+        let Some(mesh) = node.mesh() else { continue };
+        let world = Mat4::from(world).as_dmat4();
+        for primitive in mesh.primitives() {
+            if primitive.morph_targets().len() != 0 {
+                return None;
+            }
+            for position in primitive.reader(buffer).read_positions()? {
+                let point = world.transform_point3(Vec3::from_array(position).as_dvec3());
+                // Compare at the precision of the authored radius, including vertices on its surface.
+                let distance = point.distance(center) as f32;
+                if !distance.is_finite() || distance > sphere.radius {
+                    return Some(false);
+                }
+                seen_position = true;
+            }
+        }
+    }
+    Some(seen_position)
 }

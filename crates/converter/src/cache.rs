@@ -471,6 +471,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "native-room-assignment-spheres",
     "complete-root-room-spheres",
     "rigid-child-and-depth-room-spheres",
+    "renderer-verified-room-spheres",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
