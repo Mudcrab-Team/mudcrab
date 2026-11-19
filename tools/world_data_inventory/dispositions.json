@@ -911,6 +911,11 @@
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
     },
+    "room_link_anomalies": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#745)",
+      "reason": "Records each supplying plugin's room-link anomaly count and identifies its lowest affected room marker and that marker's cell for conversion diagnostics."
+    },
     "room_links": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
