@@ -273,12 +273,16 @@ pub(in crate::esm) fn update_authored_subset(
     tx: &Transaction<'_>,
     master: &HashMap<u32, RawRecord>,
 ) -> Result<()> {
-    project_subset(
-        tx,
-        master,
-        |_| MarkerSource::Authored,
-        &mut ProjectionOmissions::default(),
-    )?;
+    let mut omissions = ProjectionOmissions::default();
+    project_subset(tx, master, |_| MarkerSource::Authored, &mut omissions)?;
+    for (category, details) in omissions.categories {
+        if let Some(sample) = details.samples.first() {
+            return Err(invalid_input(format!(
+                "occluder {:08X}: {category}: {}",
+                sample.form_id, sample.reason
+            )));
+        }
+    }
     Ok(())
 }
 

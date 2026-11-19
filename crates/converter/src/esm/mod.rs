@@ -720,9 +720,6 @@ fn remap_record_form_ids(
         b"GRAS" | b"LTEX" | b"TXST" | b"LAND" | b"CELL" | b"WRLD"
     );
     let record_type = record.record_type;
-    let occluder = record_type == *b"REFR"
-        && extractors::SubrecordView::new(&record.subrecords).get_form_id(b"NAME")
-            == Some(rooms::OCCLUSION_MARKER_BASE);
     let remap_with_validation = |form_id: u32, strict: bool| -> Result<u32> {
         if form_id == 0 {
             return Ok(0);
@@ -769,6 +766,13 @@ fn remap_record_form_ids(
         record.worldspace_form_id = None;
         return Ok(());
     }
+    let occluder = record_type == *b"REFR"
+        && extractors::SubrecordView::new(&record.subrecords)
+            .find_all(b"NAME")
+            .filter_map(|data| <[u8; 4]>::try_from(data).ok())
+            .any(|word| {
+                remap_link(u32::from_le_bytes(word)).ok() == Some(rooms::OCCLUSION_MARKER_BASE)
+            });
     record.cell_form_id = record.cell_form_id.map(&remap_link).transpose()?;
     record.worldspace_form_id = record.worldspace_form_id.map(&remap_link).transpose()?;
     let mut malformed_subrecords = Vec::new();
@@ -1014,30 +1018,41 @@ mod tests {
 
     #[test]
     fn malformed_occlusion_state_preserves_enable_parent_and_override_presence() {
-        let mut record = RawRecord {
-            form_id: 0x0100_0800,
-            record_type: *b"REFR",
-            flags: 0,
-            subrecords: vec![
-                (b"NAME".to_vec(), 0x17u32.to_le_bytes().to_vec()),
-                (b"XESP".to_vec(), vec![0; 3]),
-                (b"XMBR".to_vec(), vec![0; 3]),
-            ],
-            cell_form_id: None,
-            worldspace_form_id: None,
-            load_order: 0,
-        };
-        remap_record_form_ids(
-            &mut record,
-            "patch.esp",
-            &["base.esm".into()],
-            &HashMap::from([("base.esm".into(), 0), ("patch.esp".into(), 2)]),
-            &HashMap::new(),
-            &RemapWarnings::default(),
-        )
-        .unwrap();
-        assert_eq!(record.subrecords[1], (b"XESP".to_vec(), Vec::new()));
-        assert_eq!(record.subrecords[2], (b"XMBR".to_vec(), Vec::new()));
+        let indices = HashMap::from([
+            ("other.esm".into(), 1),
+            ("skyrim.esm".into(), 0),
+            ("patch.esp".into(), 2),
+        ]);
+        for (raw_base, retained) in [(0x0100_0017u32, true), (0x17, false)] {
+            let mut record = RawRecord {
+                form_id: 0x0200_0800,
+                record_type: *b"REFR",
+                flags: 0,
+                subrecords: vec![
+                    (b"NAME".to_vec(), raw_base.to_le_bytes().to_vec()),
+                    (b"XESP".to_vec(), vec![0; 3]),
+                    (b"XMBR".to_vec(), vec![0; 3]),
+                ],
+                cell_form_id: None,
+                worldspace_form_id: None,
+                load_order: 0,
+            };
+            remap_record_form_ids(
+                &mut record,
+                "patch.esp",
+                &["other.esm".into(), "skyrim.esm".into()],
+                &indices,
+                &HashMap::new(),
+                &RemapWarnings::default(),
+            )
+            .unwrap();
+            if retained {
+                assert_eq!(record.subrecords[1], (b"XESP".to_vec(), Vec::new()));
+                assert_eq!(record.subrecords[2], (b"XMBR".to_vec(), Vec::new()));
+            } else {
+                assert_eq!(record.subrecords.len(), 1);
+            }
+        }
     }
 
     #[test]

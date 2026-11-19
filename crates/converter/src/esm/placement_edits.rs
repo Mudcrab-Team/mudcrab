@@ -361,8 +361,16 @@ fn plugin_edits(
             .filter(|id| id & 0x00ff_ffff == ROOM_MARKER_BASE)
             .map(|_| RoomLinkLayout::from_raw(&record));
         let occluder = SubrecordView::new(&record.subrecords)
-            .get_form_id(b"NAME")
-            .is_some_and(|base| base & 0x00ff_ffff == OCCLUSION_MARKER_BASE);
+            .find_all(b"NAME")
+            .filter_map(|data| <[u8; 4]>::try_from(data).ok())
+            .any(|word| {
+                source_identity::header_runtime_id(
+                    b"REFR",
+                    u32::from_le_bytes(word),
+                    priority,
+                    &order,
+                ) == Some(OCCLUSION_MARKER_BASE)
+            });
         let marker_warnings = RemapWarnings::default();
         record.load_order = priority as u32;
         remap_record_form_ids(
