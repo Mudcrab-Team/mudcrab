@@ -6,6 +6,7 @@ members = [
     "crates/engine",
     "crates/launcher",
     "crates/mo2",
+    "crates/retail-rules",
     "crates/shared",
 ]
 
@@ -59,8 +60,13 @@ project-wormhole-esm = "0.1.0"
 # The vendored copy changes only that requirement to 0.14, so the engine's KTX2
 # decoder shares the fixed zstd with the converter. The advisories and the removal
 # criteria are in vendor/bevy_image/README.mudcrab.md.
+#
+# bevy_pbr and bevy_render are vendored for Bevy fixes that are not yet in a Bevy release.
+# Every carried Bevy change is listed in vendor/BEVY_PATCHES.md.
 [patch.crates-io]
 bevy_image = { path = "vendor/bevy_image" }
+bevy_pbr = { path = "vendor/bevy_pbr" }
+bevy_render = { path = "vendor/bevy_render" }
 
 # Every `unsafe` block, impl and fn body needs a `// SAFETY:` comment that states the invariant.
 # Each workspace crate opts in with `[lints] workspace = true`. Vendored crates keep their own.

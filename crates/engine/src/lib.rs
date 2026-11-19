@@ -7,6 +7,8 @@ pub mod actor_skin_tone;
 pub mod actors;
 pub mod app;
 mod background_window;
+#[cfg(test)]
+mod bevy_source;
 pub mod bug_report;
 mod capture_frame;
 pub mod cell_commands;
@@ -63,9 +65,14 @@ pub mod terrain_merge;
 pub mod terrain_upload;
 #[cfg(test)]
 mod test_support;
+pub mod texture_fallback;
 pub mod tone_mapping;
 mod underwater;
 mod underwater_pass;
+#[cfg(test)]
+mod vendored_bevy_patches;
+#[cfg(test)]
+mod vendored_morph_shader;
 pub mod visibility_optimization;
 pub mod visual_profile;
 mod water_depth;
