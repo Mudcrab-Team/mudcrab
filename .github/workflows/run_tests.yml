@@ -124,6 +124,9 @@ jobs:
       - name: Test room culling count reader
         run: python3 -m unittest discover -s scripts/tests -p test_room_culling_counts.py -v
 
+      - name: Test shared storage tool
+        run: python3 -I -B -m unittest discover -s scripts/tests -p 'test_workspace*.py' -v
+
       - name: Test Skyrim capture, replay and comparison helpers
         run: python3 -B -m unittest discover -s scripts -p 'test_*.py' -v
 
