@@ -18,7 +18,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 
 mod occluders;
-pub(super) use occluders::invalidate_subset_links as invalidate_subset_occluder_links;
+pub(super) use occluders::update_subset as update_subset_occluders;
+pub use occluders::{NativeOccluderChange, NativeOccluderShape, apply_native_occluders};
 
 /// `RoomMarker` base form in `Skyrim.esm`, which is always load-order slot 0.
 pub const ROOM_MARKER_BASE: u32 = 0x1F;
@@ -131,16 +132,7 @@ pub fn migrate_room_metadata(conn: &Connection) -> Result<()> {
                 "ALTER TABLE room_links ADD COLUMN link_index INTEGER NOT NULL DEFAULT 0",
             )?;
         }
-        let verified_plane_links: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('room_occluder_links') WHERE name='single_target_verified')",
-            [],
-            |row| row.get(0),
-        )?;
-        if !verified_plane_links {
-            conn.execute_batch(
-                "ALTER TABLE room_occluder_links ADD COLUMN single_target_verified INTEGER NOT NULL DEFAULT 0",
-            )?;
-        }
+        migrate_occluder_links(conn)?;
         conn.execute_batch("RELEASE portal_endpoints")
     })();
     if result.is_err() {
@@ -151,6 +143,20 @@ pub fn migrate_room_metadata(conn: &Connection) -> Result<()> {
         });
     }
     result
+}
+
+fn migrate_occluder_links(conn: &Connection) -> Result<()> {
+    let verified_plane_links: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('room_occluder_links') WHERE name='single_target_verified')",
+            [],
+            |row| row.get(0),
+        )?;
+    if !verified_plane_links {
+        conn.execute_batch(
+                "ALTER TABLE room_occluder_links ADD COLUMN single_target_verified INTEGER NOT NULL DEFAULT 0",
+            )?;
+    }
+    Ok(())
 }
 
 /// The typed reader can clear broken links to zero. Restore outside provenance from source
@@ -1294,6 +1300,7 @@ fn project_room_graph(
         .keys()
         .copied()
         .chain(occluders.cells)
+        .chain(incomplete.intersection(interior_cells).copied())
         .collect();
     for cell in cells {
         let dangling: bool = dangling_links.query_row([cell], |row| row.get(0))?;

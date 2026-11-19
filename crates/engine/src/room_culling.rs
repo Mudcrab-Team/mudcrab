@@ -1763,6 +1763,9 @@ fn owner_form_id(
 }
 
 #[cfg(test)]
+mod occluder_subset_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::world::database::{CellKey, DatabaseRequest, WorldDatabase};

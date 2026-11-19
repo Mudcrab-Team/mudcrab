@@ -9,6 +9,11 @@ use crate::records::{DecodedRecord, source_identity};
 use rusqlite::{Result, Transaction, params};
 use std::collections::{HashMap, HashSet};
 
+mod subset;
+
+pub(in crate::esm) use subset::update_subset;
+pub use subset::{NativeOccluderChange, NativeOccluderShape, apply_native_occluders};
+
 #[derive(Default)]
 pub(super) struct Exported {
     pub count: u64,
@@ -59,34 +64,6 @@ fn is_marker(record: &RawRecord, view: &SubrecordView<'_>) -> bool {
         && view
             .find_all(b"NAME")
             .any(|name| name == OCCLUSION_MARKER_BASE.to_le_bytes())
-}
-
-pub(in crate::esm) fn invalidate_subset_links(
-    tx: &Transaction<'_>,
-    record: &RawRecord,
-) -> Result<()> {
-    // The stored snapshot can still contain links from the previous version of this record.
-    tx.prepare_cached(
-        "UPDATE room_graph_cells SET complete=0 WHERE cell_id IN (
-            SELECT target.cell_id FROM room_occluder_links link
-            JOIN room_occluders target ON target.ref_id=link.linked_ref WHERE link.ref_id=?1
-        )",
-    )?
-    .execute([record.form_id])?;
-
-    let view = SubrecordView::new(&record.subrecords);
-    if is_marker(record, &view) {
-        let mut invalidate = tx.prepare_cached(
-            "UPDATE room_graph_cells SET complete=0
-             WHERE cell_id=(SELECT cell_id FROM room_occluders WHERE ref_id=?1)",
-        )?;
-        for target in view.find_all(b"XORD").filter_map(link_targets).flatten() {
-            if target != 0 {
-                invalidate.execute([target])?;
-            }
-        }
-    }
-    Ok(())
 }
 
 struct Geometry {
@@ -148,156 +125,203 @@ pub(super) fn export(
         .collect();
     markers.sort_unstable_by_key(|record| record.form_id);
     for record in markers {
-        let id = record.form_id;
-        let view = SubrecordView::new(&record.subrecords);
-        let cell = record.cell_form_id.unwrap_or(0);
-        let source =
-            sources.and_then(|(records, order)| records.get(&id).map(|record| (record, order)));
-        let source_fields = source.map(|(record, _)| record.framed_source_prefix());
-        let authored = |tag: [u8; 4]| {
-            source_fields
-                .iter()
-                .flatten()
-                .filter_map(move |(signature, data)| (*signature == tag).then_some(*data))
-        };
-        let field = |tag: &[u8; 4]| match source {
-            Some((record, _)) => {
-                let mut occurrences = authored(*tag);
-                let value = occurrences.next()?;
-                (occurrences.next().is_none() && !record.rejected_fields.contains(tag))
-                    .then_some(value)
-            }
-            None => view.find(tag),
-        };
-        let present = |tag: &[u8; 4]| {
-            view.find(tag).is_some()
-                || authored(*tag).next().is_some()
-                || source.is_some_and(|(record, _)| record.rejected_fields.contains(tag))
-        };
-        let complete = source.is_none_or(|(record, _)| record.payload_complete);
-        if !complete {
-            result.incomplete_cells.insert(cell);
-        }
-
-        // Walk physical occurrences, including rejected ones. Outgoing links from an
-        // unusable marker still suppress independently valid targets in any cell.
-        let mut link_omission = None;
-        let single_target = source.is_some()
-            && complete
-            && field(b"XORD")
-                .and_then(link_targets)
-                .is_some_and(|slots| slots.iter().filter(|&&id| id != 0).count() == 1);
-        let xords = view
-            .find_all(b"XORD")
-            .filter(|_| source.is_none())
-            .chain(authored(*b"XORD"));
-        for (occurrence, bytes) in xords.enumerate() {
-            let Some(targets) = link_targets(bytes) else {
-                link_omission.get_or_insert("PlaneMarker XORD must contain four FormIDs");
-                continue;
-            };
-            for (slot, target) in targets.into_iter().enumerate() {
-                if target == 0 {
-                    continue;
-                }
-                let linked = match source {
-                    Some((record, order)) => source_identity::header_runtime_id(
-                        b"REFR",
-                        target,
-                        record.load_order as usize,
-                        order,
-                    )
-                    .filter(|linked| {
-                        *linked != 0
-                            && master.get(linked).map_or(*linked < 0x800, |record| {
-                                record.record_type == *b"REFR" && !record.is_deleted()
-                            })
-                    }),
-                    None => Some(target),
-                };
-                let Some(linked) = linked else {
-                    link_omission.get_or_insert("PlaneMarker XORD contains an unresolved FormID");
-                    continue;
-                };
-                tx.prepare_cached(
-                    "INSERT INTO room_occluder_links(ref_id,link_index,linked_ref,single_target_verified) VALUES(?1,?2,?3,?4)",
-                )?
-                .execute(params![id, (occurrence * 4 + slot) as i64, linked, single_target])?;
-            }
-        }
-        if let Some(reason) = link_omission {
-            result.incomplete_cells.insert(cell);
-            omissions.record(OmissionCategory::OccluderUnusableLinks, id, reason);
-        }
-        if !in_interior(record) {
-            continue;
-        }
-        result.cells.insert(cell);
-
-        let Geometry {
-            shape,
-            half,
-            position,
-            rotation,
-        } = match geometry(&view, complete, field) {
-            Ok(geometry) => geometry,
-            Err(reason) => {
-                result.invalid += 1;
-                result.incomplete_cells.insert(cell);
-                omissions.record(OmissionCategory::OccluderUnusableGeometry, id, reason);
-                continue;
-            }
-        };
-        let scale = if present(b"XSCL") {
-            field(b"XSCL")
-                .filter(|_| source.is_some() || view.find_all(b"XSCL").nth(1).is_none())
-                .and_then(|data| <[u8; 4]>::try_from(data).ok())
-                .map(f32::from_le_bytes)
-                .filter(|value| value.is_finite())
-                .unwrap_or(0.0)
-        } else {
-            1.0
-        };
-        let target = present(b"XMBR").then(|| {
-            view.find(b"XMBR")
-                .filter(|data| data.len() == 4)
-                .and_then(|data| u32_at(data, 0))
-                .unwrap_or(0)
+        let source = sources.and_then(|(records, order)| {
+            records.get(&record.form_id).map(|record| (record, order))
         });
-        tx.execute(
-            "INSERT INTO room_occluders(ref_id,cell_id,shape,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_y,half_z,scale,header_flags,has_enable_parent,has_links,target_ref)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
-            params![
-                id,
-                cell,
-                shape,
-                position[0],
-                position[1],
-                position[2],
-                rotation[0],
-                rotation[1],
-                rotation[2],
-                half[0],
-                half[1],
-                half[2],
-                scale,
-                record.flags,
-                present(b"XESP"),
-                present(b"XORD"),
-                target
-            ],
+        project(
+            tx,
+            record,
+            in_interior(record),
+            MarkerSource::from_typed(source),
+            |id| {
+                Ok(master.get(&id).map_or(id < 0x800, |record| {
+                    record.record_type == *b"REFR" && !record.is_deleted()
+                }))
+            },
+            &mut result,
+            omissions,
         )?;
-        if source.is_some()
-            && shape == 3
-            && let Some(target) = target.filter(|&id| id != 0)
-            && field(b"XMBR").is_some_and(|data| data.len() == 4 && data != [0; 4])
-        {
-            tx.prepare_cached("INSERT INTO room_reference_rules(reference_id,cell_id,assignment,target_ref) VALUES(?1,?2,'target',?3)")?
-                .execute(params![id,cell,target])?;
-        }
-        result.count += 1;
     }
     Ok(result)
+}
+
+#[derive(Clone, Copy)]
+enum MarkerSource<'a> {
+    Canonical,
+    Native,
+    Typed(&'a DecodedRecord, &'a LoadOrder),
+}
+
+impl<'a> MarkerSource<'a> {
+    fn from_typed(source: Option<(&'a DecodedRecord, &'a LoadOrder)>) -> Self {
+        source.map_or(Self::Canonical, |(record, order)| {
+            Self::Typed(record, order)
+        })
+    }
+
+    fn typed(self) -> Option<(&'a DecodedRecord, &'a LoadOrder)> {
+        match self {
+            Self::Typed(record, order) => Some((record, order)),
+            _ => None,
+        }
+    }
+}
+
+fn project(
+    tx: &Transaction<'_>,
+    record: &RawRecord,
+    interior: bool,
+    provenance: MarkerSource<'_>,
+    target_exists: impl Fn(u32) -> Result<bool>,
+    result: &mut Exported,
+    omissions: &mut ProjectionOmissions,
+) -> Result<()> {
+    let id = record.form_id;
+    let view = SubrecordView::new(&record.subrecords);
+    let cell = record.cell_form_id.unwrap_or(0);
+    let source = provenance.typed();
+    let authored_ids = !matches!(provenance, MarkerSource::Canonical);
+    let source_fields = source.map(|(record, _)| record.framed_source_prefix());
+    let authored = |tag: [u8; 4]| {
+        source_fields
+            .iter()
+            .flatten()
+            .filter_map(move |(signature, data)| (*signature == tag).then_some(*data))
+    };
+    let field = |tag: &[u8; 4]| match source {
+        Some((record, _)) => {
+            let mut occurrences = authored(*tag);
+            let value = occurrences.next()?;
+            (occurrences.next().is_none() && !record.rejected_fields.contains(tag)).then_some(value)
+        }
+        None => view.find(tag),
+    };
+    let present = |tag: &[u8; 4]| {
+        view.find(tag).is_some()
+            || authored(*tag).next().is_some()
+            || source.is_some_and(|(record, _)| record.rejected_fields.contains(tag))
+    };
+    let complete = source.is_none_or(|(record, _)| record.payload_complete);
+    if !complete {
+        result.incomplete_cells.insert(cell);
+    }
+
+    // Walk physical occurrences, including rejected ones. Outgoing links from an
+    // unusable marker still suppress independently valid targets in any cell.
+    let mut link_omission = None;
+    let single_target = authored_ids
+        && complete
+        && field(b"XORD")
+            .and_then(link_targets)
+            .is_some_and(|slots| slots.iter().filter(|&&target| target != 0).count() == 1);
+    let xords = view
+        .find_all(b"XORD")
+        .filter(|_| source.is_none())
+        .chain(authored(*b"XORD"));
+    for (occurrence, bytes) in xords.enumerate() {
+        let Some(targets) = link_targets(bytes) else {
+            link_omission.get_or_insert("PlaneMarker XORD must contain four FormIDs");
+            continue;
+        };
+        for (slot, target) in targets.into_iter().enumerate() {
+            if target == 0 {
+                continue;
+            }
+            let linked = match source {
+                Some((record, order)) => source_identity::header_runtime_id(
+                    b"REFR",
+                    target,
+                    record.load_order as usize,
+                    order,
+                ),
+                None => Some(target),
+            };
+            let Some(linked) = linked else {
+                link_omission.get_or_insert("PlaneMarker XORD contains an unresolved FormID");
+                continue;
+            };
+            if linked == 0 || authored_ids && !target_exists(linked)? {
+                link_omission.get_or_insert("PlaneMarker XORD contains an unresolved FormID");
+                continue;
+            }
+            tx.prepare_cached(
+                "INSERT INTO room_occluder_links(ref_id,link_index,linked_ref,single_target_verified) VALUES(?1,?2,?3,?4)",
+            )?
+            .execute(params![id, (occurrence * 4 + slot) as i64, linked, single_target])?;
+        }
+    }
+    if let Some(reason) = link_omission {
+        result.incomplete_cells.insert(cell);
+        omissions.record(OmissionCategory::OccluderUnusableLinks, id, reason);
+    }
+    if !interior {
+        return Ok(());
+    }
+    result.cells.insert(cell);
+
+    let Geometry {
+        shape,
+        half,
+        position,
+        rotation,
+    } = match geometry(&view, complete, field) {
+        Ok(geometry) => geometry,
+        Err(reason) => {
+            result.invalid += 1;
+            result.incomplete_cells.insert(cell);
+            omissions.record(OmissionCategory::OccluderUnusableGeometry, id, reason);
+            return Ok(());
+        }
+    };
+    let scale = if present(b"XSCL") {
+        field(b"XSCL")
+            .filter(|_| source.is_some() || view.find_all(b"XSCL").nth(1).is_none())
+            .and_then(|data| <[u8; 4]>::try_from(data).ok())
+            .map(f32::from_le_bytes)
+            .filter(|value| value.is_finite())
+            .unwrap_or(0.0)
+    } else {
+        1.0
+    };
+    let target = present(b"XMBR").then(|| {
+        view.find(b"XMBR")
+            .filter(|data| data.len() == 4)
+            .and_then(|data| u32_at(data, 0))
+            .unwrap_or(0)
+    });
+    tx.execute(
+        "INSERT INTO room_occluders(ref_id,cell_id,shape,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_y,half_z,scale,header_flags,has_enable_parent,has_links,target_ref)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+        params![
+            id,
+            cell,
+            shape,
+            position[0],
+            position[1],
+            position[2],
+            rotation[0],
+            rotation[1],
+            rotation[2],
+            half[0],
+            half[1],
+            half[2],
+            scale,
+            record.flags,
+            present(b"XESP"),
+            present(b"XORD"),
+            target
+        ],
+    )?;
+    if authored_ids
+        && shape == 3
+        && let Some(target) = target.filter(|&id| id != 0)
+        && field(b"XMBR").is_some_and(|data| data.len() == 4 && data != [0; 4])
+    {
+        tx.prepare_cached("INSERT INTO room_reference_rules(reference_id,cell_id,assignment,target_ref) VALUES(?1,?2,'target',?3)")?
+            .execute(params![id, cell, target])?;
+    }
+    result.count += 1;
+    Ok(())
 }
 
 #[cfg(test)]
