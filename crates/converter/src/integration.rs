@@ -371,21 +371,20 @@ fn read_glb_bounds_from_reader(
 }
 
 fn read_glb_prefix(reader: &mut impl Read, file_length: u64) -> Result<Vec<u8>> {
-    let mut header = [0u8; 20];
+    let mut fields = [[0u8; 4]; 5];
     reader
-        .read_exact(&mut header)
+        .read_exact(fields.as_flattened_mut())
         .wrap_err("invalid GLB container")?;
-    ensure!(&header[..4] == b"glTF", "invalid GLB container");
+    let [magic, version, length, json_length, chunk_type] = fields;
+    let header = fields.as_flattened();
+    ensure!(&magic == b"glTF", "invalid GLB container");
+    ensure!(u32::from_le_bytes(version) == 2, "unsupported GLB version");
     ensure!(
-        u32::from_le_bytes(header[4..8].try_into().unwrap()) == 2,
-        "unsupported GLB version"
-    );
-    ensure!(
-        u64::from(u32::from_le_bytes(header[8..12].try_into().unwrap())) == file_length,
+        u64::from(u32::from_le_bytes(length)) == file_length,
         "GLB length is inconsistent"
     );
-    ensure!(&header[16..20] == b"JSON", "GLB JSON chunk is missing");
-    let json_length = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
+    ensure!(&chunk_type == b"JSON", "GLB JSON chunk is missing");
+    let json_length = u32::from_le_bytes(json_length);
     ensure!(
         u64::from(json_length) <= file_length.saturating_sub(header.len() as u64),
         "truncated GLB JSON chunk"
@@ -395,7 +394,7 @@ fn read_glb_prefix(reader: &mut impl Read, file_length: u64) -> Result<Vec<u8>> 
         .checked_add(json_length as usize)
         .ok_or_else(|| color_eyre::eyre::eyre!("GLB JSON chunk length overflow"))?;
     let mut prefix = Vec::with_capacity(prefix_length);
-    prefix.extend_from_slice(&header);
+    prefix.extend_from_slice(header);
     prefix.resize(prefix_length, 0);
     reader
         .read_exact(&mut prefix[header.len()..])
