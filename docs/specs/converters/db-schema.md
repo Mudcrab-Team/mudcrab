@@ -1329,10 +1329,13 @@ Columns and rules:
   false. In-house exports also clear that flag for unresolved FormIDs. A full in-house export
   publishes `occlusion_version = 1` and `occlusion_links_verified = 1` in `room_graph_stats`.
   These markers let the loader keep unrelated occluders in a complete cell that contains an
-  all-null `XORD`. Subset exports invalidate cells that contain an old or new link target.
+  all-null `XORD`. Subset exports invalidate cells at the other end of cross-cell or unverified
+  links. A verified same-cell edge can be replaced or removed while the engine reloads its
+  endpoints and checks their shared owner.
   Legacy exports omit both markers.
   A single complete source `XORD` with exactly one nonzero slot sets `single_target_verified`
-  on its resolved edge. Existing rows default to zero. Isolated one-way and reciprocal pairs of
+  on its resolved edge. The pack editor checks the original Skyrim fields before remapping, or
+  reads all four runtime FormID slots directly from native JSON. Existing rows default to zero. Isolated one-way and reciprocal pairs of
   eligible planes with a common owner may each cast independent shadows.
 - **`room_bounds`**: the box is centred on the marker's position and oriented by its rotation
   (the same Euler convention as any reference, `shared::coordinates`). `half_*` are the `XPRM`
