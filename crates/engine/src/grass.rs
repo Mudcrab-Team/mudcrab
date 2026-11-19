@@ -490,12 +490,11 @@ fn stream_grass(
     };
     for (id, root, _, terrain) in &wanted {
         let (id, root) = (*id, *root);
-        if state.pool.contains_key(&id) {
+        let state = &mut *state;
+        if let Some(entry) = state.pool.get_mut(&id) {
             let tick = state.tick;
-            let old_tick = state.pool[&id].touched;
-            state.lru.remove(&(old_tick, id));
+            state.lru.remove(&(entry.touched, id));
             state.lru.insert((tick, id));
-            let entry = state.pool.get_mut(&id).unwrap();
             entry.touched = tick;
             // Identical prefetch/reloaded surfaces now share the committed root's Arc.
             entry.terrain = terrain.clone();
@@ -503,7 +502,7 @@ fn stream_grass(
                 metrics.cache_hits += 1;
             }
             let uploaded = state.attached.get(&id).map_or(0, |entry| entry.uploaded);
-            let batches: Vec<_> = state.pool[&id]
+            let batches: Vec<_> = entry
                 .data
                 .batches
                 .iter()
@@ -550,13 +549,14 @@ fn stream_grass(
                 .filter(|(prefetch_id, _, _)| *prefetch_id == id)
                 .map(|(_, root, terrain)| (*root, terrain.clone()))
         });
-        let root = source.as_ref().map(|(root, _)| *root);
+        let Some((root, terrain)) = source else {
+            continue;
+        };
         state.pending.insert(
             id,
             PendingGrass {
-                root,
+                root: Some(root),
                 task: grass_task_pool().spawn(async move {
-                    let terrain = source.expect("scheduled grass has committed terrain").1;
                     let data =
                         generation::generate_on_terrain(&mapped, id, &generation_config, &terrain);
                     (data, terrain)

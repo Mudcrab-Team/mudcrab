@@ -380,7 +380,10 @@ fn build_templates(
         return Ok(false);
     }
     while !build.pending.is_empty() && budget.spend() {
-        match build.pending.pop().unwrap() {
+        let Some(work) = build.pending.pop() else {
+            break;
+        };
+        match work {
             TemplateWork::Node(handle, parent) => {
                 if !build.visited.insert(handle.id()) {
                     return Err("grass node hierarchy is not a tree");
@@ -888,6 +891,7 @@ impl SpecializedMeshPipeline for GrassPipeline {
         // cascades, filtering and bias. The depth pass keeps its coverage-only layout.
         let mut layouts = vec![self.view_layout.clone(), self.batch_layout.clone()];
         if let Some(scene_key) = key.scene {
+            // queue_grass installs the scene pipeline before submitting scene keys.
             let descriptor = self
                 .scene
                 .as_ref()
@@ -1108,11 +1112,15 @@ fn prepare_grass(
         value.sun_color = sun_color;
         let mut uniform = UniformBuffer::from(value);
         uniform.write_buffer(&device, &queue);
+        let Some(binding) = uniform.binding() else {
+            warn!("grass batch uniform is unavailable for {entity:?}");
+            continue;
+        };
         let bind_group = device.create_bind_group(
             "grass batch",
             &cache.get_bind_group_layout(&pipeline.batch_layout),
             &BindGroupEntries::sequential((
-                uniform.binding().unwrap(),
+                binding,
                 &texture.texture_view,
                 &texture.sampler,
                 &normal.texture_view,
@@ -1158,7 +1166,10 @@ fn grass_matches_evidence_camera(data: &GrassPrimitive, camera: MainEntity) -> b
 
 /// Refresh main-draw evidence when its specialization or availability changes.
 fn record_grass_pipeline(data: &GrassPrimitive, key: GrassKey, ready: bool) {
-    let mut previous = data.proof_pipeline.lock().unwrap();
+    let mut previous = data
+        .proof_pipeline
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !ready || previous.is_some_and(|previous| previous != key) {
         data.drawn.store(false, Ordering::Release);
     }
@@ -1192,7 +1203,11 @@ fn queue_grass(
     mut queued: ResMut<GrassQueuedEntities>,
     prepass_draws: Res<GrassPrepassDraws>,
 ) {
-    prepass_draws.0.lock().unwrap().clear();
+    prepass_draws
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
     pipeline.scene = Some(scene.clone());
     clear_queued_grass(&mut queued, &mut main_phases, &mut pre_phases);
     for (view, msaa, camera, tonemapping) in &views {
@@ -1411,7 +1426,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
             && !prepass_draws
                 .0
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .insert((view.retained_view_entity, phase.entity()))
         {
             return RenderCommandResult::Skip;

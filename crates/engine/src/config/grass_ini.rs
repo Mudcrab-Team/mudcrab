@@ -41,8 +41,9 @@ impl Options {
                 .as_ref()
                 .and_then(|report| report.boolean("bDrawShaderGrass"))
                 .unwrap_or(true);
-        if config.grass {
-            let report = Arc::clone(config.grass_settings_report.as_ref().unwrap());
+        if config.grass
+            && let Some(report) = config.grass_settings_report.clone()
+        {
             config.map_grass_settings(&report);
         }
         for (flag, value) in self.numeric {
@@ -146,15 +147,22 @@ impl EngineConfig {
     /// Apply accepted INI assignments while preserving unmentioned or malformed values.
     fn map_grass_settings(&mut self, report: &Report) {
         // A source named "default" can be a real file; line provenance identifies imports.
-        let imported = |key: &str| report.settings[key].effective.line.is_some();
-        if imported("iMinGrassSize") {
-            self.grass_min_spacing = report.integer("iMinGrassSize").unwrap() as f32;
+        let imported = |key: &str| {
+            report
+                .settings
+                .get(key)
+                .is_some_and(|setting| setting.effective.line.is_some())
+        };
+        let integer = |key| report.integer(key).filter(|_| imported(key));
+        let float = |key| report.float(key).filter(|_| imported(key));
+        if let Some(value) = integer("iMinGrassSize") {
+            self.grass_min_spacing = value as f32;
         }
-        if imported("iGrassCellRadius") {
-            self.grass_radius = report.integer("iGrassCellRadius").unwrap();
+        if let Some(value) = integer("iGrassCellRadius") {
+            self.grass_radius = value;
         }
-        if imported("iMaxGrassTypesPerTexure") {
-            match usize::try_from(report.integer("iMaxGrassTypesPerTexure").unwrap()) {
+        if let Some(value) = integer("iMaxGrassTypesPerTexure") {
+            match usize::try_from(value) {
                 Ok(value) => self.grass_max_types_per_texture = value,
                 Err(_) => {
                     self.grass_settings_error.get_or_insert_with(|| {
@@ -163,21 +171,20 @@ impl EngineConfig {
                 }
             }
         }
-        if imported("fTexturePctThreshold") {
-            self.grass_texture_threshold = report.float("fTexturePctThreshold").unwrap();
+        if let Some(value) = float("fTexturePctThreshold") {
+            self.grass_texture_threshold = value;
         }
-        if imported("bEnableGrassFade") {
-            self.grass_enable_fade = report.boolean("bEnableGrassFade").unwrap();
+        if let Some(value) = report
+            .boolean("bEnableGrassFade")
+            .filter(|_| imported("bEnableGrassFade"))
+        {
+            self.grass_enable_fade = value;
         }
-        if imported("fGrassStartFadeDistance") || imported("fGrassFadeRange") {
-            let range = if imported("fGrassFadeRange") {
-                report.float("fGrassFadeRange").unwrap()
-            } else {
-                self.grass_fade_end - self.grass_fade_start
-            };
-            if imported("fGrassStartFadeDistance") {
-                self.grass_fade_start = report.float("fGrassStartFadeDistance").unwrap();
-            }
+        let start = float("fGrassStartFadeDistance");
+        let range = float("fGrassFadeRange");
+        if start.is_some() || range.is_some() {
+            let range = range.unwrap_or(self.grass_fade_end - self.grass_fade_start);
+            self.grass_fade_start = start.unwrap_or(self.grass_fade_start);
             self.grass_fade_end = self.grass_fade_start + range;
         }
     }
