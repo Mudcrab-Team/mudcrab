@@ -76,6 +76,12 @@ fn covering_skeleton() -> Vec<u8> {
     let mut bytes = legacy_skinned_shapes(&[skin("CoveringRig")]).unwrap();
     let root = blocks(&bytes)[0].1;
     bytes[root..root + 4].copy_from_slice(&0u32.to_le_bytes());
+    let bone = blocks(&bytes)
+        .into_iter()
+        .find(|(kind, _)| kind == "NiNode")
+        .unwrap()
+        .1;
+    bytes[bone + 16..bone + 20].copy_from_slice(&17.0f32.to_le_bytes());
     bytes
 }
 
@@ -932,15 +938,25 @@ async fn assert_repair_agrees_with_batch(has_covering_skeleton: bool) {
         );
         "skin-resolution:unresolved".to_owned()
     };
+    let check_body = |path: &Path| {
+        assert_body(path, has_covering_skeleton);
+        if has_covering_skeleton {
+            let doc = read_glb(path).json;
+            let joints = doc["skins"][0]["joints"].as_array().unwrap();
+            let bone = joints
+                .iter()
+                .map(|j| &doc["nodes"][j.as_u64().unwrap() as usize])
+                .find(|node| node["name"] == "Bone0")
+                .unwrap();
+            assert_eq!(bone["translation"], serde_json::json!([17.0, 0.0, 0.0]));
+        }
+    };
     let before = pack_bytes(&output);
     let preview = repair_failed(&config, false).unwrap();
     assert!(!preview.published);
     assert_eq!(preview.converted, 1);
     assert!(preview.failures.is_empty(), "{:?}", preview.failures);
-    assert_body(
-        &preview.directory.join("assets").join(BODY_OUTPUT),
-        has_covering_skeleton,
-    );
+    check_body(&preview.directory.join("assets").join(BODY_OUTPUT));
     let preview_manifest = manifest(&preview.directory.join("assets"));
     let expected_hash = format!("{}:{suffix}", hash_file(&body).unwrap());
     assert_eq!(
@@ -955,7 +971,7 @@ async fn assert_repair_agrees_with_batch(has_covering_skeleton: bool) {
     assert!(applied.published);
     assert_eq!(applied.converted, 1);
     assert!(applied.failures.is_empty(), "{:?}", applied.failures);
-    assert_body(&output.join(BODY_OUTPUT), has_covering_skeleton);
+    check_body(&output.join(BODY_OUTPUT));
     let repaired = manifest(&output);
     assert!(repaired.complete);
     assert!(repaired.failures.is_empty());
@@ -987,6 +1003,12 @@ async fn assert_repair_agrees_with_batch(has_covering_skeleton: bool) {
         manifest(&output).entries[BODY_KEY].source_hash,
         expected_hash
     );
+    if has_covering_skeleton {
+        let mut fresh = config.clone();
+        fresh.output_dir = root.path().join("fresh");
+        assert!(publish(&fresh).await.complete);
+        check_body(&fresh.output_dir.join(BODY_OUTPUT));
+    }
 }
 
 /// Preserve block boundaries while making the first shape's shader reference out of range.

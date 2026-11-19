@@ -752,7 +752,11 @@ fn legacy_skinned_shape_with_shader(
         SkinFixtureExtra::Body(body) => {
             validate_body(body)?;
             blocks.push(rigid_body(body, NULL_REF));
-            block_types.push("bhkRigidBody");
+            block_types.push(if body.transform.is_some() {
+                "bhkRigidBodyT"
+            } else {
+                "bhkRigidBody"
+            });
             None
         }
         SkinFixtureExtra::Track(target) => {
