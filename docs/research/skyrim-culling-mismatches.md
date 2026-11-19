@@ -158,9 +158,9 @@ python3 docs/research/evidence/room-culling-corpus-20261118/check-mesh-corpus.py
     --output "$CORPUS_OUTPUT"
 ```
 
-The script verifies both manifest digests and every input hash. It writes the same comparison
-fields as the original receipt, including the converter command. The recorded paths vary with
-the checkout and output directory.
+The script verifies both manifest digests and every input hash. For changed GLBs it compares
+the mesh transform paths and the ancestry and local transforms of every joint used by a drawable
+in the active scene. The receipt includes the converter command.
 
 At `d0e275e4`, all 989 source NIFs reconverted. Compared with the original captured GLBs,
 632 file hashes changed. The binary geometry, primitive geometry, drawable transform paths,
@@ -168,6 +168,11 @@ and drawable counts matched for every model. Compared with the earlier `3abaeb8e
 only `meshes/effects/fxcobwebroundwall01.nif` changed, dropping its fixed room-assignment
 sphere. The new comparison receipt has SHA-256
 `beab170a3b6204145a996bd30d4835eca2bff52803659443406d0e7f40f297b0`.
+
+A recheck of the 989 archived `505566f6` outputs verified their hashes against that conversion's
+receipt. Of the 788 files whose hashes differed from the original captures, two had drawables
+with skins. Their joint paths and transforms matched. A synthetic sibling-joint control detected
+changes to the joint translation, its parent's translation, and the joint's parentage.
 
 ## Remaining differences
 
