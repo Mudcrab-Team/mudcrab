@@ -386,8 +386,8 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
     number!(Streaming, "Per-frame budgets", "Model spawns per frame (0 = unlimited)", model_spawns; 0.0, 512.0, 8.0),
     number!(Streaming, "Per-frame budgets", "Asset upload MiB per frame (0 = unlimited)", upload_mib; 0.0, 256.0, 4.0),
     number!(Streaming, "Threads", "IO threads (restart; 0 = automatic)", io_threads; 0.0, 64.0, 1.0),
-    // Nominal INI bounds 0.01..0.05 divided by the nominal default 0.0125. The UI shows a
-    // multiplier, rather than importing an INI value; see the settings UI specification.
+    // Divide retail fMouseHeadingSensitivityMin (0.01) and fMouseHeadingSensitivityMax (0.05)
+    // by the nominal default (0.0125) to get the UI multiplier bounds. See the settings UI spec.
     number!(Controls, "Mouse look", "Mouse sensitivity (x)", mouse_sensitivity; 0.8, 4.0, 0.05),
 ];
 
