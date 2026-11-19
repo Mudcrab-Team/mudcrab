@@ -18,12 +18,12 @@ use super::{
     },
     types::ArchivedRecordData,
 };
-use crate::{cache::hash_bytes, check::WORLD_DATABASE_FILE_NAME, records::source_identity};
+use crate::{cache::hash_bytes, records::source_identity};
 use color_eyre::{
     Result,
     eyre::{WrapErr, bail, ensure},
 };
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 use serde::Deserialize;
 use shared::{asset_lock::AssetLock, records::MULTIBOUND_REFERENCE_FLAG};
 use std::{
@@ -68,23 +68,7 @@ pub struct PlacementEditReport {
 /// edit source commit together. Reapplying an already imported source is a no-op.
 pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEditReport> {
     let lock = AssetLock::acquire_exclusive(assets)?;
-    let database = lock.asset_dir().join(WORLD_DATABASE_FILE_NAME);
-    let file = fs::symlink_metadata(&database)?;
-    ensure!(
-        file.is_file(),
-        "{} is not a regular file",
-        database.display()
-    );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        ensure!(
-            file.nlink() == 1,
-            "the pack needs a private copy of skyrim_world.db"
-        );
-    }
-    let mut conn = Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_WRITE)
-        .wrap_err_with(|| format!("failed to open {}", database.display()))?;
+    let mut conn = crate::integration::open_private_world_database(lock.asset_dir())?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let current_schema: bool = tx.query_row(
         "SELECT version=?1 FROM schema_info",
@@ -198,7 +182,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
             .record
             .cell_form_id
             .is_some_and(|cell| fresh_cells.contains(&cell));
-        if in_fresh_cell {
+        if !edit.record.is_deleted() {
             let view = SubrecordView::new(&edit.record.subrecords);
             ensure!(
                 view.find_all(b"XPRM").count() <= 1

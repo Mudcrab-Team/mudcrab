@@ -1876,19 +1876,20 @@ fn a_two_pair_xpod_is_remapped_in_every_pair() {
 
 #[test]
 fn broken_portal_links_do_not_become_authored_outside_endpoints() {
-    for (destination, kept) in [(0u32, true), (0x0900_0802, false)] {
+    for (destination, kept) in [(0u32, true), (0x0900_0802, false), (0x0100_0000, false)] {
         let dir = tempfile::tempdir().unwrap();
         let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
+        let other = plugin(dir.path(), "Other.esm", &[], 1, Vec::new());
         let payload = [0x0100_0801u32.to_le_bytes(), destination.to_le_bytes()].concat();
         let patch = plugin(
             dir.path(),
             "Patch.esm",
-            &["Base.esm"],
+            &["Other.esm", "Base.esm"],
             1,
-            record(b"REFR", 0x0100_0900, 0, sub(b"XPOD", &payload)),
+            record(b"REFR", 0x0200_0900, 0, sub(b"XPOD", &payload)),
         );
-        let merged = EsmParser::merge_plugins(&[base, patch]).unwrap();
-        let xpods: Vec<_> = merged[&0x0100_0900]
+        let merged = EsmParser::merge_plugins(&[base, other, patch]).unwrap();
+        let xpods: Vec<_> = merged[&0x0200_0900]
             .subrecords
             .iter()
             .filter(|(tag, _)| tag.as_slice() == b"XPOD")
@@ -2256,6 +2257,35 @@ fn failed_room_link_remapping_keeps_both_readers_conservative() {
                 .query_row("SELECT COUNT(*) FROM room_bounds", [], |r| r.get(0))
                 .unwrap();
             assert_eq!(rooms, 2);
+        }
+    }
+}
+
+#[test]
+fn a_source_null_and_a_missing_room_have_different_cell_certificates() {
+    for typed in [false, true] {
+        for (target, valid) in [(0u32, true), (0x801, true), (0x910, false)] {
+            let dir = tempfile::tempdir().unwrap();
+            let data = dir.path().join("Data");
+            room_graph_review_fixture(
+                &data,
+                None,
+                Some(sub(
+                    b"XPOD",
+                    &[0x800u32.to_le_bytes(), target.to_le_bytes()].concat(),
+                )),
+            );
+            let db = rusqlite::Connection::open(export_room_review_fixture(
+                &data,
+                &dir.path().join("bundle"),
+                typed,
+            ))
+            .unwrap();
+            assert_eq!(
+                placement_certificate(&db, 0x900),
+                valid,
+                "typed={typed} target={target}"
+            );
         }
     }
 }
@@ -2768,6 +2798,69 @@ fn room_link_anomalies_reach_both_readers_integration_reports() {
 }
 
 #[test]
+fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let mut contents = record(b"STAT", 0x830, 0, sub(b"EDID", b"FixtureStatic\0"));
+    for (cell, room) in [(0x900, 0x800), (0x901, 0x810), (0x902, 0x820)] {
+        contents.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
+        let mut placements = placement_marker(room, 0x1f, Vec::new());
+        if cell == 0x900 {
+            placements.extend(placement(0x850, 0x830, 0, 0.0, Vec::new()));
+        }
+        contents.extend(placement_group(cell, placements));
+    }
+    let base = plugin(&data, "Skyrim.esm", &[], 1, contents);
+    let torn = plugin(
+        &data,
+        "Torn.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(0x901, record(b"REFR", 0x850, 0x40000, vec![0xff; 8])),
+    );
+    let restored = plugin(
+        &data,
+        "Fixed.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(0x901, record(b"REFR", 0x850, 0x20, Vec::new())),
+    );
+    for repaired in [false, true] {
+        let mut plugins = vec![base.clone(), torn.clone()];
+        if repaired {
+            plugins.push(restored.clone());
+        }
+        for typed in [false, true] {
+            let output = dir.path().join(format!("world-{typed}-{repaired}.db"));
+            let reader = if typed {
+                converter::config::RecordReader::Inhouse
+            } else {
+                converter::config::RecordReader::Legacy
+            };
+            EsmParser::convert_plugins_with_reader(&plugins, &output, reader, &data).unwrap();
+            let db = rusqlite::Connection::open(output).unwrap();
+            for cell in [0x900, 0x901] {
+                assert_eq!(
+                    placement_certificate(&db, cell),
+                    repaired,
+                    "typed={typed} cell={cell} repaired={repaired}"
+                );
+            }
+            assert!(placement_certificate(&db, 0x902));
+            let exists: bool = db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM records WHERE form_id=0x850)",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, !repaired);
+        }
+    }
+}
+
+#[test]
 fn incomplete_placed_payloads_keep_their_cells_open() {
     for base in [0x1Fu32, 0x999] {
         for truncated in [false, true] {
@@ -2978,6 +3071,66 @@ fn assert_placement_import(result: std::process::Output, summary: &str) {
         String::from_utf8_lossy(&result.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&result.stdout).trim(), summary);
+}
+
+#[test]
+fn duplicate_apertures_cannot_replace_a_certified_portal() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    let portal = |extra: Vec<u8>| {
+        plugin(
+            dir.path(),
+            "Aperture.esp",
+            &["Skyrim.esm"],
+            0,
+            placement_group(
+                PLACEMENT_CELL_A,
+                placement_marker(
+                    0x801,
+                    0x20,
+                    [
+                        sub(b"XPOD", &[0x800u32.to_le_bytes(), [0; 4]].concat()),
+                        extra,
+                    ]
+                    .concat(),
+                ),
+            ),
+        )
+    };
+    let result = run_placement_import(&assets, "--plugin", &portal(sub(b"XPRM", &[0; 32])));
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("primitive"));
+    assert!(placement_certificate(&db, PLACEMENT_CELL_A));
+    let result = run_placement_import(&assets, "--plugin", &portal(Vec::new()));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(placement_certificate(&db, PLACEMENT_CELL_A));
+}
+
+#[test]
+fn both_pack_editors_reject_a_shared_database_before_starting_sqlite() {
+    let dir = tempfile::tempdir().unwrap();
+    let other = dir.path().join("other.db");
+    fs::write(&other, b"original").unwrap();
+    fs::hard_link(&other, dir.path().join("skyrim_world.db")).unwrap();
+    let placement = run_placement_import(dir.path(), "--native", &dir.path().join("edit.json"));
+    let bounds = std::process::Command::new(env!("CARGO_BIN_EXE_room-model-bounds-refresh"))
+        .arg(dir.path())
+        .arg("meshes/test.glb")
+        .output()
+        .unwrap();
+    for result in [placement, bounds] {
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            !result.status.success() && error.contains("private copy"),
+            "{error}"
+        );
+    }
+    assert_eq!(fs::read(other).unwrap(), b"original");
 }
 
 #[test]

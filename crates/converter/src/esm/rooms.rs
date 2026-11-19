@@ -108,7 +108,7 @@ pub(crate) fn restore_portal_endpoint_provenance<'a>(
         "UPDATE room_portals SET unbounded_a=(room_a IS NULL AND ?3), unbounded_b=(room_b IS NULL AND ?4) WHERE ref_id=?1 AND pair_index=?2",
     )?;
     let mut incomplete = conn.prepare_cached(
-        "UPDATE room_graph_cells SET complete=0 WHERE cell_id IN \
+        "UPDATE room_graph_cells SET complete=0 WHERE cell_id IN
          (SELECT cell_id FROM room_portals WHERE ref_id=?1)",
     )?;
     for (id, source) in sources {
@@ -127,10 +127,15 @@ pub(crate) fn restore_portal_endpoint_provenance<'a>(
                 ])?;
             }
         } else {
-            // Canonical adaptation can retain only one of conflicting source occurrences.
             incomplete.execute([id])?;
         }
     }
+    conn.execute(
+        "UPDATE room_graph_cells SET complete=0 WHERE cell_id IN
+         (SELECT cell_id FROM room_portals WHERE (room_a IS NULL AND unbounded_a=0)
+          OR (room_b IS NULL AND unbounded_b=0))",
+        [],
+    )?;
     Ok(())
 }
 
@@ -986,14 +991,18 @@ fn project_room_graph(
         };
         for pair in 0..pairs.max(1) {
             let (room_a, room_b) = (side(pair, 0), side(pair, 4));
+            let outside_a = pair < pairs && u32_at(xpod, pair * 8) == Some(0);
+            let outside_b = pair < pairs && u32_at(xpod, pair * 8 + 4) == Some(0);
+            if (room_a.is_none() && !outside_a) || (room_b.is_none() && !outside_b) {
+                incomplete.insert(cell);
+            }
             tx.execute(
                 "INSERT OR REPLACE INTO room_portals(ref_id, pair_index, cell_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, half_x, half_z, room_a, room_b, unbounded_a, unbounded_b)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     form_id, pair as i64, cell, position[0], position[1], position[2],
                     rotation[0], rotation[1], rotation[2], half_x, half_z, room_a, room_b,
-                    pair < pairs && u32_at(xpod, pair * 8)==Some(0),
-                    pair < pairs && u32_at(xpod, pair * 8+4)==Some(0)
+                    outside_a, outside_b
                 ],
             )?;
             if room_a.is_none() || room_b.is_none() {

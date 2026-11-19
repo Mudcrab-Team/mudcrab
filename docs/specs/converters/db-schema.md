@@ -1251,6 +1251,10 @@ CREATE TABLE IF NOT EXISTS reference_rooms (   -- room membership, interiors wit
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_reference_rooms_room ON reference_rooms(room_ref);
 
+CREATE TABLE IF NOT EXISTS room_graph_cells (
+    cell_id INTEGER PRIMARY KEY,
+    complete INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS room_graph_stats (  -- report counters and visibility_version marker
     name TEXT PRIMARY KEY,
     value INTEGER NOT NULL
@@ -1345,7 +1349,8 @@ Unbounded traversal also requires both endpoint columns, `visibility_version = 2
 `room_graph_cells` marker for the cell. A skipped unsupported room or invalid room/portal marker
 makes that cell incomplete, so the runtime draws the whole cell. Negative room or portal extents are invalid; the loader also rejects them in older packs. Other complete cells retain
 unbounded traversal. The engine keeps the full cell visible whenever its completeness row or the table itself is
-missing. A full room export enables portal clipping in cells verified as complete.
+missing. Write one row per assessed interior. Set `complete=1` only after validating its room
+geometry, links and portal endpoints. Set `complete=0` for an interior with incomplete evidence.
 In a versioned graph, the engine reads the cell's `references.id` values to distinguish known
 placements from references belonging to other cells or unknown runtime objects.
 

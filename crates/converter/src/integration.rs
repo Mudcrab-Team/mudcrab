@@ -58,6 +58,41 @@ pub struct NativeModelBoundsRefresh {
     pub unbounded_models: BTreeMap<String, String>,
 }
 
+/// Both offline pack editors require a private world database before starting a write transaction.
+pub(crate) fn open_private_world_database(root: &Path) -> Result<Connection> {
+    let database = root.join(crate::check::WORLD_DATABASE_FILE_NAME);
+    let metadata = fs::symlink_metadata(&database)?;
+    ensure!(
+        metadata.is_file(),
+        "{} is not a regular file",
+        database.display()
+    );
+    #[cfg(unix)]
+    let links = std::os::unix::fs::MetadataExt::nlink(&metadata);
+    #[cfg(windows)]
+    let links = {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+        let file = fs::File::open(&database)?;
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: the file owns a live handle and info is writable for the duration of the call.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+            return Err(std::io::Error::last_os_error())
+                .wrap_err("could not check database link count");
+        }
+        info.nNumberOfLinks
+    };
+    #[cfg(any(unix, windows))]
+    ensure!(
+        links == 1,
+        "the pack needs a private copy of skyrim_world.db"
+    );
+    Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .wrap_err_with(|| format!("failed to open {}", database.display()))
+}
+
 /// Refreshes model projections in a private, offline runtime pack after installing or
 /// removing native GLBs. Paths name winners under the pack's `meshes` directory.
 pub fn refresh_native_model_bounds(
@@ -96,22 +131,7 @@ pub fn refresh_native_model_bounds(
         }
     }
 
-    let database = root.join("skyrim_world.db");
-    let metadata = fs::symlink_metadata(&database)?;
-    ensure!(
-        metadata.is_file(),
-        "not a world database: {}",
-        database.display()
-    );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        ensure!(
-            metadata.nlink() == 1,
-            "use a private copy of skyrim_world.db"
-        );
-    }
-    let mut connection = Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    let mut connection = open_private_world_database(&root)?;
     let transaction =
         connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let affected = {

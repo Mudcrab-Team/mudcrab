@@ -1257,9 +1257,29 @@ fn convert_plugins_with_text_sources_report_impl(
                 (id, source)
             }),
         )?;
-        // Canonical placement rows can omit a damaged field or an entire unusable record.
-        let mut incomplete =
-            tx.prepare_cached("UPDATE room_graph_cells SET complete=0 WHERE cell_id=?1")?;
+        let mut damage = super::PlacementDamage::default();
+        for entry in &decoded.history {
+            if entry.accepted {
+                if let Some(id) = entry.form_id {
+                    damage.accepted(id);
+                }
+            } else if super::is_placed_record_type(&entry.record_type) {
+                damage.reject(
+                    entry.form_id,
+                    entry.source_cell_form_id,
+                    entry.plugin_index as usize,
+                    &order,
+                );
+            }
+        }
+        let mut incomplete = tx.prepare_cached(
+            "INSERT INTO room_graph_cells(cell_id,complete)
+             SELECT id,0 FROM cells WHERE id=?1 AND worldspace_id IS NULL AND grid_x IS NULL AND grid_y IS NULL
+             ON CONFLICT(cell_id) DO UPDATE SET complete=0",
+        )?;
+        for cell in damage.affected_cells(&master) {
+            incomplete.execute([cell])?;
+        }
         for record in decoded.records.values() {
             if super::is_placed_record_type(&record.record_type)
                 && (!record.payload_complete
