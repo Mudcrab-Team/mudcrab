@@ -65,12 +65,13 @@ impl EsmParser {
         paths: &[PathBuf],
         database: &std::path::Path,
     ) -> Result<(FormKeyConversion, LegacyWriterOutcome)> {
-        let conversion = Self::merge_plugins_form_keys(paths)?;
+        let (paths, name_warnings) = super::form_keys::recover_plugin_paths(paths)?;
+        let conversion = Self::merge_accepted_form_key_plugins(&paths, name_warnings)?;
         if let Some(notice) = conversion.order.notice() {
             eprintln!("notice: {notice}");
             return Ok((conversion, LegacyWriterOutcome::Unavailable { notice }));
         }
-        Self::convert_plugins(paths, database)?;
+        Self::convert_plugins(&paths, database)?;
         Ok((conversion, LegacyWriterOutcome::Published))
     }
 
@@ -79,10 +80,15 @@ impl EsmParser {
     /// The old writer remains a separate checked boundary; no stand-in numbers are allocated.
     pub fn merge_plugins_form_keys(paths: &[PathBuf]) -> Result<FormKeyConversion> {
         let (accepted_paths, name_warnings) = super::form_keys::recover_plugin_paths(paths)?;
-        let paths = accepted_paths.as_slice();
+        Self::merge_accepted_form_key_plugins(&accepted_paths, name_warnings)
+    }
+
+    fn merge_accepted_form_key_plugins(
+        paths: &[PathBuf],
+        mut summaries: Vec<String>,
+    ) -> Result<FormKeyConversion> {
         let order = FormKeyOrder::read(paths)?;
         let warnings = RemapWarnings::default();
-        let mut summaries = name_warnings;
         let mut records = HashMap::new();
         let mut settings = GameSettingIdentities::default();
         for (priority, path) in paths.iter().enumerate() {

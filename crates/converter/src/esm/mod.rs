@@ -164,7 +164,7 @@ impl EsmParser {
     ) -> Result<RecordConversion> {
         match reader {
             crate::config::RecordReader::Legacy => {
-                Self::convert_legacy_plugins_report(plugin_paths, db_path, string_sources)
+                Self::convert_legacy_plugins_report(plugin_paths, db_path, Some(string_sources))
             }
             crate::config::RecordReader::Inhouse => {
                 inhouse::convert_plugins_with_string_sources_report(
@@ -196,26 +196,24 @@ impl EsmParser {
         plugin_paths: &[PathBuf],
         db_path: &Path,
     ) -> Result<RecordConversion> {
-        // Without a staged archive VFS, string tables come from each plugin's loose folder.
-        let loose = plugin_paths
-            .first()
-            .and_then(|path| path.parent())
-            .unwrap_or(Path::new("."));
-        Self::convert_legacy_plugins_report(
-            plugin_paths,
-            db_path,
-            inhouse::StringSources::default_language(inhouse::StringRoots::PluginLooseFirst(loose)),
-        )
+        Self::convert_legacy_plugins_report(plugin_paths, db_path, None)
     }
 
     /// Export legacy records, resolving localized text through the in-house string sources.
     fn convert_legacy_plugins_report(
         plugin_paths: &[PathBuf],
         db_path: &Path,
-        string_sources: inhouse::StringSources<'_>,
+        string_sources: Option<inhouse::StringSources<'_>>,
     ) -> Result<RecordConversion> {
         let (accepted_paths, name_warnings) = form_keys::recover_plugin_paths(plugin_paths)?;
         let plugin_paths = accepted_paths.as_slice();
+        let string_sources = string_sources.unwrap_or_else(|| {
+            let loose = plugin_paths
+                .first()
+                .and_then(|path| path.parent())
+                .unwrap_or(Path::new("."));
+            inhouse::StringSources::default_language(inhouse::StringRoots::PluginLooseFirst(loose))
+        });
         let order = load_order::LoadOrder::read(plugin_paths)?;
         let mut master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
         master.warnings.extend(name_warnings);
@@ -335,11 +333,18 @@ impl EsmParser {
                                     eyre!("wide light FormID {raw:08X} has no allocated owner")
                                 })?
                                 .normalized_name;
-                            warnings.truncated(owner, raw);
-                            Ok(legacy.to_legacy_u32(shared::form_key::FormKey::new(
+                            let packed = legacy.to_legacy_u32(shared::form_key::FormKey::new(
                                 key.plugin(),
                                 key.local() & 0xfff,
-                            )?)?)
+                            )?)?;
+                            // Group labels are strict. For a permissive record header, an
+                            // exact source identity reserves the ID in either source order.
+                            color_eyre::eyre::ensure!(
+                                field || !source_ids.contains(&packed),
+                                "wide light FormID {raw:08X} would collide with exact record {packed:08X}"
+                            );
+                            warnings.truncated(owner, raw);
+                            Ok(packed)
                         }
                         Err(error) => Err(error.into()),
                     };
