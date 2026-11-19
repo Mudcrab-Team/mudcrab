@@ -5,11 +5,20 @@ import hashlib
 import json
 import re
 import sqlite3
+import subprocess
+import sys
 from contextlib import closing
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
+SURFACE_NAME = "reviewed-surface.json"
+# Derived files. Never commit them: they hold fingerprints of source files, so every unrelated source edit
+# changes them and every open pull request then conflicts. CI and this tool regenerate them. The list matches
+# .gitignore. `reviewed-sources.json` is the old committed fingerprint file; it stays here so a stale copy is found.
+GENERATED_PATHS = ("docs/data-inventory/inventory.json", "docs/data-inventory/report.md",
+                   "tools/world_data_inventory/reviewed-sources.json")
+MIGRATION_RECIPE = ("git rm -qf --ignore-unmatch -- " + " ".join(GENERATED_PATHS) + " && git commit --no-edit")
 METHODS = {"prepare", "prepare_cached", "query_row", "query_row_and_then", "execute", "execute_batch"}
 STATES = ("decoded", "preserved", "projected", "query_dependent", "mapped", "semantic_use")
 STATE_VALUES = {
@@ -474,46 +483,138 @@ def source_guard(root, queries, manual):
                 "crates/engine/src/world/inventory_tests.rs") if (root / p).is_file()}}
 
 
-def main():
+def reader_surface(queries):
+    """Stable identity of each record reader: the call site key plus a hash of the SQL it runs.
+
+    The key holds the file path, method, a hash of the call expression and an occurrence number. It holds no
+    line number and no hash of the whole file, so an unrelated edit leaves it unchanged. The SQL hash catches a
+    changed constant or literal. `None` marks a dynamic query that the scan cannot resolve."""
+    return {q["id"]: None if q["sql"] is None else digest(q["sql"])[:16] for q in queries}
+
+
+def emitted_columns(extraction):
+    """Every `table.column` that any extracted schema shape declares, as a sorted list."""
+    names = set()
+    for schema in extraction["schemas"].values():
+        with closing(open_schema(schema)) as db:
+            for obj in schema["objects"]:
+                if obj["type"] == "table" and obj["name"] not in schema["shadow_tables"]:
+                    names.update(f"{obj['name']}.{row[1]}" for row in
+                                 db.execute("SELECT * FROM pragma_table_info(?)", (obj["name"],)))
+    return sorted(names)
+
+
+def surface_text(surface):
+    """One entry per line, so a review diff shows exactly which reader or column changed."""
+    lines = ['{', '  "format_version": 1,', '  "readers": {']
+    lines += [f'    {json.dumps(key)}: {json.dumps(value)}' + ("," if i + 1 < len(surface["readers"]) else "")
+              for i, (key, value) in enumerate(sorted(surface["readers"].items()))]
+    lines += ['  },', '  "columns": [']
+    lines += [f'    {json.dumps(name)}' + ("," if i + 1 < len(surface["columns"]) else "")
+              for i, name in enumerate(sorted(surface["columns"]))]
+    lines += ['  ]', '}', '']
+    return "\n".join(lines)
+
+
+def load_surface(here):
+    path = here / SURFACE_NAME
+    if not path.is_file():
+        raise ValueError(f"missing {SURFACE_NAME}; review the readers, then run inventory.py --review-sources")
+    surface = json.loads(path.read_text(encoding="utf-8"))
+    if surface.get("format_version") != 1:
+        raise ValueError("unsupported reviewed-surface version")
+    return surface
+
+
+def surface_difference(kind, reviewed, current):
+    added = sorted(set(current) - set(reviewed))
+    removed = sorted(set(reviewed) - set(current))
+    changed = sorted(key for key in set(current) & set(reviewed)
+                     if isinstance(reviewed, dict) and reviewed[key] != current[key])
+    lines = [f"  new {kind} without a reviewed disposition: {key}" for key in added]
+    lines += [f"  changed {kind} (its SQL changed): {key}" for key in changed]
+    lines += [f"  reviewed {kind} that no longer exists: {key}" for key in removed]
+    return lines
+
+
+def tracked_generated_files(root):
+    """Generated files that git tracks. Returns nothing outside a git checkout."""
+    try:
+        done = subprocess.run(["git", "ls-files", "--", *GENERATED_PATHS], cwd=root, capture_output=True,
+                              text=True, encoding="utf-8", check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    return done.stdout.split()
+
+
+def run(argv, root=ROOT, here=HERE):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--extraction", type=Path, help="JSON emitted by world_data_inventory_extraction")
-    parser.add_argument("--output", type=Path, default=ROOT / "docs/data-inventory")
-    parser.add_argument("--check", action="store_true", help="compare committed source inventory/report; never write")
-    parser.add_argument("--review-sources", action="store_true", help="explicitly accept reviewed source fingerprints after updating dispositions")
-    parser.add_argument("--source-identity", action="store_true", help="print the checked source fingerprint for executable extraction")
-    args = parser.parse_args()
+    parser.add_argument("--output", type=Path, default=root / "docs/data-inventory",
+                        help="where to write the generated report and JSON (default is gitignored)")
+    parser.add_argument("--check", action="store_true",
+                        help="kept for existing commands: the committed reviewed surface is always enforced")
+    parser.add_argument("--review-sources", action="store_true",
+                        help=f"after review, rewrite the committed {SURFACE_NAME}; add --extraction to rewrite its columns too")
+    parser.add_argument("--source-identity", action="store_true", help="print the source fingerprint for executable extraction")
+    args = parser.parse_args(argv)
     if args.source_identity and (args.extraction or args.review_sources or args.check):
         parser.error("--source-identity cannot be combined with generation/check options")
-    manual = json.loads((HERE / "dispositions.json").read_text(encoding="utf-8"))
+    if args.review_sources and args.check:
+        parser.error("--check cannot update the reviewed surface")
+    manual = json.loads((here / "dispositions.json").read_text(encoding="utf-8"))
     extraction = json.loads(args.extraction.read_text(encoding="utf-8")) if args.extraction else None
-    validate_manual(ROOT, manual)
-    queries = scan_queries(ROOT)
-    guard = source_guard(ROOT, queries, manual)
-    if args.review_sources:
-        if args.check:
-            parser.error("--check cannot update reviewed sources")
-        write_text(HERE / "reviewed-sources.json", canonical(guard))
-    expected = json.loads((HERE / "reviewed-sources.json").read_text(encoding="utf-8"))
-    if guard != expected:
-        raise ValueError("unreviewed projection source/query drift; review dispositions and reviewed-sources.json")
+    validate_manual(root, manual)
+    queries = scan_queries(root)
+    # Derived. Never compared with a committed copy, so no committed file holds a source hash.
+    guard = source_guard(root, queries, manual)
     fingerprint = digest(canonical(guard))
     if args.source_identity:
         print(fingerprint)
         return
-    if extraction and extraction.get("reviewed_source_guard_sha256") != fingerprint:
+    tracked = tracked_generated_files(root)
+    if tracked:
+        raise ValueError("generated inventory files are committed: " + ", ".join(tracked)
+                         + ". They are derived in CI and gitignored. Remove them with: " + MIGRATION_RECIPE)
+    if extraction and not args.review_sources and extraction.get("reviewed_source_guard_sha256") != fingerprint:
         raise ValueError("extraction does not match the reviewed source fingerprint")
-    result = build(ROOT, manual, extraction, queries)
+    surface_path = here / SURFACE_NAME
+    if args.review_sources:
+        if extraction:
+            # Reviewing a column never replaces classifying its table in dispositions.json.
+            tables = sorted({name.split(".", 1)[0] for name in emitted_columns(extraction)} - set(manual["tables"]))
+            if tables:
+                raise ValueError("unclassified emitted table: " + ", ".join(tables)
+                                 + ". Add a disposition to dispositions.json first")
+        previous = json.loads(surface_path.read_text(encoding="utf-8")) if surface_path.is_file() else {}
+        columns = emitted_columns(extraction) if extraction else previous.get("columns", [])
+        write_text(surface_path, surface_text({"readers": reader_surface(queries), "columns": columns}))
+    surface = load_surface(here)
+    problems = surface_difference("reader", surface["readers"], reader_surface(queries))
+    if extraction:
+        problems += surface_difference("column", surface["columns"], emitted_columns(extraction))
+    if problems:
+        raise ValueError("unreviewed change to the record readers or columns. Review the dispositions in "
+                         "dispositions.json, then run inventory.py --review-sources"
+                         + (" --extraction <extraction.json>" if extraction else "")
+                         + " and commit " + SURFACE_NAME + ":\n" + "\n".join(problems))
+    result = build(root, manual, extraction, queries)
     result["reviewed_source_guard_sha256"] = fingerprint
+    result["source_guard"] = guard
     outputs = {"inventory.json": canonical(result), "report.md": report(result)}
-    if args.check:
-        for name, content in outputs.items():
-            if not (args.output / name).is_file() or (args.output / name).read_text(encoding="utf-8") != content:
-                raise ValueError(f"inventory drift: {name}; regenerate after review")
-    else:
-        args.output.mkdir(parents=True, exist_ok=True)
-        for name, content in outputs.items():
-            write_text(args.output / name, content)
-    print(f"inventory: {result['schema_status']}; {len(result['queries'])} candidates; {len(result['variants'])} composed variants")
+    # Always regenerate. A missing file is created and a stale one is overwritten, so no step trusts a copy on disk.
+    args.output.mkdir(parents=True, exist_ok=True)
+    for name, content in outputs.items():
+        write_text(args.output / name, content)
+    print(f"inventory: {result['schema_status']}; {len(result['queries'])} candidates; {len(result['variants'])} composed variants; "
+          f"regenerated {', '.join(outputs)} in {args.output}")
+
+
+def main():
+    try:
+        run(sys.argv[1:])
+    except ValueError as error:
+        sys.exit(f"error: {error}")
 
 
 if __name__ == "__main__":
