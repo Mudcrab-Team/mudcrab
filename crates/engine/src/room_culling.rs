@@ -36,8 +36,9 @@
 //! volume. The mesh's current AABB is transformed into cell-local space with its full affine
 //! transform, including rotation, scale, and shear. Missing or invalid bounds and `NoFrustumCulling`
 //! skip the aperture test but retain the unreached-space test. Versioned graphs also track
-//! references whose pivots are in no room as unbounded; their conservative overlap memberships
-//! remain candidates. Multiple containing rooms, unknown references, and legacy unassigned
+//! references whose pivots are in no room. Those with overlap rows can use the overlap and
+//! unbounded volumes. Those without either kind of row stay drawn in roomed cells.
+//! Multiple containing rooms, unknown references, and legacy unassigned
 //! references stay drawn. References whose aggregate model bounds touch an attached portal gain
 //! the union of both endpoint volumes. Mesh filtering never inserts duplicate entries.
 //!
@@ -601,7 +602,13 @@ impl RoomGraph {
         let Some(membership) = self.membership.get(&form_id) else {
             return true;
         };
-        if membership.contained.len() > 1 {
+        // A cell-local reference ID proves identity, but empty geometric membership
+        // does not establish ownership by the unbounded node of a roomed cell.
+        if membership.contained.len() > 1
+            || (!self.rooms.is_empty()
+                && membership.contained.is_empty()
+                && membership.overlapping.is_empty())
+        {
             return true;
         }
         // Portal overlap adds endpoint candidates. Keep geometric overlap candidates too:
@@ -2371,7 +2378,7 @@ mod tests {
     }
 
     #[test]
-    fn a_room_can_see_unbounded_geometry_only_through_its_aperture() {
+    fn unassigned_geometry_stays_visible_beside_a_clipped_outside_aperture() {
         let graph = outside_graph();
         let eye = Vec3::new(0.0, 0.0, -20.0);
         let clip = clip_from_local()
@@ -2387,12 +2394,56 @@ mod tests {
         };
         assert!(visible.unbounded.is_reached());
         assert!(graph.mesh_is_drawn(102, &visible, Some(&bounds_at(0.0)), None));
-        assert!(!graph.mesh_is_drawn(102, &visible, Some(&bounds_at(8.0)), None));
+        assert!(!visible.unbounded.intersects(Some(&bounds_at(8.0))));
+        assert!(graph.mesh_is_drawn(102, &visible, Some(&bounds_at(8.0)), None));
         let away = graph
             .visibility_volumes(eye, clip_from_local() * Mat4::from_translation(-eye))
             .unwrap();
         assert!(!away.unbounded.is_reached());
-        assert!(!graph.mesh_is_drawn(102, &away, None, None));
+        let in_front = MeshBounds::transformed(
+            &Aabb::from_min_max(-Vec3::splat(0.1), Vec3::splat(0.1)),
+            Affine3A::from_translation(Vec3::new(0.0, 0.0, -35.0)),
+        )
+        .unwrap();
+        assert!(away.rooms[0].intersects(Some(&in_front)));
+        assert!(graph.mesh_is_drawn(102, &away, Some(&in_front), None));
+    }
+
+    #[test]
+    fn only_verified_outside_ownership_requires_an_outside_route() {
+        let connection = authored_database();
+        insert_room(&connection, 1, 7, [0.0; 3]);
+        insert_room(&connection, 2, 7, [0.0, 50.0, 0.0]);
+        connection
+            .execute_batch(
+                "INSERT INTO room_portals(ref_id,cell_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,
+                half_x,half_z,room_a,room_b) VALUES(10,7,0,25,0,0,0,0,4,4,1,2);
+             INSERT INTO [references](id,cell_id,base_form_id) VALUES(100,7,77),(101,7,78);
+             INSERT INTO room_reference_rules VALUES(100,7,'auto',NULL),(101,7,'auto',NULL);
+             INSERT INTO room_model_bounds VALUES(78,0,0,-80,1);",
+            )
+            .unwrap();
+        let graph = load_room_graph(&connection, 7).unwrap();
+        let view = graph
+            .visibility_volumes(Vec3::ZERO, clip_from_local())
+            .unwrap();
+        let center = Vec3::new(0.0, 0.0, -80.0);
+        let bounds = MeshBounds::transformed(
+            &Aabb::from_min_max(center - Vec3::ONE, center + Vec3::ONE),
+            Affine3A::IDENTITY,
+        )
+        .unwrap();
+        assert!(view.rooms[0].intersects(Some(&bounds)));
+        assert!(!view.unbounded.is_reached());
+        let authored = graph.authored.as_ref().unwrap();
+        for (id, expected) in [(100, true), (101, false)] {
+            let owners =
+                authored.initial_owners(id, Affine3A::IDENTITY, &graph.rooms, &graph.portals);
+            assert_eq!(
+                assignment::draws(&owners, &graph.portals, &view, Some(&bounds)),
+                expected
+            );
+        }
     }
 
     #[test]
