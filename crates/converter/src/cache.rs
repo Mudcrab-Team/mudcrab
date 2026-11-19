@@ -479,6 +479,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "animated-skin-bone-room-spheres",
     "animated-skin-ancestor-and-character-room-spheres",
     "renderer-verified-room-spheres",
+    "scene-ancestor-skin-motion",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical

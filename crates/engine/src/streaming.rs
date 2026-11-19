@@ -4705,16 +4705,14 @@ pub(crate) fn converted_model_path(path: String) -> Option<String> {
     // `Is Marker` flag (`spawned_model_path`) and, inside a mesh, by the converter's
     // `EditorMarker` shape rule; the folder rules below stay as path-convention guards.
     let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    if normalized.starts_with("meshes/sky/")
-        || normalized.starts_with("sky/")
-        || normalized.starts_with("meshes/markers/")
-        || normalized.starts_with("markers/")
-        || normalized.starts_with("meshes/effects/")
-        || normalized.starts_with("effects/")
+    let without_prefix = normalized.strip_prefix("meshes/").unwrap_or(&normalized);
+    if without_prefix.starts_with("sky/")
+        || without_prefix.starts_with("markers/")
+        || (without_prefix.starts_with("effects/")
+            && without_prefix != "effects/fxcobwebroundwall01.nif")
     {
         return None;
     }
-    let without_prefix = normalized.strip_prefix("meshes/").unwrap_or(&normalized);
     if without_prefix.is_empty() || !is_safe_relative_asset_path(without_prefix) {
         return None;
     }
@@ -7006,6 +7004,16 @@ mod tests {
             converted_model_path("Markers/CivilWarMarkers/CWAttSpawn02.nif".into()),
             None
         );
+        for path in [
+            r"Effects\FXcobwebRoundWall01.nif",
+            "meshes/effects/fxcobwebroundwall01.nif",
+        ] {
+            assert_eq!(
+                spawned_model_path(Some(path.into()), false).as_deref(),
+                Some("meshes/effects/fxcobwebroundwall01.glb")
+            );
+            assert!(spawned_model_path(Some(path.into()), true).is_none());
+        }
         assert_eq!(converted_model_path("Effects/FXRapids.nif".into()), None);
     }
 

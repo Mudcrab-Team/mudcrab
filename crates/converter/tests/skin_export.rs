@@ -496,7 +496,8 @@ fn legacy_bsdismember_skin_exports_skin() {
 #[test]
 fn transform_track_on_a_skin_bone_omits_the_room_sphere() {
     let directory = tempfile::tempdir().unwrap();
-    let skin = fixed_pose_skin();
+    let mut skin = fixed_pose_skin();
+    skin.name = "Bone0";
     let convert = |label: &str, target_bone| {
         let input = directory.path().join(format!("{label}.nif"));
         let output = input.with_extension("glb");
@@ -533,7 +534,7 @@ fn controllers_on_joint_ancestors_omit_the_room_sphere() {
         for (target, fixed) in [
             (SkinControllerTarget::Ancestor, false),
             (SkinControllerTarget::Unrelated, true),
-            (SkinControllerTarget::AboveSkinRoot, true),
+            (SkinControllerTarget::AboveSkinRoot, false),
         ] {
             fs::write(
                 &input,

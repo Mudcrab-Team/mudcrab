@@ -141,32 +141,21 @@ fn skin_motion_targets(blocks: &[NifBlock]) -> HashSet<u32> {
     }
 
     let mut targets = HashSet::new();
-    let mut visited = HashSet::new();
     for block in blocks {
-        let (root, bones) = match block {
-            NifBlock::NiSkinInstance(skin) => (skin.skeleton_root, &skin.bones),
-            NifBlock::BsDismemberSkinInstance(skin) => {
-                (skin.skin_instance.skeleton_root, &skin.skin_instance.bones)
-            }
-            NifBlock::BSSkinInstance(skin) => (skin.skeleton_root, &skin.bones),
+        let bones = match block {
+            NifBlock::NiSkinInstance(skin) => &skin.bones,
+            NifBlock::BsDismemberSkinInstance(skin) => &skin.skin_instance.bones,
+            NifBlock::BSSkinInstance(skin) => &skin.bones,
             _ => continue,
         };
         // Skyrim may store influences in the geometry or skin partition, so treat every
         // joint listed by the instance as potentially weighted.
         for &bone in bones.iter().filter(|&&bone| bone != u32::MAX) {
             let mut target = bone;
-            while visited.insert((root, target)) {
-                targets.insert(target);
-                if target == root {
-                    break;
-                }
+            while target != crate::mesh::NIF_ROOT_BLOCK && targets.insert(target) {
                 let Some(parent) = parents.get(target as usize).copied().flatten() else {
                     break;
                 };
-                // The placing reference owns the scene root's transform.
-                if parent == crate::mesh::NIF_ROOT_BLOCK {
-                    break;
-                }
                 target = parent;
             }
         }

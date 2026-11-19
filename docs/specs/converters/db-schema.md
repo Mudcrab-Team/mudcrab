@@ -648,7 +648,8 @@ Rows come from every placeable base type with a world model: `STAT`, `MSTT`, `FU
 `KEYM`, `SCRL`, `ARMO`, `APPA`, `ADDN`, `ARTO`, `PROJ`, `HAZD`, and `LIGH` when it has a model. `TACT`
 (talking activators), `APPA` (apparatus), `ADDN` (addon nodes) and `ARTO` (art objects) were
 added for #269; before that their references had no row and did not render. The engine still
-skips models under `effects/`, `sky/` or `markers/`
+skips models under `effects/`, `sky/` or `markers/`, with one drawable activator exception for
+`effects/fxcobwebroundwall01.nif`
 (`converted_model_path` in `crates/engine/src/streaming.rs`), which covers many `ADDN` and `ARTO`
 models; that is render policy, not data the table lacks. Marker filenames alone are not excluded:
 the base record's `Is Marker` flag controls editor-marker admission. They are additive
