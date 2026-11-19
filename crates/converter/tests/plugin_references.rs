@@ -3624,3 +3624,49 @@ fn native_placement_import_is_atomic_and_preserves_incomplete_cell_evidence() {
     );
     assert!(!placement_certificate(&db, PLACEMENT_CELL_INCOMPLETE));
 }
+
+#[test]
+fn later_placement_edits_preserve_the_original_room_link_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    let room = placement_marker(
+        0x0100_0900,
+        0x1f,
+        [
+            sub(b"XRMR", &[1, 0, 0, 0]),
+            // Legacy ID remapping drops this malformed field, leaving an apparent XLRM slot.
+            sub(b"LNAM", &[0]),
+            sub(b"XLRM", &0x800u32.to_le_bytes()),
+        ]
+        .concat(),
+    );
+    let change = plugin(
+        dir.path(),
+        "Misplaced.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(PLACEMENT_CELL_A, room),
+    );
+    assert_placement_import(
+        run_placement_import(&assets, "--plugin", &change),
+        "Applied 1 room placements in 1 cells (0 certified)",
+    );
+    let outgoing = || {
+        db.query_row(
+            "SELECT count(*) FROM room_links WHERE room_ref=0x01000900",
+            [],
+            |row| row.get::<_, usize>(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(outgoing(), 0);
+    let delete = dir.path().join("delete.json");
+    fs::write(&delete, r#"{"edits":[{"op":"delete","id":2051}]}"#).unwrap();
+    assert_placement_import(
+        run_placement_import(&assets, "--native", &delete),
+        "Applied 1 room placements in 1 cells (0 certified)",
+    );
+    assert_eq!(outgoing(), 0);
+    assert!(!placement_certificate(&db, PLACEMENT_CELL_A));
+}
