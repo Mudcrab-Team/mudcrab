@@ -3359,7 +3359,13 @@ mod tests {
         assert!(
             run_config(&["--shots-no-room-culling", "--shots", "poses.json"]).shots_no_room_culling
         );
-        assert!(parse_error(&["--shots-no-room-culling"]).contains("--shots"));
+        assert!(matches!(
+            parse_error(&["--shots-no-room-culling"]),
+            ConfigError::MissingRequirement {
+                option: "--shots-no-room-culling",
+                requires: "--shots"
+            }
+        ));
     }
 
     #[test]

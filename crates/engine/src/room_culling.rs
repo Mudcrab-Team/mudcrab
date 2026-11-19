@@ -2407,7 +2407,7 @@ mod tests {
         let draws_mesh = || {
             let graph = load_room_graph(&connection, 7).unwrap();
             graph
-                .visibility_volumes(Vec3::ZERO, clip_from_local())
+                .visibility_volumes(Vec3::ZERO, Vec3::ZERO, clip_from_local())
                 .is_none_or(|visible| graph.mesh_is_drawn(500, &visible, Some(&bounds), None))
         };
         assert!(draws_mesh(), "legacy pack without a completeness table");
