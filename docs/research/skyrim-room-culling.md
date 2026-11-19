@@ -8,6 +8,10 @@ verifies its portal graph, the engine keeps the cell's entire main-camera mesh l
 This policy uses Skyrim's authored room and portal records, but does not claim exact replication
 of Skyrim's traversal.
 
+Portal order can change which meshes appear downstream even with a single starting room.
+Mudcrab can replay a measured load’s order. Ordinary packs use deterministic FormID order.
+See the [two retail renders and comparison procedure](skyrim-culling-rea-parity.md#portal-order-within-one-starting-room-changes-the-image).
+
 ## Evidence
 
 Research checked on 2026-11-15:
@@ -109,12 +113,11 @@ The flag/target distribution supports the `NONE` interpretation; it is not a con
 or a reconstruction of Skyrim's assignment code.
 
 The room-basics page describes Skyrim restricting views from outside room bounds to portals.
-Mudcrab keeps whole-cell rendering when the camera is outside every room, including in versioned
-graphs, because gaps between bounds are not verified outside space. From a containing room,
-versioned graphs can traverse an authored outside endpoint through its portal aperture. Legacy
-NULL endpoints cannot distinguish authored outside from invalid links. Unknown references remain
-drawn. This conservative camera-start policy differs from the traced native null-room traversal;
-it does not change versioned object membership to draw every unassigned reference.
+Complete authored graphs start in unbounded space when no room contains the near-shifted lookup
+point. Both traversal directions use source-verified outside endpoints. Legacy NULL endpoints
+cannot distinguish outside space from invalid links, so legacy gaps retain full rendering.
+Unknown references remain drawn. The [Gallows Rock replay](skyrim-culling-rea-parity.md#gallows-rock-west-doorway)
+checks this rule against the stock interior.
 
 Its dropped-object warning also shows why a reference's original placement is insufficient for
 moving objects. Actors and animated categories remain exempt. Supported loose objects now
@@ -130,26 +133,25 @@ The tutorial recommends measuring performance and limiting long chains of visibl
 Each view starts from all containing authored room unions with the camera frustum. Portal polygons
 are clipped against incoming convex volumes; aperture edges and the doorway plane narrow the next
 volume. Separate paths remain a union. Perspective views use converging rays and orthographic views
-use parallel rays. The work limits remain 16 contributions per space and 64 planes per volume;
-exceeding either widens that space conservatively. These limits differ from the native operator budget.
+use parallel rays. On a newly reached bounded room, an incoming program of 26 or more native
+operator records drops its inherited constraints after the exit passes its aperture test.
+The exit and the room’s own occluders still constrain its meshes. See the
+[retail threshold captures](skyrim-culling-rea-parity.md#the-26-operator-fallback-retains-local-constraints).
+Independent work limits can also widen a complex volume. Authored graphs allow at least one contribution per physical portal in the cell before applying that limit.
 
 Full source conversions publish `occlusion_version = 1` with authored plane and box geometry.
 Supported independent occluders add exclusions to their containing joined room or unbounded space.
 Exclusions propagate with each path; an alternative clear path retains the mesh. Rejection requires
 full containment of the mesh AABB's enclosing sphere. Budget widening retains local exclusions.
-Linked, stateful, overridden, and ambiguously assigned primitives remain inactive. Older exports
+An explicitly targeted plane can hide meshes when the converted source confirms its unique containing room as the target. The loader treats an isolated, source-verified pair of linked planes with the same owner as two independent occluders. Other overrides, complex links, stateful primitives, and ambiguous assignments remain inactive. Older exports
 retain their previous behavior until reconverted. See the [occluder implementation contract](skyrim-culling-rea-parity.md#independent-occluder-implementation).
 
 An interior with no authored rooms can apply verified independent occluders directly to the full
-camera volume. In an interior with rooms, occluders do not establish portal coverage: a camera
-outside every room still retains full rendering.
+camera volume. In an interior with rooms, occluders do not establish portal coverage: older packs without authored assignment and complete endpoint data retain full rendering when the lookup point falls outside every room.
 
 Graphs with `visibility_version = 2` have explicit unbounded space. Only endpoints verified as zero
 in source `XPOD` name it. Missing, invalid, or foreign-cell links remain unknown and trigger full
-rendering. Room-to-outside traversal narrows its volume through the same aperture tests. A camera
-outside every room keeps full rendering: room boxes can have seams, so their complement is not
-verified outside-space coverage. This conservative start policy deliberately differs from the
-traced native null-room traversal. Older conversions retain their outside-camera fallback.
+rendering. Room-to-outside traversal narrows its volume through the same aperture tests. When the near-shifted camera point falls outside every authored room union in a complete graph, traversal starts in unbounded space and follows its authored portals. Older conversions retain their outside-camera fallback.
 
 New conversions additionally publish `assignment_version = 1`, ordered `XLRM` links, per-reference
 rules, source NIF spheres, and per-cell completeness. `XRMR[2]` selects explicit masters. Slaves

@@ -2522,6 +2522,7 @@ fn setup_world(
         Projection::Perspective(perspective),
         camera_transform,
         StreamingCamera,
+        crate::room_culling::RoomCullingNear::SKYRIM,
         IsDefaultUiCamera,
         // This camera draws the streamed world, so the weather's distance fog covers it.
         FogCamera,

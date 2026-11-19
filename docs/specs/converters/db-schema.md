@@ -1253,6 +1253,7 @@ CREATE INDEX IF NOT EXISTS idx_room_occluders_cell ON room_occluders(cell_id);
 CREATE TABLE IF NOT EXISTS room_occluder_links (
     ref_id INTEGER NOT NULL, link_index INTEGER NOT NULL,
     linked_ref INTEGER NOT NULL,
+    single_target_verified INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (ref_id, link_index)
 );
 
@@ -1302,11 +1303,17 @@ Columns and rules:
   scale, unsupported shapes, and deleted placements produce no row. Disabled-state flags,
   enable-parent presence, and linked-plane presence are retained for runtime policy.
   `target_ref` is NULL only when `XMBR` is absent; zero preserves an unresolved or malformed
-  explicit override. `has_links` remains true for malformed `XORD`, including after remapping.
+  explicit override. For a plane with one valid nonzero source target, the full converter also writes
+  the corroborating `target` assignment in `room_reference_rules`. The runtime requires both
+  facts to agree with the unique containing room before using a named plane.
+  `has_links` remains true for malformed `XORD`, including after remapping.
 - **`room_occluder_links`** preserves nonzero linked FormIDs from complete 16-byte `XORD`
   occurrences. Slots are numbered `occurrence * 4 + slot`, without asserting the historical
-  edge names. All four FormIDs are remapped. Links remain when source geometry is skipped,
-  so a linked target cannot become an independent occluder. Malformed occurrences have no
+  edge names. All four FormIDs are remapped. A trusted conversion sets `single_target_verified`
+  on the remapped edge when the original record has exactly one complete `XORD` with one
+  nonzero slot. An isolated one-way or reciprocal pair can then cast two independent
+  shadows if both endpoints are eligible planes with the same owner. The default is zero
+  for existing rows. Edges survive skipped geometry so a missing peer disables the pair. Malformed occurrences have no
   link rows. They preserve `has_links` when the source has valid geometry and set the cell's
   `complete` flag to false. A full trusted runtime export publishes
   `room_graph_stats.occlusion_version = 1` in the in-house source-data transaction.
@@ -1338,6 +1345,11 @@ Columns and rules:
   so malformed siblings cannot disappear and establish false uniqueness or authored nulls.
   The typed reader restores flags only from a unique source field containing whole eight-byte
   pairs; its canonical cleared links cannot establish outside connectivity.
+  Private comparison databases may add a nullable integer `retail_visit_index` to this table.
+  It records the portal registration order from one retail load. For a complete visibility-v2
+  cell the engine accepts the order only when there is one row per marker and the indices form
+  a permutation from zero through the portal count minus one. Otherwise it uses FormID order.
+  The ordinary converter has no load-specific order to export.
 - **`room_links`**: one row per distinct `XLRM` target, retaining the last occurrence's
   zero-based `link_index`, with no synthesized mirror rows. Migration adds the column with zero defaults; only a fresh export
   publishes the authored-assignment version. The target is retained even if no room row exists.
@@ -1437,6 +1449,8 @@ on supported root-transform changes. Activators remain exempt with legacy data o
 assignment bounds. Named-target neighboring-room priority and specialized/forced native assignment
 paths are not fully reproduced.
 
+The `switch-value-and-multibound-room-spheres` mesh contract includes the initially selected child of a switch with the active-child bound flag, empty value-node attachment points, and oriented boxes referenced by multibound nodes. A missing or unsupported bound remains unknown. The [Gallows Rock comparison](../../research/skyrim-culling-rea-parity.md#gallows-rock-west-doorway) checks the resulting room assignments against retail.
+
 Legacy `reference_rooms` rows remain for compatibility. Multibound-flagged references are omitted
 from both pivot and overlap membership; integration removes stale rows. Legacy runtime exemptions
 protect these references even before reconversion. Reconvert normally to obtain authored assignment:
@@ -1457,7 +1471,7 @@ take precedence over the per-object rules. Other renderer visibility checks stil
 | Object in several rooms | several `contained = 1` rows | always retained by geometric membership |
 | Object in no room, legacy graph | no `contained = 1` row | always retained |
 | Known object in no room, complete versioned graph | no `contained = 1` row | retained when a visible candidate volume passes its mesh-bound test; candidates come from unbounded space, overlap rooms, and portal sharing |
-| Camera outside every room | n/a | retain the cell, including possible gaps between bounds |
+| Lookup point outside every room, geometric membership only | n/a | retain the cell |
 | Non-box room shape in a new conversion | skipped, counted; cell marked incomplete | retain the cell |
 | Exterior markers | not written | out of scope (#106) |
 
@@ -1476,7 +1490,7 @@ The authored-assignment path uses these rules:
 | Verified source NULL endpoint in a versioned graph | unbounded-space traversal |
 | Unknown portal endpoint | whole-cell fallback |
 | Incomplete authored cell or unresolved master | whole-cell fallback |
-| Camera outside every authored room union | whole-cell fallback, including possible gaps between bounds |
+| Lookup point outside every authored room union, complete graph with source-verified endpoints | start in unbounded space and traverse its portals |
 | Reference with no recoverable assignment | keep visible |
 | Exterior markers | outside this feature's scope |
 

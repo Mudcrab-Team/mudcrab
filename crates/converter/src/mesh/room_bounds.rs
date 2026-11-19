@@ -19,7 +19,9 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
         }
         *remaining = remaining.checked_sub(1)?;
         let block = nif.blocks.get(index as usize)?;
-        if block.as_node().is_ok() && path.len() >= super::MAX_SCENE_DEPTH {
+        if (block.as_node().is_ok() || matches!(block, NifBlock::NiSwitchNode(_)))
+            && path.len() >= super::MAX_SCENE_DEPTH
+        {
             return None;
         }
         path.push(index);
@@ -27,6 +29,39 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
             NifBlock::NiNode(node)
             | NifBlock::BSFadeNode(node)
             | NifBlock::BSLeafAnimNode(node) => (&node.av, None, node.children.as_slice()),
+            NifBlock::BSValueNode(node) if node.node.children.is_empty() => {
+                (&node.node.av, None, &[][..])
+            }
+            NifBlock::NiSwitchNode(switch) => {
+                let children = switch.node.children.as_slice();
+                // NiSwitchNode::UpdateWorldBound uses only the active child when bit 0 is set.
+                let contributing = if switch.flags & 1 == 0 {
+                    children
+                } else if switch.active_child == u32::MAX {
+                    &[]
+                } else {
+                    std::slice::from_ref(children.get(switch.active_child as usize)?)
+                };
+                (&switch.node.av, None, contributing)
+            }
+            NifBlock::BSMultiBoundNode(node) => {
+                let NifBlock::BSMultiBound(bound) = nif.blocks.get(node.bound.0? as usize)? else {
+                    return None;
+                };
+                let NifBlock::BSMultiBoundOBB(shape) = nif.blocks.get(bound.data.0? as usize)?
+                else {
+                    return None;
+                };
+                let extent = shape.size.0;
+                if !extent.is_finite() || extent.min_element() < 0.0 {
+                    return None;
+                }
+                let bound = ModelSphere {
+                    center: shape.center.0.to_array(),
+                    radius: extent.length(),
+                };
+                (&node.node.av, Some(bound), &[][..])
+            }
             // LoadBinary overwrites the file bit and clears it for zero or unordered radii.
             NifBlock::BSOrderedNode(node)
                 if node.static_bound != 0 && node.alpha_sort_bound[3].abs() > 0.0 =>
@@ -114,7 +149,12 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
         if !reachable.insert(index) {
             continue;
         }
-        if let Ok(node) = nif.blocks.get(index as usize)?.as_node() {
+        let block = nif.blocks.get(index as usize)?;
+        let node = match block {
+            NifBlock::NiSwitchNode(switch) => Some(&switch.node),
+            other => other.as_node().ok(),
+        };
+        if let Some(node) = node {
             pending.extend(
                 node.children
                     .iter()

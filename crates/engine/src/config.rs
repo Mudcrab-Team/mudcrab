@@ -390,6 +390,8 @@ pub struct EngineConfig {
     pub shots_out: Option<PathBuf>,
     /// Maximum settling time per shot, in seconds.
     pub shots_settle_timeout: f32,
+    /// Capture the ordinary main-camera mesh list as the control for room-culling comparisons.
+    pub shots_no_room_culling: bool,
     pub diagnostic_asset_fallbacks: bool,
     pub material_fixture: bool,
     pub terrain_water_fixture: bool,
@@ -507,6 +509,7 @@ impl Default for EngineConfig {
             matched_route: None,
             shots_out: None,
             shots_settle_timeout: crate::shots::SETTLE_TIMEOUT_SECONDS,
+            shots_no_room_culling: false,
             diagnostic_asset_fallbacks: false,
             material_fixture: false,
             terrain_water_fixture: false,
@@ -610,6 +613,7 @@ Benchmark and profiling:
   --timescale <scale>                  game seconds per real second (default 20; 0 freezes)
   --sun-position <azimuth,elevation>     sun bearing clockwise from north and elevation above horizon, degrees
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
+  --shots-no-room-culling              capture with room filtering disabled (requires --shots)
   --shots-settle-timeout <seconds>      maximum settling time per shot (default: 30, maximum: 600)
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
   --water-time <seconds>                pin the water's wave phase so captures match
@@ -1506,6 +1510,7 @@ impl EngineConfig {
                 "--always-active" => config.always_active = true,
                 "--stdin-console" => config.stdin_console = true,
                 "--no-render-diagnostics" => config.no_render_diagnostics = true,
+                "--shots-no-room-culling" => config.shots_no_room_culling = true,
                 "--shots-settle-timeout" => {
                     const EXPECTED: &str = "a positive number of seconds up to 600";
                     let raw = take_raw("--shots-settle-timeout", EXPECTED, args.next())?;
@@ -1619,6 +1624,12 @@ impl EngineConfig {
             return Err(ConfigError::MissingRequirement {
                 option: "--profile-gpu-inventory",
                 requires: "--profile-output",
+            });
+        }
+        if config.shots_no_room_culling && config.shots.is_none() {
+            return Err(ConfigError::MissingRequirement {
+                option: "--shots-no-room-culling",
+                requires: "--shots",
             });
         }
         config.check_visual_profile()?;
@@ -1984,6 +1995,8 @@ mod tests {
         ("install.sh", "--progress-bar"), // curl
         ("stage-release.sh", "--dest"),
         ("stage-release.sh", "--target"),
+        ("prepare_portal_comparison.py", "--native"),
+        ("prepare_portal_comparison.py", "--model"),
         // footprint_guard.py owns its own CLI and its test drives that CLI. The
         // guard watches a process the caller started and is not an engine
         // launcher. `--pid` is already in NON_ENGINE_FLAGS.
@@ -3338,6 +3351,15 @@ mod tests {
                 .window_title()
                 .contains("matched-route")
         );
+    }
+
+    #[test]
+    fn shots_control_requires_a_capture() {
+        assert!(!run_config(&["--shots", "poses.json"]).shots_no_room_culling);
+        assert!(
+            run_config(&["--shots-no-room-culling", "--shots", "poses.json"]).shots_no_room_culling
+        );
+        assert!(parse_error(&["--shots-no-room-culling"]).contains("--shots"));
     }
 
     #[test]

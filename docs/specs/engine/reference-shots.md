@@ -17,6 +17,10 @@ rendering window, whereas `--headless` normally removes that window. When both
 are supplied, `--hidden-window` retains the hidden render target. Hidden runs
 do not capture interactive mouse/controller input.
 
+Use the same shots file and asset pack with `--shots-no-room-culling` for a full-camera control.
+The capture still waits for room graph reads. In `shots.log`, `room_culling.drawn` equals
+`room_culling.listed` on each disabled frame.
+
 ## The shots file
 
 ```json

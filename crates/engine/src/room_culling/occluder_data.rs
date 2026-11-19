@@ -2,7 +2,7 @@
 
 use super::{PortalSide, RoomGraph, occlusion::Occluder};
 use rusqlite::{Connection, Result};
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 fn supported(conn: &Connection) -> Result<bool> {
     let tables: bool = conn.query_row(
@@ -33,6 +33,43 @@ pub(super) fn has_occluders(conn: &Connection, cell: u32) -> Result<bool> {
     )
 }
 
+/// Both incoming and outgoing XORDs matter: a disabled or missing endpoint
+/// must not leave its neighbor acting as a verified standalone plane.
+fn plane_neighbors(conn: &Connection) -> Result<HashMap<u32, Option<u32>>> {
+    let verified_column: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('room_occluder_links') WHERE name='single_target_verified')",
+        [], |row| row.get(0),
+    )?;
+    let query = if verified_column {
+        "SELECT ref_id,linked_ref,single_target_verified=1 AND link_index BETWEEN 0 AND 3 FROM room_occluder_links"
+    } else {
+        "SELECT ref_id,linked_ref,0 FROM room_occluder_links"
+    };
+    let mut neighbors = HashMap::new();
+    let mut statement = conn.prepare_cached(query)?;
+    for edge in statement.query_map([], |row| {
+        Ok((
+            row.get::<_, u32>(0)?,
+            row.get::<_, u32>(1)?,
+            row.get::<_, bool>(2)?,
+        ))
+    })? {
+        let (a, b, verified) = edge?;
+        for (id, neighbor) in [(a, b), (b, a)] {
+            let candidate = (verified && a != b).then_some(neighbor);
+            neighbors
+                .entry(id)
+                .and_modify(|old| {
+                    if *old != candidate {
+                        *old = None;
+                    }
+                })
+                .or_insert(candidate);
+        }
+    }
+    Ok(neighbors)
+}
+
 pub(super) fn load(conn: &Connection, cell: u32, graph: &RoomGraph) -> Result<Vec<Occluder>> {
     if !supported(conn)? || !graph.supports_unbounded {
         return Ok(Vec::new());
@@ -53,17 +90,13 @@ pub(super) fn load(conn: &Connection, cell: u32, graph: &RoomGraph) -> Result<Ve
     if unknown_links {
         return Ok(Vec::new());
     }
-    let mut linked = HashSet::new();
-    let mut statement = conn.prepare_cached("SELECT ref_id,linked_ref FROM room_occluder_links")?;
-    for link in statement.query_map([], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)))? {
-        let (source, target) = link?;
-        linked.insert(source);
-        linked.insert(target);
-    }
+    let neighbors = plane_neighbors(conn)?;
     let mut statement = conn.prepare_cached(
         "SELECT ref_id,shape,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_y,half_z,scale,\
-         header_flags,has_enable_parent,has_links,target_ref \
-         FROM room_occluders WHERE cell_id=?1 ORDER BY ref_id",
+         header_flags,has_enable_parent,has_links,o.target_ref,
+                EXISTS(SELECT 1 FROM room_reference_rules r WHERE r.reference_id=o.ref_id
+                       AND r.cell_id=o.cell_id AND r.assignment='target' AND r.target_ref=o.target_ref)
+         FROM room_occluders o WHERE cell_id=?1 ORDER BY ref_id",
     )?;
     let rows = statement.query_map([cell], |row| {
         Ok((
@@ -77,18 +110,30 @@ pub(super) fn load(conn: &Connection, cell: u32, graph: &RoomGraph) -> Result<Ve
             row.get::<_, bool>(13)?,
             row.get::<_, bool>(14)?,
             row.get::<_, Option<u32>>(15)?,
+            row.get::<_, bool>(16)?,
         ))
     })?;
     let mut occluders = Vec::new();
     for row in rows {
-        let (id, shape, position, rotation, half, scale, flags, parent, links, target) = row?;
-        // Initially disabled, deleted, NONE, enable-parent, linked, and explicit override paths
-        // need runtime state or construction rules not provided by the static room export.
+        let (
+            id,
+            shape,
+            position,
+            rotation,
+            half,
+            scale,
+            flags,
+            parent,
+            links,
+            target,
+            verified_target,
+        ) = row?;
+        // Retail kept isolated authored XORD pairs as separate render planes.
         if flags & (0x800 | 0x20 | shared::records::MULTIBOUND_REFERENCE_FLAG) != 0
             || parent
-            || links
-            || linked.contains(&id)
-            || target.is_some()
+            || ((links || neighbors.contains_key(&id))
+                && (shape != 3 || neighbors.get(&id).copied().flatten().is_none()))
+            || (target.is_some() && (shape != 3 || !verified_target))
         {
             continue;
         }
@@ -106,11 +151,27 @@ pub(super) fn load(conn: &Connection, cell: u32, graph: &RoomGraph) -> Result<Ve
         // Native occlusion-shape assignment tests its translation before portal sharing. More
         // than one master would require reproducing native handle/hash iteration order.
         occluder.owner = match graph.rooms_containing(occluder.center).as_slice() {
-            [] => PortalSide::Unbounded,
-            [room] => PortalSide::Room(*room),
+            [] if target.is_none() => PortalSide::Unbounded,
+            [room] if target.is_none_or(|id| graph.rooms[*room].ref_id == id) => {
+                PortalSide::Room(*room)
+            }
             _ => continue,
         };
         occluders.push(occluder);
+    }
+    if !neighbors.is_empty() {
+        let owners: HashMap<_, _> = occluders
+            .iter()
+            .filter(|o| neighbors.contains_key(&o.ref_id))
+            .map(|o| (o.ref_id, o.owner))
+            .collect();
+        occluders.retain(|o| match neighbors.get(&o.ref_id) {
+            None => true,
+            Some(Some(peer)) => {
+                neighbors.get(peer) == Some(&Some(o.ref_id)) && owners.get(peer) == Some(&o.owner)
+            }
+            Some(None) => false,
+        });
     }
     Ok(occluders)
 }

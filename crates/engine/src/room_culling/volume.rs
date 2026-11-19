@@ -7,7 +7,7 @@ use super::occlusion::OcclusionVolume;
 
 // These are conservative work limits, not Skyrim's operator budget. Overflow widens the room
 // to the camera frustum with local exclusions and propagates that wider volume.
-const MAX_ROOM_CONTRIBUTIONS: usize = 16;
+const BASE_ROOM_CONTRIBUTIONS: usize = 16;
 const MAX_VOLUME_PLANES: usize = 64;
 const PLANE_EPSILON: f32 = 1.0e-3;
 
@@ -97,6 +97,29 @@ pub(super) fn orthographic_forward(clip: Mat4) -> Option<Vec3> {
     (-clip.inverse().z_axis.truncate()).try_normalize()
 }
 
+fn clip_aperture(corners: &[Vec3; 4], planes: impl Iterator<Item = Vec4>) -> Option<Vec<Vec3>> {
+    let mut polygon = corners.to_vec();
+    for plane in planes {
+        let mut clipped = Vec::with_capacity(polygon.len() + 1);
+        for (index, &a) in polygon.iter().enumerate() {
+            let b = polygon[(index + 1) % polygon.len()];
+            let da = plane.truncate().dot(a) + plane.w + PLANE_EPSILON;
+            let db = plane.truncate().dot(b) + plane.w + PLANE_EPSILON;
+            if da >= 0.0 {
+                clipped.push(a);
+            }
+            if (da >= 0.0) != (db >= 0.0) {
+                clipped.push(a + (b - a) * (da / (da - db)));
+            }
+        }
+        polygon = clipped;
+        if polygon.is_empty() {
+            return None;
+        }
+    }
+    Some(polygon)
+}
+
 impl VisibilityVolume {
     pub(super) fn camera(clip_from_local: Mat4) -> Option<Self> {
         let (x, y, z, w) = (
@@ -114,6 +137,10 @@ impl VisibilityVolume {
             planes,
             exclusions: Vec::new(),
         })
+    }
+
+    pub(super) fn has_exclusions(&self) -> bool {
+        !self.exclusions.is_empty()
     }
 
     /// Occluders belong to this contributing path, not to the union of every room path.
@@ -159,31 +186,53 @@ impl VisibilityVolume {
         camera: Vec3,
         clip: Mat4,
     ) -> Option<Self> {
+        self.clip_portal(corners, camera, clip, None)
+    }
+
+    pub(super) fn through_authored_portal(
+        &self,
+        portal: &super::Portal,
+        view: &super::PortalView,
+    ) -> Option<Self> {
+        self.clip_portal(&portal.corners, view.eye, view.clip, Some((portal, view)))
+    }
+
+    fn clip_portal(
+        &self,
+        corners: &[Vec3; 4],
+        camera: Vec3,
+        clip: Mat4,
+        authored: Option<(&super::Portal, &super::PortalView)>,
+    ) -> Option<Self> {
         if !corners.iter().all(|point| point.is_finite()) {
             return Some(self.clone());
         }
-        let mut polygon = corners.to_vec();
-        // A doorway between the viewpoint and the near plane can reveal meshes beyond it.
-        // Keep the near plane for mesh tests, but clip traversal only by the other constraints.
         let near = normalized(clip.row(3) - clip.row(2));
-        for plane in self.planes.iter().filter(|plane| Some(**plane) != near) {
-            let mut clipped = Vec::with_capacity(polygon.len() + 1);
-            for (index, &a) in polygon.iter().enumerate() {
-                let b = polygon[(index + 1) % polygon.len()];
-                let da = plane.truncate().dot(a) + plane.w + PLANE_EPSILON;
-                let db = plane.truncate().dot(b) + plane.w + PLANE_EPSILON;
-                if da >= 0.0 {
-                    clipped.push(a);
-                }
-                if (da >= 0.0) != (db >= 0.0) {
-                    clipped.push(a + (b - a) * (da / (da - db)));
-                }
-            }
-            polygon = clipped;
-            if polygon.is_empty() {
+        let ordinary = self
+            .planes
+            .iter()
+            .copied()
+            .filter(|plane| Some(*plane) != near);
+        let polygon = clip_aperture(corners, ordinary).or_else(|| {
+            let (portal, view) = authored?;
+            if clip.row(3).truncate() == Vec3::ZERO || !portal.admits_projected_eye(view) {
                 return None;
             }
-        }
+            // The ordinary-view exception still has to pass each inherited aperture.
+            clip_aperture(corners, self.planes[5..].iter().copied())
+        })?;
+        // When the complete aperture projects in front of the eye, keep its actual edges.
+        // Baking screen edges into the next aperture would override the native admission above.
+        let polygon = if authored.is_some()
+            && clip.row(3).truncate() != Vec3::ZERO
+            && corners
+                .iter()
+                .all(|p| clip.row(3).dot(p.extend(1.0)) > PLANE_EPSILON)
+        {
+            corners.as_slice()
+        } else {
+            &polygon
+        };
         if polygon.len() < 3 || !polygon.iter().all(|point| point.is_finite()) {
             return Some(self.clone());
         }
@@ -228,30 +277,56 @@ impl VisibilityVolume {
 }
 
 /// Union of the volumes arriving at one room. An empty union is unreached.
-#[derive(Default)]
 pub(super) struct RoomVisibility {
     volumes: Vec<VisibilityVolume>,
     contributions: usize,
+    contribution_limit: usize,
+}
+
+impl Default for RoomVisibility {
+    fn default() -> Self {
+        Self::for_authored_portals(0)
+    }
 }
 
 impl RoomVisibility {
+    /// Allow one contribution per physical portal before widening combinations of paths.
+    pub(super) fn for_authored_portals(portals: usize) -> Self {
+        Self {
+            volumes: Vec::new(),
+            contributions: 0,
+            contribution_limit: BASE_ROOM_CONTRIBUTIONS.max(portals),
+        }
+    }
+
+    pub(super) fn seed(&mut self, volume: VisibilityVolume) {
+        self.volumes.clear();
+        self.volumes.push(volume);
+        self.contributions = 1;
+    }
+
+    pub(super) fn volumes(&self) -> &[VisibilityVolume] {
+        &self.volumes
+    }
+
     /// Returns only the new contribution that must be propagated to neighbours.
     pub(super) fn insert(
         &mut self,
         mut arriving: VisibilityVolume,
         fallback: &VisibilityVolume,
-    ) -> Option<VisibilityVolume> {
+    ) -> Option<&VisibilityVolume> {
         if self.volumes.iter().any(|old| old.contains(&arriving)) {
             return None;
         }
-        if self.contributions >= MAX_ROOM_CONTRIBUTIONS || arriving.planes.len() > MAX_VOLUME_PLANES
+        if self.contributions >= self.contribution_limit
+            || arriving.planes.len() > MAX_VOLUME_PLANES
         {
             arriving = fallback.clone();
         }
         self.contributions += 1;
         self.volumes.retain(|old| !arriving.contains(old));
-        self.volumes.push(arriving.clone());
-        Some(arriving)
+        self.volumes.push(arriving);
+        self.volumes.last()
     }
 
     pub(super) fn is_reached(&self) -> bool {
@@ -346,7 +421,7 @@ mod tests {
         assert!(visible.insert(occluded.clone(), &occluded).is_none());
 
         let mut limited = RoomVisibility {
-            contributions: MAX_ROOM_CONTRIBUTIONS,
+            contributions: BASE_ROOM_CONTRIBUTIONS,
             ..Default::default()
         };
         limited.insert(occluded.clone(), &occluded);
@@ -529,8 +604,8 @@ mod tests {
     fn a_volume_budget_overflow_widens_instead_of_dropping_paths() {
         let camera = camera();
         let mut room = RoomVisibility::default();
-        for i in 0..=MAX_ROOM_CONTRIBUTIONS {
-            let x = -3.0 + 6.0 * i as f32 / MAX_ROOM_CONTRIBUTIONS as f32;
+        for i in 0..=BASE_ROOM_CONTRIBUTIONS {
+            let x = -3.0 + 6.0 * i as f32 / BASE_ROOM_CONTRIBUTIONS as f32;
             room.insert(
                 camera
                     .through_portal(

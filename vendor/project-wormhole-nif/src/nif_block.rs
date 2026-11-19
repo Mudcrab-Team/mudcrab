@@ -392,6 +392,20 @@ impl NifBlock {
                 Ok((i, NifBlock::BSMultiBoundNode(result)))
             }
 
+            "NiSwitchNode" => {
+                let (i, node) = NiNode::parse(i)?;
+                let (i, flags) = le_u16(i)?;
+                let (i, active_child) = le_u32(i)?;
+                Ok((
+                    i,
+                    NifBlock::NiSwitchNode(NiSwitchNode {
+                        node,
+                        flags,
+                        active_child,
+                    }),
+                ))
+            }
+
             "BSOrderedNode" => {
                 let (i, result) = BSOrderedNode::parse(i)?;
                 if !i.is_empty() {
@@ -1572,7 +1586,9 @@ pub struct NiStringsExtraData {
 }
 #[derive(Debug)]
 pub struct NiSwitchNode {
-    // TODO
+    pub node: NiNode,
+    pub flags: u16,
+    pub active_child: u32,
 }
 #[derive(Debug)]
 pub struct NiTransformController {

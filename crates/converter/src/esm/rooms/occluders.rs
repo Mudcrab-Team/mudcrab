@@ -189,6 +189,21 @@ pub(crate) fn restore_source_provenance<'a>(
                 [record.cell_form_id],
             )?;
         }
+        if has_links && let Some(data) = source(b"XORD").filter(|bytes| bytes.len() == 16) {
+            let mut slots = data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .enumerate()
+                .filter(|(_, word)| **word != [0; 4]);
+            if let Some((slot, _)) = slots.next()
+                && slots.next().is_none()
+            {
+                conn.prepare_cached(
+                    "UPDATE room_occluder_links SET single_target_verified=1 WHERE ref_id=?1 AND link_index=?2"
+                )?.execute(params![id, slot])?;
+            }
+        }
         let shape = source(b"XPRM");
         let placement = source(b"DATA");
         let scale = source(b"XSCL");
@@ -211,6 +226,14 @@ pub(crate) fn restore_source_provenance<'a>(
                 }));
         if !valid {
             removed += conn.execute("DELETE FROM room_occluders WHERE ref_id=?1", [id])?;
+        } else if source(b"XMBR").is_some_and(|bytes| bytes.len() == 4 && bytes != [0; 4]) {
+            // The typed projection contains the remapped FormID. Only the original payload
+            // establishes that it came from a single complete target field.
+            conn.prepare_cached(
+                "INSERT OR REPLACE INTO room_reference_rules(reference_id,cell_id,assignment,target_ref)
+                 SELECT ref_id,cell_id,'target',target_ref FROM room_occluders
+                 WHERE ref_id=?1 AND shape=3 AND target_ref>0",
+            )?.execute([id])?;
         }
     }
     // The source pass may remove canonical defaults; retain report/table agreement.

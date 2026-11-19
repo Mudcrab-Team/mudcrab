@@ -113,6 +113,13 @@ impl View {
 }
 
 impl Occluder {
+    pub(super) fn program_size(&self) -> (u8, u8) {
+        match self.shape {
+            Shape::Plane => (2, 1),
+            Shape::Box => (6, 2), // OR of two exclusion predicates
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn from_creation(
         ref_id: u32,

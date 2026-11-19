@@ -1923,6 +1923,12 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
             payload.extend(sub(b"XLRM", &0x811u32.to_le_bytes()));
             payload.extend(sub(b"XLRM", &0x810u32.to_le_bytes()));
         }
+        if id == 0x830 || id == 0x833 {
+            payload.extend(sub(b"XMBR", &0x810u32.to_le_bytes()));
+        }
+        if id == 0x833 {
+            payload.extend(sub(b"XMBR", &0x811u32.to_le_bytes()));
+        }
         if id == 0x803 {
             payload.extend(sub(b"XPOD", &[0; 9]));
             payload.extend(sub(
@@ -1972,6 +1978,7 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
                         marker(0x810, 0x1F, 1, None),
                         marker(0x811, 0x1F, 1, None),
                         marker(0x830, 0x17, 3, None),
+                        marker(0x833, 0x17, 3, None),
                         record(
                             b"REFR",
                             0x831,
@@ -2083,8 +2090,19 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        2
+        3
     );
+    let explicit_planes = conn
+        .prepare(
+            "SELECT reference_id,target_ref FROM room_reference_rules
+         WHERE reference_id BETWEEN 0x830 AND 0x833 AND assignment='target' ORDER BY reference_id",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(explicit_planes, [(0x830, 0x810)]);
     for (id, outside) in [(0x801, true), (0x802, false), (0x803, false), (0x804, true)] {
         let actual: (Option<u32>, bool) = conn
             .query_row(
@@ -2966,4 +2984,76 @@ fn malformed_portal_primitives_only_disable_their_own_cells() {
             "typed={typed}"
         );
     }
+}
+
+#[test]
+fn typed_plane_links_require_one_source_field_with_one_nonzero_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let mut shape = vec![0; 32];
+    for offset in [0, 8] {
+        shape[offset..offset + 4].copy_from_slice(&20f32.to_le_bytes());
+    }
+    shape[28..].copy_from_slice(&3u32.to_le_bytes());
+    let plane = |id, links: &[[u32; 4]]| {
+        let mut payload = [
+            sub(b"NAME", &0x17u32.to_le_bytes()),
+            sub(b"DATA", &[0; 24]),
+            sub(b"XPRM", &shape),
+        ]
+        .concat();
+        for words in links {
+            payload.extend(sub(
+                b"XORD",
+                &words
+                    .iter()
+                    .flat_map(|word| word.to_le_bytes())
+                    .collect::<Vec<_>>(),
+            ));
+        }
+        record(b"REFR", id, 0x400, payload)
+    };
+    plugin(
+        &data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            group(
+                6,
+                0x900,
+                group(
+                    8,
+                    0x900,
+                    [
+                        plane(0x810, &[[0, 0x811, 0, 0]]),
+                        plane(0x811, &[[0, 0, 0, 0x810]]),
+                        plane(0x812, &[[0x811, 0, 0, 0], [0; 4]]),
+                        plane(0x813, &[[0x810, 0, 0, 0x811]]),
+                    ]
+                    .concat(),
+                ),
+            ),
+        ]
+        .concat(),
+    );
+    let order = dir.path().join("plugins.txt");
+    fs::write(&order, "*Skyrim.esm\n").unwrap();
+    let output = dir.path().join("bundle");
+    converter::esm::inhouse::export_record_bundle_typed(&data, &order, &output, &[]).unwrap();
+    let db = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+    let mut edges = db
+        .prepare(
+            "SELECT ref_id, link_index, linked_ref FROM room_occluder_links
+         WHERE single_target_verified=1 ORDER BY ref_id",
+        )
+        .unwrap();
+    let verified: Vec<(u32, u32, u32)> = edges
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(verified, [(0x810, 1, 0x811), (0x811, 3, 0x810)]);
 }

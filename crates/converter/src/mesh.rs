@@ -4953,6 +4953,87 @@ mod tests {
     }
 
     #[test]
+    fn switch_assignment_bound_uses_the_selected_child_or_merges_children() {
+        use project_wormhole_nif::nif_block::NiSwitchNode;
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("switch.nif");
+        fs::write(&input, static_nif()).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let mut root = nif.blocks[0].as_node().unwrap().clone();
+        let first = room_bounds::source_sphere(&nif).unwrap();
+        let (mut other, _, _) = open_nif_resilient(&input).unwrap();
+        let mut child = other.blocks.remove(1);
+        let NifBlock::BSTriShape(shape) = &mut child else {
+            unreachable!()
+        };
+        shape.av.translation.0.0.x += 1000.0;
+        let mut second = first;
+        second.center[0] += 1000.0;
+        root.children.push(nif.blocks.len() as u32);
+        nif.blocks.push(child);
+        for (flags, active_child, expected) in [
+            (3, 0, Some(first)),
+            (3, 1, Some(second)),
+            (0, 1, Some(first.merge(second))),
+            (1, u32::MAX, None),
+            (1, 2, None),
+        ] {
+            nif.blocks[0] = NifBlock::NiSwitchNode(NiSwitchNode {
+                node: root.clone(),
+                flags,
+                active_child,
+            });
+            assert_eq!(room_bounds::source_sphere(&nif), expected);
+        }
+    }
+
+    #[test]
+    fn model_box_supplies_room_sphere_even_with_empty_value_nodes() {
+        use project_wormhole_nif::nif_block::{BSMultiBound, BSMultiBoundNode, BSValueNode};
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("box.nif");
+        fs::write(&input, static_nif()).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let mut root = nif.blocks[0].as_node().unwrap().clone();
+        let mut empty = root.clone();
+        empty.children.clear();
+        let value = nif.blocks.len() as u32;
+        nif.blocks.push(NifBlock::BSValueNode(BSValueNode {
+            node: empty,
+            value: 49,
+            value_node_flags: 1,
+        }));
+        let container = nif.blocks.len() as u32;
+        let mut bound_ref = root.av.collision_object.clone();
+        bound_ref.0 = Some(container + 1);
+        let mut data_ref = bound_ref.clone();
+        data_ref.0 = Some(container + 2);
+        nif.blocks
+            .push(NifBlock::BSMultiBoundNode(BSMultiBoundNode {
+                node: root.clone(),
+                bound: bound_ref,
+                culling_mode: Some(1),
+            }));
+        nif.blocks
+            .push(NifBlock::BSMultiBound(BSMultiBound { data: data_ref }));
+        let values: [f32; 15] = [1., 2., 3., 3., 4., 12., 1., 0., 0., 0., 1., 0., 0., 0., 1.];
+        let bytes: Vec<u8> = values.into_iter().flat_map(f32::to_le_bytes).collect();
+        nif.blocks
+            .push(NifBlock::parse(&bytes, "BSMultiBoundOBB".into()).unwrap().1);
+        root.children = vec![value, container];
+        nif.blocks[0] = NifBlock::NiNode(root);
+        assert_eq!(
+            room_bounds::source_sphere(&nif),
+            Some(shared::room_assignment::ModelSphere {
+                center: [1., 3., -2.],
+                radius: 13.,
+            })
+        );
+        nif.blocks.pop();
+        assert_eq!(room_bounds::source_sphere(&nif), None);
+    }
+
+    #[test]
     fn assignment_sphere_declines_disconnected_exported_geometry() {
         let directory = tempfile::tempdir().unwrap();
         let input = directory.path().join("disconnected.nif");
