@@ -3124,12 +3124,19 @@ fn write_acceptance_screenshot(image: Image, path: &Path) -> Result<()> {
     let format = image::ImageFormat::from_path(path)?;
     let rgb = crate::shots::decode_shot(image).map_err(color_eyre::eyre::Error::msg)?;
     // Choose the format from the requested name, then publish beside the link's target.
-    let target = if path.is_symlink() {
-        path.canonicalize()
-            .wrap_err_with(|| format!("cannot resolve screenshot symlink {}", path.display()))?
-    } else {
-        path.to_owned()
-    };
+    let mut target = path.to_owned();
+    let mut hops = 0;
+    while target.is_symlink() {
+        color_eyre::eyre::ensure!(
+            hops < 40,
+            "too many screenshot symlinks at {}",
+            path.display()
+        );
+        let next = fs::read_link(&target)
+            .wrap_err_with(|| format!("cannot read screenshot symlink {}", target.display()))?;
+        target = target.with_file_name(next);
+        hops += 1;
+    }
     let parent = target
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -3181,7 +3188,16 @@ mod tests {
         let reference = target_dir.join("reference");
         fs::File::create(&reference).unwrap();
         let target = target_dir.join("frame.png");
-        write_acceptance_screenshot(Image::default(), &target).unwrap();
+        let link = dir.path().join("latest.png");
+        let intermediate = target_dir.join("current");
+        symlink("frames/current", &link).unwrap();
+        symlink("frame.png", &intermediate).unwrap();
+        write_acceptance_screenshot(Image::default(), &link).unwrap();
+        assert!(image::open(&target).is_ok());
+        assert_eq!(
+            fs::read_link(&intermediate).unwrap(),
+            Path::new("frame.png")
+        );
         assert_eq!(
             target.metadata().unwrap().permissions().mode(),
             reference.metadata().unwrap().permissions().mode()
@@ -3189,10 +3205,8 @@ mod tests {
 
         fs::write(&target, b"old frame").unwrap();
         fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
-        let link = dir.path().join("latest.png");
-        symlink("frames/frame.png", &link).unwrap();
         write_acceptance_screenshot(Image::default(), &link).unwrap();
-        assert_eq!(fs::read_link(&link).unwrap(), Path::new("frames/frame.png"));
+        assert_eq!(fs::read_link(&link).unwrap(), Path::new("frames/current"));
         assert!(image::open(&target).is_ok());
         assert_eq!(
             target.metadata().unwrap().permissions().mode() & 0o777,
