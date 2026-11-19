@@ -3246,6 +3246,63 @@ fn assert_placement_import(result: std::process::Output, summary: &str) {
 }
 
 #[test]
+fn placement_import_accepts_matching_room_marker_extents_and_a_pack_named_like_help() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let pack = dir.path().join("-h");
+    fs::rename(assets, &pack).unwrap();
+    let db = rusqlite::Connection::open(pack.join("skyrim_world.db")).unwrap();
+    let extents = 100f32.to_le_bytes().repeat(3);
+    let replace = |fields| {
+        plugin(
+            dir.path(),
+            "Marker.esp",
+            &["Skyrim.esm"],
+            0,
+            placement_group(PLACEMENT_CELL_A, placement_marker(0x800, 0x1f, fields)),
+        )
+    };
+    for fields in [
+        sub(b"XMBO", &[0; 12]),
+        sub(b"XMBO", &[0; 11]),
+        [sub(b"XMBO", &extents), sub(b"XMBO", &extents)].concat(),
+    ] {
+        let failure = run_placement_import(&pack, "--plugin", &replace(fields));
+        assert!(!failure.status.success());
+        assert!(String::from_utf8_lossy(&failure.stderr).contains("XMBO"));
+        assert!(placement_certificate(&db, PLACEMENT_CELL_A));
+    }
+    assert_placement_import(
+        run_placement_import(&pack, "--plugin", &replace(sub(b"XMBO", &extents))),
+        "Applied 1 room placements in 1 cells (1 certified)",
+    );
+    let delete = dir.path().join("delete.json");
+    fs::write(&delete, br#"{"edits":[{"op":"delete","id":2048}]}"#).unwrap();
+    let cli = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_converter"))
+            .current_dir(dir.path())
+            .arg("apply-room-placements")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(String::from_utf8_lossy(&cli(&["--help"]).stdout).contains("--native FILE"));
+    assert_placement_import(
+        cli(&["-h", "--native", "delete.json"]),
+        "Applied 1 room placements in 1 cells (0 certified)",
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM [references] WHERE id=0x800",
+            [],
+            |row| row.get::<_, usize>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn duplicate_apertures_cannot_replace_a_certified_portal() {
     let dir = tempfile::tempdir().unwrap();
     let assets = converted_placement_fixture(dir.path());

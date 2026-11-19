@@ -212,6 +212,9 @@ async fn main() -> Result<()> {
     color_eyre::install()?;
     suppress_caught_nif_parser_panics();
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    if args.first().and_then(|argument| argument.to_str()) == Some("apply-room-placements") {
+        return apply_room_placements(&args[1..]);
+    }
     // Asking for help is not an error: print the usage and exit successfully.
     if args
         .iter()
@@ -227,9 +230,6 @@ async fn main() -> Result<()> {
     if args.first().and_then(|argument| argument.to_str()) == Some("derive-outfits") {
         let command_line = std::env::args().collect::<Vec<String>>();
         return derive_outfits(&args[1..], command_line);
-    }
-    if args.first().and_then(|argument| argument.to_str()) == Some("apply-room-placements") {
-        return apply_room_placements(&args[1..]);
     }
     let command = parse_command(args)?;
     let mo2 = match &command {
@@ -808,10 +808,14 @@ fn format_check_report(report: &converter::CheckReport) -> String {
 fn apply_room_placements(args: &[OsString]) -> Result<()> {
     use converter::esm::placement_edits::{PlacementSource, apply};
 
+    const USAGE: &str =
+        "usage: converter apply-room-placements <asset directory> (--plugin FILE | --native FILE)";
+    if matches!(args, [arg] if arg == "-h" || arg == "--help") {
+        println!("{USAGE}");
+        return Ok(());
+    }
     let [pack, format, input] = args else {
-        bail!(
-            "usage: converter apply-room-placements <asset directory> (--plugin FILE | --native FILE)"
-        );
+        bail!("{USAGE}");
     };
     let input = Path::new(input);
     let source = match format.to_str() {
