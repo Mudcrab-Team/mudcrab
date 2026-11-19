@@ -337,6 +337,27 @@ fn native_subset_replaces_the_link_and_named_owner_used_by_the_loaded_pair() {
     assert!(active_planes(&conn, OTHER).is_empty());
     apply([OTHER_MARKER, 0, 0, 0], room);
     assert_eq!(active_planes(&conn, OTHER), [OTHER_MARKER, id]);
+    let peer = id + 1;
+    apply_native_occluders(
+        &conn,
+        &[NativeOccluderChange::Upsert {
+            id: peer,
+            cell_id: OTHER,
+            position: [0.0, 20.0, 0.0],
+            rotation: [0.0; 3],
+            shape: NativeOccluderShape::Plane {
+                half_width: 8.0,
+                half_height: 8.0,
+            },
+        }],
+    )
+    .unwrap();
+    apply([peer, 0, 0, 0], room);
+    assert_eq!(active_planes(&conn, OTHER), [OTHER_MARKER, id, peer]);
+    for _ in 0..2 {
+        apply_native_occluders(&conn, &[NativeOccluderChange::Remove { id: peer }]).unwrap();
+        assert_eq!(active_planes(&conn, OTHER), [OTHER_MARKER]);
+    }
     apply_native_occluders(&conn, &[NativeOccluderChange::Remove { id }]).unwrap();
     assert_eq!(active_planes(&conn, OTHER), [OTHER_MARKER]);
     assert_eq!(

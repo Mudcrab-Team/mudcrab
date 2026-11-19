@@ -301,7 +301,8 @@ fn project_subset<'a>(
          LEFT JOIN room_occluders marker ON marker.ref_id=link.ref_id
          LEFT JOIN records canonical ON canonical.form_id=link.ref_id
          LEFT JOIN room_occluders target ON target.ref_id=link.linked_ref
-         WHERE link.linked_ref=?1 AND (link.single_target_verified<>1 OR marker.cell_id IS NOT target.cell_id)",
+         WHERE link.linked_ref=?1 AND (link.single_target_verified<>1
+           OR (target.cell_id IS NOT NULL AND marker.cell_id IS NOT target.cell_id))",
     )?;
     for record in master
         .values()
