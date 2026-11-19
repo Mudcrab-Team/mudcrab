@@ -33,36 +33,38 @@ jobs:
 
       - id: filter
         name: Filter changed files
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          if [ -z "${GITHUB_BASE_REF:-}" ]; then
-            echo "Not in a PR context (i.e., push event)"
-            COMPARE_REV="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
+          changed_paths="$RUNNER_TEMP/changed-paths.z"
+          if [ -n "${GITHUB_BASE_REF:-}" ]; then
+            if ! { git fetch origin "$GITHUB_BASE_REF" --depth=350 &&
+               base="$(git merge-base FETCH_HEAD "$GITHUB_SHA")" &&
+               git diff --no-renames --name-only -z "$base" "$GITHUB_SHA" > "$changed_paths"; }; then
+              git ls-files -z > "$changed_paths"
+            fi
+          elif [[ "${PUSH_BEFORE:-}" =~ ^[0-9a-f]{40}$ && "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ]] &&
+               { git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null || git fetch --depth=1 origin "$PUSH_BEFORE"; }; then
+            git diff --no-renames --name-only -z "$PUSH_BEFORE" "$GITHUB_SHA" > "$changed_paths"
           else
-            echo "In a PR context comparing to pull_request.base.ref"
-            git fetch origin "$GITHUB_BASE_REF" --depth=350
-            COMPARE_REV="$(git merge-base "origin/${GITHUB_BASE_REF}" HEAD)"
-          fi
-
-          if [ "$COMPARE_REV" = "$GITHUB_SHA" ]; then
-            CHANGED_FILES="$(git diff --name-only HEAD~1 "$GITHUB_SHA" 2>/dev/null || git ls-files)"
-          else
-            CHANGED_FILES="$(git diff --name-only "$COMPARE_REV" "$GITHUB_SHA")"
+            # New branches, manual dispatch, or unavailable history require all current checks.
+            git ls-files -z > "$changed_paths"
           fi
 
           check_pattern() {
             local output_name="$1"
             local pattern="$2"
 
-            if echo "$CHANGED_FILES" | grep -qE "$pattern"; then
+            if LC_ALL=C grep -zqE "$pattern" "$changed_paths"; then
               echo "${output_name}=true" >> "$GITHUB_OUTPUT"
             else
               echo "${output_name}=false" >> "$GITHUB_OUTPUT"
             fi
           }
 
-          check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|(.*/)?Cargo\.toml|.*\.rs|crates/converter/src/records/.*\.json|\.cargo/.*|\.github/workflows/.*)$'
-          check_pattern "check_scripts" '(\.(ps1|py)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^tools/world_data_inventory/|^docs/data-inventory/|^crates/(converter|shared)/|^crates/engine/src/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
+          check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|(.*/)?Cargo\.toml|.*\.rs|crates/converter/src/records/.*\.json|\.cargo/.*|\.github/workflows/.*|tools/skyrim-recorder/.*|docs/research/evidence/skyrim-physics-221/.*|scripts/[^/]*skyrim[^/]*\.py)$'
+          check_pattern "check_scripts" '(\.(ps1|py)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^tools/skyrim-recorder/|^docs/research/evidence/skyrim-physics-221/|^tools/world_data_inventory/|^docs/data-inventory/|^crates/(converter|shared)/|^crates/engine/src/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
           check_pattern "check_world_data" '^(tools/world_data_inventory/|docs/data-inventory/|crates/(converter|shared)/|crates/engine/src/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_lod_experiment" '^(scripts/lod-experiment/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_native_profiling" '^(scripts/profiling/(analyze_native\.py|correlate_drawables\.py|metal_trace\.m|source-manifest\.json|fixtures/.*\.json)|scripts/tests/test_native_metal_profiling\.py|\.github/workflows/run_tests\.yml)$'
@@ -129,6 +131,12 @@ jobs:
 
       - name: Test Skyrim capture, replay and comparison helpers
         run: python3 -B -m unittest discover -s scripts -p 'test_*.py' -v
+
+      - name: Verify native jump input evidence and retained failed attempts
+        run: python3 -B scripts/verify_skyrim_jump_inputs.py > "$RUNNER_TEMP/skyrim-jump-inputs.json"
+
+      - name: Audit published Skyrim evidence and nested archives
+        run: python3 -B scripts/publish_skyrim_evidence.py
 
       - name: Test actor idle CPU qualification tools
         run: |
