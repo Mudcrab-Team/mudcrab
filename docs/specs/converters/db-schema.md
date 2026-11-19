@@ -1218,7 +1218,7 @@ CREATE TABLE IF NOT EXISTS room_bounds (       -- one row per interior RoomMarke
     half_x REAL NOT NULL, half_y REAL NOT NULL, half_z REAL NOT NULL, -- XPRM[0..12]
     lighting_template_id INTEGER,              -- LNAM, NULL when absent
     image_space_id INTEGER,                    -- INAM, NULL when absent
-    flags INTEGER NOT NULL DEFAULT 0           -- XRMR flags byte | (XRMR u16 << 8), kept raw
+    flags INTEGER NOT NULL DEFAULT 0           -- XRMR byte 1 | (second XRMR word << 8), kept raw
 );
 CREATE INDEX IF NOT EXISTS idx_room_bounds_cell ON room_bounds(cell_id);
 
@@ -1254,6 +1254,12 @@ CREATE INDEX IF NOT EXISTS idx_reference_rooms_room ON reference_rooms(room_ref)
 CREATE TABLE IF NOT EXISTS room_graph_stats (  -- report counters and visibility_version marker
     name TEXT PRIMARY KEY,
     value INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS room_link_anomalies (
+    plugin TEXT PRIMARY KEY,
+    count INTEGER NOT NULL,
+    first_marker INTEGER NOT NULL,
+    first_cell INTEGER NOT NULL
 );
 ```
 
@@ -1316,6 +1322,9 @@ Columns and rules:
   `visibility_version = 2` additionally marks graphs whose outside endpoints have verified
   source provenance. The typed reader publishes this marker and the flags in the source-data
   transaction. Until that transaction commits, the runtime uses legacy fallback behavior.
+- **`room_link_anomalies`** counts markers with `XRMR` header or linked-count anomalies for each
+  supplying plugin. The lowest affected marker FormID and its cell are stored with the count.
+  `integration-report.json` shows these rows under `room_graph.room_link_anomalies`.
 
 The tables are derived data: a full load-order export clears and rebuilds them from the winning
 records on every conversion, like the grass tables. Subsets without placed references, including

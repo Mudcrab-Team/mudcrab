@@ -12,7 +12,7 @@ use crate::{
 };
 use rusqlite::{Connection, Result, Statement, ToSql, Transaction, params};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     path::PathBuf,
     str::from_utf8,
 };
@@ -405,6 +405,7 @@ struct ExportOptions<'a> {
     trusted_portal_nulls: bool,
     /// Typed export counts room link occurrences in winning source payloads.
     decoded_records: Option<&'a HashMap<u32, DecodedRecord>>,
+    damaged_placement_cells: Option<&'a HashSet<u32>>,
 }
 
 /// Export selected records without changing existing provenance. Grass records
@@ -424,6 +425,7 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
             scalar_scripts: false,
             trusted_portal_nulls: true,
             decoded_records: None,
+            damaged_placement_cells: None,
         },
     )
 }
@@ -449,6 +451,7 @@ pub fn export_to_db_with_load_order(
             scalar_scripts: false,
             trusted_portal_nulls: true,
             decoded_records: None,
+            damaged_placement_cells: None,
         },
     )
 }
@@ -462,6 +465,7 @@ pub(super) fn export_plugins_to_db(
     order: &LoadOrder,
     plugin_paths: &[PathBuf],
     unresolved_fields: &HashMap<u32, BTreeSet<usize>>,
+    damaged_placement_cells: &HashSet<u32>,
 ) -> Result<()> {
     export_records(
         conn,
@@ -475,6 +479,7 @@ pub(super) fn export_plugins_to_db(
             scalar_scripts: false,
             trusted_portal_nulls: true,
             decoded_records: None,
+            damaged_placement_cells: Some(damaged_placement_cells),
         },
     )
 }
@@ -501,6 +506,7 @@ pub(crate) fn export_inhouse_to_db(
             scalar_scripts: true,
             trusted_portal_nulls: false,
             decoded_records: Some(decoded_records),
+            damaged_placement_cells: None,
         },
     )
 }
@@ -525,6 +531,7 @@ pub(crate) fn export_inhouse_record_archive_to_db(
             scalar_scripts: true,
             trusted_portal_nulls: false,
             decoded_records: None,
+            damaged_placement_cells: None,
         },
     )
 }
@@ -657,6 +664,7 @@ fn export_records(
         scalar_scripts,
         trusted_portal_nulls,
         decoded_records,
+        damaged_placement_cells,
     } = options;
     conn.set_prepared_statement_cache_capacity(64);
     let tx = conn.unchecked_transaction()?;
@@ -1050,7 +1058,7 @@ fn export_records(
     // export owns them, so the movement annotator's subset export leaves them alone, and
     // diagnostic archives defer them. The emittance pass holds every reference and the records
     // their XEMI names, and may run on a database older than `emittance_id`.
-    if runtime_views && order.is_some() {
+    if runtime_views && let Some(order) = order {
         insert_actor_models(&tx, master)?;
         let (authoring, unreadable) = race_authoring_rows(master);
         for (id, error) in unreadable {
@@ -1065,6 +1073,8 @@ fn export_records(
             master,
             &interior_cells,
             decoded_records,
+            &order.names,
+            damaged_placement_cells,
         )?;
         if !trusted_portal_nulls {
             // Canonical nulls need their source provenance. Keep legacy-safe semantics until

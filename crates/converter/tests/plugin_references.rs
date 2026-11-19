@@ -2099,6 +2099,20 @@ fn room_graph_review_fixture(
     link: Option<&[u8]>,
     endpoints: Option<Vec<u8>>,
 ) -> PathBuf {
+    room_graph_review_fixture_with_fields(
+        data,
+        link.map(<[u8]>::to_vec),
+        endpoints,
+        Vec::new(),
+    )
+}
+
+fn room_graph_review_fixture_with_fields(
+    data: &Path,
+    link: Option<Vec<u8>>,
+    endpoints: Option<Vec<u8>>,
+    references: Vec<Vec<u8>>,
+) -> PathBuf {
     fs::create_dir_all(data).unwrap();
     let marker = |id: u32, base: u32, kind: u32, position: f32, extra: Vec<u8>| {
         let mut shape = vec![0; 32];
@@ -2123,7 +2137,7 @@ fn room_graph_review_fixture(
     };
     let mut extra = sub(b"XRMR", &[u8::from(link.is_some()), 0, 1, 0]);
     if let Some(link) = link {
-        extra.extend(sub(b"XLRM", link));
+        extra.extend(sub(b"XLRM", &link));
     }
     let mut markers = vec![
         marker(0x800, 0x1F, 1, 0.0, extra),
@@ -2132,6 +2146,7 @@ fn room_graph_review_fixture(
     if let Some(endpoints) = endpoints {
         markers.push(marker(0x802, 0x20, 3, 100.0, endpoints));
     }
+    markers.extend(references);
     plugin(
         data,
         "Skyrim.esm",
@@ -2466,4 +2481,156 @@ fn authored_room_link_counts_keep_only_mismatched_cells_incomplete() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn room_link_anomalies_reach_both_readers_integration_reports() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let marker = |id, extra: Vec<u8>| {
+        let mut shape = vec![0; 32];
+        for offset in [0, 4, 8] {
+            shape[offset..offset + 4].copy_from_slice(&100f32.to_le_bytes());
+        }
+        shape[28..32].copy_from_slice(&1u32.to_le_bytes());
+        record(
+            b"REFR",
+            id,
+            0,
+            [
+                sub(b"NAME", &0x1Fu32.to_le_bytes()),
+                sub(b"DATA", &[0; 24]),
+                sub(b"XPRM", &shape),
+                extra,
+            ]
+            .concat(),
+        )
+    };
+    let base = room_graph_review_fixture_with_fields(
+        &data,
+        None,
+        None,
+        vec![
+            marker(0x806, sub(b"XRMR", &[1, 0, 0, 0])),
+            marker(0x804, sub(b"XRMR", &[0, 0, 0, 0]).repeat(2)),
+        ],
+    );
+    let patch = plugin(
+        &data,
+        "Patch.esp",
+        &["Skyrim.esm"],
+        0,
+        group(
+            6,
+            0x900,
+            group(9, 0x900, marker(0x801, sub(b"XRMR", &[0; 3]))),
+        ),
+    );
+    let order = directory.path().join("plugins.txt");
+    fs::write(&order, "*Skyrim.esm\n*Patch.esp\n").unwrap();
+    for typed in [false, true] {
+        let output = directory
+            .path()
+            .join(if typed { "typed" } else { "legacy" });
+        if typed {
+            converter::esm::inhouse::export_record_bundle_typed(&data, &order, &output, &[])
+                .unwrap();
+        } else {
+            fs::create_dir(&output).unwrap();
+            EsmParser::convert_plugins(
+                &[base.clone(), patch.clone()],
+                &output.join("skyrim_world.db"),
+            )
+            .unwrap();
+        }
+        converter::integration::finalize_world_database(&output).unwrap();
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("integration-report.json")).unwrap())
+                .unwrap();
+        assert_eq!(report["room_graph"]["rooms"], 4);
+        assert_eq!(
+            report["room_graph"]["room_link_anomalies"],
+            serde_json::json!({
+                "skyrim.esm": {"count": 2, "first_marker": 0x804, "first_cell": 0x900},
+                "patch.esp": {"count": 1, "first_marker": 0x801, "first_cell": 0x900},
+            }),
+            "typed={typed}: attribute winning overrides to the supplying plugin"
+        );
+    }
+}
+
+#[test]
+fn incomplete_placed_payloads_keep_their_cells_open() {
+    for base in [0x1Fu32, 0x999] {
+        for truncated in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let data = directory.path().join("Data");
+            let mut shape = vec![0; 32];
+            for offset in [0, 4, 8] {
+                shape[offset..offset + 4].copy_from_slice(&100f32.to_le_bytes());
+            }
+            shape[28..32].copy_from_slice(&1u32.to_le_bytes());
+            let room = |id| {
+                record(
+                    b"REFR",
+                    id,
+                    0,
+                    [
+                        sub(b"NAME", &0x1Fu32.to_le_bytes()),
+                        sub(b"DATA", &[0; 24]),
+                        sub(b"XPRM", &shape),
+                        sub(b"XRMR", &[0, 0, 1, 0]),
+                    ]
+                    .concat(),
+                )
+            };
+            let mut payload = [sub(b"NAME", &base.to_le_bytes()), sub(b"DATA", &[0; 24])].concat();
+            if base == 0x1F {
+                payload.extend(sub(b"XPRM", &shape));
+            }
+            if truncated {
+                payload.extend(b"XL");
+            }
+            fs::create_dir_all(&data).unwrap();
+            plugin(
+                &data,
+                "Skyrim.esm",
+                &[],
+                1,
+                [
+                    record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+                    group(
+                        6,
+                        0x900,
+                        group(
+                            9,
+                            0x900,
+                            [room(0x800), record(b"REFR", 0x803, 0, payload)].concat(),
+                        ),
+                    ),
+                    record(b"CELL", 0x901, 0, sub(b"DATA", &[1, 0])),
+                    group(6, 0x901, group(9, 0x901, room(0x810))),
+                ]
+                .concat(),
+            );
+            for typed in [true, false] {
+                let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+                let conn = rusqlite::Connection::open(db).unwrap();
+                let complete = |cell| {
+                    conn.query_row(
+                        "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
+                        [cell],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .unwrap()
+                };
+                assert_eq!(
+                    complete(0x900),
+                    !truncated,
+                    "typed={typed}, base={base:X}, truncated={truncated}"
+                );
+                assert!(complete(0x901), "a healthy neighbor must remain complete");
+            }
+        }
+    }
 }
