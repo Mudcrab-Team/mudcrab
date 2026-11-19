@@ -477,6 +477,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "ordered-node-loader-room-spheres",
     "snapshot-and-keyframed-skin-room-spheres",
     "animated-skin-bone-room-spheres",
+    "animated-skin-ancestor-and-character-room-spheres",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
