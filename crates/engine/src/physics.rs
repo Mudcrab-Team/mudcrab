@@ -16,9 +16,15 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use shared::collision::CollisionBody;
 use std::path::Path;
 
+mod camera_follow;
+mod camera_trace;
 pub mod carry;
 #[cfg(test)]
+mod feel_measure;
+#[cfg(test)]
 mod stair_tests;
+#[cfg(test)]
+mod view_interpolation_tests;
 mod walk_support;
 #[cfg(test)]
 mod walk_support_tests;
@@ -551,9 +557,11 @@ impl Plugin for PlayerControlsPlugin {
             .init_resource::<MoveMode>()
             .init_resource::<WalkIntent>()
             .init_resource::<SprintLatch>()
+            .init_resource::<WalkViewPose>()
             .init_resource::<LookIntent>()
             .init_resource::<WalkEntryStatus>()
             .init_resource::<WalkSpawnHold>()
+            .init_resource::<WalkCameraFollowState>()
             .init_resource::<CursorCapture>()
             .add_message::<TeleportPlayer>()
             .add_console_command(toggle_collision_command())
@@ -590,6 +598,32 @@ impl Plugin for PlayerControlsPlugin {
                     .chain()
                     .run_if(crate::door_crossing::walk_physics_allowed)
                     .before(PhysicsSet::SyncBackend),
+            )
+            // Not gated: the blend must follow the body through pauses, crossings and the console.
+            .add_systems(
+                FixedUpdate,
+                (
+                    // After the safe placement: a body moved by `release_walk_spawn_hold` must snap the
+                    // view pose, not be blended from the blocked pose.
+                    walk_view_begin_tick
+                        .after(release_walk_spawn_hold)
+                        .before(walk_movement_system),
+                    walk_view_end_tick.after(PhysicsSet::Writeback),
+                ),
+            )
+            // `--walk-camera-trace`: off unless the option names a file.
+            .add_systems(Startup, camera_trace::start_walk_camera_trace)
+            .add_systems(
+                FixedUpdate,
+                camera_trace::count_walk_camera_trace_tick
+                    .after(walk_view_end_tick)
+                    .run_if(resource_exists::<camera_trace::WalkCameraTrace>),
+            )
+            .add_systems(
+                Update,
+                camera_trace::write_walk_camera_trace_row
+                    .after(walk_camera_follow_system)
+                    .run_if(resource_exists::<camera_trace::WalkCameraTrace>),
             );
     }
 }
@@ -2020,28 +2054,465 @@ fn walk_step_rise(
     Some(lift)
 }
 
+/// Body position at the previous and the latest fixed tick, used to show the WALK view between ticks.
+///
+/// Physics runs at 60 Hz and a display can run faster. A camera that follows the body only
+/// repeats its position on every frame that ran no tick: on 50% of frames at 120 Hz, 59% at 144 Hz
+/// and 75% at 240 Hz in the controller-feel measurements (`physics/feel_measure.rs`). The view now
+/// shows the point between the previous and the latest tick that matches how far the frame is into
+/// the next tick (`Time<Fixed>::overstep_fraction`).
+///
+/// This is presentation only. The body, its collision and every physics query keep the latest tick
+/// position (the tankard spawn ray, the carry hold point and the door return point read the body,
+/// not this pose). The view trails it by 0 to one tick, at most 16.7 ms. Look rotation is not interpolated, so turning has no
+/// added latency.
+///
+/// The blended position is the input of the first-person follow spring
+/// ([`walk_camera_follow_system`]). Retail needs no blend: its player controller moves once per
+/// rendered frame with that frame's time, and the camera follows that position (RF-PHYS-003,
+/// RF-CAM-018). Mudcrab's WALK controller runs on a fixed 60 Hz tick, so the blend is a Mudcrab
+/// stand-in that gives the spring a position that moves on every frame, as retail's does. Without
+/// it the spring samples a staircase of tick positions and an uneven frame rate aliases into the
+/// view. The long-term fix is a per-frame controller; this blend is not a retail mechanism.
+///
+/// Behaviour source: the Mudcrab controller-feel report, which takes the idea of showing a blend of
+/// the last two tick poses from the spud re-audit (chasmlol/spud, MIT, used as a map). This code is
+/// written from that written description, not from spud source.
+#[derive(Debug, Clone, Copy, Default, Resource)]
+pub struct WalkViewPose {
+    previous: Vec3,
+    latest: Vec3,
+    valid: bool,
+    /// The floating origin the two positions are stored in.
+    origin: Option<IVec2>,
+}
+
+impl WalkViewPose {
+    fn snap(&mut self, position: Vec3) {
+        *self = Self {
+            previous: position,
+            latest: position,
+            valid: true,
+            origin: self.origin,
+        };
+    }
+
+    /// Moves both stored positions into the space of `origin`. A floating-origin rebase moves the
+    /// body by whole cells outside the tick. The streamer subtracts the same displacement from the
+    /// body, so the blend continues across a cell border instead of snapping.
+    fn rebase(&mut self, origin: Option<IVec2>) {
+        if let (Some(old), Some(new)) = (self.origin, origin)
+            && old != new
+        {
+            let displacement = render_origin_displacement(old, new);
+            self.previous -= displacement;
+            self.latest -= displacement;
+        }
+        self.origin = origin;
+    }
+
+    /// Whether `body` is where the last tick left it. Anything else moved the body outside the
+    /// fixed tick (teleport, door arrival, origin rebase, entering WALK): show it where it is.
+    fn follows(&self, body: Vec3) -> bool {
+        self.valid && body == self.latest
+    }
+
+    fn shown(&self, fraction: f32) -> Vec3 {
+        self.previous.lerp(self.latest, fraction.clamp(0.0, 1.0))
+    }
+}
+
+/// Before a tick moves the body: drop a stale pose if something else moved the body since.
+fn walk_view_begin_tick(
+    mut pose: ResMut<WalkViewPose>,
+    render_origin: Option<Res<crate::streaming::RenderOrigin>>,
+    player: Query<&Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
+) {
+    let Ok(body) = player.single() else {
+        return;
+    };
+    pose.rebase(render_origin.as_ref().map(|origin| origin.0));
+    if !pose.follows(body.translation) {
+        pose.snap(body.translation);
+    }
+}
+
+/// After physics wrote the body back: the latest tick becomes the end of the blend.
+fn walk_view_end_tick(
+    mut pose: ResMut<WalkViewPose>,
+    render_origin: Option<Res<crate::streaming::RenderOrigin>>,
+    player: Query<&Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
+) {
+    let Ok(body) = player.single() else {
+        return;
+    };
+    pose.rebase(render_origin.as_ref().map(|origin| origin.0));
+    pose.previous = pose.latest;
+    pose.latest = body.translation;
+    pose.valid = true;
+}
+
+/// State of the first-person camera follow spring between rendered frames.
+#[derive(Debug, Default, Resource)]
+struct WalkCameraFollowState {
+    /// `None` until the first WALK frame, and again after leaving WALK.
+    spring: Option<camera_follow::FollowSpring>,
+    initialized: bool,
+    previous_origin: Option<IVec2>,
+}
+
 /// Camera follows the capsule at eye height; yaw on body, pitch on view (V9).
-/// Pause also holds a door-staged camera pose until its queued body placement can commit.
-pub fn walk_camera_follow_system(
-    time: Res<Time<Virtual>>,
-    crossing: Option<Res<crate::door_crossing::DoorCrossing>>,
+///
+/// The view position is the eye node plus the retail follow spring's lag (RF-CAM-001 to
+/// RF-CAM-007). It is evaluated once per rendered frame with the frame delta. This system runs in
+/// `Update`, so the spring is not tied to the fixed physics step. The spring itself is
+/// [`camera_follow::follow_spring_step`]. Its input is the body position blended between the last
+/// two ticks ([`WalkViewPose`]), not the latest tick, so it moves on every rendered frame.
+///
+/// Pause also holds a door-staged camera pose until its queued body placement can commit. The
+/// spring state is kept unchanged while it holds.
+#[allow(clippy::too_many_arguments)]
+fn walk_camera_follow_system(
+    virtual_time: Res<Time<Virtual>>,
     mode: Res<MoveMode>,
     tuning: Res<MovementTuning>,
     look: Res<LookIntent>,
+    time: Res<Time>,
+    fixed: Res<Time<Fixed>>,
+    mut pose: ResMut<WalkViewPose>,
+    camera_space: Option<Res<crate::sky::CameraSpace>>,
+    render_origin: Option<Res<crate::streaming::RenderOrigin>>,
+    mut teleports: MessageReader<TeleportPlayer>,
+    crossing: Option<Res<crate::door_crossing::DoorCrossing>>,
+    hold: Option<Res<WalkSpawnHold>>,
+    mut follow: ResMut<WalkCameraFollowState>,
     player: Query<&Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
     mut camera: Query<&mut Transform, With<StreamingCamera>>,
 ) {
-    if (time.is_paused() && crossing.is_some_and(|crossing| crossing.is_active()))
-        || *mode != MoveMode::Walk
+    let mut teleported = false;
+    for _ in teleports.read() {
+        teleported = true;
+    }
+    let space_changed = camera_space
+        .as_ref()
+        .is_some_and(|space| space.is_changed());
+    let current_origin = render_origin.as_ref().map(|origin| origin.0);
+    // A floating-origin rebase shifts the body and the view by whole cells. It is not a retail
+    // event. The spring state is shifted by the same displacement below, so the lag is unchanged.
+    let rebase = follow
+        .previous_origin
+        .zip(current_origin)
+        .filter(|(old, new)| old != new)
+        .map(|(old, new)| render_origin_displacement(old, new));
+    follow.previous_origin = current_origin;
+
+    if virtual_time.is_paused()
+        && crossing
+            .as_ref()
+            .is_some_and(|crossing| crossing.is_active())
     {
+        return;
+    }
+    if *mode != MoveMode::Walk {
+        follow.spring = None;
         return;
     }
     let (Ok(body), Ok(mut view)) = (player.single(), camera.single_mut()) else {
         return;
     };
+    pose.rebase(current_origin);
+    // A reset frame (below) shows the body itself, so the pose is snapped to it: a tick that moved
+    // the body while it settles must not leave the view up to one tick behind. Ordinary frames keep
+    // the blend.
+    let placing = hold.as_ref().is_some_and(|hold| hold.is_active())
+        || crossing
+            .as_ref()
+            .is_some_and(|crossing| crossing.is_active());
+    let reset = teleported || space_changed || placing;
+    if reset || !pose.follows(body.translation) {
+        pose.snap(body.translation);
+    }
+    let feet = pose.shown(fixed.overstep_fraction());
+    let target = feet + Vec3::Y * tuning.eye_height;
+    if !follow.initialized {
+        // The authored startup camera pose is authoritative for the first frame.
+        follow.initialized = true;
+        follow.spring = Some(camera_follow::FollowSpring::at_rest(feet, 0.0));
+        set_walk_camera_rotation(&mut view, body, look.pitch);
+        return;
+    }
+
+    // Engine plumbing, not retail behaviour. A teleport and a camera space change move the body
+    // and the view into a new frame, so the old smoothed point is meaningless there. Retail
+    // reaches the same result for a teleport over 300 units through the snap (RF-CAM-002). A door
+    // crossing and the safe-placement hold place the body without player control. They are
+    // plumbing for Mudcrab-only mechanisms that retail does not have, so the view follows the
+    // body directly until they end. The spring weight carries over. Entering WALK needs no reset:
+    // the spring is `None` outside WALK and starts at rest on the feet.
+    let mut previous = follow
+        .spring
+        .unwrap_or(camera_follow::FollowSpring::at_rest(feet, 0.0));
+    if let Some(displacement) = rebase {
+        // The smoothed point lives in the same render space as the feet. Move it with them.
+        previous.smoothed -= displacement;
+    }
+    let step = if reset {
+        camera_follow::FollowStep {
+            state: camera_follow::FollowSpring::at_rest(feet, previous.weight),
+            lag: Vec3::ZERO,
+        }
+    } else if time.delta_secs() <= 0.0 {
+        // Paused (focus pause, console, a held frame): no time passes, so the spring keeps its
+        // state. A step of zero length would scale the lag by the weight again on every paused
+        // frame, and clear the velocity (the momentum term would be lost on resume).
+        camera_follow::FollowStep {
+            state: previous,
+            lag: previous.smoothed - feet,
+        }
+    } else {
+        camera_follow::follow_spring_step(
+            previous,
+            camera_follow::FollowInput {
+                feet,
+                delta_secs: time.delta_secs(),
+                // RF-CAM-004: the player is controls-driven in normal play. Mudcrab has no
+                // AI-driven player movement.
+                controls_driven: true,
+                // RF-CAMW-001: Mudcrab has no mount state yet, so this stays false.
+                is_on_mount: false,
+                // The engine has no third-person camera. RF-CAM-006: it would get no spring.
+                view: camera_follow::FollowView::FirstPerson,
+            },
+        )
+    };
+    follow.spring = Some(step.state);
+    view.translation = target + step.lag;
+    set_walk_camera_rotation(&mut view, body, look.pitch);
+}
+
+/// The displacement of the floating origin from `old` to `new`, in render-space units. The
+/// streamer subtracts it from the body and the view when it rebases.
+fn render_origin_displacement(old: IVec2, new: IVec2) -> Vec3 {
+    let shift = new - old;
+    Vec3::new(
+        shift.x as f32 * crate::world::components::CELL_SIZE,
+        0.0,
+        -(shift.y as f32) * crate::world::components::CELL_SIZE,
+    )
+}
+
+fn set_walk_camera_rotation(view: &mut Transform, body: &Transform, pitch: f32) {
     let (yaw, _, _) = body.rotation.to_euler(EulerRot::YXZ);
-    view.translation = body.translation + Vec3::Y * tuning.eye_height;
-    view.rotation = Quat::from_euler(EulerRot::YXZ, yaw, look.pitch, 0.0);
+    view.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
+}
+
+#[cfg(test)]
+mod walk_camera_presentation_tests {
+    use super::*;
+
+    #[test]
+    fn camera_placement_resets_drop_the_smoothed_point_and_follow_full_position() {
+        let mut app = headless::fixture_app();
+        let (body, camera) = {
+            let mut bodies = app.world_mut().query_filtered::<Entity, With<PlayerBody>>();
+            let body = bodies.single(app.world()).unwrap();
+            let mut cameras = app
+                .world_mut()
+                .query_filtered::<Entity, With<StreamingCamera>>();
+            (body, cameras.single(app.world()).unwrap())
+        };
+        app.insert_resource(MoveMode::Walk);
+        app.world_mut().run_schedule(Update);
+        for case in 0..4 {
+            {
+                let mut follow = app.world_mut().resource_mut::<WalkCameraFollowState>();
+                follow.initialized = true;
+                follow.spring = Some(camera_follow::FollowSpring::at_rest(Vec3::ZERO, 1.0));
+            }
+            let destination = Vec3::new(500.0 + case as f32 * 100.0, 800.0, -900.0);
+            app.world_mut()
+                .get_mut::<Transform>(body)
+                .unwrap()
+                .translation = destination;
+            match case {
+                0 => {
+                    app.world_mut().write_message(TeleportPlayer {
+                        position: destination,
+                        sampled_ground_y: Some(destination.y),
+                        yaw: 0.4,
+                    });
+                }
+                1 => {
+                    app.insert_resource(crate::sky::CameraSpace::Interior);
+                }
+                2 => {
+                    app.insert_resource(MoveMode::Noclip);
+                    app.world_mut().run_schedule(Update);
+                    app.insert_resource(MoveMode::Walk);
+                }
+                _ => {
+                    // Engine plumbing: the safe-placement hold places the body without control.
+                    app.world_mut().resource_mut::<WalkSpawnHold>().active = true;
+                }
+            }
+            app.world_mut().run_schedule(Update);
+            let position = app.world().get::<Transform>(body).unwrap().translation;
+            let view = app.world().get::<Transform>(camera).unwrap().translation;
+            assert!(
+                view.distance(position + Vec3::Y * MovementTuning::default().eye_height) < 1.0e-3,
+                "reset case {case} retained an old camera coordinate: {view:?} vs {position:?}"
+            );
+            let spring = app
+                .world()
+                .resource::<WalkCameraFollowState>()
+                .spring
+                .expect("the spring is seeded after a reset");
+            assert_eq!(spring.smoothed, position);
+            assert_eq!(spring.velocity, Vec3::ZERO);
+            app.world_mut().resource_mut::<WalkSpawnHold>().active = false;
+        }
+    }
+
+    /// While no time passes (focus pause, console), the follow spring keeps its lag, velocity and
+    /// weight. A zero-length step would scale the lag by the weight on every paused frame.
+    #[test]
+    fn a_paused_frame_keeps_the_follow_spring() {
+        let mut app = headless::fixture_app();
+        let (body, camera) = {
+            let mut bodies = app.world_mut().query_filtered::<Entity, With<PlayerBody>>();
+            let body = bodies.single(app.world()).unwrap();
+            let mut cameras = app
+                .world_mut()
+                .query_filtered::<Entity, With<StreamingCamera>>();
+            (body, cameras.single(app.world()).unwrap())
+        };
+        let eye = Vec3::Y * MovementTuning::default().eye_height;
+        app.insert_resource(MoveMode::Walk);
+        app.insert_resource(crate::streaming::RenderOrigin(IVec2::ZERO));
+        app.world_mut().run_schedule(Update);
+        let feet = Vec3::new(1_000.0, 300.0, -500.0);
+        app.world_mut()
+            .get_mut::<Transform>(body)
+            .unwrap()
+            .translation = feet;
+        // A spring that has not reached full weight, with a lag and a velocity.
+        let running = camera_follow::FollowSpring {
+            smoothed: feet - Vec3::new(20.0, -6.0, 0.0),
+            velocity: Vec3::new(370.0, -100.0, 0.0),
+            weight: 0.5,
+        };
+        {
+            let mut follow = app.world_mut().resource_mut::<WalkCameraFollowState>();
+            follow.initialized = true;
+            follow.spring = Some(running);
+        }
+        for _ in 0..5 {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(std::time::Duration::ZERO);
+            app.world_mut().run_schedule(Update);
+        }
+        let follow = app.world().resource::<WalkCameraFollowState>();
+        assert_eq!(
+            follow.spring,
+            Some(running),
+            "a paused frame changed the spring"
+        );
+        let view = app.world().get::<Transform>(camera).unwrap().translation;
+        let lag = running.smoothed - feet;
+        assert!(
+            (view - (feet + eye + lag)).length() < 1.0e-3,
+            "the paused view moved: view={view:?} expected lag {lag:?}"
+        );
+    }
+
+    /// A floating-origin rebase moves the body, the view and the smoothed point by the same
+    /// displacement. The lag, which is about 20 units while running, must not change in the world
+    /// frame, so the view does not pop forward at a cell border.
+    #[test]
+    fn a_render_origin_rebase_while_running_keeps_the_camera_offset() {
+        let mut app = headless::fixture_app();
+        let (body, camera) = {
+            let mut bodies = app.world_mut().query_filtered::<Entity, With<PlayerBody>>();
+            let body = bodies.single(app.world()).unwrap();
+            let mut cameras = app
+                .world_mut()
+                .query_filtered::<Entity, With<StreamingCamera>>();
+            (body, cameras.single(app.world()).unwrap())
+        };
+        let eye = Vec3::Y * MovementTuning::default().eye_height;
+        app.insert_resource(MoveMode::Walk);
+        app.insert_resource(crate::streaming::RenderOrigin(IVec2::ZERO));
+        app.world_mut().run_schedule(Update);
+        let feet = Vec3::new(1_000.0, 300.0, -500.0);
+        app.world_mut()
+            .get_mut::<Transform>(body)
+            .unwrap()
+            .translation = feet;
+        // A running spring: the smoothed point trails the feet and moves with them.
+        let running = camera_follow::FollowSpring {
+            smoothed: feet - Vec3::new(20.0, 0.0, 0.0),
+            velocity: Vec3::new(370.0, 0.0, 0.0),
+            weight: 1.0,
+        };
+        {
+            let mut follow = app.world_mut().resource_mut::<WalkCameraFollowState>();
+            follow.initialized = true;
+            follow.spring = Some(running);
+        }
+        // A running frame: the fixture's first frame has no elapsed time, and a frame with none is
+        // a paused frame that keeps the spring (see `a_paused_frame_keeps_the_follow_spring`).
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs_f32(PHYSICS_TIMESTEP));
+        // The same frame without a rebase is the control.
+        let delta_secs = app.world().resource::<Time>().delta_secs();
+        let expected = camera_follow::follow_spring_step(
+            running,
+            camera_follow::FollowInput {
+                feet,
+                delta_secs,
+                controls_driven: true,
+                is_on_mount: false,
+                view: camera_follow::FollowView::FirstPerson,
+            },
+        );
+        assert!(
+            expected.lag.x.abs() > 1.0,
+            "the fixture needs a visible lag: {:?}",
+            expected.lag
+        );
+        // The streamer rebases: the origin moves one cell in X and in Y, and the body and the view
+        // are shifted by the displacement.
+        let new_origin = IVec2::new(1, 1);
+        let displacement = render_origin_displacement(IVec2::ZERO, new_origin);
+        assert_ne!(displacement, Vec3::ZERO);
+        app.world_mut()
+            .resource_mut::<crate::streaming::RenderOrigin>()
+            .0 = new_origin;
+        for entity in [body, camera] {
+            app.world_mut()
+                .get_mut::<Transform>(entity)
+                .unwrap()
+                .translation -= displacement;
+        }
+        app.world_mut().run_schedule(Update);
+        let view = app.world().get::<Transform>(camera).unwrap().translation;
+        let shifted_feet = feet - displacement;
+        assert!(
+            (view - (shifted_feet + eye) - expected.lag).length() < 1.0e-3,
+            "the rebase changed the camera offset: view={view:?} lag={:?}",
+            expected.lag
+        );
+        let spring = app
+            .world()
+            .resource::<WalkCameraFollowState>()
+            .spring
+            .unwrap();
+        assert!((spring.smoothed - (shifted_feet + expected.lag)).length() < 1.0e-3);
+        assert_eq!(spring.velocity, expected.state.velocity);
+        assert_eq!(spring.weight, expected.state.weight);
+    }
 }
 
 /// Attempt NOCLIP->WALK at the camera pose; overlap pushes the search upward
@@ -3991,6 +4462,9 @@ fn setup_controlled_player(
 fn tankard_spawn_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     capture: Res<CursorCapture>,
+    mode: Res<MoveMode>,
+    tuning: Res<MovementTuning>,
+    player: Query<&Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
     camera: Query<&Transform, (With<StreamingCamera>, With<ControlledCamera>)>,
     terrain: Query<(), With<TerrainCollider>>,
     tankards: Query<(), With<DebugTankard>>,
@@ -4009,7 +4483,15 @@ fn tankard_spawn_input(
     }
     let Some(visuals) = visuals else { return };
     let horizontal = camera.forward().as_vec3().with_y(0.0).normalize_or_zero();
-    let origin = camera.translation + horizontal * 140.0 + Vec3::Y * 300.0;
+    // The ray starts at the eye of the body, not at the blended or lagging view, so the spawn
+    // point does not depend on the display's refresh rate. The body is shifted by a floating-origin
+    // rebase at once, unlike the view pose, which follows on the next sample. In NOCLIP the camera
+    // is authoritative.
+    let eye = match (*mode, player.single()) {
+        (MoveMode::Walk, Ok(body)) => body.translation + Vec3::Y * tuning.eye_height,
+        _ => camera.translation,
+    };
+    let origin = eye + horizontal * 140.0 + Vec3::Y * 300.0;
     let is_terrain = |entity| terrain.get(entity).is_ok();
     if let Some((_, distance)) = context.cast_ray(
         origin,
