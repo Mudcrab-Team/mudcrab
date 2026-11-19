@@ -28,7 +28,25 @@ use crate::{
         water::FlatWaterBody,
     },
 };
-use bevy::prelude::*;
+use bevy::{camera::visibility::VisibilitySystems, prelude::*, transform::TransformSystems};
+
+/// Detects submersion from the current frame's propagated camera and water transforms.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct UnderwaterStateSet;
+
+pub(crate) struct UnderwaterStatePlugin;
+
+impl Plugin for UnderwaterStatePlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<UnderwaterState>().add_systems(
+            PostUpdate,
+            update_underwater_state
+                .in_set(UnderwaterStateSet)
+                .after(TransformSystems::Propagate)
+                .before(VisibilitySystems::VisibilityPropagate),
+        );
+    }
+}
 
 /// Where the camera is relative to the water surface (RF-WATER-033: the mode word is 0 above, 1
 /// crossing, 2 below).
@@ -362,6 +380,125 @@ mod tests {
         ));
         app.update();
         assert_eq!(app.world().resource::<UnderwaterState>().fog(), None);
+    }
+
+    #[test]
+    fn streamed_child_water_uses_current_transforms_on_its_first_frame() {
+        use crate::world::{cache::TerrainSnapshot, database::CellKey};
+        use bevy::transform::TransformPlugin;
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, TransformPlugin, UnderwaterStatePlugin));
+        let camera = app
+            .world_mut()
+            .spawn((
+                StreamingCamera,
+                Projection::Perspective(PerspectiveProjection::default()),
+                Transform::from_xyz(2048.0, -4636.0, -2048.0),
+            ))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world().resource::<UnderwaterState>().mode(),
+            UnderwaterMode::Above
+        );
+
+        // A newly streamed child's required GlobalTransform starts at identity until propagation.
+        // Its real surface is below the camera, while identity would put that surface above it.
+        let root = app
+            .world_mut()
+            .spawn(Transform::from_xyz(2048.0, 0.0, -2048.0))
+            .id();
+        let terrain = TerrainSnapshot {
+            cell_id: 1,
+            width: 33,
+            height: 33,
+            heights: vec![-6000.0; 33 * 33],
+            normals: vec![],
+            vertex_colors: vec![],
+            layers: vec![],
+            water_height: Some(-5000.0),
+            water_type_form_id: None,
+        };
+        let body = FlatWaterBody::from_terrain(
+            CellKey::Exterior {
+                worldspace_id: 60,
+                grid_x: 0,
+                grid_y: 0,
+            },
+            &terrain,
+        )
+        .expect("complete flat water body");
+        let water = app
+            .world_mut()
+            .spawn((
+                WaterSurface,
+                body,
+                Transform::from_xyz(0.0, -5000.0, 0.0),
+                ChildOf(root),
+            ))
+            .id();
+        assert_eq!(
+            app.world()
+                .get::<GlobalTransform>(water)
+                .unwrap()
+                .translation(),
+            Vec3::ZERO
+        );
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<GlobalTransform>(water)
+                .unwrap()
+                .translation(),
+            Vec3::new(2048.0, -5000.0, -2048.0)
+        );
+        assert_eq!(
+            app.world().resource::<UnderwaterState>().mode(),
+            UnderwaterMode::Above,
+            "the new water's first detection uses its propagated surface height"
+        );
+        assert!(app.world().get::<UnderwaterPass>(camera).is_none());
+
+        // Movement and its pass component agree in the same frame in both directions.
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation
+            .y = -5100.0;
+        app.update();
+        assert_eq!(
+            app.world().resource::<UnderwaterState>().mode(),
+            UnderwaterMode::Below
+        );
+        assert!(app.world().get::<UnderwaterPass>(camera).is_some());
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation
+            .y = -4636.0;
+        app.update();
+        assert_eq!(
+            app.world().resource::<UnderwaterState>().mode(),
+            UnderwaterMode::Above
+        );
+        assert!(app.world().get::<UnderwaterPass>(camera).is_none());
+
+        // Removing the streamed body clears the pass even while the camera stays at depth.
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation
+            .y = -5100.0;
+        app.update();
+        assert!(app.world().get::<UnderwaterPass>(camera).is_some());
+        app.world_mut().entity_mut(water).despawn();
+        app.update();
+        assert_eq!(
+            app.world().resource::<UnderwaterState>().mode(),
+            UnderwaterMode::Above
+        );
+        assert!(app.world().get::<UnderwaterPass>(camera).is_none());
     }
 
     #[test]

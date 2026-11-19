@@ -4412,6 +4412,71 @@ mod tests {
                 .any(|part| part.as_os_str().to_str() == Some("perf"))
     }
 
+    fn before_python_comment(line: &str) -> &str {
+        let mut quote = None;
+        let mut chars = line.char_indices();
+        while let Some((index, ch)) = chars.next() {
+            match (quote, ch) {
+                (None, '#') => return &line[..index],
+                (None, '\'' | '"') => quote = Some(ch),
+                (Some(_), '\\') => {
+                    chars.next();
+                }
+                (Some(open), close) if open == close => quote = None,
+                _ => {}
+            }
+        }
+        line
+    }
+
+    /// Locate the command or parser declaration that owns this particular option literal.
+    /// Argument lists in the native capture scripts continue on the next line after a comma.
+    fn native_tool_owns_option(script: &str, flag: &str) -> bool {
+        let offset = flag.as_ptr() as usize - script.as_ptr() as usize;
+        let mut lines = script[..offset].rsplit('\n');
+        let current = lines.next().unwrap_or_default();
+        if before_python_comment(current).len() != current.len() {
+            return true;
+        }
+        let mut start = current;
+        for previous in lines {
+            let previous = before_python_comment(previous).trim_end();
+            if previous.is_empty() {
+                continue;
+            }
+            if !previous.ends_with([',', '[', '(']) {
+                break;
+            }
+            start = previous;
+        }
+        [
+            ".add_argument(",
+            "scripts/record_skyrim_motion.py",
+            "tools/skyrim-recorder/build.py",
+            "['pkg-config',",
+            "['systemd-run',",
+            "['gamescope',",
+            "['journalctl',",
+            "['systemctl',",
+            "[str(args.test_binary.resolve()),",
+            "['cargo', 'test',",
+            "['capture',",
+            "['record',",
+            "['report',",
+            "patch('sys.argv', argv + [",
+            "patch('sys.argv', ['audit',",
+        ]
+        .iter()
+        .any(|owner| start.contains(owner) || current.contains(owner))
+            || (current.contains("command += [")
+                && matches!(flag, "--setenv" | "--working-directory"))
+            || (current.contains("argv += [")
+                && matches!(flag, "--condition" | "--split" | "--adopt-baseline"))
+            || current.ends_with(".index('")
+            || current.ends_with(".startswith('")
+            || current.ends_with(".removeprefix('")
+    }
+
     fn checked_script_engine_flags(script: &str, path: &std::path::Path) -> usize {
         let options = parser_options();
         let mut checked = 0;
@@ -4523,12 +4588,95 @@ mod tests {
                     .iter()
                     .any(|&(script, scoped)| name == script && flag == scoped)
             });
+            let publication_option = if path.ends_with("publish_skyrim_evidence.py")
+                || path.ends_with("test_publish_skyrim_evidence.py")
+            {
+                let offset = flag.as_ptr() as usize - scanned.as_ptr() as usize;
+                let command = scanned[..offset]
+                    .rsplit(['\n', ';'])
+                    .next()
+                    .unwrap_or_default()
+                    .trim_start();
+                match flag {
+                    "--start-address" | "--stop-address" => command.starts_with("llvm-objdump "),
+                    "--sanitize" | "--root" => {
+                        command.ends_with(".add_argument('")
+                            || (flag == "--sanitize" && command == "Reproduce with ")
+                            || command.contains("['audit',")
+                            || command.contains("patch('sys.argv', argv + [")
+                    }
+                    _ => false,
+                }
+            } else {
+                false
+            };
+            let native_jump_option =
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        matches!(
+                            name,
+                            "record_skyrim_motion.py"
+                                | "test_record_skyrim_motion.py"
+                                | "capture_skyrim_jump.py"
+                                | "test_capture_skyrim_jump.py"
+                                | "test_capture_skyrim_attempts.py"
+                                | "capture_skyrim_jump_inputs.py"
+                                | "evaluate_skyrim_jump.py"
+                                | "test_evaluate_skyrim_jump.py"
+                                | "test_skyrim_reference_replay.py"
+                                | "analyze_skyrim_jump_inputs.py"
+                                | "test_analyze_skyrim_jump_inputs.py"
+                                | "check_skyrim_jump_runtime.py"
+                                | "verify_skyrim_jump_inputs.py"
+                                | "report_skyrim_jump.py"
+                        ) && matches!(
+                            flag,
+                            "--session"
+                                | "--game"
+                                | "--save"
+                                | "--proton"
+                                | "--profile"
+                                | "--exe"
+                                | "--fixture"
+                                | "--frame-cap"
+                                | "--ocr-prefix"
+                                | "--keep-alive"
+                                | "--plan"
+                                | "--corpus"
+                                | "--private-output"
+                                | "--split"
+                                | "--frozen"
+                                | "--adopt-baseline"
+                                | "--condition"
+                                | "--results"
+                                | "--prepare-only"
+                                | "--require-heldout-pass"
+                                | "--test-binary"
+                                | "--lib"
+                                | "--ignored"
+                                | "--exact"
+                                | "--nocapture"
+                                | "--cflags"
+                                | "--libs"
+                                | "--backend"
+                                | "--collect"
+                                | "--no-pager"
+                                | "--setenv"
+                                | "--signal"
+                                | "--unit"
+                                | "--description"
+                                | "--working-directory"
+                        ) && native_tool_owns_option(scanned, flag)
+                    });
             if NON_ENGINE_FLAGS.contains(&flag)
                 || observation_option
                 || material_oracle_option
                 || harness_option
-                || release_option
                 || inspector_option
+                || release_option
+                || publication_option
+                || native_jump_option
             {
                 continue;
             }
@@ -4785,6 +4933,58 @@ mod tests {
         }
     }
 
+    #[test]
+    fn publication_options_are_checked_per_occurrence() {
+        let path = std::path::Path::new("publish_skyrim_evidence.py");
+        let example = "llvm-objdump -d --start-address=2 --stop-address=4 binary";
+        let parser = "parser.add_argument('--root')";
+        assert_eq!(checked_script_engine_flags(example, path), 0);
+        assert_eq!(checked_script_engine_flags(parser, path), 0);
+        for flag in ["--root", "--sanitize", "--start-address", "--stop-address"] {
+            let script = format!("{example}\n{parser}; engine {flag}");
+            assert!(
+                std::panic::catch_unwind(|| checked_script_engine_flags(&script, path)).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn native_jump_tool_options_do_not_become_engine_options() {
+        let native = std::path::Path::new("record_skyrim_motion.py");
+        assert_eq!(
+            checked_script_engine_flags(
+                "cmd = ['systemd-run',  # recorder scope\n    '--collect']",
+                native
+            ),
+            0
+        );
+        assert_eq!(
+            checked_script_engine_flags(
+                "run.add_argument(\n    # recorder CLI\n    '--session')",
+                native
+            ),
+            0
+        );
+        for (text, path) in [
+            ("engine --unknown-engine-option", native),
+            (
+                "run.add_argument('--session')\nengine --session fixture",
+                native,
+            ),
+            ("cmd = ['engine',\n    '--session', 'fixture']", native),
+            (
+                "cmd = ['engine',  # ['systemd-run',\n    '--collect']",
+                native,
+            ),
+            (
+                "engine --session fixture",
+                std::path::Path::new("launch.sh"),
+            ),
+        ] {
+            assert!(std::panic::catch_unwind(|| checked_script_engine_flags(text, path)).is_err());
+        }
+    }
+
     /// Standalone inspector flags must not become general engine CLI options.
     #[test]
     fn inspector_options_are_scoped_to_the_standalone_example_launcher() {
@@ -4859,7 +5059,11 @@ mod tests {
                 // identically named CLI argument visible to the parser check.
                 let offset = flag.as_ptr() as usize - script.as_ptr() as usize;
                 let prefix = &script[..offset];
-                !(prefix.trim_end().ends_with("var(")
+                let suffix = &script[offset + flag.len()..];
+                let declaration =
+                    prefix.trim_end().ends_with(['{', ';']) && suffix.trim_start().starts_with(':');
+                !(declaration
+                    || prefix.trim_end().ends_with("var(")
                     || prefix.ends_with(".setProperty('")
                     || prefix.ends_with(".setProperty(\""))
             })
@@ -4874,13 +5078,16 @@ mod tests {
 
     #[test]
     fn checked_script_audit_ignores_css_but_rejects_the_same_unknown_cli_option() {
-        let path = std::path::Path::new("capture_tonemap_tuning.py");
-        let script = "color:var(--foreground); x.style.setProperty('--aspect','16/9'); engine --headless --assets pack";
+        let path = std::path::Path::new("report_skyrim_jump.py");
+        let script = ":root{ --foreground: white; --border: black } color:var(--foreground); x.style.setProperty('--aspect','16/9'); engine --headless --assets pack";
         assert_eq!(checked_script_engine_flags(script, path), 2);
 
         assert!(
             std::panic::catch_unwind(|| {
-                checked_script_engine_flags("color:var(--foreground); engine --foreground", path)
+                checked_script_engine_flags(
+                    ":root{ --foreground: white } engine --foreground",
+                    path,
+                )
             })
             .is_err()
         );
