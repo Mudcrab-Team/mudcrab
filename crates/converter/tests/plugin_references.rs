@@ -1245,6 +1245,15 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
 ) {
     use converter::AssetPipeline;
     use rusqlite::Connection;
+    /// Adds a complete authored transform so link tests retain a usable placement.
+    fn placed(id: u32, mut payload: Vec<u8>) -> Vec<u8> {
+        let transform: Vec<_> = [31.25f32, -97.5, 14.75, 0.13, -0.27, 0.49]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        payload.extend(sub(b"DATA", &transform));
+        record(b"REFR", id, 0, payload)
+    }
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("Data");
     dummy_content::layout::prepare_directory(&data, false).unwrap();
@@ -1261,12 +1270,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
         "Light.esl",
         &["Skyrim.esm"],
         0x201,
-        record(
-            b"REFR",
-            0x0100_0802,
-            0,
-            sub(b"NAME", &0x0000_0003u32.to_le_bytes()),
-        ),
+        placed(0x0100_0802, sub(b"NAME", &0x0000_0003u32.to_le_bytes())),
     );
     let mut xtel = 0x0200_0801u32.to_le_bytes().to_vec();
     xtel.extend([0xAB; 28]);
@@ -1284,7 +1288,11 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
                 b"LGTM",
                 0x0200_0901,
                 0,
-                sub(b"EDID", b"SyntheticLinkLighting\0"),
+                [
+                    sub(b"EDID", b"SyntheticLinkLighting\0"),
+                    sub(b"DATA", &[0; 92]),
+                ]
+                .concat(),
             ),
             record(
                 b"CELL",
@@ -1304,28 +1312,11 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
                     9,
                     cell,
                     [
-                        record(
-                            b"REFR",
-                            0x0200_0803,
-                            0,
-                            sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
-                        ),
-                        record(
-                            b"REFR",
-                            0x0200_0804,
-                            0,
-                            sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
-                        ),
-                        record(
-                            b"REFR",
-                            0x0200_0805,
-                            0,
-                            sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
-                        ),
-                        record(
-                            b"REFR",
+                        placed(0x0200_0803, sub(b"NAME", &0x0100_0003u32.to_le_bytes())),
+                        placed(0x0200_0804, sub(b"NAME", &0x0100_0003u32.to_le_bytes())),
+                        placed(0x0200_0805, sub(b"NAME", &0x0100_0003u32.to_le_bytes())),
+                        placed(
                             0x0200_0800,
-                            0,
                             [
                                 sub(b"XTEL", &xtel),
                                 sub(b"XESP", &xesp),
@@ -1334,10 +1325,8 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
                             ]
                             .concat(),
                         ),
-                        record(
-                            b"REFR",
+                        placed(
                             0x0200_0806,
-                            0,
                             [
                                 sub(
                                     b"XESP",
@@ -1347,20 +1336,16 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
                             ]
                             .concat(),
                         ),
-                        record(
-                            b"REFR",
+                        placed(
                             0x0200_0807,
-                            0,
                             [
                                 sub(b"XESP", &[0xAB; 4]),
                                 sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
                             ]
                             .concat(),
                         ),
-                        record(
-                            b"REFR",
+                        placed(
                             0x0200_0808,
-                            0,
                             [
                                 sub(
                                     b"XESP",
@@ -1391,10 +1376,8 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
             group(
                 9,
                 0x0100_0900,
-                record(
-                    b"REFR",
+                placed(
                     0x0100_0800,
-                    0,
                     [
                         sub(b"XTEL", &override_xtel),
                         sub(b"XLRT", &[0xAB; 6]),
@@ -1457,6 +1440,14 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
             assert!(report.cache_hits > 0);
         }
         let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+        let position: (f32, f32, f32) = conn
+            .query_row(
+                "SELECT pos_x,pos_y,pos_z FROM \"references\" WHERE id=?1",
+                [0x0300_0800u32],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(position, (31.25, -97.5, 14.75));
         let schema: u32 = conn
             .query_row("SELECT version FROM schema_info", [], |row| row.get(0))
             .unwrap();

@@ -431,6 +431,7 @@ async fn combined_export_keeps_grass_links_lod_origins_and_payloads() {
         .concat()
     }
     // TNAM refers to the generated master; new GRAS/LTEX identities use self index one.
+    // This is a complete-export control with full GRAS DATA, not a malformed-GRAS recovery fixture.
     let mut plugin = record(
         b"TES4",
         0,
