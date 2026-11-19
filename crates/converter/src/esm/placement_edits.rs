@@ -1,14 +1,21 @@
-//! Offline, append-only edits to interior room placements in an existing pack.
+//! Offline, append-only imports of interiors and room placements into an existing pack.
 
 use super::{
     RemapWarnings,
-    binary::{ParsedRecord, PluginMetadata, parse_plugin_bytes, plugin_metadata_from_bytes},
-    exporter::insert_reference,
+    binary::{
+        FLAG_COMPRESSED, ParsedRecord, PluginMetadata, parse_plugin_bytes,
+        plugin_metadata_from_bytes,
+    },
+    environment::Links,
+    exporter::{insert_reference, project_cell},
     extractors::SubrecordView,
     load_order::{LoadOrder, normalize_plugin_name},
     records::RawRecord,
     remap_record_form_ids,
-    rooms::{PORTAL_MARKER_BASE, ROOM_MARKER_BASE, RoomLinkLayout, refresh_placement_cells},
+    rooms::{
+        PORTAL_MARKER_BASE, ROOM_MARKER_BASE, RoomLinkLayout, SHAPE_BOX, SHAPE_PORTAL,
+        refresh_placement_cells,
+    },
     types::ArchivedRecordData,
 };
 use crate::{cache::hash_bytes, check::WORLD_DATABASE_FILE_NAME, records::source_identity};
@@ -37,12 +44,13 @@ const LAYER_TABLES: &str = "
     ) WITHOUT ROWID;
 ";
 const NATIVE_FORM_START: u32 = 0xff00_0001;
+const CELL: [u8; 4] = *b"CELL";
 const REFR: [u8; 4] = *b"REFR";
 
 /// Source to apply after the pack's original conversion and any earlier placement edits.
 #[derive(Clone, Copy)]
 pub enum PlacementSource<'a> {
-    /// Placement-only Skyrim plugin. Its master list is resolved against the pack and prior imports.
+    /// Skyrim interiors and placements. Masters are resolved against the pack and prior imports.
     SkyrimPlugin(&'a Path),
     /// MudCrab placement JSON using this pack's runtime FormIDs.
     NativeJson(&'a Path),
@@ -52,6 +60,7 @@ pub enum PlacementSource<'a> {
 pub struct PlacementEditReport {
     pub changed_references: usize,
     pub affected_cells: Vec<u32>,
+    pub created_cells: Vec<u32>,
     pub certified_cells: Vec<u32>,
 }
 
@@ -86,17 +95,16 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         current_schema,
         "placement edits require the current world database schema"
     );
-    let versions: u32 = tx.query_row(
-        "SELECT count(*) FROM room_graph_stats WHERE
-         (name='visibility_version' AND value=2) OR (name='assignment_version' AND value=1)",
+    let (visibility_version, assignment_version): (Option<i64>, Option<i64>) = tx.query_row(
+        "SELECT (SELECT value FROM room_graph_stats WHERE name='visibility_version'),
+                (SELECT value FROM room_graph_stats WHERE name='assignment_version')",
         [],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     ensure!(
-        versions == 2,
-        "placement edits require a versioned room graph"
+        visibility_version == Some(2) && matches!(assignment_version, None | Some(1)),
+        "placement edits require a supported versioned room graph"
     );
-
     let (path, is_plugin) = match source {
         PlacementSource::SkyrimPlugin(path) => (path, true),
         PlacementSource::NativeJson(path) => (path, false),
@@ -128,22 +136,24 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     if already_applied {
         return Ok(PlacementEditReport::default());
     }
-    let (edits, metadata) = if is_plugin {
+    if assignment_version.is_none() {
+        // Older packs keep geometric ownership. Migrate storage for the shared projector
+        // without publishing an authored-assignment certificate.
+        tx.execute_batch(super::rooms::ROOM_TABLES_SQL)?;
+        super::rooms::migrate_room_metadata(&tx)?;
+    }
+    let (import, metadata) = if is_plugin {
         let metadata = plugin_metadata_from_bytes(&bytes)?;
         (plugin_edits(&tx, &name, &bytes, &metadata)?, Some(metadata))
     } else {
-        let edits = serde_json::from_slice::<NativePlacements>(&bytes)
+        let native = serde_json::from_slice::<NativePlacements>(&bytes)
             .wrap_err("invalid native placement JSON")?;
-        (
-            edits
-                .edits
-                .into_iter()
-                .map(NativeEdit::into_edit)
-                .collect::<Result<_>>()?,
-            None,
-        )
+        (native.into_import(assignment_version.is_none())?, None)
     };
-    ensure!(!edits.is_empty(), "{name} contains no placement edits");
+    ensure!(
+        !import.cells.is_empty() || !import.edits.is_empty(),
+        "{name} contains no cells or placement edits"
+    );
 
     tx.execute(
         "INSERT INTO room_placement_layers(name,sha256,plugin_flags,plugin_masters,source)
@@ -160,31 +170,100 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         ],
     )?;
     let layer = tx.last_insert_rowid();
-    let mut cells = HashSet::new();
+    let has_history: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='record_overrides' AND type='table')",
+        [],
+        |row| row.get(0),
+    )?;
+    let mut fresh_cells = HashSet::new();
+    let empty_master = HashMap::new();
+    for creation in &import.cells {
+        let record = &creation.record;
+        let id = record.form_id;
+        require_unused_id(&tx, id, has_history)?;
+        require_no_cell_data(&tx, id)?;
+        project_cell(
+            &tx,
+            &Links {
+                master: &empty_master,
+            },
+            id,
+            record,
+            &record.subrecords,
+        )
+        .wrap_err_with(|| format!("cell {id:08X}"))?;
+        tx.execute(
+            "INSERT INTO room_placement_edits VALUES (?1,?2,?3,0)",
+            params![layer, id, creation.source_id],
+        )?;
+        fresh_cells.insert(id);
+    }
+    let mut cells = fresh_cells.clone();
     let mut changed = HashSet::new();
-    for edit in &edits {
+    for edit in &import.edits {
         let id = edit.record.form_id;
         ensure!(changed.insert(id), "duplicate placement edit for {id:08X}");
-        apply_edit(&tx, edit, &mut cells).wrap_err_with(|| format!("placement {id:08X}"))?;
+        let in_fresh_cell = edit
+            .record
+            .cell_form_id
+            .is_some_and(|cell| fresh_cells.contains(&cell));
+        if in_fresh_cell {
+            let view = SubrecordView::new(&edit.record.subrecords);
+            ensure!(
+                view.find_all(b"XPRM").count() <= 1
+                    && view.find(b"XPRM").is_none_or(|data| data.len() <= 32)
+                    && view.find_all(b"XSCL").count() <= 1,
+                "placement {id:08X} has unsupported primitive or scale data"
+            );
+        }
+        apply_edit(
+            &tx,
+            edit,
+            &mut cells,
+            in_fresh_cell || (is_plugin && edit.owns_new_id),
+            has_history,
+        )
+        .wrap_err_with(|| format!("placement {id:08X}"))?;
         tx.execute(
             "INSERT INTO room_placement_edits VALUES (?1,?2,?3,?4)",
             params![layer, id, edit.source_id, edit.record.is_deleted()],
         )?;
     }
-    let layouts = edits
+    let layouts = import
+        .edits
         .into_iter()
         .filter_map(|edit| edit.room_links.map(|layout| (edit.record.form_id, layout)))
         .collect::<HashMap<_, _>>();
-    let certified_cells =
-        refresh_placement_cells(&tx, &cells, &changed, &layouts, std::slice::from_ref(&name))?;
+    let certified_cells = refresh_placement_cells(
+        &tx,
+        &cells,
+        &fresh_cells,
+        &changed,
+        &layouts,
+        std::slice::from_ref(&name),
+    )?;
     tx.commit()?;
     let mut affected_cells = cells.into_iter().collect::<Vec<_>>();
     affected_cells.sort_unstable();
+    let mut created_cells = fresh_cells.into_iter().collect::<Vec<_>>();
+    created_cells.sort_unstable();
     Ok(PlacementEditReport {
         changed_references: changed.len(),
         affected_cells,
+        created_cells,
         certified_cells,
     })
+}
+
+#[derive(Default)]
+struct Import {
+    cells: Vec<CellCreation>,
+    edits: Vec<Edit>,
+}
+
+struct CellCreation {
+    source_id: u32,
+    record: RawRecord,
 }
 
 struct Edit {
@@ -199,7 +278,7 @@ fn plugin_edits(
     name: &str,
     bytes: &[u8],
     metadata: &PluginMetadata,
-) -> Result<Vec<Edit>> {
+) -> Result<Import> {
     let (mut order, _) = crate::records::history::stored_order(tx).wrap_err(
         "Skyrim placement imports require a pack with retained in-house plugin headers",
     )?;
@@ -239,7 +318,7 @@ fn plugin_edits(
         "{name} contains malformed records or groups"
     );
     let warnings = RemapWarnings::default();
-    let mut edits = Vec::new();
+    let mut import = Import::default();
     for candidate in candidates {
         let ParsedRecord::Usable(mut record) = candidate else {
             bail!("{name} contains a damaged placement");
@@ -251,10 +330,20 @@ fn plugin_edits(
                 .ok_or_else(|| {
                     color_eyre::eyre::eyre!("{name}: invalid record FormID {source_id:08X}")
                 })?;
-        if record.record_type == *b"CELL" && !record.is_deleted() {
-            // A group carrier can include an existing CELL record. Only its interior identity
-            // participates in placement import.
-            require_interior(tx, remapped)?;
+        let owns_new_id = (source_id >> 24) as usize == metadata.masters.len();
+        ensure!(
+            !owns_new_id || source_id & 0x00ff_ffff != 0,
+            "{name}: new FormID {source_id:08X} has a zero local ID"
+        );
+        if record.record_type == CELL && !record.is_deleted() {
+            if owns_new_id {
+                validate_new_cell(&record, metadata.flags & 0x80 != 0)?;
+                record.form_id = remapped;
+                import.cells.push(CellCreation { source_id, record });
+            } else {
+                // A master-owned CELL can carry children for an existing interior.
+                require_interior(tx, remapped)?;
+            }
             continue;
         }
         ensure!(
@@ -278,15 +367,102 @@ fn plugin_edits(
             &order.light,
             &warnings,
         )?;
-        edits.push(Edit {
+        import.edits.push(Edit {
             source_id,
             record,
             room_links,
-            owns_new_id: (source_id >> 24) as usize == metadata.masters.len(),
+            owns_new_id,
         });
     }
     warnings.report();
-    Ok(edits)
+    Ok(import)
+}
+
+fn validate_new_cell(record: &RawRecord, localized: bool) -> Result<()> {
+    let id = record.form_id;
+    ensure!(
+        record.cell_form_id.is_none()
+            && record.worldspace_form_id.is_none()
+            && record.flags & !FLAG_COMPRESSED == 0,
+        "unsupported CELL context or header flags for {id:08X}"
+    );
+    let mut tags = HashSet::new();
+    for (tag, data) in &record.subrecords {
+        let name = String::from_utf8_lossy(tag);
+        ensure!(tags.insert(tag), "repeated CELL field {name} in {id:08X}");
+        let valid = match tag.as_slice() {
+            b"EDID" => valid_cell_name(data),
+            b"FULL" => !localized && valid_cell_name(data),
+            b"DATA" => matches!(data.as_slice(), [1] | [1, 0]),
+            b"XCLL" => {
+                matches!(data.len(), 72 | 92)
+                    && [12, 16, 28, 32, 36, 76, 80, 84].into_iter().all(|offset| {
+                        data.get(offset..offset + 4).is_none_or(|word| {
+                            f32::from_le_bytes(word.try_into().unwrap()).is_finite()
+                        })
+                    })
+            }
+            _ => bail!("unsupported CELL field {name} in {id:08X}"),
+        };
+        ensure!(valid, "invalid CELL field {name} in {id:08X}");
+    }
+    let view = SubrecordView::new(&record.subrecords);
+    ensure!(
+        view.find(b"DATA").is_some() && view.find(b"EDID").is_some(),
+        "new CELL {id:08X} requires DATA and EDID"
+    );
+    Ok(())
+}
+
+fn valid_cell_name(data: &[u8]) -> bool {
+    data.strip_suffix(&[0]).is_some_and(|name| {
+        !name.is_empty() && !name.contains(&0) && std::str::from_utf8(name).is_ok()
+    })
+}
+
+fn require_unused_id(tx: &Transaction<'_>, id: u32, has_history: bool) -> Result<()> {
+    let occupied: bool = tx
+        .prepare_cached(
+            "SELECT EXISTS(
+             SELECT 1 FROM records WHERE form_id=?1
+             UNION ALL SELECT 1 FROM formid_map WHERE form_id=?1
+             UNION ALL SELECT 1 FROM cells WHERE id=?1
+             UNION ALL SELECT 1 FROM worldspaces WHERE id=?1
+             UNION ALL SELECT 1 FROM [references] WHERE id=?1
+             UNION ALL SELECT 1 FROM room_bounds WHERE ref_id=?1
+             UNION ALL SELECT 1 FROM room_portals WHERE ref_id=?1
+             UNION ALL SELECT 1 FROM room_placement_edits WHERE form_id=?1
+         )",
+        )?
+        .query_row([id], |row| row.get(0))?;
+    ensure!(!occupied, "FormID {id:08X} is already in use");
+    if has_history {
+        let historical: bool = tx
+            .prepare_cached("SELECT EXISTS(SELECT 1 FROM record_overrides WHERE form_id=?1)")?
+            .query_row([id], |row| row.get(0))?;
+        ensure!(!historical, "FormID {id:08X} is already in source history");
+    }
+    Ok(())
+}
+
+fn require_no_cell_data(tx: &Transaction<'_>, cell: u32) -> Result<()> {
+    let occupied: bool = tx
+        .prepare_cached(
+            "SELECT EXISTS(
+             SELECT 1 FROM records WHERE cell_id=?1
+             UNION ALL SELECT 1 FROM [references] WHERE cell_id=?1
+             UNION ALL SELECT 1 FROM room_graph_cells WHERE cell_id=?1
+             UNION ALL SELECT 1 FROM room_bounds WHERE cell_id=?1
+             UNION ALL SELECT 1 FROM room_portals WHERE cell_id=?1
+             UNION ALL SELECT 1 FROM cell_environment WHERE cell_id=?1
+             UNION ALL SELECT 1 FROM cell_lighting WHERE cell_id=?1
+             UNION ALL SELECT 1 FROM cell_regions WHERE cell_id=?1
+             UNION ALL SELECT 1 FROM land WHERE cell_id=?1
+         )",
+        )?
+        .query_row([cell], |row| row.get(0))?;
+    ensure!(!occupied, "cell {cell:08X} already has associated data");
+    Ok(())
 }
 
 fn require_interior(tx: &Transaction<'_>, cell: u32) -> Result<()> {
@@ -303,9 +479,26 @@ fn require_interior(tx: &Transaction<'_>, cell: u32) -> Result<()> {
     Ok(())
 }
 
-fn apply_edit(tx: &Transaction<'_>, edit: &Edit, cells: &mut HashSet<u32>) -> Result<()> {
+fn apply_edit(
+    tx: &Transaction<'_>,
+    edit: &Edit,
+    cells: &mut HashSet<u32>,
+    must_be_new: bool,
+    has_history: bool,
+) -> Result<()> {
     let record = &edit.record;
     let id = record.form_id;
+    if must_be_new {
+        ensure!(
+            edit.owns_new_id,
+            "placement needs a new source-owned FormID"
+        );
+        require_unused_id(tx, id, has_history)?;
+    }
+    let cell_collision: bool = tx
+        .prepare_cached("SELECT EXISTS(SELECT 1 FROM cells WHERE id=?1)")?
+        .query_row([id], |row| row.get(0))?;
+    ensure!(!cell_collision, "FormID belongs to a CELL");
     let canonical: Option<(String, Option<u32>, Vec<u8>)> = tx
         .query_row(
             "SELECT record_type,cell_id,data FROM records WHERE form_id=?1",
@@ -348,6 +541,9 @@ fn apply_edit(tx: &Transaction<'_>, edit: &Edit, cells: &mut HashSet<u32>) -> Re
         old_data.is_some() || ((edit.owns_new_id || previously_edited) && !record.is_deleted()),
         "FormID has no existing placement"
     );
+    if !must_be_new && old_data.is_none() && !previously_edited {
+        require_unused_id(tx, id, has_history)?;
+    }
     // Each supported reference has only room and transform semantics. Its old memberships
     // and assignment rule are discarded even when it moves out of the old cell.
     tx.execute("DELETE FROM reference_rooms WHERE reference_id=?1", [id])?;
@@ -446,7 +642,71 @@ fn validate_room_field_tags(subrecords: &[(Vec<u8>, Vec<u8>)]) -> Result<()> {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NativePlacements {
+    #[serde(default)]
+    cells: Vec<NativeCell>,
+    #[serde(default)]
     edits: Vec<NativeEdit>,
+}
+
+impl NativePlacements {
+    fn into_import(self, geometric_ownership: bool) -> Result<Import> {
+        Ok(Import {
+            cells: self
+                .cells
+                .into_iter()
+                .map(NativeCell::into_creation)
+                .collect::<Result<_>>()?,
+            edits: self
+                .edits
+                .into_iter()
+                .map(|edit| edit.into_edit(geometric_ownership))
+                .collect::<Result<_>>()?,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeCell {
+    id: u32,
+    editor_id: String,
+    full_name: Option<String>,
+}
+
+impl NativeCell {
+    fn into_creation(self) -> Result<CellCreation> {
+        let id = self.id;
+        ensure!(
+            id >= NATIVE_FORM_START,
+            "new native CELL {id:08X} needs a native FormID"
+        );
+        let terminated = |name: String| {
+            let mut data = name.into_bytes();
+            data.push(0);
+            data
+        };
+        let mut subrecords = vec![
+            (b"EDID".to_vec(), terminated(self.editor_id)),
+            (b"DATA".to_vec(), vec![1, 0]),
+        ];
+        if let Some(name) = self.full_name {
+            subrecords.push((b"FULL".to_vec(), terminated(name)));
+        }
+        let record = RawRecord {
+            form_id: id,
+            record_type: CELL,
+            flags: 0,
+            subrecords,
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        };
+        validate_new_cell(&record, false)?;
+        Ok(CellCreation {
+            source_id: id,
+            record,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -462,6 +722,25 @@ enum NativeEdit {
         scale: Option<f32>,
         #[serde(default)]
         ownership: NativeOwnership,
+    },
+    PutRoom {
+        id: u32,
+        cell: u32,
+        position: [f32; 3],
+        #[serde(default)]
+        rotation: [f32; 3],
+        half_extents: [f32; 3],
+        #[serde(default)]
+        links: Vec<u32>,
+    },
+    PutPortal {
+        id: u32,
+        cell: u32,
+        position: [f32; 3],
+        #[serde(default)]
+        rotation: [f32; 3],
+        half_extents: [f32; 2],
+        endpoints: [u32; 2],
     },
     Delete {
         id: u32,
@@ -480,8 +759,9 @@ enum NativeOwnership {
 }
 
 impl NativeEdit {
-    fn into_edit(self) -> Result<Edit> {
-        let (id, record) = match self {
+    fn into_edit(self, geometric_ownership: bool) -> Result<Edit> {
+        let mut room_links = None;
+        let record = match self {
             Self::Put {
                 id,
                 cell,
@@ -495,58 +775,124 @@ impl NativeEdit {
                     !matches!(base, ROOM_MARKER_BASE | PORTAL_MARKER_BASE),
                     "native put requires a STAT base"
                 );
-                let transform = position
-                    .into_iter()
-                    .chain(rotation)
-                    .flat_map(f32::to_le_bytes)
-                    .collect();
-                let mut subrecords = vec![
-                    (b"NAME".to_vec(), base.to_le_bytes().to_vec()),
-                    (b"DATA".to_vec(), transform),
-                ];
+                let mut record = native_reference(id, cell, base, position, rotation);
                 if let Some(scale) = scale {
-                    subrecords.push((b"XSCL".to_vec(), scale.to_le_bytes().to_vec()));
+                    record
+                        .subrecords
+                        .push((b"XSCL".to_vec(), scale.to_le_bytes().to_vec()));
                 }
-                let flags = match ownership {
+                record.flags = match ownership {
                     NativeOwnership::Auto => 0,
                     NativeOwnership::None => MULTIBOUND_REFERENCE_FLAG,
                     NativeOwnership::Target { room } => {
                         ensure!(room != 0, "ownership target must have a nonzero FormID");
-                        subrecords.push((b"XMBR".to_vec(), room.to_le_bytes().to_vec()));
-                        0
+                        record
+                            .subrecords
+                            .push((b"XMBR".to_vec(), room.to_le_bytes().to_vec()));
+                        if geometric_ownership {
+                            MULTIBOUND_REFERENCE_FLAG
+                        } else {
+                            0
+                        }
                     }
                 };
-                (
-                    id,
-                    RawRecord {
-                        form_id: id,
-                        record_type: REFR,
-                        flags,
-                        subrecords,
-                        cell_form_id: Some(cell),
-                        worldspace_form_id: None,
-                        load_order: 0,
-                    },
-                )
+                record
             }
-            Self::Delete { id } => (
+            Self::PutRoom {
                 id,
-                RawRecord {
-                    form_id: id,
-                    record_type: REFR,
-                    flags: 0x20,
-                    subrecords: Vec::new(),
-                    cell_form_id: None,
-                    worldspace_form_id: None,
-                    load_order: 0,
-                },
-            ),
+                cell,
+                position,
+                rotation,
+                half_extents,
+                links,
+            } => {
+                let mut record = native_reference(id, cell, ROOM_MARKER_BASE, position, rotation);
+                record
+                    .subrecords
+                    .push(native_primitive(half_extents, SHAPE_BOX));
+                ensure!(links.len() <= 0x3fff, "room has too many links");
+                let count = (links.len() as u32).to_le_bytes();
+                record.subrecords.push((b"XRMR".to_vec(), count.to_vec()));
+                record.subrecords.extend(
+                    links
+                        .into_iter()
+                        .map(|id| (b"XLRM".to_vec(), id.to_le_bytes().to_vec())),
+                );
+                room_links = Some(RoomLinkLayout::from_raw(&record));
+                record
+            }
+            Self::PutPortal {
+                id,
+                cell,
+                position,
+                rotation,
+                half_extents: [x, z],
+                endpoints,
+            } => {
+                let mut record = native_reference(id, cell, PORTAL_MARKER_BASE, position, rotation);
+                record
+                    .subrecords
+                    .push(native_primitive([x, 0.0, z], SHAPE_PORTAL));
+                record.subrecords.push((
+                    b"XPOD".to_vec(),
+                    endpoints.into_iter().flat_map(u32::to_le_bytes).collect(),
+                ));
+                record
+            }
+            Self::Delete { id } => RawRecord {
+                form_id: id,
+                record_type: REFR,
+                flags: 0x20,
+                subrecords: Vec::new(),
+                cell_form_id: None,
+                worldspace_form_id: None,
+                load_order: 0,
+            },
         };
+        let id = record.form_id;
         Ok(Edit {
             source_id: id,
             record,
-            room_links: None,
+            room_links,
             owns_new_id: id >= NATIVE_FORM_START,
         })
     }
+}
+
+fn native_reference(
+    id: u32,
+    cell: u32,
+    base: u32,
+    position: [f32; 3],
+    rotation: [f32; 3],
+) -> RawRecord {
+    RawRecord {
+        form_id: id,
+        record_type: REFR,
+        flags: 0,
+        subrecords: vec![
+            (b"NAME".to_vec(), base.to_le_bytes().to_vec()),
+            (
+                b"DATA".to_vec(),
+                position
+                    .into_iter()
+                    .chain(rotation)
+                    .flat_map(f32::to_le_bytes)
+                    .collect(),
+            ),
+        ],
+        cell_form_id: Some(cell),
+        worldspace_form_id: None,
+        load_order: 0,
+    }
+}
+
+fn native_primitive(half_extents: [f32; 3], shape: u32) -> (Vec<u8>, Vec<u8>) {
+    let mut data: Vec<_> = half_extents
+        .into_iter()
+        .flat_map(f32::to_le_bytes)
+        .collect();
+    data.resize(28, 0);
+    data.extend(shape.to_le_bytes());
+    (b"XPRM".to_vec(), data)
 }
