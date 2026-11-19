@@ -1432,7 +1432,9 @@ additive tables do not change the global world schema or add a feature flag.
 #### Import interiors and room placements after conversion
 
 Use `converter apply-room-placements` on a private, offline asset directory with the current world
-database schema and versioned room graph. The command takes the pack's exclusive lock.
+database schema and versioned room graph. The command takes the pack's exclusive lock. A pack with only `visibility_version = 2`
+keeps geometric membership. A native named target in that pack keeps the Multibound exemption.
+
 
 ```sh
 converter apply-room-placements path/to/assets --plugin Decorations.esp

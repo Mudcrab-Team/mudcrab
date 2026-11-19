@@ -4117,3 +4117,43 @@ fn native_new_cell_and_placement_ids_cannot_reuse_an_earlier_edit() {
     assert!(String::from_utf8_lossy(&result.stderr).contains("FormID belongs to a CELL"));
     assert!(placement_certificate(&db, cell));
 }
+
+#[test]
+fn placement_import_keeps_geometric_ownership_on_a_portal_only_pack() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    db.execute_batch(
+        "DELETE FROM room_graph_stats WHERE name='assignment_version';
+         DROP TABLE room_model_bounds;
+         DROP TABLE room_reference_rules;
+         ALTER TABLE room_links DROP COLUMN link_index;",
+    )
+    .unwrap();
+    let source = dir.path().join("named.json");
+    let id = 0xff00_0001u32;
+    let edit = serde_json::json!({"edits": [{
+        "op":"put", "id":id, "cell":PLACEMENT_CELL_A, "base":PLACEMENT_STAT,
+        "position":[0,0,0], "ownership":{"kind":"target","room":0x800}
+    }]});
+    fs::write(&source, serde_json::to_vec(&edit).unwrap()).unwrap();
+    assert_placement_import(
+        run_placement_import(&assets, "--native", &source),
+        "Applied 1 room placements in 1 cells (1 certified)",
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT header_flags, (SELECT count(*) FROM reference_rooms WHERE reference_id=?1),
+             (SELECT count(*) FROM room_graph_stats WHERE name='assignment_version')
+             FROM [references] WHERE id=?1",
+            [id],
+            |row| Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, u32>(2)?
+            ))
+        )
+        .unwrap(),
+        (shared::records::MULTIBOUND_REFERENCE_FLAG, 0, 0)
+    );
+}

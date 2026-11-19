@@ -95,17 +95,16 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         current_schema,
         "placement edits require the current world database schema"
     );
-    let versions: u32 = tx.query_row(
-        "SELECT count(*) FROM room_graph_stats WHERE
-         (name='visibility_version' AND value=2) OR (name='assignment_version' AND value=1)",
+    let (visibility_version, assignment_version): (Option<i64>, Option<i64>) = tx.query_row(
+        "SELECT (SELECT value FROM room_graph_stats WHERE name='visibility_version'),
+                (SELECT value FROM room_graph_stats WHERE name='assignment_version')",
         [],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     ensure!(
-        versions == 2,
-        "placement edits require a versioned room graph"
+        visibility_version == Some(2) && matches!(assignment_version, None | Some(1)),
+        "placement edits require a supported versioned room graph"
     );
-
     let (path, is_plugin) = match source {
         PlacementSource::SkyrimPlugin(path) => (path, true),
         PlacementSource::NativeJson(path) => (path, false),
@@ -137,13 +136,19 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     if already_applied {
         return Ok(PlacementEditReport::default());
     }
+    if assignment_version.is_none() {
+        // Older packs keep geometric ownership. Migrate storage for the shared projector
+        // without publishing an authored-assignment certificate.
+        tx.execute_batch(super::rooms::ROOM_TABLES_SQL)?;
+        super::rooms::migrate_room_metadata(&tx)?;
+    }
     let (import, metadata) = if is_plugin {
         let metadata = plugin_metadata_from_bytes(&bytes)?;
         (plugin_edits(&tx, &name, &bytes, &metadata)?, Some(metadata))
     } else {
         let native = serde_json::from_slice::<NativePlacements>(&bytes)
             .wrap_err("invalid native placement JSON")?;
-        (native.into_import()?, None)
+        (native.into_import(assignment_version.is_none())?, None)
     };
     ensure!(
         !import.cells.is_empty() || !import.edits.is_empty(),
@@ -644,7 +649,7 @@ struct NativePlacements {
 }
 
 impl NativePlacements {
-    fn into_import(self) -> Result<Import> {
+    fn into_import(self, geometric_ownership: bool) -> Result<Import> {
         Ok(Import {
             cells: self
                 .cells
@@ -654,7 +659,7 @@ impl NativePlacements {
             edits: self
                 .edits
                 .into_iter()
-                .map(NativeEdit::into_edit)
+                .map(|edit| edit.into_edit(geometric_ownership))
                 .collect::<Result<_>>()?,
         })
     }
@@ -754,7 +759,7 @@ enum NativeOwnership {
 }
 
 impl NativeEdit {
-    fn into_edit(self) -> Result<Edit> {
+    fn into_edit(self, geometric_ownership: bool) -> Result<Edit> {
         let mut room_links = None;
         let record = match self {
             Self::Put {
@@ -784,7 +789,11 @@ impl NativeEdit {
                         record
                             .subrecords
                             .push((b"XMBR".to_vec(), room.to_le_bytes().to_vec()));
-                        0
+                        if geometric_ownership {
+                            MULTIBOUND_REFERENCE_FLAG
+                        } else {
+                            0
+                        }
                     }
                 };
                 record
