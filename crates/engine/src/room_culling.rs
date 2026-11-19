@@ -94,7 +94,7 @@
 //!   or an animated door outside `spawn_cell` inserts `RoomCullExempt` on the reference entity;
 //! - a mesh whose own entity, or whose reference, has a `RigidBody` that moves
 //!   (`Dynamic`, `KinematicPositionBased` or `KinematicVelocityBased`), except an authored
-//!   reference root with a known source sphere. Moving child meshes still stay drawn.
+//!   reference root, which follows its assignment rule. Moving child meshes still stay drawn.
 //!   `Fixed` bodies, which static collision uses, are culled normally.
 //!
 //! Streamed actors and doors receive the exemption when their reference root is spawned.
@@ -166,6 +166,31 @@ pub struct RoomCullLegacyExempt;
 #[derive(Default)]
 pub struct RoomAssignmentCache(HashMap<(u32, Entity, Entity), assignment::CachedAssignment>);
 
+impl RoomAssignmentCache {
+    fn owners_at(
+        &mut self,
+        key: (u32, Entity, Entity),
+        authored: &assignment::Assignments,
+        graph: &RoomGraph,
+        form_id: u32,
+        transform: bevy::math::Affine3A,
+    ) -> &[assignment::Owner] {
+        let assigned = self
+            .0
+            .entry(key)
+            .or_insert_with(|| assignment::CachedAssignment {
+                transform,
+                owners: authored.initial_owners(form_id, transform, &graph.rooms, &graph.portals),
+            });
+        if assigned.transform != transform {
+            assigned.transform = transform;
+            assigned.owners =
+                authored.owners(form_id, Some(transform), &graph.rooms, &graph.portals);
+        }
+        &assigned.owners
+    }
+}
+
 pub fn assignment_follows_transform(record_type: Option<&str>) -> bool {
     matches!(
         record_type,
@@ -185,10 +210,7 @@ pub fn assignment_follows_transform(record_type: Option<&str>) -> bool {
     )
 }
 
-/// Whether a base record type (the `records.record_type` of a reference's base object) is one
-/// room culling must not hide: actors and their leveled lists, doors, activators, and the
-/// inventory records that become loose, physics-driven objects when placed. Mudcrab keeps
-/// these types visible as a precaution. Retail has no record-type exemption list.
+/// Types exempt in legacy graphs. Authored graphs classify movable roots using their assignment rules.
 pub fn exempt_record_type(record_type: Option<&str>) -> bool {
     matches!(
         record_type,
@@ -211,6 +233,20 @@ pub fn exempt_record_type(record_type: Option<&str>) -> bool {
                 | "WEAP"
         )
     )
+}
+
+pub(crate) fn mark_reference_exemptions(
+    entity: &mut bevy::ecs::system::EntityCommands,
+    record_type: Option<&str>,
+    has_override: bool,
+) {
+    let movable = assignment_follows_transform(record_type);
+    if movable || has_override {
+        entity.insert(RoomCullLegacyExempt);
+    }
+    if !movable && exempt_record_type(record_type) {
+        entity.insert(RoomCullExempt);
+    }
 }
 
 /// Opt-in marker for a camera, other than the main one, that culls by room (a portal view).
@@ -1177,6 +1213,10 @@ pub fn cull_room_views(
         Has<RoomCullLegacyExempt>,
         Has<ExpectedModelBounds>,
     )>,
+    changed_references: Query<
+        (Entity, &FormId),
+        Or<(Changed<GlobalTransform>, Changed<Transform>)>,
+    >,
     mut owners: Local<HashMap<Entity, (u32, Entity)>>,
     mut assignments: Local<RoomAssignmentCache>,
 ) {
@@ -1193,6 +1233,44 @@ pub fn cull_room_views(
             .is_some_and(|loaded| loaded.root == root)
             && reference_transforms.get(reference).is_ok()
     });
+    // Direct children retain their exact cell-local transform across world-origin rebases.
+    let placement = |reference, root, local_from_world: bevy::math::Affine3A| {
+        let (world, local) = reference_transforms.get(reference).ok()?;
+        Some(
+            local
+                .filter(|_| parents.get(reference).is_ok_and(|p| p.parent() == root))
+                .map_or_else(
+                    || local_from_world * world.affine(),
+                    Transform::compute_affine,
+                ),
+        )
+    };
+    // A named attachment is initial-only. Observe movement even if all meshes are off screen.
+    for (cell, loaded) in &state.graphs {
+        let Some(authored) = &loaded.graph.authored else {
+            continue;
+        };
+        let Ok(root) = roots.get(loaded.root) else {
+            continue;
+        };
+        let local_from_world = root.affine().inverse();
+        for (reference, id) in &changed_references {
+            if authored.has_named_target(id.0)
+                && parents
+                    .iter_ancestors(reference)
+                    .any(|parent| parent == loaded.root)
+                && let Some(transform) = placement(reference, loaded.root, local_from_world)
+            {
+                assignments.owners_at(
+                    (*cell, loaded.root, reference),
+                    authored,
+                    &loaded.graph,
+                    id.0,
+                    transform,
+                );
+            }
+        }
+    }
     for (camera_transform, projection, camera, is_main, mut visible) in &mut views {
         if camera.is_some_and(|camera| !camera.is_active) {
             continue;
@@ -1251,11 +1329,6 @@ pub fn cull_room_views(
                     return true;
                 };
                 // Re-read every frame: a body can be added after the mesh spawns.
-                let has_bound = loaded
-                    .graph
-                    .authored
-                    .as_ref()
-                    .is_some_and(|authored| authored.has_source_bound(form_id));
                 // Authored rules and source spheres supply ownership independently.
                 let exempted = |entity| {
                     exemptions
@@ -1267,7 +1340,7 @@ pub fn cull_room_views(
                                     && loaded.graph.authored.is_none())
                                 || (legacy && loaded.graph.authored.is_none())
                                 || (body.is_some_and(|body| body_moves(*body))
-                                    && (entity != reference || !has_bound))
+                                    && (entity != reference || loaded.graph.authored.is_none()))
                         })
                 };
                 let mut ancestor = entity;
@@ -1293,44 +1366,19 @@ pub fn cull_room_views(
                     if !authored.has_rule(form_id) {
                         return true;
                     }
-                    let Ok((matrix, local)) = reference_transforms.get(reference) else {
+                    let Some(transform) = placement(reference, loaded.root, local_from_world)
+                    else {
                         return true;
                     };
-                    // Streamed references are direct cell children. Their local placement avoids
-                    // root-composition rounding on initial attachment and later origin rebases.
-                    let transform = local
-                        .filter(|_| {
-                            parents
-                                .get(reference)
-                                .is_ok_and(|parent| parent.parent() == loaded.root)
-                        })
-                        .map_or_else(
-                            || local_from_world * matrix.affine(),
-                            Transform::compute_affine,
-                        );
-                    let assigned = assignments
-                        .0
-                        .entry((*cell, loaded.root, reference))
-                        .or_insert_with(|| assignment::CachedAssignment {
-                            transform,
-                            owners: authored.initial_owners(
-                                form_id,
-                                transform,
-                                &loaded.graph.rooms,
-                                &loaded.graph.portals,
-                            ),
-                        });
-                    if transform != assigned.transform {
-                        assigned.transform = transform;
-                        assigned.owners = authored.owners(
-                            form_id,
-                            Some(transform),
-                            &loaded.graph.rooms,
-                            &loaded.graph.portals,
-                        );
-                    }
+                    let assigned = assignments.owners_at(
+                        (*cell, loaded.root, reference),
+                        authored,
+                        &loaded.graph,
+                        form_id,
+                        transform,
+                    );
                     return assignment::draws(
-                        &assigned.owners,
+                        assigned,
                         &loaded.graph.portals,
                         &volumes,
                         bounds.as_ref(),
@@ -1710,7 +1758,7 @@ mod tests {
     }
 
     #[test]
-    fn an_initial_named_target_does_not_require_legacy_stored_bounds() {
+    fn a_named_activator_without_a_sphere_attaches_until_it_moves() {
         let connection = authored_database();
         insert_room(&connection, 1, 7, [0.0; 3]);
         insert_room(&connection, 2, 7, [0.0, 25.0, 0.0]);
@@ -1741,15 +1789,62 @@ mod tests {
             .world_mut()
             .entity_mut(reference)
             .remove::<ExpectedModelBounds>()
-            .insert(GlobalTransform::IDENTITY);
+            .insert((
+                RigidBody::Dynamic,
+                Transform::IDENTITY,
+                GlobalTransform::IDENTITY,
+            ));
+        mark_reference_exemptions(
+            &mut scene.app.world_mut().commands().entity(reference),
+            Some("ACTI"),
+            true,
+        );
+        scene.app.world_mut().flush();
         scene.app.world_mut().entity_mut(scene.far).insert((
             Aabb::from_min_max(-Vec3::splat(0.5), Vec3::splat(0.5)),
             GlobalTransform::from_translation(Vec3::new(0.0, 0.0, -25.0)),
         ));
-        run_cull(&mut scene.app);
+        scene.app.add_systems(Update, cull_room_views);
+        scene.app.world_mut().run_schedule(Update);
         assert!(
             !mesh_list(&scene.app, scene.camera).contains(&scene.far),
             "an explicit initial target supplies ownership without geometric memberships or spheres"
+        );
+        assert!(mesh_list(&scene.app, scene.camera).contains(&scene.near));
+        scene
+            .app
+            .insert_resource(crate::settings::RenderingSettings {
+                room_culling: false,
+                ..Default::default()
+            });
+        scene.app.world_mut().entity_mut(reference).insert((
+            Transform::from_xyz(1.0, 0.0, 0.0),
+            GlobalTransform::from_xyz(1.0, 0.0, 0.0),
+        ));
+        // The far mesh is absent from the list during this move.
+        scene.app.world_mut().run_schedule(Update);
+        scene
+            .app
+            .world_mut()
+            .entity_mut(reference)
+            .insert((Transform::IDENTITY, GlobalTransform::IDENTITY));
+        scene.app.world_mut().run_schedule(Update);
+        scene
+            .app
+            .world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .room_culling = true;
+        scene
+            .app
+            .world_mut()
+            .get_mut::<VisibleEntities>(scene.camera)
+            .unwrap()
+            .get_mut(TypeId::of::<Mesh3d>())
+            .push(scene.far);
+        scene.app.world_mut().run_schedule(Update);
+        assert!(
+            mesh_list(&scene.app, scene.camera).contains(&scene.far),
+            "a moved root without a source sphere stays visible after returning to its original placement"
         );
     }
 

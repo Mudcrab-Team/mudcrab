@@ -1218,7 +1218,7 @@ CREATE TABLE IF NOT EXISTS room_bounds (       -- one row per interior RoomMarke
     half_x REAL NOT NULL, half_y REAL NOT NULL, half_z REAL NOT NULL, -- XPRM[0..12]
     lighting_template_id INTEGER,              -- LNAM, NULL when absent
     image_space_id INTEGER,                    -- INAM, NULL when absent
-    flags INTEGER NOT NULL DEFAULT 0           -- XRMR flags byte | (XRMR u16 << 8), kept raw
+    flags INTEGER NOT NULL DEFAULT 0           -- XRMR byte 1 | (second XRMR word << 8), kept raw
 );
 CREATE INDEX IF NOT EXISTS idx_room_bounds_cell ON room_bounds(cell_id);
 
@@ -1291,6 +1291,12 @@ CREATE TABLE IF NOT EXISTS room_graph_stats (  -- report counters and version ma
     name TEXT PRIMARY KEY,
     value INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS room_link_anomalies (
+    plugin TEXT PRIMARY KEY,
+    count INTEGER NOT NULL,
+    first_marker INTEGER NOT NULL,
+    first_cell INTEGER NOT NULL
+);
 ```
 
 Columns and rules:
@@ -1344,7 +1350,8 @@ Columns and rules:
   zero-based `link_index`, with no synthesized mirror rows. Migration adds the column with zero defaults; only a fresh export
   publishes the authored-assignment version. The target is retained even if no room row exists.
   Both readers compare the lower 14 bits of the first `XRMR` word with the number of source
-  `XLRM` occurrences before deduplication. A count mismatch or repeated header marks the cell incomplete.
+  `XLRM` occurrences before deduplication. A count mismatch, a malformed or repeated header,
+  or links without a header mark the cell incomplete.
   In authored mode, `XRMR[2] != 0` marks a master (`(flags >> 8) & 255` in `room_bounds`).
   An unlinked marker is also a master. Slaves resolve linked masters, preferring direct masters
   before recursive links and traversing reverse source order. Explicit masters install missing
@@ -1353,6 +1360,8 @@ Columns and rules:
   The room is the union of its primary and joined bounds; gaps are not filled by an enclosing box.
   Malformed or unresolved `XLRM` occurrences keep the cell incomplete in both readers,
   including fields rejected before typed canonical publication.
+  The legacy reader also marks the cell incomplete when it skips a damaged placement with a
+  known parent cell and no usable version supplies that placement.
   Legacy graphs continue treating links as open visibility edges.
 - **`reference_rooms`**: written for every placed object (`REFR`, `ACHR`, `ACRE`, `PGRE`,
   `PMIS`) in an interior cell that has at least one room, except the room and portal markers
@@ -1384,6 +1393,9 @@ Columns and rules:
   `visibility_version = 2` additionally marks graphs whose outside endpoints have verified
   source provenance. The typed reader publishes this marker and the flags in the source-data
   transaction. Until that transaction commits, the runtime uses legacy fallback behavior.
+- **`room_link_anomalies`** counts markers with `XRMR` header or linked-count anomalies for each
+  supplying plugin. The lowest affected marker FormID and its cell are stored with the count.
+  `integration-report.json` shows these rows under `room_graph.room_link_anomalies`.
 
 The tables are derived data: a full load-order export clears and rebuilds them from the winning
 records on every conversion, like the grass tables. Subsets without placed references, including
@@ -1433,10 +1445,10 @@ one, or multiple touched physical portals as ordinary-space, portal-shared, or c
 ownership. Portal sharing uses the native sphere test, and each child mesh tests the resulting
 volume with its current affine AABB. Ambiguous overlapping masters retain all possible owners;
 native runtime handle/hash order is not reconstructed from FormIDs. Automatic assignment keeps unknown bounds visible. A valid initial named target assigns directly
-without requiring a source sphere. `NONE`, unsupported transforms, actors, and doors remain drawn. Supported `ACTI` references, including
-static web activators, use authored assignment when source bounds are available and reclassify
-on supported root-transform changes. Activators remain exempt with legacy data or unsupported
-assignment bounds. Named-target neighboring-room priority and specialized/forced native assignment
+without requiring a source sphere. `NONE`, unsupported transforms, actors, and doors remain drawn. Activators (`ACTI`), including static webs,
+stay visible in legacy graphs. A valid named target attaches an activator to its room at the
+authored placement, even without a source sphere. Automatic attachment and reassignment after
+movement keep an activator visible when its bounds are unknown. Named-target neighboring-room priority and specialized/forced native assignment
 paths are not fully reproduced.
 
 Legacy `reference_rooms` rows remain for compatibility. Multibound-flagged references are omitted

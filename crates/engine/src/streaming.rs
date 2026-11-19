@@ -1901,18 +1901,11 @@ fn spawn_cell(
             if let Some(bounds) = bounds.zip(model_bounds) {
                 entity.insert(bounds);
             }
-            // Authored multibound policies and movable references override stored room membership.
-            let loose = crate::room_culling::assignment_follows_transform(
+            crate::room_culling::mark_reference_exemptions(
+                &mut entity,
                 reference.base_record_type.as_deref(),
+                reference.has_multibound_override,
             );
-            if reference.has_multibound_override || loose {
-                entity.insert(crate::room_culling::RoomCullLegacyExempt);
-            }
-            if !loose
-                && crate::room_culling::exempt_record_type(reference.base_record_type.as_deref())
-            {
-                entity.insert(crate::room_culling::RoomCullExempt);
-            }
             if let Some(plan) = &actor_plan {
                 entity.insert(plan.actor);
                 if !plan.parts.is_empty() {

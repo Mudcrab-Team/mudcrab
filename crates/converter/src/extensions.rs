@@ -98,6 +98,7 @@ const MAIN_CORE_TABLES: &[&str] = &[
     "room_bounds",
     "room_graph_cells",
     "room_graph_stats",
+    "room_link_anomalies",
     "room_links",
     "room_model_bounds",
     "room_occluder_links",

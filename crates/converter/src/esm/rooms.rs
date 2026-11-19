@@ -96,6 +96,10 @@ pub const ROOM_TABLES_SQL: &str = r#"
          CREATE TABLE IF NOT EXISTS room_graph_stats (
              name TEXT PRIMARY KEY, value INTEGER NOT NULL
          );
+         CREATE TABLE IF NOT EXISTS room_link_anomalies (
+             plugin TEXT PRIMARY KEY, count INTEGER NOT NULL,
+             first_marker INTEGER NOT NULL, first_cell INTEGER NOT NULL
+         );
 "#;
 
 /// Old NULL endpoints are ambiguous. Adding columns never promotes them to authored outside.
@@ -149,17 +153,17 @@ pub(crate) fn restore_portal_endpoint_provenance<'a>(
         "UPDATE room_portals SET unbounded_a=(room_a IS NULL AND ?3), unbounded_b=(room_b IS NULL AND ?4) WHERE ref_id=?1 AND pair_index=?2",
     )?;
     let mut incomplete = conn.prepare_cached(
-        "UPDATE room_graph_cells SET complete=0 WHERE cell_id IN \
-         (SELECT cell_id FROM room_portals WHERE ref_id=?1)",
+        "UPDATE room_graph_cells SET complete=0 WHERE cell_id IN
+         (SELECT cell_id FROM room_portals WHERE ref_id=?1 AND
+          (?2 OR (room_a IS NULL AND NOT unbounded_a) OR (room_b IS NULL AND NOT unbounded_b)))",
     )?;
     for (id, source) in sources {
         if clear.execute([id])? == 0 {
             continue;
         }
-        if let Some(source) =
-            source.filter(|bytes| !bytes.is_empty() && bytes.len().is_multiple_of(8))
-        {
-            for (index, pair) in source.as_chunks::<8>().0.iter().enumerate() {
+        let pairs = source.filter(|bytes| !bytes.is_empty() && bytes.len().is_multiple_of(8));
+        if let Some(bytes) = pairs {
+            for (index, pair) in bytes.as_chunks::<8>().0.iter().enumerate() {
                 set.execute(params![
                     id,
                     index as i64,
@@ -167,10 +171,8 @@ pub(crate) fn restore_portal_endpoint_provenance<'a>(
                     u32_at(pair, 4) == Some(0)
                 ])?;
             }
-        } else {
-            // Canonical adaptation can retain only one of conflicting source occurrences.
-            incomplete.execute([id])?;
         }
+        incomplete.execute(params![id, pairs.is_none()])?;
     }
     Ok(())
 }
@@ -303,6 +305,17 @@ pub struct RoomGraphReport {
     /// Occlusion markers with missing, malformed or unsupported geometry.
     #[serde(default)]
     pub invalid_occluders_skipped: u64,
+    /// Markers with an invalid `XRMR` header or a mismatched source `XLRM` count.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub room_link_anomalies: BTreeMap<String, RoomLinkAnomalies>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomLinkAnomalies {
+    pub count: u64,
+    /// Lowest FormID among affected markers from this plugin.
+    pub first_marker: u32,
+    pub first_cell: u32,
 }
 
 const STAT_NAMES: [&str; 14] = [
@@ -350,6 +363,17 @@ impl RoomGraphReport {
                 params![name, value as i64],
             )?;
         }
+        let mut statement = conn.prepare(
+            "INSERT INTO room_link_anomalies(plugin,count,first_marker,first_cell) VALUES (?1,?2,?3,?4)",
+        )?;
+        for (plugin, anomalies) in &self.room_link_anomalies {
+            statement.execute(params![
+                plugin,
+                anomalies.count,
+                anomalies.first_marker,
+                anomalies.first_cell
+            ])?;
+        }
         Ok(())
     }
 
@@ -392,6 +416,21 @@ impl RoomGraphReport {
                 _ => {}
             }
         }
+        if table_exists(conn, "room_link_anomalies")? {
+            let mut statement = conn
+                .prepare("SELECT plugin,count,first_marker,first_cell FROM room_link_anomalies")?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    RoomLinkAnomalies {
+                        count: row.get(1)?,
+                        first_marker: row.get(2)?,
+                        first_cell: row.get(3)?,
+                    },
+                ))
+            })?;
+            report.room_link_anomalies = rows.collect::<Result<_>>()?;
+        }
         Ok(report)
     }
 }
@@ -409,6 +448,7 @@ pub fn clear(conn: &Connection) -> Result<()> {
         "room_model_bounds",
         "reference_rooms",
         "room_graph_stats",
+        "room_link_anomalies",
     ] {
         conn.execute(&format!("DELETE FROM {table}"), [])?;
     }
@@ -577,21 +617,16 @@ fn is_placed(record_type: &[u8; 4]) -> bool {
     super::is_placed_record_type(record_type)
 }
 
-fn room_link_metadata_is_complete<'a>(
-    form_id: u32,
-    cell: u32,
+fn room_link_metadata_anomaly<'a>(
     fields: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
-) -> bool {
+) -> Option<String> {
     let mut header = None;
     let mut actual = 0;
     for (tag, data) in fields {
         match tag {
             b"XRMR" => {
                 if header.replace(data).is_some() {
-                    eprintln!(
-                        "warning: room marker {form_id:08X} in cell {cell:08X} has repeated XRMR headers"
-                    );
-                    return false;
+                    return Some("has repeated XRMR headers".into());
                 }
             }
             b"XLRM" => actual += 1,
@@ -601,27 +636,13 @@ fn room_link_metadata_is_complete<'a>(
     let declared = match header {
         // The native loader masks the two lighting and image-space flags off the count.
         Some(&[low, high, _, _]) => usize::from(u16::from_le_bytes([low, high]) & 0x3fff),
-        Some(_) => {
-            eprintln!(
-                "warning: room marker {form_id:08X} in cell {cell:08X} has a malformed XRMR header"
-            );
-            return false;
-        }
-        None if actual == 0 => return true,
+        Some(_) => return Some("has a malformed XRMR header".into()),
+        None if actual == 0 => return None,
         None => {
-            eprintln!(
-                "warning: room marker {form_id:08X} in cell {cell:08X} has {actual} XLRM entries without an XRMR header"
-            );
-            return false;
+            return Some(format!("has {actual} XLRM entries without an XRMR header"));
         }
     };
-    if declared != actual {
-        eprintln!(
-            "warning: room marker {form_id:08X} in cell {cell:08X} has {actual} XLRM entries but XRMR declares {declared}"
-        );
-        return false;
-    }
-    true
+    (declared != actual).then(|| format!("has {actual} XLRM entries but XRMR declares {declared}"))
 }
 
 /// Rebuilds the room tables from the merged records. `interior_cells` are the CELL records
@@ -641,6 +662,8 @@ pub fn export_room_graph(
         master,
         interior_cells,
         None,
+        None,
+        None,
         &mut ProjectionOmissions::default(),
     )
 }
@@ -649,12 +672,15 @@ pub(crate) fn export_room_graph_with_sources(
     tx: &Transaction<'_>,
     master: &HashMap<u32, RawRecord>,
     interior_cells: &HashSet<u32>,
-    sources: Option<(&HashMap<u32, DecodedRecord>, &LoadOrder)>,
+    sources: Option<&HashMap<u32, DecodedRecord>>,
+    order: Option<&LoadOrder>,
+    damaged_placement_cells: Option<&HashSet<u32>>,
     omissions: &mut ProjectionOmissions,
 ) -> Result<RoomGraphReport> {
     clear(tx)?;
     let mut report = RoomGraphReport::default();
     let mut incomplete = HashSet::new();
+    incomplete.extend(damaged_placement_cells.into_iter().flatten().copied());
     let mut ordered: Vec<(&u32, &RawRecord)> = master
         .iter()
         .filter(|(_, record)| {
@@ -680,6 +706,40 @@ pub(crate) fn export_room_graph_with_sources(
         }
         let cell = record.cell_form_id.unwrap_or(0);
         let view = SubrecordView::new(&record.subrecords);
+        // The typed projection can lack rejected occurrences, so count its source fields.
+        let anomaly = match sources.and_then(|sources| sources.get(&form_id)) {
+            Some(source) => match source.framed_source_subrecords() {
+                Some(fields) => room_link_metadata_anomaly(
+                    fields.iter().map(|(tag, data)| (tag.as_slice(), *data)),
+                ),
+                None => {
+                    incomplete.insert(cell);
+                    None
+                }
+            },
+            None => room_link_metadata_anomaly(
+                record
+                    .subrecords
+                    .iter()
+                    .map(|(tag, data)| (tag.as_slice(), data.as_slice())),
+            ),
+        };
+        if let Some(anomaly) = anomaly {
+            incomplete.insert(cell);
+            let plugin = order
+                .and_then(|order| order.names.get(record.load_order as usize))
+                .map_or("<unknown plugin>", String::as_str);
+            eprintln!("warning: {plugin}: room marker {form_id:08X} in cell {cell:08X} {anomaly}");
+            report
+                .room_link_anomalies
+                .entry(plugin.to_owned())
+                .or_insert(RoomLinkAnomalies {
+                    count: 0,
+                    first_marker: form_id,
+                    first_cell: cell,
+                })
+                .count += 1;
+        }
         let Some(xprm) = view.find(b"XPRM").filter(|data| data.len() >= 32) else {
             incomplete.insert(cell);
             report.non_box_rooms_skipped += 1;
@@ -710,27 +770,6 @@ pub(crate) fn export_room_graph_with_sources(
             report.invalid_markers_skipped += 1;
             incomplete.insert(cell);
             continue;
-        }
-        // The typed projection can lack rejected occurrences, so count its source fields.
-        let links_complete = match sources.and_then(|(sources, _)| sources.get(&form_id)) {
-            Some(source) => source.framed_source_subrecords().is_some_and(|fields| {
-                room_link_metadata_is_complete(
-                    form_id,
-                    cell,
-                    fields.iter().map(|(tag, data)| (tag.as_slice(), *data)),
-                )
-            }),
-            None => room_link_metadata_is_complete(
-                form_id,
-                cell,
-                record
-                    .subrecords
-                    .iter()
-                    .map(|(tag, data)| (tag.as_slice(), data.as_slice())),
-            ),
-        };
-        if !links_complete {
-            incomplete.insert(cell);
         }
         let flags = record
             .subrecords
@@ -848,15 +887,17 @@ pub(crate) fn export_room_graph_with_sources(
         if pairs == 0 {
             incomplete.insert(cell);
         }
-        let side = |pair: usize, offset: usize| {
-            u32_at(xpod, pair * 8 + offset)
-                .filter(|_| pair < pairs)
-                .filter(|id| {
-                    *id != 0
-                        && rooms_by_cell
-                            .get(&cell)
-                            .is_some_and(|rooms| rooms.iter().any(|room| room.ref_id == *id))
-                })
+        let mut side = |pair: usize, offset: usize| {
+            let id = u32_at(xpod, pair * 8 + offset).filter(|&id| pair < pairs && id != 0)?;
+            if rooms_by_cell
+                .get(&cell)
+                .is_some_and(|rooms| rooms.iter().any(|room| room.ref_id == id))
+            {
+                Some(id)
+            } else {
+                incomplete.insert(cell);
+                None
+            }
         };
         for pair in 0..pairs.max(1) {
             let (room_a, room_b) = (side(pair, 0), side(pair, 4));
@@ -877,7 +918,7 @@ pub(crate) fn export_room_graph_with_sources(
         report.portals += 1;
     }
 
-    let occluders = occluders::export(tx, master, interior_cells, sources, omissions)?;
+    let occluders = occluders::export(tx, master, interior_cells, sources.zip(order), omissions)?;
     report.occluders = occluders.count;
     report.invalid_occluders_skipped = occluders.invalid;
     incomplete.extend(occluders.incomplete_cells);
@@ -899,12 +940,15 @@ pub(crate) fn export_room_graph_with_sources(
             continue;
         }
         let view = SubrecordView::new(&record.subrecords);
-        let target = view
-            .get_form_id(b"XMBR")
-            .filter(|&id| id != 0 && view.find_all(b"XMBR").count() == 1);
+        let mut targets = view.find_all(b"XMBR");
+        let authored_target = targets.next();
+        let target = authored_target
+            .and_then(|data| <[u8; 4]>::try_from(data).ok())
+            .map(u32::from_le_bytes)
+            .filter(|&id| id != 0 && targets.next().is_none());
         let assignment = if target.is_some() {
             "target"
-        } else if view.find(b"XMBR").is_some() {
+        } else if authored_target.is_some() {
             "unknown"
         } else if record.flags & shared::records::MULTIBOUND_REFERENCE_FLAG != 0 {
             "none"

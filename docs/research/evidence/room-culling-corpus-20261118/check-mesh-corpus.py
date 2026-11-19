@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 import struct
 import subprocess
+import tempfile
 
 BASELINE_DIGEST = "a4e08f52273b700779c5e0cd40d2b039ac9be6e3f1443ee45980674f69126526"
 SOURCE_DIGEST = "cf8ac2dcb0c409e2b917b495467f948297c48a9954c896d70d52f67486ab4115"
@@ -23,7 +24,7 @@ def read_manifest(path, expected):
     return json.loads(raw)
 
 
-def checked_inputs(sources, baseline_assets, baseline_manifest, source_inventory):
+def checked_inputs(sources, snapshot, baseline_assets, baseline_manifest, source_inventory):
     hashes = read_manifest(baseline_manifest, BASELINE_DIGEST)
     inventory = read_manifest(source_inventory, SOURCE_DIGEST)
     extracted = {path.relative_to(sources).as_posix() for path in sources.rglob("*.nif")}
@@ -35,8 +36,12 @@ def checked_inputs(sources, baseline_assets, baseline_manifest, source_inventory
             raise ValueError(f"Unexpected model path {model}")
         source = sources / relative
         baseline = (baseline_assets / relative).with_suffix(".glb")
-        if sha256(source.read_bytes()) != expected["sha256"]:
+        data = source.read_bytes()
+        if sha256(data) != expected["sha256"]:
             raise ValueError(f"Source digest mismatch for {model}")
+        destination = snapshot / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(data)
         if sha256(baseline.read_bytes()) != hashes[model]:
             raise ValueError(f"Captured GLB digest mismatch for {model}")
     return hashes
@@ -84,7 +89,7 @@ def scene_metrics(document):
         if "mesh" not in node:
             continue
         counts["mesh_instances"] += 1
-        drawable_transforms.append((node["mesh"], path))
+        drawable_transforms.append((node["mesh"], node.get("skin"), path))
         for primitive in meshes[node["mesh"]]["primitives"]:
             counts["primitives"] += 1
             if primitive.get("mode", 4) == 4:
@@ -94,7 +99,7 @@ def scene_metrics(document):
 
 
 def primitive_geometry(document):
-    return [
+    primitives = [
         [
             {key: primitive[key] for key in ("attributes", "indices", "mode", "targets")
              if key in primitive}
@@ -102,6 +107,24 @@ def primitive_geometry(document):
         ]
         for mesh in document.get("meshes", [])
     ]
+    referenced = set()
+    for mesh in primitives:
+        for primitive in mesh:
+            referenced.update(primitive["attributes"].values())
+            if "indices" in primitive:
+                referenced.add(primitive["indices"])
+            for target in primitive.get("targets", []):
+                referenced.update(target.values())
+    skins = document.get("skins", [])
+    referenced.update(skin["inverseBindMatrices"] for skin in skins if "inverseBindMatrices" in skin)
+    accessors = {i: document["accessors"][i] for i in referenced}
+    views = set()
+    for accessor in accessors.values():
+        if "bufferView" in accessor:
+            views.add(accessor["bufferView"])
+        if "sparse" in accessor:
+            views.update(accessor["sparse"][part]["bufferView"] for part in ("indices", "values"))
+    return primitives, skins, accessors, {i: document["bufferViews"][i] for i in views}
 
 
 def compare(model, expected, baseline_assets, output):
@@ -111,6 +134,8 @@ def compare(model, expected, baseline_assets, output):
     if result["final_sha256"] == expected:
         return result
     previous = (baseline_assets / relative).read_bytes()
+    if sha256(previous) != expected:
+        raise ValueError(f"Captured GLB digest mismatch for {model}")
     before, before_binary = glb_chunks(previous)
     after, after_binary = glb_chunks(final)
     before_counts, before_transforms = scene_metrics(before)
@@ -133,6 +158,8 @@ def run(worktree, output, sources, baseline_assets, hashes):
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=worktree, text=True).strip()
 
+    if output.is_relative_to(Path(git("rev-parse", "--show-toplevel"))):
+        raise ValueError("Choose an output directory outside the worktree")
     head = git("rev-parse", "HEAD")
     if git("status", "--porcelain"):
         raise ValueError(f"Expected a clean committed HEAD in {worktree}")
@@ -184,8 +211,10 @@ def main():
     args = parser.parse_args()
     sources = args.sources.resolve()
     baseline_assets = args.captured_assets.resolve()
-    hashes = checked_inputs(sources, baseline_assets, args.captured_hashes, args.source_inventory)
-    run(args.worktree.resolve(), args.output.resolve(), sources, baseline_assets, hashes)
+    with tempfile.TemporaryDirectory(prefix="room-corpus-") as directory:
+        snapshot = Path(directory)
+        hashes = checked_inputs(sources, snapshot, baseline_assets, args.captured_hashes, args.source_inventory)
+        run(args.worktree.resolve(), args.output.resolve(), snapshot, baseline_assets, hashes)
 
 
 if __name__ == "__main__":
