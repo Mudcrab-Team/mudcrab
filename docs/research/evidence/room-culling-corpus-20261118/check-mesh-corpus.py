@@ -71,23 +71,28 @@ def scene_metrics(document):
     accessors = document.get("accessors", [])
     scenes = document.get("scenes", [])
     roots = scenes[document.get("scene", 0)].get("nodes", []) if scenes else []
-    pending = [(index, ()) for index in roots]
+    pending = [(index, None, ()) for index in roots]
     counts = dict(mesh_instances=0, primitives=0, triangles=0)
     drawable_transforms = []
-    visited = set()
+    parents = {}
+    local_transforms = {}
+    referenced_skins = set()
     while pending:
-        index, path = pending.pop()
-        if index in visited:
+        index, parent, path = pending.pop()
+        if index in parents:
             raise ValueError("A node is reached twice in the GLB scene")
-        visited.add(index)
+        parents[index] = parent
         node = nodes[index]
         transform = {key: node[key] for key in ("matrix", "translation", "rotation", "scale")
                      if key in node}
+        local_transforms[index] = transform
         if transform:
             path += (transform,)
-        pending.extend((child, path) for child in node.get("children", []))
+        pending.extend((child, index, path) for child in node.get("children", []))
         if "mesh" not in node:
             continue
+        if "skin" in node:
+            referenced_skins.add(node["skin"])
         counts["mesh_instances"] += 1
         drawable_transforms.append((node["mesh"], node.get("skin"), path))
         for primitive in meshes[node["mesh"]]["primitives"]:
@@ -95,7 +100,20 @@ def scene_metrics(document):
             if primitive.get("mode", 4) == 4:
                 index = primitive.get("indices", primitive["attributes"]["POSITION"])
                 counts["triangles"] += accessors[index]["count"] // 3
-    return counts, drawable_transforms
+    joint_paths = {}
+    for skin_index in referenced_skins:
+        for joint in document["skins"][skin_index]["joints"]:
+            if joint not in parents:
+                raise ValueError(f"Joint {joint} of skin {skin_index} is outside the drawable scene")
+            if joint in joint_paths:
+                continue
+            chain = []
+            index = joint
+            while index is not None:
+                chain.append((index, local_transforms[index]))
+                index = parents[index]
+            joint_paths[joint] = chain
+    return counts, drawable_transforms, joint_paths
 
 
 def primitive_geometry(document):
@@ -138,14 +156,15 @@ def compare(model, expected, baseline_assets, output):
         raise ValueError(f"Captured GLB digest mismatch for {model}")
     before, before_binary = glb_chunks(previous)
     after, after_binary = glb_chunks(final)
-    before_counts, before_transforms = scene_metrics(before)
-    after_counts, after_transforms = scene_metrics(after)
+    before_counts, before_transforms, before_joints = scene_metrics(before)
+    after_counts, after_transforms, after_joints = scene_metrics(after)
     result.update(
         changed_json_fields=sorted(key for key in before.keys() | after.keys()
                                    if before.get(key) != after.get(key)),
         same_binary_chunks=before_binary == after_binary,
         same_primitive_geometry=primitive_geometry(before) == primitive_geometry(after),
         same_drawable_transform_paths=before_transforms == after_transforms,
+        same_joint_transform_paths=before_joints == after_joints,
         before_counts=before_counts,
         after_counts=after_counts,
         before_room_sphere=before.get("extras", {}).get("mudcrabRoomSphere"),
