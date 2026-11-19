@@ -2,6 +2,7 @@
 
 use color_eyre::{Result, eyre::ensure};
 
+// The observed unit conversions and gravity values are documented in docs/research/skyrim-physics-221.md.
 const HAVOK_TO_CREATION: f32 = f32::from_bits(0x428b_fb85);
 const CREATION_TO_HAVOK: f32 = f32::from_bits(0x3c6a_161e);
 const GRAVITY_HAVOK: f32 = f32::from_bits(0x411c_f5c3);
