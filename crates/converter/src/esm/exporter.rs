@@ -832,10 +832,14 @@ fn export_records(
         check_record_insert(&statement)?;
         Some(statement)
     };
+    let mut edited_references = HashSet::new();
     for (&form_id, record) in ordered {
         let type_str = from_utf8(&record.record_type).unwrap_or("UNKN");
         let subset_placement = order.is_none() && super::is_placed_record_type(&record.record_type);
         if subset_placement {
+            if type_str == "REFR" {
+                edited_references.insert(form_id);
+            }
             if record.is_deleted() {
                 let previous_type: Option<String> = tx
                     .prepare_cached("SELECT record_type FROM records WHERE form_id=?1")?
@@ -1216,6 +1220,8 @@ fn export_records(
         // Read back from the canonical `records` and `references` rows just written, so the
         // legacy and in-house readers share one projection.
         super::doors::project_door_links(&tx)?;
+    } else {
+        super::doors::refresh_placement_links(&tx, &edited_references)?;
     }
     tx.commit()
 }

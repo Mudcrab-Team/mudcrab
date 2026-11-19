@@ -1442,7 +1442,8 @@ Unbounded traversal also requires both endpoint columns, `visibility_version = 2
 `room_graph_cells` marker for the cell. A skipped unsupported room or invalid room/portal marker
 makes that cell incomplete, so the runtime draws the whole cell. Negative room or portal extents are invalid; the loader also rejects them in older packs. Other complete cells retain
 unbounded traversal. The engine keeps the full cell visible whenever its completeness row or the table itself is
-missing. A full room export enables portal clipping in cells verified as complete.
+missing. Write one row per assessed interior. Set `complete=1` only after validating its room
+geometry, links and portal endpoints. Set `complete=0` for an interior with incomplete evidence.
 In a versioned graph, the engine reads the cell's `references.id` values to distinguish known
 placements from references belonging to other cells or unknown runtime objects.
 
@@ -1515,8 +1516,8 @@ converter apply-room-placements path/to/assets --native decorations.json
 The pack must retain the in-house reader's plugin headers. Masters can come from the original
 conversion or earlier placement imports. Existing FormID slots stay stable. The command reads
 `REFR` adds, full overrides, moves, and deleted headers for existing interiors. The supported
-bases are existing `STAT` records and Skyrim's room, portal, and occlusion markers. A master-owned `CELL`
-record can identify an existing interior for its children. The import uses only its FormID.
+bases are existing `STAT` and `DOOR` records and Skyrim's room, portal, and occlusion markers. A master-owned
+`CELL` record can identify an existing interior for its children. The import uses only its FormID.
 
 A plugin can declare a new interior with a plugin-owned `CELL`. Give it a nonzero local FormID
 that fits the plugin's full or light slot, a null-terminated UTF-8 `EDID`, and `DATA` with only
@@ -1526,8 +1527,9 @@ and cell-child groups. Its record header supports the compression flag. Its plac
 unused FormIDs owned by the same plugin.
 
 Supported `REFR` fields are `EDID`, `NAME`, `DATA`, `XSCL`, `XESP`, `XMBR`, and the marker fields
-`XPRM`, `XRMR`, `XLRM`, `XPOD`, `XORD`, `LNAM`, and `INAM`. Static primitives, actor references, doors,
-scripts, new base records, exterior changes, and other `CELL` fields require a normal conversion.
+`XPRM`, `XRMR`, `XLRM`, `XPOD`, `XORD`, `LNAM`, and `INAM`. A door can also carry an `XTEL` field.
+Static primitives, actor references, scripts, new base records, exterior changes, and other
+`CELL` fields require a normal conversion.
 
 `--native` accepts a `cells` array for new interiors and an `edits` array for placements.
 Provide at least one cell or edit. A cell declaration takes an `id`, an `editor_id`, and an optional
@@ -1718,8 +1720,10 @@ record decides: an override that removes `XTEL` removes the link. The `XTEL` fla
 projected; it stays in `records.data`.
 
 A full load-order export clears and rebuilds the table on every conversion, like the grass and
-room tables. The movement-annotation subset export leaves it alone, and a diagnostic archive
-(which defers every runtime view) leaves it empty. `create_tables` adds the table to an older
+room tables. Placement edits refresh links to and from edited doors in the same transaction.
+When a plugin placement layer edits a door, the projection reads its effective fields from
+`references.data`. The movement-annotation subset export leaves the table alone. A diagnostic
+archive defers every runtime view and leaves the table empty. `create_tables` adds the table to an older
 reused database, and adds `destination_name` to a table that predates it.
 `door-links-annotate <skyrim_world.db>` rebuilds it in one transaction from a converted
 database's own winning records, with no plugin reparsed, so an existing package gains doors
