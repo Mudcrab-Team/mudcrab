@@ -90,3 +90,38 @@ The nonempty-subset regression failed when replacing `A.nif` with `B.nif`: the o
 It now covers replacement, removal, and unchanged-model updates for both `STAT` and modeled `LIGH`
 records, including affected cells and unrelated controls. This fixes derived ownership metadata;
 the existing retail images were not rerun for subset conversion.
+
+## Katariah wall control, 2026-11-19
+
+The integrated traversal still hides a drawable wall in the upper-right corner of the named-floor view.
+At the NONE-floor pose, room culling removes 95 main-camera meshes and leaves the entire PNG identical.
+
+| Settled camera pose | Meshes with room culling | Meshes without room culling |
+| --- | ---: | ---: |
+| NONE floor | 58 | 153 |
+| Named floor | 39 | 255 |
+
+Both runs used the same executable and private pack. The pack rebuilt all 236 requested models for
+Katariah01. Each mode reproduced both PNGs byte for byte on a second run. Run the two poses from
+the [receipt](evidence/room-review-20261117/katariah-wedge-control.json) with `--shots`, then add
+`--shots-no-room-culling` for the control. The retail images are the camera-verified Skyrim
+1.7.104 captures from November 17.
+
+In the named-floor view, a close wall (`000BC19E`) covers the disputed corner when room filtering
+is off. In a separate database copy we lowered only that placement by 50,000 Creation units.
+The exposed 40 × 40 patch at pixel (1320, 50) then showed wall detail with filtering off.
+With filtering on, all 1,600 pixels were black at the default grade. Allowing one additional
+placement through the filter, wall `000C4A50` (`ShipKatariahWoodWall01.nif`), raised the drawn
+count from 39 to 40 and reproduced the exposed off-control patch exactly.
+
+For that intervention, change only the wall's `room_reference_rules.assignment` from `auto` to
+`none` in the displaced-wall copy. The same patch matched at a second lighting setting
+(`--lights --color-grade off`). Admitting the other nearby wall, `000C4A65`, left 1,571 of the
+1,600 pixels different from the exposed off control under that setting. The intervention identifies
+the Mudcrab placement responsible for the sampled detail. Skyrim's placement identity and the
+reason its visibility differs remain open.
+
+![Katariah named-floor view and enlarged upper-right corner across the retail and Mudcrab controls](evidence/room-review-20261117/katariah-wedge-control.jpg)
+
+The orange box marks the measured patch. The Mudcrab panels use the second lighting setting and
+three times the captured RGB values for legibility. Pixel comparisons use the original PNGs.
