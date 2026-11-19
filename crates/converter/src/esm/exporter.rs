@@ -4,6 +4,7 @@ use crate::esm::{
     load_order::{LoadOrder, StableId},
     projection_omissions::{OmissionCategory, ProjectionOmissions},
     records::{RawRecord, achr::SubrecordXESP},
+    rooms::{RoomLinkLayout, RoomLinkSources},
 };
 use crate::{
     asset_path::{AssetKind, canonical_asset_path},
@@ -403,8 +404,7 @@ struct ExportOptions<'a> {
     scalar_scripts: bool,
     /// Source remapping preserves authored nulls; typed canonical nulls need source verification.
     trusted_portal_nulls: bool,
-    /// Typed export counts room link occurrences in winning source payloads.
-    decoded_records: Option<&'a HashMap<u32, DecodedRecord>>,
+    room_link_sources: Option<RoomLinkSources<'a>>,
     damaged_placement_cells: Option<&'a HashSet<u32>>,
 }
 
@@ -424,7 +424,7 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
             runtime_views: true,
             scalar_scripts: false,
             trusted_portal_nulls: true,
-            decoded_records: None,
+            room_link_sources: None,
             damaged_placement_cells: None,
         },
     )
@@ -450,7 +450,7 @@ pub fn export_to_db_with_load_order(
             runtime_views: true,
             scalar_scripts: false,
             trusted_portal_nulls: true,
-            decoded_records: None,
+            room_link_sources: None,
             damaged_placement_cells: None,
         },
     )
@@ -466,6 +466,7 @@ pub(super) fn export_plugins_to_db(
     plugin_paths: &[PathBuf],
     unresolved_fields: &HashMap<u32, BTreeSet<usize>>,
     damaged_placement_cells: &HashSet<u32>,
+    room_link_layouts: &HashMap<u32, RoomLinkLayout>,
 ) -> Result<()> {
     export_records(
         conn,
@@ -478,7 +479,7 @@ pub(super) fn export_plugins_to_db(
             runtime_views: true,
             scalar_scripts: false,
             trusted_portal_nulls: true,
-            decoded_records: None,
+            room_link_sources: Some(RoomLinkSources::Legacy(room_link_layouts)),
             damaged_placement_cells: Some(damaged_placement_cells),
         },
     )
@@ -505,7 +506,7 @@ pub(crate) fn export_inhouse_to_db(
             runtime_views: true,
             scalar_scripts: true,
             trusted_portal_nulls: false,
-            decoded_records: Some(decoded_records),
+            room_link_sources: Some(RoomLinkSources::Typed(decoded_records)),
             damaged_placement_cells: None,
         },
     )
@@ -530,7 +531,7 @@ pub(crate) fn export_inhouse_record_archive_to_db(
             runtime_views: false,
             scalar_scripts: true,
             trusted_portal_nulls: false,
-            decoded_records: None,
+            room_link_sources: None,
             damaged_placement_cells: None,
         },
     )
@@ -663,7 +664,7 @@ fn export_records(
         runtime_views,
         scalar_scripts,
         trusted_portal_nulls,
-        decoded_records,
+        room_link_sources,
         damaged_placement_cells,
     } = options;
     conn.set_prepared_statement_cache_capacity(64);
@@ -1083,7 +1084,7 @@ fn export_records(
             &tx,
             master,
             &interior_cells,
-            decoded_records,
+            room_link_sources,
             Some(order),
             damaged_placement_cells,
             &mut omissions,

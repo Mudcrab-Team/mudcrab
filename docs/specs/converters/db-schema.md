@@ -1357,9 +1357,11 @@ Columns and rules:
 - **`room_links`**: one row per distinct `XLRM` target, retaining the last occurrence's
   zero-based `link_index`, with no synthesized mirror rows. Migration adds the column with zero defaults; only a fresh export
   publishes the authored-assignment version. The target is retained even if no room row exists.
-  Both readers compare the lower 14 bits of the first `XRMR` word with the number of source
-  `XLRM` occurrences before deduplication. A count mismatch, a malformed or repeated header,
-  or links without a header mark the cell incomplete.
+  Both readers check the source order before publishing resolved links. One four-byte `XRMR`
+  header precedes four-byte `LNAM` and `INAM` fields, in that order, when their flags are set.
+  The lower 14 bits of the first `XRMR` word give the number of contiguous four-byte `XLRM`
+  slots that follow. A misplaced field or count mismatch marks the cell incomplete. The export
+  retains links from the valid prefix of this run, up to the declared count.
   In authored mode, `XRMR[2] != 0` marks a master (`(flags >> 8) & 255` in `room_bounds`).
   An unlinked marker is also a master. Slaves resolve linked masters, preferring direct masters
   before recursive links and traversing reverse source order. Explicit masters install missing
@@ -1401,9 +1403,10 @@ Columns and rules:
   `visibility_version = 2` additionally marks graphs whose outside endpoints have verified
   source provenance. The typed reader publishes this marker and the flags in the source-data
   transaction. Until that transaction commits, the runtime uses legacy fallback behavior.
-- **`room_link_anomalies`** counts markers with `XRMR` header or linked-count anomalies for each
+- **`room_link_anomalies`** counts markers with `XRMR` header, field order, or link count anomalies for each
   supplying plugin. The lowest affected marker FormID and its cell are stored with the count.
-  `integration-report.json` shows these rows under `room_graph.room_link_anomalies`.
+  Each plugin has one warning with that count and example. `integration-report.json` shows
+  the counts under `room_graph.room_link_anomalies`.
 
 The tables are derived data: a full load-order export clears and rebuilds them from the winning
 records on every conversion, like the grass tables. Subsets without placed references, including
