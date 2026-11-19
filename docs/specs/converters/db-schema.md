@@ -1424,6 +1424,63 @@ the compiled converter digest invalidates old base-database cache bundles, and t
 regenerate source-sphere metadata. These
 additive tables do not change the global world schema or add a feature flag.
 
+#### Edit room placements after conversion
+
+Use `converter apply-room-placements` on a private, offline asset directory with the current world
+database schema and versioned room graph. The command takes the pack's exclusive lock.
+
+```sh
+converter apply-room-placements path/to/assets --plugin Decorations.esp
+converter apply-room-placements path/to/assets --native decorations.json
+```
+
+`--plugin` appends a placement-only `.esp`, `.esm`, or `.esl` to the original plugin order.
+The pack must retain the in-house reader's plugin headers. Masters can come from the original
+conversion or earlier placement imports. Existing FormID slots stay stable. The command reads
+`REFR` adds, full overrides, moves, and deleted headers for existing interiors. The supported
+bases are existing `STAT` records and Skyrim's room and portal markers. A `CELL` record can
+identify an existing interior for its children. Its fields are ignored. Supported `REFR` fields
+are `EDID`, `NAME`, `DATA`, `XSCL`, `XESP`, `XMBR`, and the room and portal marker fields
+`XPRM`, `XRMR`, `XLRM`, `XPOD`, `LNAM`, and `INAM`. Static primitives, actor references, doors,
+scripts, new base records, new cells, and exterior changes require a normal conversion.
+
+`--native` accepts an `edits` array. `put` adds or replaces a static placement, and `delete`
+removes a placement by `id`. Use numeric runtime FormIDs from the target pack. For a new native
+placement, choose an unused ID from `0xFF000001` through `0xFFFFFFFF`. Position uses Creation
+units. Rotation uses radians and defaults to `[0, 0, 0]`. Scale defaults to `1`. Ownership
+defaults to `{"kind": "auto"}`. Use `{"kind": "none"}` for a Multibound override without a
+target, or `{"kind": "target", "room": 2048}` for a named room.
+
+```json
+{
+  "edits": [
+    {
+      "op": "put",
+      "id": 4278190081,
+      "cell": 2304,
+      "base": 2457,
+      "position": [32, 0, 16],
+      "ownership": {"kind": "target", "room": 2048}
+    },
+    {"op": "delete", "id": 2051}
+  ]
+}
+```
+
+One transaction updates runtime `references`, the edited ownership rules, and the room geometry
+and legacy memberships of affected cells. Moves refresh both the source and destination cells.
+The command uses the model bounds already in the pack. A cell retains certification only if it
+was certified before the edit and its refreshed graph passes validation. Unknown assignments and
+unverified portal endpoints retain their conservative behavior. A full conversion is required to
+establish certification for a previously incomplete or uncertified cell.
+
+The original conversion's canonical `records`, `formid_map`, source history, and reports remain
+available for inspection. `room_placement_layers` retains the exact imported file and checksum.
+`room_placement_edits` maps each edited runtime FormID to its source FormID and records deletions.
+Reapplying the same source is a no-op. Subsequent imports apply in command order. A new conversion
+replaces this runtime snapshot. To reproduce the edited pack, reapply its placement sources in the
+same order.
+
 The following table describes geometric membership. Whole-cell fallbacks and reference exemptions
 take precedence over the per-object rules. Other renderer visibility checks still apply.
 
