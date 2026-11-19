@@ -164,6 +164,9 @@ jobs:
       - name: Test recorded comparison value matching
         run: python3 -B -m unittest discover -s tools/record_comparison -p 'test_*.py' -v
 
+      - name: Test Papyrus parity tools
+        run: python3 -B -m unittest discover -s tools/papyrus-parity -p 'test_*.py' -v
+
       - name: Test world-data evidence inventory and source drift
         if: needs.orchestrate.outputs.check_world_data == 'true'
         run: |
