@@ -3078,6 +3078,57 @@ mod tests {
     }
 
     #[test]
+    fn a_close_second_portal_must_intersect_the_inherited_aperture() {
+        let db = authored_database();
+        insert_room(&db, 1, 7, [0.0; 3]);
+        insert_room(&db, 2, 7, [0.0, 30.0, 0.0]);
+        insert_room(&db, 3, 7, [0.0, 60.0, 0.0]);
+        let mut graph = load_room_graph(&db, 7).unwrap();
+        assert!(graph.authored.is_some());
+        let entrance = doorway(10, Vec3::new(0.0, 0.0, -20.0), 1.0, [0, 1]);
+        let bounds = MeshBounds::transformed(
+            &Aabb::from_min_max(-Vec3::splat(0.2), Vec3::splat(0.2)),
+            Affine3A::from_translation(Vec3::new(0.0, 0.0, -40.0)),
+        )
+        .unwrap();
+        let side_exit = |x| {
+            let mut exit = side_doorway(11, Vec3::new(x, 0.0, -14.0), 11.0, [1, 2]);
+            for corner in &mut exit.corners {
+                corner.y /= 11.0;
+            }
+            exit
+        };
+        for (exit, reaches_far_room) in [
+            (doorway(11, Vec3::new(3.0, 0.0, -3.0), 0.5, [1, 2]), false),
+            (doorway(11, Vec3::new(0.0, 0.0, -3.0), 0.5, [1, 2]), false),
+            (side_exit(3.0), false),
+            (side_exit(0.5), true),
+        ] {
+            assert!(exit.distance_to(Vec3::ZERO) < PORTAL_OPEN_DISTANCE);
+            let exit_center = exit.center();
+            graph.portals = vec![entrance.clone(), exit];
+            let visible = graph
+                .visibility_volumes(Vec3::ZERO, Vec3::ZERO, clip_from_local())
+                .unwrap();
+            assert!(visible.rooms[1].is_reached());
+            assert_eq!(
+                visible.rooms[2].is_reached(),
+                reaches_far_room,
+                "{exit_center}"
+            );
+            assert_eq!(visible.rooms[2].intersects(Some(&bounds)), reaches_far_room);
+        }
+
+        // A close entrance can still open the route when it sits outside the camera frustum.
+        let clip = Mat4::perspective_infinite_reverse_rh(std::f32::consts::FRAC_PI_3, 1.0, 8.0);
+        graph.portals = vec![
+            doorway(10, Vec3::new(3.0, 0.0, -3.0), 0.5, [0, 1]),
+            doorway(11, Vec3::new(0.0, 0.0, -30.0), 1.0, [1, 2]),
+        ];
+        assert!(reached_rooms(&graph, Vec3::ZERO, clip).unwrap()[2]);
+    }
+
+    #[test]
     fn occluder_exclusions_follow_their_portal_path_into_later_rooms() {
         let mut graph = chain(doorway(11, Vec3::new(0.0, 0.0, -30.0), 3.0, [1, 2]));
         graph.add_occluder(

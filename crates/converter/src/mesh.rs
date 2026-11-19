@@ -5236,7 +5236,7 @@ mod tests {
             (3, 0, Some(first), [true, false]),
             (3, 1, Some(second), [false, true]),
             (0, 1, Some(first.merge(second)), [false, true]),
-            (1, u32::MAX, None, [false, false]),
+            (1, -1, None, [false, false]),
             (1, 2, None, [true, true]),
         ] {
             nif.blocks[switch_index] = NifBlock::NiSwitchNode(NiSwitchNode {
@@ -5276,7 +5276,7 @@ mod tests {
                 glb_bounds_from_bytes(&bytes).is_ok(),
                 visible.contains(&true)
             );
-            if active_child == u32::MAX {
+            if active_child < 0 {
                 // Skinned meshes can be independent scene roots. An inactive switch keeps both detached.
                 let mut direct_roots = serde_json::json!({
                     "nodes": [{"mesh": 0, "skin": 0}, {"mesh": 1, "skin": 0}],
@@ -5287,6 +5287,55 @@ mod tests {
                 assert_eq!(direct_roots["nodes"][2], serde_json::json!({}));
                 assert_eq!(drawable_bounds(&direct_roots).unwrap(), None);
             }
+        }
+    }
+
+    #[test]
+    fn signed_switch_selectors_control_converted_geometry_and_bounds() {
+        use shared::room_assignment::ModelSphere;
+
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("switch.nif");
+        let output = directory.path().join("switch.glb");
+        let first = ModelSphere {
+            center: [0.0; 3],
+            radius: 2.0_f32.sqrt(),
+        };
+        let second = ModelSphere {
+            center: [1000.0, 0.0, 0.0],
+            ..first
+        };
+        for (flags, selector, mesh_count, x_bounds, sphere) in [
+            (1, -2, 0, None, None),
+            (1, -1, 0, None, None),
+            (1, 1, 1, Some((999.0, 1001.0)), Some(second)),
+            (1, 2, 2, Some((-1.0, 1001.0)), None),
+            (0, -2, 0, None, Some(first.merge(second))),
+        ] {
+            let nif = dummy_content::nif::static_switch(&static_fixture_shape(), flags, selector)
+                .unwrap();
+            fs::write(&input, nif).unwrap();
+            MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+
+            let bytes = fs::read(&output).unwrap();
+            let gltf = gltf::Gltf::from_slice(&bytes).unwrap();
+            let mut pending: Vec<_> = gltf.default_scene().unwrap().nodes().collect();
+            let mut drawn = 0;
+            while let Some(node) = pending.pop() {
+                drawn += usize::from(node.mesh().is_some());
+                pending.extend(node.children());
+            }
+            let actual_bounds = MeshConverter::drawable_bounds(&output)
+                .unwrap()
+                .map(|bounds| (bounds.min[0], bounds.max[0]));
+            let document = glb_json_from_bytes(&bytes).unwrap();
+            let actual_sphere: Option<ModelSphere> =
+                serde_json::from_value(document["extras"]["mudcrabRoomSphere"].clone()).unwrap();
+            assert_eq!(
+                (drawn, actual_bounds, actual_sphere),
+                (mesh_count, x_bounds, sphere),
+                "flags {flags}, selector {selector}"
+            );
         }
     }
 
@@ -5606,7 +5655,11 @@ mod tests {
     }
 
     fn static_nif() -> Vec<u8> {
-        dummy_content::nif::static_shape(&dummy_content::nif::StaticShape {
+        dummy_content::nif::static_shape(&static_fixture_shape()).unwrap()
+    }
+
+    fn static_fixture_shape() -> dummy_content::nif::StaticShape<'static> {
+        dummy_content::nif::StaticShape {
             name: "PropertyQuad",
             positions: &[
                 [-1.0, -1.0, 0.0],
@@ -5619,8 +5672,7 @@ mod tests {
             indices: &[[0, 1, 2], [0, 2, 3]],
             diffuse: "textures/generated_color.dds",
             normal_texture: "textures/generated_normal.dds",
-        })
-        .unwrap()
+        }
     }
 
     /// A NIF whose only blocks are `len` chained `NiNode`s, each naming the next

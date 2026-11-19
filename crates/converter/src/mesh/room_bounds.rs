@@ -37,7 +37,7 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
                 // NiSwitchNode::UpdateWorldBound uses only the active child when bit 0 is set.
                 let contributing = if switch.flags & 1 == 0 {
                     children
-                } else if switch.active_child == u32::MAX {
+                } else if switch.active_child < 0 {
                     &[]
                 } else {
                     std::slice::from_ref(children.get(switch.active_child as usize)?)
@@ -228,14 +228,14 @@ pub(super) fn select_switch_geometry(
         let block = &nif.blocks[index];
         let mut draw = children(block);
         if let NifBlock::NiSwitchNode(switch) = block {
-            if switch.active_child == u32::MAX {
+            if switch.active_child < 0 {
                 draw = &[];
             } else if let Some(child) = draw.get(switch.active_child as usize)
                 && (*child == u32::MAX || (*child as usize) < nif.blocks.len())
             {
                 draw = std::slice::from_ref(child);
             }
-            // An invalid selection leaves all branches available.
+            // An out-of-range index leaves all branches available.
         }
         pending.extend(
             draw.iter()

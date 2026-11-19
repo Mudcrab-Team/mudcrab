@@ -482,6 +482,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "skin-ancestor-room-spheres",
     "initial-switch-scene",
     "inactive-switch-scene-bounds",
+    "signed-switch-selectors",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical

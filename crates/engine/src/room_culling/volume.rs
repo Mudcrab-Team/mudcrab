@@ -10,6 +10,7 @@ use super::{PORTAL_OPEN_DISTANCE, Portal, PortalView, occlusion::OcclusionVolume
 const BASE_ROOM_CONTRIBUTIONS: usize = 16;
 const MAX_VOLUME_PLANES: usize = 64;
 const PLANE_EPSILON: f32 = 1.0e-3;
+const CAMERA_PLANE_COUNT: usize = 5;
 
 /// A mesh's transformed AABB, including shear and negative or nonuniform scale.
 pub(super) struct MeshBounds {
@@ -141,10 +142,8 @@ impl VisibilityVolume {
             clip_from_local.row(3),
         );
         // Bevy uses reverse Z: w-z is the near plane. Its infinite far plane is omitted.
-        let planes: Option<Vec<_>> = [w + x, w - x, w + y, w - y, w - z]
-            .into_iter()
-            .map(normalized)
-            .collect();
+        let camera_planes: [_; CAMERA_PLANE_COUNT] = [w + x, w - x, w + y, w - y, w - z];
+        let planes: Option<Vec<_>> = camera_planes.into_iter().map(normalized).collect();
         planes.map(|planes| Self {
             planes,
             exclusions: BTreeMap::new(),
@@ -192,6 +191,10 @@ impl VisibilityVolume {
                 .all(|id| other.exclusions.contains_key(id))
     }
 
+    fn inherited_planes(&self) -> impl Iterator<Item = Vec4> {
+        self.planes[CAMERA_PLANE_COUNT..].iter().copied()
+    }
+
     #[cfg(test)]
     fn through_portal(&self, corners: &[Vec3; 4], camera: Vec3, clip: Mat4) -> Option<Self> {
         self.clip_portal(corners, camera, clip, None)
@@ -214,13 +217,8 @@ impl VisibilityVolume {
             }) {
                 return None;
             }
-            let shadowed = authored
-                && !self.exclusions.is_empty()
-                && match eye_plane {
-                    Some(plane) => clip_aperture(corners, std::iter::once(plane))
-                        .is_none_or(|aperture| self.aperture_is_shadowed(&aperture)),
-                    None => self.aperture_is_shadowed(corners),
-                };
+            let aperture = clip_aperture(corners, self.inherited_planes().chain(eye_plane))?;
+            let shadowed = authored && self.aperture_is_shadowed(&aperture);
             return Some((self.clone(), shadowed));
         }
         self.clip_portal(
@@ -266,7 +264,7 @@ impl VisibilityVolume {
                 return None;
             }
             // The ordinary-view exception still has to pass each inherited aperture.
-            clip_aperture(corners, self.planes[5..].iter().copied())
+            clip_aperture(corners, self.inherited_planes())
         })?;
         let shadowed = authored.is_some() && self.aperture_is_shadowed(&polygon);
         // When the complete aperture projects in front of the eye, keep its actual edges.

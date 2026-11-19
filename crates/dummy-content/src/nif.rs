@@ -156,6 +156,43 @@ pub fn static_shape(shape: &StaticShape<'_>) -> Result<Vec<u8>> {
     static_shape_with_colors(shape, &[])
 }
 
+/// Generates a two-child switch with identical meshes 1,000 units apart on X.
+pub fn static_switch(shape: &StaticShape<'_>, flags: u16, selector: i32) -> Result<Vec<u8>> {
+    validate(shape)?;
+    let mut switch = fade_node(&[1, 5]);
+    push_u16(&mut switch, flags);
+    switch.extend_from_slice(&selector.to_le_bytes());
+    let first = triangle_shape(shape, &[])?;
+    let mut second = first.clone();
+    set_av_transform(
+        &mut second,
+        RootTransform {
+            translation: [1000.0, 0.0, 0.0],
+            rotation: IDENTITY_ROTATION.as_flattened().try_into().unwrap(),
+            scale: 1.0,
+        },
+    );
+    assemble(
+        vec![
+            fade_node(&[4]),
+            first,
+            lighting_shader_property(false, 3),
+            texture_set(shape)?,
+            switch,
+            second,
+        ],
+        vec![
+            "BSFadeNode",
+            "BSTriShape",
+            "BSLightingShaderProperty",
+            "BSShaderTextureSet",
+            "NiSwitchNode",
+            "BSTriShape",
+        ],
+        vec![shape.name],
+    )
+}
+
 /// Generates a static NIF with authored RGBA vertex data and both color flags enabled.
 pub fn static_shape_with_colors(shape: &StaticShape<'_>, colors: &[[u8; 4]]) -> Result<Vec<u8>> {
     build_static_shape(shape, colors, &[], None, None)

@@ -395,7 +395,7 @@ impl NifBlock {
             "NiSwitchNode" => {
                 let (i, node) = NiNode::parse(i)?;
                 let (i, flags) = le_u16(i)?;
-                let (i, active_child) = le_u32(i)?;
+                let (i, active_child) = le_i32(i)?;
                 Ok((
                     i,
                     NifBlock::NiSwitchNode(NiSwitchNode {
@@ -1589,7 +1589,7 @@ pub struct NiStringsExtraData {
 pub struct NiSwitchNode {
     pub node: NiNode,
     pub flags: u16,
-    pub active_child: u32,
+    pub active_child: i32,
 }
 #[derive(Debug)]
 pub struct NiTransformController {
