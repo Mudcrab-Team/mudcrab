@@ -1,20 +1,17 @@
-//! Rebuild room metadata and selected source meshes in a private asset copy for native captures.
+//! Refresh selected source meshes and their derived bounds in a private native-capture fixture.
 //!
-//! Each invocation replaces all room metadata with the selected cells. Use a fresh private copy
-//! for independent cell sets, or include every desired cell when reusing a copy.
+//! The input pack must already contain source-verified portal endpoints and authored assignments.
 //! Requires Unix hard-link validation and exclusive access to the private asset copy.
 use color_eyre::{Result, eyre::ensure};
 use converter::{
     archive::ArchiveExtractor,
     asset_path::{AssetKind, AssetSourceIndex, canonical_asset_path},
-    esm::{exporter::create_tables, records::RawRecord, rooms},
     mesh::MeshConverter,
 };
 use rayon::prelude::*;
-use rusqlite::{Connection, params};
-use shared::records::ArchivedRecordData;
+use rusqlite::{Connection, OpenFlags};
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -33,11 +30,14 @@ fn run(args: &[String]) -> Result<()> {
     let assets = Path::new(&args[1]);
     validate_private_assets(assets)?;
     let _asset_lock = shared::asset_lock::AssetLock::acquire_exclusive(assets)?;
-    let cells: HashSet<u32> = args[2]
+    let cells: BTreeSet<u32> = args[2]
         .split(',')
         .map(str::parse)
         .collect::<std::result::Result<_, _>>()?;
-    let mut conn = Connection::open(assets.join("skyrim_world.db"))?;
+    let conn = Connection::open_with_flags(
+        assets.join("skyrim_world.db"),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
     for cell in &cells {
         ensure!(
             conn.query_row(
@@ -51,34 +51,18 @@ fn run(args: &[String]) -> Result<()> {
     }
     // From the first mutation onward, an interrupted run has an incomplete receipt.
     publish_receipt(assets, &serde_json::json!({"complete": false}))?;
-    create_tables(&conn)?;
-    ensure!(conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='visibility_version' AND value=2)",
-        [], |row| row.get::<_, bool>(0))?, "fixture input must already have source-verified portal endpoints");
-    let mut master = HashMap::new();
+    let verified = conn.query_row(
+        "SELECT count(*)=2 FROM room_graph_stats WHERE (name='visibility_version' AND value=2)
+         OR (name='assignment_version' AND value=1)",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    ensure!(
+        verified,
+        "capture preparation requires source-verified portal endpoints and authored room assignments; reconvert the pack"
+    );
     let mut models = BTreeSet::new();
     for &cell in &cells {
-        let mut query=conn.prepare("SELECT r.form_id,r.record_type,r.load_order,r.data,p.header_flags FROM records r JOIN \"references\" p ON p.id=r.form_id WHERE p.cell_id=?1")?;
-        let mut rows = query.query([cell])?;
-        while let Some(row) = rows.next()? {
-            let blob: Vec<u8> = row.get(3)?;
-            let fields = rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(&blob)?;
-            let kind: String = row.get(1)?;
-            let record = RawRecord {
-                form_id: row.get(0)?,
-                record_type: kind.as_bytes().try_into()?,
-                flags: row.get(4)?,
-                subrecords: fields
-                    .subrecords
-                    .into_iter()
-                    .map(|s| (s.tag.to_vec(), s.data))
-                    .collect(),
-                cell_form_id: Some(cell),
-                worldspace_form_id: None,
-                load_order: row.get(2)?,
-            };
-            master.insert(record.form_id, record);
-        }
         let paths=conn.prepare("SELECT DISTINCT s.model_path FROM statics s JOIN \"references\" r ON r.base_form_id=s.id WHERE r.cell_id=?1 AND s.model_path IS NOT NULL AND s.model_path<>''")?
             .query_map([cell],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         for path in paths {
@@ -99,12 +83,11 @@ fn run(args: &[String]) -> Result<()> {
             models.insert(model);
         }
     }
-    rebuild_room_graph(&mut conn, &master, &cells)?;
-    drop(conn);
-    let plugins: Vec<String> = Connection::open(assets.join("skyrim_world.db"))?
+    let plugins: Vec<String> = conn
         .prepare("SELECT name FROM plugins ORDER BY priority")?
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
+    drop(conn);
     let (sources, extracted) =
         prepare_model_sources(data, assets.parent().unwrap(), &models, &plugins)?;
     let results = convert_capture_models(sources.path(), assets, &models)?;
@@ -113,7 +96,7 @@ fn run(args: &[String]) -> Result<()> {
     let bounds: u64 = conn.query_row("SELECT count(*) FROM room_model_bounds", [], |r| r.get(0))?;
     let report = serde_json::json!({
         "complete": true,
-        "scope": "private capture fixture; source-verified endpoint flags retained",
+        "scope": "private capture fixture; source-verified portal endpoints and authored assignments retained",
         "cells": cells,
         "requested_models": models.len(),
         "extracted_entries": extracted,
@@ -134,98 +117,6 @@ fn publish_receipt(assets: &Path, report: &serde_json::Value) -> Result<()> {
     let file = tempfile::NamedTempFile::new_in(assets)?;
     serde_json::to_writer_pretty(file.as_file(), report)?;
     file.persist(assets.join(RECEIPT))?;
-    Ok(())
-}
-
-fn rebuild_room_graph(
-    conn: &mut Connection,
-    master: &HashMap<u32, RawRecord>,
-    cells: &HashSet<u32>,
-) -> Result<()> {
-    let tx = conn.transaction()?;
-    let old_endpoints: Vec<_> = tx
-        .prepare("SELECT ref_id,pair_index,unbounded_a,unbounded_b FROM room_portals")?
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, u32>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, bool>(2)?,
-                r.get::<_, bool>(3)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-    let incomplete_cells: Vec<u32> = tx
-        .prepare("SELECT cell_id FROM room_graph_cells WHERE complete=0")?
-        .query_map([], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    let unknown_assignments: Vec<u32> = tx
-        .prepare("SELECT reference_id FROM room_reference_rules WHERE assignment='unknown'")?
-        .query_map([], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    let verified_occlusion = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='occlusion_version' AND value=1)",
-        [],
-        |r| r.get::<_, bool>(0),
-    )?;
-    if verified_occlusion {
-        tx.execute(
-            "CREATE TEMP TABLE capture_cells(id INTEGER PRIMARY KEY)",
-            [],
-        )?;
-        for cell in cells {
-            tx.execute("INSERT INTO capture_cells VALUES (?1)", [cell])?;
-        }
-        // The engine checks both ends of every XORD. Even a source outside the
-        // selection (or missing from the runtime projection) can veto a selected plane.
-        tx.execute_batch(
-            "CREATE TEMP TABLE capture_occluders AS
-                 SELECT * FROM room_occluders WHERE cell_id IN (SELECT id FROM capture_cells);
-             CREATE TEMP TABLE capture_links AS
-                 SELECT * FROM room_occluder_links WHERE ref_id IN (SELECT ref_id FROM capture_occluders)
-                    OR linked_ref IN (SELECT ref_id FROM capture_occluders)
-                    OR ref_id IN (SELECT id FROM \"references\" WHERE cell_id IN (SELECT id FROM capture_cells));
-             CREATE TEMP TABLE capture_rules AS
-                 SELECT * FROM room_reference_rules WHERE reference_id IN (SELECT ref_id FROM capture_occluders);",
-        )?;
-    }
-    rooms::export_room_graph(&tx, master, cells)?;
-    if verified_occlusion {
-        tx.execute_batch(
-            "UPDATE room_graph_stats SET value=value+(SELECT count(*) FROM room_occluders
-                 WHERE ref_id NOT IN (SELECT ref_id FROM capture_occluders)) WHERE name='invalid_occluders_skipped';
-             DELETE FROM room_occluders;
-             INSERT INTO room_occluders SELECT * FROM capture_occluders;
-             DELETE FROM room_occluder_links;
-             INSERT INTO room_occluder_links SELECT * FROM capture_links;
-             DELETE FROM room_reference_rules WHERE reference_id IN (SELECT ref_id FROM capture_occluders);
-             INSERT INTO room_reference_rules SELECT * FROM capture_rules;
-             UPDATE room_graph_stats SET value=(SELECT count(*) FROM room_occluders) WHERE name='occluders';
-             INSERT INTO room_graph_stats VALUES ('occlusion_version',1);
-             DROP TABLE capture_rules;
-             DROP TABLE capture_links;
-             DROP TABLE capture_occluders;
-             DROP TABLE capture_cells;",
-        )?;
-    }
-    // Preserve the previous source-verified NULL distinction; canonical archives can clear links.
-    for (id, pair, a, b) in old_endpoints {
-        tx.execute("UPDATE room_portals SET unbounded_a=?3,unbounded_b=?4 WHERE ref_id=?1 AND pair_index=?2",params![id,pair,a,b])?;
-    }
-    // Rejected source fields are absent from canonical records. Rebuilding cannot resolve
-    // their uncertainty; updates affect only rows retained in the selected capture cells.
-    for cell in incomplete_cells {
-        tx.execute(
-            "UPDATE room_graph_cells SET complete=0 WHERE cell_id=?1",
-            [cell],
-        )?;
-    }
-    for id in unknown_assignments {
-        tx.execute(
-            "UPDATE room_reference_rules SET assignment='unknown',target_ref=NULL WHERE reference_id=?1",
-            [id],
-        )?;
-    }
-    tx.commit()?;
     Ok(())
 }
 
@@ -342,167 +233,73 @@ fn prepare_model_sources(
 mod tests {
     use super::*;
 
-    fn canonical_fixture() -> (Connection, HashMap<u32, RawRecord>, HashSet<u32>) {
-        let mut conn = Connection::open_in_memory().unwrap();
+    use converter::esm::exporter::create_tables;
+
+    #[cfg(unix)]
+    #[test]
+    fn repeated_cell_selections_require_and_preserve_source_assignments() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let assets = root.join("assets");
+        let data = root.join("Data");
+        fs::create_dir(&assets).unwrap();
+        fs::create_dir(&data).unwrap();
+        let conn = Connection::open(assets.join("skyrim_world.db")).unwrap();
         create_tables(&conn).unwrap();
-        let cells = HashSet::from([7, 8]);
-        let mut master = HashMap::new();
-        for (id, cell, base) in [
-            (70u32, 7, rooms::ROOM_MARKER_BASE),
-            (80, 8, rooms::ROOM_MARKER_BASE),
-            (71, 7, 500),
-            (72, 7, 500),
-        ] {
-            let mut fields = vec![
-                (b"NAME".to_vec(), base.to_le_bytes().to_vec()),
-                (b"DATA".to_vec(), vec![0; 24]),
-            ];
-            if base == rooms::ROOM_MARKER_BASE {
-                let mut shape = vec![0; 32];
-                for offset in [0, 4, 8] {
-                    shape[offset..offset + 4].copy_from_slice(&100f32.to_le_bytes());
-                }
-                shape[28..32].copy_from_slice(&1u32.to_le_bytes());
-                fields.push((b"XPRM".to_vec(), shape));
-                fields.push((b"XRMR".to_vec(), vec![0, 0, 1, 0]));
-            }
-            master.insert(
-                id,
-                RawRecord {
-                    form_id: id,
-                    record_type: *b"REFR",
-                    flags: 0,
-                    subrecords: fields,
-                    cell_form_id: Some(cell),
-                    worldspace_form_id: None,
-                    load_order: 0,
-                },
-            );
-        }
-        rebuild_room_graph(&mut conn, &master, &cells).unwrap();
-        (conn, master, cells)
-    }
-
-    #[test]
-    fn capture_rebuild_preserves_source_incomplete_cells() {
-        let (mut conn, master, cells) = canonical_fixture();
-        assert!(master[&70].subrecords.iter().all(|(tag, _)| tag != b"XLRM"));
-        // Source restoration retained a rejected join that the canonical archive omitted.
-        conn.execute("UPDATE room_graph_cells SET complete=0 WHERE cell_id=7", [])
-            .unwrap();
-        rebuild_room_graph(&mut conn, &master, &cells).unwrap();
-        let states = conn
-            .prepare("SELECT cell_id,complete FROM room_graph_cells ORDER BY cell_id")
-            .unwrap()
-            .query_map([], |row| {
-                Ok((row.get::<_, u32>(0)?, row.get::<_, bool>(1)?))
-            })
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        assert_eq!(states, vec![(7, false), (8, true)]);
-    }
-
-    #[test]
-    fn capture_rebuild_preserves_source_unknown_assignments() {
-        let (mut conn, master, cells) = canonical_fixture();
-        assert!(master[&71].subrecords.iter().all(|(tag, _)| tag != b"XMBR"));
-        // A malformed source override has already been restored as unknown in this pack.
-        conn.execute("UPDATE room_reference_rules SET assignment='unknown', target_ref=NULL WHERE reference_id=71", []).unwrap();
-        rebuild_room_graph(&mut conn, &master, &cells).unwrap();
-        // Supplying model bounds and rebuilding overlap membership must not erase that rule.
-        conn.execute("INSERT INTO room_model_bounds VALUES (500,0,0,0,10)", [])
-            .unwrap();
-        rooms::add_overlap_rows(&mut conn).unwrap();
-        let rules = conn.prepare("SELECT reference_id,assignment,target_ref FROM room_reference_rules ORDER BY reference_id").unwrap()
-            .query_map([], |row| Ok((row.get::<_,u32>(0)?, row.get::<_,String>(1)?, row.get::<_,Option<u32>>(2)?))).unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>().unwrap();
-        assert_eq!(
-            rules,
-            vec![(71, "unknown".into(), None), (72, "auto".into(), None)]
-        );
-    }
-
-    #[test]
-    fn verified_occlusion_replaces_canonical_geometry_links_and_target_rules() {
-        let (mut conn, mut master, cells) = canonical_fixture();
-        for (id, cell) in [(73, 7), (74, 7), (75, 7), (76, 7), (83, 8)] {
-            let mut marker = master[&70].clone();
-            marker.form_id = id;
-            marker.cell_form_id = Some(cell);
-            marker.subrecords[0].1 = rooms::OCCLUSION_MARKER_BASE.to_le_bytes().to_vec();
-            marker
-                .subrecords
-                .iter_mut()
-                .find(|(tag, _)| tag == b"XPRM")
-                .unwrap()
-                .1[28..32]
-                .copy_from_slice(&3u32.to_le_bytes());
-            marker
-                .subrecords
-                .push((b"XMBR".to_vec(), 70u32.to_le_bytes().to_vec()));
-            master.insert(id, marker);
-        }
-        rebuild_room_graph(&mut conn, &master, &cells).unwrap();
         conn.execute_batch(
-            "INSERT INTO room_graph_stats VALUES ('occlusion_version',1);
-             DELETE FROM room_occluders WHERE ref_id=74;
-             UPDATE room_occluders SET has_enable_parent=1 WHERE ref_id=73;
-             INSERT INTO room_reference_rules VALUES (73,7,'target',70),(75,7,'none',NULL),(83,8,'target',80);
-             INSERT INTO room_occluder_links VALUES (73,2,99,1),(999,0,73,0),(83,1,80,1);",
+            "INSERT INTO cells(id,flags) VALUES(7,0),(8,0);
+             INSERT INTO room_graph_stats VALUES('visibility_version',2);
+             INSERT INTO room_graph_cells VALUES(7,1),(8,0);",
         )
         .unwrap();
-        rebuild_room_graph(&mut conn, &master, &HashSet::from([7])).unwrap();
-        let occluders: Vec<(u32, bool)> = conn
-            .prepare("SELECT ref_id,has_enable_parent FROM room_occluders ORDER BY ref_id")
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        assert_eq!(occluders, [(73, true), (75, false), (76, false)]);
-        let links: Vec<(u32, u32, u32, bool)> = conn
-            .prepare("SELECT * FROM room_occluder_links ORDER BY ref_id")
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        assert_eq!(links, [(73, 2, 99, true), (999, 0, 73, false)]);
-        let rules = conn
-            .prepare(
-                "SELECT reference_id,assignment,target_ref FROM room_reference_rules
-               WHERE reference_id IN (73,74,75,76,83) ORDER BY reference_id",
-            )
-            .unwrap()
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, u32>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, Option<u32>>(2)?,
-                ))
-            })
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        assert_eq!(
-            rules,
-            [(73, "target".into(), Some(70)), (75, "none".into(), None)]
+        let mut args = [
+            data.display().to_string(),
+            assets.display().to_string(),
+            "7".into(),
+        ];
+        assert!(
+            run(&args)
+                .unwrap_err()
+                .to_string()
+                .contains("authored room assignments")
         );
-        for (stat, expected) in [
-            ("occlusion_version", 1),
-            ("occluders", 3),
-            ("invalid_occluders_skipped", 1),
-        ] {
-            assert_eq!(
-                conn.query_row(
-                    "SELECT value FROM room_graph_stats WHERE name=?1",
-                    [stat],
-                    |r| r.get::<_, u32>(0)
+        conn.execute_batch(
+            "INSERT INTO room_graph_stats VALUES('assignment_version',1),('occlusion_version',1);
+             INSERT INTO room_occluders VALUES(83,8,3,0,0,0,0,0,0,1,1,0,1,0,0,0,NULL);
+             INSERT INTO room_occluder_links VALUES(99,0,83,1);
+             INSERT INTO room_reference_rules VALUES(81,8,'unknown',NULL);
+             INSERT INTO room_portals VALUES(82,0,8,0,0,0,0,0,0,1,1,NULL,NULL,1,0);",
+        )
+        .unwrap();
+        let fresh = root.join("fresh");
+        fs::create_dir(&fresh).unwrap();
+        drop(conn);
+        fs::copy(
+            assets.join("skyrim_world.db"),
+            fresh.join("skyrim_world.db"),
+        )
+        .unwrap();
+        for (copy, selection) in [(&assets, "7"), (&assets, "7,8"), (&fresh, "7,8")] {
+            args[1] = copy.display().to_string();
+            args[2] = selection.into();
+            run(&args).unwrap();
+            let conn = Connection::open(copy.join("skyrim_world.db")).unwrap();
+            let planes: u32 = conn.query_row(
+                "SELECT count(*) FROM room_occluders o JOIN room_occluder_links l ON l.linked_ref=o.ref_id
+                 WHERE o.cell_id=8 AND o.ref_id=83 AND l.ref_id=99", [], |row| row.get(0)
+            ).unwrap();
+            assert_eq!(planes, 1);
+            let state: (bool, String, bool, bool) = conn
+                .query_row(
+                    "SELECT g.complete,r.assignment,p.unbounded_a,p.unbounded_b
+                 FROM room_graph_cells g JOIN room_reference_rules r USING(cell_id)
+                 JOIN room_portals p USING(cell_id)
+                 WHERE g.cell_id=8 AND r.reference_id=81 AND p.ref_id=82",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
-                .unwrap(),
-                expected
-            );
+                .unwrap();
+            assert_eq!(state, (false, "unknown".to_owned(), true, false));
         }
     }
 
@@ -521,7 +318,7 @@ mod tests {
         conn.execute_batch(
             "INSERT INTO cells(id,flags,worldspace_id) VALUES(7,1,NULL),(8,0,1);
             INSERT INTO room_graph_cells VALUES(9,0);
-            INSERT INTO room_graph_stats VALUES('visibility_version',2);",
+            INSERT INTO room_graph_stats VALUES('visibility_version',2),('assignment_version',1);",
         )
         .unwrap();
         drop(conn);

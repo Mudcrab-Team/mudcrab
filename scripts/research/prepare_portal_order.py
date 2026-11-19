@@ -23,8 +23,10 @@ def prepare(source, output, cell, portals):
                     or not db.execute("SELECT 1 FROM room_graph_cells WHERE cell_id=? AND complete=1",
                                       (cell,)).fetchone()
                     or not db.execute("SELECT 1 FROM room_graph_stats WHERE name='visibility_version' "
-                                      "AND value=2").fetchone()):
-                raise ValueError("captured order requires a complete visibility-v2 cell with endpoint provenance")
+                                      "AND value=2").fetchone()
+                    or not db.execute("SELECT 1 FROM room_graph_stats WHERE name='assignment_version' "
+                                      "AND value=1").fetchone()):
+                raise ValueError("captured order requires a complete visibility-v2 cell with authored assignment-v1 provenance")
             rows = sorted(row[0] for row in db.execute(
                 "SELECT ref_id FROM room_portals WHERE cell_id=?", (cell,)
             ))

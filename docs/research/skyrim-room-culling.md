@@ -266,17 +266,13 @@ inside the master and slave cave geometry, match in every pairing while exercisi
 No final capture timed out or retained pending/failed room-graph reads. These results support the
 covered behavior, not a claim that every interior matches Skyrim.
 
-For an existing source-verified pack, the `room_assignment_validation` converter example rebuilds
-selected cells and source meshes in an independent private database/mesh tree. It is a capture
-fixture helper for the installed official archives, not a general mod migration path. Normal users
-reconvert through the standard pipeline, which resolves effective sources and refreshes both
-metadata and mesh contracts. The helper's existing endpoint-provenance requirement prevents a
-canonical cleared FormID from being promoted to authored outside space. Each invocation replaces
-all room metadata with the selected cells. Use a fresh private copy for independent cell sets,
-or include every desired cell when reusing a copy. The helper requires Unix hard-link validation
-and holds the asset directory's exclusive lock through database and mesh finalization. The helper
-writes `room-assignment-preparation.json` inside that private asset directory. Its `complete` flag
-turns true after finalization succeeds.
+For an existing source-verified pack, the `room_assignment_validation` converter example refreshes
+the source meshes used by the selected cells and finalizes their bounds in an independent private
+copy. It requires both verified portal endpoints and authored room assignments. It retains the
+source graph for every cell, so later runs can expand the selection without losing rejected links
+or unknown assignments. The helper uses the installed official archives, requires Unix hard-link
+validation, and holds the asset directory's exclusive lock through finalization. Use the standard
+conversion pipeline to rebuild room metadata from plugins.
 
 ## Default-on review validation
 
