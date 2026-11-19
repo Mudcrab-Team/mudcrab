@@ -1303,19 +1303,27 @@ CREATE TABLE IF NOT EXISTS room_link_anomalies (
 Columns and rules:
 
 - **`room_occluders`** stores interior `PlaneMarker` placements, base form `0x17`, including
-  cells with no room markers. Shape 1 is a box; shape 3 is a local X-Z plane. Geometry comes
-  from `DATA`, `XPRM`, and `XSCL`. The native record loader consumes legacy `XOCP` without
-  retaining its geometry, so it cannot replace these fields. Non-finite geometry, non-positive
-  scale, unsupported shapes, and deleted placements produce no row. Disabled-state flags,
-  enable-parent presence, and linked-plane presence are retained for runtime policy.
-  `target_ref` is NULL only when `XMBR` is absent; zero preserves an unresolved or malformed
-  explicit override. For a plane with one valid nonzero source target, the full converter also writes
-  the corroborating `target` assignment in `room_reference_rules`. The runtime requires both
+  cells with no room markers. Shape 1 is a box. Shape 3 is a local X-Z plane. `DATA` supplies
+  the transform and `XPRM` supplies the unscaled half-extents. The native record loader consumes
+  legacy `XOCP` without retaining its geometry. The converter skips deleted placements.
+  Unusable geometry leaves no row and marks the cell incomplete. The `scale` column preserves a
+  single finite `XSCL`, defaults to 1 when absent, and stores 0 for an unreadable, repeated, or
+  non-finite field. The runtime skips occluders with invalid or non-positive scale. For positive
+  scale it uses the authored extents at scale 1 or higher and shrinks them below 1. This bounds
+  the shadow whether retail uses authored extents or scales them.
+  The row retains disabled-state flags, enable-parent presence, and linked-plane presence for
+  runtime policy. `target_ref` is NULL only when `XMBR` is absent. Zero preserves an unresolved
+  or malformed explicit override. `has_links` remains true for malformed `XORD`, including after
+  remapping.
+  For a plane with one valid nonzero source target, the full converter also writes the
+  corroborating `target` assignment in `room_reference_rules`. The runtime requires both
   facts to agree with the unique containing room before using a named plane.
-  `has_links` remains true for malformed `XORD`, including after remapping.
 - **`room_occluder_links`** preserves nonzero linked FormIDs from complete 16-byte `XORD`
-  occurrences. `link_index` is `occurrence * 4 + slot` using the original source position,
-  including gaps for earlier malformed occurrences. All four FormIDs are remapped. Links
+  occurrences. Each occurrence holds four 32-bit FormIDs that can name a `REFR` or be null.
+  [xEdit 4.1.5f's TES5 `REFR.XORD` definition](https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsTES5.pas#L12272-L12278)
+
+  `link_index` is `occurrence * 4 + slot` using the original source position, including gaps for
+  earlier malformed occurrences. The converter remaps all four FormIDs. Links
   remain when the converter skips source geometry, so a linked target cannot become an
   independent occluder. An unreadable occurrence sets the source cell's `complete` flag to
   false. In-house exports also clear that flag for unresolved FormIDs. A full in-house export
@@ -1862,7 +1870,7 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 | `light_short_data` | `LIGH` whose `DATA` is shorter than the 20 bytes the row needs: no `lights` row | data loss |
 | `grass_unusable_data` | `GRAS` with missing or short `DATA`: unavailable scalar columns NULL, readable scalar prefix/model/identity retained | data loss |
 | `reference_unusable_data` | Placed record with missing or short `DATA`: no placement or spatial row; canonical record retained | data loss |
-| `occluder_unusable_geometry` | PlaneMarker with unusable geometry has no occluder row | data loss |
+| `occluder_unusable_geometry` | PlaneMarker with unusable geometry has no occluder row and leaves its cell incomplete | data loss |
 | `occluder_unusable_links` | PlaneMarker with a malformed `XORD` or unresolved target leaves its cell incomplete | data loss |
 | `lighting_template_unusable_data` | `LGTM` with missing or unsupported-size `DATA`: DATA lighting columns NULL, other fields retained | data loss |
 | `emittance_target_absent` | `XEMI` target not in the load order, or deleted: no `emittance` row | fallback |

@@ -69,7 +69,7 @@
     "crates/engine/src/room_culling/native_fixture.rs::execute::f85d8187888db688::1": "46ffb58627290660",
     "crates/engine/src/room_culling/native_fixture.rs::execute_batch::8d3ea2201c6edb63::1": "9f6641a348b1072d",
     "crates/engine/src/room_culling/native_fixture.rs::execute_batch::d81cec1247e7b995::1": "9a710bcd9b4c0597",
-    "crates/engine/src/room_culling/occluder_data.rs::prepare_cached::42ac1b32b259ea63::1": "6ffc5e719f5739f6",
+    "crates/engine/src/room_culling/occluder_data.rs::prepare_cached::3e2946a5bbf4f5bf::1": "4238957ade991ab2",
     "crates/engine/src/room_culling/occluder_data.rs::prepare_cached::a8b771920b8319e4::1": null,
     "crates/engine/src/room_culling/occluder_data.rs::query_row::22af47a0879b9632::1": "731ab1c87cf733d8",
     "crates/engine/src/room_culling/occluder_data.rs::query_row::3869afb0d80797da::1": "baf4332f7ac7ff39",

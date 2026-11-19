@@ -94,14 +94,12 @@ struct Geometry {
     half: [f32; 3],
     position: [f32; 3],
     rotation: [f32; 3],
-    scale: f32,
 }
 
 fn geometry<'a>(
     view: &SubrecordView<'_>,
     complete: bool,
     field: impl Fn(&[u8; 4]) -> Option<&'a [u8]>,
-    has_scale: bool,
 ) -> std::result::Result<Geometry, &'static str> {
     if !complete {
         return Err("incomplete PlaneMarker payload");
@@ -119,21 +117,11 @@ fn geometry<'a>(
     let (position, rotation) = field(b"DATA")
         .and_then(placement)
         .ok_or("missing or invalid PlaneMarker DATA placement")?;
-    let scale = if has_scale {
-        field(b"XSCL")
-            .and_then(|data| <[u8; 4]>::try_from(data).ok())
-            .map(f32::from_le_bytes)
-            .filter(|value| value.is_finite() && *value > 0.0)
-            .ok_or("invalid PlaneMarker XSCL")?
-    } else {
-        1.0
-    };
     Ok(Geometry {
         shape,
         half,
         position,
         rotation,
-        scale,
     })
 }
 
@@ -251,14 +239,24 @@ pub(super) fn export(
             half,
             position,
             rotation,
-            scale,
-        } = match geometry(&view, complete, field, present(b"XSCL")) {
+        } = match geometry(&view, complete, field) {
             Ok(geometry) => geometry,
             Err(reason) => {
                 result.invalid += 1;
+                result.incomplete_cells.insert(cell);
                 omissions.record(OmissionCategory::OccluderUnusableGeometry, id, reason);
                 continue;
             }
+        };
+        let scale = if present(b"XSCL") {
+            field(b"XSCL")
+                .filter(|_| source.is_some() || view.find_all(b"XSCL").nth(1).is_none())
+                .and_then(|data| <[u8; 4]>::try_from(data).ok())
+                .map(f32::from_le_bytes)
+                .filter(|value| value.is_finite())
+                .unwrap_or(0.0)
+        } else {
+            1.0
         };
         let target = present(b"XMBR").then(|| {
             view.find(b"XMBR")
@@ -452,22 +450,51 @@ mod tests {
     fn invalid_deleted_and_exterior_occluders_do_not_gain_geometry() {
         let mut bad_size = marker(100, 1);
         bad_size.subrecords[1].1[..4].copy_from_slice(&f32::NAN.to_le_bytes());
-        let mut bad_scale = marker(101, 3);
-        bad_scale
-            .subrecords
-            .push((b"XSCL".to_vec(), (-1.0f32).to_le_bytes().to_vec()));
         let mut deleted = marker(102, 3);
         deleted.flags = 0x20;
         let mut exterior = marker(103, 3);
         exterior.cell_form_id = Some(8);
-        let (conn, report) = exported(vec![bad_size, bad_scale, deleted, exterior, marker(104, 2)]);
-        assert_eq!((report.occluders, report.invalid_occluders_skipped), (0, 3));
+        let (conn, report) = exported(vec![bad_size, deleted, exterior, marker(104, 2)]);
+        assert_eq!((report.occluders, report.invalid_occluders_skipped), (0, 2));
         assert_eq!(
             conn.query_row("SELECT count(*) FROM room_occluders", [], |r| r
                 .get::<_, u32>(0))
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn geometry_rows_preserve_finite_scale_and_flag_unreadable_scale() {
+        let cases = [
+            (vec![], 1.0),
+            (vec![0.5f32.to_le_bytes().to_vec()], 0.5),
+            (vec![(-1.0f32).to_le_bytes().to_vec()], -1.0),
+            (vec![f32::NAN.to_le_bytes().to_vec()], 0.0),
+            (vec![vec![0; 3]], 0.0),
+            (vec![0.5f32.to_le_bytes().to_vec(); 2], 0.0),
+        ];
+        let placements = cases
+            .iter()
+            .enumerate()
+            .map(|(index, (scales, _))| {
+                let mut plane = marker(100 + index as u32, 3);
+                plane
+                    .subrecords
+                    .extend(scales.iter().map(|bytes| (b"XSCL".to_vec(), bytes.clone())));
+                plane
+            })
+            .collect();
+        let (conn, report) = exported(placements);
+        assert_eq!(report.invalid_occluders_skipped, 0);
+        let scales = conn
+            .prepare("SELECT scale FROM room_occluders ORDER BY ref_id")
+            .unwrap()
+            .query_map([], |row| row.get::<_, f32>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(scales, cases.map(|(_, scale)| scale));
     }
 
     #[test]

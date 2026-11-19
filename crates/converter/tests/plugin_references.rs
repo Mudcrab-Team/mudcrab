@@ -2074,14 +2074,14 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
         3
     );
     assert_eq!(conn.query_row("SELECT header_flags,has_enable_parent,target_ref FROM room_occluders WHERE ref_id=2097", [], |row| Ok((row.get::<_,u32>(0)?,row.get::<_,bool>(1)?,row.get::<_,Option<u32>>(2)?))).unwrap(), (0x8000_0800,true,Some(0)));
-    assert!(
-        !conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM room_occluders WHERE ref_id=2098)",
-                [],
-                |row| row.get::<_, bool>(0)
-            )
-            .unwrap()
+    assert_eq!(
+        conn.query_row(
+            "SELECT scale FROM room_occluders WHERE ref_id=2098",
+            [],
+            |row| row.get::<_, f32>(0)
+        )
+        .unwrap(),
+        0.0
     );
     assert_eq!(
         conn.query_row(
@@ -2349,11 +2349,11 @@ fn ambiguous_occluder_names_are_rejected_by_both_readers() {
 }
 
 fn occluder_fixture(data: &Path, half_x: f32, links: &[&[u8]]) {
-    let mut shape = [0; 32];
-    shape[..4].copy_from_slice(&half_x.to_le_bytes());
-    shape[8..12].copy_from_slice(&12.0f32.to_le_bytes());
-    shape[28..].copy_from_slice(&3u32.to_le_bytes());
-    let marker = |id, links: &[&[u8]]| {
+    let marker = |id, half_x: f32, links: &[&[u8]]| {
+        let mut shape = [0; 32];
+        shape[..4].copy_from_slice(&half_x.to_le_bytes());
+        shape[8..12].copy_from_slice(&12.0f32.to_le_bytes());
+        shape[28..].copy_from_slice(&3u32.to_le_bytes());
         let mut payload = [sub(b"NAME", &0x17u32.to_le_bytes()), sub(b"XPRM", &shape)].concat();
         for bytes in links {
             payload.extend(sub(b"XORD", bytes));
@@ -2373,7 +2373,11 @@ fn occluder_fixture(data: &Path, half_x: f32, links: &[&[u8]]) {
             group(
                 6,
                 cell,
-                group(9, cell, [marker(0x801, links), marker(0x802, &[])].concat()),
+                group(
+                    9,
+                    cell,
+                    [marker(0x801, half_x, links), marker(0x802, 12.0, &[])].concat(),
+                ),
             ),
         ]
         .concat(),
@@ -2446,15 +2450,28 @@ fn occluder_link_verification_distinguishes_null_from_unusable_source() {
 async fn dropped_occluder_fields_make_conversion_incomplete() {
     use converter::{AssetPipeline, config::RecordReader};
 
+    let outgoing = [0u32, 0, 0x802, 0].map(u32::to_le_bytes).concat();
     for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
-        for (half_x, links, category) in [
-            (f32::NAN, &[][..], "occluder_unusable_geometry"),
-            (12.0, &[&[0; 12][..]][..], "occluder_unusable_links"),
+        for (half_x, link, category, expected_refs, expected_links) in [
+            (
+                f32::NAN,
+                outgoing.as_slice(),
+                "occluder_unusable_geometry",
+                &[0x802][..],
+                &[(0x801, 2, 0x802)][..],
+            ),
+            (
+                12.0,
+                &[0; 12][..],
+                "occluder_unusable_links",
+                &[0x801, 0x802][..],
+                &[][..],
+            ),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let data = dir.path().join("Data");
             fs::create_dir(&data).unwrap();
-            occluder_fixture(&data, half_x, links);
+            occluder_fixture(&data, half_x, &[link]);
             let list = dir.path().join("plugins.txt");
             fs::write(&list, "*Skyrim.esm\n").unwrap();
             let output = dir.path().join("bundle");
@@ -2479,6 +2496,32 @@ async fn dropped_occluder_fields_make_conversion_incomplete() {
                 serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
                     .unwrap();
             assert!(!manifest.complete);
+
+            let conn = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+            let refs = conn
+                .prepare("SELECT ref_id FROM room_occluders ORDER BY ref_id")
+                .unwrap()
+                .query_map([], |row| row.get::<_, u32>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert_eq!(refs, expected_refs, "{reader:?} {category}");
+            let links = conn
+                .prepare("SELECT ref_id, link_index, linked_ref FROM room_occluder_links")
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<(u32, u32, u32)>>>()
+                .unwrap();
+            assert_eq!(links, expected_links, "{reader:?} {category}");
+            let complete: bool = conn
+                .query_row(
+                    "SELECT complete FROM room_graph_cells WHERE cell_id=0x900",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(!complete, "{reader:?} {category}");
         }
     }
 }

@@ -146,7 +146,8 @@ impl Occluder {
             return None;
         }
         let room = Room::from_creation(ref_id, position, rotation, half);
-        let half = room.half * scale;
+        // Keep the shadow inside both the authored and placement-scaled shapes.
+        let half = room.half * scale.min(1.0);
         if !room.center.is_finite()
             || !room.rotation.is_finite()
             || !room.rotation.is_normalized()

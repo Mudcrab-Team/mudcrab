@@ -103,7 +103,7 @@ pub(super) fn load(
          header_flags,has_enable_parent,has_links,o.target_ref,
                 EXISTS(SELECT 1 FROM room_reference_rules r WHERE r.reference_id=o.ref_id
                        AND r.cell_id=o.cell_id AND r.assignment='target' AND r.target_ref=o.target_ref)
-         FROM room_occluders o WHERE cell_id=?1 ORDER BY ref_id",
+         FROM room_occluders o WHERE cell_id=?1 AND typeof(o.scale) IN ('real','integer') ORDER BY ref_id",
     )?;
     let rows = statement.query_map([cell], |row| {
         Ok((
