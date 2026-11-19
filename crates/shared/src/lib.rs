@@ -36,8 +36,8 @@ where
 /// Current combined database contract: corrected TXST roles and one-byte XESP flags.
 pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 9;
 
-/// Current Papyrus script emission ABI: case-insensitive identifiers and permissive initial states.
-pub const PAPYRUS_SCRIPT_ABI_VERSION: u32 = 3;
+/// Script ABI 4 packages the helper that searches active-state methods across the ancestry first.
+pub const PAPYRUS_SCRIPT_ABI_VERSION: u32 = 4;
 /// Latest producer required when a package advertises the combined LOD contract.
 /// 27: collision coverage (sphere shapes as zero-length capsules, multi-sphere and cylinder
 /// shapes) changes GLB collision extras.
