@@ -1257,14 +1257,16 @@ fn convert_plugins_with_text_sources_report_impl(
                 (id, source)
             }),
         )?;
-        // The canonical record omits rejected XLRM fields, but its room graph still lost a link.
-        let mut incomplete = tx.prepare_cached(
-            "UPDATE room_graph_cells SET complete=0 WHERE cell_id IN \
-             (SELECT cell_id FROM room_bounds WHERE ref_id=?1)",
-        )?;
+        // Canonical placement rows can omit a damaged field or an entire unusable record.
+        let mut incomplete =
+            tx.prepare_cached("UPDATE room_graph_cells SET complete=0 WHERE cell_id=?1")?;
         for record in decoded.records.values() {
-            if record.rejected_fields.contains(b"XLRM") {
-                incomplete.execute([record.form_id])?;
+            if super::is_placed_record_type(&record.record_type)
+                && (!record.payload_complete
+                    || record.rejected_fields.contains(b"XLRM")
+                    || record.rejected_fields.contains(b"XRMR"))
+            {
+                incomplete.execute([record.cell_form_id])?;
             }
         }
         tx.execute(

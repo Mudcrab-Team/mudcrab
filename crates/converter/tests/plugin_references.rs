@@ -1624,6 +1624,7 @@ fn load_order_export_writes_the_room_graph_with_remapped_marker_ids() {
                             [500.0, 0.0, 0.0],
                             [
                                 sub(b"XPRM", &xprm([100.0; 3], 1)),
+                                sub(b"XRMR", &[1, 0xc0, 1, 0]),
                                 sub(b"LNAM", &word(0x0100_0A00)),
                                 sub(b"INAM", &word(0x0100_0A01)),
                                 sub(b"XLRM", &word(0x0100_0801)),
