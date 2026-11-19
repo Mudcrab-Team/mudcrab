@@ -4,7 +4,11 @@
 //! Environment" and "Weather, Climate, Image Space and Lighting Templates"). Layouts follow
 //! xEdit 4.1.5f `Core/wbDefinitionsTES5.pas` and the in-house schema.
 
-use super::{extractors::SubrecordView, records::RawRecord};
+use super::{
+    extractors::SubrecordView,
+    projection_omissions::{OmissionCategory, ProjectionOmissions},
+    records::RawRecord,
+};
 use rusqlite::{Result, Transaction, types::Value};
 use std::collections::HashMap;
 
@@ -570,12 +574,26 @@ pub(crate) fn insert_record(
     links: &Links<'_>,
     record: &RawRecord,
     view: &SubrecordView<'_>,
+    omissions: &mut ProjectionOmissions,
 ) -> Result<()> {
     let id = record.form_id;
     match &record.record_type {
         b"LGTM" => {
             let data =
                 Some(sized(view, b"DATA", LGTM_DATA_SIZES)).filter(|bytes| !bytes.is_empty());
+            if data.is_none() {
+                omissions.record(
+                    OmissionCategory::LightingTemplateUnusableData,
+                    id,
+                    match view.find(b"DATA") {
+                        None => "LGTM has no DATA; lighting columns are NULL".to_owned(),
+                        Some(bytes) => format!(
+                            "LGTM DATA is {} bytes, which no known layout has; lighting columns are NULL",
+                            bytes.len()
+                        ),
+                    },
+                );
+            }
             Row::default()
                 .put("id", id)
                 .put("editor_id", view.get_string(b"EDID"))

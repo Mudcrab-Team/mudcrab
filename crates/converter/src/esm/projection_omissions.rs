@@ -41,6 +41,14 @@ pub enum OmissionCategory {
     EmittanceWeatherNoLighting,
     /// An `XEMI` target that is neither a `LIGH` nor a `REGN`.
     EmittanceTargetWrongType,
+    /// A `GRAS` without `DATA` gets NULL in every `DATA`-derived column.
+    GrassMissingData,
+    /// A `GRAS` whose `DATA` is shorter than its 32 bytes gets NULL past the end of the data.
+    GrassShortData,
+    /// A placed reference without `DATA` or with fewer than 24 bytes of it gets no `references` row.
+    PlacementUnusableData,
+    /// An `LGTM` without `DATA`, or with a size no known layout has, gets NULL lighting columns.
+    LightingTemplateUnusableData,
 }
 
 impl OmissionCategory {
@@ -53,6 +61,10 @@ impl OmissionCategory {
             Self::EmittanceRegionNoWeather => "emittance_region_no_weather",
             Self::EmittanceWeatherNoLighting => "emittance_weather_no_lighting",
             Self::EmittanceTargetWrongType => "emittance_target_wrong_type",
+            Self::GrassMissingData => "grass_missing_data",
+            Self::GrassShortData => "grass_short_data",
+            Self::PlacementUnusableData => "placement_unusable_data",
+            Self::LightingTemplateUnusableData => "lighting_template_unusable_data",
         }
     }
 
@@ -60,7 +72,12 @@ impl OmissionCategory {
     /// emittance target keeps the model's own emission, the documented fallback.
     pub fn severity(self) -> Severity {
         match self {
-            Self::LightMissingData | Self::LightShortData => Severity::DataLoss,
+            Self::LightMissingData
+            | Self::LightShortData
+            | Self::GrassMissingData
+            | Self::GrassShortData
+            | Self::PlacementUnusableData
+            | Self::LightingTemplateUnusableData => Severity::DataLoss,
             Self::EmittanceTargetAbsent
             | Self::EmittanceLightUnusableData
             | Self::EmittanceRegionNoWeather
