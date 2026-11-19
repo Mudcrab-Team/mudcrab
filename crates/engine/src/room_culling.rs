@@ -1546,7 +1546,7 @@ mod tests {
         let connection = authored_database();
         connection
             .execute_batch(
-                "INSERT INTO room_graph_stats VALUES('occlusion_version',1);
+                "INSERT INTO room_graph_stats VALUES('occlusion_version',1),('occlusion_links_verified',1);
              CREATE TABLE room_occluders(ref_id INTEGER PRIMARY KEY,cell_id INTEGER,shape INTEGER,
                pos_x REAL,pos_y REAL,pos_z REAL,rot_x REAL,rot_y REAL,rot_z REAL,
                half_x REAL,half_y REAL,half_z REAL,scale REAL,header_flags INTEGER,
@@ -1691,7 +1691,8 @@ mod tests {
         connection
             .execute_batch(
                 "INSERT INTO room_occluders VALUES(501,7,3,0,40,0,0,0,0,8,0,8,1,0,0,0,NULL);
-             UPDATE room_occluders SET has_links=1 WHERE ref_id=500;",
+             DELETE FROM room_graph_stats WHERE name='occlusion_links_verified';
+             UPDATE room_occluders SET cell_id=8,has_links=1 WHERE ref_id=500;",
             )
             .unwrap();
         assert!(
@@ -1701,9 +1702,9 @@ mod tests {
                 .is_empty()
         );
         connection
-            .execute(
-                "INSERT INTO room_graph_stats VALUES ('occlusion_links_verified',1)",
-                [],
+            .execute_batch(
+                "INSERT INTO room_graph_stats VALUES ('occlusion_links_verified',1);
+                 UPDATE room_occluders SET cell_id=7 WHERE ref_id=500;",
             )
             .unwrap();
         let graph = load_room_graph(&connection, 7).unwrap();

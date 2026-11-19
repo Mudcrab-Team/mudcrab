@@ -1326,7 +1326,8 @@ Columns and rules:
   publishes `occlusion_version = 1` and `occlusion_links_verified = 1` in `room_graph_stats`.
   These markers let the loader keep unrelated occluders in a complete cell that contains an
   all-null `XORD`. Subset exports invalidate cells that contain an old or new link target.
-  Legacy exports omit both markers.
+  Occluder shadows require both markers because an unverified source in another cell can have a
+  missing incoming link to a local occluder. Legacy exports omit both markers.
 - **`room_bounds`**: the box is centred on the marker's position and oriented by its rotation
   (the same Euler convention as any reference, `shared::coordinates`). `half_*` are the `XPRM`
   half-extents in the room's own frame. `lighting_template_id` (`LNAM`) and `image_space_id`

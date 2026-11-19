@@ -244,7 +244,7 @@ impl Occluder {
                 } else {
                     outward.dot(view.camera - point)
                 };
-                if facing > f64::from(EPSILON) {
+                if facing > 0.0 {
                     visible[axis * 2 + side] = true;
                     // A ray has entered the opaque box only after crossing every visible face.
                     planes.push(through_point(-outward, point)?);
@@ -424,6 +424,24 @@ mod tests {
                 assert!(!shadow.contains_sphere(Vec3::new(0.0, 0.0, -10.0), 1.0));
             }
         }
+    }
+
+    #[test]
+    fn shallow_orthographic_rays_keep_spheres_beside_a_long_box_visible() {
+        let projection = Mat4::orthographic_rh(-100.0, 100.0, -100.0, 100.0, 1000.0, 0.1);
+        let clip = projection * Mat4::look_at_rh(Vec3::ZERO, Vec3::new(0.0005, 0.0, -1.0), Vec3::Y);
+        let shape = occluder(1, Vec3::new(0.0, 0.0, -110.0), Vec3::new(0.01, 5.0, 100.0));
+        assert!(
+            !shape
+                .shadow(Vec3::ZERO, clip)
+                .is_some_and(|shadow| shadow.contains_sphere(Vec3::new(-0.1, 0.0, -110.0), 0.01))
+        );
+        assert!(
+            shape
+                .shadow(Vec3::ZERO, projection)
+                .unwrap()
+                .contains_sphere(Vec3::new(0.0, 0.0, -220.0), 0.002)
+        );
     }
 
     #[test]

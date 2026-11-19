@@ -170,7 +170,11 @@ fn project(
             let value = occurrences.next()?;
             (occurrences.next().is_none() && !record.rejected_fields.contains(tag)).then_some(value)
         }
-        None => view.find(tag),
+        None => {
+            let mut fields = view.find_all(tag);
+            let first = fields.next()?;
+            fields.next().is_none().then_some(first)
+        }
     };
     let present = |tag: &[u8; 4]| {
         view.find(tag).is_some()
@@ -246,7 +250,6 @@ fn project(
     };
     let scale = if present(b"XSCL") {
         field(b"XSCL")
-            .filter(|_| source.is_some() || view.find_all(b"XSCL").nth(1).is_none())
             .and_then(|data| <[u8; 4]>::try_from(data).ok())
             .map(f32::from_le_bytes)
             .filter(|value| value.is_finite())
@@ -385,6 +388,50 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(super::super::RoomGraphReport::read(&conn).unwrap(), report);
+    }
+
+    #[test]
+    fn duplicate_geometry_keeps_outgoing_links_and_valid_siblings() {
+        for index in [1, 2] {
+            let mut bad = marker(100, 3);
+            bad.subrecords.push(bad.subrecords[index].clone());
+            bad.subrecords.push((
+                b"XORD".to_vec(),
+                [0u32, 101, 0, 0]
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect(),
+            ));
+            let (db, report) = exported(vec![bad, marker(101, 3)]);
+            assert_eq!(report.occluders, 1);
+            assert_eq!(
+                db.query_row("SELECT ref_id FROM room_occluders", [], |r| r
+                    .get::<_, u32>(0))
+                    .unwrap(),
+                101
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT ref_id, link_index, linked_ref FROM room_occluder_links",
+                    [],
+                    |r| Ok((
+                        r.get::<_, u32>(0)?,
+                        r.get::<_, u32>(1)?,
+                        r.get::<_, u32>(2)?
+                    ))
+                )
+                .unwrap(),
+                (100, 1, 101)
+            );
+            assert!(
+                !db.query_row(
+                    "SELECT complete FROM room_graph_cells WHERE cell_id=7",
+                    [],
+                    |r| r.get::<_, bool>(0)
+                )
+                .unwrap()
+            );
+        }
     }
 
     #[test]

@@ -4160,35 +4160,49 @@ fn assert_created_interior(
 }
 
 #[test]
-fn fresh_interior_with_a_malformed_occluder_keeps_its_incomplete_certificate() {
+fn fresh_interior_with_a_malformed_occluder_rolls_back_and_can_be_retried() {
     let dir = tempfile::tempdir().unwrap();
     let assets = converted_placement_fixture(dir.path());
     let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
     let cell = 0x0100_0900;
-    let source = plugin(
-        dir.path(),
-        "FreshPlane.esp",
-        &["Skyrim.esm"],
-        0,
-        [
-            authored_cell(cell, Vec::new()),
-            placement_group(
-                cell,
-                [
-                    placement_marker(cell + 1, 0x1f, Vec::new()),
-                    placement(cell + 2, 23, 0, 0.0, sub(b"XPRM", &[0; 31])),
-                ]
-                .concat(),
-            ),
-        ]
-        .concat(),
+    let source = |plane| {
+        plugin(
+            dir.path(),
+            "FreshPlane.esp",
+            &["Skyrim.esm"],
+            0,
+            [
+                authored_cell(cell, Vec::new()),
+                placement_group(
+                    cell,
+                    [placement_marker(cell + 1, 0x1f, Vec::new()), plane].concat(),
+                ),
+            ]
+            .concat(),
+        )
+    };
+    let bad = source(placement(cell + 2, 23, 0, 0.0, sub(b"XPRM", &[0; 31])));
+    let result = run_placement_import(&assets, "--plugin", &bad);
+    assert!(!result.status.success());
+    let error = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        error.contains("01000902") && error.contains("XPRM"),
+        "{error}"
     );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM cells WHERE id=?1", [cell], |row| row
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    let good = source(placement_marker(cell + 2, 23, Vec::new()));
     assert_placement_import(
-        run_placement_import(&assets, "--plugin", &source),
-        "Applied 2 room placements in 1 cells (1 created, 0 certified)",
+        run_placement_import(&assets, "--plugin", &good),
+        "Applied 2 room placements in 1 cells (1 created, 1 certified)",
     );
-    assert!(!placement_certificate(&db, cell));
-    assert_eq!(db.query_row("SELECT (SELECT count(*) FROM room_bounds WHERE cell_id=?1), (SELECT count(*) FROM room_occluders WHERE cell_id=?1)", [cell], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?))).unwrap(), (1, 0));
+    assert!(placement_certificate(&db, cell));
 }
 
 #[test]
