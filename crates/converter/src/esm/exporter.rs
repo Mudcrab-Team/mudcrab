@@ -1,5 +1,5 @@
 use crate::esm::{
-    emittance,
+    default_object_pairs, emittance,
     extractors::{SubrecordView, extract_cell_info, extract_land_data, serialize_subrecords},
     load_order::{LoadOrder, StableId},
     projection_omissions::{OmissionCategory, ProjectionOmissions},
@@ -65,13 +65,12 @@ fn invalid_movement_field(form_id: u32, field: &str) -> rusqlite::Error {
     )))
 }
 
-fn decode_npc_default_speeds(view: &SubrecordView<'_>, form_id: u32) -> Result<[f32; 8]> {
-    if view.get_string(b"EDID").as_deref() != Some("NPC_Default_MT") {
-        return Err(invalid_movement_field(
-            form_id,
-            "MOVT EDID (expected NPC_Default_MT)",
-        ));
-    }
+/// Decode the eight directional walk and run speeds of a `MOVT` `SPED`.
+///
+/// Retail movement types can hold zero speeds (a creature that cannot strafe has
+/// zero lateral speeds), so only negative and non-finite values are rejected. The
+/// engine checks the forward speed that a selected profile must supply.
+fn decode_movement_speeds(view: &SubrecordView<'_>, form_id: u32) -> Result<[f32; 8]> {
     let data = view
         .find(b"SPED")
         .ok_or_else(|| invalid_movement_field(form_id, "MOVT SPED"))?;
@@ -84,7 +83,7 @@ fn decode_npc_default_speeds(view: &SubrecordView<'_>, form_id: u32) -> Result<[
     let mut speeds = [0.0; 8];
     for (index, speed) in speeds.iter_mut().enumerate() {
         *speed = f32::from_le_bytes(data[index * 4..index * 4 + 4].try_into().unwrap());
-        if !speed.is_finite() || *speed <= 0.0 {
+        if !speed.is_finite() || *speed < 0.0 {
             return Err(invalid_movement_field(
                 form_id,
                 &format!("MOVT SPED[{index}]"),
@@ -240,6 +239,10 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
          CREATE TABLE IF NOT EXISTS race_movement_links (
              id INTEGER PRIMARY KEY, walk_movt_id INTEGER, run_movt_id INTEGER,
              load_order INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS default_objects (
+             key TEXT PRIMARY KEY,          -- DOBJ DNAM use code, for example DMWL
+             form_id INTEGER NOT NULL       -- load-order FormID; a null link has no row
          );
          CREATE TABLE IF NOT EXISTS movement_game_settings (
              id INTEGER PRIMARY KEY, editor_id TEXT NOT NULL,
@@ -535,6 +538,7 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
         DROP TABLE IF EXISTS waters;
         DROP TABLE IF EXISTS movement_game_settings;
         DROP TABLE IF EXISTS race_movement_links;
+        DROP TABLE IF EXISTS default_objects;
         DROP TABLE IF EXISTS race_animation_sources;
         DROP TABLE IF EXISTS movement_types;
         DROP TABLE IF EXISTS npcs;
@@ -603,8 +607,8 @@ fn runtime_projection(
 pub(crate) fn validate_inhouse_record(record: &RawRecord) -> Result<()> {
     let view = SubrecordView::new(&record.subrecords);
     match &record.record_type {
-        b"MOVT" if record.form_id == 0x0003_580D => {
-            decode_npc_default_speeds(&view, record.form_id)?;
+        b"MOVT" => {
+            decode_movement_speeds(&view, record.form_id)?;
         }
         b"GMST"
             if view.get_string(b"EDID").is_some_and(|name| {
@@ -923,12 +927,32 @@ fn export_records(
                     params![form_id, walk, run, record.load_order],
                 )?;
             }
-            "MOVT" if form_id == 0x0003_580D => {
-                let speeds = decode_npc_default_speeds(&view, form_id)?;
+            "MOVT" => {
+                let speeds = decode_movement_speeds(&view, form_id)?;
                 tx.prepare_cached(
                     "INSERT OR REPLACE INTO movement_types(id, editor_id, left_walk, left_run, right_walk, right_run, forward_walk, forward_run, back_walk, back_run, load_order) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)")?.execute(
-                    params![form_id, "NPC_Default_MT", speeds[0], speeds[1], speeds[2], speeds[3], speeds[4], speeds[5], speeds[6], speeds[7], record.load_order],
+                    params![form_id, view.get_string(b"EDID").unwrap_or_default(), speeds[0], speeds[1], speeds[2], speeds[3], speeds[4], speeds[5], speeds[6], speeds[7], record.load_order],
                 )?;
+            }
+            // The readers merge overrides key by key before export (see `merge_default_objects`).
+            // A null link, or a record without usable pairs, adds no default: the engine then
+            // reports the missing default instead of inventing a movement type. A listed key
+            // with a null link removes its stored row. Only a complete snapshot clears the
+            // table, so a partial export keeps the rows it does not list.
+            "DOBJ" => {
+                for (key, target) in default_object_pairs(&record.subrecords) {
+                    let key = String::from_utf8_lossy(&key);
+                    if target == 0 {
+                        // The loader sets a listed slot to null, so a stored default goes too.
+                        tx.prepare_cached("DELETE FROM default_objects WHERE key=?1")?
+                            .execute(params![key])?;
+                    } else {
+                        tx.prepare_cached(
+                            "INSERT OR REPLACE INTO default_objects(key, form_id) VALUES (?1, ?2)",
+                        )?
+                        .execute(params![key, target])?;
+                    }
+                }
             }
             "GMST" => {
                 let editor_id = view.get_string(b"EDID");
@@ -1766,6 +1790,7 @@ mod tests {
             "npcs",
             "movement_types",
             "race_movement_links",
+            "default_objects",
             "movement_game_settings",
             "scripts",
             "waters",
@@ -1874,6 +1899,88 @@ mod tests {
         legacy.subrecords[1].1.truncate(40);
         export_to_db(&conn, &HashMap::from([(legacy.form_id, legacy)])).unwrap();
 
+        // Any MOVT exports with its own editor ID, including retail zero speeds (no strafing).
+        let mut creature = movement.clone();
+        creature.form_id = 0x000C_EFCF;
+        creature.subrecords[0].1 = b"NPC_Drunk_MT\0".to_vec();
+        creature.subrecords[1].1[0..4].copy_from_slice(&0.0f32.to_le_bytes());
+        let defaults = RawRecord {
+            form_id: 0x0000_0031,
+            record_type: *b"DOBJ",
+            flags: 0,
+            subrecords: vec![(
+                b"DNAM".to_vec(),
+                [
+                    *b"DMWL",
+                    0x0003_580Du32.to_le_bytes(),
+                    *b"DMRN",
+                    0x000C_EFCFu32.to_le_bytes(),
+                    // A null link names no movement type, so it exports no row.
+                    *b"DMSW",
+                    0u32.to_le_bytes(),
+                ]
+                .concat(),
+            )],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 4,
+        };
+        export_to_db(
+            &conn,
+            &HashMap::from([(creature.form_id, creature), (defaults.form_id, defaults)]),
+        )
+        .unwrap();
+        let (editor_id, left_walk): (String, f32) = conn
+            .query_row(
+                "SELECT editor_id, left_walk FROM movement_types WHERE id=0x000CEFCF",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((editor_id.as_str(), left_walk), ("NPC_Drunk_MT", 0.0));
+        let defaults: Vec<(String, u32)> = conn
+            .prepare("SELECT key, form_id FROM default_objects ORDER BY key")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            defaults,
+            [
+                ("DMRN".to_string(), 0x000C_EFCF),
+                ("DMWL".to_string(), 0x0003_580D)
+            ]
+        );
+
+        // A later export that lists DMRN with a null link removes it and keeps DMWL.
+        let null_run = RawRecord {
+            subrecords: vec![(
+                b"DNAM".to_vec(),
+                [b"DMRN".as_slice(), &0u32.to_le_bytes()].concat(),
+            )],
+            load_order: 5,
+            form_id: 0x0000_0031,
+            record_type: *b"DOBJ",
+            flags: 0,
+            cell_form_id: None,
+            worldspace_form_id: None,
+        };
+        export_to_db(&conn, &HashMap::from([(null_run.form_id, null_run)])).unwrap();
+        let after_null: Vec<String> = conn
+            .prepare("SELECT key FROM default_objects ORDER BY key")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(after_null, ["DMWL"]);
+
+        let mut negative = movement.clone();
+        negative.subrecords[1].1[4..8].copy_from_slice(&(-1.0f32).to_le_bytes());
+        let error =
+            export_to_db(&conn, &HashMap::from([(negative.form_id, negative)])).unwrap_err();
+        assert!(error.to_string().contains("MOVT SPED[1]"));
         let mut broken = movement;
         broken.subrecords[1].1[0..4].copy_from_slice(&f32::NAN.to_le_bytes());
         let error = export_to_db(&conn, &HashMap::from([(broken.form_id, broken)])).unwrap_err();
@@ -1885,6 +1992,53 @@ mod tests {
         let error =
             export_to_db(&conn, &HashMap::from([(broken_race.form_id, broken_race)])).unwrap_err();
         assert!(error.to_string().contains("RACE WKMV length"));
+    }
+
+    #[test]
+    fn default_objects_without_usable_pairs_export_no_rows_and_do_not_fail() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        let dobj = |form_id: u32, subrecords: Vec<(Vec<u8>, Vec<u8>)>| RawRecord {
+            form_id,
+            record_type: *b"DOBJ",
+            flags: 0,
+            subrecords,
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 3,
+        };
+        let missing = dobj(0x0100_0031, vec![(b"EDID".to_vec(), b"Mod\0".to_vec())]);
+        // A trailing partial pair is ignored; the whole pair before it is kept.
+        let partial_tail = dobj(
+            0x0200_0031,
+            vec![(
+                b"DNAM".to_vec(),
+                [
+                    b"DMWL".as_slice(),
+                    &0x0003_580Du32.to_le_bytes(),
+                    &[1, 2, 3],
+                ]
+                .concat(),
+            )],
+        );
+        let short = dobj(0x0300_0031, vec![(b"DNAM".to_vec(), vec![1, 2, 3])]);
+        export_to_db(
+            &conn,
+            &HashMap::from([
+                (missing.form_id, missing),
+                (partial_tail.form_id, partial_tail),
+                (short.form_id, short),
+            ]),
+        )
+        .unwrap();
+        let rows: Vec<(String, u32)> = conn
+            .prepare("SELECT key, form_id FROM default_objects")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, [("DMWL".to_string(), 0x0003_580D)]);
     }
 
     #[test]
@@ -2864,6 +3018,56 @@ mod tests {
             .unwrap();
         assert_eq!(emittance_id, Some(0x8277B));
         assert!(emittance_row(&conn, 0x8277B).is_some());
+    }
+
+    /// Update.esm and every DLC override `DOBJ` `00000031` with a partial key list. Merged
+    /// key by key, Skyrim.esm's default walk and run movement types survive as
+    /// `NPC_Default_MT`, and every retail `MOVT` exports, zero strafe speeds included.
+    ///
+    /// Reads the game install, so it is opt-in:
+    /// `cargo test -p converter --lib -- --ignored`.
+    #[test]
+    #[ignore = "requires MUDCRAB_SKYRIM_DATA with locally installed game assets"]
+    fn default_movement_types_of_the_real_masters_survive_overrides() {
+        let data_dir = std::env::var_os("MUDCRAB_SKYRIM_DATA")
+            .map(std::path::PathBuf::from)
+            .expect("set MUDCRAB_SKYRIM_DATA to the Skyrim Data directory");
+        let plugins: Vec<_> = [
+            "Skyrim.esm",
+            "Update.esm",
+            "Dawnguard.esm",
+            "HearthFires.esm",
+            "Dragonborn.esm",
+        ]
+        .iter()
+        .map(|name| data_dir.join(name))
+        .collect();
+        let merged = crate::esm::EsmParser::merge_plugins(&plugins).unwrap();
+        let selected: HashMap<u32, RawRecord> = merged
+            .into_iter()
+            .filter(|(_, record)| matches!(&record.record_type, b"DOBJ" | b"MOVT"))
+            .collect();
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        export_to_db(&conn, &selected).unwrap();
+        for key in ["DMWL", "DMRN"] {
+            let (form_id, editor_id): (u32, String) = conn
+                .query_row(
+                    "SELECT d.form_id, m.editor_id FROM default_objects d \
+                     JOIN movement_types m ON m.id = d.form_id WHERE d.key = ?1",
+                    [key],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                (form_id, editor_id.as_str()),
+                (0x0003_580D, "NPC_Default_MT")
+            );
+        }
+        let movement_types: i64 = conn
+            .query_row("SELECT count(*) FROM movement_types", [], |row| row.get(0))
+            .unwrap();
+        assert!(movement_types >= 107, "only {movement_types} MOVT exported");
     }
 
     /// The Sleeping Giant Inn's reference in Riverwood names `FXLightRegionInvertWindowWhiterun`,

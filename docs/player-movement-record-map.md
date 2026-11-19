@@ -11,7 +11,7 @@ The directional Riverwood WALK speeds remain a first-pass profile. Character jum
 | 4 | Dragonborn.esm | `635f21a938a17b8677f524cf41210933afc7f23820f2e210ab3bb6d3cd837046` |
 | 22 | ccbgssse018-shadowrend.esl | `7ffcdfd2882445f25db3c5b4d40de7efa28dcca03d8eceb7a3e155e3c6618cfc` |
 
-The winning Player `NPC_` `0x00000007` comes from `ccbgssse018-shadowrend.esl` and has `RNAM = 0x00013746` (`NordRace`). Update.esm supplies the winning NordRace record. Its `RACE` data has no `WKMV` or `RNMV` subrecord and no embedded `0x0003580D` FormID. CommonLibSSE-NG exposes six runtime `baseMoveTypes` slots, but that header does not prove how an unset slot selects a movement form. The Riverwood first pass explicitly selects `NPC_Default_MT` `MOVT` `0x0003580D`, whose winning record is in Skyrim.esm. This selection is a project rule pending native selection-path evidence, not a record link from NordRace. Packages whose Player race supplies `WKMV` or `RNMV` fail with an explicit error until that selection path is supported.
+The winning Player `NPC_` `0x00000007` comes from `ccbgssse018-shadowrend.esl` and has `RNAM = 0x00013746` (`NordRace`). Update.esm supplies the winning NordRace record. Its `RACE` data has no `WKMV` or `RNMV` subrecord and no embedded `0x0003580D` FormID. CommonLibSSE-NG exposes six runtime `baseMoveTypes` slots. An unset slot falls back to a default movement type from the game's default-object table (see [Default movement types](#default-movement-types)). Skyrim.esm's `DOBJ` maps the walk and run defaults to `NPC_Default_MT` `MOVT` `0x0003580D`, so NordRace walks and runs with `NPC_Default_MT` through that table, not through a record link. The loader resolves an explicit `WKMV` or `RNMV` link and an unset slot independently, and it reports a missing default object or movement type as an error.
 
 `MOVT` `SPED` is eleven little-endian `f32` values. CommonLib's `Movement::MaxSpeeds` identifies four direction pairs, one rotation pair, and `rotateWhileMovingRun`. The retail `NPC_Default_MT` values are:
 
@@ -22,7 +22,7 @@ The winning Player `NPC_` `0x00000007` comes from `ccbgssse018-shadowrend.esl` a
 | Forward | 80.10 | 370.00 |
 | Back | 71.93 | 205.25 |
 
-The last three floats are `3.14159`, `3.14159`, `3.14159`; they are rotation values, not linear speed. The engine treats the first eight raw numbers as Creation units per second with conversion factor `1` for this first guess. The header proves the field order but does not prove the game's elapsed-time equation or physical units. For our fixed-step controller, steady flat-ground distance is `effective_speed * elapsed_seconds`; acceleration and contacts change distance from rest. Thus forward walk/run targets over two steady seconds are `160.20`/`740.00` Creation units under this project rule.
+The last three floats are `3.14159`, `3.14159`, `3.14159`; they are rotation values, not linear speed. The engine treats the first eight raw numbers as Creation units per second with conversion factor `1` for this first guess. The header proves the field order but does not prove the game's elapsed-time equation or physical units. For our fixed-step controller, steady flat-ground distance is `effective_speed * elapsed_seconds`; acceleration and contacts change distance from rest. Thus forward walk/run targets over two steady seconds are `160.20`/`740.00` Creation units with this profile.
 
 Skyrim.esm contains `GMST` `fMoveCharWalkBase` `0x0001EC72 = 100.0` (`f32`) and `fJumpHeightMin` `0x000ABEF6 = 76.0` (`f32`). The walk setting is still not substituted for a `MOVT` speed. Native jump observations now establish that the loaded jump setting is multiplied by reference scale and NPC/race height before conversion to Havok length and impulse construction. The measured baseline uses `76 × 1 × 1 × 1.03`, yielding a float32 setter argument of `78.27999877929688` Creation units. That value is a launch parameter, not a guaranteed apex.
 
@@ -33,6 +33,25 @@ The retained recordings cover stationary launches on flat ground with unit contr
 The production schedule remains fixed at 60 Hz and passes its actual fixed-clock delta to the transition. Native scheduler ownership and high-cadence behavior remain unresolved. The former 900/340 character approximation is retained only in the before-change evidence. Rigid-body gravity remains a separate 900 Creation units/s² policy because native character measurements do not establish rigid-body acceleration. `fJumpFallHeightMin = 600` and `fJumpFallVelocityMin = 700` remain fall-related settings and are not treated as gravity.
 
 Sources: the five ESM hashes above; [`Movement.h`](https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/M/Movement.h); [`TESRace.h`](https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/T/TESRace.h); [Mutagen MOVT schema](https://github.com/Mutagen-Modding/Mutagen/blob/dev/Mutagen.Bethesda.Skyrim/Records/Major%20Records/MovementType.xml). ESM `MOVT`/`GMST` subrecord bytes and FormIDs were read directly from those files.
+
+## Default movement types
+
+Question: which `MOVT` does a race use when its `WKMV` or `RNMV` is unset?
+
+Evidence: static analysis of SkyrimSE.exe 1.7.104.0 (SHA-256 `846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f`). Addresses are virtual addresses at the image base `0x140000000`.
+
+- The race loader (`0x1403e3da0`) reads `WKMV`, `RNMV`, `SWMV`, `FLMV`, `SNMV` and `SPMV` into six consecutive slots. An absent subrecord leaves its slot empty.
+- The race movement-type getter (`0x1403e64a0`) returns the slot of the given index when it is set. Otherwise it returns the default object for that index (`0x140393860`).
+- That function maps the indexes 0 to 5 to the default objects "Default MovementType: Walk", "Run", "Swim", "Fly", "Sneak" and "Sprint". Their `DOBJ` use codes are `DMWL`, `DMRN`, `DMSW`, `DMFL`, `DMSN` and `DMSP`.
+- The default-object loader (`0x14031b8b0`) sets the slot of each `DNAM` (use code, FormID) pair that a `DOBJ` lists. It does not clear the table first, so a later `DOBJ` override changes only the keys it lists.
+
+Data: Skyrim.esm `DOBJ` `00000031` maps `DMWL` and `DMRN` to `0x0003580D` (`NPC_Default_MT`). Update.esm, Dawnguard.esm, HearthFires.esm and Dragonborn.esm override the same `DOBJ` with lists that hold no `DMWL` or `DMRN`. Last-record-wins would therefore drop the defaults, so both record readers merge `DOBJ` overrides key by key. For retail data both slots resolve to `NPC_Default_MT`, which is the value that the earlier project rule chose.
+
+What the converter and engine do: the converter exports every `MOVT` into `movement_types` (with zero speeds kept; a selected zero forward speed loads and is flagged with a warning) and the merged pairs into `default_objects`. The engine uses the race's own link when it is set, and otherwise `DMWL` for the walk slot and `DMRN` for the run slot. A default object that is missing, or that names a movement type the package lacks, is an error. The engine does not choose a movement type for it. A package with no `default_objects` table was converted before the table existed. It is the only case that keeps the earlier rule, `NPC_Default_MT` for an unset slot. The speed source labels it, and the engine logs one warning at startup that says a metadata rebuild (`--reuse-assets`) publishes the table. A package that has the table but no row for the key, including an empty table, is an error.
+
+Not established: which callers use the getter, whether actor state (combat, weapon or sneak overrides) replaces its result, and how the game blends walk and run speeds when the two slots name different movement types. The engine takes the walk speeds from the walk slot's profile and the run speeds from the run slot's profile. That split is an engine rule. No in-game measurement was taken. The `DOBJ` scan covered the five masters; the other plugins in the [manifest](player-movement-plugin-manifest.csv) were not checked.
+
+Tests: `both_record_readers_publish_the_same_default_movement_types` (converter), `default_object_overrides_merge_by_key`, and `a_race_without_links_takes_the_default_movement_types` (engine). The opt-in test `default_movement_types_of_the_real_masters_survive_overrides` reads the retail masters.
 
 ## Sprint follow-up for the in-house reader
 

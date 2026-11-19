@@ -1126,11 +1126,11 @@ CREATE TABLE IF NOT EXISTS npcs (               -- one row per NPC_
 );
 CREATE INDEX IF NOT EXISTS idx_npcs_editor_id ON npcs(editor_id);
 
-CREATE TABLE IF NOT EXISTS movement_types (     -- MOVT 0003580D (NPC_Default_MT) only, today
+CREATE TABLE IF NOT EXISTS movement_types (     -- one row per MOVT
     id INTEGER PRIMARY KEY,
-    editor_id TEXT NOT NULL,                    -- written as the literal 'NPC_Default_MT'
-    left_walk REAL NOT NULL, left_run REAL NOT NULL,       -- SPED, Creation units per second
-    right_walk REAL NOT NULL, right_run REAL NOT NULL,
+    editor_id TEXT NOT NULL,                    -- EDID
+    left_walk REAL NOT NULL, left_run REAL NOT NULL,       -- SPED, Creation units per second;
+    right_walk REAL NOT NULL, right_run REAL NOT NULL,     -- zero where the type cannot move
     forward_walk REAL NOT NULL, forward_run REAL NOT NULL,
     back_walk REAL NOT NULL, back_run REAL NOT NULL,
     load_order INTEGER NOT NULL
@@ -1140,6 +1140,10 @@ CREATE TABLE IF NOT EXISTS race_movement_links (  -- one row per RACE
     walk_movt_id INTEGER,                       -- WKMV
     run_movt_id INTEGER,                        -- RNMV
     load_order INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS default_objects (    -- DOBJ DNAM, merged key by key over every override
+    key TEXT PRIMARY KEY,                       -- use code, for example DMWL (walk) or DMRN (run)
+    form_id INTEGER NOT NULL                    -- load-order FormID; a null link has no row
 );
 CREATE TABLE IF NOT EXISTS movement_game_settings ( -- fMoveCharWalkBase and fJumpHeightMin only
     id INTEGER PRIMARY KEY, editor_id TEXT NOT NULL,
