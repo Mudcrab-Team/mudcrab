@@ -1184,7 +1184,7 @@ fn convert_plugins_with_text_sources_report_impl(
             plugin_paths,
             &unresolved_fields,
             &terrain_offsets,
-            &decoded.records,
+            &decoded,
         )?;
     } else {
         export_inhouse_record_archive_to_db(&conn, &master, &order, plugin_paths)?;
@@ -2674,6 +2674,7 @@ mod runtime_move_tests {
                     ..Default::default()
                 },
             )]),
+            ..Default::default()
         };
         let raw_pointer = decoded.records[&id].raw_payload.as_ptr();
         let history_pointer = decoded.history.as_ptr();

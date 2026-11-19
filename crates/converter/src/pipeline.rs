@@ -4360,6 +4360,22 @@ pub(crate) fn non_mo2_archive_is_active(archive: &Path, owners: &BTreeMap<String
         .is_none_or(|(_, active)| *active)
 }
 
+/// Lists the active BSA files in a direct Data directory in conversion order.
+pub fn active_data_bsa_paths(data: &Path, plugins: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(data)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            files.push(entry.path());
+        }
+    }
+    let owners = installed_archive_owners(data, &files, plugins);
+    files.retain(|path| extension(path, &["bsa"]) && non_mo2_archive_is_active(path, &owners));
+    files.sort();
+    sort_archives_by_load_order(&mut files, plugins);
+    Ok(files)
+}
+
 /// Match an exact normalized stem or an owner followed by a space, dash or underscore.
 /// Ownership, MO2 activity and priority share this companion-name boundary.
 fn archive_stem_matches_plugin(stem: &str, plugin: &str) -> bool {

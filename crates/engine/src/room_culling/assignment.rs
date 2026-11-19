@@ -78,6 +78,18 @@ impl Assignments {
             .is_some_and(|rule| matches!(rule.rule, Rule::Target(PortalSide::Room(_))))
     }
 
+    /// An unbounded skin can deform away from its named room even while its reference is stationary.
+    pub(super) fn unbounded_named_skin(&self, id: u32) -> bool {
+        matches!(
+            self.rules.get(&id),
+            Some(ReferenceRule {
+                rule: Rule::Target(PortalSide::Room(_)),
+                sphere: None,
+                ..
+            })
+        )
+    }
+
     pub(super) fn owners(
         &self,
         id: u32,

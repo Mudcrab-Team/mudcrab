@@ -3,7 +3,7 @@ use super::PluginDiagnostics;
 use color_eyre::{Result, eyre::WrapErr};
 use flate2::{Decompress, FlushDecompress, Status};
 use memmap2::Mmap;
-use std::{fs::File, path::Path};
+use std::{collections::HashSet, fs::File, path::Path};
 
 /// A framed, inflated record before any schema interpretation or ID resolution.
 pub(crate) struct ScannedRecord {
@@ -53,12 +53,12 @@ pub(crate) fn scan_plugin(
     diagnostics: &mut PluginDiagnostics,
     mut observe: impl FnMut(ObservedHeader),
     mut receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
-) -> Result<()> {
+) -> Result<HashSet<u32>> {
     diagnostics.set_record(0, None, None, None, "framing");
     let file = File::open(path).wrap_err_with(|| format!("open {}", path.display()))?;
     if file.metadata()?.len() < 24 {
         diagnostics.note("record", || "input shorter than TES4 header".into());
-        return Ok(());
+        return Ok(HashSet::new());
     }
     // SAFETY: inputs are read-only for the conversion and the map is never exposed to a writer.
     // An outside truncation or in-place rewrite would fault reads of the map; that risk is
@@ -66,10 +66,14 @@ pub(crate) fn scan_plugin(
     let map = unsafe { Mmap::map(&file)? };
     if map.len() < 24 || &map[..4] != b"TES4" {
         diagnostics.note("record", || "input has no complete TES4 header".into());
-        return Ok(());
+        return Ok(HashSet::new());
     }
-    scan_bytes_observed(&map, diagnostics, &mut receive, &mut observe);
-    Ok(())
+    Ok(scan_bytes_observed(
+        &map,
+        diagnostics,
+        &mut receive,
+        &mut observe,
+    ))
 }
 
 /// Traverse groups iteratively, retaining siblings when an inner boundary is corrupt.
@@ -88,13 +92,14 @@ fn scan_bytes_observed(
     diagnostics: &mut PluginDiagnostics,
     receive: &mut impl FnMut(ScannedRecord, &mut PluginDiagnostics),
     observe: &mut impl FnMut(ObservedHeader),
-) {
+) -> HashSet<u32> {
     let mut position = 0;
     let mut end = bytes.len();
     let mut cell = None;
     let mut world = None;
     let mut topic = None;
     let mut parents = Vec::new();
+    let mut damaged_cell_groups = HashSet::new();
     loop {
         if position == end {
             let Some((parent_end, parent_cell, parent_world, parent_topic)) = parents.pop() else {
@@ -111,6 +116,7 @@ fn scan_bytes_observed(
             diagnostics.note("record", || {
                 format!("incomplete frame at byte {position}; skipping containing group remainder")
             });
+            damaged_cell_groups.extend(cell);
             position = end;
             continue;
         }
@@ -125,23 +131,25 @@ fn scan_bytes_observed(
             "framing",
         );
         if signature == *b"GRUP" {
+            let label = u32_at(header, 8);
+            let kind = u32_at(header, 12) as i32;
+            let cell_child = matches!(kind, 6 | 8 | 9 | 10).then_some(label);
             if size < 24 || size > end - position || parents.len() >= 4096 {
                 diagnostics.note("record", || {
                     format!("invalid group boundary/nesting at byte {position}")
                 });
+                damaged_cell_groups.extend([cell, cell_child].into_iter().flatten());
                 position = end;
                 continue;
             }
             parents.push((end, cell, world, topic));
             end = position + size;
-            let label = u32_at(header, 8);
-            let kind = u32_at(header, 12) as i32;
             if kind == 1 {
                 world = Some(label);
                 cell = None;
             }
-            if matches!(kind, 6 | 8 | 9 | 10) {
-                cell = Some(label);
+            if cell_child.is_some() {
+                cell = cell_child;
             }
             if kind == 7 {
                 topic = Some((label, position as u64));
@@ -238,6 +246,7 @@ fn scan_bytes_observed(
             diagnostics,
         );
     }
+    damaged_cell_groups
 }
 
 /// Require exactly one complete zlib stream, with a 64 MiB per-record ceiling.

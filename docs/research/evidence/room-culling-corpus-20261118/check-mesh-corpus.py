@@ -213,6 +213,13 @@ def run(worktree, output, sources, baseline_assets, hashes):
         "source_inventory_sha256": SOURCE_DIGEST,
         "baseline_manifest_sha256": BASELINE_DIGEST,
         "models_verified": len(models),
+        "mismatch_counts": {
+            "binary_chunks": sum(not row["same_binary_chunks"] for row in changes),
+            "primitive_geometry": sum(not row["same_primitive_geometry"] for row in changes),
+            "drawable_transform_paths": sum(not row["same_drawable_transform_paths"] for row in changes),
+            "joint_transform_paths": sum(not row["same_joint_transform_paths"] for row in changes),
+            "draw_counts": sum(row["before_counts"] != row["after_counts"] for row in changes),
+        },
         "changed": changes,
         "models": comparison,
     }, indent=2) + "\n")
