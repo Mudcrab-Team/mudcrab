@@ -7,7 +7,7 @@
 //! drops a bound, renames the file or breaks the WGSL fails in CI instead of bringing the fault
 //! back.
 
-use crate::bevy_source::required_source;
+use crate::bevy_source::{read_source, required_source};
 use bevy::shader::{Shader, ShaderImport};
 use naga_oil::compose::{
     ComposableModuleDescriptor, Composer, NagaModuleDescriptor, ShaderDefValue, ShaderLanguage,
@@ -195,8 +195,19 @@ fn the_vendored_morph_shader_stays_bounded() {
 }
 
 /// A copy of the vendored crate in a temporary directory, without `skip` and with `edit` applied
-/// to `morph.wgsl`.
+/// to `morph.wgsl`. The files are written with LF endings.
 fn vendored_copy(skip: Option<&str>, edit: impl Fn(String) -> String) -> tempfile::TempDir {
+    vendored_copy_with_endings(skip, edit, "\n")
+}
+
+/// Like [`vendored_copy`], but written with `ending` as the line ending, as a checkout made with
+/// `core.autocrlf` would. `edit` always sees LF text: the sources are read through
+/// [`read_source`], so it does not depend on the checkout that runs the test.
+fn vendored_copy_with_endings(
+    skip: Option<&str>,
+    edit: impl Fn(String) -> String,
+    ending: &str,
+) -> tempfile::TempDir {
     let source = vendored_bevy_pbr();
     let copy = tempfile::tempdir().unwrap();
     for relative in [
@@ -211,13 +222,13 @@ fn vendored_copy(skip: Option<&str>, edit: impl Fn(String) -> String) -> tempfil
         }
         let target = copy.path().join(relative);
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        let text = std::fs::read_to_string(source.join(relative)).unwrap();
+        let text = read_source(&source.join(relative)).unwrap();
         let text = if relative == MORPH_WGSL {
             edit(text)
         } else {
             text
         };
-        std::fs::write(target, text).unwrap();
+        std::fs::write(target, text.replace('\n', ending)).unwrap();
     }
     copy
 }
@@ -237,7 +248,7 @@ fn a_missing_morph_shader_fails() {
 #[should_panic(expected = "morph.wgsl is missing or unreadable")]
 fn a_morph_shader_moved_to_wesl_fails() {
     let copy = vendored_copy(Some(MORPH_WGSL), |text| text);
-    let original = std::fs::read_to_string(vendored_bevy_pbr().join(MORPH_WGSL)).unwrap();
+    let original = read_source(&vendored_bevy_pbr().join(MORPH_WGSL)).unwrap();
     std::fs::write(copy.path().join("src/render/morph.wesl"), original).unwrap();
     check_bounded_morph_shader(copy.path());
 }
@@ -272,4 +283,53 @@ fn invalid_wgsl_in_the_port_fails() {
         )
     });
     check_bounded_morph_shader(copy.path());
+}
+
+/// The message of the panic that `run` raises, or `None` when it does not panic.
+fn panic_message(run: impl FnOnce()) -> Option<String> {
+    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).err()?;
+    Some(
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| {
+                payload
+                    .downcast_ref::<&str>()
+                    .map(|text| (*text).to_owned())
+            })
+            .unwrap_or_default(),
+    )
+}
+
+/// An intact and a mutated shader give the same verdict with LF and with CRLF endings on disk
+/// (a Windows checkout with `core.autocrlf`).
+#[test]
+fn every_line_ending_gives_the_same_verdict() {
+    for ending in ["\n", "\r\n"] {
+        let intact = vendored_copy_with_endings(None, |text| text, ending);
+        let on_disk = std::fs::read_to_string(intact.path().join(MORPH_WGSL)).unwrap();
+        assert_eq!(
+            on_disk.contains("\r\n"),
+            ending == "\r\n",
+            "the copy really has {ending:?} endings"
+        );
+        check_bounded_morph_shader(intact.path());
+
+        let mutated = vendored_copy_with_endings(
+            None,
+            |text| {
+                text.replace(
+                    BOUNDED_LAYER_COUNT,
+                    "    return morph_descriptors[morph_descriptor_index].weight_count;",
+                )
+            },
+            ending,
+        );
+        let message = panic_message(|| check_bounded_morph_shader(mutated.path()))
+            .unwrap_or_else(|| panic!("an unbounded layer_count passed with {ending:?} endings"));
+        assert!(
+            message.contains("layer_count lost its morph descriptor bound"),
+            "{ending:?}: {message}"
+        );
+    }
 }

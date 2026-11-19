@@ -1,0 +1,12 @@
+# Line endings.
+#
+# Tests and guards match exact source text, and the vendored Bevy sources are compared with the
+# published crates, so a Windows checkout with `core.autocrlf=true` must not turn them into CRLF.
+# The later rules win: vendored files detect their own type, and every Rust, WGSL and TOML file
+# (and `Cargo.lock`) is always LF. The guards also normalise CRLF when they read a source
+# (`crates/engine/src/bevy_source.rs`), so a checkout made before this file is safe too.
+vendor/** text=auto eol=lf
+*.rs text eol=lf
+*.wgsl text eol=lf
+*.toml text eol=lf
+Cargo.lock text eol=lf
