@@ -2815,6 +2815,219 @@ fn authored_room_link_counts_keep_only_mismatched_cells_incomplete() {
 }
 
 #[test]
+fn authored_room_link_order_uses_source_slots_in_both_readers() {
+    use converter::config::RecordReader;
+
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let base = plugin(data, "Skyrim.esm", &[], 1, Vec::new());
+    let filler = plugin(data, "Filler.esm", &["Skyrim.esm"], 1, Vec::new());
+    let header = |count, flags| sub(b"XRMR", &[count, flags, 1, 0]);
+    let lighting = || sub(b"LNAM", &[0; 4]);
+    let image_space = || sub(b"INAM", &[0; 4]);
+    let link = |target_offset: u8| sub(b"XLRM", &[target_offset, 0, 0, 0]);
+    let cases = [
+        (
+            "ordered with both flagged fields and a repeated target",
+            vec![
+                header(3, 0xc0),
+                lighting(),
+                image_space(),
+                link(1),
+                link(2),
+                link(1),
+            ],
+            true,
+            vec![(2, 1), (1, 2)],
+        ),
+        (
+            "early link",
+            vec![link(1), header(1, 0), sub(b"ZZZZ", &[0; 4])],
+            false,
+            vec![],
+        ),
+        (
+            "missing lighting slot",
+            vec![header(1, 0x80), link(1)],
+            false,
+            vec![],
+        ),
+        (
+            "malformed flagged lighting slot",
+            vec![header(1, 0x80), sub(b"LNAM", &[0; 3]), link(1)],
+            false,
+            vec![],
+        ),
+        (
+            "missing image-space slot",
+            vec![header(1, 0xc0), lighting(), link(1)],
+            false,
+            vec![],
+        ),
+        (
+            "reversed flagged fields",
+            vec![header(1, 0xc0), image_space(), lighting(), link(1)],
+            false,
+            vec![],
+        ),
+        (
+            "unflagged lighting slot",
+            vec![header(1, 0), lighting(), link(1)],
+            false,
+            vec![],
+        ),
+        (
+            "stray image space after a valid run",
+            vec![header(1, 0), link(1), image_space()],
+            false,
+            vec![(1, 0)],
+        ),
+        (
+            "duplicate lighting slot",
+            vec![header(1, 0x80), lighting(), lighting(), link(1)],
+            false,
+            vec![],
+        ),
+        (
+            "duplicate header",
+            vec![header(1, 0), link(1), header(1, 0)],
+            false,
+            vec![],
+        ),
+        ("no header", vec![link(1)], false, vec![]),
+        (
+            "gap removed during remapping",
+            vec![header(2, 0), link(1), sub(b"XESP", &[0; 3]), link(2)],
+            false,
+            vec![(1, 0)],
+        ),
+        (
+            "wrong-width link",
+            vec![header(2, 0), sub(b"XLRM", &[0; 5]), link(2)],
+            false,
+            vec![],
+        ),
+        (
+            "short run",
+            vec![header(2, 0), link(1)],
+            false,
+            vec![(1, 0)],
+        ),
+        (
+            "long run",
+            vec![header(1, 0), link(1), link(2)],
+            false,
+            vec![(1, 0)],
+        ),
+        (
+            "early link before a valid run",
+            vec![link(2), header(1, 0), link(1)],
+            false,
+            vec![(1, 0)],
+        ),
+    ];
+    let mut shape = vec![0; 32];
+    for offset in [0, 4, 8] {
+        shape[offset..offset + 4].copy_from_slice(&100f32.to_le_bytes());
+    }
+    shape[28..32].copy_from_slice(&1u32.to_le_bytes());
+    let marker = |id, fields: &[Vec<u8>]| {
+        record(
+            b"REFR",
+            id,
+            0,
+            [
+                sub(b"NAME", &0x1Fu32.to_le_bytes()),
+                sub(b"DATA", &[0; 24]),
+                sub(b"XPRM", &shape),
+                fields.concat(),
+            ]
+            .concat(),
+        )
+    };
+    let mut payload = Vec::new();
+    for (index, (_, fields, _, _)) in cases.iter().enumerate() {
+        let cell = 0x0100_0900 + index as u32;
+        let source = 0x0100_1000 + 3 * index as u32;
+        // Each case links to its own targets, both in the mod's file-relative slot 1.
+        let mut fields = fields.clone();
+        for field in &mut fields {
+            if field.starts_with(b"XLRM") && field.len() == 10 {
+                let offset = u32::from(field[6]);
+                field[6..].copy_from_slice(&(source + offset).to_le_bytes());
+            }
+        }
+        payload.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
+        payload.extend(group(
+            6,
+            cell,
+            group(
+                9,
+                cell,
+                [
+                    marker(source, &fields),
+                    marker(source + 1, &[]),
+                    marker(source + 2, &[]),
+                ]
+                .concat(),
+            ),
+        ));
+    }
+    let patch = plugin(data, "Patch.esp", &["Skyrim.esm"], 0, payload);
+    let mut failures = Vec::new();
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let db = data.join(format!("{reader:?}.db"));
+        EsmParser::convert_plugins_with_reader(
+            &[base.clone(), filler.clone(), patch.clone()],
+            &db,
+            reader,
+            data,
+        )
+        .unwrap();
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let mut links = conn.prepare("SELECT linked_ref,link_index FROM room_links WHERE room_ref=?1 ORDER BY link_index").unwrap();
+        for (index, (name, _, expected_complete, expected_links)) in cases.iter().enumerate() {
+            let cell = 0x0200_0900 + index as u32;
+            let source = 0x0200_1000 + 3 * index as u32;
+            let complete: bool = conn
+                .query_row(
+                    "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
+                    [cell],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let actual = links
+                .query_map([source], |row| {
+                    Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            let expected: Vec<_> = expected_links
+                .iter()
+                .map(|&(target, index)| (source + target, index))
+                .collect();
+            if complete != *expected_complete || actual != expected {
+                failures.push(format!("{reader:?} {name}: complete={complete}, links={actual:08X?}; expected complete={expected_complete}, links={expected:08X?}"));
+            }
+        }
+        let report = converter::esm::rooms::RoomGraphReport::read(&conn).unwrap();
+        let expected = converter::esm::rooms::RoomLinkAnomalies {
+            count: (cases.len() - 1) as u64,
+            first_marker: 0x0200_1003,
+            first_cell: 0x0200_0901,
+        };
+        if report.room_link_anomalies != [("patch.esp".into(), expected)].into() {
+            failures.push(format!(
+                "{reader:?} anomaly report: {:?}",
+                report.room_link_anomalies
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
 fn room_link_anomalies_reach_both_readers_integration_reports() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");
