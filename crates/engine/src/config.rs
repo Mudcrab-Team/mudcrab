@@ -2371,15 +2371,18 @@ mod tests {
         }
     }
 
-    /// The option literals in single and grouped parser `match` arms, in source order.
+    /// The option literals in single and grouped argument match arms, in source order.
     fn parser_options() -> Vec<&'static str> {
         CONFIG_SOURCE
             .lines()
+            .skip_while(|line| *line != "            match argument.as_str() {")
+            .skip(1)
+            .take_while(|line| *line != "            }")
             .filter_map(|line| {
                 let line = line.trim_start();
                 let (option, rest) = leading_quoted(line.strip_prefix('|').unwrap_or(line))?;
                 // The bare `--` arm is a no-op marker, not an option to document.
-                ((option == "-h" || option.starts_with("--"))
+                ((matches!(option, "-h" | "-V") || option.starts_with("--"))
                     && !option.contains(char::is_whitespace)
                     && (rest.trim().is_empty() || rest.trim_start().starts_with("=>"))
                     && option != "--")
