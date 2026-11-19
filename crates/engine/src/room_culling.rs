@@ -1984,7 +1984,7 @@ mod tests {
                 )
                 .unwrap();
             let graph = load_room_graph(&connection, 7).unwrap();
-            let view = graph.visibility_volumes(Vec3::ZERO, clip).unwrap();
+            let view = graph.visibility_volumes(Vec3::ZERO, Vec3::ZERO, clip).unwrap();
             [0.0, edge, 44.0].map(|x| {
                 let bounds = MeshBounds::transformed(
                     &Aabb::from_min_max(-Vec3::splat(0.2), Vec3::splat(0.2)),
