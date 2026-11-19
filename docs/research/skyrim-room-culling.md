@@ -180,6 +180,13 @@ skip aperture filtering but retain the unreached-space test.
 
 In roomed cells, empty geometric membership leaves the mesh eligible for ordinary view culling.
 Authored automatic assignment to unbounded space requires a usable model sphere.
+
+In the converted Bards College interior (cell `00016A0C`), static `000F717E` has no
+geometric membership or multibound override. The pack contains eight rooms and nine portals,
+all between rooms. The authored loader classifies the static as unbounded using the source
+sphere for `SMDAFloSol04` (center at the model origin, radius 181.02). This is a pack and
+loader check. Visibility of this floor piece in retail has not been measured.
+
 Legacy graphs retain pivot/overlap candidates, conservative box/portal sharing, open links,
 touching-box edges that preserve the incoming visibility volume, and reached-portal-less-room fallbacks. Loose items and authored overrides retain
 legacy exemptions. The normal converter refreshes both room metadata and source-sphere GLBs; no
