@@ -10,15 +10,28 @@ use bevy::{
 use bevy_rapier3d::prelude::*;
 use color_eyre::{
     Result,
-    eyre::{WrapErr, ensure},
+    eyre::{WrapErr, bail, ensure},
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use shared::collision::CollisionBody;
+use shared::{collision::CollisionBody, records::ArchivedRecordData};
 use std::path::Path;
 
+mod camera_follow;
+mod camera_trace;
 pub mod carry;
 #[cfg(test)]
+mod feel_measure;
+#[cfg(test)]
 mod stair_tests;
+mod vertical;
+#[cfg(test)]
+mod view_interpolation_tests;
+mod walk_support;
+#[cfg(test)]
+mod walk_support_tests;
+
+use vertical::VerticalMotion;
+pub use vertical::{JumpHeight, ResolvedWalk};
 
 use crate::{
     console::{AppConsoleExt, ConsoleCommand, ConsoleState, console_closed},
@@ -31,8 +44,8 @@ use crate::{
 pub const PHYSICS_TIMESTEP: f32 = 1.0 / 60.0;
 const PLAYER_CONTROLLER_OFFSET: f32 = 2.0;
 const NPC_DEFAULT_MOVT_FORM_ID: u32 = 0x0003_580D;
-/// Shared downward gravity in Creation units/s^2 for WALK and tankards (V11, V15).
-pub const GRAVITY_CREATION_UNITS: f32 = 900.0;
+/// Existing engine rigid-body policy, independent of character motion.
+pub const RIGID_BODY_GRAVITY_CREATION: f32 = 900.0;
 /// Collision groups: world surfaces (V17).
 pub const GROUP_WORLD: Group = Group::GROUP_1;
 /// Collision groups: player capsule (V17).
@@ -52,7 +65,7 @@ pub const MAX_LINEAR_SPEED: f32 = 20_000.0;
 /// when their cell loads next, if earlier bodies have unloaded by then.
 pub const MAX_LIVE_DYNAMIC_CLUTTER: usize = 256;
 
-/// Provisional movement tuning, centralized (V10, V11, V12).
+/// Movement tuning with one source-attributed effective character jump height.
 #[derive(Debug, Clone, Resource)]
 pub struct MovementTuning {
     pub walk_speed: f32,
@@ -60,15 +73,13 @@ pub struct MovementTuning {
     /// Provisional sprint factor applied to the selected directional run speed.
     pub sprint_multiplier: f32,
     pub horizontal_acceleration: f32,
-    pub gravity: f32,
-    pub jump_launch: f32,
+    pub jump_height: JumpHeight,
     pub capsule_radius: f32,
     pub capsule_standing_height: f32,
     pub eye_height: f32,
     pub slope_climb_degrees: f32,
     pub slope_slide_degrees: f32,
     pub autostep_height: f32,
-    pub ground_snap: f32,
     /// Selected MOVT's left/right/forward/back walk/run speeds, when packaged.
     pub record_speeds: Option<DirectionalMovementSpeeds>,
 }
@@ -87,15 +98,15 @@ impl Default for MovementTuning {
             run_speed: 300.0,
             sprint_multiplier: 1.5,
             horizontal_acceleration: 1800.0,
-            gravity: GRAVITY_CREATION_UNITS,
-            jump_launch: 340.0,
+            jump_height: JumpHeight::synthetic(
+                "synthetic unit actor; fJumpHeightMin=76; runtime reference scale=1 policy",
+            ),
             capsule_radius: 28.0,
             capsule_standing_height: 100.8,
             eye_height: 89.6,
             slope_climb_degrees: 50.0,
             slope_slide_degrees: 55.0,
             autostep_height: 36.0,
-            ground_snap: 12.0,
             record_speeds: None,
         }
     }
@@ -109,14 +120,20 @@ impl MovementTuning {
     /// Legacy packages lack `movement_types`. A package with the table must
     /// contain a valid selected profile; otherwise it cannot claim record speeds.
     pub fn from_world_database(path: &Path) -> Result<Self> {
-        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .wrap_err_with(|| format!("opening movement records in {}", path.display()))?;
+        let conn = connection.unchecked_transaction()?;
         let has_table: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='movement_types')",
             [], |row| row.get(0),
         )?;
         if !has_table {
-            return Ok(Self::default());
+            return Ok(Self {
+                jump_height: JumpHeight::synthetic(
+                    "legacy package without movement_types; synthetic unit actor; fJumpHeightMin=76; runtime reference scale=1 policy",
+                ),
+                ..Self::default()
+            });
         }
         let race_id: u32 = conn
             .query_row("SELECT race_id FROM npcs WHERE id=7", [], |row| row.get(0))
@@ -149,8 +166,9 @@ impl MovementTuning {
             .query_row(
                 "SELECT m.editor_id, m.left_walk, m.left_run, m.right_walk, m.right_run, \
                     m.forward_walk, m.forward_run, m.back_walk, m.back_run, \
-                    COALESCE(p.name, '<unknown plugin>') \
-             FROM movement_types m LEFT JOIN plugins p ON p.id=m.load_order \
+                    COALESCE((SELECT MIN(p.name) FROM plugins p WHERE p.priority=m.load_order \
+                              HAVING COUNT(*)=1), '<unknown plugin>') \
+             FROM movement_types m \
              WHERE m.id=?1",
                 params![NPC_DEFAULT_MOVT_FORM_ID],
                 |row| {
@@ -184,7 +202,10 @@ impl MovementTuning {
                 "MOVT 0003580D SPED[{index}] is invalid: {value}"
             );
         }
+        let jump_height = load_player_jump_height(&conn, race_id)
+            .wrap_err("record-backed jump inputs are incomplete or unsupported")?;
         Ok(Self {
+            jump_height,
             walk_speed: values[4],
             run_speed: values[5],
             record_speeds: Some(DirectionalMovementSpeeds {
@@ -225,6 +246,177 @@ impl MovementTuning {
             base
         }
     }
+}
+
+struct JumpInputRecord {
+    id: u32,
+    data: ArchivedRecordData,
+    source: String,
+}
+
+fn winning_plugin(conn: &Connection, priority: u32) -> Result<String> {
+    let mut statement = conn.prepare("SELECT name FROM plugins WHERE priority=?1")?;
+    let plugins = statement
+        .query_map([priority], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    ensure!(
+        plugins.len() <= 1,
+        "winning priority {priority} matches multiple plugins"
+    );
+    Ok(plugins
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "<unknown plugin>".into()))
+}
+
+fn jump_input_record(conn: &Connection, id: u32, expected: &str) -> Result<JumpInputRecord> {
+    let (kind, priority, bytes): (String, u32, Vec<u8>) = conn
+        .query_row(
+            "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .wrap_err_with(|| format!("missing canonical {expected} {id:08X}"))?;
+    ensure!(
+        kind == expected,
+        "record {id:08X} is {kind}, expected {expected}"
+    );
+    let mut aligned = rkyv::util::AlignedVec::<16>::with_capacity(bytes.len());
+    aligned.extend_from_slice(&bytes);
+    let data = rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(&aligned)
+        .wrap_err_with(|| format!("invalid canonical archive for {expected} {id:08X}"))?;
+    Ok(JumpInputRecord {
+        id,
+        data,
+        source: format!(
+            "{expected} {id:08X} priority={priority} ({})",
+            winning_plugin(conn, priority)?
+        ),
+    })
+}
+
+impl JumpInputRecord {
+    fn field(&self, tag: &[u8; 4]) -> Result<Option<&[u8]>> {
+        let mut matches = self
+            .data
+            .subrecords
+            .iter()
+            .filter(|field| &field.tag == tag);
+        let field = matches.next().map(|field| field.data.as_slice());
+        ensure!(
+            matches.next().is_none(),
+            "record {:08X} has duplicate {} fields",
+            self.id,
+            String::from_utf8_lossy(tag)
+        );
+        Ok(field)
+    }
+
+    fn required(&self, tag: &[u8; 4], size: usize) -> Result<&[u8]> {
+        let bytes = self.field(tag)?.ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "record {:08X} lacks {}",
+                self.id,
+                String::from_utf8_lossy(tag)
+            )
+        })?;
+        ensure!(
+            bytes.len() == size,
+            "record {:08X} {} length {} is unsupported; expected {size}",
+            self.id,
+            String::from_utf8_lossy(tag),
+            bytes.len()
+        );
+        Ok(bytes)
+    }
+}
+
+fn load_player_jump_height(conn: &Connection, race_id: u32) -> Result<JumpHeight> {
+    let player = jump_input_record(conn, 7, "NPC_")?;
+    let acbs = player.required(b"ACBS", 24)?;
+    let female = u32::from_le_bytes(acbs[..4].try_into()?) & 1 != 0;
+    let template_flags = u16::from_le_bytes(acbs[18..20].try_into()?);
+    let template = player
+        .field(b"TPLT")?
+        .map(|bytes| bytes.try_into().map(u32::from_le_bytes))
+        .transpose()
+        .wrap_err("Player NPC_ TPLT must be four bytes")?;
+    const USE_TRAITS: u16 = 0x0001;
+    if template_flags & USE_TRAITS != 0 {
+        let template = template.filter(|id| *id != 0).ok_or_else(|| {
+            color_eyre::eyre::eyre!("Player NPC_ sets Use Traits but has no nonzero TPLT")
+        })?;
+        bail!(
+            "Player NPC_ inherits traits from TPLT {template:08X}; inherited jump inputs are unsupported"
+        );
+    }
+    // Raw RNAM may be file-relative. Its normalized identity comes from npcs.
+    player.required(b"RNAM", 4)?;
+    let npc_height = f32::from_le_bytes(player.required(b"NAM6", 4)?.try_into()?);
+    ensure!(
+        npc_height.is_finite() && npc_height > 0.0,
+        "Player NPC_ NAM6 height is invalid: {npc_height}"
+    );
+    let race = jump_input_record(conn, race_id, "RACE")?;
+    let data = race
+        .field(b"DATA")?
+        .ok_or_else(|| color_eyre::eyre::eyre!("RACE {race_id:08X} lacks DATA heights"))?;
+    ensure!(
+        matches!(data.len(), 124 | 128 | 164),
+        "RACE {race_id:08X} DATA length {} is unsupported; expected 124, 128, or 164 bytes",
+        data.len()
+    );
+    let heights = [
+        f32::from_le_bytes(data[16..20].try_into()?),
+        f32::from_le_bytes(data[20..24].try_into()?),
+    ];
+    ensure!(
+        heights
+            .iter()
+            .all(|height| height.is_finite() && *height > 0.0),
+        "RACE {race_id:08X} DATA heights are invalid: {heights:?}"
+    );
+    let race_height = heights[usize::from(female)];
+    let mut query = conn.prepare(
+        "SELECT id,value,load_order FROM movement_game_settings WHERE editor_id='fJumpHeightMin' COLLATE NOCASE"
+    ).wrap_err("missing movement_game_settings; reconvert assets")?;
+    let settings = query
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, f32>(1)?,
+                row.get::<_, u32>(2)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    ensure!(
+        !settings.is_empty(),
+        "expected one effective fJumpHeightMin, found 0"
+    );
+    ensure!(
+        settings.len() == 1,
+        "expected one effective fJumpHeightMin, found {}; multiple GMST FormIDs with this EDID are unsupported; inspect plugin load order and settings",
+        settings.len()
+    );
+    let (setting_id, setting, priority) = settings[0];
+    ensure!(setting.is_finite(), "GMST fJumpHeightMin is nonfinite");
+    let actor_scale = race_height * npc_height;
+    ensure!(
+        actor_scale.is_finite(),
+        "Player NPC_/RACE height product overflows"
+    );
+    let reference_scale = 1.0;
+    let effective = setting * (actor_scale * reference_scale);
+    JumpHeight::new(
+        effective,
+        format!(
+            "GMST {setting_id:08X} fJumpHeightMin={setting} priority={priority} ({}); {}; sex={}; NAM6={npc_height}; {}; selected DATA height={race_height}; runtime reference scale=1 policy (no save mutation or swimming)",
+            winning_plugin(conn, priority)?,
+            player.source,
+            if female { "female" } else { "male" },
+            race.source,
+        ),
+    )
 }
 
 /// Debug tankard fixture bounds in Creation units (V15).
@@ -494,23 +686,22 @@ fn report_movement_tuning(tuning: Res<MovementTuning>) {
         .as_ref()
         .map_or("legacy provisional constants", |s| s.source.as_str());
     info!(
-        "WALK speeds: forward walk={} run={} Creation units/s (first-pass factor 1); provisional sprint={} ({}x directional run); source={source}; jump_launch={} and gravity={} provisional",
+        "WALK speeds: forward walk={} run={} Creation units/s (first-pass factor 1); provisional sprint={} ({}x directional run); source={source}; effective jump height={} Creation; jump source={}; character gravity=9.81 Havok; rigid-body gravity=900 Creation",
         tuning.walk_speed,
         tuning.run_speed,
         tuning.target_speed(Vec2::new(0.0, -1.0), false, true),
         tuning.sprint_multiplier,
-        tuning.jump_launch,
-        tuning.gravity
+        tuning.jump_height.creation(),
+        tuning.jump_height.source()
     );
 }
 
 fn configure_physics_gravity(
-    tuning: Res<MovementTuning>,
     mut configs: Query<&mut RapierConfiguration>,
     mut simulations: Query<&mut RapierContextSimulation>,
 ) {
     for mut config in &mut configs {
-        config.gravity = Vect::new(0.0, -tuning.gravity, 0.0);
+        config.gravity = Vect::new(0.0, -RIGID_BODY_GRAVITY_CREATION, 0.0);
     }
     // Raise Rapier's global linear cap (default 400 units/s) so falling clutter is not clipped;
     // the authored per-body limits are enforced by `clamp_dynamic_clutter_velocities`.
@@ -550,9 +741,11 @@ impl Plugin for PlayerControlsPlugin {
             .init_resource::<MoveMode>()
             .init_resource::<WalkIntent>()
             .init_resource::<SprintLatch>()
+            .init_resource::<WalkViewPose>()
             .init_resource::<LookIntent>()
             .init_resource::<WalkEntryStatus>()
             .init_resource::<WalkSpawnHold>()
+            .init_resource::<WalkCameraFollowState>()
             .init_resource::<CursorCapture>()
             .add_message::<TeleportPlayer>()
             .add_console_command(toggle_collision_command())
@@ -589,6 +782,32 @@ impl Plugin for PlayerControlsPlugin {
                     .chain()
                     .run_if(crate::door_crossing::walk_physics_allowed)
                     .before(PhysicsSet::SyncBackend),
+            )
+            // Not gated: the blend must follow the body through pauses, crossings and the console.
+            .add_systems(
+                FixedUpdate,
+                (
+                    // After the safe placement: a body moved by `release_walk_spawn_hold` must snap the
+                    // view pose, not be blended from the blocked pose.
+                    walk_view_begin_tick
+                        .after(release_walk_spawn_hold)
+                        .before(walk_movement_system),
+                    walk_view_end_tick.after(PhysicsSet::Writeback),
+                ),
+            )
+            // `--walk-camera-trace`: off unless the option names a file.
+            .add_systems(Startup, camera_trace::start_walk_camera_trace)
+            .add_systems(
+                FixedUpdate,
+                camera_trace::count_walk_camera_trace_tick
+                    .after(walk_view_end_tick)
+                    .run_if(resource_exists::<camera_trace::WalkCameraTrace>),
+            )
+            .add_systems(
+                Update,
+                camera_trace::write_walk_camera_trace_row
+                    .after(walk_camera_follow_system)
+                    .run_if(resource_exists::<camera_trace::WalkCameraTrace>),
             );
     }
 }
@@ -841,10 +1060,442 @@ mod tests {
         assert!(walk < run && run < sprint);
         assert_eq!(sprint, run * tuning.sprint_multiplier);
         assert!(tuning.horizontal_acceleration > 0.0);
-        assert_eq!(tuning.gravity, GRAVITY_CREATION_UNITS);
+        assert_eq!(tuning.jump_height.creation(), 76.0);
         assert_eq!(tuning.capsule_standing_height, 100.8);
         assert_eq!(tuning.eye_height, 89.6);
         assert_eq!(tuning.capsule_radius, 28.0);
+    }
+
+    fn fixture_record(kind: &[u8; 4], id: u32, fields: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut payload = Vec::new();
+        for (tag, data) in fields {
+            payload.extend_from_slice(tag);
+            payload.extend_from_slice(&(data.len() as u16).to_le_bytes());
+            payload.extend_from_slice(data);
+        }
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(kind);
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&id.to_le_bytes());
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(&44_u16.to_le_bytes());
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        bytes.extend_from_slice(&payload);
+        bytes
+    }
+
+    fn generated_player_database(directory: &Path) -> std::path::PathBuf {
+        use dummy_content::{esm, layout};
+        let base = directory.join("Skyrim.esm");
+        std::fs::write(
+            &base,
+            esm::plugin(&esm::Plugin {
+                author: layout::GENERATED_AUTHOR,
+                worldspace: layout::GENERATED_WORLDSPACE,
+                cells: &[esm::PRESET_EXTERIOR_CELL],
+                model_path: layout::GENERATED_MODEL_PATH,
+                diffuse: layout::GENERATED_DIFFUSE_PATH,
+                normal_texture: layout::GENERATED_NORMAL_PATH,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let header = fixture_record(
+            b"TES4",
+            0,
+            &[
+                (
+                    *b"HEDR",
+                    [1.7_f32.to_le_bytes().as_slice(), &[0; 8]].concat(),
+                ),
+                (*b"MAST", b"Skyrim.esm\0".to_vec()),
+                (*b"DATA", vec![0; 8]),
+            ],
+        );
+        // The unreferenced middle plugin makes patch-local slot one differ
+        // from the normalized global slot two of its newly authored race.
+        let middle = directory.join("Middle.esp");
+        std::fs::write(&middle, &header).unwrap();
+        let mut patch = header;
+        let mut acbs = vec![0; 24];
+        acbs[..4].copy_from_slice(&1_u32.to_le_bytes());
+        patch.extend(fixture_record(
+            b"NPC_",
+            7,
+            &[
+                (*b"EDID", b"Player\0".to_vec()),
+                (*b"RNAM", 0x0100_0811_u32.to_le_bytes().to_vec()),
+                (*b"ACBS", acbs),
+                (*b"NAM6", 1.2_f32.to_le_bytes().to_vec()),
+            ],
+        ));
+        let mut data = vec![0; 128];
+        data[16..20].copy_from_slice(&0.8_f32.to_le_bytes());
+        data[20..24].copy_from_slice(&1.25_f32.to_le_bytes());
+        patch.extend(fixture_record(
+            b"RACE",
+            0x0100_0811,
+            &[(*b"EDID", b"OverrideRace\0".to_vec()), (*b"DATA", data)],
+        ));
+        patch.extend(fixture_record(
+            b"GMST",
+            0x0100_0810,
+            &[
+                (*b"EDID", b"FJUMPHEIGHTMIN\0".to_vec()),
+                (*b"DATA", 100_f32.to_le_bytes().to_vec()),
+            ],
+        ));
+        let speeds = [
+            80.09_f32, 370.0, 79.75, 370.0, 80.1, 370.0, 71.93, 205.25, 3.0, 3.0, 3.0,
+        ];
+        patch.extend(fixture_record(
+            b"MOVT",
+            NPC_DEFAULT_MOVT_FORM_ID,
+            &[
+                (*b"EDID", b"NPC_Default_MT\0".to_vec()),
+                (
+                    *b"SPED",
+                    speeds
+                        .iter()
+                        .flat_map(|value| value.to_le_bytes())
+                        .collect(),
+                ),
+            ],
+        ));
+        let patch_path = directory.join("JumpOverride.esp");
+        std::fs::write(&patch_path, patch).unwrap();
+        let database = directory.join("skyrim_world.db");
+        converter::esm::EsmParser::convert_plugins(&[base, middle, patch_path], &database).unwrap();
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute("UPDATE plugins SET id=id+100", [])
+            .unwrap();
+        database
+    }
+
+    fn rewrite_jump_record(
+        conn: &Connection,
+        id: u32,
+        change: impl FnOnce(&mut ArchivedRecordData),
+    ) {
+        let bytes: Vec<u8> = conn
+            .query_row("SELECT data FROM records WHERE form_id=?1", [id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let mut aligned = rkyv::util::AlignedVec::<16>::new();
+        aligned.extend_from_slice(&bytes);
+        let mut record =
+            rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(&aligned).unwrap();
+        change(&mut record);
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&record).unwrap();
+        conn.execute(
+            "UPDATE records SET data=?1 WHERE form_id=?2",
+            params![bytes.as_slice(), id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn packaged_jump_uses_winning_setting_sex_heights_and_normalized_race() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        let race: u32 = conn
+            .query_row("SELECT race_id FROM npcs WHERE id=7", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(race, 0x0200_0811);
+        let tuning = MovementTuning::from_world_database(&path).unwrap();
+        assert_eq!(tuning.jump_height.creation(), 100.0 * (1.25_f32 * 1.2_f32));
+        let source = tuning.jump_height.source();
+        assert!(source.contains("fJumpHeightMin=100"), "{source}");
+        assert!(source.contains("sex=female"), "{source}");
+        assert!(source.contains("NAM6=1.2"), "{source}");
+        assert!(source.contains("RACE 02000811"), "{source}");
+        assert!(source.contains("priority=2 (JumpOverride.esp)"), "{source}");
+        assert!(
+            tuning
+                .record_speeds
+                .as_ref()
+                .unwrap()
+                .source
+                .contains("JumpOverride.esp")
+        );
+        rewrite_jump_record(&conn, 7, |record| {
+            record
+                .subrecords
+                .iter_mut()
+                .find(|field| field.tag == *b"ACBS")
+                .unwrap()
+                .data[..4]
+                .copy_from_slice(&0_u32.to_le_bytes());
+        });
+        let male = MovementTuning::from_world_database(&path).unwrap();
+        assert_eq!(male.jump_height.creation(), 100.0 * (0.8_f32 * 1.2_f32));
+        for setting in [-100.0_f32, 0.0] {
+            conn.execute(
+                "UPDATE movement_game_settings SET value=?1 WHERE editor_id='fJumpHeightMin'",
+                [setting],
+            )
+            .unwrap();
+            assert_eq!(
+                MovementTuning::from_world_database(&path)
+                    .unwrap()
+                    .jump_height
+                    .creation(),
+                setting * (0.8_f32 * 1.2_f32)
+            );
+        }
+    }
+
+    #[test]
+    fn ambiguous_movt_priority_keeps_speeds_without_attributing_a_plugin() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        conn.execute("UPDATE plugins SET priority=1 WHERE priority=0", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE movement_types SET load_order=1 WHERE id=?1",
+            [NPC_DEFAULT_MOVT_FORM_ID],
+        )
+        .unwrap();
+        let tuning = MovementTuning::from_world_database(&path).unwrap();
+        assert_eq!((tuning.walk_speed, tuning.run_speed), (80.1, 370.0));
+        assert_eq!(
+            tuning.record_speeds.unwrap().source,
+            "MOVT 0003580D NPC_Default_MT (<unknown plugin>)"
+        );
+    }
+
+    #[test]
+    fn packaged_jump_requires_a_supported_race_data_layout() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        for size in [124, 128, 164, 24, 123, 129] {
+            rewrite_jump_record(&conn, 0x0200_0811, |record| {
+                record
+                    .subrecords
+                    .iter_mut()
+                    .find(|field| field.tag == *b"DATA")
+                    .unwrap()
+                    .data
+                    .resize(size, 0);
+            });
+            let result = MovementTuning::from_world_database(&path);
+            if matches!(size, 124 | 128 | 164) {
+                assert_eq!(result.unwrap().jump_height.creation(), 150.0);
+            } else {
+                let error = format!("{:#}", result.unwrap_err());
+                assert!(
+                    error.contains(&format!("DATA length {size} is unsupported")),
+                    "{error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn packaged_jump_only_requires_local_traits() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        for (flags, template, expected_error) in [
+            (0x0100_u16, Some(99_u32), None),
+            (0x0001, None, Some("has no nonzero TPLT")),
+            (0x0001, Some(0), Some("has no nonzero TPLT")),
+            (0x0101, Some(99), Some("inherits traits from TPLT 00000063")),
+        ] {
+            rewrite_jump_record(&conn, 7, |record| {
+                let acbs = record
+                    .subrecords
+                    .iter_mut()
+                    .find(|field| field.tag == *b"ACBS")
+                    .unwrap();
+                acbs.data[18..20].copy_from_slice(&flags.to_le_bytes());
+                record.subrecords.retain(|field| field.tag != *b"TPLT");
+                if let Some(id) = template {
+                    record.subrecords.push(shared::records::ArchivedSubRecord {
+                        tag: *b"TPLT",
+                        data: id.to_le_bytes().to_vec(),
+                    });
+                }
+            });
+            let result = MovementTuning::from_world_database(&path);
+            if let Some(message) = expected_error {
+                let error = format!("{:#}", result.unwrap_err());
+                assert!(error.contains(message), "{error}");
+            } else {
+                assert_eq!(result.unwrap().jump_height.creation(), 150.0);
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_jump_setting_edids_report_unsupported_plugin_inputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "INSERT INTO movement_game_settings(id,editor_id,value,load_order) VALUES (?1,?2,?3,?4)",
+            params![0x0300_0810_u32, "fjumpheightmin", 64.0, 3],
+        )
+        .unwrap();
+        let error = format!(
+            "{:#}",
+            MovementTuning::from_world_database(&path).unwrap_err()
+        );
+        assert!(error.contains("found 2"), "{error}");
+        assert!(error.contains("multiple GMST FormIDs"), "{error}");
+        assert!(error.contains("inspect plugin load order"), "{error}");
+        assert!(!error.contains("reconvert"), "{error}");
+    }
+
+    #[test]
+    fn modern_jump_package_rejects_partial_malformed_duplicate_and_inherited_inputs() {
+        use shared::records::ArchivedSubRecord;
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        let original: Vec<u8> = conn
+            .query_row("SELECT data FROM records WHERE form_id=7", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let assert_invalid = || assert!(MovementTuning::from_world_database(&path).is_err());
+        for failure in 0..8 {
+            rewrite_jump_record(&conn, 7, |record| match failure {
+                0 => record.subrecords.retain(|field| field.tag != *b"NAM6"),
+                1 => {
+                    record
+                        .subrecords
+                        .iter_mut()
+                        .find(|field| field.tag == *b"NAM6")
+                        .unwrap()
+                        .data = vec![0; 3]
+                }
+                2 => record.subrecords.push(ArchivedSubRecord {
+                    tag: *b"NAM6",
+                    data: 1_f32.to_le_bytes().to_vec(),
+                }),
+                3 => {
+                    record
+                        .subrecords
+                        .iter_mut()
+                        .find(|field| field.tag == *b"NAM6")
+                        .unwrap()
+                        .data = f32::NAN.to_le_bytes().to_vec()
+                }
+                4 => {
+                    record
+                        .subrecords
+                        .iter_mut()
+                        .find(|field| field.tag == *b"ACBS")
+                        .unwrap()
+                        .data = vec![0; 16]
+                }
+                5 => {
+                    record
+                        .subrecords
+                        .iter_mut()
+                        .find(|field| field.tag == *b"ACBS")
+                        .unwrap()
+                        .data[18..20]
+                        .copy_from_slice(&1_u16.to_le_bytes());
+                    record.subrecords.push(ArchivedSubRecord {
+                        tag: *b"TPLT",
+                        data: 99_u32.to_le_bytes().to_vec(),
+                    });
+                }
+                6 => {
+                    record
+                        .subrecords
+                        .iter_mut()
+                        .find(|field| field.tag == *b"RNAM")
+                        .unwrap()
+                        .data = vec![0; 3]
+                }
+                7 => {
+                    record
+                        .subrecords
+                        .iter_mut()
+                        .find(|field| field.tag == *b"NAM6")
+                        .unwrap()
+                        .data = 0_f32.to_le_bytes().to_vec()
+                }
+                _ => unreachable!(),
+            });
+            assert_invalid();
+            conn.execute("UPDATE records SET data=?1 WHERE form_id=7", [&original])
+                .unwrap();
+        }
+        rewrite_jump_record(&conn, 7, |record| {
+            record.subrecords.push(ArchivedSubRecord {
+                tag: *b"TPLT",
+                data: 99_u32.to_le_bytes().to_vec(),
+            })
+        });
+        assert!(
+            MovementTuning::from_world_database(&path).is_ok(),
+            "inactive template pointer can retain complete own fields"
+        );
+        conn.execute("UPDATE records SET data=x'000102' WHERE form_id=7", [])
+            .unwrap();
+        assert_invalid();
+        conn.execute("UPDATE records SET data=?1 WHERE form_id=7", [&original])
+            .unwrap();
+        let race_original: Vec<u8> = conn
+            .query_row(
+                "SELECT data FROM records WHERE form_id=33556497",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        for failure in 0..4 {
+            rewrite_jump_record(&conn, 0x0200_0811, |record| {
+                let data = &mut record
+                    .subrecords
+                    .iter_mut()
+                    .find(|field| field.tag == *b"DATA")
+                    .unwrap()
+                    .data;
+                match failure {
+                    0 => data.truncate(23),
+                    1 => data[20..24].copy_from_slice(&f32::INFINITY.to_le_bytes()),
+                    2 => data[16..20].copy_from_slice(&(-1_f32).to_le_bytes()),
+                    3 => record.subrecords.push(ArchivedSubRecord {
+                        tag: *b"DATA",
+                        data: vec![0; 128],
+                    }),
+                    _ => unreachable!(),
+                }
+            });
+            assert_invalid();
+            conn.execute(
+                "UPDATE records SET data=?1 WHERE form_id=?2",
+                params![&race_original, 0x0200_0811_u32],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO movement_game_settings VALUES(999,'FJUMPHEIGHTMIN',76,2)",
+            [],
+        )
+        .unwrap();
+        assert_invalid();
+        conn.execute("DELETE FROM movement_game_settings WHERE id=999", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE movement_game_settings SET value=?1",
+            [f64::INFINITY],
+        )
+        .unwrap();
+        assert_invalid();
+        conn.execute("DELETE FROM movement_game_settings", [])
+            .unwrap();
+        assert_invalid();
     }
 
     #[test]
@@ -855,23 +1506,10 @@ mod tests {
         let legacy = MovementTuning::from_world_database(&path).unwrap();
         assert_eq!(legacy.run_speed, 300.0);
         assert!(legacy.record_speeds.is_none());
-        conn.execute_batch(
-            "CREATE TABLE npcs(id INTEGER PRIMARY KEY, race_id INTEGER);
-            CREATE TABLE records(form_id INTEGER PRIMARY KEY, record_type TEXT);
-            CREATE TABLE plugins(id INTEGER PRIMARY KEY, name TEXT);
-            CREATE TABLE race_movement_links(id INTEGER PRIMARY KEY, walk_movt_id INTEGER, run_movt_id INTEGER);
-            CREATE TABLE movement_types(id INTEGER PRIMARY KEY, editor_id TEXT,
-                left_walk REAL, left_run REAL, right_walk REAL, right_run REAL,
-                forward_walk REAL, forward_run REAL, back_walk REAL, back_run REAL,
-                load_order INTEGER);
-            INSERT INTO npcs VALUES(7, 79686);
-            INSERT INTO records VALUES(79686, 'RACE');
-            INSERT INTO race_movement_links VALUES(79686, NULL, NULL);
-            INSERT INTO plugins VALUES(0, 'Skyrim.esm');
-            INSERT INTO movement_types VALUES(219149, 'NPC_Default_MT',
-                80.09, 370, 79.75, 370, 80.1, 370, 71.93, 205.25, 0);",
-        )
-        .unwrap();
+        drop(conn);
+        std::fs::remove_file(&path).unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
         let tuning = MovementTuning::from_world_database(&path).unwrap();
         assert_eq!(tuning.walk_speed, 80.1);
         assert_eq!(tuning.run_speed, 370.0);
@@ -891,9 +1529,15 @@ mod tests {
             tuning.target_speed(Vec2::new(1.0, -1.0), false, false),
             370.0
         );
-        assert!(tuning.record_speeds.unwrap().source.contains("Skyrim.esm"));
+        assert!(
+            tuning
+                .record_speeds
+                .unwrap()
+                .source
+                .contains("JumpOverride.esp")
+        );
         conn.execute(
-            "UPDATE records SET record_type='STAT' WHERE form_id=79686",
+            "UPDATE records SET record_type='STAT' WHERE form_id=33556497",
             [],
         )
         .unwrap();
@@ -904,12 +1548,12 @@ mod tests {
                 .contains("expected RACE")
         );
         conn.execute(
-            "UPDATE records SET record_type='RACE' WHERE form_id=79686",
+            "UPDATE records SET record_type='RACE' WHERE form_id=33556497",
             [],
         )
         .unwrap();
         conn.execute(
-            "UPDATE race_movement_links SET walk_movt_id=219149 WHERE id=79686",
+            "UPDATE race_movement_links SET walk_movt_id=219149 WHERE id=33556497",
             [],
         )
         .unwrap();
@@ -920,7 +1564,7 @@ mod tests {
                 .contains("supports only unset race links")
         );
         conn.execute(
-            "UPDATE race_movement_links SET walk_movt_id=NULL WHERE id=79686",
+            "UPDATE race_movement_links SET walk_movt_id=NULL WHERE id=33556497",
             [],
         )
         .unwrap();
@@ -1635,15 +2279,46 @@ pub struct WalkIntent {
 #[derive(Debug, Clone, Copy, Default, Resource)]
 pub(crate) struct SprintLatch(pub(crate) bool);
 
-/// Live walk state: horizontal velocity + vertical velocity (V10, V11).
+/// Horizontal motion and one owner of character flight history.
 #[derive(Debug, Clone, Copy, Default, Component)]
 pub struct WalkState {
     pub horizontal_velocity: Vec3,
-    pub vertical_velocity: f32,
-    pub grounded: bool,
-    pub jump_apex: f32,
-    pub jump_time: f32,
-    pub jump_active: bool,
+    vertical: VerticalMotion,
+    /// Retail's InAir state (RF-CC-013). False while walking, including while the unsupported cast
+    /// keeps hitting (a step down), so no fall state and no landing begin on a stair tread.
+    pub airborne: bool,
+    /// The height where the air state began (RF-CC-013, retail stores it for fall damage).
+    pub fall_start_height: f32,
+    /// True for the one tick in which support returned after the air state (retail flag 0x80,
+    /// RF-CC-015).
+    pub landed: bool,
+}
+
+impl WalkState {
+    pub fn vertical_velocity(&self) -> f32 {
+        self.vertical.velocity_creation()
+    }
+
+    pub fn grounded(&self) -> bool {
+        self.vertical.grounded()
+    }
+
+    pub fn jump_active(&self) -> bool {
+        self.vertical.jump_active()
+    }
+
+    fn jump_launched(&self) -> bool {
+        self.vertical.just_launched()
+    }
+
+    /// Apex from actual resolved positions, retained after landing.
+    pub fn jump_apex(&self) -> f32 {
+        self.vertical.jump_apex()
+    }
+
+    pub fn velocity(&self) -> Vec3 {
+        self.horizontal_velocity + Vec3::Y * self.vertical_velocity()
+    }
 }
 
 /// Upward search budget when entering WALK inside geometry (V8).
@@ -1669,7 +2344,9 @@ pub fn player_controller_bundle(tuning: &MovementTuning) -> impl Bundle {
             // NOTE: upstream Rapier 0.35 manifold-transfer panic (see T4 gate
             // hill test); re-enable with push validation once upgraded.
             apply_impulse_to_dynamic_bodies: false,
-            snap_to_ground: Some(CharacterLength::Absolute(tuning.ground_snap)),
+            // Retail has no ground snap. A step down is the unsupported cast of `walk_support`
+            // (RF-CC-013, RF-CC-014), which keeps the player walking and pulls it onto the surface.
+            snap_to_ground: None,
             ..default()
         },
     )
@@ -1682,12 +2359,8 @@ pub fn integrate_walk(
     intent: &WalkIntent,
     tuning: &MovementTuning,
     dt: f32,
-    grounded: bool,
+    resolved: ResolvedWalk,
 ) {
-    // Rapier's ground probe can remain true for several steps after takeoff.
-    // Upward jump velocity must survive that proximity signal until ascent ends.
-    let grounded = grounded && !(state.jump_active && state.vertical_velocity > 0.0);
-    state.grounded = grounded;
     let wish = intent.wish_dir * intent.target_speed;
     let current = state.horizontal_velocity;
     let max_delta = tuning.horizontal_acceleration * dt;
@@ -1697,26 +2370,9 @@ pub fn integrate_walk(
     } else {
         current + delta.normalize_or_zero() * max_delta
     };
-    if grounded {
-        state.vertical_velocity = 0.0;
-        if state.jump_active {
-            state.jump_active = false;
-        }
-        if intent.jump_pressed {
-            state.vertical_velocity = tuning.jump_launch;
-            state.jump_active = true;
-            state.jump_apex = 0.0;
-            state.jump_time = 0.0;
-        }
-    } else {
-        state.vertical_velocity -= tuning.gravity * dt;
-        if state.jump_active {
-            state.jump_time += dt;
-            state.jump_apex = state
-                .jump_apex
-                .max(state.vertical_velocity * state.jump_time);
-        }
-    }
+    state
+        .vertical
+        .advance(&tuning.jump_height, resolved, intent.jump_pressed, dt);
 }
 
 type WalkBodyQuery<'w, 's> = Query<
@@ -1746,6 +2402,7 @@ fn neutralize_blocked_walk_input(
 
 /// Fixed-step walk integration + controller feed (V10, V11, V18).
 pub fn walk_movement_system(
+    fixed_time: Res<Time<Fixed>>,
     mode: Res<MoveMode>,
     hold: Option<Res<WalkSpawnHold>>,
     mut intent: ResMut<WalkIntent>,
@@ -1769,16 +2426,105 @@ pub fn walk_movement_system(
         controller.translation = None;
         return;
     }
-    let grounded = output.map(|o| o.grounded).unwrap_or(false);
-    integrate_walk(&mut state, &intent, &tuning, PHYSICS_TIMESTEP, grounded);
+    let dt = fixed_time.delta_secs();
+    // Rapier's grounded flag stands in for retail's kSupport.
+    let supported = output.map(|o| o.grounded).unwrap_or(false);
+    let rapier = context.single().ok();
+    // Walking state without support: a pending jump skips the unsupported cast, both the hit and
+    // the miss (RF-CC-013), so the state stays walking and the jump launches from it. Without a
+    // pending jump, the cast decides (RF-CC-013): a hit keeps walking and glides (RF-CC-014), a
+    // miss starts the air state.
+    let jump_pending = intent.jump_pressed;
+    let walking_unsupported = !supported && !state.airborne && !state.jump_active();
+    let glide = walking_unsupported
+        && !jump_pending
+        && rapier.as_ref().is_some_and(|context| {
+            walk_support::unsupported_cast_hits(context, entity, &body, capsule, &controller)
+        });
+    let jump_from_walking = walking_unsupported && jump_pending;
+    let previous_vertical = state.vertical_velocity();
+    // RF-CC-015: landing is the first supported step after the air state. It is decided from the
+    // state before this tick's integration, so a jump launched on the same tick keeps it: the
+    // integration clears the old jump and starts the new one.
+    let landing =
+        supported && state.airborne && !(state.jump_active() && state.vertical_velocity() > 0.0);
+    integrate_walk(
+        &mut state,
+        &intent,
+        &tuning,
+        dt,
+        ResolvedWalk {
+            y: body.translation.y,
+            grounded: supported || glide || jump_from_walking,
+        },
+    );
     intent.jump_pressed = false;
-    let mut displacement =
-        (state.horizontal_velocity + Vec3::Y * state.vertical_velocity) * PHYSICS_TIMESTEP;
-    if state.grounded
-        && !state.jump_active
-        && let Ok(context) = context.single()
+    state.landed = false;
+    // The tick that launches a jump starts the air state at the launch height (RF-CC-013), before
+    // this tick's displacement. Rapier can keep reporting support for a few ticks after take-off,
+    // so support does not count while the jump is rising (RF-CC-015: landing needs support).
+    // VerticalMotion records accepted launches, including a relaunch on the landing tick.
+    let launched = state.jump_launched();
+    let rising = state.jump_active() && state.vertical_velocity() > 0.0;
+    if launched {
+        state.airborne = true;
+        state.fall_start_height = body.translation.y;
+        state.landed = landing;
+    } else if supported && !rising {
+        // RF-CC-015: the first supported step ends the air state and sets the landing flag.
+        state.airborne = false;
+        state.landed = landing;
+    } else if supported {
+        // Still rising right after take-off: the air state continues.
+    } else if glide {
+        // RF-CC-013, RF-CC-014: a hit keeps the walking state; 4 x gravity accelerates the body
+        // onto the surface. No fall state, no fall start height, no landing.
+        state
+            .vertical
+            .glide(body.translation.y, previous_vertical, dt);
+    } else if !state.airborne {
+        // RF-CC-013: a miss, or a jump launched from a cast hit, starts the air state.
+        state.airborne = true;
+        state.fall_start_height = body.translation.y;
+    }
+    // RF-CC-016, RF-CC-017: on a supported slope the wish lies in the support plane. A cast hit
+    // runs the same walking step (RF-CC-014), so the surface below gives the normal there too.
+    let mut wish = state.horizontal_velocity;
+    if (supported || glide)
+        && !state.jump_active()
+        && let Some(context) = rapier.as_ref()
+        && let Some(normal) =
+            walk_support::support_normal(context, entity, &body, &controller, &tuning)
+    {
+        wish = walk_support::slope_velocity(wish, normal, controller.max_slope_climb_angle.cos());
+    }
+    let mut displacement = (wish + Vec3::Y * state.vertical_velocity()) * dt;
+    if glide && let Some(context) = rapier.as_ref() {
+        // RF-CC-014: the pull of a cast hit moves the body straight down. Rapier runs the
+        // controller before syncing transforms, so the query pose is overridden as for a step up.
+        let dropped = walk_support::drop_straight_down(
+            context,
+            entity,
+            &body,
+            capsule,
+            &controller,
+            -displacement.y,
+        );
+        if dropped > 0.0 {
+            body.translation.y -= dropped;
+            controller.custom_shape = Some((
+                capsule.clone(),
+                body.rotation.inverse() * (Vec3::NEG_Y * dropped),
+                Quat::IDENTITY,
+            ));
+        }
+        displacement.y = 0.0;
+    }
+    if supported
+        && !state.jump_active()
+        && let Some(context) = rapier.as_ref()
         && let Some(rise) = walk_step_rise(
-            &context,
+            context,
             entity,
             &body,
             capsule,
@@ -1797,8 +2543,7 @@ pub fn walk_movement_system(
             body.rotation.inverse() * (Vec3::Y * rise),
             Quat::IDENTITY,
         ));
-        state.grounded = false;
-        state.vertical_velocity = 0.0;
+        state.vertical.leave_support();
         displacement.y = 0.0;
     }
     controller.translation = Some(displacement);
@@ -1924,28 +2669,465 @@ fn walk_step_rise(
     Some(lift)
 }
 
+/// Body position at the previous and the latest fixed tick, used to show the WALK view between ticks.
+///
+/// Physics runs at 60 Hz and a display can run faster. A camera that follows the body only
+/// repeats its position on every frame that ran no tick: on 50% of frames at 120 Hz, 59% at 144 Hz
+/// and 75% at 240 Hz in the controller-feel measurements (`physics/feel_measure.rs`). The view now
+/// shows the point between the previous and the latest tick that matches how far the frame is into
+/// the next tick (`Time<Fixed>::overstep_fraction`).
+///
+/// This is presentation only. The body, its collision and every physics query keep the latest tick
+/// position (the tankard spawn ray, the carry hold point and the door return point read the body,
+/// not this pose). The view trails it by 0 to one tick, at most 16.7 ms. Look rotation is not interpolated, so turning has no
+/// added latency.
+///
+/// The blended position is the input of the first-person follow spring
+/// ([`walk_camera_follow_system`]). Retail needs no blend: its player controller moves once per
+/// rendered frame with that frame's time, and the camera follows that position (RF-PHYS-003,
+/// RF-CAM-018). Mudcrab's WALK controller runs on a fixed 60 Hz tick, so the blend is a Mudcrab
+/// stand-in that gives the spring a position that moves on every frame, as retail's does. Without
+/// it the spring samples a staircase of tick positions and an uneven frame rate aliases into the
+/// view. The long-term fix is a per-frame controller; this blend is not a retail mechanism.
+///
+/// Behaviour source: the Mudcrab controller-feel report, which takes the idea of showing a blend of
+/// the last two tick poses from the spud re-audit (chasmlol/spud, MIT, used as a map). This code is
+/// written from that written description, not from spud source.
+#[derive(Debug, Clone, Copy, Default, Resource)]
+pub struct WalkViewPose {
+    previous: Vec3,
+    latest: Vec3,
+    valid: bool,
+    /// The floating origin the two positions are stored in.
+    origin: Option<IVec2>,
+}
+
+impl WalkViewPose {
+    fn snap(&mut self, position: Vec3) {
+        *self = Self {
+            previous: position,
+            latest: position,
+            valid: true,
+            origin: self.origin,
+        };
+    }
+
+    /// Moves both stored positions into the space of `origin`. A floating-origin rebase moves the
+    /// body by whole cells outside the tick. The streamer subtracts the same displacement from the
+    /// body, so the blend continues across a cell border instead of snapping.
+    fn rebase(&mut self, origin: Option<IVec2>) {
+        if let (Some(old), Some(new)) = (self.origin, origin)
+            && old != new
+        {
+            let displacement = render_origin_displacement(old, new);
+            self.previous -= displacement;
+            self.latest -= displacement;
+        }
+        self.origin = origin;
+    }
+
+    /// Whether `body` is where the last tick left it. Anything else moved the body outside the
+    /// fixed tick (teleport, door arrival, origin rebase, entering WALK): show it where it is.
+    fn follows(&self, body: Vec3) -> bool {
+        self.valid && body == self.latest
+    }
+
+    fn shown(&self, fraction: f32) -> Vec3 {
+        self.previous.lerp(self.latest, fraction.clamp(0.0, 1.0))
+    }
+}
+
+/// Before a tick moves the body: drop a stale pose if something else moved the body since.
+fn walk_view_begin_tick(
+    mut pose: ResMut<WalkViewPose>,
+    render_origin: Option<Res<crate::streaming::RenderOrigin>>,
+    player: Query<&Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
+) {
+    let Ok(body) = player.single() else {
+        return;
+    };
+    pose.rebase(render_origin.as_ref().map(|origin| origin.0));
+    if !pose.follows(body.translation) {
+        pose.snap(body.translation);
+    }
+}
+
+/// After physics wrote the body back: the latest tick becomes the end of the blend.
+fn walk_view_end_tick(
+    mut pose: ResMut<WalkViewPose>,
+    render_origin: Option<Res<crate::streaming::RenderOrigin>>,
+    player: Query<&Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
+) {
+    let Ok(body) = player.single() else {
+        return;
+    };
+    pose.rebase(render_origin.as_ref().map(|origin| origin.0));
+    pose.previous = pose.latest;
+    pose.latest = body.translation;
+    pose.valid = true;
+}
+
+/// State of the first-person camera follow spring between rendered frames.
+#[derive(Debug, Default, Resource)]
+struct WalkCameraFollowState {
+    /// `None` until the first WALK frame, and again after leaving WALK.
+    spring: Option<camera_follow::FollowSpring>,
+    initialized: bool,
+    previous_origin: Option<IVec2>,
+}
+
 /// Camera follows the capsule at eye height; yaw on body, pitch on view (V9).
-/// Pause also holds a door-staged camera pose until its queued body placement can commit.
-pub fn walk_camera_follow_system(
-    time: Res<Time<Virtual>>,
-    crossing: Option<Res<crate::door_crossing::DoorCrossing>>,
+///
+/// The view position is the eye node plus the retail follow spring's lag (RF-CAM-001 to
+/// RF-CAM-007). It is evaluated once per rendered frame with the frame delta. This system runs in
+/// `Update`, so the spring is not tied to the fixed physics step. The spring itself is
+/// [`camera_follow::follow_spring_step`]. Its input is the body position blended between the last
+/// two ticks ([`WalkViewPose`]), not the latest tick, so it moves on every rendered frame.
+///
+/// Pause also holds a door-staged camera pose until its queued body placement can commit. The
+/// spring state is kept unchanged while it holds.
+#[allow(clippy::too_many_arguments)]
+fn walk_camera_follow_system(
+    virtual_time: Res<Time<Virtual>>,
     mode: Res<MoveMode>,
     tuning: Res<MovementTuning>,
     look: Res<LookIntent>,
+    time: Res<Time>,
+    fixed: Res<Time<Fixed>>,
+    mut pose: ResMut<WalkViewPose>,
+    camera_space: Option<Res<crate::sky::CameraSpace>>,
+    render_origin: Option<Res<crate::streaming::RenderOrigin>>,
+    mut teleports: MessageReader<TeleportPlayer>,
+    crossing: Option<Res<crate::door_crossing::DoorCrossing>>,
+    hold: Option<Res<WalkSpawnHold>>,
+    mut follow: ResMut<WalkCameraFollowState>,
     player: Query<&Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
     mut camera: Query<&mut Transform, With<StreamingCamera>>,
 ) {
-    if (time.is_paused() && crossing.is_some_and(|crossing| crossing.is_active()))
-        || *mode != MoveMode::Walk
+    let mut teleported = false;
+    for _ in teleports.read() {
+        teleported = true;
+    }
+    let space_changed = camera_space
+        .as_ref()
+        .is_some_and(|space| space.is_changed());
+    let current_origin = render_origin.as_ref().map(|origin| origin.0);
+    // A floating-origin rebase shifts the body and the view by whole cells. It is not a retail
+    // event. The spring state is shifted by the same displacement below, so the lag is unchanged.
+    let rebase = follow
+        .previous_origin
+        .zip(current_origin)
+        .filter(|(old, new)| old != new)
+        .map(|(old, new)| render_origin_displacement(old, new));
+    follow.previous_origin = current_origin;
+
+    if virtual_time.is_paused()
+        && crossing
+            .as_ref()
+            .is_some_and(|crossing| crossing.is_active())
     {
+        return;
+    }
+    if *mode != MoveMode::Walk {
+        follow.spring = None;
         return;
     }
     let (Ok(body), Ok(mut view)) = (player.single(), camera.single_mut()) else {
         return;
     };
+    pose.rebase(current_origin);
+    // A reset frame (below) shows the body itself, so the pose is snapped to it: a tick that moved
+    // the body while it settles must not leave the view up to one tick behind. Ordinary frames keep
+    // the blend.
+    let placing = hold.as_ref().is_some_and(|hold| hold.is_active())
+        || crossing
+            .as_ref()
+            .is_some_and(|crossing| crossing.is_active());
+    let reset = teleported || space_changed || placing;
+    if reset || !pose.follows(body.translation) {
+        pose.snap(body.translation);
+    }
+    let feet = pose.shown(fixed.overstep_fraction());
+    let target = feet + Vec3::Y * tuning.eye_height;
+    if !follow.initialized {
+        // The authored startup camera pose is authoritative for the first frame.
+        follow.initialized = true;
+        follow.spring = Some(camera_follow::FollowSpring::at_rest(feet, 0.0));
+        set_walk_camera_rotation(&mut view, body, look.pitch);
+        return;
+    }
+
+    // Engine plumbing, not retail behaviour. A teleport and a camera space change move the body
+    // and the view into a new frame, so the old smoothed point is meaningless there. Retail
+    // reaches the same result for a teleport over 300 units through the snap (RF-CAM-002). A door
+    // crossing and the safe-placement hold place the body without player control. They are
+    // plumbing for Mudcrab-only mechanisms that retail does not have, so the view follows the
+    // body directly until they end. The spring weight carries over. Entering WALK needs no reset:
+    // the spring is `None` outside WALK and starts at rest on the feet.
+    let mut previous = follow
+        .spring
+        .unwrap_or(camera_follow::FollowSpring::at_rest(feet, 0.0));
+    if let Some(displacement) = rebase {
+        // The smoothed point lives in the same render space as the feet. Move it with them.
+        previous.smoothed -= displacement;
+    }
+    let step = if reset {
+        camera_follow::FollowStep {
+            state: camera_follow::FollowSpring::at_rest(feet, previous.weight),
+            lag: Vec3::ZERO,
+        }
+    } else if time.delta_secs() <= 0.0 {
+        // Paused (focus pause, console, a held frame): no time passes, so the spring keeps its
+        // state. A step of zero length would scale the lag by the weight again on every paused
+        // frame, and clear the velocity (the momentum term would be lost on resume).
+        camera_follow::FollowStep {
+            state: previous,
+            lag: previous.smoothed - feet,
+        }
+    } else {
+        camera_follow::follow_spring_step(
+            previous,
+            camera_follow::FollowInput {
+                feet,
+                delta_secs: time.delta_secs(),
+                // RF-CAM-004: the player is controls-driven in normal play. Mudcrab has no
+                // AI-driven player movement.
+                controls_driven: true,
+                // RF-CAMW-001: Mudcrab has no mount state yet, so this stays false.
+                is_on_mount: false,
+                // The engine has no third-person camera. RF-CAM-006: it would get no spring.
+                view: camera_follow::FollowView::FirstPerson,
+            },
+        )
+    };
+    follow.spring = Some(step.state);
+    view.translation = target + step.lag;
+    set_walk_camera_rotation(&mut view, body, look.pitch);
+}
+
+/// The displacement of the floating origin from `old` to `new`, in render-space units. The
+/// streamer subtracts it from the body and the view when it rebases.
+fn render_origin_displacement(old: IVec2, new: IVec2) -> Vec3 {
+    let shift = new - old;
+    Vec3::new(
+        shift.x as f32 * crate::world::components::CELL_SIZE,
+        0.0,
+        -(shift.y as f32) * crate::world::components::CELL_SIZE,
+    )
+}
+
+fn set_walk_camera_rotation(view: &mut Transform, body: &Transform, pitch: f32) {
     let (yaw, _, _) = body.rotation.to_euler(EulerRot::YXZ);
-    view.translation = body.translation + Vec3::Y * tuning.eye_height;
-    view.rotation = Quat::from_euler(EulerRot::YXZ, yaw, look.pitch, 0.0);
+    view.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
+}
+
+#[cfg(test)]
+mod walk_camera_presentation_tests {
+    use super::*;
+
+    #[test]
+    fn camera_placement_resets_drop_the_smoothed_point_and_follow_full_position() {
+        let mut app = headless::fixture_app();
+        let (body, camera) = {
+            let mut bodies = app.world_mut().query_filtered::<Entity, With<PlayerBody>>();
+            let body = bodies.single(app.world()).unwrap();
+            let mut cameras = app
+                .world_mut()
+                .query_filtered::<Entity, With<StreamingCamera>>();
+            (body, cameras.single(app.world()).unwrap())
+        };
+        app.insert_resource(MoveMode::Walk);
+        app.world_mut().run_schedule(Update);
+        for case in 0..4 {
+            {
+                let mut follow = app.world_mut().resource_mut::<WalkCameraFollowState>();
+                follow.initialized = true;
+                follow.spring = Some(camera_follow::FollowSpring::at_rest(Vec3::ZERO, 1.0));
+            }
+            let destination = Vec3::new(500.0 + case as f32 * 100.0, 800.0, -900.0);
+            app.world_mut()
+                .get_mut::<Transform>(body)
+                .unwrap()
+                .translation = destination;
+            match case {
+                0 => {
+                    app.world_mut().write_message(TeleportPlayer {
+                        position: destination,
+                        sampled_ground_y: Some(destination.y),
+                        yaw: 0.4,
+                    });
+                }
+                1 => {
+                    app.insert_resource(crate::sky::CameraSpace::Interior);
+                }
+                2 => {
+                    app.insert_resource(MoveMode::Noclip);
+                    app.world_mut().run_schedule(Update);
+                    app.insert_resource(MoveMode::Walk);
+                }
+                _ => {
+                    // Engine plumbing: the safe-placement hold places the body without control.
+                    app.world_mut().resource_mut::<WalkSpawnHold>().active = true;
+                }
+            }
+            app.world_mut().run_schedule(Update);
+            let position = app.world().get::<Transform>(body).unwrap().translation;
+            let view = app.world().get::<Transform>(camera).unwrap().translation;
+            assert!(
+                view.distance(position + Vec3::Y * MovementTuning::default().eye_height) < 1.0e-3,
+                "reset case {case} retained an old camera coordinate: {view:?} vs {position:?}"
+            );
+            let spring = app
+                .world()
+                .resource::<WalkCameraFollowState>()
+                .spring
+                .expect("the spring is seeded after a reset");
+            assert_eq!(spring.smoothed, position);
+            assert_eq!(spring.velocity, Vec3::ZERO);
+            app.world_mut().resource_mut::<WalkSpawnHold>().active = false;
+        }
+    }
+
+    /// While no time passes (focus pause, console), the follow spring keeps its lag, velocity and
+    /// weight. A zero-length step would scale the lag by the weight on every paused frame.
+    #[test]
+    fn a_paused_frame_keeps_the_follow_spring() {
+        let mut app = headless::fixture_app();
+        let (body, camera) = {
+            let mut bodies = app.world_mut().query_filtered::<Entity, With<PlayerBody>>();
+            let body = bodies.single(app.world()).unwrap();
+            let mut cameras = app
+                .world_mut()
+                .query_filtered::<Entity, With<StreamingCamera>>();
+            (body, cameras.single(app.world()).unwrap())
+        };
+        let eye = Vec3::Y * MovementTuning::default().eye_height;
+        app.insert_resource(MoveMode::Walk);
+        app.insert_resource(crate::streaming::RenderOrigin(IVec2::ZERO));
+        app.world_mut().run_schedule(Update);
+        let feet = Vec3::new(1_000.0, 300.0, -500.0);
+        app.world_mut()
+            .get_mut::<Transform>(body)
+            .unwrap()
+            .translation = feet;
+        // A spring that has not reached full weight, with a lag and a velocity.
+        let running = camera_follow::FollowSpring {
+            smoothed: feet - Vec3::new(20.0, -6.0, 0.0),
+            velocity: Vec3::new(370.0, -100.0, 0.0),
+            weight: 0.5,
+        };
+        {
+            let mut follow = app.world_mut().resource_mut::<WalkCameraFollowState>();
+            follow.initialized = true;
+            follow.spring = Some(running);
+        }
+        for _ in 0..5 {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(std::time::Duration::ZERO);
+            app.world_mut().run_schedule(Update);
+        }
+        let follow = app.world().resource::<WalkCameraFollowState>();
+        assert_eq!(
+            follow.spring,
+            Some(running),
+            "a paused frame changed the spring"
+        );
+        let view = app.world().get::<Transform>(camera).unwrap().translation;
+        let lag = running.smoothed - feet;
+        assert!(
+            (view - (feet + eye + lag)).length() < 1.0e-3,
+            "the paused view moved: view={view:?} expected lag {lag:?}"
+        );
+    }
+
+    /// A floating-origin rebase moves the body, the view and the smoothed point by the same
+    /// displacement. The lag, which is about 20 units while running, must not change in the world
+    /// frame, so the view does not pop forward at a cell border.
+    #[test]
+    fn a_render_origin_rebase_while_running_keeps_the_camera_offset() {
+        let mut app = headless::fixture_app();
+        let (body, camera) = {
+            let mut bodies = app.world_mut().query_filtered::<Entity, With<PlayerBody>>();
+            let body = bodies.single(app.world()).unwrap();
+            let mut cameras = app
+                .world_mut()
+                .query_filtered::<Entity, With<StreamingCamera>>();
+            (body, cameras.single(app.world()).unwrap())
+        };
+        let eye = Vec3::Y * MovementTuning::default().eye_height;
+        app.insert_resource(MoveMode::Walk);
+        app.insert_resource(crate::streaming::RenderOrigin(IVec2::ZERO));
+        app.world_mut().run_schedule(Update);
+        let feet = Vec3::new(1_000.0, 300.0, -500.0);
+        app.world_mut()
+            .get_mut::<Transform>(body)
+            .unwrap()
+            .translation = feet;
+        // A running spring: the smoothed point trails the feet and moves with them.
+        let running = camera_follow::FollowSpring {
+            smoothed: feet - Vec3::new(20.0, 0.0, 0.0),
+            velocity: Vec3::new(370.0, 0.0, 0.0),
+            weight: 1.0,
+        };
+        {
+            let mut follow = app.world_mut().resource_mut::<WalkCameraFollowState>();
+            follow.initialized = true;
+            follow.spring = Some(running);
+        }
+        // A running frame: the fixture's first frame has no elapsed time, and a frame with none is
+        // a paused frame that keeps the spring (see `a_paused_frame_keeps_the_follow_spring`).
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs_f32(PHYSICS_TIMESTEP));
+        // The same frame without a rebase is the control.
+        let delta_secs = app.world().resource::<Time>().delta_secs();
+        let expected = camera_follow::follow_spring_step(
+            running,
+            camera_follow::FollowInput {
+                feet,
+                delta_secs,
+                controls_driven: true,
+                is_on_mount: false,
+                view: camera_follow::FollowView::FirstPerson,
+            },
+        );
+        assert!(
+            expected.lag.x.abs() > 1.0,
+            "the fixture needs a visible lag: {:?}",
+            expected.lag
+        );
+        // The streamer rebases: the origin moves one cell in X and in Y, and the body and the view
+        // are shifted by the displacement.
+        let new_origin = IVec2::new(1, 1);
+        let displacement = render_origin_displacement(IVec2::ZERO, new_origin);
+        assert_ne!(displacement, Vec3::ZERO);
+        app.world_mut()
+            .resource_mut::<crate::streaming::RenderOrigin>()
+            .0 = new_origin;
+        for entity in [body, camera] {
+            app.world_mut()
+                .get_mut::<Transform>(entity)
+                .unwrap()
+                .translation -= displacement;
+        }
+        app.world_mut().run_schedule(Update);
+        let view = app.world().get::<Transform>(camera).unwrap().translation;
+        let shifted_feet = feet - displacement;
+        assert!(
+            (view - (shifted_feet + eye) - expected.lag).length() < 1.0e-3,
+            "the rebase changed the camera offset: view={view:?} lag={:?}",
+            expected.lag
+        );
+        let spring = app
+            .world()
+            .resource::<WalkCameraFollowState>()
+            .spring
+            .unwrap();
+        assert!((spring.smoothed - (shifted_feet + expected.lag)).length() < 1.0e-3);
+        assert_eq!(spring.velocity, expected.state.velocity);
+        assert_eq!(spring.weight, expected.state.weight);
+    }
 }
 
 /// Attempt NOCLIP->WALK at the camera pose; overlap pushes the search upward
@@ -2235,11 +3417,29 @@ mod walk_tests {
             target_speed: tuning.run_speed,
             jump_pressed: false,
         };
-        integrate_walk(&mut state, &intent, &tuning, PHYSICS_TIMESTEP, true);
+        integrate_walk(
+            &mut state,
+            &intent,
+            &tuning,
+            PHYSICS_TIMESTEP,
+            ResolvedWalk {
+                y: 0.0,
+                grounded: true,
+            },
+        );
         let expected = tuning.horizontal_acceleration * PHYSICS_TIMESTEP;
         assert!((state.horizontal_velocity.x - expected).abs() < 0.01);
         for _ in 0..600 {
-            integrate_walk(&mut state, &intent, &tuning, PHYSICS_TIMESTEP, true);
+            integrate_walk(
+                &mut state,
+                &intent,
+                &tuning,
+                PHYSICS_TIMESTEP,
+                ResolvedWalk {
+                    y: 0.0,
+                    grounded: true,
+                },
+            );
         }
         assert!((state.horizontal_velocity.length() - tuning.run_speed).abs() < 0.5);
     }
@@ -2252,14 +3452,35 @@ mod walk_tests {
             jump_pressed: true,
             ..default()
         };
-        integrate_walk(&mut state, &air_jump, &tuning, PHYSICS_TIMESTEP, false);
-        assert!(state.vertical_velocity < 0.0);
+        integrate_walk(
+            &mut state,
+            &air_jump,
+            &tuning,
+            PHYSICS_TIMESTEP,
+            ResolvedWalk {
+                y: 0.0,
+                grounded: false,
+            },
+        );
+        assert!(state.vertical_velocity() < 0.0);
         let grounded_jump = WalkIntent {
             jump_pressed: true,
             ..default()
         };
-        integrate_walk(&mut state, &grounded_jump, &tuning, PHYSICS_TIMESTEP, true);
-        assert!((state.vertical_velocity - tuning.jump_launch).abs() < f32::EPSILON);
+        integrate_walk(
+            &mut state,
+            &grounded_jump,
+            &tuning,
+            PHYSICS_TIMESTEP,
+            ResolvedWalk {
+                y: 0.0,
+                grounded: true,
+            },
+        );
+        let expected = ((2.0_f32 * 9.81 * (76.0 * f32::from_bits(0x3c6a_161e))).sqrt()
+            - 9.81 * 1.35 * PHYSICS_TIMESTEP)
+            * f32::from_bits(0x428b_fb85);
+        assert!((state.vertical_velocity() - expected).abs() < 0.0001);
     }
 
     #[test]
@@ -2278,10 +3499,7 @@ mod walk_tests {
             (controller.max_slope_climb_angle - tuning.slope_climb_degrees.to_radians()).abs()
                 < 1.0e-6
         );
-        assert_eq!(
-            controller.snap_to_ground,
-            Some(CharacterLength::Absolute(tuning.ground_snap))
-        );
+        assert_eq!(controller.snap_to_ground, None, "retail has no ground snap");
     }
 }
 
@@ -2347,7 +3565,7 @@ pub(crate) mod headless {
         let (transform, state, output) = query.single(app.world()).expect("player body");
         (
             transform.translation,
-            state.grounded || output.map(|o| o.grounded).unwrap_or(false),
+            state.grounded() || output.map(|o| o.grounded).unwrap_or(false),
         )
     }
 }
@@ -2459,7 +3677,16 @@ mod world_startup_tests {
         let ground = floor(&mut app, true);
         {
             let mut state = app.world_mut().get_mut::<WalkState>(entity).unwrap();
-            state.vertical_velocity = -900.0;
+            integrate_walk(
+                &mut state,
+                &WalkIntent::default(),
+                &MovementTuning::default(),
+                1.0,
+                ResolvedWalk {
+                    y: 500.0,
+                    grounded: false,
+                },
+            );
             state.horizontal_velocity = Vec3::X * 300.0;
         }
         tick(&mut app, 20);
@@ -2747,7 +3974,7 @@ mod world_startup_tests {
         let entity = body(&mut app);
         let state = app.world().get::<WalkState>(entity).unwrap();
         assert_eq!(state.horizontal_velocity, Vec3::ZERO);
-        assert_eq!(state.vertical_velocity, 0.0);
+        assert_eq!(state.vertical_velocity(), 0.0);
         assert!(!app.world().resource::<SprintLatch>().0);
     }
 
@@ -2755,17 +3982,23 @@ mod world_startup_tests {
     fn tcl_cancels_hold_and_round_trips() {
         let mut app = world_app();
         let entity = body(&mut app);
-        app.world_mut()
-            .get_mut::<WalkState>(entity)
-            .unwrap()
-            .vertical_velocity = -900.0;
+        integrate_walk(
+            &mut app.world_mut().get_mut::<WalkState>(entity).unwrap(),
+            &WalkIntent::default(),
+            &MovementTuning::default(),
+            1.0,
+            ResolvedWalk {
+                y: 500.0,
+                grounded: false,
+            },
+        );
         app.world_mut().resource_mut::<SprintLatch>().0 = true;
         crate::console::execute_line(app.world_mut(), "tcl");
         assert_eq!(
             app.world()
                 .get::<WalkState>(entity)
                 .unwrap()
-                .vertical_velocity,
+                .vertical_velocity(),
             0.0
         );
         assert!(!app.world().resource::<SprintLatch>().0);
@@ -3518,7 +4751,7 @@ mod simulation_tests {
     }
 
     #[test]
-    fn jump_ascent_survives_ground_probe_and_lands_on_descent() {
+    fn jump_gravity_and_apex_follow_the_highest_resolved_position() {
         let tuning = MovementTuning::default();
         let mut state = WalkState::default();
         integrate_walk(
@@ -3529,27 +4762,41 @@ mod simulation_tests {
             },
             &tuning,
             PHYSICS_TIMESTEP,
-            true,
+            ResolvedWalk {
+                y: 100.0,
+                grounded: true,
+            },
         );
-        for step in 1..=10 {
+        // Each sample is the position returned by collision resolution on the preceding tick.
+        for (y, gravity_multiplier, apex) in [
+            (104.0, 1.0, 4.0),
+            (104.0, 1.35, 4.0),
+            (101.0, 1.35, 4.0),
+            (103.0, 1.35, 4.0),
+            (105.0, 1.0, 5.0),
+        ] {
+            let before = state.vertical_velocity();
             integrate_walk(
                 &mut state,
                 &WalkIntent::default(),
                 &tuning,
                 PHYSICS_TIMESTEP,
-                true,
+                ResolvedWalk { y, grounded: false },
             );
-            assert!(state.jump_active);
-            assert!(!state.grounded);
+            let expected_drop = 9.81 * 69.99125 * PHYSICS_TIMESTEP * gravity_multiplier;
             assert!(
-                (state.vertical_velocity
-                    - (tuning.jump_launch - tuning.gravity * PHYSICS_TIMESTEP * step as f32))
-                    .abs()
-                    < 0.01
+                (before - state.vertical_velocity() - expected_drop).abs() < 0.001,
+                "resolved y={y}"
             );
+            assert_eq!(state.jump_apex(), apex, "resolved y={y}");
         }
-        // A new press cannot relaunch while the ground probe overlaps ascent.
-        let before = state.vertical_velocity;
+    }
+
+    #[test]
+    fn jump_ascent_survives_ground_probe_and_lands_on_descent() {
+        let tuning = MovementTuning::default();
+        let mut state = WalkState::default();
+        let mut y = 0.0;
         integrate_walk(
             &mut state,
             &WalkIntent {
@@ -3558,16 +4805,36 @@ mod simulation_tests {
             },
             &tuning,
             PHYSICS_TIMESTEP,
-            true,
+            ResolvedWalk { y, grounded: true },
         );
-        assert!(state.vertical_velocity < before);
-        while state.vertical_velocity > 0.0 {
+        for _ in 0..10 {
+            y += state.vertical_velocity() * PHYSICS_TIMESTEP;
+            let before = state.vertical_velocity();
+            integrate_walk(
+                &mut state,
+                &WalkIntent {
+                    jump_pressed: true,
+                    ..default()
+                },
+                &tuning,
+                PHYSICS_TIMESTEP,
+                ResolvedWalk { y, grounded: true },
+            );
+            assert!(state.jump_active());
+            assert!(!state.grounded());
+            assert!(
+                state.vertical_velocity() < before,
+                "proximity support relaunched ascent"
+            );
+        }
+        while state.vertical_velocity() > 0.0 {
+            y += state.vertical_velocity() * PHYSICS_TIMESTEP;
             integrate_walk(
                 &mut state,
                 &WalkIntent::default(),
                 &tuning,
                 PHYSICS_TIMESTEP,
-                false,
+                ResolvedWalk { y, grounded: false },
             );
         }
         integrate_walk(
@@ -3575,11 +4842,14 @@ mod simulation_tests {
             &WalkIntent::default(),
             &tuning,
             PHYSICS_TIMESTEP,
-            true,
+            ResolvedWalk {
+                y: 0.0,
+                grounded: true,
+            },
         );
-        assert!(state.grounded);
-        assert!(!state.jump_active);
-        assert_eq!(state.vertical_velocity, 0.0);
+        assert!(state.grounded());
+        assert!(!state.jump_active());
+        assert_eq!(state.vertical_velocity(), 0.0);
     }
 
     #[test]
@@ -3607,7 +4877,6 @@ mod simulation_tests {
             apex = apex.max(headless::player_pose(&mut app).0.y);
         }
         let (landing, grounded) = headless::player_pose(&mut app);
-        // v^2/2g = 340^2/1800 ~ 64 units of apex above rest.
         assert!(
             apex - rest_y > 30.0,
             "jump apex {apex} too low above rest {rest_y}"
@@ -3902,6 +5171,9 @@ fn setup_controlled_player(
 fn tankard_spawn_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     capture: Res<CursorCapture>,
+    mode: Res<MoveMode>,
+    tuning: Res<MovementTuning>,
+    player: Query<&Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
     camera: Query<&Transform, (With<StreamingCamera>, With<ControlledCamera>)>,
     terrain: Query<(), With<TerrainCollider>>,
     tankards: Query<(), With<DebugTankard>>,
@@ -3920,7 +5192,15 @@ fn tankard_spawn_input(
     }
     let Some(visuals) = visuals else { return };
     let horizontal = camera.forward().as_vec3().with_y(0.0).normalize_or_zero();
-    let origin = camera.translation + horizontal * 140.0 + Vec3::Y * 300.0;
+    // The ray starts at the eye of the body, not at the blended or lagging view, so the spawn
+    // point does not depend on the display's refresh rate. The body is shifted by a floating-origin
+    // rebase at once, unlike the view pose, which follows on the next sample. In NOCLIP the camera
+    // is authoritative.
+    let eye = match (*mode, player.single()) {
+        (MoveMode::Walk, Ok(body)) => body.translation + Vec3::Y * tuning.eye_height,
+        _ => camera.translation,
+    };
+    let origin = eye + horizontal * 140.0 + Vec3::Y * 300.0;
     let is_terrain = |entity| terrain.get(entity).is_ok();
     if let Some((_, distance)) = context.cast_ray(
         origin,
@@ -5738,9 +7018,17 @@ mod teleport_tests {
             .query_filtered::<&mut WalkState, With<PlayerBody>>();
         {
             let mut state = query.single_mut(app.world_mut()).unwrap();
-            state.vertical_velocity = -900.0;
+            integrate_walk(
+                &mut state,
+                &WalkIntent::default(),
+                &MovementTuning::default(),
+                1.0,
+                ResolvedWalk {
+                    y: 500.0,
+                    grounded: false,
+                },
+            );
             state.horizontal_velocity = Vec3::new(300.0, 0.0, 0.0);
-            state.grounded = true;
         }
         let target = Vec3::new(40_000.0, 900.0, -2_000.0);
         app.world_mut().write_message(TeleportPlayer {
@@ -5750,9 +7038,9 @@ mod teleport_tests {
         });
         app.update();
         let state = *query.single(app.world()).unwrap();
-        assert_eq!(state.vertical_velocity, 0.0);
+        assert_eq!(state.vertical_velocity(), 0.0);
         assert_eq!(state.horizontal_velocity, Vec3::ZERO);
-        assert!(!state.grounded);
+        assert!(!state.grounded());
         let mut body = app
             .world_mut()
             .query_filtered::<&Transform, With<PlayerBody>>();

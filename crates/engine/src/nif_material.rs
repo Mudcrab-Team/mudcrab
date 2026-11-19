@@ -6,6 +6,7 @@ use crate::{
         SkyrimSkinMaterial, facegen_texture_indices, gltf_sampler, hair_material, is_skin_tint,
         load_linear_twin, nif_hair_tint, skin_material, specular_color_texture_index,
     },
+    texture_fallback::{FallbackKind, record},
 };
 use ::gltf::material::AlphaMode as GltfAlphaMode;
 use bevy::{
@@ -292,6 +293,60 @@ fn effect_palette_material(
             scale,
             raw_colour_texels,
         ),
+    }
+}
+
+/// The stand-ins a primitive may render with, as (kind, slot) pairs. They are candidates: a
+/// placed reference's texture swap (`object_materials`) can supply the missing image or hide the
+/// shape, and this load-time hook cannot see that.
+///
+/// A lighting material with no base-colour image draws its flat colour. Skin and face tint
+/// materials are exempt: the actor systems supply their images at runtime. A primitive with a
+/// textured material and no `TEXCOORD_0` skips that texture's sample (Bevy 0.19) and draws the
+/// base colour.
+fn texture_fallbacks(
+    material: &gltf::Material<'_>,
+    has_uvs: bool,
+) -> Vec<(FallbackKind, &'static str)> {
+    let mut found = Vec::new();
+    let has_base_color = material
+        .pbr_metallic_roughness()
+        .base_color_texture()
+        .is_some();
+    let tinted_by_actor = native_tag(material, "lightingShaderType", "skin_tint")
+        || native_tag(material, "lightingShaderType", "face_tint");
+    if native_tag(material, "shaderFamily", "lighting") && !has_base_color && !tinted_by_actor {
+        found.push((FallbackKind::UntexturedMaterial, "base_color"));
+    }
+    if !has_uvs && (has_base_color || material.normal_texture().is_some()) {
+        found.push((
+            FallbackKind::PrimitiveWithoutUvs,
+            if has_base_color {
+                "base_color"
+            } else {
+                "normal"
+            },
+        ));
+    }
+    found
+}
+
+/// Logs each fallback candidate of a primitive once per model, with the model path and the slot.
+fn record_texture_fallbacks(
+    context: &LoadContext<'_>,
+    primitive: &gltf::Primitive<'_>,
+    mesh: &gltf::Mesh<'_>,
+    material: &gltf::Material<'_>,
+) {
+    let has_uvs = primitive.get(&::gltf::Semantic::TexCoords(0)).is_some();
+    let found = texture_fallbacks(material, has_uvs);
+    if found.is_empty() {
+        return;
+    }
+    let path = context.path().to_string();
+    let shape = mesh.name().or_else(|| material.name()).unwrap_or("unnamed");
+    for (kind, slot) in found {
+        record(kind, &path, &format!("{slot} ({shape})"));
     }
 }
 
@@ -667,11 +722,12 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         &mut self,
         context: &mut LoadContext<'_>,
         primitive: &gltf::Primitive<'_>,
-        _mesh: &gltf::Mesh<'_>,
+        mesh: &gltf::Mesh<'_>,
         material: &gltf::Material<'_>,
         entity: &mut EntityWorldMut,
         label: &str,
     ) {
+        record_texture_fallbacks(context, primitive, mesh, material);
         if let Some(shape) = crate::object_materials::ObjectGeometryIndex::from_primitive(primitive)
         {
             entity.insert(shape);
@@ -1320,6 +1376,56 @@ mod tests {
         // One material component per mesh: the palette itself must not also draw.
         assert!(unwrapped.is_none());
         assert!(no_shadow.is_some());
+    }
+
+    #[test]
+    fn texture_fallbacks_name_untextured_lighting_and_uv_less_textured_primitives() {
+        fn kinds(material: serde_json::Value, has_uvs: bool) -> Vec<FallbackKind> {
+            let gltf = gltf::Gltf::from_slice(
+                serde_json::to_string(&serde_json::json!({
+                    "asset": {"version": "2.0"},
+                    "images": [{"uri": "a.ktx2"}],
+                    "textures": [{"source": 0}],
+                    "materials": [material]
+                }))
+                .unwrap()
+                .as_bytes(),
+            )
+            .unwrap();
+            let material = gltf.materials().next().expect("one material");
+            texture_fallbacks(&material, has_uvs)
+                .into_iter()
+                .map(|(kind, _)| kind)
+                .collect()
+        }
+        let lighting = |shader_type: &str| {
+            serde_json::json!({
+                "extras": {"openSkyrim": {"shaderFamily": "lighting", "lightingShaderType": shader_type}}
+            })
+        };
+        // No base-colour image on a default lighting material: flat colour.
+        assert_eq!(
+            kinds(lighting("default"), true),
+            vec![FallbackKind::UntexturedMaterial]
+        );
+        // Skin tint is filled in by the actor systems, so it is not a miss.
+        assert!(kinds(lighting("skin_tint"), true).is_empty());
+        // An effect material is not a lighting material.
+        assert!(
+            kinds(
+                serde_json::json!({"extras": {"openSkyrim": {"shaderFamily": "effect"}}}),
+                true
+            )
+            .is_empty()
+        );
+        // A textured material on a primitive with no UVs skips its texture sample.
+        let mut textured = lighting("default");
+        textured["pbrMetallicRoughness"] = serde_json::json!({"baseColorTexture": {"index": 0}});
+        assert_eq!(
+            kinds(textured.clone(), false),
+            vec![FallbackKind::PrimitiveWithoutUvs]
+        );
+        assert!(kinds(textured, true).is_empty());
     }
 
     fn first_material(material: serde_json::Value) -> gltf::Gltf {

@@ -7,9 +7,10 @@ use crate::{
     physics::{MovementTuning, PhysicsFixturePlugin, WorldPlayerPlugin},
     profiling::{ProfilingPlugin, ProfilingState},
     render::{
-        LIGHT_LAYERS, MAIN_VIEW_LAYERS, RendererMetrics, TerrainExtension, TerrainMaterial,
-        VercidiumRendererPlugin, WATER_LAYER, WaterExtension, WaterMaterial,
-        WaterReflectionTexture, terrain_layer_sampler,
+        DEFAULT_WATER_DEEP_COLOR, DEFAULT_WATER_OPACITY, DEFAULT_WATER_REFLECTION_COLOR,
+        DEFAULT_WATER_SHALLOW_COLOR, LIGHT_LAYERS, MAIN_VIEW_LAYERS, RendererMetrics,
+        TerrainExtension, TerrainMaterial, VercidiumRendererPlugin, WATER_LAYER, WaterExtension,
+        WaterMaterial, WaterReflectionTexture, terrain_layer_sampler,
     },
     renderer_init::RendererInitPlugin,
     route::{RouteGround, RoutePlan, RouteRunner, drive_route},
@@ -44,7 +45,7 @@ use bevy::{
     render::occlusion_culling::OcclusionCulling,
     render::render_asset::RenderAssetBytesPerFrame,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
-    render::view::screenshot::{Screenshot, save_to_disk},
+    render::view::screenshot::{Screenshot, ScreenshotCaptured},
     tasks::{IoTaskPool, TaskPoolBuilder},
     window::{MonitorSelection, PresentMode, WindowLevel, WindowPlugin, WindowPosition},
     winit::WinitSettings,
@@ -242,7 +243,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         ))
     };
     // Authored lighting, weather, climate and image space, when the database has them (#269).
-    // Read only; the sun consumes climate timing and GMST settings from this catalog.
+    // Read only. The sun consumes climate timing and GMST settings from this catalog, and
+    // InteriorEnvironmentPlugin applies the authored interior lighting from it (RF-LIGHT-CPU-010).
     let environment = runtime_data.as_ref().map(|_| {
         crate::world::environment::EnvironmentCatalog::open(
             &config.assets_dir.join("skyrim_world.db"),
@@ -376,6 +378,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         app.insert_resource(WinitSettings::continuous());
     }
     let render_asset_budget = upload_budget(&config);
+    let room_culling = crate::room_culling::RoomCullingPlugin::from_config(&config);
     // The run fingerprint is measurement data: an ordinary play session neither builds one nor
     // pays for the startup system that reads it.
     let records_measurements = crate::fingerprint::records_measurements(&config);
@@ -451,6 +454,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .add_plugins(crate::actor_drive::ActorDrivePlugin)
         .add_plugins(crate::actor_head::ActorHeadPlugin)
         .add_plugins(crate::actor_outfit::ActorOutfitPlugin)
+        .add_plugins(room_culling)
         .add_systems(PostUpdate, keep_windows_hidden)
         .add_systems(Update, crate::sun::update_sun)
         .add_systems(Update, crate::background_window::hold_focus_with_the_user)
@@ -493,7 +497,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     }
     if let Some((database, catalog, cache, ground_height, spawn_ground_height)) = runtime_data {
         if let Some(environment) = environment {
-            app.insert_resource(environment);
+            app.insert_resource(environment)
+                .add_plugins(crate::world::environment::interior::InteriorEnvironmentPlugin);
         }
         if let Some(actor_catalog) = actor_catalog {
             app.insert_resource(actor_catalog);
@@ -560,8 +565,14 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         app.add_systems(Startup, setup_world);
         app.add_systems(Startup, setup_synthetic_benchmark);
     }
-    if !app.world().resource::<EngineConfig>().no_render_diagnostics {
-        app.add_plugins(RenderDiagnosticsPlugin);
+    match render_diagnostics_off_reason(
+        app.world().resource::<EngineConfig>(),
+        cfg!(target_os = "macos"),
+    ) {
+        Some(reason) => info!(reason, "GPU render diagnostics are off"),
+        None => {
+            app.add_plugins(RenderDiagnosticsPlugin);
+        }
     }
     if app.world().resource::<EngineConfig>().stdin_console && !shots_active {
         app.add_plugins(crate::capture_frame::CaptureFramePlugin);
@@ -656,6 +667,24 @@ fn finished(exit: &AppExit) -> Result<()> {
         AppExit::Error(code) => Err(color_eyre::eyre::eyre!(
             "the run failed (exit code {code:?})"
         )),
+    }
+}
+
+/// Why Bevy's GPU timing recorder (`RenderDiagnosticsPlugin`) stays off, or `None` when it runs.
+///
+/// A hidden window on macOS never acquires a drawable and never presents, so nothing paces the
+/// frames. Bevy's recorder keeps one Metal counter sample buffer for each frame that is still in
+/// flight and has no limit. When the GPU falls behind the CPU, the buffers can grow until Metal
+/// refuses the allocation ("Cannot allocate sample buffer") and the device is lost. This is the
+/// likely cause; the live buffer count at a failure is not measured. Any new macOS capture mode
+/// that does not present must also return a reason here.
+fn render_diagnostics_off_reason(config: &EngineConfig, macos: bool) -> Option<&'static str> {
+    if config.no_render_diagnostics {
+        Some("--no-render-diagnostics")
+    } else if macos && config.hidden_window {
+        Some("hidden window on macOS never presents, so Metal counter sample buffers could pile up")
+    } else {
+        None
     }
 }
 
@@ -1592,20 +1621,37 @@ fn setup_terrain_water_fixture(
             TerrainWaterFixtureTerrain,
         ));
     }
+    let [deep_r, deep_g, deep_b] = DEFAULT_WATER_DEEP_COLOR;
     commands.spawn((
         Name::new("Terrain/water fixture water"),
         Mesh3d(meshes.add(Plane3d::default().mesh().size(2200.0, 2200.0))),
-        MeshMaterial3d(water_materials.add(WaterMaterial {
-            base: StandardMaterial {
-                base_color: Color::srgba(0.04, 0.2, 0.32, 0.7),
-                metallic: 0.15,
-                perceptual_roughness: 0.06,
-                reflectance: 0.9,
-                alpha_mode: AlphaMode::Blend,
-                ..default()
-            },
-            extension: WaterExtension::with_reflection(reflection.0.clone(), Some(flow_normal)),
-        })),
+        MeshMaterial3d(
+            water_materials.add(WaterMaterial {
+                base: StandardMaterial {
+                    base_color: crate::render::water_deep_color(
+                        [deep_r, deep_g, deep_b],
+                        crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER,
+                    ),
+                    metallic: 0.15,
+                    perceptual_roughness: 0.06,
+                    reflectance: 0.9,
+                    alpha_mode: AlphaMode::Opaque,
+                    specular_transmission: crate::render::WATER_TRANSMISSION_FLAG,
+                    ..default()
+                },
+                extension: WaterExtension::with_reflection(reflection.0.clone(), Some(flow_normal))
+                    .with_water_multiplier(
+                        crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER,
+                    )
+                    .with_sun_color(crate::sky::WeatherLighting::SKYRIM_CLEAR_DAY.sunlight)
+                    .with_reflection_color(DEFAULT_WATER_REFLECTION_COLOR)
+                    .with_body(
+                        DEFAULT_WATER_SHALLOW_COLOR,
+                        DEFAULT_WATER_OPACITY,
+                        Default::default(),
+                    ),
+            }),
+        ),
         Transform::from_xyz(CELL_SIZE_HALF, 12.0, -CELL_SIZE_HALF),
         crate::world::components::WaterSurface,
         TerrainWaterFixtureWater,
@@ -2511,6 +2557,7 @@ fn setup_world(
             ..default()
         },
         sun_shadow_cascades(&config),
+        crate::world::environment::interior::WorldSun,
         RenderLayers::from_layers(LIGHT_LAYERS),
         Transform::from_rotation(sun_rotation(
             &config,
@@ -2886,7 +2933,7 @@ fn bounded_auto_flight_direction(
 /// `refresh_console_ui` hides the overlay on the closing frame, before the capture resumes on the
 /// next update.
 fn add_camera_and_capture_systems(app: &mut App) {
-    app.add_systems(
+    app.init_resource::<AcceptanceCapture>().add_systems(
         Update,
         (
             fly_camera.run_if(console_closed),
@@ -2902,6 +2949,7 @@ fn fly_camera(
     mut camera: Query<&mut Transform, With<StreamingCamera>>,
     mut profiler: ResMut<ProfilingState>,
     mut auto_flight: Local<AutoFlightState>,
+    capture: Res<AcceptanceCapture>,
 ) {
     // Interactive player paths own the camera; automated camera paths keep legacy controls. A
     // shots run poses the camera itself, and a key press must not move a pose.
@@ -2938,10 +2986,6 @@ fn fly_camera(
     if keyboard.pressed(KeyCode::ShiftLeft) {
         direction -= Vec3::Y;
     }
-    let acceptance_capture_pending = config
-        .acceptance_screenshot
-        .as_ref()
-        .is_some_and(|path| !path.is_file());
     let speed = if config.auto_fly_speed > 0.0 {
         config.auto_fly_speed
     } else if keyboard.pressed(KeyCode::ControlLeft) {
@@ -2949,7 +2993,7 @@ fn fly_camera(
     } else {
         900.0
     };
-    if config.auto_fly_speed > 0.0 && !acceptance_capture_pending {
+    if config.auto_fly_speed > 0.0 && capture.ready(&config) {
         direction += bounded_auto_flight_direction(
             *transform.forward(),
             speed * time.delta_secs(),
@@ -2974,7 +3018,8 @@ const SCREENSHOT_GPU_WARMUP: std::time::Duration = std::time::Duration::from_sec
 fn capture_acceptance_screenshot(
     mut commands: Commands,
     config: Res<EngineConfig>,
-    mut state: Local<ScreenshotCaptureState>,
+    mut frames: Local<u32>,
+    mut capture: ResMut<AcceptanceCapture>,
     real_time: Res<Time<Real>>,
     streaming: Option<Res<StreamingMetrics>>,
     world_database: Option<Res<WorldDatabase>>,
@@ -2984,12 +3029,12 @@ fn capture_acceptance_screenshot(
     let Some(path) = &config.acceptance_screenshot else {
         return;
     };
-    state.frames = state.frames.saturating_add(1);
+    *frames = frames.saturating_add(1);
     let settled_frames = config
         .benchmark_warmup_frames
         .saturating_add(SCREENSHOT_SETTLE_FRAMES);
-    if state.captured
-        || state.frames < settled_frames
+    if *capture != AcceptanceCapture::Waiting
+        || *frames < settled_frames
         || real_time.elapsed() < SCREENSHOT_GPU_WARMUP
         || windows.is_empty()
     {
@@ -3011,8 +3056,8 @@ fn capture_acceptance_screenshot(
     }
     commands
         .spawn(Screenshot::primary_window())
-        .observe(save_to_disk(path.clone()));
-    state.captured = true;
+        .observe(save_acceptance_screenshot(path.clone()));
+    *capture = AcceptanceCapture::Requested;
 }
 
 fn screenshot_assets_ready(
@@ -3042,14 +3087,132 @@ fn screenshot_assets_ready(
         && (!config.physics_fixture || metrics.physics_fixture_validated)
 }
 
-#[derive(Default)]
-struct ScreenshotCaptureState {
-    frames: u32,
-    captured: bool,
+#[derive(Resource, Default, PartialEq, Eq)]
+pub(crate) enum AcceptanceCapture {
+    #[default]
+    Waiting,
+    Requested,
+    Saved,
+}
+
+impl AcceptanceCapture {
+    pub(crate) fn ready(&self, config: &EngineConfig) -> bool {
+        config
+            .acceptance_screenshot
+            .as_ref()
+            .is_none_or(|path| *self == Self::Saved && path.is_file())
+    }
+}
+
+pub(crate) fn save_acceptance_screenshot(
+    path: PathBuf,
+) -> impl FnMut(On<ScreenshotCaptured>, ResMut<AcceptanceCapture>) {
+    move |event, mut capture| match write_acceptance_screenshot(event.image.clone(), &path) {
+        Ok(()) => {
+            *capture = AcceptanceCapture::Saved;
+            info!(path = %path.display(), "saved acceptance screenshot");
+        }
+        Err(error) => {
+            error!(%error, path = %path.display(), "failed to save acceptance screenshot")
+        }
+    }
+}
+
+fn write_acceptance_screenshot(image: Image, path: &Path) -> Result<()> {
+    let format = image::ImageFormat::from_path(path)?;
+    let rgb = crate::shots::decode_shot(image).map_err(color_eyre::eyre::Error::msg)?;
+    // Finish encoding before opening the destination. Writing in place follows symlinks
+    // and preserves the existing file's ownership and access permissions.
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    rgb.write_to(&mut encoded, format)?;
+    fs::write(path, encoded.into_inner())?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn acceptance_screenshot_follows_links_and_preserves_access_modes() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+        let dir = tempfile::tempdir().unwrap();
+        let target_dir = dir.path().join("frames");
+        fs::create_dir(&target_dir).unwrap();
+        let reference = target_dir.join("reference");
+        fs::File::create(&reference).unwrap();
+        let target = target_dir.join("frame.png");
+        let link = dir.path().join("latest.png");
+        let intermediate = target_dir.join("current");
+        symlink("frames/current", &link).unwrap();
+        symlink("frame.png", &intermediate).unwrap();
+        write_acceptance_screenshot(Image::default(), &link).unwrap();
+        assert!(image::open(&target).is_ok());
+        assert_eq!(
+            fs::read_link(&intermediate).unwrap(),
+            Path::new("frame.png")
+        );
+        assert_eq!(
+            target.metadata().unwrap().permissions().mode(),
+            reference.metadata().unwrap().permissions().mode()
+        );
+
+        let inode = target.metadata().unwrap().ino();
+        fs::write(&target, b"old frame").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+        write_acceptance_screenshot(Image::default(), &link).unwrap();
+        assert_eq!(target.metadata().unwrap().ino(), inode);
+        assert_eq!(fs::read_link(&link).unwrap(), Path::new("frames/current"));
+        assert!(image::open(&target).is_ok());
+        assert_eq!(
+            target.metadata().unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acceptance_screenshot_leaves_a_socket_in_place() {
+        use std::os::unix::{fs::FileTypeExt, net::UnixListener};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("acceptance.png");
+        let _listener = UnixListener::bind(&path).unwrap();
+        assert!(write_acceptance_screenshot(Image::default(), &path).is_err());
+        assert!(path.metadata().unwrap().file_type().is_socket());
+    }
+
+    /// Hidden macOS runs skip Bevy's GPU timing recorder. Visible runs, other platforms and the
+    /// existing flag keep their behaviour.
+    #[test]
+    fn render_diagnostics_are_off_only_for_the_flag_or_a_hidden_macos_window() {
+        let hidden = EngineConfig {
+            hidden_window: true,
+            ..EngineConfig::default()
+        };
+        let visible = EngineConfig::default();
+        let flagged = EngineConfig {
+            no_render_diagnostics: true,
+            ..EngineConfig::default()
+        };
+        let hidden_and_flagged = EngineConfig {
+            hidden_window: true,
+            no_render_diagnostics: true,
+            ..EngineConfig::default()
+        };
+
+        assert!(render_diagnostics_off_reason(&hidden, true).is_some());
+        assert!(render_diagnostics_off_reason(&visible, true).is_none());
+        assert!(render_diagnostics_off_reason(&flagged, true).is_some());
+        assert!(render_diagnostics_off_reason(&flagged, false).is_some());
+        assert_eq!(
+            render_diagnostics_off_reason(&hidden_and_flagged, true),
+            Some("--no-render-diagnostics")
+        );
+        // Linux and Windows present in a hidden window, so they are unchanged.
+        assert!(render_diagnostics_off_reason(&hidden, false).is_none());
+        assert!(render_diagnostics_off_reason(&visible, false).is_none());
+    }
+
     /// A `--route` file shares the camera with neither `--shots` nor `--matched-route`. The refusal
     /// comes before the shots file is read, so the file names here need not exist.
     #[test]
@@ -4264,6 +4427,15 @@ mod tests {
         let step = capture_step_below_the_time_warmup();
         let mut app = acceptance_capture_app(directory.path(), step);
 
+        fs::write(directory.path().join("acceptance.png"), b"previous run").unwrap();
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .auto_fly_speed = 10.0;
+        let camera = app
+            .world_mut()
+            .spawn((StreamingCamera, Transform::default()))
+            .id();
+
         // The frame gate opens here and the time gate does not: the capture is held back still.
         for _ in 0..capture_warmup_frames() {
             step_capture(&mut app, step);
@@ -4289,9 +4461,25 @@ mod tests {
             1,
             "later updates do not queue a second capture"
         );
-        // The PNG is written by the render world's observer, which needs a GPU: this test pins the
-        // queue decision the schedule makes, not the write.
-        assert!(!directory.path().join("acceptance.png").exists());
+        assert_eq!(
+            app.world().get::<Transform>(camera).unwrap().translation,
+            Vec3::ZERO
+        );
+        let world = app.world_mut();
+        let request = world
+            .query_filtered::<Entity, With<Screenshot>>()
+            .single(world)
+            .unwrap();
+        world.trigger(ScreenshotCaptured {
+            entity: request,
+            image: Image::default(),
+        });
+        step_capture(&mut app, step);
+        assert_ne!(
+            app.world().get::<Transform>(camera).unwrap().translation,
+            Vec3::ZERO
+        );
+        assert!(image::open(directory.path().join("acceptance.png")).is_ok());
     }
 
     /// The console's real close transition: no capture while it is open or on the closing frame,
@@ -5496,6 +5684,7 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ProfilingState>()
+            .init_resource::<AcceptanceCapture>()
             .insert_resource(EngineConfig {
                 headless: true,
                 ..default()

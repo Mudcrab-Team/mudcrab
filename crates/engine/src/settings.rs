@@ -57,12 +57,17 @@ pub struct RenderingSettings {
     pub water_reflections: bool,
     pub water_reflection_strength: f32,
     pub water_waves: bool,
+    /// No longer read: the flow-normal tilt had no Skyrim source and was removed (`#299`). The
+    /// field stays so saved settings files keep loading.
     pub water_flow_normals: bool,
     pub wave_scale: f32,
     pub wave_speed: f32,
     pub wave_strength: f32,
     pub cpu_frustum_culling: bool,
+    pub room_culling: bool,
+    /// Saved drawing preference, applied to camera views at the next start.
     pub indirect_drawing: bool,
+    /// Saved occlusion preference, applied with indirect drawing at the next start.
     pub occlusion_culling: bool,
     pub depth_prepass: bool,
     pub msaa: usize,
@@ -140,10 +145,11 @@ impl Default for RenderingSettings {
             water_reflection_strength: 1.0,
             water_waves: true,
             water_flow_normals: true,
-            wave_scale: 0.006,
-            wave_speed: 0.15,
+            wave_scale: crate::render::DEFAULT_WAVE_SCALE,
+            wave_speed: crate::render::DEFAULT_WAVE_SPEED,
             wave_strength: crate::render::WAVE_STRENGTH,
             cpu_frustum_culling: true,
+            room_culling: true,
             indirect_drawing: true,
             occlusion_culling: true,
             depth_prepass: true,
@@ -312,13 +318,13 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
     number!(Graphics, "Water", "Water reflection multiplier", water_reflection_strength; 0.0, 1.0, 0.1)
         .when(|s| s.water_reflections),
     toggle!("Water", "Water waves", water_waves),
-    toggle!("Water", "Water flow normals", water_flow_normals),
     number!(Graphics, "Water", "Water wave scale", wave_scale; 0.001, 0.05, 0.001).when(|s| s.water_waves),
     number!(Graphics, "Water", "Water wave speed", wave_speed; 0.0, 2.0, 0.05).when(|s| s.water_waves),
     number!(Graphics, "Water", "Water wave strength", wave_strength; 0.0, 2.0, 0.05).when(|s| s.water_waves),
     toggle!("Culling and drawing", "CPU frustum culling", cpu_frustum_culling),
-    toggle!("Culling and drawing", "GPU indirect drawing", indirect_drawing),
-    toggle!("Culling and drawing", "GPU occlusion culling", occlusion_culling),
+    toggle!("Culling and drawing", "Room culling", room_culling),
+    toggle!("Culling and drawing", "GPU indirect drawing (restart)", indirect_drawing),
+    toggle!("Culling and drawing", "GPU occlusion culling (restart)", occlusion_culling),
     toggle!("Culling and drawing", "Depth prepass", depth_prepass),
     choice!("Image", "MSAA", msaa, &["Off", "2x", "4x", "8x"]),
     number!(Graphics, "Image", "Exposure (EV100)", exposure_ev100; -5.0, 20.0, 0.25),
@@ -376,10 +382,10 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
     ),
     number!(Streaming, "Range", "Full-detail radius (cells)", stream_radius; 0.0, 16.0, 1.0),
     number!(Streaming, "Range", "Unload radius (cells)", unload_radius; 0.0, 32.0, 1.0),
-    number!(Streaming, "Terrain level of detail", "Level-4 terrain LOD distance (units)", lod_level0_distance; 0.0, 1_000_000.0, 5000.0),
-    number!(Streaming, "Terrain level of detail", "Level-8 terrain LOD distance (units)", lod_level1_distance; 0.0, 1_000_000.0, 5000.0),
-    number!(Streaming, "Terrain level of detail", "Level-16 terrain LOD distance (units)", lod_maximum_distance; 0.0, 1_000_000.0, 10_000.0),
-    number!(Streaming, "Terrain level of detail", "Terrain LOD distance multiplier", lod_multiplier; 0.0, 4.0, 0.25),
+    number!(Streaming, "Terrain level of detail", "Object LOD level-4 distance (units; unused until object LOD lands)", lod_level0_distance; 0.0, 1_000_000.0, 5000.0),
+    number!(Streaming, "Terrain level of detail", "Object LOD level-8 distance (units; unused until object LOD lands)", lod_level1_distance; 0.0, 1_000_000.0, 5000.0),
+    number!(Streaming, "Terrain level of detail", "Terrain LOD outer reach (units, times the split multiplier)", lod_maximum_distance; 0.0, 1_000_000.0, 10_000.0),
+    number!(Streaming, "Terrain level of detail", "Terrain LOD split multiplier", lod_multiplier; 0.0, 4.0, 0.25),
     number!(Streaming, "Per-frame budgets", "Cell commits per frame", cell_commits; 1.0, 64.0, 1.0),
     number!(Streaming, "Per-frame budgets", "Cell commit budget (ms)", commit_ms; 0.5, 100.0, 0.5),
     number!(Streaming, "Per-frame budgets", "Cell unloads per frame (0 = unlimited)", cell_unloads; 0.0, 128.0, 1.0),
@@ -744,7 +750,7 @@ impl SettingsFile {
     pub fn session_only() -> Self {
         Self {
             path: None,
-            status: "Changes apply now. This preview does not save preferences.".into(),
+            status: "Changes apply now except settings marked restart. This preview does not save preferences.".into(),
             stored: RenderingSettings::default(),
             launch_overrides: Vec::new(),
             preserve_unavailable_record_mode: false,
@@ -779,9 +785,9 @@ impl SettingsFile {
             .iter()
             .any(|flag| flag == "--start-shot")
         {
-            "Defaults restored for this session. Save preserves the pre-launch FOV, window mode, and window size.".into()
+            "Defaults selected. Settings marked restart apply on the next start. Save preserves the pre-launch FOV, window mode, and window size.".into()
         } else {
-            "Defaults restored for this session. Choose Save to keep them.".into()
+            "Defaults selected. Settings marked restart apply on the next start. Choose Save to keep them.".into()
         };
     }
 
@@ -793,8 +799,8 @@ impl SettingsFile {
                 self.metal_drawing_auto_unowned,
             ) {
                 Ok(()) if self.launch_overrides.iter().any(|flag| flag == "--start-shot") =>
-                    "Settings saved. IO-thread changes apply after restart. Save preserves the pre-launch FOV, window mode, and window size.".into(),
-                Ok(()) => "Settings saved. IO-thread changes apply after restart.".into(),
+                    "Settings saved. Drawing, occlusion, visual-profile and IO-thread changes apply after restart. Save preserves the pre-launch FOV, window mode, and window size.".into(),
+                Ok(()) => "Settings saved. Drawing, occlusion, visual-profile and IO-thread changes apply after restart.".into(),
                 Err(error) => format!("Could not save settings: {error}"),
             },
             None => "Saving is unavailable for this session.".into(),
@@ -852,7 +858,7 @@ pub(crate) fn prepare_settings_at(
     let no_preferences_path = path.is_none();
     let mut file = SettingsFile {
         path,
-        status: "Changes apply now. Choose Save to keep them across runs.".into(),
+        status: "Changes apply now except settings marked restart. Choose Save to keep them across runs.".into(),
         stored: RenderingSettings::default(),
         launch_overrides: config.settings_overrides.clone(),
         preserve_unavailable_record_mode: false,
@@ -967,10 +973,11 @@ pub(crate) struct RenderSettingsTargets<'w, 's> {
             &'static mut Tonemapping,
             &'static mut Msaa,
             &'static mut Projection,
+            Ref<'static, StreamingCamera>,
         ),
         With<StreamingCamera>,
     >,
-    reflections: Query<'w, 's, Entity, With<crate::render::WaterReflectionCamera>>,
+    reflections: Query<'w, 's, (Entity, Ref<'static, crate::render::WaterReflectionCamera>)>,
     /// The sun and the "a sun light appeared since the last apply" check need conflicting
     /// access (`&mut DirectionalLight` against that component's change tick), so they share a
     /// `ParamSet`. Every other target's marker is not mutated by this system, so those live in
@@ -1016,6 +1023,23 @@ pub(crate) struct RenderSettingsTargets<'w, 's> {
 /// Interactive runs apply the same default through `apply_render_settings`.
 pub struct RenderSettingsPlugin;
 
+/// The drawing mode selected before this session's views are first extracted. Bevy retains
+/// preprocessing buffers for that mode, so each view keeps it for its lifetime.
+#[derive(Clone, Copy)]
+pub(crate) struct SessionDrawingSettings {
+    indirect_drawing: bool,
+    occlusion_culling: bool,
+}
+
+impl SessionDrawingSettings {
+    fn from_settings(settings: &RenderingSettings) -> Self {
+        Self {
+            indirect_drawing: settings.indirect_drawing,
+            occlusion_culling: settings.occlusion_culling,
+        }
+    }
+}
+
 impl Plugin for RenderSettingsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RenderingSettings>()
@@ -1044,26 +1068,43 @@ fn apply_metal_direct_default(
     adapter: Option<Res<bevy::render::renderer::RenderAdapterInfo>>,
     mut file: ResMut<SettingsFile>,
     mut commands: Commands,
-    world_views: Query<Entity, With<StreamingCamera>>,
-    reflection_views: Query<Entity, With<crate::render::WaterReflectionCamera>>,
+    world_views: Query<(Entity, Ref<StreamingCamera>)>,
+    reflection_views: Query<(Entity, Ref<crate::render::WaterReflectionCamera>)>,
+    mut automatic_direct: Local<Option<bool>>,
 ) {
-    let metal = adapter.is_some_and(|info| info.backend == wgpu::Backend::Metal);
-    if !should_enable_metal_direct_default(&settings, &mut file, metal) {
+    let Some(adapter) = adapter else {
+        return;
+    };
+    let apply = *automatic_direct.get_or_insert_with(|| {
+        let apply = should_enable_metal_direct_default(
+            &settings,
+            &mut file,
+            adapter.backend == wgpu::Backend::Metal,
+        );
+        if apply {
+            settings.indirect_drawing = false;
+            settings.occlusion_culling = false;
+        }
+        apply
+    });
+    if !apply {
         return;
     }
-    settings.indirect_drawing = false;
-    settings.occlusion_culling = false;
-    for entity in &world_views {
-        commands
-            .entity(entity)
-            .insert(NoIndirectDrawing)
-            .remove::<OcclusionCulling>();
+    for (entity, camera) in &world_views {
+        if camera.is_added() {
+            commands
+                .entity(entity)
+                .insert(NoIndirectDrawing)
+                .remove::<OcclusionCulling>();
+        }
     }
-    for entity in &reflection_views {
-        commands
-            .entity(entity)
-            .insert(NoIndirectDrawing)
-            .remove::<OcclusionCulling>();
+    for (entity, camera) in &reflection_views {
+        if camera.is_added() {
+            commands
+                .entity(entity)
+                .insert(NoIndirectDrawing)
+                .remove::<OcclusionCulling>();
+        }
     }
 }
 
@@ -1081,6 +1122,7 @@ pub(crate) fn apply_render_settings(
     mut sky_palette: Option<ResMut<crate::sky::SkyPalette>>,
     mut targets: RenderSettingsTargets,
     mut previous: Local<Option<RenderingSettings>>,
+    mut session_drawing: Local<Option<SessionDrawingSettings>>,
     adapter: Option<Res<RenderAdapter>>,
     adapter_info: Option<Res<bevy::render::renderer::RenderAdapterInfo>>,
     mut file: Option<ResMut<SettingsFile>>,
@@ -1095,6 +1137,8 @@ pub(crate) fn apply_render_settings(
         settings.indirect_drawing = false;
         settings.occlusion_culling = false;
     }
+    let drawing =
+        *session_drawing.get_or_insert_with(|| SessionDrawingSettings::from_settings(&settings));
     // This system writes some of its own inputs (the shown grade values, the MSAA fallback and
     // the engine config), so the resource tick alone cannot mean "a preference changed": compare
     // against the snapshot left by the previous run, and also run when the engine config or the
@@ -1214,7 +1258,9 @@ pub(crate) fn apply_render_settings(
     if settings.config_differs(&config) {
         settings.apply_config(&mut config);
     }
-    for (entity, mut exposure, mut tone_map, mut msaa, mut projection) in &mut targets.cameras {
+    for (entity, mut exposure, mut tone_map, mut msaa, mut projection, camera) in
+        &mut targets.cameras
+    {
         exposure.ev100 = settings.exposure_ev100;
         if tone.mode == crate::tone_mapping::SceneToneMapMode::Tony {
             *tone_map = TONE_MAPS[settings.tone_map];
@@ -1223,11 +1269,11 @@ pub(crate) fn apply_render_settings(
         if let Projection::Perspective(p) = &mut *projection {
             p.fov = settings.fov_degrees.to_radians();
         }
-        apply_camera_features(&mut commands, entity, &settings);
+        apply_camera_features(&mut commands, entity, &settings, drawing, camera.is_added());
     }
-    for entity in &targets.reflections {
+    for (entity, camera) in &targets.reflections {
         commands.entity(entity).insert(MSAA_MODES[settings.msaa]);
-        apply_camera_features(&mut commands, entity, &settings);
+        apply_camera_features(&mut commands, entity, &settings, drawing, camera.is_added());
     }
     for (mut light, mut cascades) in &mut targets.sun.p0() {
         light.illuminance = if settings.sun {
@@ -1318,27 +1364,36 @@ pub(crate) fn apply_render_settings(
     *previous = Some(settings.clone());
 }
 
-fn apply_camera_features(commands: &mut Commands, camera: Entity, settings: &RenderingSettings) {
+fn apply_camera_features(
+    commands: &mut Commands,
+    camera: Entity,
+    settings: &RenderingSettings,
+    drawing: SessionDrawingSettings,
+    added: bool,
+) {
     let mut camera = commands.entity(camera);
     if settings.cpu_frustum_culling {
         camera.remove::<NoCpuCulling>();
     } else {
         camera.insert(NoCpuCulling);
     }
-    if settings.indirect_drawing {
-        camera.remove::<NoIndirectDrawing>();
-    } else {
-        camera.insert(NoIndirectDrawing);
+    if added {
+        if drawing.indirect_drawing {
+            camera.remove::<NoIndirectDrawing>();
+        } else {
+            camera.insert(NoIndirectDrawing);
+        }
+        if drawing.occlusion_culling {
+            camera.insert(OcclusionCulling);
+        } else {
+            camera.remove::<OcclusionCulling>();
+        }
     }
-    if settings.depth_prepass {
+    // Active occlusion retains its required depth prepass until the next start.
+    if settings.depth_prepass || drawing.occlusion_culling {
         camera.insert(DepthPrepass);
     } else {
         camera.remove::<DepthPrepass>();
-    }
-    if settings.occlusion_culling {
-        camera.insert(OcclusionCulling);
-    } else {
-        camera.remove::<OcclusionCulling>();
     }
 }
 
@@ -1420,7 +1475,7 @@ mod tests {
         file.restore_defaults(&mut settings);
         assert_eq!(
             file.status,
-            "Defaults restored for this session. Choose Save to keep them."
+            "Defaults selected. Settings marked restart apply on the next start. Choose Save to keep them."
         );
         file.apply_start_shot(&mut settings, 60.0, (1920, 1080));
         file.restore_defaults(&mut settings);
@@ -1439,7 +1494,7 @@ mod tests {
         file.save(&settings);
         assert_eq!(
             file.status,
-            "Settings saved. IO-thread changes apply after restart."
+            "Settings saved. Drawing, occlusion, visual-profile and IO-thread changes apply after restart."
         );
         file.apply_start_shot(&mut settings, 60.0, (1920, 1080));
         file.save(&settings);
@@ -2587,7 +2642,33 @@ mod tests {
     }
 
     #[test]
-    fn renderer_changes_reach_camera_and_upload_budget_but_io_waits_for_restart() {
+    fn room_culling_defaults_on_for_old_settings_and_persists_the_menu_choice() {
+        let mut settings: RenderingSettings =
+            serde_json::from_value(serde_json::json!({"cpu_frustum_culling":false})).unwrap();
+        assert_eq!(
+            serde_json::to_value(&settings).unwrap()["room_culling"],
+            true
+        );
+        let control = SETTING_SPECS
+            .iter()
+            .find(|setting| setting.label == "Room culling")
+            .unwrap();
+        control.adjust(&mut settings, 1);
+        assert_eq!(control.value_label(&settings), "Off");
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_settings(&path, &settings).unwrap();
+        let restored: RenderingSettings =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&restored).unwrap()["room_culling"],
+            false
+        );
+        assert!(!restored.cpu_frustum_culling);
+    }
+
+    #[test]
+    fn live_renderer_changes_preserve_startup_drawing_and_occlusion_dependencies() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(EngineConfig::default())
@@ -2618,10 +2699,10 @@ mod tests {
             settings.io_threads = 4;
         }
         app.update();
-        assert!(app.world().get::<DepthPrepass>(camera).is_none());
-        assert!(app.world().get::<OcclusionCulling>(camera).is_none());
+        assert!(app.world().get::<DepthPrepass>(camera).is_some());
+        assert!(app.world().get::<OcclusionCulling>(camera).is_some());
         assert!(app.world().get::<NoCpuCulling>(camera).is_some());
-        assert!(app.world().get::<NoIndirectDrawing>(camera).is_some());
+        assert!(app.world().get::<NoIndirectDrawing>(camera).is_none());
         assert_eq!(app.world().get::<Exposure>(camera).unwrap().ev100, 8.5);
         let Projection::Perspective(projection) = app.world().get::<Projection>(camera).unwrap()
         else {
@@ -2677,6 +2758,188 @@ mod tests {
             assert!(app.world().get::<OcclusionCulling>(camera).is_none());
             assert!(app.world().get::<DepthPrepass>(camera).is_some());
         }
+    }
+
+    fn drawing_settings_app(path: &Path) -> App {
+        let mut config = EngineConfig::default();
+        let (settings, file) = prepare_settings_at(&mut config, Some(path.to_owned()));
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(config)
+            .insert_resource(settings)
+            .insert_resource(file)
+            .add_systems(Update, apply_render_settings);
+        app
+    }
+
+    fn spawn_drawing_cameras(app: &mut App) -> [Entity; 2] {
+        let world = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                StreamingCamera,
+                Exposure::default(),
+                Tonemapping::TonyMcMapface,
+                Projection::default(),
+                Msaa::Off,
+                DepthPrepass,
+                OcclusionCulling,
+            ))
+            .id();
+        let reflection = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                crate::render::WaterReflectionCamera,
+                Msaa::Off,
+                DepthPrepass,
+                OcclusionCulling,
+            ))
+            .id();
+        [world, reflection]
+    }
+
+    fn assert_camera_drawing(
+        app: &App,
+        cameras: [Entity; 2],
+        indirect: bool,
+        occlusion: bool,
+        depth: bool,
+    ) {
+        for camera in cameras {
+            assert_eq!(
+                app.world().get::<NoIndirectDrawing>(camera).is_none(),
+                indirect
+            );
+            assert_eq!(
+                app.world().get::<OcclusionCulling>(camera).is_some(),
+                occlusion
+            );
+            assert_eq!(app.world().get::<DepthPrepass>(camera).is_some(), depth);
+        }
+    }
+
+    #[test]
+    fn drawing_toggle_and_save_keep_live_views_and_apply_on_the_next_start() {
+        for label in ["GPU indirect drawing", "GPU occlusion culling"] {
+            for enabled in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let path = directory.path().join("settings.json");
+                let initial = RenderingSettings {
+                    indirect_drawing: enabled,
+                    occlusion_culling: enabled,
+                    ..default()
+                };
+                save_settings(&path, &initial).unwrap();
+                let mut app = drawing_settings_app(&path);
+                let cameras = spawn_drawing_cameras(&mut app);
+                app.update();
+                assert_camera_drawing(&app, cameras, enabled, enabled, true);
+
+                let control = SETTING_SPECS
+                    .iter()
+                    .find(|spec| spec.label.starts_with(label))
+                    .unwrap();
+                control.adjust(
+                    app.world_mut()
+                        .resource_mut::<RenderingSettings>()
+                        .into_inner(),
+                    1,
+                );
+                app.world_mut()
+                    .resource_mut::<SettingsFile>()
+                    .note_drawing_selection();
+                app.update();
+                save_app_settings(&mut app);
+                app.update();
+                let pending = app.world().resource::<RenderingSettings>().clone();
+                let saved: RenderingSettings =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                assert_eq!(saved.indirect_drawing, pending.indirect_drawing);
+                assert_eq!(saved.occlusion_culling, pending.occlusion_culling);
+                assert_camera_drawing(&app, cameras, enabled, enabled, true);
+
+                // Replacement views use the same session mode while saved choices await restart.
+                let later = spawn_drawing_cameras(&mut app);
+                app.update();
+                assert_camera_drawing(&app, later, enabled, enabled, true);
+                assert_camera_drawing(&app, cameras, enabled, enabled, true);
+
+                let mut restarted = drawing_settings_app(&path);
+                let cameras = spawn_drawing_cameras(&mut restarted);
+                restarted.update();
+                assert_camera_drawing(
+                    &restarted,
+                    cameras,
+                    pending.indirect_drawing,
+                    pending.occlusion_culling,
+                    true,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn disabling_depth_prepass_keeps_active_occlusion_valid_until_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_settings(&path, &RenderingSettings::default()).unwrap();
+        let mut app = drawing_settings_app(&path);
+        let cameras = spawn_drawing_cameras(&mut app);
+        app.update();
+        SETTING_SPECS
+            .iter()
+            .find(|spec| spec.label == "Depth prepass")
+            .unwrap()
+            .adjust(
+                app.world_mut()
+                    .resource_mut::<RenderingSettings>()
+                    .into_inner(),
+                1,
+            );
+        app.world_mut()
+            .resource_mut::<SettingsFile>()
+            .note_drawing_selection();
+        app.update();
+        save_app_settings(&mut app);
+        app.update();
+        assert_camera_drawing(&app, cameras, true, true, true);
+        let mut restarted = drawing_settings_app(&path);
+        let cameras = spawn_drawing_cameras(&mut restarted);
+        restarted.update();
+        assert_camera_drawing(&restarted, cameras, true, false, false);
+    }
+
+    #[test]
+    fn restored_drawing_defaults_wait_for_the_next_start() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_settings(
+            &path,
+            &RenderingSettings {
+                indirect_drawing: false,
+                occlusion_culling: false,
+                depth_prepass: false,
+                ..default()
+            },
+        )
+        .unwrap();
+        let mut app = drawing_settings_app(&path);
+        let cameras = spawn_drawing_cameras(&mut app);
+        app.update();
+        let mut settings = app.world().resource::<RenderingSettings>().clone();
+        app.world_mut()
+            .resource_mut::<SettingsFile>()
+            .restore_defaults(&mut settings);
+        app.insert_resource(settings);
+        app.update();
+        save_app_settings(&mut app);
+        app.update();
+        assert_camera_drawing(&app, cameras, false, false, true);
+        let mut restarted = drawing_settings_app(&path);
+        let cameras = spawn_drawing_cameras(&mut restarted);
+        restarted.update();
+        assert_camera_drawing(&restarted, cameras, true, true, true);
     }
 
     #[test]
@@ -2761,6 +3024,10 @@ mod tests {
         }
         let settings = app.world().resource::<RenderingSettings>();
         assert!(!settings.indirect_drawing && !settings.occlusion_culling);
+
+        let later = spawn_drawing_cameras(&mut app);
+        app.update();
+        assert_camera_drawing(&app, later, false, false, true);
     }
 
     #[test]
@@ -2879,7 +3146,7 @@ mod tests {
             .unwrap();
         let occlusion = SETTING_SPECS
             .iter()
-            .find(|spec| spec.label == "GPU occlusion culling")
+            .find(|spec| spec.label == "GPU occlusion culling (restart)")
             .unwrap();
         depth.adjust(&mut settings, 1);
         assert!(!settings.depth_prepass && !settings.occlusion_culling);

@@ -375,7 +375,7 @@ fn menu_actions(
                 if drawing_before != (settings.indirect_drawing, settings.occlusion_culling) {
                     file.note_drawing_selection();
                 }
-                file.status = "Changed for this session. Choose Save to keep settings.".into();
+                file.status = "Changed. Settings marked restart apply on the next start; other changes apply now. Choose Save to keep settings.".into();
             }
             MenuAction::CollisionDebug => {
                 if let Some(debug) = debug.as_deref_mut() {
@@ -704,8 +704,9 @@ fn mouse_sensitivity_slider(
 fn group_note(group: &str) -> Option<&'static str> {
     match group {
         "Culling and drawing" => Some(
-            "Room culling: not available yet (#188). Occlusion culling needs depth prepass \
-             and indirect drawing; enabling it enables both.",
+            "Room culling applies to interiors. Occlusion culling needs depth prepass \
+             and indirect drawing; enabling it enables both. Drawing and occlusion changes \
+             require Save and a restart. Active occlusion keeps depth prepass on until restart.",
         ),
         "Image" => Some(
             "HDR composition stays on. Material colors, texture tiling, and per-water factors \
@@ -1544,21 +1545,28 @@ mod tests {
     #[test]
     fn opening_menu_mid_jump_keeps_the_airborne_state_for_resume() {
         let mut app = menu_app();
-        let body = app
-            .world_mut()
-            .spawn(crate::physics::WalkState {
-                vertical_velocity: 200.0,
-                grounded: false,
-                jump_active: true,
+        let mut flight = crate::physics::WalkState::default();
+        crate::physics::integrate_walk(
+            &mut flight,
+            &crate::physics::WalkIntent {
+                jump_pressed: true,
                 ..default()
-            })
-            .id();
+            },
+            &crate::physics::MovementTuning::default(),
+            crate::physics::PHYSICS_TIMESTEP,
+            crate::physics::ResolvedWalk {
+                y: 0.0,
+                grounded: true,
+            },
+        );
+        let before = flight.vertical_velocity();
+        let body = app.world_mut().spawn(flight).id();
         key(&mut app, KeyCode::Escape, ButtonState::Pressed);
         assert!(app.world().resource::<SettingsMenuState>().open);
         let state = app.world().get::<crate::physics::WalkState>(body).unwrap();
-        assert_eq!(state.vertical_velocity, 200.0);
-        assert!(state.jump_active);
-        assert!(!state.grounded);
+        assert_eq!(state.vertical_velocity(), before);
+        assert!(state.jump_active());
+        assert!(!state.grounded());
     }
 
     /// Closing either menu must release only that menu, regardless of focus acquisition order.

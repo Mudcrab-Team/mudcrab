@@ -15,10 +15,10 @@
 //! | `[Sky]` | `fSunXExtreme`, `fSunYExtreme`, `fSunZExtreme`, `fSunDirXExtreme`, `fSunAlphaTransTime` | explicit sun-path overrides over the pack's GMST (retail exe default for a missing GMST) |
 //! | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2` |
 //! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units |
-//! | `[TerrainManager]` | `fBlockLevel0Distance` | level-4 terrain LOD distance, before the multiplier |
-//! | `[TerrainManager]` | `fBlockLevel1Distance` | level-8 terrain LOD distance, before the multiplier |
-//! | `[TerrainManager]` | `fBlockMaximumDistance` | level-16 terrain LOD distance, before the multiplier |
-//! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD multiplier on the three block distances |
+//! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD split rule: a block of `level` cells splits into its four children under `fSplitDistanceMult` x `level` x 2,048 x sqrt(2) units (34,756 / 69,512 at levels 8 / 16 with 1.5) |
+//! | `[TerrainManager]` | `fBlockMaximumDistance` | outer reach of tier 16, times `fSplitDistanceMult`, until a level-32 tier exists (not a retail terrain cut) |
+//! | `[TerrainManager]` | `fBlockLevel0Distance` | parsed and kept for the object LOD rule (level 8 hands over to level 4); does not affect terrain, so it changes nothing on screen until object LOD lands |
+//! | `[TerrainManager]` | `fBlockLevel1Distance` | parsed and kept for the object LOD rule (level 16 hands over to level 8); does not affect terrain, so it changes nothing on screen until object LOD lands |
 
 use crate::config::{EngineConfig, MAX_STREAM_RADIUS};
 use std::{collections::HashMap, path::Path};
@@ -213,10 +213,12 @@ mod tests {
             ),
             (40_000.0, 80_000.0, 300_000.0, 2.0)
         );
-        // 40000 * 2 / 4096 = 19.5 cells; 80000 * 2 / 4096 = 39.1; 300000 * 2 / 4096 = 146.5.
+        // Query radius: tier 4 = ceil(2 * 8 * 2048 * sqrt(2) / 4096) + 8 = 12 + 8; tier 8 =
+        // ceil(2 * 16 * 2048 * sqrt(2) / 4096) + 16 = 23 + 16; tier 16 = the outer reach,
+        // 300000 * 2 / 4096 = 146.5 cells.
         assert_eq!(
             LodTier::ALL.map(|tier| lod.reach_cells(tier)),
-            [19, 39, 146]
+            [20, 39, 146]
         );
     }
 

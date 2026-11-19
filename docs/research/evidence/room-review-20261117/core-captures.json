@@ -1,0 +1,267 @@
+{
+  "source": "19376d359bd911dfed4e2000cd0a7c28694113df",
+  "binary_sha256": "e6d152f3e2aabf2687df5edf6955d0c5041b2bd599b372e8f5e800ae30097ba8",
+  "capture_backend": "Vulkan",
+  "dimensions": [
+    1400,
+    1050
+  ],
+  "repetitions": 3,
+  "controls": "Same executable, models and textures. Off copy removes the four legacy room tables. Automated shots intentionally ignore interactive preferences; the live setting is verified separately by ECS and persistence tests.",
+  "captures": [
+    {
+      "pose": "BleakFallsBarrow01-portal0-c",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 132,
+      "listed": 132,
+      "image": "BleakFallsBarrow01-portal0-c.png",
+      "sha256": "64d09e31c8c286b1b153112daafcad43195b95dc2ecf17cd49b26a3b64f740c9"
+    },
+    {
+      "pose": "WhiterunDragonsreach-room0-c",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 710,
+      "listed": 710,
+      "image": "WhiterunDragonsreach-room0-c.png",
+      "sha256": "8d70d6921fde3fa864321bcfc3bdde89af08c5e228e191e35111fa17fe7b27d1"
+    },
+    {
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 482,
+      "listed": 920,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "sha256": "2d98bf37c8c23bec63ec2ee0d4de3fa3f214f33582d08883403bb4f490463ac8"
+    },
+    {
+      "pose": "BleakFallsBarrow01-portal0-c",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 132,
+      "listed": 132,
+      "image": "BleakFallsBarrow01-portal0-c.png",
+      "sha256": "64d09e31c8c286b1b153112daafcad43195b95dc2ecf17cd49b26a3b64f740c9"
+    },
+    {
+      "pose": "WhiterunDragonsreach-room0-c",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 710,
+      "listed": 710,
+      "image": "WhiterunDragonsreach-room0-c.png",
+      "sha256": "8d70d6921fde3fa864321bcfc3bdde89af08c5e228e191e35111fa17fe7b27d1"
+    },
+    {
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 920,
+      "listed": 920,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "sha256": "8b844a51f30171c2fb076b25d79b57f437edb2ab90c4c5bd1bb649fce62099c7"
+    },
+    {
+      "pose": "BleakFallsBarrow01-portal0-c",
+      "mode": "off",
+      "repeat": 2,
+      "drawn": 132,
+      "listed": 132,
+      "image": "BleakFallsBarrow01-portal0-c.png",
+      "sha256": "64d09e31c8c286b1b153112daafcad43195b95dc2ecf17cd49b26a3b64f740c9"
+    },
+    {
+      "pose": "WhiterunDragonsreach-room0-c",
+      "mode": "off",
+      "repeat": 2,
+      "drawn": 710,
+      "listed": 710,
+      "image": "WhiterunDragonsreach-room0-c.png",
+      "sha256": "8d70d6921fde3fa864321bcfc3bdde89af08c5e228e191e35111fa17fe7b27d1"
+    },
+    {
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "mode": "off",
+      "repeat": 2,
+      "drawn": 920,
+      "listed": 920,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "sha256": "2d98bf37c8c23bec63ec2ee0d4de3fa3f214f33582d08883403bb4f490463ac8"
+    },
+    {
+      "pose": "BleakFallsBarrow01-portal0-c",
+      "mode": "on",
+      "repeat": 2,
+      "drawn": 132,
+      "listed": 132,
+      "image": "BleakFallsBarrow01-portal0-c.png",
+      "sha256": "64d09e31c8c286b1b153112daafcad43195b95dc2ecf17cd49b26a3b64f740c9"
+    },
+    {
+      "pose": "WhiterunDragonsreach-room0-c",
+      "mode": "on",
+      "repeat": 2,
+      "drawn": 710,
+      "listed": 710,
+      "image": "WhiterunDragonsreach-room0-c.png",
+      "sha256": "8d70d6921fde3fa864321bcfc3bdde89af08c5e228e191e35111fa17fe7b27d1"
+    },
+    {
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "mode": "on",
+      "repeat": 2,
+      "drawn": 482,
+      "listed": 920,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "sha256": "8b844a51f30171c2fb076b25d79b57f437edb2ab90c4c5bd1bb649fce62099c7"
+    },
+    {
+      "pose": "BleakFallsBarrow01-portal0-c",
+      "mode": "on",
+      "repeat": 3,
+      "drawn": 132,
+      "listed": 132,
+      "image": "BleakFallsBarrow01-portal0-c.png",
+      "sha256": "64d09e31c8c286b1b153112daafcad43195b95dc2ecf17cd49b26a3b64f740c9"
+    },
+    {
+      "pose": "WhiterunDragonsreach-room0-c",
+      "mode": "on",
+      "repeat": 3,
+      "drawn": 710,
+      "listed": 710,
+      "image": "WhiterunDragonsreach-room0-c.png",
+      "sha256": "8d70d6921fde3fa864321bcfc3bdde89af08c5e228e191e35111fa17fe7b27d1"
+    },
+    {
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "mode": "on",
+      "repeat": 3,
+      "drawn": 482,
+      "listed": 920,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "sha256": "2d98bf37c8c23bec63ec2ee0d4de3fa3f214f33582d08883403bb4f490463ac8"
+    },
+    {
+      "pose": "BleakFallsBarrow01-portal0-c",
+      "mode": "off",
+      "repeat": 3,
+      "drawn": 132,
+      "listed": 132,
+      "image": "BleakFallsBarrow01-portal0-c.png",
+      "sha256": "64d09e31c8c286b1b153112daafcad43195b95dc2ecf17cd49b26a3b64f740c9"
+    },
+    {
+      "pose": "WhiterunDragonsreach-room0-c",
+      "mode": "off",
+      "repeat": 3,
+      "drawn": 710,
+      "listed": 710,
+      "image": "WhiterunDragonsreach-room0-c.png",
+      "sha256": "8d70d6921fde3fa864321bcfc3bdde89af08c5e228e191e35111fa17fe7b27d1"
+    },
+    {
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "mode": "off",
+      "repeat": 3,
+      "drawn": 920,
+      "listed": 920,
+      "image": "RiftenMercerFreyHouse-room0-c.png",
+      "sha256": "8b844a51f30171c2fb076b25d79b57f437edb2ab90c4c5bd1bb649fce62099c7"
+    }
+  ],
+  "image_comparison": [
+    {
+      "pose": "BleakFallsBarrow01-portal0-c",
+      "threshold_per_channel": 8,
+      "changed_pixels": [
+        0,
+        0,
+        0
+      ],
+      "persistent_stable_changed_pixels": 0,
+      "within_side_changed_pixels": {
+        "on": 0,
+        "off": 0
+      }
+    },
+    {
+      "pose": "RiftenMercerFreyHouse-room0-c",
+      "threshold_per_channel": 8,
+      "changed_pixels": [
+        1,
+        1,
+        1
+      ],
+      "persistent_stable_changed_pixels": 0,
+      "within_side_changed_pixels": {
+        "on": 1,
+        "off": 1
+      }
+    },
+    {
+      "pose": "WhiterunDragonsreach-room0-c",
+      "threshold_per_channel": 8,
+      "changed_pixels": [
+        0,
+        0,
+        0
+      ],
+      "persistent_stable_changed_pixels": 0,
+      "within_side_changed_pixels": {
+        "on": 0,
+        "off": 0
+      }
+    }
+  ],
+  "poses": {
+    "width": 1400,
+    "height": 1050,
+    "shots": [
+      {
+        "name": "BleakFallsBarrow01-portal0-c",
+        "worldspace_id": null,
+        "interior_cell_id": 225758,
+        "position": [
+          1018.55,
+          -4962.72,
+          -2011.23
+        ],
+        "yaw": 260.12,
+        "pitch": 2.13,
+        "hfov": 75.0,
+        "note": "through portal 234056 (234061 -> 234037), eye in room 234061"
+      },
+      {
+        "name": "WhiterunDragonsreach-room0-c",
+        "worldspace_id": null,
+        "interior_cell_id": 91555,
+        "position": [
+          -384.0,
+          1080.0,
+          984.0
+        ],
+        "yaw": 295.39,
+        "pitch": 17.34,
+        "hfov": 75.0,
+        "note": "room 933570 centre, looking at the doorway (portal 933574) into room 933569"
+      },
+      {
+        "name": "RiftenMercerFreyHouse-room0-c",
+        "worldspace_id": null,
+        "interior_cell_id": 228550,
+        "position": [
+          -1234.68,
+          1797.12,
+          -87.11
+        ],
+        "yaw": 265.74,
+        "pitch": -11.23,
+        "hfov": 75.0,
+        "note": "room 347646 centre, looking at the doorway (portal 347651) into room 347647"
+      }
+    ]
+  }
+}

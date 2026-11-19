@@ -1,4 +1,5 @@
 use crate::{
+    app::AcceptanceCapture,
     config::EngineConfig,
     fingerprint::{RunFingerprint, records_measurements},
     frame_budget::{FrameBudgetReport, FrameSides, ScoredFrame, attribute},
@@ -50,6 +51,7 @@ impl Plugin for AcceptanceMetricsPlugin {
     /// Install benchmark collection and enable frame tracing when profile output is configured.
     fn build(&self, app: &mut App) {
         app.init_resource::<BenchmarkSamples>()
+            .init_resource::<AcceptanceCapture>()
             .add_plugins((
                 EntityCountDiagnosticsPlugin::default(),
                 SystemInformationDiagnosticsPlugin,
@@ -460,6 +462,10 @@ struct Thresholds {
     minimum_average_fps: f64,
     maximum_p95_frame_ms: f64,
     maximum_memory_growth_gib: f64,
+    /// `--accept-frame-pass-bar` was given: the frame-budget bar decides the run.
+    frame_pass_bar_required: bool,
+    /// The frame-budget window met the bar (99.9% within budget, none over twice it).
+    frame_pass_bar_met: bool,
     no_streaming_failures: bool,
     commit_budget_respected: bool,
     streaming_lifecycle_validated: bool,
@@ -471,6 +477,7 @@ struct Thresholds {
 /// grouped so that `collect_and_finish` stays within Bevy's system-parameter limit.
 #[derive(SystemParam)]
 struct MeasurementInputs<'w> {
+    capture: Res<'w, AcceptanceCapture>,
     fingerprint: Option<Res<'w, RunFingerprint>>,
     render_measurement_probe: Option<Res<'w, RenderMeasurementProbe>>,
     meshes: Res<'w, Assets<Mesh>>,
@@ -582,10 +589,7 @@ fn collect_and_finish(
         samples.measurement_complete = true;
         render_timings.set_recording(false);
     }
-    let screenshot_captured = config
-        .acceptance_screenshot
-        .as_ref()
-        .is_none_or(|path| path.is_file());
+    let screenshot_captured = measurements.capture.ready(&config);
     if !screenshot_captured {
         let waiting_since = samples
             .screenshot_wait_started
@@ -649,8 +653,23 @@ fn collect_and_finish(
         .first_process_memory_gib
         .zip(samples.last_process_memory_gib)
         .map(|(first, last)| (last - first).max(0.0));
+    // The frame-budget bar is computed before the verdict because the opt-in gate reads it. The
+    // window is the measured frames; a route run scores the route, as it does for the report.
+    let frame_budget = FrameBudgetReport::from_frames(
+        config.frame_budget_ms,
+        if route.is_some() || measurements.file_route.is_some() {
+            "route window: the frames from the first full frame on the route to the end of the measured window"
+        } else {
+            "measured window: every frame after the warm-up"
+        },
+        &samples.ledger.scored,
+    );
+    // Off by default. `None` (no scored frame) cannot meet the bar, so with the flag a run that
+    // scored no frame fails even when the frame rate limit is 0.
+    let frame_pass_bar_met = frame_budget.meets_pass_bar == Some(true);
     let passed = average_fps >= config.accept_min_fps
         && p95 <= config.accept_p95_ms
+        && (!config.accept_frame_pass_bar || frame_pass_bar_met)
         && memory_growth_gib.is_none_or(|growth| growth <= config.accept_max_memory_growth_gib)
         && no_streaming_failures
         && commit_budget_respected
@@ -688,15 +707,6 @@ fn collect_and_finish(
         core_count: value.core_count.clone(),
         memory: value.memory.clone(),
     });
-    let frame_budget = FrameBudgetReport::from_frames(
-        config.frame_budget_ms,
-        if route.is_some() || measurements.file_route.is_some() {
-            "route window: the frames from the first full frame on the route to the end of the measured window"
-        } else {
-            "measured window: every frame after the warm-up"
-        },
-        &samples.ledger.scored,
-    );
     let report = BenchmarkReport {
         format_version: 11,
         generated_unix_ms: SystemTime::now()
@@ -769,6 +779,8 @@ fn collect_and_finish(
             minimum_average_fps: config.accept_min_fps,
             maximum_p95_frame_ms: config.accept_p95_ms,
             maximum_memory_growth_gib: config.accept_max_memory_growth_gib,
+            frame_pass_bar_required: config.accept_frame_pass_bar,
+            frame_pass_bar_met,
             no_streaming_failures,
             commit_budget_respected,
             streaming_lifecycle_validated,
@@ -865,6 +877,7 @@ fn record_frame_ledger(
     render_timings: Res<RenderTimings>,
     streaming: Option<Res<StreamingMetrics>>,
     route: Option<Res<RouteRunner>>,
+    streaming_route: Option<Res<crate::app::StreamingBenchmarkRoute>>,
     mut samples: ResMut<BenchmarkSamples>,
 ) {
     if samples.finished || samples.measurement_complete || !config.is_benchmark_run() {
@@ -884,7 +897,7 @@ fn record_frame_ledger(
     let scored = frame_is_scored(
         ledger.frames_seen,
         config.benchmark_warmup_frames,
-        route.as_deref().map(RouteRunner::scoring),
+        route_scoring(streaming_route.as_deref(), route.as_deref()),
     );
     let milliseconds = real_time.delta_secs_f64() * 1000.0;
     if scored && milliseconds.is_finite() && milliseconds > 0.0 {
@@ -903,6 +916,21 @@ fn record_frame_ledger(
         });
     }
     ledger.previous_upload_ms = commit_ms;
+}
+
+/// Whether the route the run follows is scoring this frame, or `None` when the run has no route.
+/// A streaming route scores only its measured window (`route_window`), the same frames the
+/// summary measures: the waiting for the world and the moving tail are not scored, so a loading
+/// hitch there cannot fail the frame budget. A file route scores its own frames.
+fn route_scoring(
+    streaming: Option<&crate::app::StreamingBenchmarkRoute>,
+    file: Option<&RouteRunner>,
+) -> Option<bool> {
+    match (streaming, file) {
+        (Some(route), _) => Some(route_window(route) == BenchmarkWindow::Measured),
+        (None, Some(file)) => Some(file.scoring()),
+        (None, None) => None,
+    }
 }
 
 /// Whether a frame belongs to the frame budget's window. A run with no route scores the frames
@@ -1426,6 +1454,76 @@ mod tests {
         assert_eq!(snapshot.movement_started_elapsed_ms, Some(7000.0));
     }
 
+    /// A streaming route scores only its measured window. A 40 ms frame while the route waits for
+    /// the world or in its moving tail is not scored, so it cannot fail `--accept-frame-pass-bar`;
+    /// the same frame while the route moves is scored and misses the bar.
+    #[test]
+    fn a_streaming_route_scores_only_its_measured_window() {
+        use crate::{
+            app::{StreamingBenchmarkPhase, StreamingBenchmarkRoute},
+            frame_budget::{FrameBudgetReport, ScoredFrame},
+            profiling::ProfilingPlugin,
+        };
+        use bevy::time::TimeUpdateStrategy;
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(EngineConfig {
+                streaming_benchmark_route_speed: Some(370.0),
+                accept_frame_pass_bar: true,
+                benchmark_output: directory.path().join("report.json"),
+                profile_output_dir: Some(directory.path().join("profile")),
+                ..default()
+            })
+            .insert_resource(StreamingBenchmarkRoute::default())
+            .insert_resource(TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(40),
+            ))
+            .init_resource::<DiagnosticsStore>()
+            .init_resource::<RendererMetrics>()
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<Image>>()
+            .add_plugins((AcceptanceMetricsPlugin, ProfilingPlugin));
+        let scored = |app: &App| {
+            app.world()
+                .resource::<BenchmarkSamples>()
+                .ledger
+                .scored
+                .clone()
+        };
+        let bar = |frames: &[ScoredFrame]| {
+            FrameBudgetReport::from_frames(6.25, "test window", frames).meets_pass_bar
+        };
+
+        // Waiting for the world: 40 ms frames are loading, not the route.
+        app.update();
+        app.update();
+        assert!(scored(&app).is_empty(), "waiting frames are not scored");
+        assert_eq!(bar(&scored(&app)), None, "no window, no verdict");
+
+        // Moving: the same frame belongs to the window and misses the 6.25 ms bar.
+        {
+            let mut route = app.world_mut().resource_mut::<StreamingBenchmarkRoute>();
+            route.phase = StreamingBenchmarkPhase::Moving;
+            route.movement_started_real_seconds = Some(1.0);
+        }
+        app.update();
+        let moving = scored(&app);
+        assert_eq!(moving.len(), 1, "the moving frame is scored");
+        assert!((moving[0].ms - 40.0).abs() < 1.0, "{}", moving[0].ms);
+        assert_eq!(bar(&moving), Some(false));
+
+        // Moving tail: scoring stops again, and the window keeps its single frame.
+        {
+            let mut route = app.world_mut().resource_mut::<StreamingBenchmarkRoute>();
+            route.phase = StreamingBenchmarkPhase::Tail;
+            route.movement_finished_real_seconds = Some(5.0);
+        }
+        app.update();
+        assert_eq!(scored(&app).len(), 1, "tail frames are not scored");
+    }
+
     /// Verify trace frame ordering across all benchmark windows with GPU inventory on and off.
     #[test]
     fn trace_keeps_warmup_and_capture_settlement_on_one_frame_clock() {
@@ -1507,7 +1605,7 @@ mod tests {
         assert!(benchmark.measurement_complete);
         assert!(!benchmark.finished);
 
-        std::fs::write(directory.path().join("pending.png"), []).unwrap();
+        deliver_acceptance_screenshot(&mut app, &directory.path().join("pending.png"));
         app.update();
         let saved: serde_json::Value = serde_json::from_slice(
             &std::fs::read(directory.path().join("profile/streaming-frames.json")).unwrap(),
@@ -1895,6 +1993,7 @@ mod tests {
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<Image>>()
             .insert_resource(ProfilingState::default())
+            .init_resource::<AcceptanceCapture>()
             .add_systems(Update, collect_and_finish);
         app
     }
@@ -1904,52 +2003,142 @@ mod tests {
         serde_json::from_str(&report).unwrap()
     }
 
-    /// A missing acceptance screenshot fails the run once the 10-second wait is past, instead of
-    /// passing on it or hanging; the same run with the PNG written passes. The wait is seeded past
-    /// rather than slept through.
+    fn deliver_acceptance_screenshot(app: &mut App, path: &std::path::Path) {
+        use bevy::render::view::screenshot::ScreenshotCaptured;
+
+        let world = app.world_mut();
+        let request = world
+            .spawn_empty()
+            .observe(crate::app::save_acceptance_screenshot(path.to_owned()))
+            .id();
+        world.trigger(ScreenshotCaptured {
+            entity: request,
+            image: Image::default(),
+        });
+    }
+
     #[test]
-    fn the_screenshot_wait_fails_a_missing_capture_instead_of_passing_it() {
+    fn acceptance_report_waits_for_its_own_screenshot_write() {
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("acceptance.png");
+        fs::write(&path, b"previous run").unwrap();
+        let mut app = acceptance_report_app(directory.path(), Some(&path), Duration::ZERO);
+        app.update();
+        assert!(!directory.path().join("benchmark-report.json").exists());
+        assert_eq!(fs::read(&path).unwrap(), b"previous run");
+
+        deliver_acceptance_screenshot(&mut app, &path);
+        app.update();
+        assert!(image::open(&path).is_ok());
+        let report = written_report(directory.path());
+        assert_eq!(report["thresholds"]["screenshot_captured"], true);
+        assert_eq!(report["passed"], true);
+    }
+
+    #[test]
+    fn acceptance_report_fails_when_the_capture_times_out() {
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("acceptance.unsupported");
+        for stale in [false, true] {
+            if stale {
+                fs::write(&path, b"previous run").unwrap();
+            }
+            let mut app =
+                acceptance_report_app(directory.path(), Some(&path), Duration::from_secs(11));
+            if stale {
+                // The renderer delivers the image, but this destination cannot be encoded.
+                deliver_acceptance_screenshot(&mut app, &path);
+                assert_eq!(fs::read(&path).unwrap(), b"previous run");
+            }
+            app.update();
+            assert_eq!(app.should_exit(), Some(AppExit::error()));
+            let report = written_report(directory.path());
+            assert_eq!(report["thresholds"]["screenshot_captured"], false);
+            assert_eq!(report["passed"], false);
+        }
+    }
+
+    #[test]
+    fn failed_screenshot_write_fails_the_report() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("acceptance.png");
+        fs::create_dir(&path).unwrap();
+        let mut app = acceptance_report_app(
+            directory.path(),
+            Some(&path),
+            std::time::Duration::from_secs(11),
+        );
+        deliver_acceptance_screenshot(&mut app, &path);
+        assert!(path.is_dir());
+        assert!(!matches!(
+            *app.world().resource::<AcceptanceCapture>(),
+            AcceptanceCapture::Saved
+        ));
+        app.update();
+        assert_eq!(app.should_exit(), Some(AppExit::error()));
+        let report = written_report(directory.path());
+        assert_eq!(report["thresholds"]["screenshot_captured"], false);
+        assert_eq!(report["passed"], false);
+    }
+
+    /// `--accept-frame-pass-bar` is off by default, so a 40 ms hitch is reported and does not fail
+    /// the run. With the flag the same window misses the bar (one frame over twice the 6.25 ms
+    /// budget) and the run fails, with the gate named in the report.
+    #[test]
+    fn the_frame_pass_bar_flag_fails_a_run_with_one_hitch() {
+        use crate::frame_budget::{FrameOwner, ScoredFrame};
         use bevy::app::AppExit;
         use bevy::ecs::message::Messages;
         use std::time::Duration;
 
-        let directory = tempfile::tempdir().unwrap();
-        let missing = directory.path().join("acceptance.png");
+        let run = |required: bool| {
+            let directory = tempfile::tempdir().unwrap();
+            let mut app = acceptance_report_app(directory.path(), None, Duration::ZERO);
+            {
+                let mut config = app.world_mut().resource_mut::<EngineConfig>();
+                config.accept_frame_pass_bar = required;
+                // Widen p95 so the hitch is judged by the pass bar alone, not by two gates.
+                config.accept_p95_ms = 100.0;
+            }
+            app.world_mut()
+                .resource_mut::<BenchmarkSamples>()
+                .ledger
+                .scored
+                .push(ScoredFrame {
+                    ms: 40.0,
+                    owner: FrameOwner::MainWorld,
+                    wait_ms: None,
+                });
+            app.update();
+            let exits: Vec<AppExit> = app
+                .world()
+                .resource::<Messages<AppExit>>()
+                .iter_current_update_messages()
+                .cloned()
+                .collect();
+            let report = written_report(directory.path());
+            (exits, report, directory)
+        };
 
-        // The wait has only just started: the run waits for the screenshot instead of finishing.
-        let mut waiting = acceptance_report_app(directory.path(), Some(&missing), Duration::ZERO);
-        waiting.update();
-        assert!(!waiting.world().resource::<BenchmarkSamples>().finished);
-        assert!(!directory.path().join("benchmark-report.json").exists());
+        let (exits, report, _directory) = run(false);
+        assert_eq!(report["thresholds"]["frame_pass_bar_required"], false);
+        assert_eq!(report["thresholds"]["frame_pass_bar_met"], false);
+        assert_eq!(report["frame_budget"]["meets_pass_bar"], false);
+        assert_eq!(report["passed"], true, "the bar is advisory unless asked");
+        assert_eq!(exits, vec![AppExit::Success], "a pass exits successfully");
 
-        // Past the wait: the run finishes with the screenshot gate failed, and says so.
-        let mut expired =
-            acceptance_report_app(directory.path(), Some(&missing), Duration::from_secs(11));
-        expired.update();
-        assert!(expired.world().resource::<BenchmarkSamples>().finished);
-        let exits: Vec<AppExit> = expired
-            .world()
-            .resource::<Messages<AppExit>>()
-            .iter_current_update_messages()
-            .cloned()
-            .collect();
+        let (exits, report, _directory) = run(true);
+        assert_eq!(report["thresholds"]["frame_pass_bar_required"], true);
+        assert_eq!(report["thresholds"]["frame_pass_bar_met"], false);
         assert_eq!(
-            exits,
-            vec![AppExit::error()],
-            "a missing screenshot fails the run"
+            report["passed"], false,
+            "a 40 ms frame misses the 6.25 ms bar"
         );
-        let report = written_report(directory.path());
-        assert_eq!(report["thresholds"]["screenshot_captured"], false);
-        assert_eq!(report["passed"], false);
-
-        // The screenshot the capture system queues is what that gate reads: write it and the same
-        // run passes without waiting at all.
-        fs::write(&missing, b"png").unwrap();
-        let mut captured = acceptance_report_app(directory.path(), Some(&missing), Duration::ZERO);
-        captured.update();
-        let report = written_report(directory.path());
-        assert_eq!(report["thresholds"]["screenshot_captured"], true);
-        assert_eq!(report["passed"], true);
+        assert_eq!(exits, vec![AppExit::error()]);
     }
 
     /// A report that cannot be written fails the run even when every measured threshold passed.
