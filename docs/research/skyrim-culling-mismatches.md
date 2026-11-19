@@ -1,8 +1,8 @@
 # Web and foliage culling mismatches
 
 The original-game comparison exposed two confirmed causes of overdraw: missing source bounds
-for foliage and effect-node hierarchies, and blanket activator exemptions. The fixes remove the
-distant webs and ferns while retaining them in matched close-up controls.
+for foliage and effect-node hierarchies, and blanket activator exemptions. The first fixes removed
+distant webs and ferns in the captures while retaining them in matched close-up controls.
 
 The [machine-readable report](room-culling-mismatches-20261115.json) records native bounds,
 reference identities, source fingerprints, repeated render receipts, and checks. The local evidence
@@ -42,10 +42,10 @@ The conspicuous white web in the distant Bleak Falls Barrow view includes activa
 every declared skin.
 
 Activators now use the same supported, moving-root assignment policy as loose objects. Legacy
-graphs retain their exemption. Self-contained skins can retain initial source spheres when their
-raw physics data is fixed. External or unresolved rigs, simulated/keyframed skin bodies,
-constraints, unknown bound hierarchies, and independently moving children keep the conservative
-fallback. Actors and animated doors retain their separate exemptions.
+graphs retain their exemption. Self-contained skins can retain source spheres when their bones
+have a fixed pose. External or unresolved rigs, simulated or keyframed skin bodies, animated
+skin bones, constraints, and unknown bound hierarchies keep the conservative fallback. Actors
+and animated doors retain their separate exemptions.
 
 The physics check reads original rigid-body fields independently of collision export. At capture
 time, the web door's motion system 5, quality 0, and mass 0 were classified as fixed. Its collision
@@ -59,10 +59,22 @@ and the fixed-pose gate. Replacing a loose NIF after that read cannot authorize 
 different geometry. The gate rejects keyframed bodies independently of mass and quality. A
 mesh-output contract invalidates assignment metadata produced before these corrections.
 
-Nine skinned web references across the door and round-wall models match live native spheres
-within 0.000143 Creation units. The web-door model radius is 241.229568, including the native
-scale of each placement. Physics-deformed corpse models differ substantially from their source
-poses and deliberately receive no source-sphere assignment metadata.
+At the captured poses, nine skinned web references across the door and round-wall models
+matched live native spheres within 0.000143 Creation units. The web-door model radius was
+241.229568, including the native scale of each placement. Physics-deformed corpse models
+differ substantially from their source poses and receive no source-sphere assignment metadata.
+
+The retail activator `FXcobwebRoundWall01ACT` (base form `0001EEB9`) has placements
+in Bleak Falls Temple, Cronvangr Broodlair, and Honningbrew Basement. Its model,
+`Effects/FXcobwebRoundWall01.nif`, has SHA-256
+`467aedb10d5c8913f463de55df50be9dc07e64692119734ca1ba00c4fa9a55de`.
+Its root controller manager (block 3) lists the `partB` and `partA` sequences (blocks 5
+and 13). Both target `bone01` by name through a `NiMultiTargetTransformController`
+(block 4). The object palette maps that name to node 24. Both `NiSkinInstance` blocks
+(28 and 34) reference node 24 and have positive weights for it in their `NiSkinData`
+(42 and 34 entries, respectively). The sequences supply translation keys for that bone.
+The converter now omits `mudcrabRoomSphere` for the animated skin, so its placements use
+conservative drawing. The captured sphere matches describe the sampled poses.
 
 ## Rendered verification
 
@@ -103,11 +115,11 @@ targets and features with warnings denied, passed.
 
 ## Later converter recheck
 
-A fresh conversion of all 989 captured source NIFs succeeds after the leaf-export and
-ordered-node loader fixes. The comparison uses the exact extracted source bytes and verifies
-the captured GLB hashes before conversion. It finds 631 changed GLB hashes. Every model retains
-identical vertex and index binary data, primitive geometry, drawable transform paths, and
-drawable instance, primitive, and triangle counts.
+All 989 captured source NIFs converted after the leaf-export and
+ordered-node loader fixes at `3abaeb8eb03a312a5c2fe4f50b25f25695badac8`. The
+comparison used the exact extracted source bytes and verified the captured GLB hashes before
+conversion. It found 631 changed GLB hashes. Every model retained identical vertex and index data,
+primitive geometry, drawable transform paths, and drawable instance, primitive, and triangle counts.
 
 The byte differences have three causes, with overlap between the first two groups:
 
@@ -124,6 +136,28 @@ The 16 leaf models retain 7,903 triangles in total. A nested-leaf regression ver
 transforms and geometry, but this corpus contains only leaf roots. The fresh model comparison
 does not rerun the historical images or establish current web-door culling behavior. Native
 classification of its animated pose remains unresolved.
+
+The original `mesh-hash-check.json` has SHA-256
+`2187eb0236c32ab16b23190d83efc1fb436c178f15d4b8d688154b4d823e6379`.
+Set `CORPUS_WORKTREE` to a clean checkout of the recorded commit. Set
+`CAPTURE_DIR` to the private capture directory with `room-assignment-nifs/meshes`,
+`assets/meshes`, and `captured-mesh-hashes.json`. Set `SOURCE_INVENTORY` to the review's
+`source-inventory.json` and `CORPUS_OUTPUT` to a fresh directory path. Run the
+comparison script from this repository:
+
+```sh
+python3 docs/research/evidence/room-culling-corpus-20261118/check-mesh-corpus.py \
+    --worktree "$CORPUS_WORKTREE" \
+    --sources "$CAPTURE_DIR/room-assignment-nifs" \
+    --captured-assets "$CAPTURE_DIR/assets" \
+    --captured-hashes "$CAPTURE_DIR/captured-mesh-hashes.json" \
+    --source-inventory "$SOURCE_INVENTORY" \
+    --output "$CORPUS_OUTPUT"
+```
+
+The script verifies both manifest digests and every input hash. It writes the same comparison
+fields as the original receipt, including the converter command. The recorded paths vary with
+the checkout and output directory.
 
 ## Remaining differences
 

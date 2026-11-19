@@ -10,7 +10,7 @@ use color_eyre::{
 };
 use nom_derive::Parse;
 use project_wormhole_nif::{
-    nif_block::{NiAVObject, NifBlock},
+    nif_block::{NiAVObject, NiTimeController, NifBlock},
     nif_file::NifFile,
 };
 use project_wormhole_shared::glam::{Mat3, Mat4, Quat, Vec3};
@@ -21,7 +21,7 @@ use shared::{
     },
     coordinates::creation_to_runtime_vector,
 };
-use std::{fs, path::Path};
+use std::{collections::HashSet, fs, path::Path};
 
 const HAVOK_TO_CREATION: f32 = 70.0;
 const MAX_VERTICES: usize = 1_000_000;
@@ -36,10 +36,45 @@ struct Block<'a> {
     bytes: &'a [u8],
 }
 
-/// Skin bounds must not assume a bind pose for independently simulated bones. Read dynamics
-/// independently of collision-layer/shape filtering: an unexported collider can still move a native bone.
-pub(crate) fn skin_pose_is_fixed(path: &Path, bytes: &[u8]) -> Result<bool> {
+/// A skin can use a bind-pose bound only if its bones have no independent motion.
+pub(crate) fn skin_pose_is_fixed(path: &Path, bytes: &[u8], blocks: &[NifBlock]) -> Result<bool> {
     let (mut data, header) = crate::mesh::parse_skyrim_header(bytes, path)?;
+    // A skin's joint list can include unused bones. Treat each entry as potentially weighted
+    // because Skyrim can store the influences in the geometry or skin partition.
+    let bone_blocks: HashSet<_> = blocks
+        .iter()
+        .flat_map(|block| match block {
+            NifBlock::NiSkinInstance(skin) => skin.bones.as_slice(),
+            NifBlock::BsDismemberSkinInstance(skin) => skin.skin_instance.bones.as_slice(),
+            NifBlock::BSSkinInstance(skin) => skin.bones.as_slice(),
+            _ => &[],
+        })
+        .copied()
+        .filter(|&index| index != u32::MAX)
+        .collect();
+    let string = |index: u32| {
+        header
+            .strings
+            .get(index as usize)
+            .map(|name| name.0.as_str())
+    };
+    let mut bone_names: HashSet<_> = bone_blocks
+        .iter()
+        .filter_map(|&index| blocks.get(index as usize)?.as_node().ok())
+        .filter_map(|node| string(node.av.object.name))
+        .collect();
+    for block in blocks {
+        if let NifBlock::NiDefaultAVObjectPalette(palette) = block {
+            bone_names.extend(
+                palette
+                    .objs
+                    .iter()
+                    .filter(|entry| bone_blocks.contains(&entry.index))
+                    .map(|entry| entry.name.0.as_str()),
+            );
+        }
+    }
+
     for index in 0..header.block_count as usize {
         let size = header.block_size_index[index] as usize;
         let (raw, remaining) = data
@@ -49,6 +84,38 @@ pub(crate) fn skin_pose_is_fixed(path: &Path, bytes: &[u8]) -> Result<bool> {
         let kind = header
             .get_block_type(index)
             .map_err(|_| color_eyre::eyre::eyre!("invalid NIF block type"))?;
+        if !bone_blocks.is_empty() {
+            let moves_bone = match (kind, blocks.get(index)) {
+                ("NiTransformController" | "NiKeyframeController", _) => {
+                    NiTimeController::parse(raw)
+                        .ok()
+                        .is_none_or(|(_, controller)| bone_blocks.contains(&controller.target))
+                }
+                (_, Some(NifBlock::NiMultiTargetTransformController(controller))) => {
+                    bone_blocks.contains(&controller.parent.target)
+                        || controller
+                            .extra_targets
+                            .iter()
+                            .any(|target| bone_blocks.contains(target))
+                }
+                // A manager can supply a target by name even when the multi-target slot is null.
+                (_, Some(NifBlock::NiControllerSequence(sequence))) => {
+                    sequence.parent.controlled_blocks.iter().any(|track| {
+                        matches!(
+                            string(track.controller_type),
+                            Some("NiTransformController" | "NiKeyframeController")
+                        ) && string(track.node_name).is_some_and(|name| bone_names.contains(name))
+                    })
+                }
+                ("NiMultiTargetTransformController" | "NiControllerSequence", _) => true,
+                _ => false,
+            };
+            if moves_bone {
+                return Ok(false);
+            }
+        }
+
+        // Read dynamics independently of collision filtering because an unexported body can move a bone.
         if kind.ends_with("Constraint") || kind == "bhkRagdollSystem" {
             return Ok(false);
         }
@@ -1468,7 +1535,7 @@ mod tests {
             bytes[offset + BODY_MASS..offset + BODY_MASS + 4]
                 .copy_from_slice(&0.0f32.to_le_bytes());
         }
-        assert!(skin_pose_is_fixed(&path, &bytes).unwrap());
+        assert!(skin_pose_is_fixed(&path, &bytes, &[]).unwrap());
         let offset = bodies[0];
         for motion in SIMULATED_MOTION_SYSTEMS {
             for mass in [0.0f32, 5.0] {
@@ -1476,7 +1543,7 @@ mod tests {
                 bytes[offset + BODY_MASS..offset + BODY_MASS + 4]
                     .copy_from_slice(&mass.to_le_bytes());
                 assert!(
-                    !skin_pose_is_fixed(&path, &bytes).unwrap(),
+                    !skin_pose_is_fixed(&path, &bytes, &[]).unwrap(),
                     "motion={motion}, automatic quality, mass={mass}"
                 );
             }
@@ -1488,7 +1555,7 @@ mod tests {
                 bytes[offset + BODY_MASS..offset + BODY_MASS + 4]
                     .copy_from_slice(&mass.to_le_bytes());
                 assert!(
-                    !skin_pose_is_fixed(&path, &bytes).unwrap(),
+                    !skin_pose_is_fixed(&path, &bytes, &[]).unwrap(),
                     "keyframed mass={mass}, quality={quality}"
                 );
             }
@@ -1509,12 +1576,12 @@ mod tests {
             bytes[offset + BODY_MASS..offset + BODY_MASS + 4]
                 .copy_from_slice(&0.0f32.to_le_bytes());
         }
-        assert!(skin_pose_is_fixed(&path, &bytes).unwrap());
+        assert!(skin_pose_is_fixed(&path, &bytes, &[]).unwrap());
         let offset = bodies[0];
         bytes[offset + BODY_MOTION_SYSTEM] = 5;
         bytes[offset + BODY_QUALITY_TYPE] = 4;
         bytes[offset + BODY_MASS..offset + BODY_MASS + 4].copy_from_slice(&5.0f32.to_le_bytes());
-        assert!(!skin_pose_is_fixed(&path, &bytes).unwrap());
+        assert!(!skin_pose_is_fixed(&path, &bytes, &[]).unwrap());
     }
 
     #[test]
@@ -1527,8 +1594,8 @@ mod tests {
             fixed[offset + BODY_MOTION_SYSTEM] = 7;
         }
         fs::write(&path, &fixed).unwrap();
-        assert!(!skin_pose_is_fixed(&path, &moving).unwrap());
-        assert!(skin_pose_is_fixed(&path, &fs::read(&path).unwrap()).unwrap());
+        assert!(!skin_pose_is_fixed(&path, &moving, &[]).unwrap());
+        assert!(skin_pose_is_fixed(&path, &fs::read(&path).unwrap(), &[]).unwrap());
     }
 
     fn rigid_body_offsets(bytes: &[u8], path: &Path) -> Vec<usize> {

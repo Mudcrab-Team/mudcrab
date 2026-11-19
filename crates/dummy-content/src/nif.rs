@@ -314,6 +314,21 @@ pub fn legacy_skinned_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
     legacy_skinned_shape_with(spec, LegacyShapeKind::Plain, false, SkinNormals::Authored)
 }
 
+/// Generates a legacy skin with a named transform track on a root controller chain.
+pub fn legacy_skinned_shape_with_transform_track(
+    spec: &LegacySkin<'_>,
+    target_bone: bool,
+) -> Result<Vec<u8>> {
+    legacy_skinned_shape_with_shader(
+        spec,
+        LegacyShapeKind::Plain,
+        false,
+        SkinNormals::Authored,
+        false,
+        Some(target_bone),
+    )
+}
+
 /// Like [`legacy_skinned_shape`], with the shading normals supplied as `normals` says.
 pub fn legacy_skinned_shape_with_normals(
     spec: &LegacySkin<'_>,
@@ -468,6 +483,7 @@ pub fn legacy_skin_tint_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
         false,
         SkinNormals::ModelSpaceMap,
         true,
+        None,
     )
 }
 
@@ -477,7 +493,7 @@ fn legacy_skinned_shape_with(
     nested: bool,
     normals: SkinNormals,
 ) -> Result<Vec<u8>> {
-    legacy_skinned_shape_with_shader(spec, kind, nested, normals, false)
+    legacy_skinned_shape_with_shader(spec, kind, nested, normals, false, None)
 }
 
 fn legacy_skinned_shape_with_shader(
@@ -486,6 +502,7 @@ fn legacy_skinned_shape_with_shader(
     nested: bool,
     normals: SkinNormals,
     skin_tint: bool,
+    transform_track_targets_bone: Option<bool>,
 ) -> Result<Vec<u8>> {
     validate_skin(spec)?;
 
@@ -632,6 +649,100 @@ fn legacy_skinned_shape_with_shader(
         "textures/generated_skin_n.dds",
     )?);
     block_types.push("BSShaderTextureSet");
+
+    if let Some(target_bone) = transform_track_targets_bone {
+        let manager_index = u32::try_from(blocks.len())?;
+        blocks[0][..4].copy_from_slice(&0u32.to_le_bytes()); // named scene root
+        blocks[0][8..12].copy_from_slice(&manager_index.to_le_bytes());
+        let controller_index = manager_index + 1;
+        let sequence_index = manager_index + 2;
+        let palette_index = manager_index + 3;
+        let interpolator_index = manager_index + 4;
+        let data_index = manager_index + 5;
+        let target_name_index = if target_bone { 1 } else { 0 };
+        let target_block_index = if target_bone { bone0 } else { 0 };
+        strings.extend(["NiTransformController", "FixtureSequence"]);
+
+        let time_controller = |next, flags| {
+            let mut bytes = Vec::new();
+            push_u32(&mut bytes, next);
+            push_u16(&mut bytes, flags);
+            for value in [1.0, 0.0, 0.0, 1.0] {
+                push_f32(&mut bytes, value);
+            }
+            push_u32(&mut bytes, 0);
+            bytes
+        };
+
+        let mut manager = time_controller(controller_index, 0x4c);
+        manager.push(0);
+        for value in [1, sequence_index, palette_index] {
+            push_u32(&mut manager, value);
+        }
+
+        let mut controller = time_controller(NULL_REF, 0x6c);
+        push_u16(&mut controller, 2);
+        push_u32(&mut controller, NULL_REF);
+        push_u32(&mut controller, NULL_REF);
+
+        let mut sequence = Vec::new();
+        for value in [4, 1, 1, interpolator_index, controller_index] {
+            push_u32(&mut sequence, value);
+        }
+        sequence.push(0); // track priority
+        for value in [target_name_index, NULL_REF, 3, NULL_REF, NULL_REF] {
+            push_u32(&mut sequence, value);
+        }
+        push_f32(&mut sequence, 1.0); // weight
+        push_u32(&mut sequence, NULL_REF); // text keys
+        push_u32(&mut sequence, 0); // loop
+        for value in [1.0, 0.0, 1.0] {
+            push_f32(&mut sequence, value);
+        }
+        push_u32(&mut sequence, manager_index);
+        push_u32(&mut sequence, NULL_REF); // accumulation root
+        push_u16(&mut sequence, 0); // animation notes
+
+        let mut palette = Vec::new();
+        push_u32(&mut palette, 0);
+        push_u32(&mut palette, 1);
+        let target_name = strings[target_name_index as usize];
+        push_u32(&mut palette, u32::try_from(target_name.len())?);
+        palette.extend_from_slice(target_name.as_bytes());
+        push_u32(&mut palette, target_block_index);
+
+        let mut interpolator = Vec::new();
+        for value in [f32::MIN; 8] {
+            push_f32(&mut interpolator, value);
+        }
+        push_u32(&mut interpolator, data_index);
+
+        let mut transform_data = Vec::new();
+        for value in [0, 2, 1] {
+            push_u32(&mut transform_data, value); // no rotation, two linear translation keys
+        }
+        for value in [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 5.0, 0.0] {
+            push_f32(&mut transform_data, value);
+        }
+        push_u32(&mut transform_data, 0); // no scale keys
+
+        blocks.extend([
+            manager,
+            controller,
+            sequence,
+            palette,
+            interpolator,
+            transform_data,
+        ]);
+        block_types.extend([
+            "NiControllerManager",
+            "NiMultiTargetTransformController",
+            "NiControllerSequence",
+            "NiDefaultAVObjectPalette",
+            "NiTransformInterpolator",
+            "NiTransformData",
+        ]);
+    }
 
     assemble(blocks, block_types, strings)
 }
