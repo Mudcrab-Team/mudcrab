@@ -3,7 +3,7 @@
 use crate::{
     asset_path::{AssetKind, canonical_asset_path},
     esm::projection_omissions::ProjectionOmissions,
-    mesh::glb_bounds_from_bytes,
+    mesh::glb_bounds_from_document,
 };
 use color_eyre::{
     Result,
@@ -473,7 +473,7 @@ fn read_glb_bounds(path: &Path) -> Result<ModelBounds> {
         .flatten()
         .filter(|sphere| sphere.valid() && sphere.radius > 0.0);
     Ok(ModelBounds {
-        render: glb_bounds_from_bytes(&prefix)?,
+        render: glb_bounds_from_document(&document)?,
         room: sphere,
     })
 }
@@ -483,7 +483,7 @@ fn read_glb_bounds_from_reader(
     reader: &mut impl Read,
     file_length: u64,
 ) -> Result<shared::Bounds3> {
-    glb_bounds_from_bytes(&read_glb_prefix(reader, file_length)?)
+    crate::mesh::glb_bounds_from_bytes(&read_glb_prefix(reader, file_length)?)
 }
 
 fn read_glb_prefix(reader: &mut impl Read, file_length: u64) -> Result<Vec<u8>> {

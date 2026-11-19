@@ -118,6 +118,10 @@ fn installed_native_winners_refresh_all_matching_bases_and_room_ownership_inputs
     refresh(&root, &["meshes/fern.glb"]);
     assert_winner(Some(10.0), None, Some(101));
 
+    write_glb(&path, 10.0, Some(sphere(11.0)));
+    refresh(&root, &["meshes/fern.glb"]);
+    assert_winner(Some(10.0), Some(11.0), Some(101));
+
     write_glb(
         &path,
         10.0,
