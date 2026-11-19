@@ -4294,19 +4294,58 @@ fn fresh_interior_with_a_malformed_occluder_rolls_back_and_can_be_retried() {
         error.contains("01000902") && error.contains("XPRM"),
         "{error}"
     );
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM cells WHERE id=?1", [cell], |row| row
-            .get::<_, u32>(
-            0
-        ))
-        .unwrap(),
-        0
-    );
+    let cell_exists: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM cells WHERE id=?1)",
+            [cell],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!cell_exists);
     let good = source(placement_marker(cell + 2, 23, Vec::new()));
     assert_placement_import(
         run_placement_import(&assets, "--plugin", &good),
         "Applied 2 room placements in 1 cells (1 created, 1 certified)",
     );
+    assert!(placement_certificate(&db, cell));
+
+    let replace = |shape: u32| {
+        let mut primitive = [0u8; 32];
+        for extent in primitive[..12].chunks_exact_mut(4) {
+            extent.copy_from_slice(&10f32.to_le_bytes());
+        }
+        primitive[28..].copy_from_slice(&shape.to_le_bytes());
+        plugin(
+            dir.path(),
+            "ReplacePlane.esp",
+            &["Skyrim.esm", "FreshPlane.esp"],
+            0,
+            placement_group(
+                cell,
+                placement(cell + 2, 23, 0, 1.0, sub(b"XPRM", &primitive)),
+            ),
+        )
+    };
+    let stored_shape = || {
+        db.query_row(
+            "SELECT shape FROM room_occluders WHERE ref_id=?1",
+            [cell + 2],
+            |row| row.get::<_, u32>(0),
+        )
+        .unwrap()
+    };
+    let invalid = run_placement_import(&assets, "--plugin", &replace(2));
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("01000902"));
+    assert_eq!(stored_shape(), 3);
+    assert!(placement_certificate(&db, cell));
+    let corrected = run_placement_import(&assets, "--plugin", &replace(1));
+    assert!(
+        corrected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&corrected.stderr)
+    );
+    assert_eq!(stored_shape(), 1);
     assert!(placement_certificate(&db, cell));
 }
 
