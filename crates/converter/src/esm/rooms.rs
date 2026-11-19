@@ -18,8 +18,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 
 mod occluders;
-pub(super) use occluders::update_subset as update_subset_occluders;
 pub use occluders::{NativeOccluderChange, NativeOccluderShape, apply_native_occluders};
+pub(super) use occluders::{update_authored_subset, update_subset as update_subset_occluders};
 
 /// `RoomMarker` base form in `Skyrim.esm`, which is always load-order slot 0.
 pub const ROOM_MARKER_BASE: u32 = 0x1F;

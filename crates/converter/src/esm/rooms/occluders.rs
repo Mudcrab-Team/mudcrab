@@ -11,8 +11,8 @@ use std::collections::{HashMap, HashSet};
 
 mod subset;
 
-pub(in crate::esm) use subset::update_subset;
 pub use subset::{NativeOccluderChange, NativeOccluderShape, apply_native_occluders};
+pub(in crate::esm) use subset::{update_authored_subset, update_subset};
 
 #[derive(Default)]
 pub(super) struct Exported {
@@ -148,7 +148,7 @@ pub(super) fn export(
 #[derive(Clone, Copy)]
 enum MarkerSource<'a> {
     Canonical,
-    Native,
+    Authored,
     Typed(&'a DecodedRecord, &'a LoadOrder),
 }
 

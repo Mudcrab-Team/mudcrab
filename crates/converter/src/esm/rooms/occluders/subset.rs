@@ -16,13 +16,15 @@ use shared::records::ArchivedRecordData;
 use std::collections::{HashMap, HashSet};
 
 /// Shape dimensions in Creation units. A plane lies on its local X-Z axes.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeOccluderShape {
     Plane {
         half_width: f32,
         half_height: f32,
     },
     /// Physical XORD slots and optional XMBR in the pack's runtime FormID space.
+    #[serde(skip)]
     PlaneWithReferences {
         half_width: f32,
         half_height: f32,
@@ -32,6 +34,30 @@ pub enum NativeOccluderShape {
     Box {
         half_extents: [f32; 3],
     },
+}
+
+impl NativeOccluderShape {
+    pub(in crate::esm) fn primitive_bytes(self) -> Result<Vec<u8>> {
+        let (kind, half) = match self {
+            NativeOccluderShape::Plane {
+                half_width,
+                half_height,
+            }
+            | NativeOccluderShape::PlaneWithReferences {
+                half_width,
+                half_height,
+                ..
+            } => (3u32, [half_width, 0.0, half_height]),
+            NativeOccluderShape::Box { half_extents } => (1, half_extents),
+        };
+        let mut xprm: Vec<u8> = half.into_iter().flat_map(f32::to_le_bytes).collect();
+        xprm.resize(28, 0);
+        xprm.extend(kind.to_le_bytes());
+        if primitive(&xprm).is_none() {
+            return Err(invalid_input("invalid native occluder extents"));
+        }
+        Ok(xprm)
+    }
 }
 
 /// One authored change to an existing pack. Use a stable, nonzero local ID in
@@ -93,27 +119,13 @@ pub fn apply_native_occluders(conn: &Connection, changes: &[NativeOccluderChange
                         "native occluder {id:08X} requires an interior cell"
                     )));
                 }
-                let (kind, half) = match shape {
-                    NativeOccluderShape::Plane {
-                        half_width,
-                        half_height,
-                    }
-                    | NativeOccluderShape::PlaneWithReferences {
-                        half_width,
-                        half_height,
-                        ..
-                    } => (3u32, [half_width, 0.0, half_height]),
-                    NativeOccluderShape::Box { half_extents } => (1, half_extents),
-                };
-                let mut xprm: Vec<u8> = half.into_iter().flat_map(f32::to_le_bytes).collect();
-                xprm.resize(28, 0);
-                xprm.extend(kind.to_le_bytes());
+                let xprm = shape.primitive_bytes()?;
                 let data: Vec<u8> = position
                     .into_iter()
                     .chain(rotation)
                     .flat_map(f32::to_le_bytes)
                     .collect();
-                if primitive(&xprm).is_none() || placement(&data).is_none() {
+                if placement(&data).is_none() {
                     return Err(invalid_input(format!(
                         "invalid geometry for native occluder {id:08X}"
                     )));
@@ -149,7 +161,7 @@ pub fn apply_native_occluders(conn: &Connection, changes: &[NativeOccluderChange
         let id = record.form_id;
         if id <= 0xff00_0000
             || tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM records WHERE form_id=?1)",
+                "SELECT EXISTS(SELECT 1 FROM records WHERE form_id=?1) OR EXISTS(SELECT 1 FROM [references] WHERE id=?1)",
                 [id],
                 |row| row.get::<_, bool>(0),
             )?
@@ -164,12 +176,7 @@ pub fn apply_native_occluders(conn: &Connection, changes: &[NativeOccluderChange
             )));
         }
     }
-    project_subset(
-        &tx,
-        &master,
-        |_| MarkerSource::Native,
-        &mut ProjectionOmissions::default(),
-    )?;
+    update_authored_subset(&tx, &master)?;
     tx.commit()
 }
 
@@ -254,6 +261,20 @@ pub(in crate::esm) fn update_subset(
         },
         omissions,
     )
+}
+
+/// Placement imports validate linked FormIDs against the source before remapping.
+pub(in crate::esm) fn update_authored_subset(
+    tx: &Transaction<'_>,
+    master: &HashMap<u32, RawRecord>,
+) -> Result<()> {
+    project_subset(
+        tx,
+        master,
+        |_| MarkerSource::Authored,
+        &mut ProjectionOmissions::default(),
+    )?;
+    Ok(())
 }
 
 fn project_subset<'a>(

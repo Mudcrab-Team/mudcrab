@@ -8,7 +8,10 @@ use super::{
     load_order::{LoadOrder, normalize_plugin_name},
     records::RawRecord,
     remap_record_form_ids,
-    rooms::{PORTAL_MARKER_BASE, ROOM_MARKER_BASE, RoomLinkLayout, refresh_placement_cells},
+    rooms::{
+        NativeOccluderShape, OCCLUSION_MARKER_BASE, PORTAL_MARKER_BASE, ROOM_MARKER_BASE,
+        RoomLinkLayout, refresh_placement_cells, update_authored_subset,
+    },
     types::ArchivedRecordData,
 };
 use crate::{cache::hash_bytes, check::WORLD_DATABASE_FILE_NAME, records::source_identity};
@@ -171,10 +174,15 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
             params![layer, id, edit.source_id, edit.record.is_deleted()],
         )?;
     }
-    let layouts = edits
-        .into_iter()
-        .filter_map(|edit| edit.room_links.map(|layout| (edit.record.form_id, layout)))
-        .collect::<HashMap<_, _>>();
+    let mut layouts = HashMap::new();
+    let mut records = HashMap::new();
+    for edit in edits {
+        if let Some(layout) = edit.room_links {
+            layouts.insert(edit.record.form_id, layout);
+        }
+        records.insert(edit.record.form_id, edit.record);
+    }
+    update_authored_subset(&tx, &records)?;
     let certified_cells =
         refresh_placement_cells(&tx, &cells, &changed, &layouts, std::slice::from_ref(&name))?;
     tx.commit()?;
@@ -269,6 +277,10 @@ fn plugin_edits(
             .get_form_id(b"NAME")
             .filter(|id| id & 0x00ff_ffff == ROOM_MARKER_BASE)
             .map(|_| RoomLinkLayout::from_raw(&record));
+        let occluder = SubrecordView::new(&record.subrecords)
+            .get_form_id(b"NAME")
+            .is_some_and(|base| base & 0x00ff_ffff == OCCLUSION_MARKER_BASE);
+        let marker_warnings = RemapWarnings::default();
         record.load_order = priority as u32;
         remap_record_form_ids(
             &mut record,
@@ -276,8 +288,19 @@ fn plugin_edits(
             &metadata.masters,
             &order.normal,
             &order.light,
-            &warnings,
+            if occluder {
+                &marker_warnings
+            } else {
+                &warnings
+            },
         )?;
+        if occluder {
+            let (warnings, notices) = marker_warnings.report();
+            ensure!(
+                warnings.is_empty() && notices.is_empty(),
+                "occluder {source_id:08X} has unresolved or malformed source fields"
+            );
+        }
         edits.push(Edit {
             source_id,
             record,
@@ -334,6 +357,18 @@ fn apply_edit(tx: &Transaction<'_>, edit: &Edit, cells: &mut HashSet<u32>) -> Re
     if let Some(cell) = old_cell {
         require_interior(tx, cell)?;
         cells.insert(cell);
+    }
+    if old_data.is_none() && edit.owns_new_id && id > 0xff00_0000 {
+        let has_shapes: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='room_occluders')",[],|row|row.get(0))?;
+        ensure!(
+            !has_shapes
+                || !tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM room_occluders WHERE ref_id=?1)",
+                    [id],
+                    |row| row.get::<_, bool>(0)
+                )?,
+            "FormID belongs to an existing native occluder"
+        );
     }
     if let Some(data) = old_data {
         let old_record = rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(data)?;
@@ -403,7 +438,18 @@ fn validate_room_fields(tx: &Transaction<'_>, subrecords: &[(Vec<u8>, Vec<u8>)])
         .map(u32::from_le_bytes)
         .filter(|_| bases.next().is_none())
         .ok_or_else(|| color_eyre::eyre::eyre!("placement requires one base FormID"))?;
-    if !matches!(base, ROOM_MARKER_BASE | PORTAL_MARKER_BASE) {
+    if base == OCCLUSION_MARKER_BASE {
+        ensure!(tx.query_row(
+            "SELECT count(*)=2 FROM room_graph_stats WHERE name IN ('occlusion_version','occlusion_links_verified') AND value=1",
+            [], |row| row.get::<_, bool>(0))?, "occluder edits require a source-verified pack");
+        for tag in [b"XPRM", b"XORD", b"XMBR", b"XSCL", b"XESP"] {
+            ensure!(
+                view.find_all(tag).nth(1).is_none(),
+                "ambiguous occluder field {}",
+                String::from_utf8_lossy(tag)
+            );
+        }
+    } else if !matches!(base, ROOM_MARKER_BASE | PORTAL_MARKER_BASE) {
         ensure!(
             view.find(b"XPRM").is_none(),
             "static primitives are outside the room placement format"
@@ -428,6 +474,7 @@ fn validate_room_field_tags(subrecords: &[(Vec<u8>, Vec<u8>)]) -> Result<()> {
                     | b"DATA"
                     | b"XSCL"
                     | b"XMBR"
+                    | b"XORD"
                     | b"XPRM"
                     | b"XRMR"
                     | b"XLRM"
@@ -460,6 +507,8 @@ enum NativeEdit {
         #[serde(default)]
         rotation: [f32; 3],
         scale: Option<f32>,
+        shape: Option<NativeOccluderShape>,
+        links: Option<[u32; 4]>,
         #[serde(default)]
         ownership: NativeOwnership,
     },
@@ -489,6 +538,8 @@ impl NativeEdit {
                 position,
                 rotation,
                 scale,
+                shape,
+                links,
                 ownership,
             } => {
                 ensure!(
@@ -504,6 +555,20 @@ impl NativeEdit {
                     (b"NAME".to_vec(), base.to_le_bytes().to_vec()),
                     (b"DATA".to_vec(), transform),
                 ];
+                ensure!(
+                    (base == OCCLUSION_MARKER_BASE) == shape.is_some(),
+                    "PlaneMarker placements require a shape and other bases cannot supply one"
+                );
+                ensure!(
+                    links.is_none() || shape.is_some(),
+                    "only occluders accept XORD slots"
+                );
+                if let Some(shape) = shape {
+                    subrecords.push((b"XPRM".to_vec(), shape.primitive_bytes()?));
+                }
+                if let Some(slots) = links {
+                    subrecords.push((b"XORD".to_vec(), slots.map(u32::to_le_bytes).concat()));
+                }
                 if let Some(scale) = scale {
                     subrecords.push((b"XSCL".to_vec(), scale.to_le_bytes().to_vec()));
                 }
