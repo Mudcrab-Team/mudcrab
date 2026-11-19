@@ -1,4 +1,4 @@
-//! Retain the source spheres used by native static-reference room assignment.
+//! Retain the source spheres used by native room assignment and the initial switch geometry they bound.
 
 use color_eyre::{Result, eyre::eyre};
 use project_wormhole_nif::{nif_block::NifBlock, nif_file::NifFile};

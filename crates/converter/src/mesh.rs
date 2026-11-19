@@ -5053,6 +5053,16 @@ mod tests {
                 glb_bounds_from_bytes(&bytes).is_ok(),
                 visible.contains(&true)
             );
+            if active_child == u32::MAX {
+                // Skinned mesh nodes can be independent scene roots. With neither selected,
+                // preserve an explicitly empty scene rather than rediscovering those roots.
+                let mut direct_roots = serde_json::json!({
+                    "nodes": [{"mesh": 0, "skin": 0}, {"mesh": 1, "skin": 0}],
+                    "scenes": [{"nodes": [0, 1]}]
+                });
+                room_bounds::select_switch_geometry(&nif, &blocks, &mut direct_roots).unwrap();
+                assert_eq!(direct_roots["scenes"][0]["nodes"], serde_json::json!([]));
+            }
         }
     }
 
