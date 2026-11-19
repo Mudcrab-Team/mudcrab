@@ -821,8 +821,13 @@ fn apply_room_placements(args: &[OsString]) -> Result<()> {
         _ => bail!("select --plugin or --native"),
     };
     let report = apply(Path::new(pack), source)?;
+    let creations = if report.created_cells.is_empty() {
+        String::new()
+    } else {
+        format!("{} created, ", report.created_cells.len())
+    };
     println!(
-        "Applied {} room placements in {} cells ({} certified)",
+        "Applied {} room placements in {} cells ({creations}{} certified)",
         report.changed_references,
         report.affected_cells.len(),
         report.certified_cells.len(),

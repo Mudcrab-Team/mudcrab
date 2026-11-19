@@ -1497,45 +1497,71 @@ the compiled converter digest invalidates old base-database cache bundles, and t
 regenerate source-sphere metadata. These
 additive tables do not change the global world schema or add a feature flag.
 
-#### Edit room placements after conversion
+#### Import interiors and room placements after conversion
 
 Use `converter apply-room-placements` on a private, offline asset directory with the current world
-database schema and versioned room graph. The command takes the pack's exclusive lock.
+database schema and versioned room graph. The command takes the pack's exclusive lock. A pack with only `visibility_version = 2`
+keeps geometric membership. A native named target in that pack keeps the Multibound exemption.
+
 
 ```sh
 converter apply-room-placements path/to/assets --plugin Decorations.esp
 converter apply-room-placements path/to/assets --native decorations.json
 ```
 
-`--plugin` appends a placement-only `.esp`, `.esm`, or `.esl` to the original plugin order.
+`--plugin` appends an `.esp`, `.esm`, or `.esl` with interiors and placements to the original plugin order.
 The pack must retain the in-house reader's plugin headers. Masters can come from the original
 conversion or earlier placement imports. Existing FormID slots stay stable. The command reads
 `REFR` adds, full overrides, moves, and deleted headers for existing interiors. The supported
-bases are existing `STAT` records and Skyrim's room, portal, and occlusion markers. A `CELL` record can
-identify an existing interior for its children. Its fields are ignored. Supported `REFR` fields
-are `EDID`, `NAME`, `DATA`, `XSCL`, `XESP`, `XMBR`, and the room and portal marker fields
-`XPRM`, `XRMR`, `XLRM`, `XPOD`, `XORD`, `LNAM`, and `INAM`. Static primitives, actor references, doors,
-scripts, new base records, new cells, and exterior changes require a normal conversion.
+bases are existing `STAT` records and Skyrim's room, portal, and occlusion markers. A master-owned `CELL`
+record can identify an existing interior for its children. The import uses only its FormID.
 
-`--native` accepts an `edits` array. `put` adds or replaces a static placement or occluder, and `delete`
-removes a placement by `id`. Use numeric runtime FormIDs from the target pack. For a new native
-placement, choose an unused ID from `0xFF000001` through `0xFFFFFFFF`. Position uses Creation
-units. Rotation uses radians and defaults to `[0, 0, 0]`. Scale defaults to `1`. Ownership
+A plugin can declare a new interior with a plugin-owned `CELL`. Give it a nonzero local FormID
+that fits the plugin's full or light slot, a null-terminated UTF-8 `EDID`, and `DATA` with only
+the interior bit set (one or two bytes). Optional fields are an inline UTF-8 `FULL` in a
+nonlocalized plugin and 72-byte or 92-byte `XCLL` lighting. The `CELL` must be outside worldspace
+and cell-child groups. Its record header supports the compression flag. Its placements must use
+unused FormIDs owned by the same plugin.
+
+Supported `REFR` fields are `EDID`, `NAME`, `DATA`, `XSCL`, `XESP`, `XMBR`, and the marker fields
+`XPRM`, `XRMR`, `XLRM`, `XPOD`, `XORD`, `LNAM`, and `INAM`. Static primitives, actor references, doors,
+scripts, new base records, exterior changes, and other `CELL` fields require a normal conversion.
+
+`--native` accepts a `cells` array for new interiors and an `edits` array for placements.
+Provide at least one cell or edit. A cell declaration takes an `id`, an `editor_id`, and an optional
+`full_name`. `put` adds or replaces a static placement or occluder, and `delete` removes a placement by
+`id`. Use numeric runtime FormIDs from the target pack. For a new native interior or placement,
+choose an unused ID from `0xFF000001` through `0xFFFFFFFF`. A new interior takes only fresh
+placements. IDs used in earlier imports stay reserved for their original records even after a
+placement is deleted. Position uses Creation units. Rotation uses radians and defaults to
+`[0, 0, 0]`. Scale defaults to `1`. Ownership
 defaults to `{"kind": "auto"}`. Use `{"kind": "none"}` for a Multibound override without a
 target, or `{"kind": "target", "room": 2048}` for a named room.
 
+`put_room` adds or replaces a box room marker. Its `half_extents` array gives the X, Y, and Z
+half-extents in Creation units. Optional `links` name joined rooms in authored order.
+`put_portal` adds or replaces a portal marker with X and Z `half_extents`. Its `endpoints`
+array names two rooms in that cell. Use `0` for an explicit outside endpoint.
+
 ```json
 {
+  "cells": [
+    {"id": 4278190081, "editor_id": "FreshInterior", "full_name": "Fresh Interior"}
+  ],
   "edits": [
     {
-      "op": "put",
-      "id": 4278190081,
-      "cell": 2304,
-      "base": 2457,
-      "position": [32, 0, 16],
-      "ownership": {"kind": "target", "room": 2048}
+      "op": "put_room", "id": 4278190082, "cell": 4278190081,
+      "position": [-100, 0, 0], "half_extents": [100, 100, 100]
     },
-    {"op": "delete", "id": 2051}
+    {
+      "op": "put_room", "id": 4278190083, "cell": 4278190081,
+      "position": [100, 0, 0], "half_extents": [100, 100, 100]
+    },
+    {
+      "op": "put_portal", "id": 4278190084, "cell": 4278190081,
+      "position": [0, 0, 0], "half_extents": [30, 60],
+      "endpoints": [4278190082, 4278190083]
+    }
   ]
 }
 ```
@@ -1547,18 +1573,20 @@ runtime FormIDs in physical XORD order. Use zero for an empty slot. Skyrim
 placement plugins can supply the same fields on a PlaneMarker. Occluder edits
 require a pack with a source-verified occluder projection.
 
-One transaction updates runtime `references`, the edited ownership rules, and the room geometry
-and legacy memberships of affected cells. Moves refresh both the source and destination cells.
-The command uses the model bounds already in the pack. A cell retains certification only if it
-was certified before the edit and its refreshed graph passes validation. Unknown assignments and
-unverified portal endpoints retain their conservative behavior. An existing incomplete cell requires a full conversion
-to establish certification. When an occluder first reaches a roomless interior with no
+One transaction creates the runtime cell rows and updates placements, ownership rules, and the room
+graph. Moves refresh both the source and destination cells. The command uses the model bounds
+already in the pack. It reports how many cells were created and how many affected cells passed
+certification. A fresh interior can earn its first certificate when its graph passes the same
+checks as a refreshed graph. Incomplete graph evidence keeps the whole-cell fallback. An existing cell must have a valid prior certificate to retain certification.
+Unknown assignments and unverified portal endpoints retain their conservative behavior.
+When an occluder first reaches a roomless interior with no
 certificate, the exporter checks its stored Skyrim placements for earlier room, portal, or
 occlusion markers before establishing a certificate.
 
 The original conversion's canonical `records`, `formid_map`, source history, and reports remain
 available for inspection. `room_placement_layers` retains the exact imported file and checksum.
-`room_placement_edits` maps each edited runtime FormID to its source FormID and records deletions.
+`room_placement_edits` maps each created cell and edited placement to its source FormID and
+records placement deletions.
 Reapplying the same source is a no-op. Subsequent imports apply in command order. A new conversion
 replaces this runtime snapshot. To reproduce the edited pack, reapply its placement sources in the
 same order.

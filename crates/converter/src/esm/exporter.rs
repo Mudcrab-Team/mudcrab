@@ -797,30 +797,14 @@ fn export_records(
         {
             let projection = runtime_projection(record, unresolved_fields);
             let projected = projection.as_ref().unwrap_or(record);
-            let (grid_x, grid_y, interior_name) = extract_cell_info(&projected.subrecords);
-            let full_name = SubrecordView::new(&projected.subrecords).get_string(b"FULL");
-
-            crate::esm::environment::insert_cell(
+            let metadata = project_cell(
                 &tx,
                 &crate::esm::environment::Links { master },
                 form_id,
-                &SubrecordView::new(&projected.subrecords),
+                record,
+                &projected.subrecords,
             )?;
-            let data = serialize_subrecords(&record.subrecords);
-            insert_cell(
-                &tx,
-                CellRow {
-                    form_id,
-                    worldspace_id: record.worldspace_form_id,
-                    grid_x,
-                    grid_y,
-                    interior_name: interior_name.as_deref(),
-                    full_name: full_name.as_deref(),
-                    flags: record.flags,
-                    data: &data,
-                },
-            )?;
-            cells.insert(form_id, (grid_x, grid_y, record.worldspace_form_id));
+            cells.insert(form_id, metadata);
         }
     }
     let interior_cells: std::collections::HashSet<u32> = cells
@@ -1828,23 +1812,22 @@ fn insert_reference_with_canonical_data(
     Ok(true)
 }
 
-struct CellRow<'a> {
+pub(super) fn project_cell(
+    tx: &Transaction<'_>,
+    links: &crate::esm::environment::Links<'_>,
     form_id: u32,
-    worldspace_id: Option<u32>,
-    grid_x: Option<i32>,
-    grid_y: Option<i32>,
-    interior_name: Option<&'a str>,
-    full_name: Option<&'a str>,
-    flags: u32,
-    data: &'a [u8],
-}
-
-fn insert_cell(tx: &Transaction<'_>, row: CellRow<'_>) -> Result<()> {
+    record: &RawRecord,
+    projected_subrecords: &[(Vec<u8>, Vec<u8>)],
+) -> Result<CellMetadata> {
+    let (grid_x, grid_y, interior_name) = extract_cell_info(projected_subrecords);
+    let view = SubrecordView::new(projected_subrecords);
+    let full_name = view.get_string(b"FULL");
+    crate::esm::environment::insert_cell(tx, links, form_id, &view)?;
     tx.prepare_cached(
         "INSERT OR REPLACE INTO cells(id, worldspace_id, grid_x, grid_y, interior_name, flags, data, full_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")?.execute(
-        params![row.form_id, row.worldspace_id, row.grid_x, row.grid_y, row.interior_name, row.flags, row.data, row.full_name],
+        params![form_id, record.worldspace_form_id, grid_x, grid_y, interior_name, record.flags, serialize_subrecords(&record.subrecords), full_name],
     )?;
-    Ok(())
+    Ok((grid_x, grid_y, record.worldspace_form_id))
 }
 
 pub fn validate_database(conn: &Connection) -> Result<()> {
