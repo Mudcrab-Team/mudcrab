@@ -939,7 +939,7 @@
     "room_placement_edits": {
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#745)",
-      "reason": "Post-conversion placement import maps runtime FormIDs to their supplying layer, original FormID and deletion state."
+      "reason": "Post-conversion imports map created cells and edited placements to their supplying layer and source FormID, and record placement deletions."
     },
     "room_placement_layers": {
       "classification": "provenance",

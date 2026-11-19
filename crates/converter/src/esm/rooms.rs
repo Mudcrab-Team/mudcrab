@@ -28,8 +28,8 @@ pub const PORTAL_MARKER_BASE: u32 = 0x20;
 /// `PlaneMarker` base form, used by both plane and box occlusion primitives.
 pub const OCCLUSION_MARKER_BASE: u32 = 0x17;
 /// `XPRM` shape value of a box room.
-const SHAPE_BOX: u32 = 1;
-const SHAPE_PORTAL: u32 = 3;
+pub(super) const SHAPE_BOX: u32 = 1;
+pub(super) const SHAPE_PORTAL: u32 = 3;
 
 /// Tables created by `create_tables` so an older reused database gains them.
 pub const ROOM_TABLES_SQL: &str = r#"
@@ -794,10 +794,11 @@ struct PlacementRefresh<'a> {
 
 /// Reproject a touched interior using the effective runtime reference rows. Earlier source
 /// rejections may be absent from their canonical blobs. Retain unchanged ownership rules and
-/// outside proof, and require a valid pre-edit certificate before issuing a new one.
+/// outside proof, and require a valid pre-edit certificate for cells that already existed.
 pub(super) fn refresh_placement_cells(
     tx: &Transaction<'_>,
     cells: &HashSet<u32>,
+    fresh_cells: &HashSet<u32>,
     changed: &HashSet<u32>,
     layouts: &HashMap<u32, RoomLinkLayout>,
     plugin_names: &[String],
@@ -807,12 +808,14 @@ pub(super) fn refresh_placement_cells(
     let mut previous_outside = HashMap::new();
     let mut records = HashMap::new();
     for &cell in cells {
-        let certified: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM room_graph_cells WHERE cell_id=?1 AND complete=1)",
-            [cell],
-            |row| row.get(0),
-        )?;
-        if !certified {
+        let certificate = tx
+            .query_row(
+                "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
+                [cell],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if certificate.unwrap_or(i64::from(fresh_cells.contains(&cell))) != 1 {
             occluders.incomplete_cells.insert(cell);
         }
         if has_occluders

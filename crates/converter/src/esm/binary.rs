@@ -16,7 +16,7 @@ use nom::{
 };
 use std::path::Path;
 
-const FLAG_COMPRESSED: u32 = 0x00040000;
+pub(super) const FLAG_COMPRESSED: u32 = 0x00040000;
 
 #[derive(Debug, Clone, Default)]
 pub struct PluginMetadata {
