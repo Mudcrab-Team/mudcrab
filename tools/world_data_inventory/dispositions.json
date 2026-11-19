@@ -193,6 +193,38 @@
         "semantic_use": "unknown"
       }
     },
+    "landscape_texture_grasses.ordinal": {
+      "evidence": [
+        {
+          "anchor": "INSERT OR IGNORE INTO landscape_texture_grasses(ltex_id, gras_id, ordinal)",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "SELECT ltex_id,gras_id,ordinal FROM landscape_texture_grasses ORDER BY ltex_id,ordinal,gras_id",
+          "path": "crates/converter/src/esm/grass_cache/links.rs"
+        }
+      ],
+      "owner": "Mudcrab maintainers (#282)",
+      "reason": "Projects the position of a GRAS link in the winning LTEX GNAM sequence. The grass-cache reader orders links by this position and uses a negative legacy ordinal as a signal to recover order from preserved LTEX data.",
+      "roles": [
+        "result",
+        "provenance"
+      ],
+      "sink": [
+        {
+          "anchor": "if ordinal < 0",
+          "path": "crates/converter/src/esm/grass_cache/links.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      }
+    },
     "lights.falloff": {
       "evidence": [
         {
