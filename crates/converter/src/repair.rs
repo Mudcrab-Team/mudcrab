@@ -1821,20 +1821,29 @@ mod tests {
             archive: Some((archive.clone(), hash_file(&archive).unwrap())),
             expected_hash: Some(hash_file(&blob).unwrap()),
         };
+        let captured = NifSnapshot::read(&blob).unwrap();
         fs::write(&blob, "modified skeleton").unwrap();
-        assert!(
-            verified_source_hash(&source, "skeleton", &mut BTreeSet::new(), None)
-                .unwrap_err()
-                .to_string()
-                .contains("blob hash mismatch")
-        );
+        let modified = NifSnapshot::read(&blob).unwrap();
+        let verify =
+            |snapshot| verified_source_hash(&source, "skeleton", &mut BTreeSet::new(), snapshot);
+        assert_eq!(verify(Some(&captured)).unwrap(), captured.hash());
+        for snapshot in [None, Some(&modified)] {
+            assert!(
+                verify(snapshot)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("blob hash mismatch")
+            );
+        }
         fs::write(&archive, "modified archive").unwrap();
-        assert!(
-            verified_source_hash(&source, "skeleton", &mut BTreeSet::new(), None)
-                .unwrap_err()
-                .to_string()
-                .contains("archive changed")
-        );
+        for snapshot in [None, Some(&captured)] {
+            assert!(
+                verify(snapshot)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("archive changed")
+            );
+        }
     }
 
     #[test]

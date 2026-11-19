@@ -76,8 +76,11 @@ and 13). Both target `bone01` by name through a `NiMultiTargetTransformControlle
 (block 4). The object palette maps that name to node 24. Both `NiSkinInstance` blocks
 (28 and 34) reference node 24 and have positive weights for it in their `NiSkinData`
 (42 and 34 entries, respectively). The sequences supply translation keys for that bone.
-The converter now omits `mudcrabRoomSphere` for the animated skin, so its placements use
-conservative drawing. The captured sphere matches describe the sampled poses.
+The converter omits `mudcrabRoomSphere` for the animated skin. At the time of the captures,
+the engine skipped every reference model under `effects/`, including this web. The streaming
+path now requests its converted GLB. The historical Bleak Falls close-up cannot verify this
+change. A new in-game comparison must distinguish the round-wall activator from the furniture
+web door and check both with culling on and off.
 
 ## Rendered verification
 

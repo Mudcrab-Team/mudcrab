@@ -648,7 +648,8 @@ Rows come from every placeable base type with a world model: `STAT`, `MSTT`, `FU
 `KEYM`, `SCRL`, `ARMO`, `APPA`, `ADDN`, `ARTO`, `PROJ`, `HAZD`, and `LIGH` when it has a model. `TACT`
 (talking activators), `APPA` (apparatus), `ADDN` (addon nodes) and `ARTO` (art objects) were
 added for #269; before that their references had no row and did not render. The engine still
-skips models under `effects/`, `sky/` or `markers/`
+skips models under `effects/`, `sky/` or `markers/`, with one drawable activator exception for
+`effects/fxcobwebroundwall01.nif`
 (`converted_model_path` in `crates/engine/src/streaming.rs`), which covers many `ADDN` and `ARTO`
 models; that is render policy, not data the table lacks. Marker filenames alone are not excluded:
 the base record's `Is Marker` flag controls editor-marker admission. They are additive
@@ -1527,7 +1528,8 @@ and cell-child groups. Its record header supports the compression flag. Its plac
 unused FormIDs owned by the same plugin.
 
 Supported `REFR` fields are `EDID`, `NAME`, `DATA`, `XSCL`, `XESP`, `XMBR`, and the marker fields
-`XPRM`, `XRMR`, `XLRM`, `XPOD`, `XORD`, `LNAM`, and `INAM`. A door can also carry an `XTEL` field.
+`XPRM`, `XRMR`, `XLRM`, `XPOD`, `XORD`, `LNAM`, and `INAM`. A room marker can carry one 12-byte `XMBO`.
+On import its three extents must match the first 12 bytes of `XPRM`. A door can also carry an `XTEL` field.
 Static primitives, actor references, scripts, new base records, exterior changes, and other
 `CELL` fields require a normal conversion.
 

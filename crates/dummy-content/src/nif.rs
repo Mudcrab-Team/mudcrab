@@ -760,8 +760,15 @@ fn legacy_skinned_shape_with_shader(
             None
         }
         SkinFixtureExtra::Track(target) => {
+            let root_name = u32::try_from(strings.len())?;
+            strings.push(if spec.name == "SceneRoot" {
+                "FixtureRoot"
+            } else {
+                "SceneRoot"
+            });
+            blocks[0][..4].copy_from_slice(&root_name.to_le_bytes());
             let (name, block) = match target {
-                SkinTrackTarget::Root => (0, 0),
+                SkinTrackTarget::Root => (root_name, 0),
                 SkinTrackTarget::Ancestor => (3, 2),
                 SkinTrackTarget::Bone => (2, bone1),
             };
@@ -787,7 +794,6 @@ fn legacy_skinned_shape_with_shader(
     };
     if let Some((kind, target_name_index, target_block_index)) = controller {
         let manager_index = u32::try_from(blocks.len())?;
-        blocks[0][..4].copy_from_slice(&0u32.to_le_bytes()); // named scene root
         blocks[0][8..12].copy_from_slice(&manager_index.to_le_bytes());
         let controller_index = manager_index + 1;
         let sequence_index = manager_index + 2;

@@ -9,7 +9,7 @@ use crate::esm::{
 use crate::{
     asset_path::{AssetKind, canonical_asset_path},
     esm::records::record_type::vmad::parse_vmad,
-    records::{DecodedRecord, source_identity},
+    records::{DecodedRecord, ReadResult, source_identity},
 };
 use rusqlite::{Connection, OptionalExtension, Result, Statement, ToSql, Transaction, params};
 use std::{
@@ -568,7 +568,7 @@ pub(crate) fn export_inhouse_to_db(
     plugin_paths: &[PathBuf],
     unresolved_fields: &HashMap<u32, BTreeSet<usize>>,
     terrain_offsets: &HashMap<u32, u64>,
-    decoded_records: &HashMap<u32, DecodedRecord>,
+    decoded: &ReadResult,
 ) -> Result<()> {
     export_records(
         conn,
@@ -581,7 +581,7 @@ pub(crate) fn export_inhouse_to_db(
             runtime_views: true,
             scalar_scripts: true,
             trusted_portal_nulls: false,
-            room_link_sources: Some(RoomLinkSources::Typed(decoded_records)),
+            room_link_sources: Some(RoomLinkSources::Typed(decoded)),
             subset_sources: None,
             damaged_placement_cells: None,
         },
@@ -3378,7 +3378,7 @@ mod tests {
             &paths,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            &ReadResult::default(),
         )
         .unwrap();
         let expected = rooms::RoomGraphReport::read(&conn).unwrap();
@@ -3455,7 +3455,7 @@ mod tests {
             &paths,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            &ReadResult::default(),
         )
         .unwrap();
         assert_eq!(rooms::RoomGraphReport::read(&conn).unwrap(), expected);
@@ -3554,7 +3554,7 @@ mod tests {
                 &paths,
                 &HashMap::new(),
                 &HashMap::new(),
-                &HashMap::new(),
+                &ReadResult::default(),
             )
             .unwrap()
         };

@@ -40,7 +40,7 @@ zstd = "0.14"
 # The encoder runs on native Vulkan, Metal or DX12 only (no GL, no WebGPU).
 wgpu = { version = "29.0.4", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
 tempfile = "3.20"
-gltf = { version = "1.4", default-features = false, features = ["names"] }
+gltf = { version = "1.4", default-features = false, features = ["names", "utils"] }
 
 [target.'cfg(all(target_arch = "aarch64", target_family = "unix"))'.dependencies]
 # sha2's AArch64 hardware backend is gated by its asm feature.

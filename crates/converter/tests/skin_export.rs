@@ -59,6 +59,19 @@ fn spec<'a>(
     }
 }
 
+fn fixed_pose_skin() -> LegacySkin<'static> {
+    LegacySkin {
+        bone_transforms: [([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0); 2],
+        ..spec(
+            SkinInstanceKind::Plain,
+            &SHUFFLED_PALETTE,
+            &[[0.75, 0.25, 0.0, 0.0]; 4],
+            true,
+            None,
+        )
+    }
+}
+
 fn write_fixture(directory: &Path, spec: &LegacySkin<'_>) -> PathBuf {
     let path = directory.join("skin.nif");
     fs::write(&path, legacy_skinned_shape(spec).unwrap()).unwrap();
@@ -475,10 +488,8 @@ fn legacy_bsdismember_skin_exports_skin() {
     let local = read_glb(&local_path);
     assert_skinned_primitives(&local);
     assert!(
-        local.json["extras"]["mudcrabRoomSphere"]["radius"]
-            .as_f64()
-            .unwrap()
-            > 0.0
+        local.json["extras"]["mudcrabRoomSphere"].is_null(),
+        "the non-identity inverse binds deform the mesh past its authored sphere"
     );
 }
 
@@ -486,13 +497,8 @@ fn legacy_bsdismember_skin_exports_skin() {
 fn transform_track_on_a_skin_bone_or_its_ancestor_omits_the_room_sphere() {
     use dummy_content::nif::SkinTrackTarget;
     let directory = tempfile::tempdir().unwrap();
-    let skin = spec(
-        SkinInstanceKind::Plain,
-        &SHUFFLED_PALETTE,
-        &WEIGHTS,
-        true,
-        None,
-    );
+    let mut skin = fixed_pose_skin();
+    skin.name = "Bone0";
     let convert = |label: &str, target_bone| {
         let input = directory.path().join(format!("{label}.nif"));
         let output = input.with_extension("glb");
@@ -522,13 +528,7 @@ fn controllers_on_joint_ancestors_omit_the_room_sphere() {
     let directory = tempfile::tempdir().unwrap();
     let input = directory.path().join("skin.nif");
     let output = input.with_extension("glb");
-    let skin = spec(
-        SkinInstanceKind::Plain,
-        &SHUFFLED_PALETTE,
-        &WEIGHTS,
-        true,
-        None,
-    );
+    let skin = fixed_pose_skin();
 
     for controller in [
         SkinController::Direct,
@@ -538,7 +538,7 @@ fn controllers_on_joint_ancestors_omit_the_room_sphere() {
         for (target, fixed) in [
             (SkinControllerTarget::Ancestor, false),
             (SkinControllerTarget::Unrelated, true),
-            (SkinControllerTarget::AboveSkinRoot, true),
+            (SkinControllerTarget::AboveSkinRoot, false),
         ] {
             fs::write(
                 &input,
@@ -558,20 +558,23 @@ fn controllers_on_joint_ancestors_omit_the_room_sphere() {
 }
 
 #[test]
-fn character_controller_body_omits_the_room_sphere() {
+fn only_supported_fixed_bodies_allow_a_skin_room_sphere() {
     let directory = tempfile::tempdir().unwrap();
     let input = directory.path().join("skin.nif");
     let output = input.with_extension("glb");
-    let skin = spec(
-        SkinInstanceKind::Plain,
-        &SHUFFLED_PALETTE,
-        &WEIGHTS,
-        true,
-        None,
-    );
+    let skin = fixed_pose_skin();
     let mut body = dummy_content::nif::fixed_box_body("body");
 
-    for (motion, quality, fixed) in [(7, 1, true), (9, 1, false), (7, 8, false)] {
+    for (motion, quality, fixed) in [
+        (7, 0, true),
+        (7, 1, true),
+        (0, 1, false),
+        (255, 1, false),
+        (5, 1, false),
+        (9, 1, false),
+        (7, 8, false),
+        (7, 255, false),
+    ] {
         body.transform = (motion == 9).then_some(([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]));
         body.motion_system = motion;
         body.quality_type = quality;
@@ -595,7 +598,11 @@ fn character_controller_body_omits_the_room_sphere() {
         MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
         let glb = read_glb(&output);
         assert_skinned_primitives(&glb);
-        assert_eq!(glb.json["extras"]["mudcrabRoomSphere"].is_object(), fixed);
+        assert_eq!(
+            glb.json["extras"]["mudcrabRoomSphere"].is_object(),
+            fixed,
+            "motion={motion}, quality={quality}"
+        );
     }
 }
 

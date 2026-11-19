@@ -5,13 +5,14 @@
 use color_eyre::{Result, eyre::ensure};
 use converter::{
     archive::ArchiveExtractor,
-    asset_path::{AssetKind, AssetSourceIndex, canonical_asset_path},
-    mesh::MeshConverter,
+    asset_path::{AssetKind, AssetSourceIndex, canonical_asset_path, is_authoring_resource},
+    mesh::{MeshConverter, SkeletonIndex, is_skeleton_path},
+    pipeline::active_data_bsa_paths,
 };
 use rayon::prelude::*;
 use rusqlite::{Connection, OpenFlags};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -153,13 +154,19 @@ fn convert_capture_models(
     assets: &Path,
     models: &BTreeSet<PathBuf>,
 ) -> Result<Vec<serde_json::Value>> {
+    let index = AssetSourceIndex::build(&[sources.to_path_buf()], AssetKind::Mesh)?;
+    let paths = index
+        .assets()
+        .map(|asset| (PathBuf::from(&asset.key), asset.path.clone()))
+        .collect();
+    let skeletons = SkeletonIndex::from_sources(&paths);
     let results: Vec<_> = models
         .par_iter()
         .map(|model| {
             let source = sources.join(model);
             let output = assets.join(model).with_extension("glb");
             let converted = source.is_file().then(|| {
-                MeshConverter::convert_nif_to_glb(&source, &output)
+                MeshConverter::convert_nif_to_glb_from_index(model, &source, &output, &skeletons)
                     .map_err(|error| format!("{error:#}"))
             });
             serde_json::json!({
@@ -186,45 +193,52 @@ fn prepare_model_sources(
     let sources = tempfile::Builder::new()
         .prefix("room-assignment-nifs-")
         .tempdir_in(parent)?;
-    let mut archives: Vec<_> = fs::read_dir(data)?
-        .filter_map(|p| p.ok().map(|p| p.path()))
-        .filter(|p| p.extension().is_some_and(|s| s.eq_ignore_ascii_case("bsa")))
-        .collect();
-    archives.sort();
-    let mut extracted = 0;
-    let skeleton_inputs = MeshConverter::skeleton_search_inputs(models);
-    let selected = |path: &Path| models.contains(path) || skeleton_inputs(path);
-    for plugin in plugins {
-        let stem = Path::new(&plugin)
-            .file_stem()
-            .unwrap()
-            .to_string_lossy()
-            .to_lowercase();
-        for archive in &archives {
-            let name = archive
-                .file_stem()
-                .unwrap()
-                .to_string_lossy()
-                .to_lowercase();
-            if name == stem || name.starts_with(&(stem.clone() + " - ")) {
-                extracted +=
-                    ArchiveExtractor::extract_matching(archive, sources.path(), selected)?.len();
+    if models.is_empty() {
+        return Ok((sources, 0));
+    }
+    let directories: BTreeSet<_> = models.iter().filter_map(|path| path.parent()).collect();
+    // Full-cover ranking uses skeletons from all sources and joint names from
+    // every winning mesh in a selected model's directory.
+    let needed = |path: &Path| {
+        path.extension().is_some_and(|ext| ext == "nif")
+            && !is_authoring_resource(&path.to_string_lossy())
+            && (is_skeleton_path(path)
+                || path.parent().is_some_and(|dir| directories.contains(dir)))
+    };
+    let plugins: Vec<_> = plugins.iter().map(PathBuf::from).collect();
+    let archives = active_data_bsa_paths(data, &plugins)?;
+    let mut archive_winners = BTreeMap::new();
+    for archive in &archives {
+        for path in ArchiveExtractor::list_paths(archive)? {
+            if needed(&path) {
+                archive_winners.insert(path, archive);
             }
         }
     }
     let loose = AssetSourceIndex::build(&[data.to_path_buf()], AssetKind::Mesh)?;
-    for source in loose
-        .entries()
-        .filter(|entry| selected(Path::new(&entry.key)))
-    {
-        let destination = sources.path().join(&source.key);
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
+    for source in loose.assets() {
+        let path = Path::new(&source.key);
+        if needed(path) && !is_authoring_resource(&source.relative_source) {
+            archive_winners.remove(path);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(sources.path().join(parent))?;
+            }
+            fs::copy(&source.path, sources.path().join(path))?;
         }
-        if destination.exists() {
-            fs::remove_file(&destination)?;
-        }
-        fs::copy(&source.path, destination)?;
+    }
+    let mut entries_by_archive = BTreeMap::<_, BTreeSet<_>>::new();
+    for (path, archive) in archive_winners {
+        entries_by_archive.entry(archive).or_default().insert(path);
+    }
+    let mut extracted = 0;
+    for (archive, paths) in entries_by_archive {
+        let files = ArchiveExtractor::extract_paths(archive, sources.path(), &paths)?;
+        ensure!(
+            files.len() == paths.len(),
+            "capture source archive changed while staging {}",
+            archive.display()
+        );
+        extracted += files.len();
     }
     Ok((sources, extracted))
 }
@@ -589,10 +603,90 @@ mod tests {
         let models = BTreeSet::from([PathBuf::from("meshes/test.nif")]);
         let (sources, count) =
             prepare_model_sources(&data, root.path(), &models, &["Skyrim.esm".to_owned()]).unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count, 0);
         assert_eq!(
             fs::read(sources.path().join("meshes/test.nif")).unwrap(),
             b"loose"
         );
+    }
+
+    #[test]
+    fn selected_skin_uses_an_unselected_winning_skeleton() {
+        use dummy_content::{
+            Entry,
+            bsa::{Compression, v105},
+            nif::{LegacySkin, SkinInstanceKind, legacy_skinned_shape},
+        };
+        use nom_derive::Parse;
+        use project_wormhole_nif::nif_header::NifHeader;
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("Data");
+        let assets = root.path().join("assets");
+        fs::create_dir(&data).unwrap();
+        fs::create_dir(&assets).unwrap();
+        let mut spec = LegacySkin {
+            name: "Body",
+            instance_kind: SkinInstanceKind::Plain,
+            bone_transforms: [([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0); 2],
+            palette: &[1, 0],
+            weights: &[[0.75, 0.25, 0.0, 0.0]; 4],
+            with_geometry: true,
+            joint_override: None,
+        };
+        let mesh = legacy_skinned_shape(&spec).unwrap();
+        spec.with_geometry = false;
+        let mut winner = legacy_skinned_shape(&spec).unwrap();
+        let (body, header) = NifHeader::parse(&winner).unwrap();
+        let root_start = winner.len() - body.len();
+        let first_bone = root_start + header.block_size_index[0] as usize;
+        winner[root_start..root_start + 4].copy_from_slice(&0u32.to_le_bytes());
+        winner[first_bone + 16..first_bone + 20].copy_from_slice(&17.0f32.to_le_bytes());
+        let model = "meshes/actors/selected/body.nif";
+        let skeleton = "meshes/actors/other/skeleton.nif";
+        fs::write(data.join("Later Extra.esp"), b"disabled plugin").unwrap();
+        for (name, entries) in [
+            (
+                "Skyrim - Meshes.bsa",
+                vec![Entry::new(model, &mesh), Entry::new(skeleton, b"shadowed")],
+            ),
+            ("Later.bsa", vec![Entry::new(skeleton, &winner)]),
+            (
+                "Later Extra.bsa",
+                vec![Entry::new(skeleton, b"disabled override")],
+            ),
+        ] {
+            fs::write(data.join(name), v105(&entries, Compression::None).unwrap()).unwrap();
+        }
+        let models = BTreeSet::from([PathBuf::from(model)]);
+        let plugins = ["Skyrim.esm".into(), "Later.esp".into()];
+        let (sources, count) =
+            prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(fs::read(sources.path().join(skeleton)).unwrap(), winner);
+        convert_capture_models(sources.path(), &assets, &models).unwrap();
+        let output = assets.join(model).with_extension("glb");
+        let captured = fs::read(&output).unwrap();
+        let bone_translation = |bytes: &[u8]| {
+            gltf::Gltf::from_slice(bytes)
+                .unwrap()
+                .skins()
+                .flat_map(|skin| skin.joints())
+                .find(|node| node.name() == Some("Bone0"))
+                .unwrap()
+                .transform()
+                .decomposed()
+                .0
+        };
+        assert_eq!(bone_translation(&captured), [17.0, 0.0, 0.0]);
+        MeshConverter::convert_nif_to_glb_with_skeleton(
+            &sources.path().join(model),
+            &output,
+            Some(&sources.path().join(skeleton)),
+        )
+        .unwrap();
+        assert_eq!(fs::read(&output).unwrap(), captured);
+        MeshConverter::convert_nif_to_glb_with_skeleton(&sources.path().join(model), &output, None)
+            .unwrap();
+        assert_eq!(bone_translation(&fs::read(output).unwrap()), [0.0; 3]);
     }
 }

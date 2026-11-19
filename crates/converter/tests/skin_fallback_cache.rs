@@ -1007,7 +1007,9 @@ async fn assert_repair_agrees_with_batch(has_covering_skeleton: bool) {
         let mut fresh = config.clone();
         fresh.output_dir = root.path().join("fresh");
         assert!(publish(&fresh).await.complete);
-        check_body(&fresh.output_dir.join(BODY_OUTPUT));
+        let fresh_body = fresh.output_dir.join(BODY_OUTPUT);
+        check_body(&fresh_body);
+        assert_eq!(fs::read(fresh_body).unwrap(), repaired_bytes);
     }
 }
 

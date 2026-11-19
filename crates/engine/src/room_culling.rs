@@ -1508,6 +1508,8 @@ pub fn cull_room_views(
         Has<RoomCullExempt>,
         Has<RoomCullLegacyExempt>,
         Has<ExpectedModelBounds>,
+        Has<bevy::animation::AnimatedBy>,
+        Has<bevy::mesh::skinning::SkinnedMesh>,
     )>,
     mut owners: Local<HashMap<Entity, (u32, Entity)>>,
     mut assignments: Local<RoomAssignmentCache>,
@@ -1604,19 +1606,25 @@ pub fn cull_room_views(
                 };
                 // Re-read every frame: a body can be added after the mesh spawns.
                 // Authored rules and source spheres supply ownership independently.
-                let exempted = |entity| {
-                    exemptions
-                        .get(entity)
-                        .is_ok_and(|(body, marked, legacy, has_model_bounds)| {
-                            marked
-                                || (entity == reference
-                                    && !has_model_bounds
-                                    && loaded.graph.authored.is_none())
-                                || (legacy && loaded.graph.authored.is_none())
-                                || (body.is_some_and(|body| body_moves(*body))
-                                    && (entity != reference || loaded.graph.authored.is_none()))
-                        })
-                };
+                let exempted =
+                    |entity| {
+                        exemptions.get(entity).is_ok_and(
+                            |(body, marked, legacy, has_model_bounds, animated, skinned)| {
+                                marked
+                                    || (entity != reference && animated)
+                                    || (skinned
+                                        && loaded.graph.authored.as_ref().is_some_and(|rules| {
+                                            rules.unbounded_named_skin(form_id)
+                                        }))
+                                    || (entity == reference
+                                        && !has_model_bounds
+                                        && loaded.graph.authored.is_none())
+                                    || (legacy && loaded.graph.authored.is_none())
+                                    || (body.is_some_and(|body| body_moves(*body))
+                                        && (entity != reference || loaded.graph.authored.is_none()))
+                            },
+                        )
+                    };
                 let mut ancestor = entity;
                 for _ in 0..=32 {
                     if exempted(ancestor) {
@@ -2303,6 +2311,33 @@ mod tests {
             "an explicit initial target supplies ownership without geometric memberships or spheres"
         );
         assert!(mesh_list(&scene.app, scene.camera).contains(&scene.near));
+        // A descendant can move independently while the named placement stays in its original room.
+        let animated = scene
+            .app
+            .world_mut()
+            .spawn((ChildOf(reference), bevy::animation::AnimatedBy(reference)))
+            .id();
+        scene
+            .app
+            .world_mut()
+            .entity_mut(scene.far)
+            .insert((ChildOf(animated), GlobalTransform::from_xyz(0.0, 0.0, -1.0)));
+        scene
+            .app
+            .world_mut()
+            .get_mut::<VisibleEntities>(scene.camera)
+            .unwrap()
+            .get_mut(TypeId::of::<Mesh3d>())
+            .push(scene.far);
+        scene.app.world_mut().run_schedule(Update);
+        assert!(mesh_list(&scene.app, scene.camera).contains(&scene.far));
+        scene
+            .app
+            .world_mut()
+            .entity_mut(scene.far)
+            .insert(ChildOf(reference));
+        scene.app.world_mut().run_schedule(Update);
+        assert!(!mesh_list(&scene.app, scene.camera).contains(&scene.far));
         scene
             .app
             .insert_resource(crate::settings::RenderingSettings {
@@ -2834,7 +2869,7 @@ mod tests {
     }
 
     #[test]
-    fn portal_clipping_requires_a_positive_completeness_row_for_this_cell() {
+    fn portal_clipping_requires_a_complete_cell_and_a_positive_aperture() {
         let connection = database();
         insert_room(&connection, 1, 7, [0.0; 3]);
         insert_room(&connection, 2, 7, [0.0, 50.0, 0.0]);
@@ -2873,6 +2908,15 @@ mod tests {
             .execute("UPDATE room_graph_cells SET complete=1 WHERE cell_id=7", [])
             .unwrap();
         assert!(!draws_mesh(), "the verified cell clips to its aperture");
+        for half in [(0.0, 2.0), (1.0, 0.0)] {
+            connection
+                .execute("UPDATE room_portals SET half_x=?1,half_z=?2", half)
+                .unwrap();
+            assert!(
+                draws_mesh(),
+                "a certified old pack with extent {half:?} must draw the mesh"
+            );
+        }
     }
 
     #[test]
