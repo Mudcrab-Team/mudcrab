@@ -17,7 +17,7 @@ use crate::{
     esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database},
     integration::finalize_world_database,
     lod::albedo::terrain_diffuse_paths,
-    mesh::{MeshConverter, nif_source_hash, nif_unrepaired_source_hash, prune_glb_texture_bytes},
+    mesh::{MeshConverter, NifSnapshot, prune_glb_texture_bytes, volcanic_normal_cache_suffix},
     pipeline::{
         LodWorkerOwnership, archive_load_order_priority, compile_lod_chunks,
         conversion_is_complete, convert_staged_scripts, discover, installed_archive_owners,
@@ -1547,15 +1547,19 @@ fn verify_legacy_prune(
         "legacy pruned GLB replay requires raw source NIF {} for {glb}; this runtime package omits the source. Run a normal conversion into a new package, then reuse that package instead",
         nif.display()
     );
-    ensure!(
-        nif_source_hash(&nif, &source_key, source_textures)? == entry.source_hash
-            || nif_unrepaired_source_hash(&nif)? == entry.source_hash,
-        "pruned GLB source checksum mismatch: {glb}"
-    );
+    let suffix = volcanic_normal_cache_suffix(&source_key, source_textures);
+    let expected = suffix
+        .as_deref()
+        .and_then(|suffix| entry.source_hash.strip_suffix(suffix))
+        .unwrap_or(&entry.source_hash);
     let target = staging.join(glb);
-    // Older manifests hashed GLBs before pruning. Prove the exact original
-    // checksum and deterministic postprocess; arbitrary mutations still fail.
-    MeshConverter::convert_nif_to_glb(&nif, &target)?;
+    // Older manifests hashed GLBs before pruning. Replay the exact source
+    // proof before checking the original GLB and deterministic postprocess.
+    MeshConverter::convert_nif_with_local_resolution(
+        &NifSnapshot::read(&nif)?,
+        &target,
+        Some(expected),
+    )?;
     ensure!(
         hash_file(&target)? == entry.output_hash
             && fs::metadata(&target)?.len() == entry.output_size,
