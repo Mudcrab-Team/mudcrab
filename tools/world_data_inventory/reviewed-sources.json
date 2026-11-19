@@ -189,7 +189,7 @@
     "crates/shared/src/extensions.rs": "2ad870d957f709d47329ac4865a6dfbbe7c142c92262a39bacaaccf1a48cca2d",
     "crates/shared/src/form_key.rs": "cf1f2df0c2757e5b1a94f3b81356d5642f41246e355311ebd91e6d7dd43c2fea",
     "crates/shared/src/legacy_id_view.rs": "5b1185a032a0696d5bef6d6510a06e9ecc6c95211262c204de30c21712a25c1e",
-    "crates/shared/src/lib.rs": "d552385ccbb7fae9fec178f08bcd6b6d7a1c3a471bfa331dd0055bcafb3f7e9a",
+    "crates/shared/src/lib.rs": "3af8570c8572d67b33e913554231cfab779c3d974a95cc1fc4f2e4aa208cc8ce",
     "crates/shared/src/lod.rs": "8fbb4541b75f4d7778d2005d0733aed3beb2fc52c76ad2bfa1094abc88f4fe88",
     "crates/shared/src/lod/object.rs": "93bfd611aa5fc46a4afdff7b945a42d4bea830f387fb088f44a9c6599bf463bc",
     "crates/shared/src/plugin_selection.rs": "95d5ba23722fcecd406a414cbddc30ec9f258a6eab3ec156b42e678230919516",
