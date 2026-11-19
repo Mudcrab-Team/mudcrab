@@ -3,7 +3,7 @@
 use crate::{
     asset_path::{AssetKind, canonical_asset_path},
     esm::projection_omissions::ProjectionOmissions,
-    mesh::glb_bounds_from_bytes,
+    mesh::drawable_bounds,
 };
 use color_eyre::{
     Result,
@@ -174,7 +174,10 @@ pub fn finalize_world_database_with_sources(
             .entry(key)
             .or_insert_with(|| read_glb_bounds(path).map_err(|error| format!("{error:#}")));
         match bounds {
-            Ok((bounds, sphere)) => {
+            Ok((None, _)) => {
+                transaction.execute("UPDATE statics SET bounds_valid=0 WHERE id=?1", [form_id])?;
+            }
+            Ok((Some(bounds), sphere)) => {
                 transaction.execute(
                     "UPDATE statics SET bounds_min_x=?1,bounds_min_y=?2,bounds_min_z=?3,bounds_max_x=?4,bounds_max_y=?5,bounds_max_z=?6,bounds_valid=1 WHERE id=?7",
                     params![bounds.min[0], bounds.min[1], bounds.min[2], bounds.max[0], bounds.max[1], bounds.max[2], form_id],
@@ -343,7 +346,7 @@ fn asset_file_index(root: &Path, folders: &[&str]) -> Result<HashMap<String, Pat
 fn read_glb_bounds(
     path: &Path,
 ) -> Result<(
-    shared::Bounds3,
+    Option<shared::Bounds3>,
     Option<shared::room_assignment::ModelSphere>,
 )> {
     let mut file =
@@ -359,7 +362,7 @@ fn read_glb_bounds(
         })
         .flatten()
         .filter(|sphere| sphere.valid() && sphere.radius > 0.0);
-    Ok((glb_bounds_from_bytes(&prefix)?, sphere))
+    Ok((drawable_bounds(&document)?, sphere))
 }
 
 #[cfg(test)]
@@ -367,7 +370,7 @@ fn read_glb_bounds_from_reader(
     reader: &mut impl Read,
     file_length: u64,
 ) -> Result<shared::Bounds3> {
-    glb_bounds_from_bytes(&read_glb_prefix(reader, file_length)?)
+    crate::mesh::glb_bounds_from_bytes(&read_glb_prefix(reader, file_length)?)
 }
 
 fn read_glb_prefix(reader: &mut impl Read, file_length: u64) -> Result<Vec<u8>> {
@@ -672,6 +675,56 @@ mod tests {
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
         assert_eq!(spheres, [(1, 9.0, 6.0), (2, 9.0, 6.0)]);
+    }
+
+    #[test]
+    fn inactive_switch_clears_previous_bounds_and_preserves_invalid_asset_diagnostics() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("skyrim_world.db");
+        let connection = Connection::open(&database).unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO statics(id,model_path,flags,bounds_valid) VALUES
+             (1,'switch.nif',0,1), (2,'unmarked.nif',0,0), (3,'broken.nif',0,0);",
+            )
+            .unwrap();
+        let mut document = serde_json::json!({
+            "asset":{"version":"2.0"}, "scenes":[{"nodes":[1]}], "nodes":[{"mesh":0},{}],
+            "meshes":[{"primitives":[{"attributes":{}}]}],
+            "extras":{"mudcrabInactiveSwitch":true}
+        });
+        let write = |name, document: &serde_json::Value| {
+            write_file(
+                directory.path(),
+                name,
+                &glb_with_json(serde_json::to_vec(document).unwrap(), &[]),
+            );
+        };
+        write("meshes/switch.glb", &document);
+        document["extras"] = serde_json::json!({});
+        write("meshes/unmarked.glb", &document);
+        document["extras"]["mudcrabInactiveSwitch"] = true.into();
+        document["scenes"][0]["nodes"] = serde_json::json!([0]);
+        write("meshes/broken.glb", &document);
+        empty_cache(directory.path());
+        let report = finalize_world_database(directory.path()).unwrap().unwrap();
+        assert_eq!(report.unbounded_model_count, 2);
+        assert_eq!(report.bounds_updated, 0);
+        assert_eq!(
+            connection
+                .query_row("SELECT bounds_valid FROM statics WHERE id=1", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM room_model_bounds", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

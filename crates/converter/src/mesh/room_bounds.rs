@@ -236,8 +236,10 @@ pub(super) fn select_switch_geometry(
         .as_array_mut()
         .ok_or_else(|| eyre!("exported switch scene has no node array"))?;
     let mut hidden = HashSet::new();
+    let mut mesh_nodes = 0;
     for (index, node) in nodes.iter().enumerate() {
         if let Some(mesh) = node.get("mesh") {
+            mesh_nodes += 1;
             let block = mesh
                 .as_u64()
                 .and_then(|id| usize::try_from(id).ok())
@@ -259,13 +261,13 @@ pub(super) fn select_switch_geometry(
             .and_then(serde_json::Value::as_array_mut)
         {
             children.retain(|child| child.as_u64().is_none_or(|id| !hidden.contains(&id)));
-            // Keep an explicit empty scene root list, as in empty_scene_glb. The bounds
-            // reader otherwise falls back to all parentless nodes (including detached ones).
             if key == "children" && children.is_empty() {
                 fields.remove(key);
             }
         }
     }
+    let empty_root = nodes.len();
+    let mut needs_root = false;
     for node in nodes {
         unlink(node, "children", &hidden);
     }
@@ -274,6 +276,19 @@ pub(super) fn select_switch_geometry(
         .ok_or_else(|| eyre!("exported switch scene has no scene array"))?
     {
         unlink(root, "nodes", &hidden);
+        if root["nodes"].as_array().is_some_and(Vec::is_empty) {
+            root["nodes"] = serde_json::json!([empty_root]);
+            needs_root = true;
+        }
+    }
+    if needs_root {
+        scene["nodes"]
+            .as_array_mut()
+            .ok_or_else(|| eyre!("missing node array"))?
+            .push(serde_json::json!({}));
+    }
+    if mesh_nodes > 0 && hidden.len() == mesh_nodes {
+        scene["extras"][super::INACTIVE_SWITCH] = serde_json::json!(true);
     }
     Ok(())
 }

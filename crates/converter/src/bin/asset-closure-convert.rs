@@ -221,7 +221,7 @@ fn convert_model(model_path: String, source_root: &Path, assets_root: &Path) -> 
     // even when the old GLB is readable, so it cannot bypass NIF refusal.
     let result = MeshConverter::validate_nif_for_conversion(&source).and_then(|_| {
         if output.is_file()
-            && MeshConverter::glb_bounds(&output).is_ok()
+            && MeshConverter::drawable_bounds(&output).is_ok()
             && MeshConverter::glb_texture_uris(&output).is_ok()
         {
             Ok("reused")

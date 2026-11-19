@@ -488,9 +488,15 @@ impl MeshConverter {
     /// node hierarchy. This avoids loading vertex buffers merely to build the
     /// runtime spatial index.
     pub fn glb_bounds(path: &Path) -> Result<shared::Bounds3> {
+        Self::drawable_bounds(path)?
+            .ok_or_else(|| color_eyre::eyre::eyre!("GLB contains no bounded POSITION accessor"))
+    }
+
+    /// A switch with no active geometry is a valid asset without drawable bounds.
+    pub fn drawable_bounds(path: &Path) -> Result<Option<shared::Bounds3>> {
         let bytes =
             fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
-        glb_bounds_from_bytes(&bytes)
+        drawable_bounds(&glb_json_from_bytes(&bytes)?)
             .wrap_err_with(|| format!("failed to extract bounds from {}", path.display()))
     }
 
@@ -2248,6 +2254,8 @@ impl<'a> NifCursor<'a> {
     }
 }
 
+const INACTIVE_SWITCH: &str = "mudcrabInactiveSwitch";
+
 pub(crate) fn glb_bounds_from_bytes(glb: &[u8]) -> Result<shared::Bounds3> {
     ensure!(
         glb.len() >= 20 && &glb[..4] == b"glTF",
@@ -2259,17 +2267,31 @@ pub(crate) fn glb_bounds_from_bytes(glb: &[u8]) -> Result<shared::Bounds3> {
         glb.get(20..20 + json_length)
             .ok_or_else(|| color_eyre::eyre::eyre!("truncated GLB JSON chunk"))?,
     )?;
+    drawable_bounds(&document)?
+        .ok_or_else(|| color_eyre::eyre::eyre!("GLB contains no bounded POSITION accessor"))
+}
+
+pub(crate) fn drawable_bounds(document: &serde_json::Value) -> Result<Option<shared::Bounds3>> {
     let nodes = document
         .get("nodes")
         .and_then(serde_json::Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or_default();
-    let roots = scene_roots(&document, nodes);
+    let roots = scene_roots(document, nodes);
     let mut bounds = BoundsAccumulator::default();
-    for root in roots {
-        visit_node(&document, nodes, root, Mat4::IDENTITY, 0, &mut bounds)?;
+    for &root in &roots {
+        visit_node(document, nodes, root, Mat4::IDENTITY, 0, &mut bounds)?;
     }
-    bounds.finish()
+    if document["extras"][INACTIVE_SWITCH].as_bool() == Some(true) {
+        ensure!(
+            !bounds.visited_mesh
+                && !roots.is_empty()
+                && nodes.iter().any(|node| node["mesh"].is_u64()),
+            "inactive switch scene must have a root and only detached meshes"
+        );
+        return Ok(None);
+    }
+    bounds.finish().map(Some)
 }
 
 fn scene_roots(document: &serde_json::Value, nodes: &[serde_json::Value]) -> Vec<usize> {
@@ -2320,7 +2342,11 @@ fn visit_node(
         .get(index)
         .ok_or_else(|| color_eyre::eyre::eyre!("glTF node {index} is out of range"))?;
     let transform = parent.mul(Mat4::from_node(node));
-    if let Some(mesh_index) = node.get("mesh").and_then(serde_json::Value::as_u64) {
+    if let Some(mesh) = node.get("mesh") {
+        let mesh_index = mesh
+            .as_u64()
+            .ok_or_else(|| color_eyre::eyre::eyre!("invalid mesh index at node {index}"))?;
+        bounds.visited_mesh = true;
         accumulate_mesh(document, mesh_index as usize, transform, bounds)?;
     }
     if let Some(children) = node.get("children").and_then(serde_json::Value::as_array) {
@@ -2481,6 +2507,7 @@ fn array_or<const N: usize>(value: Option<&serde_json::Value>, fallback: [f64; N
 
 #[derive(Default)]
 struct BoundsAccumulator {
+    visited_mesh: bool,
     min: [f64; 3],
     max: [f64; 3],
     populated: bool,
@@ -5049,19 +5076,26 @@ mod tests {
                 stack.extend(node.children());
             }
             assert_eq!(drawn, visible);
+            let file = directory.path().join("switch.glb");
+            std::fs::write(&file, &bytes).unwrap();
+            assert_eq!(
+                MeshConverter::drawable_bounds(&file).unwrap().is_some(),
+                visible.contains(&true)
+            );
             assert_eq!(
                 glb_bounds_from_bytes(&bytes).is_ok(),
                 visible.contains(&true)
             );
             if active_child == u32::MAX {
-                // Skinned mesh nodes can be independent scene roots. With neither selected,
-                // preserve an explicitly empty scene rather than rediscovering those roots.
+                // Skinned meshes can be independent scene roots. An inactive switch keeps both detached.
                 let mut direct_roots = serde_json::json!({
                     "nodes": [{"mesh": 0, "skin": 0}, {"mesh": 1, "skin": 0}],
                     "scenes": [{"nodes": [0, 1]}]
                 });
                 room_bounds::select_switch_geometry(&nif, &blocks, &mut direct_roots).unwrap();
-                assert_eq!(direct_roots["scenes"][0]["nodes"], serde_json::json!([]));
+                assert_eq!(direct_roots["scenes"][0]["nodes"], serde_json::json!([2]));
+                assert_eq!(direct_roots["nodes"][2], serde_json::json!({}));
+                assert_eq!(drawable_bounds(&direct_roots).unwrap(), None);
             }
         }
     }
