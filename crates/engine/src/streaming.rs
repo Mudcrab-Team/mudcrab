@@ -77,6 +77,14 @@ fn commit_budget_exceeded(elapsed_micros: u64, budget_micros: u64) -> bool {
 
 pub struct StreamingPlugin;
 
+/// LOD objects neither receive nor cast the sun shadow (`RF-SHADER-013`, `RF-SHADER-014`): the
+/// object chunk observer. LOD terrain is marked by the loader (`lod::unshadow_lod_primitives`) and
+/// where its batches are spawned. A function of its own so a test can register exactly what the
+/// plugin does.
+fn register_lod_shadow_policy(app: &mut App) {
+    app.add_observer(lod_objects::unshadow_object_chunk);
+}
+
 /// Ready terrain collider attached to the same streamed quadrant as its mesh.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct TerrainCollider;
@@ -199,6 +207,7 @@ impl Plugin for StreamingPlugin {
                     end_scene_spawn_batch.after(SceneSpawnerSystems::WorldInstanceSpawn),
                 ),
             );
+        register_lod_shadow_policy(app);
         // The world-ready scan walks the whole stream window every frame and only feeds the pacing
         // report, so an ordinary play session installs none of it.
         if app

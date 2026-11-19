@@ -259,7 +259,17 @@ fn fetch_directional_shadow(
             shadow = mix(shadow, next_shadow, (-view_z - next_near_bound) / (this_far_bound - next_near_bound));
         }
     }
-    return shadow;
+    // mudcrab: retail sun shadow distance fade (RF-LIGHT-GPU-020, not in Bevy). The shadow keeps
+    // nearly full strength to about 0.75 of the shadow distance and ends at it: the mask is
+    // `1 + fade * (vis - 1)` with `fade = 1 - (d / S)^16`, `d` the distance from the view and `S`
+    // the last cascade's far bound (the shadow distance). Squared four times, 2^4 = 16.
+    let mudcrab_fade_far = (*light).cascades[(*light).num_cascades - 1u].far_bound;
+    var mudcrab_fade_x = saturate(length(frag_position.xyz - view_bindings::view.world_position) / mudcrab_fade_far);
+    mudcrab_fade_x = mudcrab_fade_x * mudcrab_fade_x;
+    mudcrab_fade_x = mudcrab_fade_x * mudcrab_fade_x;
+    mudcrab_fade_x = mudcrab_fade_x * mudcrab_fade_x;
+    mudcrab_fade_x = mudcrab_fade_x * mudcrab_fade_x;
+    return mix(1.0, shadow, 1.0 - mudcrab_fade_x);
 }
 
 fn cascade_debug_visualization(

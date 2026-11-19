@@ -988,7 +988,7 @@
     {
       "expression": "entity",
       "id": "crates/engine/src/streaming/lod.rs::prepare::bca3685fea8acd4e::1",
-      "line": 935,
+      "line": 967,
       "method": "prepare",
       "path": "crates/engine/src/streaming/lod.rs",
       "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
@@ -1447,7 +1447,7 @@
     }
   ],
   "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
-  "reviewed_source_guard_sha256": "26d1ee0183f404b1908204cc08fda25d31c08bf3dd03c3b4c13f9afcd65e0969",
+  "reviewed_source_guard_sha256": "94179224fb737922d0594caf148460716910325dec1cb72a986ddc01cb390345",
   "schema_status": "not_extracted",
   "schemas": {},
   "stores": {

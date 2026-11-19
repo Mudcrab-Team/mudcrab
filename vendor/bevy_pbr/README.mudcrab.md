@@ -1,4 +1,4 @@
-# Vendored `bevy_pbr` 0.19.0, with bevyengine/bevy#26504, #26095 and #26588
+# Vendored `bevy_pbr` 0.19.0, with bevyengine/bevy#26504, #26095 and #26588 and two Mudcrab-only shadow hunks
 
 Source: the published [`bevy_pbr` 0.19.0 crate](https://crates.io/crates/bevy_pbr/0.19.0),
 SHA-256 `38ebc777de2d7f45888c68e8e04949bfb8a40aee62f700283fc340f525e67f52`. Upstream provenance is
@@ -30,12 +30,14 @@ so a still actor also keeps the base shape.
 | `prev_weight_at` falls back to the current weight when its offset or index is outside `prev_morph_weights` | **Mudcrab's own addition, not in the PR.** The no-previous-weights offset is `!0`; weight 0 would read index `u32::MAX`. Reached only with motion vectors. | `src/render/morph.wgsl`, comment in `src/render/morph.rs` |
 | Clear the bin-unpacking bind groups at the start of `prepare_preprocess_bind_groups` | `bevyengine/bevy#26095` (bevy_render half: see `../bevy_render/README.mudcrab.md`), ported by hand to 0.19.0's `BinUnpackingBindGroups` | `src/render/gpu_preprocess.rs` |
 | Remove the write-only `metadata_staging_pending_buffers` list (a GPU clustering leak) | `bevyengine/bevy#26588`, applied unchanged. Mudcrab turns GPU clustering off on Metal, so it matters on Vulkan and DX12 only | `src/cluster/gpu.rs` |
+| Retail sun shadow distance fade: `fetch_directional_shadow` returns `mix(1.0, shadow, 1 - (d/S)^16)`, `S` = the last cascade's far bound | **Mudcrab-only** (`RF-LIGHT-GPU-020`), not in Bevy | `src/render/shadows.wgsl` |
+| `apply_fog` gets a `receives_shadow` argument; a mesh that does not receive shadows (LOD) does not sample the sun shadow map for the in-scattering term | **Mudcrab-only** (`RF-SHADER-013`, reported on the #794 review), not in Bevy | `src/render/pbr_functions.wgsl` |
 
 Every Mudcrab comment starts with `mudcrab:`, so `grep -rn "mudcrab:" src` lists the touched spots.
 
 ## Updating or removing this copy
 
-Drop this directory and the `bevy_pbr` entry in the root `[patch.crates-io]` when a Bevy release
+Drop this directory and the `bevy_pbr` entry in the root `[patch.crates-io]` only when **every** carried change is gone. The three upstream fixes below can leave on their own, but the Mudcrab-only hunks (the retail sun shadow fade in `src/render/shadows.wgsl`, the receiver-only fog shadow in `src/render/pbr_functions.wgsl`, and the `prev_weight_at` bound) are not in Bevy: keep them, or port them to the new Bevy source, before this copy is removed. Each hunk's own removal condition is in the "Removal rule" column of [`../BEVY_PATCHES.md`](../BEVY_PATCHES.md). The upstream part: drop the matching hunks when a Bevy release
 that Mudcrab uses contains `bevyengine/bevy#26504`, `#26095` and `#26588`, or equivalent fixes (each can go on its own). If Bevy lands a different
 change, take Bevy's version. Keep the `prev_weight_at` bound only if Bevy does not fix that read.
 After any change run `cargo test --locked -p engine` and the Metal shader-validation run in

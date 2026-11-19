@@ -105,7 +105,7 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 | `crates/engine/src/room_culling.rs:754` prepare_cached | literal |
 | `crates/engine/src/route.rs:350` query_row | unknown |
 | `crates/engine/src/streaming/collision_placement_probe.rs:52` query_row | literal |
-| `crates/engine/src/streaming/lod.rs:935` prepare | unknown |
+| `crates/engine/src/streaming/lod.rs:967` prepare | unknown |
 | `crates/engine/src/world/actor_catalog.rs:176` prepare | literal |
 | `crates/engine/src/world/actor_catalog.rs:200` query_row | literal |
 | `crates/engine/src/world/actor_catalog.rs:220` prepare | unknown |

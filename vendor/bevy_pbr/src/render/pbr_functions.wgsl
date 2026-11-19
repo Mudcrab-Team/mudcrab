@@ -883,6 +883,10 @@ fn apply_fog(
     fragment_world_position: vec3<f32>,
     view_world_position: vec3<f32>,
     frag_coord_xy: vec2<f32>,
+    // mudcrab: whether the mesh receives shadows (its `MESH_FLAGS_SHADOW_RECEIVER_BIT`). A mesh
+    // that does not (LOD land and objects, RF-SHADER-013) must not be darkened by the sun shadow
+    // map through the in-scattering term either.
+    receives_shadow: bool,
 ) -> vec4<f32> {
     let view_to_world = fragment_world_position.xyz - view_world_position.xyz;
 
@@ -916,7 +920,8 @@ fn apply_fog(
 
             // Sample shadow map to attenuate inscattering in shadowed areas
             var shadow: f32 = 1.0;
-            if ((light.flags & mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u) {
+            // mudcrab: only a mesh that receives shadows samples the shadow map here.
+            if (receives_shadow && (light.flags & mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u) {
                 shadow = shadows::fetch_directional_shadow(i, fragment_world_position_vec4, view_direction_normal, view_z, frag_coord_xy);
             }
             scattering += scattering_contribution * shadow;
@@ -1006,6 +1011,7 @@ fn main_pass_post_lighting_processing(
             pbr_input.world_position.xyz,
             view_bindings::view.world_position.xyz,
             pbr_input.frag_coord.xy,
+            (pbr_input.flags & MESH_FLAGS_SHADOW_RECEIVER_BIT) != 0u, // mudcrab: receives_shadow
         );
     }
 #endif  // DISTANCE_FOG
