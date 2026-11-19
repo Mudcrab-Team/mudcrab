@@ -159,6 +159,13 @@ The script verifies both manifest digests and every input hash. It writes the sa
 fields as the original receipt, including the converter command. The recorded paths vary with
 the checkout and output directory.
 
+At `d0e275e4`, all 989 source NIFs reconverted. Compared with the original captured GLBs,
+632 file hashes changed. The binary geometry, primitive geometry, drawable transform paths,
+and drawable counts matched for every model. Compared with the earlier `3abaeb8e` conversion,
+only `meshes/effects/fxcobwebroundwall01.nif` changed, dropping its fixed room-assignment
+sphere. The new comparison receipt has SHA-256
+`beab170a3b6204145a996bd30d4835eca2bff52803659443406d0e7f40f297b0`.
+
 ## Remaining differences
 
 The close-up still shows corpse pose differences in both culled and full rendering: native
