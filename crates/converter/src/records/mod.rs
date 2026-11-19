@@ -513,6 +513,10 @@ pub struct ReadResult {
     pub overrides: HashMap<u32, Vec<RecordSource>>,
     /// Physical header provenance includes accepted, deleted and rejected versions.
     pub history: Vec<history::HistoryEntry>,
+    /// Each winning `DOBJ` with its `DNAM` pairs merged key by key over every accepted
+    /// earlier version, as the legacy reader does. A winning record alone would lose
+    /// the keys that only an earlier plugin sets. The winners stay unmerged.
+    pub(crate) default_objects: HashMap<u32, crate::esm::records::RawRecord>,
 }
 
 /// Lazily parse the schema already validated by the build script.
@@ -656,6 +660,7 @@ fn read_plugins_with_prepared(
     identities.start_resolution_run();
     let legacy = identities.legacy_view()?;
     let key_of = |word| legacy.from_legacy_u32(word).ok().flatten();
+    let mut default_objects = HashMap::new();
     let mut winners = HashMap::<shared::form_key::FormKey, DecodedRecord>::new();
     let mut result = ReadResult {
         load_order: order.names.clone(),
@@ -949,6 +954,9 @@ fn read_plugins_with_prepared(
                 return;
             };
             if let Some(previous) = winners.get(&winner_key) {
+                if previous.record_type == *b"DOBJ" && record.record_type != *b"DOBJ" {
+                    default_objects.remove(&winner_key);
+                }
                 result
                     .overrides
                     .entry(record.form_id)
@@ -964,6 +972,17 @@ fn read_plugins_with_prepared(
                 chain.push(source);
             } else if source.deleted {
                 result.overrides.insert(record.form_id, vec![source]);
+            }
+            if record.record_type == *b"DOBJ" {
+                if record.flags & 0x20 != 0 {
+                    default_objects.remove(&winner_key);
+                } else {
+                    let mut raw = record.to_raw_record();
+                    if let Some(previous) = default_objects.get(&winner_key) {
+                        crate::esm::merge_default_objects(previous, &mut raw);
+                    }
+                    default_objects.insert(winner_key, raw);
+                }
             }
             if record.flags & 0x20 != 0 {
                 winners.remove(&winner_key);
@@ -1008,6 +1027,34 @@ fn read_plugins_with_prepared(
     preservation_stage.finish(result.records.len());
     let targets_stage = profile::ProfileStage::start("validate_targets");
     decoder::validate_targets_with_prepared(&mut result, schema, prepared, order);
+    for mut raw in default_objects.into_values() {
+        let Some(winner) = result.records.get(&raw.form_id) else {
+            continue;
+        };
+        let diagnostics = result
+            .diagnostics
+            .entry(order.names[raw.load_order as usize].clone())
+            .or_default();
+        diagnostics.set_record(
+            winner.source_record_offset,
+            Some(raw.record_type),
+            Some(winner.source_form_id),
+            Some(raw.form_id),
+            "default_object_targets",
+        );
+        diagnostics.set_field("DNAM".into());
+        let id = raw.form_id;
+        crate::esm::clear_missing_movement_targets(
+            &mut raw,
+            |target| result.records.get(&target).map(|record| record.record_type),
+            |field, target| {
+                diagnostics.note("field", || {
+                    format!("DOBJ {id:08X} {field} target {target:08X} is absent or disallowed")
+                })
+            },
+        );
+        result.default_objects.insert(id, raw);
+    }
     targets_stage.finish(result.records.len());
     for warning in identities.projection_warnings() {
         eprintln!("{warning}");

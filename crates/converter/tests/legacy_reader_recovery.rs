@@ -393,7 +393,7 @@ fn torn_payloads_preserve_earlier_winners_neighbors_and_authoritative_deletions(
 }
 
 #[test]
-/// Absent past-master field links clear, including NAME; valid neighbours survive.
+/// Absent past-master links and absent RACE movement links clear; valid neighbours survive.
 fn absent_optional_self_links_clear_while_required_links_and_neighbors_survive() {
     let dir = tempfile::tempdir().unwrap();
     let paths = vec![
@@ -469,7 +469,7 @@ fn absent_optional_self_links_clear_while_required_links_and_neighbors_survive()
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(movement, (None, Some(0x0200_0903)));
+    assert_eq!(movement, (None, None));
     assert!(fields(&conn, 0x0200_0801, b"WKMV").is_empty());
 }
 

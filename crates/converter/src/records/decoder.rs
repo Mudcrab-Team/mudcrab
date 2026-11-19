@@ -608,25 +608,38 @@ fn remap(
             (value >> 24) as usize > context.order.metadata[context.plugin_index].masters.len();
         // Only runtime schema fields have the ordinary dangling-target NULL policy. Group labels
         // and catalogue probes still project self without an extra presence requirement.
-        let source_field = diagnostics.event_context.record_type != Some(*b"TES4")
-            && diagnostics
-                .event_context
-                .field
-                .as_deref()
-                .is_some_and(|field| field.contains("[source:"));
+        let source_tag = diagnostics
+            .event_context
+            .field
+            .as_deref()
+            .and_then(|field| field.split_once("[source:"))
+            .map(|(tag, _)| tag);
         if optional
             && past_master
-            && source_field
+            && diagnostics.event_context.record_type != Some(*b"TES4")
+            && let Some(tag) = source_tag
             && projected >= 0x800
             && match context.source_ids {
                 Some(ids) => !ids.contains_source(projected)?,
                 None => false,
             }
         {
-            note_decode_link(
-                diagnostics,
-                format!("optional FormID {value:08X} exceeds master list"),
-            );
+            let movement = match diagnostics.event_context.record_type.as_ref() {
+                Some(b"DOBJ") => tag == "DNAM",
+                Some(b"RACE") => crate::esm::is_race_movement_link(tag.as_bytes()),
+                _ => false,
+            };
+            if movement {
+                let reason = format!(
+                    "{tag} optional FormID {value:08X} exceeds master list and its self target is absent"
+                );
+                diagnostics.note("field", || reason);
+            } else {
+                note_decode_link(
+                    diagnostics,
+                    format!("optional FormID {value:08X} exceeds master list"),
+                );
+            }
             return Ok(0);
         }
         if observed && projected != 0 {
@@ -3419,12 +3432,13 @@ pub(crate) fn validate_targets_with_prepared(
             }
             field.canonical_bytes = bytes;
         }
-        if diagnostics.invalid_links != 0
+        if (diagnostics.invalid_links != 0 || diagnostics.skipped_fields != 0)
             && let Some(plugin) = plugin
         {
             let target = result.diagnostics.entry(plugin).or_default();
             target.event_log.merge_from(&diagnostics.event_log);
             target.invalid_links += diagnostics.invalid_links;
+            target.skipped_fields += diagnostics.skipped_fields;
             target.merge_summaries(&diagnostics);
         }
     }
@@ -3516,19 +3530,28 @@ impl TargetValidation<'_> {
         match decoded {
             Value::FormId(id) if *id != 0 => {
                 self.diagnostics.link(*id);
-                // Hardcoded IDs (including the player) need not have a plugin record.
-                let allowed = self.kinds.get(id).map_or(*id < 0x800, |kind| {
-                    field.targets.iter().any(|target| {
-                        target == "*" || target == "ANY_" || target.as_bytes() == kind
-                    })
-                });
-                if !allowed {
-                    self.diagnostics.note("link", || {
-                        format!(
-                            "{} link {:08X} is absent or has a disallowed target type",
-                            field.name, *id
-                        )
+                let race_movement = selection.record_type == *b"RACE"
+                    && field
+                        .signature
+                        .as_deref()
+                        .is_some_and(|tag| crate::esm::is_race_movement_link(tag.as_bytes()));
+                // Hardcoded IDs such as the player need no record, but a movement link needs a MOVT.
+                let allowed = self
+                    .kinds
+                    .get(id)
+                    .map_or(*id < 0x800 && !race_movement, |kind| {
+                        field.targets.iter().any(|target| {
+                            target == "*" || target == "ANY_" || target.as_bytes() == kind
+                        })
                     });
+                if !allowed {
+                    self.diagnostics
+                        .note(if race_movement { "field" } else { "link" }, || {
+                            format!(
+                                "{} link {:08X} is absent or has a disallowed target type",
+                                field.name, *id
+                            )
+                        });
                     *id = 0;
                     if bytes.len() == 4 {
                         self.nulls.push(base..base + 4);

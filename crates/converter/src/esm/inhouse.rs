@@ -104,6 +104,7 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "actor_model_parts",
     "movement_types",
     "race_movement_links",
+    "default_objects",
     "race_animation_sources",
     "movement_game_settings",
     "waters",
@@ -1129,6 +1130,15 @@ fn convert_plugins_with_text_sources_report_impl(
         for (index, text) in runtime_text_updates {
             raw.subrecords[index].1 = text;
         }
+        // The runtime default-object table follows the key-merged record, like the legacy reader.
+        if let Some(merged) = decoded.default_objects.get(&raw.form_id)
+            && raw.record_type == *b"DOBJ"
+        {
+            super::replace_default_object_pairs(
+                &mut raw,
+                &super::default_object_pairs(&merged.subrecords),
+            );
+        }
         let omitted = opaque_fields.get(&raw.form_id);
         // Admission already validated these shared text/opaque transformations.
         // This defensive guard is exceptional under the current validators; future
@@ -1533,19 +1543,46 @@ fn with_filtered_record<T>(
 /// Move canonical buffers only after selected typed serialization has completed.
 /// Source payload, identity, provenance and rejection metadata survive for the existing SQL pass.
 fn take_canonical_record(record: &mut records::DecodedRecord) -> RawRecord {
+    let grass_prefix = recover_grass_data_prefix(record);
     let fields = std::mem::take(&mut record.fields);
+    let mut subrecords: Vec<_> = fields
+        .into_iter()
+        .map(|field| (field.signature.to_vec(), field.canonical_bytes))
+        .collect();
+    if let Some(data) = grass_prefix {
+        subrecords.push((b"DATA".to_vec(), data));
+    }
     RawRecord {
         form_id: record.form_id,
         record_type: record.record_type,
         flags: record.flags,
-        subrecords: fields
-            .into_iter()
-            .map(|field| (field.signature.to_vec(), field.canonical_bytes))
-            .collect(),
+        subrecords,
         cell_form_id: record.cell_form_id,
         worldspace_form_id: record.worldspace_form_id,
         load_order: record.load_order,
     }
+}
+
+/// Recover bounded GRAS scalar bytes after the complete typed DATA field was rejected.
+/// GRAS DATA has fixed offsets and no FormIDs; the exporter reads only complete scalars.
+/// Typed output remains rejected. Duplicate DATA or an uncertain boundary is not recovered.
+fn recover_grass_data_prefix(record: &records::DecodedRecord) -> Option<Vec<u8>> {
+    if record.record_type != *b"GRAS"
+        || !record.payload_complete
+        || !record.rejected_fields.contains(b"DATA")
+        || record
+            .fields
+            .iter()
+            .any(|field| field.signature == *b"DATA")
+    {
+        return None;
+    }
+    let fields = super::extractors::extract_subrecords(&record.raw_payload).ok()?;
+    let mut data = fields
+        .into_iter()
+        .filter(|(tag, _)| tag.as_slice() == b"DATA");
+    let (_, prefix) = data.next()?;
+    (prefix.len() < 32 && data.next().is_none()).then_some(prefix)
 }
 
 /// One lazily loaded string bank shared by candidate admission and final publication.
@@ -2612,6 +2649,7 @@ mod runtime_move_tests {
                     ..Default::default()
                 },
             )]),
+            ..Default::default()
         };
         let raw_pointer = decoded.records[&id].raw_payload.as_ptr();
         let history_pointer = decoded.history.as_ptr();
@@ -2725,6 +2763,46 @@ mod runtime_move_tests {
         assert_eq!(decoded.raw_payload, b"source");
         assert_eq!(decoded.rejected_fields, vec![*b"VMAD"]);
         assert!(!decoded.payload_complete);
+    }
+
+    /// Scalar recovery preserves rejection/source evidence and refuses ambiguous boundaries.
+    #[test]
+    fn grass_prefix_recovery_keeps_rejections_and_requires_safe_unique_framing() {
+        let mut decoded = record();
+        decoded.record_type = *b"GRAS";
+        decoded.supported = true;
+        decoded.fields.clear();
+        decoded.rejected_fields = vec![*b"DATA"];
+        decoded.payload_complete = true;
+        decoded.raw_payload = source_subrecord(b"DATA", &[62, 7, 88]);
+        let source = decoded.raw_payload.clone();
+        let raw = take_canonical_record(&mut decoded);
+        assert_eq!(raw.subrecords, vec![(b"DATA".to_vec(), vec![62, 7, 88])]);
+        assert_eq!(decoded.rejected_fields, vec![*b"DATA"]);
+        assert_eq!(decoded.raw_payload, source);
+        assert!(decoded.fields.is_empty());
+
+        decoded.raw_payload = [
+            source_subrecord(b"XXXX", &3u32.to_le_bytes()),
+            source_subrecord(b"DATA", &[]),
+            vec![62, 7, 88],
+        ]
+        .concat();
+        assert_eq!(recover_grass_data_prefix(&decoded), Some(vec![62, 7, 88]));
+        for payload in [
+            [source.clone(), source.clone()].concat(),
+            [source.clone(), b"DATA\x03\x00\x3e".to_vec()].concat(),
+            b"DATA\x03".to_vec(),
+        ] {
+            decoded.raw_payload = payload;
+            assert_eq!(recover_grass_data_prefix(&decoded), None);
+        }
+        decoded.raw_payload = source;
+        decoded.payload_complete = false;
+        assert_eq!(recover_grass_data_prefix(&decoded), None);
+        decoded.payload_complete = true;
+        decoded.record_type = *b"REFR";
+        assert_eq!(recover_grass_data_prefix(&decoded), None);
     }
 }
 

@@ -2,7 +2,7 @@
 //! FormKey follows Mutagen's owner/local identity; source payload words remain source-local.
 use super::{
     EsmParser, GameSettingIdentities, RemapWarnings, binary::parse_plugin_file_with_warnings,
-    exporter::validate_inhouse_record_with_identity, form_keys::FormKeyOrder, records::RawRecord,
+    exporter::validate_inhouse_record, form_keys::FormKeyOrder, records::RawRecord,
     remap_record_using,
 };
 use color_eyre::Result;
@@ -150,10 +150,7 @@ impl EsmParser {
                 .and_then(|()| {
                     // Validate the recovered fields before registering aliases or winners.
                     if !source.is_deleted() {
-                        let default_movement =
-                            key.map(|key| order.identity_sort_tuple(key)).transpose()?
-                                == Some((0, 0, 0x0003_580D));
-                        validate_inhouse_record_with_identity(&checked, default_movement)?;
+                        validate_inhouse_record(&checked)?;
                         if source.record_type == *b"LAND" {
                             super::cell_cache::validate_inhouse_land(&checked)?;
                         }

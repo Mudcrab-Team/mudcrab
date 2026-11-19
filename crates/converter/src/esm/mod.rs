@@ -47,6 +47,8 @@ pub use plugins_txt::{
 #[cfg(test)]
 mod base_model_parity_tests;
 #[cfg(test)]
+mod default_objects_parity_tests;
+#[cfg(test)]
 mod display_name_parity_tests;
 #[cfg(test)]
 mod emittance_parity_tests;
@@ -250,7 +252,7 @@ impl EsmParser {
         plugin_paths: &[PathBuf],
         order: &load_order::LoadOrder,
     ) -> Result<RecordConversion> {
-        let mut merged = HashMap::new();
+        let mut merged = HashMap::<shared::form_key::FormKey, RawRecord>::new();
         let identities = order
             .form_key_context()
             .map_err(|error| color_eyre::eyre::eyre!(error))?;
@@ -536,21 +538,166 @@ impl EsmParser {
                 if record.is_deleted() {
                     merged.remove(&key);
                 } else {
+                    if record.record_type == *b"DOBJ"
+                        && let Some(previous) = merged.get(&key)
+                        && previous.record_type == *b"DOBJ"
+                    {
+                        merge_default_objects(previous, &mut record);
+                    }
                     merged.insert(key, record);
                 }
             }
         }
+        let mut records: HashMap<_, _> = merged
+            .into_values()
+            .map(|record| (record.form_id, record))
+            .collect();
+        // Check live winners after admission, including forward links, deleted targets and
+        // rejected MOVTs. Packed IDs here are the checked projection of the FormKey winners.
+        let mut link_records: Vec<_> = records
+            .values()
+            .filter(|record| matches!(&record.record_type, b"DOBJ" | b"RACE"))
+            .map(|record| record.form_id)
+            .collect();
+        link_records.sort_unstable();
+        for id in link_records {
+            let Some(mut record) = records.remove(&id) else {
+                continue;
+            };
+            let kind = record.record_type;
+            let plugin = &order.names[record.load_order as usize];
+            clear_missing_movement_targets(
+                &mut record,
+                |target| {
+                    if target == id {
+                        Some(kind)
+                    } else {
+                        records.get(&target).map(|target| target.record_type)
+                    }
+                },
+                |field, target| {
+                    warnings.skipped_optional(
+                        plugin,
+                        format!(
+                            "record {id:08X} {field} target {target:08X} is absent or disallowed"
+                        ),
+                    );
+                },
+            );
+            records.insert(id, record);
+        }
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
         Ok(RecordConversion {
-            records: merged
-                .into_values()
-                .map(|record| (record.form_id, record))
-                .collect(),
+            records,
             warnings: summaries,
             notices,
             phases: std::collections::BTreeMap::new(),
         })
+    }
+}
+
+/// RACE fields that address a movement type.
+pub(crate) fn is_race_movement_link(tag: &[u8]) -> bool {
+    matches!(
+        tag,
+        b"WKMV" | b"RNMV" | b"SWMV" | b"FLMV" | b"SNMV" | b"SPMV"
+    )
+}
+
+/// Clear dangling links in packed movement records and merged default objects.
+pub(crate) fn clear_missing_movement_targets(
+    record: &mut RawRecord,
+    target_kind: impl Fn(u32) -> Option<[u8; 4]>,
+    mut warn: impl FnMut(&str, u32),
+) {
+    let mut check = |field: &str, word: &mut [u8; 4], movement_only: bool| {
+        let target = u32::from_le_bytes(*word);
+        if target != 0
+            && !target_kind(target).is_some_and(|kind| !movement_only || kind == *b"MOVT")
+        {
+            warn(field, target);
+            word.fill(0);
+        }
+    };
+    for (tag, data) in &mut record.subrecords {
+        match &record.record_type {
+            b"DOBJ" if tag == b"DNAM" => {
+                for pair in data.as_chunks_mut::<8>().0 {
+                    let [a, b, c, d, target @ ..] = pair;
+                    let key = [*a, *b, *c, *d];
+                    if key != [0; 4] {
+                        check("DNAM", target, matches!(&key, b"DMWL" | b"DMRN"));
+                    }
+                }
+            }
+            b"RACE" if is_race_movement_link(tag) => {
+                if let Ok(word) = <&mut [u8; 4]>::try_from(data.as_mut_slice()) {
+                    // The remap pass has already checked field framing.
+                    let field = std::str::from_utf8(tag).unwrap_or("movement link");
+                    check(field, word, true);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The `(use code, FormID)` pairs of a `DOBJ`'s `DNAM` subrecords, in stored order.
+/// A trailing partial pair and a pair with a zero key are ignored.
+pub(crate) fn default_object_pairs(subrecords: &[(Vec<u8>, Vec<u8>)]) -> Vec<([u8; 4], u32)> {
+    subrecords
+        .iter()
+        .filter(|(tag, _)| tag.as_slice() == b"DNAM")
+        .flat_map(|(_, data)| data.as_chunks::<8>().0)
+        .map(|pair| {
+            (
+                [pair[0], pair[1], pair[2], pair[3]],
+                u32::from_le_bytes([pair[4], pair[5], pair[6], pair[7]]),
+            )
+        })
+        // The game's loader skips a zero key. Retail Update.esm holds hundreds of all-zero
+        // padding pairs, and none of them names a default object.
+        .filter(|(key, _)| *key != [0; 4])
+        .collect()
+}
+
+/// Merge a `DOBJ` override into the earlier winner key by key.
+///
+/// The game's default-object loader sets only the slots that a record lists and
+/// never clears the table, so an override changes just its own keys. Update.esm
+/// and the DLC override `DOBJ` `00000031` with partial lists; replacing the whole
+/// record would drop, for example, the walk and run defaults that Skyrim.esm sets.
+/// The merged pairs replace the `DNAM` of `record` in place, so the positions of its other
+/// subrecords do not move: the in-house reader indexes them before it merges. A record
+/// without a `DNAM` gets one at the end. Both record readers use this rule, so they publish
+/// the same `default_objects` rows.
+pub(crate) fn merge_default_objects(previous: &RawRecord, record: &mut RawRecord) {
+    let mut merged = default_object_pairs(&previous.subrecords);
+    for (key, target) in default_object_pairs(&record.subrecords) {
+        match merged.iter_mut().find(|(earlier, _)| *earlier == key) {
+            Some(slot) => slot.1 = target,
+            None => merged.push((key, target)),
+        }
+    }
+    replace_default_object_pairs(record, &merged);
+}
+
+/// Replace DNAM without moving any existing subrecord positions.
+pub(crate) fn replace_default_object_pairs(record: &mut RawRecord, pairs: &[([u8; 4], u32)]) {
+    let bytes: Vec<u8> = pairs
+        .iter()
+        .flat_map(|(key, target)| [key.as_slice(), &target.to_le_bytes()].concat())
+        .collect();
+    let mut bytes = Some(bytes);
+    for (tag, data) in &mut record.subrecords {
+        if tag.as_slice() == b"DNAM" {
+            // Any extra `DNAM` is blanked, not removed, so later indices stay valid.
+            *data = bytes.take().unwrap_or_default();
+        }
+    }
+    if let Some(bytes) = bytes {
+        record.subrecords.push((b"DNAM".to_vec(), bytes));
     }
 }
 
@@ -765,9 +912,7 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         },
         // xEdit 9fb016884bec138ea6c7b872cec831537d464c3e,
         // wbDefinitionsTES5.pas:9463-9468. Match the in-house actors schema.
-        b"WKMV" | b"RNMV" | b"SWMV" | b"FLMV" | b"SNMV" | b"SPMV" if record_type == b"RACE" => {
-            Fixed(SINGLE)
-        }
+        tag if record_type == b"RACE" && is_race_movement_link(tag) => Fixed(SINGLE),
         // The body chain the actor model catalog follows: a race's skin armor, each armature
         // an armor lists (`MODL` repeats, one FormID per subrecord, so each malformed entry is
         // dropped alone), and an armature's race. The in-house actors and items schemas remap
@@ -835,6 +980,11 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         b"WLST" if record_type == b"CLMT" => Array {
             stride: 12,
             form_ids: &[0, 8],
+        },
+        // Default objects: (four-character use code, FormID) pairs.
+        b"DNAM" if record_type == b"DOBJ" => Array {
+            stride: 8,
+            form_ids: &[4],
         },
         // A weather's precipitation, visual effect, sky static and sun glare lens.
         b"MNAM" | b"NNAM" | b"TNAM" | b"GNAM" if record_type == b"WTHR" => Fixed(SINGLE),
@@ -1511,6 +1661,110 @@ mod tests {
         assert_eq!(
             u32::from_le_bytes(race.subrecords[0].1[..4].try_into().unwrap()),
             0x0300_1234
+        );
+    }
+
+    fn default_objects(pairs: &[(&[u8; 4], u32)]) -> RawRecord {
+        RawRecord {
+            form_id: 0x0000_0031,
+            record_type: *b"DOBJ",
+            flags: 0,
+            subrecords: vec![(
+                b"DNAM".to_vec(),
+                pairs
+                    .iter()
+                    .flat_map(|(key, id)| [key.as_slice(), &id.to_le_bytes()].concat())
+                    .collect(),
+            )],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        }
+    }
+
+    #[test]
+    fn remaps_default_object_form_ids_but_not_keys() {
+        let normal_indices = HashMap::from([
+            ("skyrim.esm".to_string(), 0),
+            ("update.esm".to_string(), 3),
+            ("dawnguard.esm".to_string(), 5),
+        ]);
+        // Master 1 is update.esm (load order 3); index 2 is the plugin itself (5).
+        let mut record = default_objects(&[
+            (b"DMWL", 0x0003_580D),
+            (b"DMRN", 0x0100_0800),
+            (b"DMSW", 0x0200_0900),
+        ]);
+        remap_record_form_ids(
+            &mut record,
+            "dawnguard.esm",
+            &["skyrim.esm".to_string(), "update.esm".to_string()],
+            &normal_indices,
+            &HashMap::new(),
+            &RemapWarnings::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            record.subrecords,
+            default_objects(&[
+                (b"DMWL", 0x0003_580D),
+                (b"DMRN", 0x0300_0800),
+                (b"DMSW", 0x0500_0900),
+            ])
+            .subrecords
+        );
+    }
+
+    #[test]
+    fn default_object_overrides_merge_by_key() {
+        let base = default_objects(&[(b"DMWL", 0x0003_580D), (b"DMRN", 0x0003_580D)]);
+        let mut patch = default_objects(&[(b"DMRN", 0x0200_0001), (b"DMSW", 0x0003_6D42)]);
+        merge_default_objects(&base, &mut patch);
+        assert_eq!(
+            patch.subrecords,
+            default_objects(&[
+                (b"DMWL", 0x0003_580D),
+                (b"DMRN", 0x0200_0001),
+                (b"DMSW", 0x0003_6D42),
+            ])
+            .subrecords
+        );
+        // A record without a usable DNAM keeps the earlier defaults.
+        let mut empty = default_objects(&[]);
+        empty.subrecords.clear();
+        merge_default_objects(&base, &mut empty);
+        assert_eq!(empty.subrecords, base.subrecords);
+    }
+
+    #[test]
+    fn zero_keys_are_not_default_objects() {
+        let record = default_objects(&[(b"\0\0\0\0", 0), (b"\0\0\0\0", 5), (b"DMWL", 7)]);
+        assert_eq!(default_object_pairs(&record.subrecords), [(*b"DMWL", 7)]);
+    }
+
+    #[test]
+    fn merging_default_objects_keeps_every_subrecord_position() {
+        let base = default_objects(&[(b"DMWL", 0x0003_580D)]);
+        let mut patch = default_objects(&[(b"DMRN", 0x0200_0001)]);
+        patch.subrecords.push((b"ZZZZ".to_vec(), vec![1, 2, 3]));
+        patch
+            .subrecords
+            .insert(0, (b"EDID".to_vec(), b"Defaults\0".to_vec()));
+        let before: Vec<Vec<u8>> = patch
+            .subrecords
+            .iter()
+            .map(|(tag, _)| tag.clone())
+            .collect();
+        merge_default_objects(&base, &mut patch);
+        let after: Vec<Vec<u8>> = patch
+            .subrecords
+            .iter()
+            .map(|(tag, _)| tag.clone())
+            .collect();
+        assert_eq!(before, after, "no subrecord moved");
+        assert_eq!(
+            default_object_pairs(&patch.subrecords),
+            [(*b"DMWL", 0x0003_580D), (*b"DMRN", 0x0200_0001),]
         );
     }
 

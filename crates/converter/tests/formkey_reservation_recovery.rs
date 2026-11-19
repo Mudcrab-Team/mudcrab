@@ -844,14 +844,16 @@ fn invalid_native_value_keeps_predecessor(kind: &[u8; 4], id: u32, good: &[u8], 
     );
 }
 
-/// Nonidentity master order must recognize the default MOVT by owner/local identity.
+/// Malformed movement types cannot replace valid predecessors under a remapped master.
 #[test]
-fn native_movt_value_admission_uses_resolved_identity() {
+fn native_movt_value_admission_preserves_previous_winner() {
     let edid = sub(b"EDID", b"NPC_Default_MT\0");
     let speeds: Vec<u8> = (1..=10).flat_map(|n| (n as f32).to_le_bytes()).collect();
     let good = [edid.clone(), sub(b"SPED", &speeds)].concat();
     for bad in [edid.clone(), [edid.clone(), sub(b"SPED", &[1])].concat()] {
-        invalid_native_value_keeps_predecessor(b"MOVT", 0x3580D, &good, &bad);
+        for id in [0x3580D, 0x35900] {
+            invalid_native_value_keeps_predecessor(b"MOVT", id, &good, &bad);
+        }
     }
 }
 
@@ -924,22 +926,25 @@ fn native_race_field_recovery_matches_publication() {
     ));
 }
 
-/// The default MOVT local in a different owner must keep its ordinary-record admission policy.
+/// A remapped master selector may address a MOVT at the conventional default local ID.
 #[test]
-fn native_movt_nondefault_owner_is_not_selected_by_raw_word() {
+fn native_movt_override_stays_with_resolved_owner() {
     let root = tempfile::tempdir().unwrap();
+    let speeds = sub(b"SPED", &[0; 40]);
+    let base = [sub(b"EDID", b"ordinary\0"), speeds.clone()].concat();
+    let patch = [sub(b"EDID", b"override\0"), speeds].concat();
     plugin(root.path(), "Base.esm", &[], Vec::new());
     plugin(
         root.path(),
         "Other.esm",
         &[],
-        record(b"MOVT", 0x3580D, 0, &sub(b"EDID", b"ordinary\0")),
+        record(b"MOVT", 0x3580D, 0, &base),
     );
     plugin(
         root.path(),
         "Patch.esp",
         &["Other.esm", "Base.esm"],
-        record(b"MOVT", 0x3580D, 0, &sub(b"EDID", b"override\0")),
+        record(b"MOVT", 0x3580D, 0, &patch),
     );
     let paths = ["Base.esm", "Other.esm", "Patch.esp"].map(|n| root.path().join(n));
     let db = root.path().join("world.db");
