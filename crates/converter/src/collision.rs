@@ -114,12 +114,11 @@ pub(crate) fn skin_pose_is_fixed(path: &Path, bytes: &[u8], blocks: &[NifBlock])
             let mass = f32_at(raw, BODY_MASS)?;
             let motion = raw[BODY_MOTION_SYSTEM];
             let quality = raw[BODY_QUALITY_TYPE];
-            // Automatic quality can resolve to a moving body; it cannot prove a fixed bind pose.
-            if !mass.is_finite()
-                || matches!(motion, MOTION_SYSTEM_KEYFRAMED | MOTION_SYSTEM_CHARACTER)
-                || quality == QUALITY_TYPE_CHARACTER
-                || (quality == 0 && SIMULATED_MOTION_SYSTEMS.contains(&motion))
-                || classify(motion, quality, mass) != BodyKind::Fixed
+            // Only explicit fixed motion with automatic or fixed quality proves a bind pose.
+            if motion != MOTION_SYSTEM_FIXED
+                || !matches!(quality, 0 | QUALITY_TYPE_FIXED)
+                || !mass.is_finite()
+                || mass < 0.0
             {
                 return Ok(false);
             }
@@ -299,8 +298,8 @@ pub(crate) fn from_nif_bytes(path: &Path, nif: &NifFile, bytes: &[u8]) -> Result
 /// stabilized) and thin box. Keyframed, fixed, character and invalid are not simulated.
 const SIMULATED_MOTION_SYSTEMS: [u8; 6] = [1, 2, 3, 4, 5, 8];
 const MOTION_SYSTEM_KEYFRAMED: u8 = 6;
-const MOTION_SYSTEM_CHARACTER: u8 = 9;
-const QUALITY_TYPE_CHARACTER: u8 = 8;
+const MOTION_SYSTEM_FIXED: u8 = 7;
+const QUALITY_TYPE_FIXED: u8 = 1;
 /// Qualities of a body that moves and collides: debris, moving, critical, bullet.
 const MOVING_QUALITY_TYPES: [u8; 4] = [3, 4, 5, 6];
 
@@ -1629,7 +1628,8 @@ mod tests {
         let moving = body_nif();
         let mut fixed = moving.clone();
         for offset in rigid_body_offsets(&fixed, &path) {
-            fixed[offset + BODY_MOTION_SYSTEM] = 7;
+            fixed[offset + BODY_MOTION_SYSTEM] = MOTION_SYSTEM_FIXED;
+            fixed[offset + BODY_QUALITY_TYPE] = QUALITY_TYPE_FIXED;
         }
         fs::write(&path, &fixed).unwrap();
         assert!(!skin_pose_is_fixed(&path, &moving, &[]).unwrap());

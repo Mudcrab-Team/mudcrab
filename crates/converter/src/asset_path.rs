@@ -120,13 +120,17 @@ impl AssetSourceIndex {
         self.entries.get(canonical_key)
     }
 
+    pub fn assets(&self) -> impl Iterator<Item = &IndexedAsset> {
+        self.entries.values()
+    }
+
     pub fn overrides(&self) -> &[AssetOverride] {
         &self.overrides
     }
 }
 
 /// Authoring resources are not runtime assets, even when their extension is NIF/DDS/PEX.
-pub(crate) fn is_authoring_resource(path: &str) -> bool {
+pub fn is_authoring_resource(path: &str) -> bool {
     path.replace('\\', "/")
         .split('/')
         .any(|part| part.eq_ignore_ascii_case("calientetools"))
