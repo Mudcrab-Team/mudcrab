@@ -398,7 +398,7 @@ pub struct Membership {
 pub struct RoomGraph {
     /// Full export with authored endpoint provenance and complete reference identities.
     pub supports_unbounded: bool,
-    /// Explicit per-cell metadata says some authored geometry could not be exported.
+    /// The cell lacks positive export completeness or contains invalid geometry.
     pub incomplete: bool,
     pub rooms: Vec<Room>,
     pub portals: Vec<Portal>,
@@ -639,7 +639,7 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
         [],
         |row| row.get(0),
     )?;
-    let complete: Option<bool> = if completeness_present {
+    let complete: Option<i64> = if completeness_present {
         connection.query_row(
             "SELECT (SELECT complete FROM room_graph_cells WHERE cell_id=?1)",
             [cell_id],
@@ -648,7 +648,7 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
     } else {
         None
     };
-    graph.incomplete = complete == Some(false)
+    graph.incomplete = complete != Some(1)
         || graph.rooms.iter().any(|room| {
             !room.center.is_finite()
                 || !room.rotation.is_finite()
@@ -662,7 +662,7 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
         [],
         |row| row.get(0),
     )?;
-    graph.supports_unbounded = complete == Some(true) && endpoint_columns && stats_present && connection.query_row(
+    graph.supports_unbounded = complete == Some(1) && endpoint_columns && stats_present && connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='visibility_version' AND value=2)", [], |row| row.get::<_,bool>(0))?;
     {
         let provenance = if graph.supports_unbounded {
@@ -1339,6 +1339,48 @@ mod tests {
     }
 
     #[test]
+    fn portal_clipping_requires_a_positive_completeness_row_for_this_cell() {
+        let connection = database();
+        insert_room(&connection, 1, 7, [0.0; 3]);
+        insert_room(&connection, 2, 7, [0.0, 50.0, 0.0]);
+        connection
+            .execute_batch(
+                "INSERT INTO room_portals VALUES (10,7,0,25,0,0,0,0,1,2,1,2);
+                 INSERT INTO reference_rooms VALUES (500,2,1);",
+            )
+            .unwrap();
+        // Inside the second room and camera frustum, beside the only exported aperture.
+        let bounds = MeshBounds::transformed(
+            &Aabb::from_min_max(-Vec3::splat(0.1), Vec3::splat(0.1)),
+            Affine3A::from_translation(Vec3::new(8.0, 0.0, -50.0)),
+        )
+        .unwrap();
+        let draws_mesh = || {
+            let graph = load_room_graph(&connection, 7).unwrap();
+            graph
+                .visibility_volumes(Vec3::ZERO, clip_from_local())
+                .is_none_or(|visible| graph.mesh_is_drawn(500, &visible, Some(&bounds), None))
+        };
+        assert!(draws_mesh(), "legacy pack without a completeness table");
+        connection.execute_batch(
+            "CREATE TABLE room_graph_cells (cell_id INTEGER PRIMARY KEY, complete INTEGER NOT NULL);
+             INSERT INTO room_graph_cells VALUES (8,1);",
+        ).unwrap();
+        assert!(draws_mesh(), "only the neighboring cell is verified");
+        connection
+            .execute("INSERT INTO room_graph_cells VALUES (7,2)", [])
+            .unwrap();
+        assert!(
+            draws_mesh(),
+            "an invalid completeness flag cannot enable clipping"
+        );
+        connection
+            .execute("UPDATE room_graph_cells SET complete=1 WHERE cell_id=7", [])
+            .unwrap();
+        assert!(!draws_mesh(), "the verified cell clips to its aperture");
+    }
+
+    #[test]
     fn a_cell_without_rooms_loads_as_an_empty_graph() {
         let connection = database();
         insert_room(&connection, 1, 7, [0.0; 3]);
@@ -1671,9 +1713,13 @@ mod tests {
     }
 
     #[test]
-    fn human_review_negative_extents_in_old_packs_only_disable_the_affected_cell() {
+    fn invalid_extents_override_exported_completeness_only_in_the_affected_cell() {
         for invalid_room in [true, false] {
             let connection = database();
+            connection.execute_batch(
+                "CREATE TABLE room_graph_cells (cell_id INTEGER PRIMARY KEY, complete INTEGER NOT NULL);
+                 INSERT INTO room_graph_cells VALUES (7,1),(8,1);",
+            ).unwrap();
             insert_room(&connection, 1, 7, [0.0; 3]);
             insert_room(&connection, 2, 8, [0.0; 3]);
             if invalid_room {
@@ -1691,7 +1737,7 @@ mod tests {
             let graph = load_room_graph(&connection, 7).unwrap();
             assert!(
                 graph.incomplete,
-                "invalid_room={invalid_room}: reject invalid source extents even without new metadata"
+                "invalid_room={invalid_room}: invalid geometry overrides the completeness row"
             );
             assert!(
                 graph
@@ -2484,6 +2530,10 @@ mod tests {
             ))
             .unwrap();
         connection.execute_batch(SCHEMA).unwrap();
+        connection.execute_batch(
+            "CREATE TABLE room_graph_cells (cell_id INTEGER PRIMARY KEY, complete INTEGER NOT NULL);
+             INSERT INTO room_graph_cells VALUES (7,1);",
+        ).unwrap();
         // Rooms 1 and 2 side by side, no doorway and no link: from room 1 only room 1 is reached.
         insert_room(&connection, 1, 7, [0.0, 0.0, 0.0]);
         insert_room(&connection, 2, 7, [1000.0, 0.0, 0.0]);
