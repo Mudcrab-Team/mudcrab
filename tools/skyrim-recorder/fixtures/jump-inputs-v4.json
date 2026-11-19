@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "profile": "jump-inputs-v4",
+  "runtime_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+  "fixture": {
+    "schema": 1,
+    "name": "courtyard-jump-inputs",
+    "kind": "jump",
+    "position": [
+      24828,
+      -3000,
+      -2900
+    ],
+    "yaw_degrees": 90,
+    "hold_ms": 500,
+    "modifier": "jump",
+    "time_multiplier": 1.0
+  },
+  "frame_cap": 60,
+  "conditions": [
+    {
+      "id": "baseline"
+    },
+    {
+      "id": "setting-64",
+      "jump_height_min": 64.0
+    },
+    {
+      "id": "reference-125",
+      "reference_scale": 1.25
+    },
+    {
+      "id": "repeat-baseline"
+    }
+  ],
+  "prediction": "Unchanged float32 field products predict exact setter argument and post-store. Native v3 recurrence predicts launch without fitting. Each run has a fresh process and copied original save.",
+  "scope": "One save and actor. Ground jumps only. Interventions require memory-field validity. No arbitrary console commands."
+}
