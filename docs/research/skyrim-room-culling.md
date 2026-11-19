@@ -181,6 +181,8 @@ no duplicate render submissions are inserted. AABBs support rotation, negative/n
 and shear even though native assignment transforms require a uniform scale. Missing mesh bounds
 skip aperture filtering but retain the unreached-space test.
 
+In roomed cells, empty geometric membership leaves the mesh eligible for ordinary view culling.
+Authored automatic assignment to unbounded space requires a usable model sphere.
 Legacy graphs retain pivot/overlap candidates, conservative box/portal sharing, open links,
 touching-box edges that preserve the incoming visibility volume, and reached-portal-less-room fallbacks. Loose items and authored overrides retain
 legacy exemptions. The normal converter refreshes both room metadata and source-sphere GLBs; no
