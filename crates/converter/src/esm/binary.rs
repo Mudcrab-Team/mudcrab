@@ -221,19 +221,29 @@ pub fn parse_group(
         input,
         current_cell,
         current_worldspace,
-        records,
         &mut warnings,
+        |candidate| {
+            if let ParsedRecord::Usable(record) = candidate {
+                records.push(record);
+            }
+        },
     );
     let _ = warnings.report("plugin record stream");
     Ok(())
+}
+
+pub(super) enum ParsedRecord {
+    Usable(RawRecord),
+    /// A placed record with a known header and parent cell but no usable payload.
+    DamagedPlacement(RawRecord),
 }
 
 fn parse_group_inner(
     input: &[u8],
     current_cell: Option<u32>,
     current_worldspace: Option<u32>,
-    records: &mut Vec<RawRecord>,
     warnings: &mut ParseWarnings,
+    mut visit: impl FnMut(ParsedRecord),
 ) {
     let mut curr = input;
     let mut current_cell = current_cell;
@@ -301,40 +311,45 @@ fn parse_group_inner(
                 curr = &[];
                 continue;
             };
+            let mut record = RawRecord {
+                form_id: header.form_id,
+                record_type: header.type_tag,
+                flags: header.flags,
+                subrecords: Vec::new(),
+                cell_form_id: current_cell,
+                worldspace_form_id: current_worldspace,
+                load_order: 0,
+            };
             let record_len = header.data_size as usize;
-            if record_len > rest.len() {
-                warnings.skipped(format!(
-                    "truncated {:?} record {:08x}: expected {record_len}, got {}",
-                    header.type_tag,
-                    header.form_id,
-                    rest.len()
-                ));
+            let decoded = if let Some((payload, next)) = rest.split_at_checked(record_len) {
+                curr = next;
+                decode_record_subrecords(&header, payload)
+            } else {
                 curr = &[];
-                continue;
-            }
-            let raw_payload = &rest[..record_len];
-            curr = &rest[record_len..];
-            let subrecords = match decode_record_subrecords(&header, raw_payload) {
-                Ok(subrecords) => subrecords,
+                Err(eyre!(
+                    "truncated record payload: expected {record_len}, got {}",
+                    rest.len()
+                ))
+            };
+            match decoded {
+                Ok(subrecords) => {
+                    record.subrecords = subrecords;
+                    visit(ParsedRecord::Usable(record));
+                }
                 Err(error) => {
                     warnings.skipped(format!(
                         "{} {:08X}: {error}",
                         String::from_utf8_lossy(&header.type_tag),
                         header.form_id
                     ));
-                    continue;
+                    if current_cell.is_some()
+                        && !record.is_deleted()
+                        && super::is_placed_record_type(&record.record_type)
+                    {
+                        visit(ParsedRecord::DamagedPlacement(record));
+                    }
                 }
-            };
-
-            records.push(RawRecord {
-                form_id: header.form_id,
-                record_type: header.type_tag,
-                flags: header.flags,
-                subrecords,
-                cell_form_id: current_cell,
-                worldspace_form_id: current_worldspace,
-                load_order: 0,
-            });
+            }
         }
     }
 }
@@ -367,23 +382,30 @@ fn decode_record_subrecords_inner(
 
 /// Parse usable records once, retaining the existing terminal skip summaries.
 pub fn parse_plugin_file(path: &Path) -> Result<Vec<RawRecord>> {
-    parse_plugin_file_with_warnings(path).map(|(records, _)| records)
+    let mut records = Vec::new();
+    parse_plugin_file_inner(path, |candidate| {
+        if let ParsedRecord::Usable(record) = candidate {
+            records.push(record);
+        }
+    })
+    .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))?;
+    Ok(records)
 }
 
-/// Return the same per-plugin skip line printed while retaining usable neighboring records.
-pub(crate) fn parse_plugin_file_with_warnings(
+/// Keep usable records and known damaged placements in source order.
+pub(super) fn parse_plugin_file_with_warnings(
     path: &Path,
-) -> Result<(Vec<RawRecord>, Vec<String>)> {
-    parse_plugin_file_inner(path)
-        .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))
+) -> Result<(Vec<ParsedRecord>, Vec<String>)> {
+    let mut records = Vec::new();
+    let warnings = parse_plugin_file_inner(path, |record| records.push(record))
+        .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))?;
+    Ok((records, warnings))
 }
 
 /// Keep header checks and local recovery unchanged while returning their bounded summary.
-fn parse_plugin_file_inner(path: &Path) -> Result<(Vec<RawRecord>, Vec<String>)> {
+fn parse_plugin_file_inner(path: &Path, visit: impl FnMut(ParsedRecord)) -> Result<Vec<String>> {
     let reader = EsmReader::open(path)?;
     let data = reader.as_slice();
-
-    let mut records = Vec::new();
 
     let (after_header, header) =
         parse_record_header(data).map_err(|e| eyre!("Failed to parse record header: {e}"))?;
@@ -413,12 +435,12 @@ fn parse_plugin_file_inner(path: &Path) -> Result<(Vec<RawRecord>, Vec<String>)>
         &after_header[header_payload..],
         None,
         None,
-        &mut records,
         &mut warnings,
+        visit,
     );
     let summaries = warnings.report(&path.file_name().unwrap_or_default().to_string_lossy());
 
-    Ok((records, summaries))
+    Ok(summaries)
 }
 
 /// Parses REFR payload for Position and Base Form ID pointers

@@ -1,5 +1,5 @@
 use crate::esm::{
-    binary::parse_plugin_file_with_warnings,
+    binary::{ParsedRecord, parse_plugin_file_with_warnings},
     exporter::{create_tables, validate_inhouse_record},
     records::RawRecord,
 };
@@ -8,7 +8,7 @@ use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::File,
     io::Read,
     path::{Path, PathBuf},
@@ -207,7 +207,8 @@ impl EsmParser {
         string_sources: inhouse::StringSources<'_>,
     ) -> Result<RecordConversion> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
-        let mut master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
+        let (mut master, damaged_cells) =
+            Self::merge_plugins_with_load_order(plugin_paths, &order)?;
         let (unresolved, localization_warnings, localization_notices) =
             legacy_text::resolve_localized_fields(
                 &mut master.records,
@@ -217,7 +218,14 @@ impl EsmParser {
             );
         let conn = Connection::open(db_path)?;
         create_tables(&conn)?;
-        exporter::export_plugins_to_db(&conn, &master.records, &order, plugin_paths, &unresolved)?;
+        exporter::export_plugins_to_db(
+            &conn,
+            &master.records,
+            &order,
+            plugin_paths,
+            &unresolved,
+            &damaged_cells,
+        )?;
 
         for diagnostic in localization_warnings.iter().chain(&localization_notices) {
             eprintln!("{diagnostic}");
@@ -231,15 +239,16 @@ impl EsmParser {
     pub fn merge_plugins(plugin_paths: &[PathBuf]) -> Result<HashMap<u32, RawRecord>> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
         Self::merge_plugins_with_load_order(plugin_paths, &order)
-            .map(|conversion| conversion.records)
+            .map(|(conversion, _)| conversion.records)
     }
 
     /// Use one load-order mapping for merge/export and retain all printed reader summaries.
     fn merge_plugins_with_load_order(
         plugin_paths: &[PathBuf],
         order: &load_order::LoadOrder,
-    ) -> Result<RecordConversion> {
+    ) -> Result<(RecordConversion, HashSet<u32>)> {
         let mut merged = HashMap::new();
+        let mut damaged_placements = HashMap::new();
         let mut summaries = Vec::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
         // the first definition's key/owner while taking the last setting value.
@@ -253,7 +262,11 @@ impl EsmParser {
             let mut sources: HashMap<u32, (u32, bool)> = HashMap::new();
             let (records, parser_summaries) = parse_plugin_file_with_warnings(path)?;
             summaries.extend(parser_summaries);
-            for mut record in records {
+            for candidate in records {
+                let (mut record, damaged) = match candidate {
+                    ParsedRecord::Usable(record) => (record, false),
+                    ParsedRecord::DamagedPlacement(record) => (record, true),
+                };
                 record.load_order = priority as u32;
                 let source_id = record.form_id;
                 let out_of_range = (source_id >> 24) as usize > masters.len();
@@ -266,7 +279,7 @@ impl EsmParser {
                     &warnings,
                 )
                 .and_then(|()| {
-                    if !record.is_deleted() {
+                    if !damaged && !record.is_deleted() {
                         validate_inhouse_record(&record)?;
                         if record.record_type == *b"LAND" {
                             cell_cache::validate_inhouse_land(&record)?;
@@ -296,6 +309,16 @@ impl EsmParser {
                         );
                         continue;
                     }
+                }
+                if damaged {
+                    // Like the typed reader, keep a usable predecessor over a torn override.
+                    // Otherwise the placement's cell cannot certify its graph until it is replaced.
+                    if !merged.contains_key(&record.form_id)
+                        && let Some(cell) = record.cell_form_id
+                    {
+                        damaged_placements.insert(record.form_id, cell);
+                    }
+                    continue;
                 }
                 if record.record_type == *b"GMST" {
                     let canonical =
@@ -334,6 +357,7 @@ impl EsmParser {
                     continue;
                 }
                 sources.insert(remapped_source_id, (source_id, out_of_range));
+                damaged_placements.remove(&record.form_id);
                 if record.is_deleted() {
                     merged.remove(&record.form_id);
                 } else {
@@ -343,12 +367,15 @@ impl EsmParser {
         }
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
-        Ok(RecordConversion {
-            records: merged,
-            warnings: summaries,
-            notices,
-            phases: std::collections::BTreeMap::new(),
-        })
+        Ok((
+            RecordConversion {
+                records: merged,
+                warnings: summaries,
+                notices,
+                phases: BTreeMap::new(),
+            },
+            damaged_placements.into_values().collect(),
+        ))
     }
 }
 

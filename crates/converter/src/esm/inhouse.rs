@@ -115,6 +115,7 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "room_graph_cells",
     "reference_rooms",
     "room_graph_stats",
+    "room_link_anomalies",
     "projection_omission_stats",
     "projection_omission_samples",
     "cell_environment",
