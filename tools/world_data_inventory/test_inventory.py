@@ -1,5 +1,7 @@
 """Disposable SQLite controls; these do not certify engine or retail semantics."""
+import contextlib
 import copy
+import io
 import json
 import sqlite3
 import subprocess
@@ -112,6 +114,173 @@ class Dependencies(unittest.TestCase):
             result = inv.prepare_dependencies(db, "SELECT id FROM spatial WHERE min_x>=?1")
             self.assertEqual(result["status"], "prepared")
             self.assertIn("spatial", {d["table"] for d in result["dependencies"]})
+
+
+READER = 'fn query(db: &Connection) { db.prepare("SELECT radius FROM lights"); }\n'
+
+
+def make_tree(directory, source=READER):
+    """A disposable checkout: one reader, the fixture dispositions and the converter/shared source roots."""
+    root = Path(directory)
+    here = root / "tools/world_data_inventory"
+    here.mkdir(parents=True)
+    (here / "dispositions.json").write_text(json.dumps(manual()), encoding="utf-8")
+    for folder in ("crates/converter/src", "crates/converter/records", "crates/shared/src"):
+        (root / folder).mkdir(parents=True)
+    (root / "crates/shared/src/lib.rs").write_text("pub const VERSION: u32 = 1;\n", encoding="utf-8")
+    reader = root / "crates/engine/src/world.rs"
+    reader.parent.mkdir(parents=True)
+    reader.write_text(source, encoding="utf-8")
+    return root, here, reader
+
+
+def run_tool(root, here, *argv):
+    out = root / "docs/data-inventory"
+    with contextlib.redirect_stdout(io.StringIO()):
+        inv.run([*argv, "--output", str(out)], root=root, here=here)
+    return out
+
+
+def committed_bytes(root):
+    """Bytes of every file that the inventory tool owns and a commit would hold: the tool folder and the
+    docs folder, minus the gitignored generated files. Source files elsewhere are the developer's own edit."""
+    generated = {root / path for path in inv.GENERATED_PATHS}
+    owned = [root / "tools/world_data_inventory", root / "docs/data-inventory"]
+    return {path.relative_to(root).as_posix(): path.read_bytes() for folder in owned if folder.is_dir()
+            for path in sorted(folder.rglob("*")) if path.is_file() and path not in generated}
+
+
+class CommittedSurface(unittest.TestCase):
+    """The gate keeps its purpose, and a source edit with no new table, column or reader changes no committed file."""
+
+    def test_reader_source_edit_without_schema_change_gives_no_committed_diff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, reader = make_tree(directory)
+            run_tool(root, here, "--review-sources")
+            out = run_tool(root, here, "--check")
+            before = committed_bytes(root)
+            first = json.loads((out / "inventory.json").read_text(encoding="utf-8"))["reviewed_source_guard_sha256"]
+            # Unrelated edits: a new function, a comment, moved lines, a changed constant and an edit in a shared file.
+            reader.write_text("// header\n\n\nfn helper() -> u32 { 7 }\n\n" + READER + "fn tail() {}\n", encoding="utf-8")
+            (root / "crates/shared/src/lib.rs").write_text("pub const VERSION: u32 = 2;\n", encoding="utf-8")
+            out = run_tool(root, here, "--check")
+            self.assertEqual(committed_bytes(root), before)
+            # The derived fingerprint did change. It lives only in the generated file.
+            second = json.loads((out / "inventory.json").read_text(encoding="utf-8"))["reviewed_source_guard_sha256"]
+            self.assertNotEqual(first, second)
+
+    def test_new_or_changed_reader_fails_until_it_is_reviewed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, reader = make_tree(directory)
+            run_tool(root, here, "--review-sources")
+            reader.write_text(READER + 'fn more(db: &Connection) { db.prepare("SELECT falloff FROM lights"); }\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "new reader without a reviewed disposition"):
+                run_tool(root, here, "--check")
+            run_tool(root, here, "--review-sources")
+            run_tool(root, here, "--check")
+            # Same call expression, different SQL behind the constant: still a changed reader.
+            reader.write_text('const SQL: &str = "SELECT radius FROM lights";\nfn a(db: &Connection) { db.prepare(SQL); }\n', encoding="utf-8")
+            run_tool(root, here, "--review-sources")
+            reader.write_text('const SQL: &str = "SELECT falloff FROM lights";\nfn a(db: &Connection) { db.prepare(SQL); }\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "changed reader"):
+                run_tool(root, here, "--check")
+            # A dynamic reader that interpolates a same-file constant: an edit of the constant is reviewed.
+            reader.write_text('const COLS: &str = "radius";\nfn a(db: &Connection) { db.prepare(&format!("SELECT {COLS} FROM lights")); }\n', encoding="utf-8")
+            run_tool(root, here, "--review-sources")
+            run_tool(root, here, "--check")
+            reader.write_text('const COLS: &str = "radius,falloff";\nfn a(db: &Connection) { db.prepare(&format!("SELECT {COLS} FROM lights")); }\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "changed reader"):
+                run_tool(root, here, "--check")
+            # A removed reader is a change too, so the committed list stays exact.
+            reader.write_text("fn nothing() {}\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "no longer exists"):
+                run_tool(root, here, "--check")
+
+    def test_new_table_or_column_without_a_disposition_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            extraction = {"format_version": 1, "source_commit": "fixture", "variants": [], "schemas": {"fixture": fixture()}}
+            path = root / "extraction.json"
+            def write(value):
+                guard = inv.source_guard(root, inv.scan_queries(root), manual())
+                value["reviewed_source_guard_sha256"] = inv.digest(inv.canonical(guard))
+                path.write_text(json.dumps(value), encoding="utf-8")
+            write(extraction)
+            run_tool(root, here, "--review-sources", "--extraction", str(path))
+            run_tool(root, here, "--check", "--extraction", str(path))
+            columns = json.loads((here / "reviewed-surface.json").read_text())["columns"]
+            self.assertIn("lights.falloff", columns)
+            # A new column in a table that already has a disposition.
+            with closing(inv.open_schema(extraction["schemas"]["fixture"], ["ALTER TABLE lights ADD COLUMN brightness REAL"])) as db:
+                widened = {"format_version": 1, "source_commit": "fixture", "variants": [], "schemas": {"fixture": schema_from(db)}}
+            write(widened)
+            with self.assertRaisesRegex(ValueError, "new column without a reviewed disposition: lights.brightness"):
+                run_tool(root, here, "--check", "--extraction", str(path))
+            # A removed column must also be reviewed.
+            write(extraction)
+            run_tool(root, here, "--review-sources", "--extraction", str(path))
+            with closing(inv.open_schema(extraction["schemas"]["fixture"], ["ALTER TABLE lights DROP COLUMN falloff"])) as db:
+                narrowed = {"format_version": 1, "source_commit": "fixture", "variants": [], "schemas": {"fixture": schema_from(db)}}
+            write(narrowed)
+            with self.assertRaisesRegex(ValueError, "no longer exists: lights.falloff"):
+                run_tool(root, here, "--check", "--extraction", str(path))
+            # A new table fails: unreviewed as a column set, and unclassified as a table.
+            with closing(inv.open_schema(extraction["schemas"]["fixture"], ["CREATE TABLE brand_new(id INTEGER)"])) as db:
+                grown = {"format_version": 1, "source_commit": "fixture", "variants": [], "schemas": {"fixture": schema_from(db)}}
+            write(grown)
+            with self.assertRaisesRegex(ValueError, "new column without a reviewed disposition: brand_new.id"):
+                run_tool(root, here, "--check", "--extraction", str(path))
+            before = committed_bytes(root)
+            with self.assertRaisesRegex(ValueError, "unclassified emitted table: brand_new"):
+                run_tool(root, here, "--review-sources", "--extraction", str(path))
+            self.assertEqual(committed_bytes(root), before)
+            dispositions = json.loads((here / "dispositions.json").read_text(encoding="utf-8"))
+            dispositions["tables"]["brand_new"] = {"classification": "deferred", "owner": "fixture", "reason": "Reviewed."}
+            (here / "dispositions.json").write_text(json.dumps(dispositions), encoding="utf-8")
+            write(grown)
+            run_tool(root, here, "--review-sources", "--extraction", str(path))
+            run_tool(root, here, "--check", "--extraction", str(path))
+
+    def test_missing_or_stale_generated_files_are_regenerated_not_skipped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            run_tool(root, here, "--review-sources")
+            out = run_tool(root, here, "--check")
+            expected = {name: (out / name).read_bytes() for name in ("inventory.json", "report.md")}
+            self.assertTrue(all(expected.values()))
+            (out / "inventory.json").unlink()
+            (out / "report.md").write_text("stale copy from another checkout", encoding="utf-8")
+            run_tool(root, here, "--check")
+            self.assertEqual({name: (out / name).read_bytes() for name in expected}, expected)
+
+    def test_a_tracked_generated_file_fails_with_the_one_line_recipe(self):
+        if subprocess.run(["git", "--version"], capture_output=True).returncode != 0:
+            self.skipTest("git is not available")
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            run_tool(root, here, "--review-sources")
+            out = run_tool(root, here, "--check")
+            git = lambda *args: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
+                                               cwd=root, capture_output=True, text=True, check=True)
+            git("init", "-q")
+            (root / ".gitignore").write_text("\n".join("/" + path for path in inv.GENERATED_PATHS) + "\n", encoding="utf-8")
+            git("add", "-A")
+            # The ignore rules keep a stale local copy out of `git add -A`.
+            self.assertEqual(git("ls-files", "--", *inv.GENERATED_PATHS).stdout, "")
+            run_tool(root, here, "--check")
+            git("add", "-f", str(out / "inventory.json"))
+            with self.assertRaisesRegex(ValueError, "generated inventory files are committed.*git rm -qf --ignore-unmatch"):
+                run_tool(root, here, "--check")
+            # The recipe removes the file. It is safe to run when a file is absent or was never tracked.
+            subprocess.run(inv.MIGRATION_RECIPE.replace("&& git commit --no-edit", ""), shell=True, cwd=root, check=True,
+                           capture_output=True)
+            run_tool(root, here, "--check")
+
+    def test_repository_ignores_every_generated_file(self):
+        ignored = (inv.ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        for path in inv.GENERATED_PATHS:
+            self.assertIn("/" + path, ignored)
+        self.assertEqual(inv.tracked_generated_files(inv.ROOT), [])
 
 
 class SourceAndDrift(unittest.TestCase):
