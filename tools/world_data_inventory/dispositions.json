@@ -924,7 +924,7 @@
     "room_placement_edits": {
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#744)",
-      "reason": "Maps edited runtime FormIDs to their supplying layer, source FormID and deletion state."
+      "reason": "Post-conversion imports map created cells and edited placements to their supplying layer and source FormID, and record placement deletions."
     },
     "room_placement_layers": {
       "classification": "provenance",

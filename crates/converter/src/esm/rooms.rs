@@ -19,8 +19,8 @@ pub const ROOM_MARKER_BASE: u32 = 0x1F;
 /// `PortalMarker` base form in `Skyrim.esm`.
 pub const PORTAL_MARKER_BASE: u32 = 0x20;
 /// `XPRM` shape value of a box room.
-const SHAPE_BOX: u32 = 1;
-const SHAPE_PORTAL: u32 = 3;
+pub(super) const SHAPE_BOX: u32 = 1;
+pub(super) const SHAPE_PORTAL: u32 = 3;
 
 /// Tables created by `create_tables` so an older reused database gains them.
 pub const ROOM_TABLES_SQL: &str = r#"
@@ -685,10 +685,11 @@ pub(super) fn export_room_graph_with_sources(
 }
 
 /// Reproject the old and new cells of an edit using the effective runtime placements.
-/// Source rejections can be absent from runtime rows, so require a pre-edit certificate.
+/// Existing cells require a pre-edit certificate because runtime rows can omit source rejections.
 pub(super) fn refresh_placement_cells(
     tx: &Transaction<'_>,
     cells: &HashSet<u32>,
+    fresh_cells: &HashSet<u32>,
     edits: &HashMap<u32, RawRecord>,
     layouts: &HashMap<u32, RoomLinkLayout>,
     plugin_name: &str,
@@ -699,7 +700,7 @@ pub(super) fn refresh_placement_cells(
             .prepare_cached("DELETE FROM room_graph_cells WHERE cell_id=?1 RETURNING complete")?
             .query_row([cell], |row| row.get::<_, i64>(0))
             .optional()?;
-        if was_complete != Some(1) {
+        if was_complete != Some(1) && !fresh_cells.contains(&cell) {
             incomplete.insert(cell);
         }
         tx.prepare_cached(
