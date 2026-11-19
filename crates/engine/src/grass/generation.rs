@@ -466,9 +466,9 @@ fn generate_field(
     }
     for (id, mut instances) in instances {
         instances.shrink_to_fit();
-        let species = cache
-            .species(id)
-            .expect("generated species exists in immutable mapping");
+        let Some(species) = cache.species(id) else {
+            continue;
+        };
         result.bytes += instances.capacity() * std::mem::size_of::<GrassInstance>()
             + species.model_path.len()
             + std::mem::size_of::<Vec<GrassInstance>>()
