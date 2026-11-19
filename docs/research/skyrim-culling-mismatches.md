@@ -78,9 +78,28 @@ and 13). Both target `bone01` by name through a `NiMultiTargetTransformControlle
 (42 and 34 entries, respectively). The sequences supply translation keys for that bone.
 The converter omits `mudcrabRoomSphere` for the animated skin. At the time of the captures,
 the engine skipped every reference model under `effects/`, including this web. The streaming
-path now requests its converted GLB. The historical Bleak Falls close-up cannot verify this
-change. A new in-game comparison must distinguish the round-wall activator from the furniture
-web door and check both with culling on and off.
+path now requests its converted GLB.
+
+### Bleak Falls web controls, 2026-11-20
+
+The combined Mudcrab engine at `c3fa2555` rendered both web models in Bleak Falls Temple
+using the 989-model conversion at `be483676`. Each pose produced byte-identical 1400 × 1030
+PNGs with room culling on, off, and on a repeat of each mode. The controls cleared only the
+selected web model path in separate private database copies. All 16 captures settled.
+Exterior LOD was omitted from all copies. Unresolved NPCs were skipped at both poses.
+
+| Camera | Meshes drawn, on / off | Pixels changed by removing the round-wall web | Pixels changed by removing the furniture web |
+| --- | ---: | ---: | ---: |
+| Original web-door close-up | 156 / 666 | 0 | 487,334 |
+| East-facing round-wall view | 118 / 567 | 122,037 | 654,240 |
+
+Each pixel count uses a difference greater than 8 in any RGB channel and was the same in
+both culling modes. The first pose shows only the furniture web of the two tested models.
+Both contribute at the east-facing pose. The second pose has no matched retail capture.
+Camera positions, orientations, mesh counts and image digests are in the
+[capture receipt](evidence/room-review-20261117/bleak-falls-web-controls.json).
+
+![Bleak Falls web views with each identified model removed from its corresponding control](evidence/room-review-20261117/bleak-falls-web-controls.jpg)
 
 ## Rendered verification
 
@@ -176,6 +195,14 @@ A recheck of the 989 archived `505566f6` outputs verified their hashes against t
 receipt. Of the 788 files whose hashes differed from the original captures, two had drawables
 with skins. Their joint paths and transforms matched. A synthetic sibling-joint control detected
 changes to the joint translation, its parent's translation, and the joint's parentage.
+
+At `be483676`, all 989 archived NIFs reconverted successfully. Compared with the verified
+`505566f6` GLBs, 42 models lost their assignment sphere and 20 received a different sphere.
+The other 927 GLBs matched byte for byte. Binary chunks, primitive geometry, drawable and
+joint transform paths, and draw counts matched across all 989 models. The four measured
+fern placements retained their model spheres. Both web models continued to omit theirs.
+The private sphere comparison receipt has SHA-256
+`04f27474bf94b935701db30c39de44778ef2447d4a37e2836b8f8aa2fe3b2cf6`.
 
 ## Remaining differences
 
