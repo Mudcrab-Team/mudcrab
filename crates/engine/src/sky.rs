@@ -18,7 +18,7 @@
 use crate::world::database::CellKey;
 use bevy::{
     asset::{RenderAssetUsages, embedded_asset},
-    camera::visibility::NoFrustumCulling,
+    camera::visibility::{NoFrustumCulling, VisibilitySystems},
     ecs::{schedule::ScheduleConfigs, system::ScheduleSystem},
     light::NotShadowCaster,
     mesh::{Indices, MeshVertexBufferLayoutRef, PrimitiveTopology},
@@ -446,14 +446,24 @@ pub struct SkyPlugin;
 impl Plugin for SkyPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "shaders/sky.wgsl");
-        app.add_plugins(MaterialPlugin::<SkyMaterial>::default())
-            .init_resource::<SkyPalette>()
-            .init_resource::<CameraSpace>()
-            .init_resource::<crate::underwater::UnderwaterState>()
-            .add_systems(
-                PostUpdate,
-                sky_systems().before(TransformSystems::Propagate),
-            );
+        app.add_plugins((
+            MaterialPlugin::<SkyMaterial>::default(),
+            crate::underwater::UnderwaterStatePlugin,
+        ))
+        .init_resource::<SkyPalette>()
+        .init_resource::<CameraSpace>()
+        .add_systems(
+            PostUpdate,
+            (spawn_sky_domes, follow_sky_cameras)
+                .chain()
+                .before(TransformSystems::Propagate),
+        )
+        .add_systems(
+            PostUpdate,
+            sky_systems()
+                .after(crate::underwater::UnderwaterStateSet)
+                .before(VisibilitySystems::VisibilityPropagate),
+        );
     }
 }
 
@@ -602,15 +612,12 @@ fn apply_sky(
     }
 }
 
-/// The sky systems in order. `apply_fog` reads `InteriorFog`, which `EnvironmentSet` writes in
-/// the same schedule, so it runs after that set: a door or room crossing changes the fog in the
-/// same frame as the light. The order of the rest is main's (underwater state, then sky, then the
-/// water's copy of the sky).
+/// The sky systems that read the frame's underwater state, in order: sky, then the water's copy
+/// of the sky, then fog. `apply_fog` reads `InteriorFog`, which `EnvironmentSet` writes in the
+/// same schedule, so it runs after that set: a door or room crossing changes the fog in the same
+/// frame as the light.
 fn sky_systems() -> ScheduleConfigs<ScheduleSystem> {
     (
-        spawn_sky_domes,
-        follow_sky_cameras,
-        crate::underwater::update_underwater_state,
         apply_sky,
         sync_water_sky,
         apply_fog.after(crate::world::environment::interior::EnvironmentSet),
@@ -976,6 +983,104 @@ mod tests {
         app.insert_resource(UnderwaterState::default());
         app.update();
         assert_eq!(clear(&app), above);
+    }
+
+    /// Resurfacing restores the exterior sky and fog in the frame the camera moves.
+    #[test]
+    fn sky_plugin_restores_the_exterior_on_the_resurfacing_frame() {
+        use crate::{
+            settings::RenderingSettings,
+            world::{
+                cache::TerrainSnapshot,
+                components::{StreamingCamera, WaterSurface},
+                water::FlatWaterBody,
+            },
+        };
+        use bevy::{
+            asset::AssetPlugin, camera::visibility::VisibilityPlugin, mesh::MeshPlugin,
+            transform::TransformPlugin,
+        };
+
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            MeshPlugin,
+            TransformPlugin,
+            VisibilityPlugin,
+            SkyPlugin,
+        ))
+        .insert_resource(RenderingSettings {
+            sky: true,
+            fog: true,
+            ..default()
+        });
+        let water = FlatWaterBody::from_terrain(
+            CellKey::Exterior {
+                worldspace_id: 60,
+                grid_x: 0,
+                grid_y: 0,
+            },
+            &TerrainSnapshot {
+                cell_id: 1,
+                width: 33,
+                height: 33,
+                heights: vec![-100.0; 33 * 33],
+                normals: vec![],
+                vertex_colors: vec![],
+                layers: vec![],
+                water_height: Some(0.0),
+                water_type_form_id: None,
+            },
+        )
+        .expect("complete flat water body");
+        app.world_mut()
+            .spawn((WaterSurface, water, Transform::default()));
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera::default(),
+                Projection::Perspective(PerspectiveProjection::default()),
+                Transform::from_xyz(0.0, -10.0, 0.0),
+                StreamingCamera,
+                SkyCamera,
+                FogCamera,
+            ))
+            .id();
+
+        // Settle the submerged state even with the previous frame's underwater state.
+        app.update();
+        app.update();
+        let (dome, _, _, visibility) = only_dome(&mut app);
+        assert_eq!(visibility, Visibility::Hidden);
+        assert!(app.world().get::<DistanceFog>(camera).is_none());
+
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation
+            .y = 10.0;
+        app.update();
+
+        let world = app.world();
+        let palette = world.resource::<SkyPalette>();
+        let ClearColorConfig::Custom(clear) = world.get::<Camera>(camera).unwrap().clear_color
+        else {
+            panic!("the sky camera clears to a custom colour");
+        };
+        assert_eq!(
+            clear,
+            palette.clear_colour(CameraSpace::Exterior),
+            "exterior clear colour on the resurfacing frame",
+        );
+        let fog = world
+            .get::<DistanceFog>(camera)
+            .expect("exterior fog on the resurfacing frame");
+        assert!(same_fog(fog, &fog_for(palette)));
+        assert!(
+            world.get::<InheritedVisibility>(dome).unwrap().get(),
+            "the dome's visibility propagates on the resurfacing frame",
+        );
     }
 
     fn sky_app() -> App {

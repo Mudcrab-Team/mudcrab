@@ -61,18 +61,26 @@ function Runtime:native(target, name, args)
     return callback(target, table.unpack(args))
 end
 
--- Search each script's current state, then its empty state, before its parent.
+-- Search the active state through the ancestry before trying empty-state fallback.
 -- The receiver remains the original instance when executing inherited code.
 function Runtime:find_method(class, state, name)
-    local seen = {}
-    while class ~= nil do
-        assert(not seen[class], "cyclic Papyrus parent hierarchy")
-        seen[class] = true
-        local callback = state ~= "" and self:get_field(class, state .. "::" .. name) or nil
-        if callback == nil then callback = self:get_field(class, name) end
-        if callback ~= nil then return callback end
-        class = self.classes[string.lower(class.__parent or "")]
+    local cyclic = false
+    for pass = 1, state ~= "" and 2 or 1 do
+        local key = pass == 1 and state ~= "" and state .. "::" .. name or name
+        local current = class
+        local seen = {}
+        while current ~= nil do
+            if seen[current] then
+                cyclic = true
+                break
+            end
+            seen[current] = true
+            local callback = self:get_field(current, key)
+            if callback ~= nil then return callback end
+            current = self.classes[string.lower(current.__parent or "")]
+        end
     end
+    assert(not cyclic, "cyclic Papyrus parent hierarchy")
     return nil
 end
 
