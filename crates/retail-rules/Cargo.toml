@@ -1,0 +1,21 @@
+[package]
+name = "retail-rules"
+description = "Pure retail Skyrim rules, written so that Kani can prove them"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Keep this crate free of dependencies. Kani compiles every dependency with its own toolchain,
+# and a pure scalar crate keeps each proof small and fast. See src/lib.rs.
+[dependencies]
+
+# This crate cannot use `[lints] workspace = true`, because it also declares the `kani` cfg.
+# A workspace-wide change to the lints would rebuild every crate. So the workspace lint is
+# repeated here.
+[lints.rust]
+unsafe_code = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"

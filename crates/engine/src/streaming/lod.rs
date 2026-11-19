@@ -210,12 +210,17 @@ enum LodChunkFailureClass {
 }
 
 #[derive(Debug)]
-struct LodChunkFailure {
+pub(crate) struct LodChunkFailure {
     class: LodChunkFailureClass,
     reason: String,
 }
 
 impl LodChunkFailure {
+    /// Why the check failed, with the path and both hashes where a hash differs.
+    pub(crate) fn reason(&self) -> &str {
+        &self.reason
+    }
+
     fn transient(reason: impl Into<String>) -> Self {
         Self {
             class: LodChunkFailureClass::Transient,
@@ -243,7 +248,11 @@ pub(super) fn mark_lod_world_instance_ready(
 /// The worldspace whose distant terrain should be streamed, or `None` for none at all: a negative
 /// stream radius turns LOD off, and an interior has no distant terrain. Otherwise LOD follows the
 /// exterior the player is in, which a door may have changed from the configured one.
-fn lod_worldspace(stream_radius: i32, space: Option<&ActiveSpace>, configured: u32) -> Option<u32> {
+pub(super) fn lod_worldspace(
+    stream_radius: i32,
+    space: Option<&ActiveSpace>,
+    configured: u32,
+) -> Option<u32> {
     if stream_radius < 0 || space.is_some_and(|space| space.interior.is_some()) {
         return None;
     }
@@ -1713,7 +1722,7 @@ fn quadrant_from_node_name(name: &str) -> Option<u8> {
         .map(|index| index as u8)
 }
 
-fn streaming_center(screenshot: bool, origin: IVec2, camera: &Transform) -> IVec2 {
+pub(super) fn streaming_center(screenshot: bool, origin: IVec2, camera: &Transform) -> IVec2 {
     if screenshot {
         return origin;
     }
@@ -1746,7 +1755,7 @@ fn query_unload_radius(reach_cells: i32) -> i32 {
     reach_cells.saturating_add(LOD_UNLOAD_MARGIN_CELLS)
 }
 
-fn chunk_min_grid(key: ChunkKey, origin: LodOrigin) -> (i64, i64) {
+pub(super) fn chunk_min_grid(key: ChunkKey, origin: LodOrigin) -> (i64, i64) {
     let side = i64::from(key.tier.side_cells());
     (
         i64::from(origin.grid_x) + i64::from(key.anchor.x) * side,
@@ -1839,7 +1848,7 @@ fn classify_asset_load_failure(error: &AssetLoadError) -> LodChunkFailure {
     }
 }
 
-fn verify_payload_hash(path: PathBuf, expected: String) -> Result<(), LodChunkFailure> {
+pub(crate) fn verify_payload_hash(path: PathBuf, expected: String) -> Result<(), LodChunkFailure> {
     let bytes = std::fs::read(&path).map_err(|error| {
         let reason = format!("failed to read LOD payload {}: {error}", path.display());
         if error.kind() == std::io::ErrorKind::NotFound {
