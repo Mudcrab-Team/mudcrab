@@ -1,0 +1,204 @@
+{
+  "engine_sha256": "998304c5b5d916735d61f306ca97e54178b9a52764e4550f75a32f4a5d41a0a6",
+  "runs": {
+    "on": {
+      "BleakFallsBarrow01-web-visible": {
+        "drawn": 156,
+        "listed": 666
+      },
+      "BleakFalls-round-wall": {
+        "drawn": 118,
+        "listed": 567
+      }
+    },
+    "off": {
+      "BleakFallsBarrow01-web-visible": {
+        "drawn": 666,
+        "listed": 666
+      },
+      "BleakFalls-round-wall": {
+        "drawn": 567,
+        "listed": 567
+      }
+    },
+    "off-again": {
+      "BleakFallsBarrow01-web-visible": {
+        "drawn": 666,
+        "listed": 666
+      },
+      "BleakFalls-round-wall": {
+        "drawn": 567,
+        "listed": 567
+      }
+    },
+    "on-again": {
+      "BleakFallsBarrow01-web-visible": {
+        "drawn": 156,
+        "listed": 666
+      },
+      "BleakFalls-round-wall": {
+        "drawn": 118,
+        "listed": 567
+      }
+    },
+    "without-wall-off": {
+      "BleakFallsBarrow01-web-visible": {
+        "drawn": 657,
+        "listed": 657
+      },
+      "BleakFalls-round-wall": {
+        "drawn": 561,
+        "listed": 561
+      }
+    },
+    "without-door-off": {
+      "BleakFallsBarrow01-web-visible": {
+        "drawn": 656,
+        "listed": 656
+      },
+      "BleakFalls-round-wall": {
+        "drawn": 559,
+        "listed": 559
+      }
+    },
+    "without-wall-on": {
+      "BleakFallsBarrow01-web-visible": {
+        "drawn": 147,
+        "listed": 657
+      },
+      "BleakFalls-round-wall": {
+        "drawn": 112,
+        "listed": 561
+      }
+    },
+    "without-door-on": {
+      "BleakFallsBarrow01-web-visible": {
+        "drawn": 146,
+        "listed": 656
+      },
+      "BleakFalls-round-wall": {
+        "drawn": 110,
+        "listed": 559
+      }
+    }
+  },
+  "comparisons": {
+    "BleakFallsBarrow01-web-visible": {
+      "on": {
+        "differing_pixels": 0,
+        "outside_repeat_noise": 0
+      },
+      "without-wall-off": {
+        "differing_pixels": 0,
+        "outside_repeat_noise": 0
+      },
+      "without-door-off": {
+        "differing_pixels": 487334,
+        "outside_repeat_noise": 487334
+      },
+      "repeat_noise_pixels": 0,
+      "on_repeat_noise_pixels": 0,
+      "without-wall-on": {
+        "differing_pixels": 0,
+        "outside_repeat_noise": 0
+      },
+      "without-door-on": {
+        "differing_pixels": 487334,
+        "outside_repeat_noise": 487334
+      }
+    },
+    "BleakFalls-round-wall": {
+      "on": {
+        "differing_pixels": 0,
+        "outside_repeat_noise": 0
+      },
+      "without-wall-off": {
+        "differing_pixels": 122037,
+        "outside_repeat_noise": 122037
+      },
+      "without-door-off": {
+        "differing_pixels": 654240,
+        "outside_repeat_noise": 654240
+      },
+      "repeat_noise_pixels": 0,
+      "on_repeat_noise_pixels": 0,
+      "without-wall-on": {
+        "differing_pixels": 122037,
+        "outside_repeat_noise": 122037
+      },
+      "without-door-on": {
+        "differing_pixels": 654240,
+        "outside_repeat_noise": 654240
+      }
+    }
+  },
+  "engine_commit": "c3fa2555caf346abcee89c74922eb06e3f140e0e",
+  "converter_commit": "be4836769d6cccbc56fba1e375fc29d079ecb2d1",
+  "poses": {
+    "width": 1400,
+    "height": 1030,
+    "shots": [
+      {
+        "name": "BleakFallsBarrow01-web-visible",
+        "worldspace_id": null,
+        "interior_cell_id": 225758,
+        "position": [
+          1899.9990234375,
+          -2249.9990234375,
+          -1649.9989013671875
+        ],
+        "yaw": 291.60132110769024,
+        "pitch": -0.0,
+        "hfov": 74.99999733483311
+      },
+      {
+        "name": "BleakFalls-round-wall",
+        "worldspace_id": null,
+        "interior_cell_id": 225758,
+        "position": [
+          3900.0,
+          -3330.0,
+          -1785.0
+        ],
+        "yaw": 90.0,
+        "pitch": 0.0,
+        "hfov": 74.99999733483311
+      }
+    ]
+  },
+  "pixel_threshold": "maximum absolute RGB channel difference > 8",
+  "png_sha256": {
+    "on": {
+      "BleakFallsBarrow01-web-visible": "aad5d4216afbef02b5acb0f1fda4fc2e3d93b2ee9046435986edd523fab843dc",
+      "BleakFalls-round-wall": "96428b53864ec9a307aee13f304d015979c8d8d3444ddb4071c5347d2bc443cb"
+    },
+    "off": {
+      "BleakFallsBarrow01-web-visible": "aad5d4216afbef02b5acb0f1fda4fc2e3d93b2ee9046435986edd523fab843dc",
+      "BleakFalls-round-wall": "96428b53864ec9a307aee13f304d015979c8d8d3444ddb4071c5347d2bc443cb"
+    },
+    "off-again": {
+      "BleakFallsBarrow01-web-visible": "aad5d4216afbef02b5acb0f1fda4fc2e3d93b2ee9046435986edd523fab843dc",
+      "BleakFalls-round-wall": "96428b53864ec9a307aee13f304d015979c8d8d3444ddb4071c5347d2bc443cb"
+    },
+    "on-again": {
+      "BleakFallsBarrow01-web-visible": "aad5d4216afbef02b5acb0f1fda4fc2e3d93b2ee9046435986edd523fab843dc",
+      "BleakFalls-round-wall": "96428b53864ec9a307aee13f304d015979c8d8d3444ddb4071c5347d2bc443cb"
+    },
+    "without-wall-off": {
+      "BleakFallsBarrow01-web-visible": "aad5d4216afbef02b5acb0f1fda4fc2e3d93b2ee9046435986edd523fab843dc",
+      "BleakFalls-round-wall": "230dccf29261725690111055ca0647f6d4b4cdc581b31643d562455e8f106e5b"
+    },
+    "without-door-off": {
+      "BleakFallsBarrow01-web-visible": "fb8dbba32426c0ceb3c2c71d807bc7c84d06fcc5975670d2b471f2155c70d777",
+      "BleakFalls-round-wall": "19bbb2fe044c33faa8b9c88ffa53dbe723afb4e67f1a053ceadc89691c955e88"
+    },
+    "without-wall-on": {
+      "BleakFallsBarrow01-web-visible": "aad5d4216afbef02b5acb0f1fda4fc2e3d93b2ee9046435986edd523fab843dc",
+      "BleakFalls-round-wall": "230dccf29261725690111055ca0647f6d4b4cdc581b31643d562455e8f106e5b"
+    },
+    "without-door-on": {
+      "BleakFallsBarrow01-web-visible": "fb8dbba32426c0ceb3c2c71d807bc7c84d06fcc5975670d2b471f2155c70d777",
+      "BleakFalls-round-wall": "19bbb2fe044c33faa8b9c88ffa53dbe723afb4e67f1a053ceadc89691c955e88"
+    }
+  }
+}
