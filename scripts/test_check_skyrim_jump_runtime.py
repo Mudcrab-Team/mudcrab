@@ -106,6 +106,16 @@ class RetainedEvidenceTests(unittest.TestCase):
             self.assertEqual(error.exception.code, 2)
             self.assertFalse(output.exists())
 
+    def test_required_gate_rejects_a_supplied_binary_before_preparing_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'replay'
+            with patch.object(sys, 'argv', ['replay', '--output', str(output),
+                                            '--require-heldout-pass', '--test-binary', sys.executable]):
+                with self.assertRaises(SystemExit) as error:
+                    replay.main()
+            self.assertEqual(error.exception.code, 2)
+            self.assertFalse(output.exists())
+
     def test_existing_replay_directory_preserves_its_results(self):
         with tempfile.TemporaryDirectory() as directory:
             receipt = Path(directory) / 'result.json'

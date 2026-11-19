@@ -4463,8 +4463,10 @@ mod tests {
             start = previous;
         }
         if path.ends_with("test_check_skyrim_jump_runtime.py") {
-            return matches!(flag, "--prepare-only" | "--require-heldout-pass")
-                && start.contains("patch.object(sys, 'argv', ['replay',");
+            return matches!(
+                flag,
+                "--prepare-only" | "--require-heldout-pass" | "--test-binary"
+            ) && start.contains("patch.object(sys, 'argv', ['replay',");
         }
         [
             ".add_argument(",
@@ -5006,6 +5008,7 @@ mod tests {
             ("engine --unknown-engine-option", native),
             ("cmd = ['engine',\n    '--prepare-only']", replay_test),
             ("engine --require-heldout-pass", replay_test),
+            ("engine --test-binary stale", replay_test),
             (
                 "run.add_argument('--session')\nengine --session fixture",
                 native,

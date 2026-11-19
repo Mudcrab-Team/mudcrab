@@ -266,8 +266,10 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--prepare-only', action='store_true')
     mode.add_argument('--require-heldout-pass', action='store_true')
-    parser.add_argument('--test-binary', type=Path, help='existing engine library test executable; skips Cargo')
+    parser.add_argument('--test-binary', type=Path, help='use an existing engine test executable for a diagnostic replay')
     args = parser.parse_args()
+    if args.require_heldout_pass and args.test_binary is not None:
+        parser.error('the required held-out gate builds from this checkout with Cargo; omit the supplied test binary')
     destination = args.output.resolve()
     try:
         destination.mkdir(parents=True, exist_ok=False)
