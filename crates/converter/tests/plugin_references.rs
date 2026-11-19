@@ -2311,6 +2311,141 @@ fn ambiguous_occluder_names_are_rejected_by_both_readers() {
     );
 }
 
+fn occluder_fixture(data: &Path, half_x: f32, links: &[&[u8]]) {
+    let mut shape = [0; 32];
+    shape[..4].copy_from_slice(&half_x.to_le_bytes());
+    shape[8..12].copy_from_slice(&12.0f32.to_le_bytes());
+    shape[28..].copy_from_slice(&3u32.to_le_bytes());
+    let marker = |id, links: &[&[u8]]| {
+        let mut payload = [sub(b"NAME", &0x17u32.to_le_bytes()), sub(b"XPRM", &shape)].concat();
+        for bytes in links {
+            payload.extend(sub(b"XORD", bytes));
+        }
+        payload.extend(sub(b"DATA", &[0; 24]));
+        record(b"REFR", id, 0, payload)
+    };
+    let cell = 0x900;
+    plugin(
+        data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"STAT", 0x17, 0, sub(b"EDID", b"PlaneMarker\0")),
+            record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])),
+            group(
+                6,
+                cell,
+                group(9, cell, [marker(0x801, links), marker(0x802, &[])].concat()),
+            ),
+        ]
+        .concat(),
+    );
+}
+
+#[test]
+fn occluder_links_keep_the_source_occurrence_after_a_rejected_xord() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let link = [0u32, 0, 0x802, 0].map(u32::to_le_bytes).concat();
+    occluder_fixture(&data, 12.0, &[&[0; 3], &link]);
+
+    for typed in [false, true] {
+        let output = dir.path().join(if typed { "inhouse" } else { "legacy" });
+        let conn =
+            rusqlite::Connection::open(export_room_review_fixture(&data, &output, typed)).unwrap();
+        let links = conn
+            .prepare("SELECT link_index, linked_ref FROM room_occluder_links WHERE ref_id=0x801")
+            .unwrap()
+            .query_map([], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(links, [(6, 0x802)], "typed={typed}");
+        let complete: bool = conn
+            .query_row(
+                "SELECT complete FROM room_graph_cells WHERE cell_id=0x900",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!complete, "typed={typed}");
+    }
+}
+
+#[test]
+fn occluder_link_verification_distinguishes_null_from_unusable_source() {
+    let unresolved = [0u32, 0x0900_0802, 0, 0].map(u32::to_le_bytes).concat();
+    for (links, complete) in [
+        (&[0; 16][..], true),
+        (&[0; 12], false),
+        (&unresolved, false),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("Data");
+        fs::create_dir(&data).unwrap();
+        occluder_fixture(&data, 12.0, &[links]);
+        let db = export_room_review_fixture(&data, &dir.path().join("bundle"), true);
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let read = |sql| conn.query_row(sql, [], |row| row.get::<_, u32>(0)).unwrap();
+        assert_eq!(
+            read("SELECT value FROM room_graph_stats WHERE name='occlusion_links_verified'"),
+            1
+        );
+        assert_eq!(read("SELECT count(*) FROM room_occluder_links"), 0);
+        assert_eq!(
+            read("SELECT has_links FROM room_occluders WHERE ref_id=0x801"),
+            1
+        );
+        assert_eq!(
+            read("SELECT complete FROM room_graph_cells WHERE cell_id=0x900"),
+            u32::from(complete)
+        );
+    }
+}
+
+#[tokio::test]
+async fn dropped_occluder_fields_make_conversion_incomplete() {
+    use converter::{AssetPipeline, config::RecordReader};
+
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        for (half_x, links, category) in [
+            (f32::NAN, &[][..], "occluder_unusable_geometry"),
+            (12.0, &[&[0; 12][..]][..], "occluder_unusable_links"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let data = dir.path().join("Data");
+            fs::create_dir(&data).unwrap();
+            occluder_fixture(&data, half_x, links);
+            let list = dir.path().join("plugins.txt");
+            fs::write(&list, "*Skyrim.esm\n").unwrap();
+            let output = dir.path().join("bundle");
+            let mut config = common::cpu_lod_config(&data, &output);
+            config.plugins_file = Some(list);
+            config.record_reader = reader;
+            let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+            let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+            let report = AssetPipeline::run_async(config, tx).await.unwrap();
+            drain.await.unwrap();
+            assert!(
+                report
+                    .warnings
+                    .iter()
+                    .any(|warning| { warning.contains(category) && warning.contains("00000801") }),
+                "{reader:?} {category}: {:?}",
+                report.warnings
+            );
+            assert!(!report.complete, "{reader:?} {category}");
+            assert_eq!(report.skipped, 0);
+            let manifest: converter::cache::ConversionManifest =
+                serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
+                    .unwrap();
+            assert!(!manifest.complete);
+        }
+    }
+}
+
 fn room_graph_review_fixture(
     data: &Path,
     link: Option<u32>,

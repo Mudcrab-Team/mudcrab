@@ -183,6 +183,10 @@ pub struct DecodedRecord {
 }
 
 impl DecodedRecord {
+    pub(crate) fn framed_source_prefix(&self) -> Vec<([u8; 4], &[u8])> {
+        decoder::framed_source_prefix(&self.raw_payload)
+    }
+
     pub(crate) fn framed_source_subrecords(&self) -> Option<Vec<([u8; 4], &[u8])>> {
         decoder::framed_source_subrecords(&self.raw_payload)
     }

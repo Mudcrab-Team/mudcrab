@@ -1,7 +1,12 @@
 //! Authored occlusion primitives. Runtime ownership and activation remain per-view policy.
 
-use super::{OCCLUSION_MARKER_BASE, RawRecord, SubrecordView, f32_at, transform_of, u32_at};
-use rusqlite::{Connection, Result, Transaction, params};
+use super::{OCCLUSION_MARKER_BASE, RawRecord, SubrecordView, u32_at};
+use crate::esm::{
+    load_order::LoadOrder,
+    projection_omissions::{OmissionCategory, ProjectionOmissions},
+};
+use crate::records::{DecodedRecord, source_identity};
+use rusqlite::{Result, Transaction, params};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
@@ -13,13 +18,9 @@ pub(super) struct Exported {
 }
 
 fn primitive(data: &[u8]) -> Option<(u32, [f32; 3])> {
-    let (words, tail) = data.as_chunks::<4>();
-    let [x, y, z, _, _, _, _, shape] = words else {
+    let ([x, y, z, _, _, _, _, shape], []) = data.as_chunks::<4>() else {
         return None;
     };
-    if !tail.is_empty() {
-        return None;
-    }
     let half = [*x, *y, *z].map(f32::from_le_bytes);
     let shape = u32::from_le_bytes(*shape);
     let valid = half.iter().all(|value| value.is_finite())
@@ -31,76 +32,235 @@ fn primitive(data: &[u8]) -> Option<(u32, [f32; 3])> {
     valid.then_some((shape, half))
 }
 
-fn has_unique_marker_name(view: &SubrecordView<'_>) -> bool {
-    let marker = OCCLUSION_MARKER_BASE.to_le_bytes();
-    let mut names = view.find_all(b"NAME");
-    names.next() == Some(marker.as_slice()) && names.next().is_none()
+fn placement(data: &[u8]) -> Option<([f32; 3], [f32; 3])> {
+    let (words, []) = data.as_chunks::<4>() else {
+        return None;
+    };
+    let words: &[[u8; 4]; 6] = words.try_into().ok()?;
+    let values = words.map(f32::from_le_bytes);
+    let [x, y, z, rx, ry, rz] = values;
+    values
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(([x, y, z], [rx, ry, rz]))
 }
 
-pub(super) fn export(tx: &Transaction<'_>, records: &[(&u32, &RawRecord)]) -> Result<Exported> {
+fn link_targets(data: &[u8]) -> Option<[u32; 4]> {
+    let (words, []) = data.as_chunks::<4>() else {
+        return None;
+    };
+    let words: &[[u8; 4]; 4] = words.try_into().ok()?;
+    Some(words.map(u32::from_le_bytes))
+}
+
+fn is_marker(record: &RawRecord, view: &SubrecordView<'_>) -> bool {
+    record.record_type == *b"REFR"
+        && !record.is_deleted()
+        && view
+            .find_all(b"NAME")
+            .any(|name| name == OCCLUSION_MARKER_BASE.to_le_bytes())
+}
+
+pub(in crate::esm) fn invalidate_subset_links(
+    tx: &Transaction<'_>,
+    record: &RawRecord,
+) -> Result<()> {
+    // The stored snapshot can still contain links from the previous version of this record.
+    tx.prepare_cached(
+        "UPDATE room_graph_cells SET complete=0 WHERE cell_id IN (
+            SELECT target.cell_id FROM room_occluder_links link
+            JOIN room_occluders target ON target.ref_id=link.linked_ref WHERE link.ref_id=?1
+        )",
+    )?
+    .execute([record.form_id])?;
+
+    let view = SubrecordView::new(&record.subrecords);
+    if is_marker(record, &view) {
+        let mut invalidate = tx.prepare_cached(
+            "UPDATE room_graph_cells SET complete=0
+             WHERE cell_id=(SELECT cell_id FROM room_occluders WHERE ref_id=?1)",
+        )?;
+        for target in view.find_all(b"XORD").filter_map(link_targets).flatten() {
+            if target != 0 {
+                invalidate.execute([target])?;
+            }
+        }
+    }
+    Ok(())
+}
+
+struct Geometry {
+    shape: u32,
+    half: [f32; 3],
+    position: [f32; 3],
+    rotation: [f32; 3],
+    scale: f32,
+}
+
+fn geometry<'a>(
+    view: &SubrecordView<'_>,
+    complete: bool,
+    field: impl Fn(&[u8; 4]) -> Option<&'a [u8]>,
+    has_scale: bool,
+) -> std::result::Result<Geometry, &'static str> {
+    if !complete {
+        return Err("incomplete PlaneMarker payload");
+    }
+    let mut names = view.find_all(b"NAME");
+    if names.next() != Some(OCCLUSION_MARKER_BASE.to_le_bytes().as_slice())
+        || names.next().is_some()
+        || !field(b"NAME").is_some_and(|data| data.len() == 4)
+    {
+        return Err("ambiguous or malformed PlaneMarker NAME");
+    }
+    let (shape, half) = field(b"XPRM")
+        .and_then(primitive)
+        .ok_or("missing, malformed, or unsupported PlaneMarker XPRM")?;
+    let (position, rotation) = field(b"DATA")
+        .and_then(placement)
+        .ok_or("missing or invalid PlaneMarker DATA placement")?;
+    let scale = if has_scale {
+        field(b"XSCL")
+            .and_then(|data| <[u8; 4]>::try_from(data).ok())
+            .map(f32::from_le_bytes)
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .ok_or("invalid PlaneMarker XSCL")?
+    } else {
+        1.0
+    };
+    Ok(Geometry {
+        shape,
+        half,
+        position,
+        rotation,
+        scale,
+    })
+}
+
+pub(super) fn export(
+    tx: &Transaction<'_>,
+    master: &HashMap<u32, RawRecord>,
+    interior_cells: &HashSet<u32>,
+    sources: Option<(&HashMap<u32, DecodedRecord>, &LoadOrder)>,
+    omissions: &mut ProjectionOmissions,
+) -> Result<Exported> {
     let mut result = Exported::default();
-    let marker = OCCLUSION_MARKER_BASE.to_le_bytes();
-    for &(&id, record) in records {
-        if record.record_type != *b"REFR" || record.is_deleted() {
-            continue;
-        }
+    let in_interior = |record: &RawRecord| {
+        record
+            .cell_form_id
+            .is_some_and(|cell| interior_cells.contains(&cell))
+    };
+    // A typed export retains incoming links from markers outside the interior snapshot.
+    let mut markers: Vec<_> = master
+        .values()
+        .filter(|record| {
+            (sources.is_some() || in_interior(record))
+                && is_marker(record, &SubrecordView::new(&record.subrecords))
+        })
+        .collect();
+    markers.sort_unstable_by_key(|record| record.form_id);
+    for record in markers {
+        let id = record.form_id;
         let view = SubrecordView::new(&record.subrecords);
-        if !view.find_all(b"NAME").any(|name| name == marker) {
+        let cell = record.cell_form_id.unwrap_or(0);
+        let source =
+            sources.and_then(|(records, order)| records.get(&id).map(|record| (record, order)));
+        let source_fields = source.map(|(record, _)| record.framed_source_prefix());
+        let authored = |tag: [u8; 4]| {
+            source_fields
+                .iter()
+                .flatten()
+                .filter_map(move |(signature, data)| (*signature == tag).then_some(*data))
+        };
+        let field = |tag: &[u8; 4]| match source {
+            Some((record, _)) => {
+                let mut occurrences = authored(*tag);
+                let value = occurrences.next()?;
+                (occurrences.next().is_none() && !record.rejected_fields.contains(tag))
+                    .then_some(value)
+            }
+            None => view.find(tag),
+        };
+        let present = |tag: &[u8; 4]| {
+            view.find(tag).is_some()
+                || authored(*tag).next().is_some()
+                || source.is_some_and(|(record, _)| record.rejected_fields.contains(tag))
+        };
+        let complete = source.is_none_or(|(record, _)| record.payload_complete);
+        if !complete {
+            result.incomplete_cells.insert(cell);
+        }
+
+        // Walk physical occurrences, including rejected ones. Outgoing links from an
+        // unusable marker still suppress independently valid targets in any cell.
+        let mut link_omission = None;
+        let xords = view
+            .find_all(b"XORD")
+            .filter(|_| source.is_none())
+            .chain(authored(*b"XORD"));
+        for (occurrence, bytes) in xords.enumerate() {
+            let Some(targets) = link_targets(bytes) else {
+                link_omission.get_or_insert("PlaneMarker XORD must contain four FormIDs");
+                continue;
+            };
+            for (slot, target) in targets.into_iter().enumerate() {
+                if target == 0 {
+                    continue;
+                }
+                let linked = match source {
+                    Some((record, order)) => source_identity::header_runtime_id(
+                        b"REFR",
+                        target,
+                        record.load_order as usize,
+                        order,
+                    )
+                    .filter(|linked| {
+                        *linked != 0
+                            && master.get(linked).map_or(*linked < 0x800, |record| {
+                                record.record_type == *b"REFR" && !record.is_deleted()
+                            })
+                    }),
+                    None => Some(target),
+                };
+                let Some(linked) = linked else {
+                    link_omission.get_or_insert("PlaneMarker XORD contains an unresolved FormID");
+                    continue;
+                };
+                tx.prepare_cached(
+                    "INSERT INTO room_occluder_links(ref_id,link_index,linked_ref) VALUES(?1,?2,?3)",
+                )?
+                .execute(params![id, (occurrence * 4 + slot) as i64, linked])?;
+            }
+        }
+        if let Some(reason) = link_omission {
+            result.incomplete_cells.insert(cell);
+            omissions.record(OmissionCategory::OccluderUnusableLinks, id, reason);
+        }
+        if !in_interior(record) {
             continue;
         }
-        let cell = record.cell_form_id.unwrap_or(0);
         result.cells.insert(cell);
-        // Links survive invalid geometry: otherwise a valid linked target could appear
-        // independent and become an unsafe occluder.
-        for (occurrence, data) in view.find_all(b"XORD").enumerate() {
-            if data.len() != 16 {
-                result.incomplete_cells.insert(cell);
+
+        let Geometry {
+            shape,
+            half,
+            position,
+            rotation,
+            scale,
+        } = match geometry(&view, complete, field, present(b"XSCL")) {
+            Ok(geometry) => geometry,
+            Err(reason) => {
+                result.invalid += 1;
+                omissions.record(OmissionCategory::OccluderUnusableGeometry, id, reason);
                 continue;
             }
-            for (slot, bytes) in data.as_chunks::<4>().0.iter().enumerate() {
-                let linked = u32::from_le_bytes(*bytes);
-                if linked != 0 {
-                    tx.execute(
-                        "INSERT INTO room_occluder_links(ref_id,link_index,linked_ref) VALUES(?1,?2,?3)",
-                        params![id, (occurrence * 4 + slot) as i64, linked],
-                    )?;
-                }
-            }
-        }
-        if !has_unique_marker_name(&view) {
-            result.invalid += 1;
-            continue;
-        }
-        let Some((shape, half)) = view.find(b"XPRM").and_then(primitive) else {
-            result.invalid += 1;
-            continue;
         };
-        let Some((position, rotation)) = transform_of(&view) else {
-            result.invalid += 1;
-            continue;
-        };
-        let scale = match view.find(b"XSCL") {
-            None => Some(1.0),
-            Some(data) if data.len() == 4 => f32_at(data, 0),
-            Some(_) => None,
-        };
-        let Some(scale) = scale.filter(|scale| scale.is_finite() && *scale > 0.0) else {
-            result.invalid += 1;
-            continue;
-        };
-        if !position
-            .iter()
-            .chain(&rotation)
-            .all(|value| value.is_finite())
-            || !view.find(b"DATA").is_some_and(|data| data.len() == 24)
-        {
-            result.invalid += 1;
-            continue;
-        }
-        let has_links = view.find(b"XORD").is_some();
-        let target = view
-            .find(b"XMBR")
-            .map(|data| u32_at(data, 0).filter(|_| data.len() == 4).unwrap_or(0));
+        let target = present(b"XMBR").then(|| {
+            view.find(b"XMBR")
+                .filter(|data| data.len() == 4)
+                .and_then(|data| u32_at(data, 0))
+                .unwrap_or(0)
+        });
         tx.execute(
             "INSERT INTO room_occluders(ref_id,cell_id,shape,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_y,half_z,scale,header_flags,has_enable_parent,has_links,target_ref)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
@@ -119,107 +279,14 @@ pub(super) fn export(tx: &Transaction<'_>, records: &[(&u32, &RawRecord)]) -> Re
                 half[2],
                 scale,
                 record.flags,
-                view.find(b"XESP").is_some(),
-                has_links,
+                present(b"XESP"),
+                present(b"XORD"),
                 target
             ],
         )?;
         result.count += 1;
     }
     Ok(result)
-}
-
-/// Canonical decoding can discard malformed optional fields. Keep source presence and
-/// reject repaired geometry before publishing a trusted full-export version.
-pub(crate) fn restore_source_provenance<'a>(
-    conn: &Connection,
-    canonical: &HashMap<u32, RawRecord>,
-    records: impl IntoIterator<Item = &'a crate::records::DecodedRecord>,
-) -> Result<()> {
-    let mut removed = 0;
-    for record in records {
-        if record.record_type != *b"REFR" || record.flags & 0x20 != 0 {
-            continue;
-        }
-        let id = record.form_id;
-        let Some(canonical) = canonical.get(&id) else {
-            continue;
-        };
-        let view = SubrecordView::new(&canonical.subrecords);
-        // Runtime projection can omit a record whose other fields are invalid. Its
-        // resolved links still protect any independently valid target primitives.
-        for (occurrence, data) in view.find_all(b"XORD").enumerate() {
-            if data.len() != 16 {
-                continue;
-            }
-            for (slot, bytes) in data.as_chunks::<4>().0.iter().enumerate() {
-                let linked = u32::from_le_bytes(*bytes);
-                if linked != 0 {
-                    conn.execute("INSERT OR REPLACE INTO room_occluder_links(ref_id,link_index,linked_ref) VALUES(?1,?2,?3)", params![id,(occurrence*4+slot) as i64,linked])?;
-                }
-            }
-        }
-        let source = |tag| record.unique_source_subrecord(tag);
-        let present = |tag| {
-            source(tag).is_some()
-                || view.find(tag).is_some()
-                || record.rejected_fields.contains(tag)
-        };
-        if !record.payload_complete {
-            conn.execute(
-                "UPDATE room_graph_cells SET complete=0 WHERE cell_id=?1",
-                [record.cell_form_id],
-            )?;
-            removed += conn.execute("DELETE FROM room_occluders WHERE ref_id=?1", [id])?;
-            continue;
-        }
-        let has_links = present(b"XORD");
-        conn.execute(
-            "UPDATE room_occluders SET header_flags=?2,has_enable_parent=?3,has_links=?4,target_ref=CASE WHEN ?5 THEN COALESCE(target_ref,0) ELSE target_ref END WHERE ref_id=?1",
-            params![id, record.flags, present(b"XESP"), has_links, present(b"XMBR")],
-        )?;
-        // A rejected link may have hidden an incoming edge to a different source.
-        if has_links
-            && (source(b"XORD").is_some_and(|data| data.len() != 16)
-                || record.rejected_fields.contains(b"XORD")
-                || view.find(b"XORD").is_none())
-        {
-            conn.execute(
-                "UPDATE room_graph_cells SET complete=0 WHERE cell_id=?1",
-                [record.cell_form_id],
-            )?;
-        }
-        let shape = source(b"XPRM");
-        let placement = source(b"DATA");
-        let scale = source(b"XSCL");
-        // The sole file-relative NAME must have a resolved PlaneMarker counterpart.
-        let valid = source(b"NAME").is_some_and(|data| data.len() == 4)
-            && has_unique_marker_name(&view)
-            && shape.and_then(primitive).is_some()
-            && placement.is_some_and(|data| {
-                data.len() == 24
-                    && data
-                        .as_chunks::<4>()
-                        .0
-                        .iter()
-                        .all(|bytes| f32::from_le_bytes(*bytes).is_finite())
-            })
-            && (!present(b"XSCL")
-                || scale.is_some_and(|data| {
-                    data.len() == 4
-                        && f32_at(data, 0).is_some_and(|value| value.is_finite() && value > 0.0)
-                }));
-        if !valid {
-            removed += conn.execute("DELETE FROM room_occluders WHERE ref_id=?1", [id])?;
-        }
-    }
-    // The source pass may remove canonical defaults; retain report/table agreement.
-    conn.execute("UPDATE room_graph_stats SET value=(SELECT COUNT(*) FROM room_occluders) WHERE name='occluders'", [])?;
-    conn.execute(
-        "UPDATE room_graph_stats SET value=value+?1 WHERE name='invalid_occluders_skipped'",
-        [removed as u64],
-    )?;
-    Ok(())
 }
 
 #[cfg(test)]

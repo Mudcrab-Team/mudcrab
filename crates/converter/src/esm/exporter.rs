@@ -846,6 +846,7 @@ fn export_records(
             _ if super::is_placed_record_type(&record.record_type) => {
                 let cell_id = record.cell_form_id.unwrap_or(0);
                 if order.is_none() {
+                    crate::esm::rooms::invalidate_subset_occluder_links(&tx, canonical_record)?;
                     // A subset cannot rebuild the cell graph. Empty membership alone would mean
                     // unbounded space in a versioned graph, so invalidate both affected cells.
                     tx.prepare_cached(
@@ -1074,7 +1075,8 @@ fn export_records(
             &tx,
             master,
             &interior_cells,
-            decoded_records,
+            decoded_records.zip(order),
+            &mut omissions,
         )?;
         if !trusted_portal_nulls {
             // Canonical nulls need their source provenance. Keep legacy-safe semantics until
@@ -4233,6 +4235,52 @@ mod tests {
                 .unwrap();
             assert!(unrelated);
         }
+    }
+
+    #[test]
+    fn subset_occluder_changes_invalidate_old_and_new_cross_cell_targets() {
+        let occluder = |id, cell, target| {
+            let mut extra = vec![(b"XPRM", xprm([10.0; 3], 3))];
+            if let Some(target) = target {
+                extra.push((b"XORD", [word(0), word(target), word(0), word(0)].concat()));
+            }
+            marker(
+                id,
+                cell,
+                rooms::OCCLUSION_MARKER_BASE,
+                [0.0; 3],
+                [0.0; 3],
+                extra,
+            )
+        };
+        let (conn, _) = export_rooms(vec![
+            interior_cell(0x100),
+            interior_cell(0x200),
+            interior_cell(0x300),
+            interior_cell(0x400),
+            occluder(0x1001, 0x100, Some(0x2001)),
+            occluder(0x2001, 0x200, None),
+            occluder(0x3001, 0x300, None),
+            occluder(0x4001, 0x400, None),
+        ]);
+        let complete = |cell| {
+            conn.query_row(
+                "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
+                [cell],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap()
+        };
+        assert!([0x100, 0x200, 0x300, 0x400].into_iter().all(complete));
+        export_to_db(
+            &conn,
+            &HashMap::from([(0x1001, occluder(0x1001, 0x100, Some(0x3001)))]),
+        )
+        .unwrap();
+        for cell in [0x100, 0x200, 0x300] {
+            assert!(!complete(cell), "cell {cell:08X} stayed complete");
+        }
+        assert!(complete(0x400));
     }
 
     #[test]

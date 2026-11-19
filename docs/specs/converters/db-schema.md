@@ -1304,13 +1304,15 @@ Columns and rules:
   `target_ref` is NULL only when `XMBR` is absent; zero preserves an unresolved or malformed
   explicit override. `has_links` remains true for malformed `XORD`, including after remapping.
 - **`room_occluder_links`** preserves nonzero linked FormIDs from complete 16-byte `XORD`
-  occurrences. Slots are numbered `occurrence * 4 + slot`, without asserting the historical
-  edge names. All four FormIDs are remapped. Links remain when source geometry is skipped,
-  so a linked target cannot become an independent occluder. Malformed occurrences have no
-  link rows. They preserve `has_links` when the source has valid geometry and set the cell's
-  `complete` flag to false. A full trusted runtime export publishes
-  `room_graph_stats.occlusion_version = 1` in the in-house source-data transaction.
-  Legacy and untrusted canonical exports omit this marker.
+  occurrences. `link_index` is `occurrence * 4 + slot` using the original source position,
+  including gaps for earlier malformed occurrences. All four FormIDs are remapped. Links
+  remain when the converter skips source geometry, so a linked target cannot become an
+  independent occluder. An unreadable occurrence sets the source cell's `complete` flag to
+  false. In-house exports also clear that flag for unresolved FormIDs. A full in-house export
+  publishes `occlusion_version = 1` and `occlusion_links_verified = 1` in `room_graph_stats`.
+  These markers let the loader keep unrelated occluders in a complete cell that contains an
+  all-null `XORD`. Subset exports invalidate cells that contain an old or new link target.
+  Legacy exports omit both markers.
 - **`room_bounds`**: the box is centred on the marker's position and oriented by its rotation
   (the same Euler convention as any reference, `shared::coordinates`). `half_*` are the `XPRM`
   half-extents in the room's own frame. `lighting_template_id` (`LNAM`) and `image_space_id`
@@ -1834,6 +1836,8 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 | `light_short_data` | `LIGH` whose `DATA` is shorter than the 20 bytes the row needs: no `lights` row | data loss |
 | `grass_unusable_data` | `GRAS` with missing or short `DATA`: unavailable scalar columns NULL, readable scalar prefix/model/identity retained | data loss |
 | `reference_unusable_data` | Placed record with missing or short `DATA`: no placement or spatial row; canonical record retained | data loss |
+| `occluder_unusable_geometry` | PlaneMarker with unusable geometry has no occluder row | data loss |
+| `occluder_unusable_links` | PlaneMarker with a malformed `XORD` or unresolved target leaves its cell incomplete | data loss |
 | `lighting_template_unusable_data` | `LGTM` with missing or unsupported-size `DATA`: DATA lighting columns NULL, other fields retained | data loss |
 | `emittance_target_absent` | `XEMI` target not in the load order, or deleted: no `emittance` row | fallback |
 | `emittance_light_unusable_data` | `XEMI` target `LIGH` without a usable `DATA`: no `emittance` row | fallback |

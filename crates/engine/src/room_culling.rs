@@ -1599,6 +1599,39 @@ mod tests {
     }
 
     #[test]
+    fn all_null_occluder_links_keep_other_occluders_available() {
+        let connection = occluder_database();
+        connection
+            .execute_batch(
+                "INSERT INTO room_occluders VALUES(501,7,3,0,40,0,0,0,0,8,0,8,1,0,0,0,NULL);
+             UPDATE room_occluders SET has_links=1 WHERE ref_id=500;",
+            )
+            .unwrap();
+        assert!(
+            load_room_graph(&connection, 7)
+                .unwrap()
+                .occluders
+                .is_empty()
+        );
+        connection
+            .execute(
+                "INSERT INTO room_graph_stats VALUES ('occlusion_links_verified',1)",
+                [],
+            )
+            .unwrap();
+        let graph = load_room_graph(&connection, 7).unwrap();
+        assert_eq!(
+            graph
+                .occluders
+                .values()
+                .flatten()
+                .map(|shape| shape.ref_id)
+                .collect::<Vec<_>>(),
+            [501]
+        );
+    }
+
+    #[test]
     fn uncertain_occluder_state_and_legacy_exports_cannot_hide_geometry() {
         for change in [
             "DELETE FROM room_graph_stats WHERE name='occlusion_version'",

@@ -972,25 +972,6 @@ fn convert_plugins_with_text_sources_report_impl(
         .transpose()?;
     let projection_stage = records::profile::ProfileStage::start("typed_export_runtime_projection");
     let mut master = HashMap::with_capacity(decoded.records.len());
-    // Projection moves canonical fields out of DecodedRecord. Retain only the small
-    // occluder set so source publication can still resolve identity and incoming links.
-    let occluder_records = if mode == RecordBundleMode::Full {
-        decoded
-            .records
-            .values()
-            .filter(|record| {
-                record.record_type == *b"REFR"
-                    && record.fields.iter().any(|field| {
-                        field.signature == *b"NAME"
-                            && field.canonical_bytes.as_slice()
-                                == super::rooms::OCCLUSION_MARKER_BASE.to_le_bytes()
-                    })
-            })
-            .map(|record| (record.form_id, record.to_raw_record()))
-            .collect()
-    } else {
-        HashMap::new()
-    };
     let mut opaque_fields = HashMap::new();
     // Sort compact keys, leaving record payloads in place and streaming one JSON line at a time.
     // The same traversal fixes localized provenance rowids when no typed dump is requested.
@@ -1280,13 +1261,9 @@ fn convert_plugins_with_text_sources_report_impl(
                 .values()
                 .filter(|record| super::is_placed_record_type(&record.record_type)),
         )?;
-        super::rooms::restore_occluder_source_provenance(
-            &tx,
-            &occluder_records,
-            decoded.records.values(),
-        )?;
         tx.execute(
-            "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES ('visibility_version',2),('occlusion_version',1)",
+            "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES
+             ('visibility_version',2),('occlusion_version',1),('occlusion_links_verified',1)",
             [],
         )?;
     }

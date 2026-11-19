@@ -7,14 +7,17 @@
 //!
 //! Design and byte layouts: `docs/research/interior-room-graph-converter.md`.
 
-use crate::esm::{extractors::SubrecordView, records::RawRecord};
+use crate::esm::{
+    extractors::SubrecordView, load_order::LoadOrder, projection_omissions::ProjectionOmissions,
+    records::RawRecord,
+};
 use crate::records::DecodedRecord;
 use rusqlite::{Connection, OptionalExtension, Result, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 mod occluders;
-pub(crate) use occluders::restore_source_provenance as restore_occluder_source_provenance;
+pub(super) use occluders::invalidate_subset_links as invalidate_subset_occluder_links;
 
 /// `RoomMarker` base form in `Skyrim.esm`, which is always load-order slot 0.
 pub const ROOM_MARKER_BASE: u32 = 0x1F;
@@ -633,14 +636,21 @@ pub fn export_room_graph(
     master: &HashMap<u32, RawRecord>,
     interior_cells: &HashSet<u32>,
 ) -> Result<RoomGraphReport> {
-    export_room_graph_with_sources(tx, master, interior_cells, None)
+    export_room_graph_with_sources(
+        tx,
+        master,
+        interior_cells,
+        None,
+        &mut ProjectionOmissions::default(),
+    )
 }
 
 pub(crate) fn export_room_graph_with_sources(
     tx: &Transaction<'_>,
     master: &HashMap<u32, RawRecord>,
     interior_cells: &HashSet<u32>,
-    sources: Option<&HashMap<u32, DecodedRecord>>,
+    sources: Option<(&HashMap<u32, DecodedRecord>, &LoadOrder)>,
+    omissions: &mut ProjectionOmissions,
 ) -> Result<RoomGraphReport> {
     clear(tx)?;
     let mut report = RoomGraphReport::default();
@@ -702,7 +712,7 @@ pub(crate) fn export_room_graph_with_sources(
             continue;
         }
         // The typed projection can lack rejected occurrences, so count its source fields.
-        let links_complete = match sources.and_then(|sources| sources.get(&form_id)) {
+        let links_complete = match sources.and_then(|(sources, _)| sources.get(&form_id)) {
             Some(source) => source.framed_source_subrecords().is_some_and(|fields| {
                 room_link_metadata_is_complete(
                     form_id,
@@ -867,7 +877,7 @@ pub(crate) fn export_room_graph_with_sources(
         report.portals += 1;
     }
 
-    let occluders = occluders::export(tx, &ordered)?;
+    let occluders = occluders::export(tx, master, interior_cells, sources, omissions)?;
     report.occluders = occluders.count;
     report.invalid_occluders_skipped = occluders.invalid;
     incomplete.extend(occluders.incomplete_cells);
