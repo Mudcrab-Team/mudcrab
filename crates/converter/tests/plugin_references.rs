@@ -3134,6 +3134,188 @@ fn both_pack_editors_reject_a_shared_database_before_starting_sqlite() {
 }
 
 #[test]
+fn source_backed_door_edits_refresh_only_affected_links() {
+    use converter::esm::{doors::rebuild_door_links, exporter::export_to_db};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let assets = root.join("assets");
+    fs::create_dir(&assets).unwrap();
+    let database = assets.join("skyrim_world.db");
+    let base = 0x500;
+    let entry = 0x801;
+    let moved = 0x802;
+    let neighbor = 0x803;
+    let hall = 0x900;
+    let cellar = 0x901;
+    let named_cell = |id, name: &[u8]| {
+        record(
+            b"CELL",
+            id,
+            0,
+            [sub(b"DATA", &[1]), sub(b"FULL", name)].concat(),
+        )
+    };
+    let door = |id, target: u32, arrival: f32| {
+        let mut xtel = [0; 32];
+        xtel[..4].copy_from_slice(&target.to_le_bytes());
+        xtel[4..8].copy_from_slice(&arrival.to_le_bytes());
+        placement(id, base, 0, 0.0, sub(b"XTEL", &xtel))
+    };
+    let original = plugin(
+        root,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"DOOR", base, 0, Vec::new()),
+            named_cell(hall, b"Hall\0"),
+            placement_group(
+                hall,
+                [door(entry, moved, 42.0), door(neighbor, entry, 7.0)].concat(),
+            ),
+            named_cell(cellar, b"Cellar\0"),
+            placement_group(cellar, door(moved, entry, 12.0)),
+        ]
+        .concat(),
+    );
+    let convert = || {
+        EsmParser::convert_plugins_with_reader(
+            std::slice::from_ref(&original),
+            &database,
+            converter::config::RecordReader::Inhouse,
+            root,
+        )
+        .unwrap();
+        rusqlite::Connection::open(&database).unwrap()
+    };
+    let move_door = plugin(
+        root,
+        "MoveDoor.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(hall, door(moved, entry, 13.0)),
+    );
+    let links = |db: &rusqlite::Connection| {
+        db.prepare(
+            "SELECT ref_id,destination_ref_id,destination_cell_id,destination_name,pos_x
+             FROM door_links ORDER BY ref_id",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, u32>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, f32>(4)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    };
+    let after_move = vec![
+        (entry, moved, hall, "Hall".to_owned(), 42.0),
+        (moved, entry, hall, "Hall".to_owned(), 13.0),
+        (neighbor, entry, hall, "Hall".to_owned(), 7.0),
+    ];
+    let protect_neighbor = |db: &rusqlite::Connection| {
+        db.execute_batch(&format!(
+            "CREATE TRIGGER protect_neighbor BEFORE DELETE ON door_links
+             WHEN OLD.ref_id={neighbor}
+             BEGIN SELECT RAISE(ABORT, 'unrelated door link was deleted'); END;"
+        ))
+        .unwrap();
+    };
+    let import = |source: &Path| {
+        let output = run_placement_import(&assets, "--plugin", source);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    let db = convert();
+    assert_eq!(
+        links(&db)[0],
+        (entry, moved, cellar, "Cellar".to_owned(), 42.0)
+    );
+    protect_neighbor(&db);
+    let mut winning = EsmParser::merge_plugins(&[original.clone(), move_door.clone()]).unwrap();
+    export_to_db(&db, &[(moved, winning.remove(&moved).unwrap())].into()).unwrap();
+    assert_eq!(links(&db), after_move, "subset export");
+    db.execute_batch("DROP TRIGGER protect_neighbor").unwrap();
+    drop(db);
+
+    let db = convert();
+    let before = links(&db);
+    protect_neighbor(&db);
+    db.execute_batch(&format!(
+        "CREATE TRIGGER reject_door_refresh BEFORE INSERT ON door_links
+         WHEN NEW.destination_ref_id={moved}
+         BEGIN SELECT RAISE(ABORT, 'door refresh rejected'); END;"
+    ))
+    .unwrap();
+    let rejected = run_placement_import(&assets, "--plugin", &move_door);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("door refresh rejected"));
+    assert_eq!(links(&db), before);
+    let cell: u32 = db
+        .query_row(
+            "SELECT cell_id FROM [references] WHERE id=?1",
+            [moved],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(cell, cellar);
+    db.execute_batch("DROP TRIGGER reject_door_refresh")
+        .unwrap();
+
+    import(&move_door);
+    assert_eq!(links(&db), after_move, "placement import");
+
+    let remove_teleport = plugin(
+        root,
+        "RemoveTeleport.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(hall, placement(moved, base, 0, 0.0, Vec::new())),
+    );
+    import(&remove_teleport);
+    assert_eq!(links(&db), [after_move[0].clone(), after_move[2].clone()]);
+
+    let delete_door = plugin(
+        root,
+        "DeleteDoor.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(hall, record(b"REFR", moved, 0x20, Vec::new())),
+    );
+    import(&delete_door);
+    assert_eq!(links(&db), [after_move[2].clone()]);
+
+    let add_door = plugin(
+        root,
+        "AddDoor.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(
+            hall,
+            [door(moved, entry, 13.0), door(0x0100_0810, moved, 17.0)].concat(),
+        ),
+    );
+    import(&add_door);
+    let mut after_add = after_move;
+    after_add.push((0x0400_0810, moved, hall, "Hall".to_owned(), 17.0));
+    assert_eq!(links(&db), after_add);
+    db.execute_batch("DROP TRIGGER protect_neighbor").unwrap();
+    assert_eq!(rebuild_door_links(&db).unwrap(), 4);
+    assert_eq!(links(&db), after_add, "rebuild after placement imports");
+}
+
+#[test]
 fn post_conversion_plugin_placements_refresh_both_cells_and_keep_source_proof() {
     let dir = tempfile::tempdir().unwrap();
     let assets = converted_placement_fixture(dir.path());

@@ -197,6 +197,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
             &mut cells,
             in_fresh_cell || (is_plugin && edit.owns_new_id),
             has_history,
+            is_plugin,
         )
         .wrap_err_with(|| format!("placement {id:08X}"))?;
         tx.execute(
@@ -215,6 +216,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     }
     let certified_cells =
         refresh_placement_cells(&tx, &cells, &fresh_cells, &records, &layouts, &name)?;
+    super::doors::refresh_placement_links(&tx, &changed)?;
     tx.commit()?;
     let mut affected_cells = cells.into_iter().collect::<Vec<_>>();
     affected_cells.sort_unstable();
@@ -457,6 +459,7 @@ fn apply_edit(
     cells: &mut HashSet<u32>,
     must_be_new: bool,
     has_history: bool,
+    allow_doors: bool,
 ) -> Result<()> {
     let record = &edit.record;
     let id = record.form_id;
@@ -507,7 +510,7 @@ fn apply_edit(
             .into_iter()
             .map(|s| (s.tag.to_vec(), s.data))
             .collect::<Vec<_>>();
-        validate_room_fields(tx, &subrecords)?;
+        validate_room_fields(tx, &subrecords, allow_doors)?;
     }
     ensure!(
         old_data.is_some() || ((edit.owns_new_id || previously_edited) && !record.is_deleted()),
@@ -527,7 +530,7 @@ fn apply_edit(
         .filter(|_| record.worldspace_form_id.is_none())
         .ok_or_else(|| color_eyre::eyre::eyre!("placement has no interior parent cell"))?;
     require_interior(tx, cell)?;
-    validate_room_fields(tx, &record.subrecords)?;
+    validate_room_fields(tx, &record.subrecords, allow_doors)?;
     let view = SubrecordView::new(&record.subrecords);
     let mut transforms = view.find_all(b"DATA");
     let transform = transforms
@@ -556,7 +559,11 @@ fn apply_edit(
     Ok(())
 }
 
-fn validate_room_fields(tx: &Transaction<'_>, subrecords: &[(Vec<u8>, Vec<u8>)]) -> Result<()> {
+fn validate_room_fields(
+    tx: &Transaction<'_>,
+    subrecords: &[(Vec<u8>, Vec<u8>)],
+    allow_doors: bool,
+) -> Result<()> {
     validate_room_field_tags(subrecords)?;
     let view = SubrecordView::new(subrecords);
     let mut bases = view.find_all(b"NAME");
@@ -566,18 +573,26 @@ fn validate_room_fields(tx: &Transaction<'_>, subrecords: &[(Vec<u8>, Vec<u8>)])
         .map(u32::from_le_bytes)
         .filter(|_| bases.next().is_none())
         .ok_or_else(|| color_eyre::eyre::eyre!("placement requires one base FormID"))?;
+    let mut is_door = false;
     if !matches!(base, ROOM_MARKER_BASE | PORTAL_MARKER_BASE) {
         ensure!(
             view.find(b"XPRM").is_none(),
             "static primitives are outside the room placement format"
         );
-        let is_static: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM records WHERE form_id=?1 AND record_type='STAT')",
-            [base],
-            |row| row.get(0),
-        )?;
-        ensure!(is_static, "base {base:08X} is not an existing STAT");
+        let kind: Option<String> = tx
+            .prepare_cached("SELECT record_type FROM records WHERE form_id=?1")?
+            .query_row([base], |row| row.get(0))
+            .optional()?;
+        is_door = allow_doors && kind.as_deref() == Some("DOOR");
+        ensure!(
+            kind.as_deref() == Some("STAT") || is_door,
+            "unsupported placement base {base:08X}"
+        );
     }
+    ensure!(
+        is_door || view.find(b"XTEL").is_none(),
+        "XTEL requires a DOOR base"
+    );
     Ok(())
 }
 
@@ -598,6 +613,7 @@ fn validate_room_field_tags(subrecords: &[(Vec<u8>, Vec<u8>)]) -> Result<()> {
                     | b"LNAM"
                     | b"INAM"
                     | b"XESP"
+                    | b"XTEL"
             ),
             "unsupported REFR field {}",
             String::from_utf8_lossy(tag)

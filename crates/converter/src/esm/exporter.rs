@@ -749,6 +749,7 @@ fn export_records(
         check_record_insert(&statement)?;
         Some(statement)
     };
+    let mut edited_references = HashSet::new();
     for (&form_id, record) in ordered {
         let type_str = from_utf8(&record.record_type).unwrap_or("UNKN");
         let blob = serialize_subrecords(&record.subrecords);
@@ -851,6 +852,13 @@ fn export_records(
                     )?.execute([cell_id])?;
                     tx.prepare_cached("DELETE FROM reference_rooms WHERE reference_id=?1")?
                         .execute([form_id])?;
+                    if type_str == "REFR" {
+                        edited_references.insert(form_id);
+                        if record.is_deleted() {
+                            clear_reference_placement(&tx, form_id)?;
+                            continue;
+                        }
+                    }
                 }
                 let inserted = insert_reference_with_canonical_data(
                     &tx,
@@ -1078,6 +1086,8 @@ fn export_records(
         // Read back from the canonical `records` and `references` rows just written, so the
         // legacy and in-house readers share one projection.
         super::doors::project_door_links(&tx)?;
+    } else {
+        super::doors::refresh_placement_links(&tx, &edited_references)?;
     }
     tx.commit()
 }
