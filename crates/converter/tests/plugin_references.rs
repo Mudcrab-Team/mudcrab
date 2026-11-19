@@ -2090,7 +2090,7 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        3
+        4, // Includes the plane with two XMBR fields. Only its ownership is ambiguous.
     );
     let explicit_planes = conn
         .prepare(
