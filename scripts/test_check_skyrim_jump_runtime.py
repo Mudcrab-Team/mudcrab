@@ -1,6 +1,7 @@
 import gzip
 import hashlib
 import json
+import math
 from pathlib import Path
 import shutil
 import sys
@@ -10,6 +11,50 @@ from unittest.mock import patch
 
 import check_skyrim_jump_runtime as replay
 import report_skyrim_jump_runtime as chart
+
+
+class ReplayScoreTests(unittest.TestCase):
+    def score_predictions(self, heights, *, duration=replay.RULES['window_game_seconds'],
+                          prediction_ids=('jump',)):
+        samples = [{'controller': duration * (i / (len(heights) - 1)), 'z': 0.0}
+                   for i in range(len(heights))]
+        run = {'split': 'heldout', 'frame_cap': 60, 'time_multiplier': 1}
+        observed = {'baseline': 0.0, 'samples': samples, 'observed_sampled_apex': 0.0}
+        output = {'schema': 1, 'runs': [{'id': key, 'heights': heights} for key in prediction_ids]}
+        return replay.score(output, {'jump': (run, observed)})[0]
+
+    def test_perfect_prediction_requires_full_window(self):
+        window = replay.RULES['window_game_seconds']
+        for duration, passes in [(window, True), (math.nextafter(window, 0), False)]:
+            with self.subTest(duration=duration):
+                result = self.score_predictions([0, 0], duration=duration)
+                self.assertEqual(result['window_covered'], passes)
+                self.assertEqual(result['passes_frozen_report_gate'], passes)
+
+    def test_rmse_limit_is_inclusive(self):
+        limit = replay.RULES['rmse_gate']
+        for rmse, passes in [(limit, True), (math.nextafter(limit, math.inf), False)]:
+            with self.subTest(rmse=rmse):
+                # One error of 2 * rmse across four samples gives the desired RMSE.
+                result = self.score_predictions([0, 0, 0, 2 * rmse])
+                self.assertEqual(result['rmse'], rmse)
+                self.assertLess(result['max_abs'], replay.RULES['peak_error_gate'])
+                self.assertEqual(result['passes_frozen_report_gate'], passes)
+
+    def test_peak_error_limit_is_inclusive(self):
+        limit = replay.RULES['peak_error_gate']
+        for peak, passes in [(limit, True), (math.nextafter(limit, math.inf), False)]:
+            with self.subTest(peak=peak):
+                result = self.score_predictions([0] * 15 + [peak])
+                self.assertEqual(result['max_abs'], peak)
+                self.assertLess(result['rmse'], replay.RULES['rmse_gate'])
+                self.assertEqual(result['passes_frozen_report_gate'], passes)
+
+    def test_missing_and_duplicate_predictions_are_rejected(self):
+        for ids in [(), ('jump', 'jump')]:
+            with self.subTest(ids=ids):
+                with self.assertRaisesRegex(ValueError, 'Rust predictions omit, duplicate or add runs'):
+                    self.score_predictions([0, 0], prediction_ids=ids)
 
 
 class RetainedEvidenceTests(unittest.TestCase):
