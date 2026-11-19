@@ -2256,6 +2256,69 @@ fn load_order_export_ignores_markers_in_exterior_cells() {
     }
 }
 
+#[test]
+fn ambiguous_occluder_names_are_rejected_by_both_readers() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    fs::create_dir(&data).unwrap();
+
+    let marker = 0x17u32.to_le_bytes();
+    let other = 0x800u32.to_le_bytes();
+    let good_id = 0x805;
+    let cell = 0x900;
+    let mut shape = [0; 32];
+    shape[..4].copy_from_slice(&12.0f32.to_le_bytes());
+    shape[8..12].copy_from_slice(&12.0f32.to_le_bytes());
+    shape[28..].copy_from_slice(&3u32.to_le_bytes());
+    let references = [
+        (0x802, vec![marker.as_slice(), &other]),
+        (0x803, vec![other.as_slice(), &marker]),
+        (0x804, vec![marker.as_slice(), &[0; 3]]),
+        (good_id, vec![marker.as_slice()]),
+    ]
+    .into_iter()
+    .flat_map(|(id, names)| {
+        let mut payload = names
+            .into_iter()
+            .flat_map(|name| sub(b"NAME", name))
+            .collect::<Vec<_>>();
+        payload.extend(sub(b"XPRM", &shape));
+        payload.extend(sub(b"DATA", &[0; 24]));
+        record(b"REFR", id, 0, payload)
+    })
+    .collect::<Vec<_>>();
+    plugin(
+        &data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"STAT", 0x17, 0, sub(b"EDID", b"PlaneMarker\0")),
+            record(b"STAT", 0x800, 0, sub(b"EDID", b"OtherBase\0")),
+            record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])),
+            group(6, cell, group(9, cell, references)),
+        ]
+        .concat(),
+    );
+
+    let published = [false, true].map(|typed| {
+        let output = dir.path().join(if typed { "inhouse" } else { "legacy" });
+        let conn =
+            rusqlite::Connection::open(export_room_review_fixture(&data, &output, typed)).unwrap();
+        conn.prepare("SELECT ref_id FROM room_occluders ORDER BY ref_id")
+            .unwrap()
+            .query_map([], |row| row.get::<_, u32>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    });
+    assert_eq!(
+        published,
+        [vec![good_id], vec![good_id]],
+        "legacy and in-house rows"
+    );
+}
+
 fn room_graph_review_fixture(
     data: &Path,
     link: Option<u32>,

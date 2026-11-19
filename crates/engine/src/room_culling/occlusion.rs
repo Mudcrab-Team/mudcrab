@@ -87,19 +87,28 @@ impl View {
     }
 
     fn edge_plane(&self, a: Vec3, b: Vec3, inside: Vec3) -> Option<Vec4> {
-        let mut plane = if let Some(forward) = self.parallel {
-            through_point((b - a).cross(forward), a)?
+        let a = a.as_dvec3();
+        let edge = b.as_dvec3() - a;
+        let ray = if let Some(forward) = self.parallel {
+            forward.as_dvec3()
         } else {
-            through_point((a - self.camera).cross(b - self.camera), self.camera)?
+            a - self.camera.as_dvec3()
         };
-        let distance = plane.dot(inside.extend(1.0));
-        if !distance.is_finite() || distance.abs() <= EPSILON {
+        // Crossing two nearly parallel corner rays can lose the short edge to cancellation.
+        let normal = edge.cross(ray);
+        let length = normal.length();
+        let epsilon = f64::from(EPSILON);
+        if !length.is_finite() || length <= epsilon {
             return None;
         }
-        if distance < 0.0 {
-            plane = -plane;
+        let normal = normal / length;
+        let distance = normal.dot(inside.as_dvec3() - a);
+        if !distance.is_finite() || distance.abs() <= epsilon {
+            return None;
         }
-        Some(plane)
+        let inward = normal * distance.signum();
+        let plane = inward.extend(-inward.dot(a)).as_vec4();
+        plane.is_finite().then_some(plane)
     }
 }
 
@@ -292,6 +301,20 @@ mod tests {
         assert!(!shadow.contains_sphere(Vec3::new(15.0, 0.0, -40.0), 1.0));
         assert!(!shadow.contains_sphere(Vec3::new(10.0, 0.0, -40.0), 1.0));
         assert!(!shadow.contains_sphere(Vec3::new(0.0, 0.0, -21.0), 2.0));
+    }
+
+    #[test]
+    fn a_distant_off_axis_plane_keeps_spheres_outside_its_shadow() {
+        let camera = Vec3::ZERO;
+        let center = Vec3::new(7568.0, 5072.0, -16000.0);
+        let shape = occluder(3, center, Vec3::new(3.2, 3.2, 0.0));
+        let shadow = shape.shadow(camera, perspective(camera, -Vec3::Z)).unwrap();
+
+        assert!(shadow.contains_sphere(center * 2.0, 0.1));
+        assert!(
+            !shadow.contains_sphere(Vec3::new(15136.0, 10150.8, -32000.0), 0.1),
+            "the center ray hits y=5075.4, beyond the edge at y=5075.2",
+        );
     }
 
     #[test]

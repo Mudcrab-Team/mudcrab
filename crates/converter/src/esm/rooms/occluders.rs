@@ -31,14 +31,21 @@ fn primitive(data: &[u8]) -> Option<(u32, [f32; 3])> {
     valid.then_some((shape, half))
 }
 
+fn has_unique_marker_name(view: &SubrecordView<'_>) -> bool {
+    let marker = OCCLUSION_MARKER_BASE.to_le_bytes();
+    let mut names = view.find_all(b"NAME");
+    names.next() == Some(marker.as_slice()) && names.next().is_none()
+}
+
 pub(super) fn export(tx: &Transaction<'_>, records: &[(&u32, &RawRecord)]) -> Result<Exported> {
     let mut result = Exported::default();
+    let marker = OCCLUSION_MARKER_BASE.to_le_bytes();
     for &(&id, record) in records {
+        if record.record_type != *b"REFR" || record.is_deleted() {
+            continue;
+        }
         let view = SubrecordView::new(&record.subrecords);
-        if record.record_type != *b"REFR"
-            || view.get_form_id(b"NAME") != Some(OCCLUSION_MARKER_BASE)
-            || record.is_deleted()
-        {
+        if !view.find_all(b"NAME").any(|name| name == marker) {
             continue;
         }
         let cell = record.cell_form_id.unwrap_or(0);
@@ -59,6 +66,10 @@ pub(super) fn export(tx: &Transaction<'_>, records: &[(&u32, &RawRecord)]) -> Re
                     )?;
                 }
             }
+        }
+        if !has_unique_marker_name(&view) {
+            result.invalid += 1;
+            continue;
         }
         let Some((shape, half)) = view.find(b"XPRM").and_then(primitive) else {
             result.invalid += 1;
@@ -181,7 +192,10 @@ pub(crate) fn restore_source_provenance<'a>(
         let shape = source(b"XPRM");
         let placement = source(b"DATA");
         let scale = source(b"XSCL");
-        let valid = shape.and_then(primitive).is_some()
+        // The sole file-relative NAME must have a resolved PlaneMarker counterpart.
+        let valid = source(b"NAME").is_some_and(|data| data.len() == 4)
+            && has_unique_marker_name(&view)
+            && shape.and_then(primitive).is_some()
             && placement.is_some_and(|data| {
                 data.len() == 24
                     && data
