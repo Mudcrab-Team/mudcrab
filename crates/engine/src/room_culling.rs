@@ -17,8 +17,9 @@
 //! Source-verified independent plane and box occluders add exclusions to their owning room or
 //! unbounded space. Each path carries its exclusions through later portals; alternative paths
 //! remain a union. A mesh is excluded only when its affine AABB's enclosing sphere is fully
-//! inside a shadow. Budget widening retains the destination's local occluders. Stateful, linked,
-//! explicitly overridden, and ambiguously assigned primitives remain inactive.
+//! inside a shadow. Portal budget widening retains the destination's local occluders. If reaching
+//! another owner exceeds the view's shadow budget, that cell uses portal culling alone. Stateful,
+//! linked, explicitly overridden, and ambiguously assigned primitives remain inactive.
 //!
 //! Versioned graphs distinguish rooms, authored unbounded endpoints, and unknown endpoints. A
 //! camera outside every room keeps full rendering because room-box seams are not verified outside
@@ -150,6 +151,9 @@ use std::{
     path::PathBuf,
 };
 
+// Bound shadow construction across resident interiors and the exclusions carried by any path.
+const MAX_VIEW_OCCLUDERS: usize = 64;
+
 /// Marks a placed reference that room culling must never hide, such as an actor or animated door.
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct RoomCullExempt;
@@ -258,7 +262,7 @@ impl Room {
 }
 
 /// A portal side distinguishes authored outside space from unresolved conversion data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PortalSide {
     Room(usize),
     Unbounded,
@@ -439,7 +443,7 @@ pub struct Membership {
 #[derive(Debug, Clone, Default)]
 pub struct RoomGraph {
     pub(crate) authored: Option<assignment::Assignments>,
-    pub(crate) occluders: Vec<occlusion::Occluder>,
+    pub(crate) occluders: HashMap<PortalSide, Vec<occlusion::Occluder>>,
     /// Full export with authored endpoint provenance and complete reference identities.
     pub supports_unbounded: bool,
     /// The cell lacks positive export completeness or contains invalid geometry.
@@ -463,6 +467,13 @@ pub struct RoomGraph {
 }
 
 impl RoomGraph {
+    fn add_occluder(&mut self, occluder: occlusion::Occluder) {
+        self.occluders
+            .entry(occluder.owner)
+            .or_default()
+            .push(occluder);
+    }
+
     /// Indices of the rooms whose box holds a cell-local point, in table order.
     pub fn rooms_containing(&self, point: Vec3) -> Vec<usize> {
         if let Some(authored) = &self.authored {
@@ -487,7 +498,12 @@ impl RoomGraph {
     ///
     /// Every room that contains the camera is a start, which is the deterministic superset of
     /// "pick one": a camera in a doorway is in two boxes and sees into both.
-    fn visibility_volumes(&self, camera: Vec3, clip_from_local: Mat4) -> Option<CellVisibility> {
+    fn visibility_volumes_with_budget(
+        &self,
+        camera: Vec3,
+        clip_from_local: Mat4,
+        shadow_budget: &mut usize,
+    ) -> Option<CellVisibility> {
         let full = VisibilityVolume::camera(clip_from_local)?;
         let room_count = self.rooms.len();
         if (room_count == 0 && self.occluders.is_empty()) || self.incomplete {
@@ -499,14 +515,6 @@ impl RoomGraph {
             return None;
         }
         let outside = room_count;
-        let mut shadows = vec![Vec::new(); room_count + 1];
-        for occluder in &self.occluders {
-            if let Some(owner) = occluder.owner.index(room_count)
-                && let Some(shadow) = occluder.shadow(camera, clip_from_local)
-            {
-                shadows[owner].push((occluder.ref_id, std::sync::Arc::new(shadow)));
-            }
-        }
         let mut starts = self.rooms_containing(camera);
         if starts.is_empty() && room_count == 0 {
             starts.push(outside);
@@ -552,7 +560,12 @@ impl RoomGraph {
             .into_iter()
             .map(|room| (room, full.clone()))
             .collect();
-        while let Some((room, arriving)) = pending.pop() {
+        let shadow_view = (!self.occluders.is_empty())
+            .then(|| occlusion::View::new(camera, clip_from_local))
+            .flatten();
+        let mut local_volumes = HashMap::new();
+        let mut shadow_overflow = false;
+        while let Some((room, mut arriving)) = pending.pop() {
             if self.unresolved_link_rooms.contains(&room) {
                 return None;
             }
@@ -561,9 +574,35 @@ impl RoomGraph {
             if self.authored.is_none() && room != outside && !has_portal[room] {
                 return None;
             }
-            let arriving = arriving.with_occluders(&shadows[room]);
-            let local = full.with_occluders(&shadows[room]);
-            let Some(seen) = visibility[room].insert(arriving, &local) else {
+            let side = if room == outside {
+                PortalSide::Unbounded
+            } else {
+                PortalSide::Room(room)
+            };
+            let local = if !shadow_overflow
+                && let Some(view) = &shadow_view
+                && let Some(candidates) = self.occluders.get(&side)
+            {
+                local_volumes.entry(room).or_insert_with(|| {
+                    let mut local = full.clone();
+                    // Charge every attempted shadow, including shapes that fail view checks.
+                    if let Some(remaining) = shadow_budget.checked_sub(candidates.len()) {
+                        *shadow_budget = remaining;
+                        for occluder in candidates {
+                            if let Some(shadow) = occluder.shadow_in(view) {
+                                local.add_occluder(occluder.ref_id, shadow);
+                            }
+                        }
+                    } else {
+                        shadow_overflow = true;
+                    }
+                    local
+                })
+            } else {
+                &full
+            };
+            arriving.extend_occluders(local);
+            let Some(seen) = visibility[room].insert(arriving, local) else {
                 continue;
             };
             for &portal_index in &doorways[room] {
@@ -590,11 +629,22 @@ impl RoomGraph {
                 pending.push((other, seen.clone()));
             }
         }
+        if shadow_overflow {
+            for room in &mut visibility {
+                room.clear_occluders();
+            }
+        }
         let unbounded = visibility.pop()?;
         Some(CellVisibility {
             rooms: visibility,
             unbounded,
         })
+    }
+
+    #[cfg(test)]
+    fn visibility_volumes(&self, camera: Vec3, clip_from_local: Mat4) -> Option<CellVisibility> {
+        let mut shadow_budget = MAX_VIEW_OCCLUDERS;
+        self.visibility_volumes_with_budget(camera, clip_from_local, &mut shadow_budget)
     }
 
     /// Whether any membership volume intersects this mesh, or its policy exempts it.
@@ -863,7 +913,9 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
             }
         }
     }
-    graph.occluders = occluder_data::load(connection, cell_id, &graph)?;
+    for occluder in occluder_data::load(connection, cell_id, &graph)? {
+        graph.add_occluder(occluder);
+    }
     Ok(graph)
 }
 
@@ -1160,6 +1212,7 @@ pub fn cull_room_views(
         }
         let clip_from_world =
             projection.get_clip_from_view() * camera_transform.to_matrix().inverse();
+        let mut shadow_budget = MAX_VIEW_OCCLUDERS;
         for cell in &cells {
             let loaded = &state.graphs[cell];
             let Ok(root) = roots.get(loaded.root) else {
@@ -1168,10 +1221,11 @@ pub fn cull_room_views(
             let world_from_local = root.to_matrix();
             let local_from_world = root.affine().inverse();
             let camera_local = local_from_world.transform_point3(camera_transform.translation());
-            let Some(volumes) = loaded
-                .graph
-                .visibility_volumes(camera_local, clip_from_world * world_from_local)
-            else {
+            let Some(volumes) = loaded.graph.visibility_volumes_with_budget(
+                camera_local,
+                clip_from_world * world_from_local,
+                &mut shadow_budget,
+            ) else {
                 continue;
             };
             let list = visible.get_mut(TypeId::of::<Mesh3d>());
@@ -1466,7 +1520,7 @@ mod tests {
             let graph = load_room_graph(&connection, 7).unwrap();
             assert!(graph.rooms.is_empty());
             assert_eq!(graph.occluders.len(), 1);
-            assert_eq!(graph.occluders[0].owner, PortalSide::Unbounded);
+            assert_eq!(graph.occluders[&PortalSide::Unbounded].len(), 1);
             let mut scene = scene_with(root, root);
             scene
                 .app
@@ -1498,6 +1552,50 @@ mod tests {
             assert!(listed.contains(&scene.loose), "unowned geometry fails open");
             assert!(mesh_list(&scene.app, scene.light).contains(&scene.far));
         }
+    }
+
+    #[test]
+    fn a_roomless_cell_keeps_meshes_visible_when_its_shadow_budget_overflows() {
+        let connection = occluder_database();
+        let single = load_room_graph(&connection, 7).unwrap();
+        let insert_off_axis_planes = |first_id, last_id| {
+            connection
+                .execute(
+                    "WITH RECURSIVE ids(ref_id) AS (
+                       VALUES(?1) UNION ALL SELECT ref_id + 1 FROM ids WHERE ref_id < ?2
+                     )
+                     INSERT INTO room_occluders
+                     SELECT ref_id,7,3,1000,20,0,0,0,0,8,0,8,1,0,0,0,NULL FROM ids",
+                    [first_id, last_id],
+                )
+                .unwrap();
+        };
+        insert_off_axis_planes(501, 500 + MAX_VIEW_OCCLUDERS - 1);
+        let graph = load_room_graph(&connection, 7).unwrap();
+        let bounds = MeshBounds::transformed(
+            &Aabb::from_min_max(-Vec3::splat(0.2), Vec3::splat(0.2)),
+            bevy::math::Affine3A::from_translation(Vec3::new(0.0, 0.0, -40.0)),
+        )
+        .unwrap();
+        let mut shadow_budget = MAX_VIEW_OCCLUDERS;
+        let visible = graph
+            .visibility_volumes_with_budget(Vec3::ZERO, clip_from_local(), &mut shadow_budget)
+            .unwrap();
+        assert!(!visible.unbounded.intersects(Some(&bounds)));
+        let visible = single
+            .visibility_volumes_with_budget(Vec3::ZERO, clip_from_local(), &mut shadow_budget)
+            .unwrap();
+        assert!(
+            visible.unbounded.intersects(Some(&bounds)),
+            "another cell in the same view shares the exhausted budget"
+        );
+
+        insert_off_axis_planes(500 + MAX_VIEW_OCCLUDERS, 5499);
+        let visible = load_room_graph(&connection, 7)
+            .unwrap()
+            .visibility_volumes(Vec3::ZERO, clip_from_local())
+            .unwrap();
+        assert!(visible.unbounded.intersects(Some(&bounds)));
     }
 
     #[test]
@@ -1541,7 +1639,7 @@ mod tests {
             .unwrap();
         let graph = load_room_graph(&connection, 7).unwrap();
         assert_eq!(graph.occluders.len(), 1);
-        assert_eq!(graph.occluders[0].owner, PortalSide::Room(0));
+        assert_eq!(graph.occluders[&PortalSide::Room(0)].len(), 1);
         insert_room(&connection, 3, 7, [100.0, 0.0, 0.0]);
         connection
             .execute_batch("UPDATE room_bounds SET flags=256 WHERE ref_id=3")
@@ -2226,7 +2324,7 @@ mod tests {
             membership: HashMap::new(),
             authored: None,
             supports_unbounded: false,
-            occluders: Vec::new(),
+            occluders: HashMap::new(),
         }
     }
 
@@ -2280,7 +2378,7 @@ mod tests {
     #[test]
     fn occluder_exclusions_follow_their_portal_path_into_later_rooms() {
         let mut graph = chain(doorway(11, Vec3::new(0.0, 0.0, -30.0), 3.0, [1, 2]));
-        graph.occluders.push(
+        graph.add_occluder(
             occlusion::Occluder::from_creation(
                 500,
                 3,
@@ -2313,6 +2411,55 @@ mod tests {
             .visibility_volumes(Vec3::ZERO, clip_from_local())
             .unwrap();
         assert!(visible.rooms[2].intersects(Some(&bounds)));
+    }
+
+    #[test]
+    fn only_reached_owners_spend_the_shadow_budget() {
+        let mut graph = chain(side_doorway(11, Vec3::new(10.0, 0.0, -12.0), 1.5, [1, 2]));
+        let add_plane = |graph: &mut RoomGraph, id, owner, depth| {
+            graph.add_occluder(
+                occlusion::Occluder::from_creation(
+                    id,
+                    3,
+                    [0.0, depth, 0.0],
+                    [0.0; 3],
+                    [2.0, 0.0, 2.0],
+                    1.0,
+                    PortalSide::Room(owner),
+                )
+                .unwrap(),
+            );
+        };
+        add_plane(&mut graph, 500, 1, 20.0);
+        for id in 0..MAX_VIEW_OCCLUDERS as u32 {
+            add_plane(&mut graph, 1000 + id, 2, 40.0);
+        }
+        let bounds = |x| {
+            MeshBounds::transformed(
+                &Aabb::from_min_max(-Vec3::splat(0.2), Vec3::splat(0.2)),
+                bevy::math::Affine3A::from_translation(Vec3::new(x, 0.0, -25.0)),
+            )
+            .unwrap()
+        };
+        let visible = graph
+            .visibility_volumes(Vec3::ZERO, clip_from_local())
+            .unwrap();
+        assert!(!visible.rooms[2].is_reached());
+        assert!(!visible.rooms[1].intersects(Some(&bounds(0.0))));
+
+        graph.portals[1] = doorway(11, Vec3::new(0.0, 0.0, -30.0), 3.0, [1, 2]);
+        let visible = graph
+            .visibility_volumes(Vec3::ZERO, clip_from_local())
+            .unwrap();
+        assert!(visible.rooms[2].is_reached());
+        assert!(
+            visible.rooms[1].intersects(Some(&bounds(0.0))),
+            "overflow also drops the shadows already added in an earlier room"
+        );
+        assert!(
+            !visible.rooms[1].intersects(Some(&bounds(9.0))),
+            "the doorway still narrows the portal volume"
+        );
     }
 
     #[test]
@@ -2486,7 +2633,7 @@ mod tests {
                 .visibility_volumes(Vec3::ZERO, clip_from_local())
                 .is_none()
         );
-        graph.occluders.push(
+        graph.add_occluder(
             occlusion::Occluder::from_creation(
                 500,
                 3,
@@ -2737,7 +2884,7 @@ mod tests {
             membership: HashMap::new(),
             authored: None,
             supports_unbounded: false,
-            occluders: Vec::new(),
+            occluders: HashMap::new(),
         };
         graph.membership.insert(
             1,
@@ -3419,7 +3566,7 @@ mod tests {
         let graph = RoomGraph {
             authored: None,
             supports_unbounded: false,
-            occluders: Vec::new(),
+            occluders: HashMap::new(),
             rooms: vec![
                 room(1, Vec3::ZERO, 10.0),
                 room(2, Vec3::new(0.0, 0.0, -20.0), 10.0),
@@ -3755,7 +3902,7 @@ mod tests {
             membership: HashMap::new(),
             authored: None,
             supports_unbounded: false,
-            occluders: Vec::new(),
+            occluders: HashMap::new(),
             rooms: rooms.clone(),
         };
         let reached = reached_rooms(&graph, Vec3::ZERO, clip_from_local()).unwrap();
@@ -3881,7 +4028,7 @@ mod tests {
             membership: HashMap::new(),
             authored: None,
             supports_unbounded: false,
-            occluders: Vec::new(),
+            occluders: HashMap::new(),
             rooms,
         }
     }
@@ -4079,7 +4226,7 @@ mod tests {
             membership: HashMap::new(),
             authored: None,
             supports_unbounded: false,
-            occluders: Vec::new(),
+            occluders: HashMap::new(),
         };
         assert_eq!(
             graph.overlaps,
@@ -4128,7 +4275,7 @@ mod tests {
             membership: HashMap::new(),
             authored: None,
             supports_unbounded: false,
-            occluders: Vec::new(),
+            occluders: HashMap::new(),
         };
         assert_eq!(
             graph.overlaps,

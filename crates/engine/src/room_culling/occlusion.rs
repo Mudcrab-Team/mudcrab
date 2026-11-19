@@ -1,7 +1,10 @@
 //! View-dependent shadows of independent authored planes and boxes.
 
 use super::{PortalSide, Room};
-use bevy::prelude::*;
+use bevy::{
+    math::{DVec3, DVec4},
+    prelude::*,
+};
 
 const EPSILON: f32 = 1.0e-3;
 const NEAR_SHAPE_DISTANCE: f32 = 5.0;
@@ -46,54 +49,49 @@ impl OcclusionVolume {
     }
 }
 
-fn normalized(plane: Vec4) -> Option<Vec4> {
-    let length = plane.truncate().length();
-    let plane = plane / length;
-    (length > EPSILON && plane.is_finite()).then_some(plane)
+fn through_point(unit_normal: DVec3, point: DVec3) -> Option<Vec4> {
+    let plane = unit_normal.extend(-unit_normal.dot(point)).as_vec4();
+    plane.is_finite().then_some(plane)
 }
 
-fn through_point(normal: Vec3, point: Vec3) -> Option<Vec4> {
-    normalized(normal.extend(-normal.dot(point)))
-}
-
-struct View {
-    camera: Vec3,
-    near: Vec4,
-    parallel: Option<Vec3>,
+pub(super) struct View {
+    camera: DVec3,
+    near: DVec4,
+    parallel: Option<DVec3>,
 }
 
 impl View {
-    fn new(camera: Vec3, clip: Mat4) -> Option<Self> {
+    pub(super) fn new(camera: Vec3, clip: Mat4) -> Option<Self> {
         if !camera.is_finite() || !clip.is_finite() {
             return None;
         }
-        let near = normalized(clip.row(3) - clip.row(2))?;
+        let near = clip.row(3).as_dvec4() - clip.row(2).as_dvec4();
+        // A long orthographic depth range can give a valid near plane a tiny normal.
+        let near = near / near.truncate().length();
+        if !near.is_finite() {
+            return None;
+        }
         let parallel = if clip.row(3).truncate() == Vec3::ZERO {
-            Some(super::volume::orthographic_forward(clip)?)
+            Some(super::volume::orthographic_forward(clip)?.as_dvec3())
         } else {
             None
         };
         Some(Self {
-            camera,
+            camera: camera.as_dvec3(),
             near,
             parallel,
         })
     }
 
-    fn beyond_near(&self, corners: &[Vec3]) -> bool {
-        corners
-            .iter()
-            .all(|corner| corner.is_finite() && self.near.dot(corner.extend(1.0)) > EPSILON)
+    fn beyond_near(&self, corners: &[DVec3]) -> bool {
+        corners.iter().all(|corner| {
+            corner.is_finite() && self.near.dot(corner.extend(1.0)) > f64::from(EPSILON)
+        })
     }
 
-    fn edge_plane(&self, a: Vec3, b: Vec3, inside: Vec3) -> Option<Vec4> {
-        let a = a.as_dvec3();
-        let edge = b.as_dvec3() - a;
-        let ray = if let Some(forward) = self.parallel {
-            forward.as_dvec3()
-        } else {
-            a - self.camera.as_dvec3()
-        };
+    fn edge_plane(&self, a: DVec3, b: DVec3, inside: DVec3) -> Option<Vec4> {
+        let edge = b - a;
+        let ray = self.parallel.unwrap_or_else(|| a - self.camera);
         // Crossing two nearly parallel corner rays can lose the short edge to cancellation.
         let normal = edge.cross(ray);
         let length = normal.length();
@@ -102,13 +100,11 @@ impl View {
             return None;
         }
         let normal = normal / length;
-        let distance = normal.dot(inside.as_dvec3() - a);
+        let distance = normal.dot(inside - a);
         if !distance.is_finite() || distance.abs() <= epsilon {
             return None;
         }
-        let inward = normal * distance.signum();
-        let plane = inward.extend(-inward.dot(a)).as_vec4();
-        plane.is_finite().then_some(plane)
+        through_point(normal * distance.signum(), a)
     }
 }
 
@@ -157,34 +153,40 @@ impl Occluder {
         })
     }
 
-    pub(super) fn shadow(&self, camera: Vec3, clip_from_local: Mat4) -> Option<OcclusionVolume> {
-        let view = View::new(camera, clip_from_local)?;
+    #[cfg(test)]
+    fn shadow(&self, camera: Vec3, clip: Mat4) -> Option<OcclusionVolume> {
+        self.shadow_in(&View::new(camera, clip)?)
+    }
+
+    pub(super) fn shadow_in(&self, view: &View) -> Option<OcclusionVolume> {
         match self.shape {
-            Shape::Plane => self.plane_shadow(&view),
-            Shape::Box => self.box_shadow(&view),
+            Shape::Plane => self.plane_shadow(view),
+            Shape::Box => self.box_shadow(view),
         }
     }
 
     fn plane_shadow(&self, view: &View) -> Option<OcclusionVolume> {
-        let x = self.rotation * Vec3::X * self.half.x;
-        let y = self.rotation * Vec3::Y * self.half.y;
-        let normal = self.rotation * Vec3::Z;
-        let distance = normal.dot(view.camera - self.center);
-        if !distance.is_finite() || distance.abs() <= NEAR_SHAPE_DISTANCE {
+        let center = self.center.as_dvec3();
+        let rotation = self.rotation.as_dquat().normalize();
+        let x = rotation * DVec3::X * f64::from(self.half.x);
+        let y = rotation * DVec3::Y * f64::from(self.half.y);
+        let normal = rotation * DVec3::Z;
+        let distance = normal.dot(view.camera - center);
+        if !distance.is_finite() || distance.abs() <= f64::from(NEAR_SHAPE_DISTANCE) {
             return None;
         }
         let corners = [
-            self.center - x - y,
-            self.center + x - y,
-            self.center + x + y,
-            self.center - x + y,
+            center - x - y,
+            center + x - y,
+            center + x + y,
+            center - x + y,
         ];
         if !view.beyond_near(&corners) {
             return None;
         }
         let hidden_normal = if let Some(forward) = view.parallel {
             let facing = normal.dot(forward);
-            if facing.abs() <= EPSILON {
+            if facing.abs() <= f64::from(EPSILON) {
                 return None;
             }
             normal * facing.signum()
@@ -196,32 +198,35 @@ impl Occluder {
             planes.push(view.edge_plane(
                 corners[index],
                 corners[(index + 1) % corners.len()],
-                self.center,
+                center,
             )?);
         }
-        planes.push(through_point(hidden_normal, self.center)?);
+        planes.push(through_point(hidden_normal, center)?);
         Some(OcclusionVolume { planes })
     }
 
     fn box_shadow(&self, view: &View) -> Option<OcclusionVolume> {
-        let local_camera = self.rotation.inverse() * (view.camera - self.center);
-        let gap = (local_camera.abs() - self.half).max(Vec3::ZERO);
-        if !gap.is_finite() || gap.length() <= NEAR_SHAPE_DISTANCE {
+        let center = self.center.as_dvec3();
+        let rotation = self.rotation.as_dquat().normalize();
+        let half = self.half.as_dvec3();
+        let local_camera = rotation.conjugate() * (view.camera - center);
+        let gap = (local_camera.abs() - half).max(DVec3::ZERO);
+        if !gap.is_finite() || gap.length() <= f64::from(NEAR_SHAPE_DISTANCE) {
             return None;
         }
         let axes = [
-            self.rotation * Vec3::X,
-            self.rotation * Vec3::Y,
-            self.rotation * Vec3::Z,
+            rotation * DVec3::X,
+            rotation * DVec3::Y,
+            rotation * DVec3::Z,
         ];
-        let corners: [Vec3; 8] = std::array::from_fn(|index| {
-            self.center
+        let corners: [DVec3; 8] = std::array::from_fn(|index| {
+            center
                 + (0..3)
                     .map(|axis| {
                         let sign = if index & (1 << axis) == 0 { -1.0 } else { 1.0 };
-                        axes[axis] * self.half[axis] * sign
+                        axes[axis] * half[axis] * sign
                     })
-                    .sum::<Vec3>()
+                    .sum::<DVec3>()
         });
         if !view.beyond_near(&corners) {
             return None;
@@ -232,13 +237,13 @@ impl Occluder {
             for side in 0..2 {
                 let sign = if side == 0 { -1.0 } else { 1.0 };
                 let outward = direction * sign;
-                let point = self.center + outward * self.half[axis];
+                let point = center + outward * half[axis];
                 let facing = if let Some(forward) = view.parallel {
                     -outward.dot(forward)
                 } else {
                     outward.dot(view.camera - point)
                 };
-                if facing > EPSILON {
+                if facing > f64::from(EPSILON) {
                     visible[axis * 2 + side] = true;
                     // A ray has entered the opaque box only after crossing every visible face.
                     planes.push(through_point(-outward, point)?);
@@ -260,7 +265,7 @@ impl Occluder {
                     planes.push(view.edge_plane(
                         corners[index],
                         corners[index | (1 << along)],
-                        self.center,
+                        center,
                     )?);
                 }
             }
@@ -315,6 +320,37 @@ mod tests {
             !shadow.contains_sphere(Vec3::new(15136.0, 10150.8, -32000.0), 0.1),
             "the center ray hits y=5075.4, beyond the edge at y=5075.2",
         );
+    }
+
+    fn check_translated_shadow_edge(shape: Occluder) {
+        let camera = Vec3::new(65536.0, 0.0, 0.0);
+        let shadow = shape
+            .shadow(camera, perspective(camera, camera - Vec3::Z))
+            .unwrap();
+        assert!(shadow.contains_sphere(Vec3::new(65536.0, 0.0, -10240.0), 0.1));
+        assert!(!shadow.contains_sphere(Vec3::new(66100.0, 0.0, -10240.0), 0.1));
+        assert!(
+            !shadow.contains_sphere(Vec3::new(66051.0, 0.0, -10240.0), 0.1),
+            "at z=-20 the ray crosses x=65536+1.00586, beyond the 1.004 half-extent",
+        );
+    }
+
+    #[test]
+    fn a_translated_plane_keeps_spheres_just_outside_its_shadow() {
+        check_translated_shadow_edge(occluder(
+            3,
+            Vec3::new(65536.0, 0.0, -20.0),
+            Vec3::new(1.004, 2.0, 0.0),
+        ));
+    }
+
+    #[test]
+    fn a_translated_box_keeps_spheres_just_outside_its_shadow() {
+        check_translated_shadow_edge(occluder(
+            1,
+            Vec3::new(65536.0, 0.0, -21.0),
+            Vec3::new(1.004, 2.0, 1.0),
+        ));
     }
 
     #[test]
@@ -376,13 +412,16 @@ mod tests {
 
     #[test]
     fn orthographic_shadows_keep_parallel_sides() {
-        let clip = Mat4::orthographic_rh(-100.0, 100.0, -100.0, 100.0, 100.0, 0.1);
-        for kind in [1, 3] {
-            let shape = occluder(kind, Vec3::new(0.0, 0.0, -20.0), Vec3::splat(5.0));
-            let shadow = shape.shadow(Vec3::ZERO, clip).unwrap();
-            assert!(shadow.contains_sphere(Vec3::new(3.0, 0.0, -70.0), 1.0));
-            assert!(!shadow.contains_sphere(Vec3::new(6.0, 0.0, -70.0), 0.1));
-            assert!(!shadow.contains_sphere(Vec3::new(0.0, 0.0, -10.0), 1.0));
+        for far in [100.0, 10000.0] {
+            let clip = Mat4::orthographic_rh(-100.0, 100.0, -100.0, 100.0, far, 0.1);
+            let depth = -0.7 * far;
+            for kind in [1, 3] {
+                let shape = occluder(kind, Vec3::new(0.0, 0.0, -20.0), Vec3::splat(5.0));
+                let shadow = shape.shadow(Vec3::ZERO, clip).unwrap();
+                assert!(shadow.contains_sphere(Vec3::new(3.0, 0.0, depth), 1.0));
+                assert!(!shadow.contains_sphere(Vec3::new(6.0, 0.0, depth), 0.1));
+                assert!(!shadow.contains_sphere(Vec3::new(0.0, 0.0, -10.0), 1.0));
+            }
         }
     }
 
