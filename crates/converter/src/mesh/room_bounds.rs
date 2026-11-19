@@ -35,7 +35,7 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
                     center: node.alpha_sort_bound[..3].try_into().ok()?,
                     radius: node.alpha_sort_bound[3],
                 };
-                (&node.node.av, Some(bound), &[][..])
+                (&node.node.av, Some(bound), node.node.children.as_slice())
             }
             NifBlock::BSOrderedNode(node) => (&node.node.av, None, node.node.children.as_slice()),
             // Empty damage-stage nodes contribute a zero sphere. Nonempty ranges still need
@@ -117,7 +117,10 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
             }
         };
         for &child in children.iter().filter(|&&child| child != u32::MAX) {
-            result = result.merge(visit(nif, child, world, scale, path, remaining)?);
+            let child_bound = visit(nif, child, world, scale, path, remaining)?;
+            if sphere.is_none() {
+                result = result.merge(child_bound);
+            }
         }
         path.pop();
         result.valid().then_some(result)
