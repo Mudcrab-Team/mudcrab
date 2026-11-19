@@ -482,7 +482,8 @@ fn legacy_bsdismember_skin_exports_skin() {
 }
 
 #[test]
-fn transform_track_on_a_skin_bone_omits_the_room_sphere() {
+fn transform_track_on_a_skin_bone_or_its_ancestor_omits_the_room_sphere() {
+    use dummy_content::nif::SkinTrackTarget;
     let directory = tempfile::tempdir().unwrap();
     let skin = spec(
         SkinInstanceKind::Plain,
@@ -505,11 +506,14 @@ fn transform_track_on_a_skin_bone_omits_the_room_sphere() {
         glb
     };
 
-    let root_track = convert("root-track", false);
+    let root_track = convert("root-track", SkinTrackTarget::Root);
     assert!(root_track.json["extras"]["mudcrabRoomSphere"].is_object());
-    let bone_track = convert("bone-track", true);
+    let bone_track = convert("bone-track", SkinTrackTarget::Bone);
     assert!(bone_track.json["extras"]["mudcrabRoomSphere"].is_null());
+    let ancestor_track = convert("ancestor-track", SkinTrackTarget::Ancestor);
+    assert!(ancestor_track.json["extras"]["mudcrabRoomSphere"].is_null());
     assert_eq!(root_track.bin, bone_track.bin);
+    assert_eq!(root_track.bin, ancestor_track.bin);
 }
 
 #[test]

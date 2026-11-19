@@ -682,6 +682,7 @@ impl NifBlock {
             NifBlock::BSOrderedNode(block) => Ok(&block.node),
             NifBlock::NiBillboardNode(block) => Ok(&block.node),
             NifBlock::BSValueNode(block) => Ok(&block.node),
+            NifBlock::NiSwitchNode(block) => Ok(&block.node),
             _ => Err("Block is not a NiNode".to_string()),
         }
     }

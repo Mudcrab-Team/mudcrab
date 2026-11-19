@@ -10,7 +10,7 @@ use color_eyre::{
 };
 use nom_derive::Parse;
 use project_wormhole_nif::{
-    nif_block::{NiAVObject, NiTimeController, NifBlock},
+    nif_block::{NiAVObject, NiNode, NiTimeController, NifBlock},
     nif_file::NifFile,
 };
 use project_wormhole_shared::glam::{Mat3, Mat4, Quat, Vec3};
@@ -38,10 +38,17 @@ struct Block<'a> {
 
 /// A skin can use a bind-pose bound only if its bones have no independent motion.
 pub(crate) fn skin_pose_is_fixed(path: &Path, bytes: &[u8], blocks: &[NifBlock]) -> Result<bool> {
+    fn skin_node(block: &NifBlock) -> Option<&NiNode> {
+        match block {
+            NifBlock::BSBlastNode(blast) => Some(&blast.node),
+            _ => block.as_node().ok(),
+        }
+    }
+
     let (mut data, header) = crate::mesh::parse_skyrim_header(bytes, path)?;
     // A skin's joint list can include unused bones. Treat each entry as potentially weighted
     // because Skyrim can store the influences in the geometry or skin partition.
-    let bone_blocks: HashSet<_> = blocks
+    let mut bone_blocks: HashSet<_> = blocks
         .iter()
         .flat_map(|block| match block {
             NifBlock::NiSkinInstance(skin) => skin.bones.as_slice(),
@@ -52,6 +59,31 @@ pub(crate) fn skin_pose_is_fixed(path: &Path, bytes: &[u8], blocks: &[NifBlock])
         .copied()
         .filter(|&index| index != u32::MAX)
         .collect();
+    // A non-root ancestor moves each joint below it. The placing reference replaces block
+    // zero's transform, so that node is not part of a self-contained joint chain.
+    if !bone_blocks.is_empty() {
+        let mut parents = vec![Vec::new(); blocks.len()];
+        for (index, block) in blocks.iter().enumerate().skip(1) {
+            let Some(node) = skin_node(block) else {
+                continue;
+            };
+            for &child in &node.children {
+                if let Some(entries) = parents.get_mut(child as usize) {
+                    entries.push(index as u32);
+                }
+            }
+        }
+        let mut pending = bone_blocks.iter().copied().collect::<Vec<_>>();
+        while let Some(block) = pending.pop() {
+            if let Some(ancestors) = parents.get(block as usize) {
+                for &parent in ancestors {
+                    if bone_blocks.insert(parent) {
+                        pending.push(parent);
+                    }
+                }
+            }
+        }
+    }
     let string = |index: u32| {
         header
             .strings
@@ -60,7 +92,7 @@ pub(crate) fn skin_pose_is_fixed(path: &Path, bytes: &[u8], blocks: &[NifBlock])
     };
     let mut bone_names: HashSet<_> = bone_blocks
         .iter()
-        .filter_map(|&index| blocks.get(index as usize)?.as_node().ok())
+        .filter_map(|&index| skin_node(blocks.get(index as usize)?))
         .filter_map(|node| string(node.av.object.name))
         .collect();
     for block in blocks {

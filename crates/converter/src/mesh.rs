@@ -126,6 +126,30 @@ impl NifParseDiagnostics {
 }
 
 impl MeshConverter {
+    /// Paths a normalized source tree must provide for the on-disk skeleton resolver.
+    /// Actor rigs can search other actors' skeletons and use sibling rigs to break ties.
+    pub fn skeleton_search_inputs(models: &BTreeSet<PathBuf>) -> impl Fn(&Path) -> bool {
+        let candidates: BTreeSet<_> = models
+            .iter()
+            .flat_map(|path| skeleton_candidates(path))
+            .collect();
+        let mut actor_roots = BTreeSet::new();
+        let mut rig_dirs = BTreeSet::new();
+        for model in models {
+            if let Some((root, _)) = actor_root(model) {
+                actor_roots.insert(root);
+                rig_dirs.extend(model.parent().map(Path::to_owned));
+            }
+        }
+        move |path| {
+            candidates.contains(path)
+                || (path.extension().is_some_and(|ext| ext == "nif")
+                    && (path.parent().is_some_and(|dir| rig_dirs.contains(dir))
+                        || (actor_roots.iter().any(|root| path.starts_with(root))
+                            && is_skeleton_key(&normalize_path_key(path)))))
+        }
+    }
+
     pub fn dependency_paths(nif_path: &Path) -> Vec<PathBuf> {
         match find_skeleton(nif_path) {
             SkeletonResolution::Skeleton(path) => vec![path],
@@ -389,11 +413,20 @@ impl MeshConverter {
             .collect();
         retain_bodies_for_written_glb(&mut collision, &glb, Some(&source_order))?;
         let mut glb = embed_collision(glb, &collision)?;
-        if let Some(sphere) = room_sphere {
+        let has_switch = nif
+            .blocks
+            .iter()
+            .any(|block| matches!(block, NifBlock::NiSwitchNode(_)));
+        if room_sphere.is_some() || has_switch {
             let mut document = glb_json_from_bytes(&glb)?;
-            document["extras"]["mudcrabRoomSphere"] = serde_json::json!({
-                "version": 1, "center": sphere.center, "radius": sphere.radius
-            });
+            if has_switch {
+                room_bounds::select_switch_geometry(&nif, &shape_blocks, &mut document)?;
+            }
+            if let Some(sphere) = room_sphere {
+                document["extras"]["mudcrabRoomSphere"] = serde_json::json!({
+                    "version": 1, "center": sphere.center, "radius": sphere.radius
+                });
+            }
             glb = rebuild_glb_with_document(&glb, &document)?;
         }
         if !model.skeletal_meshes.is_empty() {
@@ -4960,7 +4993,8 @@ mod tests {
         fs::write(&input, static_nif()).unwrap();
         let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
         let mut root = nif.blocks[0].as_node().unwrap().clone();
-        let first = room_bounds::source_sphere(&nif).unwrap();
+        let mut first = room_bounds::source_sphere(&nif).unwrap();
+        first.center[0] += 17.0;
         let (mut other, _, _) = open_nif_resilient(&input).unwrap();
         let mut child = other.blocks.remove(1);
         let NifBlock::BSTriShape(shape) = &mut child else {
@@ -4969,21 +5003,56 @@ mod tests {
         shape.av.translation.0.0.x += 1000.0;
         let mut second = first;
         second.center[0] += 1000.0;
-        root.children.push(nif.blocks.len() as u32);
+        let branch_index = nif.blocks.len() as u32;
+        let mut branch = root.clone();
+        branch.children = vec![branch_index + 1];
+        root.children.push(branch_index);
+        nif.blocks.push(NifBlock::NiNode(branch));
         nif.blocks.push(child);
-        for (flags, active_child, expected) in [
-            (3, 0, Some(first)),
-            (3, 1, Some(second)),
-            (0, 1, Some(first.merge(second))),
-            (1, u32::MAX, None),
-            (1, 2, None),
+        let switch_index = nif.blocks.len();
+        let mut scene = root.clone();
+        scene.children = vec![switch_index as u32];
+        nif.blocks[0] = NifBlock::NiNode(scene);
+        nif.blocks.push(NifBlock::Unhandled);
+        root.av.translation.0.0.x = 17.0;
+        for (flags, active_child, expected, visible) in [
+            (3, 0, Some(first), [true, false]),
+            (3, 1, Some(second), [false, true]),
+            (0, 1, Some(first.merge(second)), [false, true]),
+            (1, u32::MAX, None, [false, false]),
+            (1, 2, None, [true, true]),
         ] {
-            nif.blocks[0] = NifBlock::NiSwitchNode(NiSwitchNode {
+            nif.blocks[switch_index] = NifBlock::NiSwitchNode(NiSwitchNode {
                 node: root.clone(),
                 flags,
                 active_child,
             });
             assert_eq!(room_bounds::source_sphere(&nif), expected);
+            let model = nif_to_static_model(&nif).unwrap();
+            assert_eq!(model.static_nodes[0].children, [switch_index as u32]);
+            let switch = model.static_nodes.last().unwrap();
+            assert_eq!(switch.children, root.children);
+            assert_eq!(switch.translation.x, 17.0);
+            let contract = build_nif_material_contract(&nif, &input).unwrap();
+            let blocks = exported_shape_blocks(&nif, &model, &contract).unwrap();
+            let glb = model.to_glb("switch".into()).unwrap();
+            let mut document = glb_json_from_bytes(&glb).unwrap();
+            room_bounds::select_switch_geometry(&nif, &blocks, &mut document).unwrap();
+            let bytes = rebuild_glb_with_document(&glb, &document).unwrap();
+            let gltf = gltf::Gltf::from_slice(&bytes).unwrap();
+            let mut drawn = [false; 2];
+            let mut stack: Vec<_> = gltf.scenes().next().unwrap().nodes().collect();
+            while let Some(node) = stack.pop() {
+                if let Some(mesh) = node.mesh() {
+                    drawn[mesh.index()] = true;
+                }
+                stack.extend(node.children());
+            }
+            assert_eq!(drawn, visible);
+            assert_eq!(
+                glb_bounds_from_bytes(&bytes).is_ok(),
+                visible.contains(&true)
+            );
         }
     }
 

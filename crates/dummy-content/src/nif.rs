@@ -314,18 +314,26 @@ pub fn legacy_skinned_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
     legacy_skinned_shape_with(spec, LegacyShapeKind::Plain, false, SkinNormals::Authored)
 }
 
+/// Target of the named transform track in the generated skin hierarchy.
+#[derive(Clone, Copy)]
+pub enum SkinTrackTarget {
+    Root,
+    Ancestor,
+    Bone,
+}
+
 /// Generates a legacy skin with a named transform track on a root controller chain.
 pub fn legacy_skinned_shape_with_transform_track(
     spec: &LegacySkin<'_>,
-    target_bone: bool,
+    target: SkinTrackTarget,
 ) -> Result<Vec<u8>> {
     legacy_skinned_shape_with_shader(
         spec,
         LegacyShapeKind::Plain,
-        false,
+        true,
         SkinNormals::Authored,
         false,
-        Some(target_bone),
+        Some(target),
     )
 }
 
@@ -502,7 +510,7 @@ fn legacy_skinned_shape_with_shader(
     nested: bool,
     normals: SkinNormals,
     skin_tint: bool,
-    transform_track_targets_bone: Option<bool>,
+    transform_track: Option<SkinTrackTarget>,
 ) -> Result<Vec<u8>> {
     validate_skin(spec)?;
 
@@ -650,7 +658,7 @@ fn legacy_skinned_shape_with_shader(
     )?);
     block_types.push("BSShaderTextureSet");
 
-    if let Some(target_bone) = transform_track_targets_bone {
+    if let Some(target) = transform_track {
         let manager_index = u32::try_from(blocks.len())?;
         blocks[0][..4].copy_from_slice(&0u32.to_le_bytes()); // named scene root
         blocks[0][8..12].copy_from_slice(&manager_index.to_le_bytes());
@@ -659,8 +667,12 @@ fn legacy_skinned_shape_with_shader(
         let palette_index = manager_index + 3;
         let interpolator_index = manager_index + 4;
         let data_index = manager_index + 5;
-        let target_name_index = if target_bone { 1 } else { 0 };
-        let target_block_index = if target_bone { bone0 } else { 0 };
+        let (target_name_index, target_block_index) = match target {
+            SkinTrackTarget::Root => (0, 0),
+            SkinTrackTarget::Ancestor => (3, 2), // NestedParent sits between Bone0 and Bone1.
+            SkinTrackTarget::Bone => (2, bone1),
+        };
+        let controller_name = u32::try_from(strings.len())?;
         strings.extend(["NiTransformController", "FixtureSequence"]);
 
         let time_controller = |next, flags| {
@@ -686,11 +698,23 @@ fn legacy_skinned_shape_with_shader(
         push_u32(&mut controller, NULL_REF);
 
         let mut sequence = Vec::new();
-        for value in [4, 1, 1, interpolator_index, controller_index] {
+        for value in [
+            controller_name + 1,
+            1,
+            1,
+            interpolator_index,
+            controller_index,
+        ] {
             push_u32(&mut sequence, value);
         }
         sequence.push(0); // track priority
-        for value in [target_name_index, NULL_REF, 3, NULL_REF, NULL_REF] {
+        for value in [
+            target_name_index,
+            NULL_REF,
+            controller_name,
+            NULL_REF,
+            NULL_REF,
+        ] {
             push_u32(&mut sequence, value);
         }
         push_f32(&mut sequence, 1.0); // weight

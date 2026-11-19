@@ -1,8 +1,10 @@
 //! Retain the source spheres used by native static-reference room assignment.
 
+use color_eyre::{Result, eyre::eyre};
 use project_wormhole_nif::{nif_block::NifBlock, nif_file::NifFile};
 use project_wormhole_shared::glam::{Affine3A, Mat3, Vec3};
 use shared::room_assignment::ModelSphere;
+use std::collections::HashSet;
 
 /// Unsupported node types stay unknown instead of becoming an AABB approximation.
 pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
@@ -19,9 +21,7 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
         }
         *remaining = remaining.checked_sub(1)?;
         let block = nif.blocks.get(index as usize)?;
-        if (block.as_node().is_ok() || matches!(block, NifBlock::NiSwitchNode(_)))
-            && path.len() >= super::MAX_SCENE_DEPTH
-        {
+        if block.as_node().is_ok() && path.len() >= super::MAX_SCENE_DEPTH {
             return None;
         }
         path.push(index);
@@ -143,18 +143,14 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
     // Static fallback exports disconnected geometry as additional roots. A bound computed only
     // from block zero must not claim ownership of those extra meshes. Follow structural children
     // even below fixed-bound nodes: their authored bound still represents that whole subtree.
-    let mut reachable = std::collections::HashSet::new();
+    let mut reachable = HashSet::new();
     let mut pending = vec![0u32];
     while let Some(index) = pending.pop() {
         if !reachable.insert(index) {
             continue;
         }
         let block = nif.blocks.get(index as usize)?;
-        let node = match block {
-            NifBlock::NiSwitchNode(switch) => Some(&switch.node),
-            other => other.as_node().ok(),
-        };
-        if let Some(node) = node {
+        if let Ok(node) = block.as_node() {
             pending.extend(
                 node.children
                     .iter()
@@ -188,4 +184,96 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
     )?;
     sphere.center = shared::coordinates::creation_to_runtime_vector(sphere.center);
     (sphere.radius > 0.0).then_some(sphere)
+}
+
+/// Unlink inactive mesh leaves from the initial scene. Static and skinned mesh nodes both
+/// carry the exported mesh index, even when the skinned node is its own glTF scene root.
+pub(super) fn select_switch_geometry(
+    nif: &NifFile,
+    shape_blocks: &[u32],
+    scene: &mut serde_json::Value,
+) -> Result<()> {
+    fn children(block: &NifBlock) -> &[u32] {
+        match block {
+            NifBlock::BSBlastNode(blast) => &blast.node.children,
+            _ => block.as_node().map_or(&[], |node| node.children.as_slice()),
+        }
+    }
+
+    // Start from every structural root, as the exporter does for disconnected geometry.
+    // A child shared with an active branch remains visible through that branch.
+    let mut root = vec![true; nif.blocks.len()];
+    for child in nif.blocks.iter().flat_map(children) {
+        if let Some(slot) = root.get_mut(*child as usize) {
+            *slot = false;
+        }
+    }
+    let mut pending: Vec<_> = (0..root.len()).filter(|&index| root[index]).collect();
+    let mut visible = HashSet::new();
+    while let Some(index) = pending.pop() {
+        if !visible.insert(index as u32) {
+            continue;
+        }
+        let block = &nif.blocks[index];
+        let mut draw = children(block);
+        if let NifBlock::NiSwitchNode(switch) = block {
+            if switch.active_child == u32::MAX {
+                draw = &[];
+            } else if let Some(child) = draw.get(switch.active_child as usize)
+                && (*child == u32::MAX || (*child as usize) < nif.blocks.len())
+            {
+                draw = std::slice::from_ref(child);
+            }
+            // An invalid selection leaves all branches available.
+        }
+        pending.extend(
+            draw.iter()
+                .map(|&id| id as usize)
+                .filter(|&id| id < nif.blocks.len()),
+        );
+    }
+    let nodes = scene["nodes"]
+        .as_array_mut()
+        .ok_or_else(|| eyre!("exported switch scene has no node array"))?;
+    let mut hidden = HashSet::new();
+    for (index, node) in nodes.iter().enumerate() {
+        if let Some(mesh) = node.get("mesh") {
+            let block = mesh
+                .as_u64()
+                .and_then(|id| usize::try_from(id).ok())
+                .and_then(|id| shape_blocks.get(id))
+                .ok_or_else(|| {
+                    eyre!("exported switch node {index} has no source shape for mesh {mesh}")
+                })?;
+            if !visible.contains(block) {
+                hidden.insert(index as u64);
+            }
+        }
+    }
+    fn unlink(parent: &mut serde_json::Value, key: &str, hidden: &HashSet<u64>) {
+        let Some(fields) = parent.as_object_mut() else {
+            return;
+        };
+        if let Some(children) = fields
+            .get_mut(key)
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            children.retain(|child| child.as_u64().is_none_or(|id| !hidden.contains(&id)));
+            // Keep an explicit empty scene root list, as in empty_scene_glb. The bounds
+            // reader otherwise falls back to all parentless nodes (including detached ones).
+            if key == "children" && children.is_empty() {
+                fields.remove(key);
+            }
+        }
+    }
+    for node in nodes {
+        unlink(node, "children", &hidden);
+    }
+    for root in scene["scenes"]
+        .as_array_mut()
+        .ok_or_else(|| eyre!("exported switch scene has no scene array"))?
+    {
+        unlink(root, "nodes", &hidden);
+    }
+    Ok(())
 }

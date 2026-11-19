@@ -274,7 +274,9 @@ metadata and mesh contracts. The helper's existing endpoint-provenance requireme
 canonical cleared FormID from being promoted to authored outside space. Each invocation replaces
 all room metadata with the selected cells. Use a fresh private copy for independent cell sets,
 or include every desired cell when reusing a copy. The helper requires Unix hard-link validation
-and holds the asset directory's exclusive lock through database and mesh finalization.
+and holds the asset directory's exclusive lock through database and mesh finalization. The helper
+writes `room-assignment-preparation.json` inside that private asset directory. Its `complete` flag
+turns true after finalization succeeds.
 
 ## Default-on review validation
 

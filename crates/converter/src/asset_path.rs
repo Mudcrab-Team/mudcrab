@@ -120,6 +120,10 @@ impl AssetSourceIndex {
         self.entries.get(canonical_key)
     }
 
+    pub fn entries(&self) -> impl Iterator<Item = &IndexedAsset> {
+        self.entries.values()
+    }
+
     pub fn overrides(&self) -> &[AssetOverride] {
         &self.overrides
     }

@@ -2103,16 +2103,35 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
         .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(explicit_planes, [(0x830, 0x810)]);
-    for (id, outside) in [(0x801, true), (0x802, false), (0x803, false), (0x804, true)] {
-        let actual: (Option<u32>, bool) = conn
-            .query_row(
-                "SELECT room_b,unbounded_b FROM room_portals WHERE ref_id=?1",
-                [id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(actual, (None, outside));
-    }
+    let portal_pairs = conn
+        .prepare(
+            "SELECT ref_id, pair_index, room_a, room_b, unbounded_a, unbounded_b FROM room_portals
+             WHERE ref_id BETWEEN 0x801 AND 0x804 ORDER BY ref_id, pair_index",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, Option<u32>>(2)?,
+                row.get::<_, Option<u32>>(3)?,
+                row.get::<_, bool>(4)?,
+                row.get::<_, bool>(5)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        portal_pairs,
+        [
+            (0x801, 0, Some(0x800), None, false, true),
+            (0x802, 0, Some(0x800), None, false, false),
+            (0x803, 0, None, None, false, false),
+            (0x804, 0, None, None, true, true),
+            (0x804, 1, None, None, false, true),
+        ]
+    );
     assert_eq!(
         conn.query_row(
             "SELECT value FROM room_graph_stats WHERE name='visibility_version'",

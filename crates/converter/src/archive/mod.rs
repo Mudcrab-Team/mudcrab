@@ -744,13 +744,16 @@ impl ArchiveExtractor {
         output_root: &Path,
         paths: &BTreeSet<PathBuf>,
     ) -> Result<Vec<ExtractedFile>> {
-        extract_selected_reporting(
-            archive_path,
-            output_root,
-            |path| paths.contains(path),
-            None,
-            None,
-        )
+        Self::extract_matching(archive_path, output_root, |path| paths.contains(path))
+    }
+
+    /// Extracts matching normalized paths without decompressing other entries.
+    pub fn extract_matching(
+        archive_path: &Path,
+        output_root: &Path,
+        include: impl Fn(&Path) -> bool + Sync,
+    ) -> Result<Vec<ExtractedFile>> {
+        extract_selected_reporting(archive_path, output_root, include, None, None)
     }
 }
 
