@@ -1144,6 +1144,8 @@ pub fn cull_room_views(
         Has<RoomCullExempt>,
         Has<RoomCullLegacyExempt>,
         Has<ExpectedModelBounds>,
+        Has<bevy::animation::AnimatedBy>,
+        Has<bevy::mesh::skinning::SkinnedMesh>,
     )>,
     changed_references: Query<
         (Entity, &FormId),
@@ -1260,19 +1262,25 @@ pub fn cull_room_views(
                 };
                 // Re-read every frame: a body can be added after the mesh spawns.
                 // Authored rules and source spheres supply ownership independently.
-                let exempted = |entity| {
-                    exemptions
-                        .get(entity)
-                        .is_ok_and(|(body, marked, legacy, has_model_bounds)| {
-                            marked
-                                || (entity == reference
-                                    && !has_model_bounds
-                                    && loaded.graph.authored.is_none())
-                                || (legacy && loaded.graph.authored.is_none())
-                                || (body.is_some_and(|body| body_moves(*body))
-                                    && (entity != reference || loaded.graph.authored.is_none()))
-                        })
-                };
+                let exempted =
+                    |entity| {
+                        exemptions.get(entity).is_ok_and(
+                            |(body, marked, legacy, has_model_bounds, animated, skinned)| {
+                                marked
+                                    || (entity != reference && animated)
+                                    || (skinned
+                                        && loaded.graph.authored.as_ref().is_some_and(|rules| {
+                                            rules.unbounded_named_skin(form_id)
+                                        }))
+                                    || (entity == reference
+                                        && !has_model_bounds
+                                        && loaded.graph.authored.is_none())
+                                    || (legacy && loaded.graph.authored.is_none())
+                                    || (body.is_some_and(|body| body_moves(*body))
+                                        && (entity != reference || loaded.graph.authored.is_none()))
+                            },
+                        )
+                    };
                 let mut ancestor = entity;
                 for _ in 0..=32 {
                     if exempted(ancestor) {
@@ -1541,6 +1549,33 @@ mod tests {
             "an explicit initial target supplies ownership without geometric memberships or spheres"
         );
         assert!(mesh_list(&scene.app, scene.camera).contains(&scene.near));
+        // A descendant can move independently while the named placement stays in its original room.
+        let animated = scene
+            .app
+            .world_mut()
+            .spawn((ChildOf(reference), bevy::animation::AnimatedBy(reference)))
+            .id();
+        scene
+            .app
+            .world_mut()
+            .entity_mut(scene.far)
+            .insert((ChildOf(animated), GlobalTransform::from_xyz(0.0, 0.0, -1.0)));
+        scene
+            .app
+            .world_mut()
+            .get_mut::<VisibleEntities>(scene.camera)
+            .unwrap()
+            .get_mut(TypeId::of::<Mesh3d>())
+            .push(scene.far);
+        scene.app.world_mut().run_schedule(Update);
+        assert!(mesh_list(&scene.app, scene.camera).contains(&scene.far));
+        scene
+            .app
+            .world_mut()
+            .entity_mut(scene.far)
+            .insert(ChildOf(reference));
+        scene.app.world_mut().run_schedule(Update);
+        assert!(!mesh_list(&scene.app, scene.camera).contains(&scene.far));
         scene
             .app
             .insert_resource(crate::settings::RenderingSettings {
