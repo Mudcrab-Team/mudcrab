@@ -2283,15 +2283,19 @@ pub(crate) fn glb_bounds_from_bytes(glb: &[u8]) -> Result<shared::Bounds3> {
         glb.get(20..20 + json_length)
             .ok_or_else(|| color_eyre::eyre::eyre!("truncated GLB JSON chunk"))?,
     )?;
+    glb_bounds_from_document(&document)
+}
+
+pub(crate) fn glb_bounds_from_document(document: &serde_json::Value) -> Result<shared::Bounds3> {
     let nodes = document
         .get("nodes")
         .and_then(serde_json::Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or_default();
-    let roots = scene_roots(&document, nodes);
+    let roots = scene_roots(document, nodes);
     let mut bounds = BoundsAccumulator::default();
     for root in roots {
-        visit_node(&document, nodes, root, Mat4::IDENTITY, 0, &mut bounds)?;
+        visit_node(document, nodes, root, Mat4::IDENTITY, 0, &mut bounds)?;
     }
     bounds.finish()
 }
