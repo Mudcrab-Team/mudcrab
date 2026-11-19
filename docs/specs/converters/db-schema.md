@@ -1471,7 +1471,8 @@ Conversion and failed-asset repair read static bounds from the winning staged GL
 or unreadable winners clear `bounds_valid` and remove stale overlaps.
 
 `room-model-bounds-refresh <assets-dir> <meshes/path.glb>...` updates a private, offline pack
-after native GLBs are replaced or removed. Each argument gives a changed lowercase runtime path.
+after native GLBs are replaced or removed. If the command fails, keep the pack offline until the
+refresh succeeds or you restore the previous GLBs. Each argument gives a changed lowercase runtime path.
 One transaction updates every matching base form and refreshes geometric room overlaps. The
 original conversion pack remains the input for manifest verification and later conversion or
 repair.
