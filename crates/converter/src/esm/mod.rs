@@ -279,10 +279,34 @@ impl EsmParser {
                 },
             )?;
         }
-        for (priority, path) in plugin_paths.iter().enumerate() {
+        let pack_wide_light = |key: shared::form_key::FormKey| -> Result<u32> {
+            Ok(legacy.to_legacy_u32(shared::form_key::FormKey::new(
+                key.plugin(),
+                key.local() & 0xfff,
+            )?)?)
+        };
+        let mut admitted_exact_lights = std::collections::HashSet::new();
+        let mut wide_candidates = BTreeMap::<usize, Vec<RawRecord>>::new();
+        // A header locates potential conflicts, but only an admitted exact record can
+        // reject a fallback. Replay just the contested wide records in supplier order.
+        let suppliers = [false, true].into_iter().flat_map(|replay| {
+            plugin_paths
+                .iter()
+                .enumerate()
+                .map(move |(priority, path)| (priority, path, replay))
+        });
+        for (priority, path, replay) in suppliers {
             let mut sources = HashMap::<shared::form_key::FormKey, (u32, bool)>::new();
-            let (records, parser_summaries) = parse_plugin_file_with_warnings(path)?;
-            summaries.extend(parser_summaries);
+            let records = if replay {
+                let Some(records) = wide_candidates.remove(&priority) else {
+                    continue;
+                };
+                records
+            } else {
+                let (records, parser_summaries) = parse_plugin_file_with_warnings(path)?;
+                summaries.extend(parser_summaries);
+                records
+            };
             for mut record in records {
                 record.load_order = priority as u32;
                 let source_id = record.form_id;
@@ -307,6 +331,16 @@ impl EsmParser {
                         continue;
                     }
                 };
+                let wide_light = key
+                    .filter(|key| key.local() > 0xfff && identities.table.is_light(key.plugin()));
+                if !replay
+                    && let Some(wide) = wide_light
+                    && let Ok(packed) = pack_wide_light(wide)
+                    && source_ids.contains(&packed)
+                {
+                    wide_candidates.entry(priority).or_default().push(record);
+                    continue;
+                }
                 let kind = record.record_type;
                 let remap_word = |raw: u32, strict: bool, field: bool| -> Result<u32> {
                     let key = if !strict && kind == *b"GMST" {
@@ -333,14 +367,9 @@ impl EsmParser {
                                     eyre!("wide light FormID {raw:08X} has no allocated owner")
                                 })?
                                 .normalized_name;
-                            let packed = legacy.to_legacy_u32(shared::form_key::FormKey::new(
-                                key.plugin(),
-                                key.local() & 0xfff,
-                            )?)?;
-                            // Group labels are strict. For a permissive record header, an
-                            // exact source identity reserves the ID in either source order.
+                            let packed = pack_wide_light(key)?;
                             color_eyre::eyre::ensure!(
-                                field || !source_ids.contains(&packed),
+                                field || !admitted_exact_lights.contains(&packed),
                                 "wide light FormID {raw:08X} would collide with exact record {packed:08X}"
                             );
                             warnings.truncated(owner, raw);
@@ -400,9 +429,7 @@ impl EsmParser {
                 }
                 // Preserve the old explicit malformed-light recovery at the legacy boundary;
                 // the native FormKey path retains the original full local without masking.
-                if key.is_some_and(|key| {
-                    key.local() > 0xfff && identities.table.is_light(key.plugin())
-                }) {
+                if wide_light.is_some() {
                     key = match legacy.from_legacy_u32(record.form_id) {
                         Ok(key) => key,
                         Err(error) => {
@@ -429,6 +456,7 @@ impl EsmParser {
                     }
                 }
                 let source_key = key;
+                let packed_source_id = record.form_id;
                 if record.record_type == *b"GMST" {
                     let canonical = match game_settings.resolve(
                         &record,
@@ -491,6 +519,9 @@ impl EsmParser {
                     continue;
                 };
                 // Reserve admitted tombstones too, using the source identity before EDID canonicalization.
+                if wide_light.is_none() && packed_source_id >> 24 == 0xfe {
+                    admitted_exact_lights.insert(packed_source_id);
+                }
                 if let Some(source_key) = source_key {
                     sources.insert(
                         source_key,

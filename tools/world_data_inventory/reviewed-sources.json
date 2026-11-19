@@ -72,7 +72,7 @@
     "crates/converter/src/esm/load_order_recovery_tests.rs": "d26b6131460041ed6882c181799d45c545e6b1e736e0dca4c0f7b4cd2789e438",
     "crates/converter/src/esm/lodsettings.rs": "4cdec36697a53b224eaf4825c5da5dc7e72d6854ce8007d847057a5e7f7747a3",
     "crates/converter/src/esm/mmap_reader.rs": "e71b08bcb021293e971c82d6fc0f55c1706f909a4de10620651c5d354ceb4ffb",
-    "crates/converter/src/esm/mod.rs": "b6376cb6b1bedc9e800be638034e8443ddac948b281b02bddc06afc3685c76e5",
+    "crates/converter/src/esm/mod.rs": "902fc9a070b53e1820f346ba43d8ca854b95c4a54e2b6ddfb6359fa57436e333",
     "crates/converter/src/esm/object_materials.rs": "f5a37e40487d8edce22dd5c511555f7a59e06e21f491faceb32d368d623daed0",
     "crates/converter/src/esm/plugin_table_tests.rs": "2ff4a42118514a9eda39ecd9f2f1a9ed831d6729df73c8ea22d83a3ebcef7cb4",
     "crates/converter/src/esm/plugins_txt.rs": "9021ed35c591e298b01db9d392ffa90c6f78383adf5aee2b8c89f0e73424c7c9",

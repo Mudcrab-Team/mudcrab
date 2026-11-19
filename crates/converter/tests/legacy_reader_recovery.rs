@@ -178,17 +178,24 @@ fn coderabbit_718_exact_light_record_survives_wide_collisions() {
                         )
                 )
                 .count(),
-            4,
+            6,
             "each colliding record or tombstone should emit a skip warning: {stderr}"
         );
     }
 }
 
 fn check_exact_light_record_survives_wide_collisions() {
-    for (wide_first, flags) in [(false, 0), (true, 0), (false, 0x20), (true, 0x20)] {
+    for (wide_first, wide_flags, exact_flags) in [
+        (false, 0, 0),
+        (true, 0, 0),
+        (false, 0x20, 0),
+        (true, 0x20, 0),
+        (false, 0, 0x20),
+        (true, 0, 0x20),
+    ] {
         let dir = tempfile::tempdir().unwrap();
-        let exact = record(b"STAT", 0x0840, 0, sub(b"EDID", b"Exact\0"));
-        let wide = record(b"STAT", 0x1840, flags, sub(b"EDID", b"Wide\0"));
+        let exact = record(b"STAT", 0x0840, exact_flags, sub(b"EDID", b"Exact\0"));
+        let wide = record(b"STAT", 0x1840, wide_flags, sub(b"EDID", b"Wide\0"));
         let collision = if wide_first {
             [wide, exact]
         } else {
@@ -205,12 +212,16 @@ fn check_exact_light_record_survives_wide_collisions() {
         let db = dir.path().join("world.db");
         EsmParser::convert_plugins(&[path], &db).unwrap();
         let conn = Connection::open(db).unwrap();
-        assert_eq!(ids(&conn), [0xfe00_0840, 0xfe00_0841]);
-        assert_eq!(
-            fields(&conn, 0xfe00_0840, b"EDID"),
-            [b"Exact\0".to_vec()],
-            "the exact light record should win (wide_first={wide_first}, flags={flags:#x})"
-        );
+        if exact_flags == 0x20 {
+            assert_eq!(ids(&conn), [0xfe00_0841], "the exact tombstone should win");
+        } else {
+            assert_eq!(ids(&conn), [0xfe00_0840, 0xfe00_0841]);
+            assert_eq!(
+                fields(&conn, 0xfe00_0840, b"EDID"),
+                [b"Exact\0".to_vec()],
+                "the exact light record should win (wide_first={wide_first}, wide_flags={wide_flags:#x})"
+            );
+        }
         assert_eq!(
             fields(&conn, 0xfe00_0841, b"EDID"),
             [b"Fallback\0".to_vec()]
