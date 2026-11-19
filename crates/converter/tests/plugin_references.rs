@@ -3015,7 +3015,7 @@ fn post_conversion_plugin_placements_refresh_both_cells_and_keep_source_proof() 
     );
     let result = run_placement_import(&assets, "--plugin", &new_cell);
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("is not an existing interior"));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("requires DATA and EDID"));
     let add = plugin(
         dir.path(),
         "Placement.esl",
