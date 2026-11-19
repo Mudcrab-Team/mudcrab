@@ -295,8 +295,12 @@ pub(super) fn positions(
             set as usize == expected,
             "noncontiguous skin attribute sets"
         );
-        let joints = primitive.get(&gltf::Semantic::Joints(set)).unwrap();
-        let weights = primitive.get(&gltf::Semantic::Weights(set)).unwrap();
+        let joints = primitive
+            .get(&gltf::Semantic::Joints(set))
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing skin joint attribute set {set}"))?;
+        let weights = primitive
+            .get(&gltf::Semantic::Weights(set))
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing skin weight attribute set {set}"))?;
         ensure!(
             matches!(
                 joints.data_type(),

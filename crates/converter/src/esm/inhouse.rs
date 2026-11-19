@@ -1159,7 +1159,7 @@ fn convert_plugins_with_text_sources_report_impl(
                 .retain(|(tag, _)| matches!(tag.as_slice(), b"BTXT" | b"ATXT" | b"VTXT"));
             for (tag, data) in &mut source.subrecords {
                 if matches!(tag.as_slice(), b"BTXT" | b"ATXT") && data.len() >= 4 {
-                    let id = u32::from_le_bytes(data[..4].try_into().expect("checked identity"));
+                    let id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
                     if id != 0 && !landscape_textures.contains(&id) {
                         data[..4].fill(0);
                     }
@@ -1552,7 +1552,7 @@ fn original_land_record(
         if data.len() < minimum || data[4] >= 4 {
             continue;
         }
-        let value = u32::from_le_bytes(data[..4].try_into().expect("checked texture identity"));
+        let value = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
         let resolved = resolve_land_texture(value, priority, order).unwrap_or_else(|| {
             unresolved += 1;
             0

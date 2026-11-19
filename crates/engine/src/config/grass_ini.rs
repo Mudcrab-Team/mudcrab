@@ -4,6 +4,14 @@ use super::EngineConfig;
 use shared::grass_settings::{GrassSettings, Report};
 use std::sync::Arc;
 
+/// Distinguish imported assignments from defaults by their source line.
+fn was_imported(report: &Report, key: &str) -> bool {
+    report
+        .settings
+        .get(key)
+        .is_some_and(|setting| setting.effective.line.is_some())
+}
+
 #[derive(Default)]
 pub(super) struct Options {
     pub requested: Option<bool>,
@@ -41,13 +49,14 @@ impl Options {
         });
         // Radius is a next-start preference even when grass rendering is disabled.
         if let Some(report) = &config.grass_settings_report
-            && report.settings["iGrassCellRadius"].effective.line.is_some()
+            && was_imported(report, "iGrassCellRadius")
         {
             let report = Arc::clone(report);
             config.map_grass_radius(&report);
         }
-        if config.grass {
-            let report = Arc::clone(config.grass_settings_report.as_ref().unwrap());
+        if config.grass
+            && let Some(report) = config.grass_settings_report.clone()
+        {
             config.map_grass_settings(&report);
         }
         for (flag, value) in self.numeric {
@@ -156,9 +165,7 @@ impl EngineConfig {
         };
         let imported = |keys: &[&str], flag: Option<&str>| {
             flag.is_none_or(|flag| !self.settings_overrides.iter().any(|value| value == flag))
-                && keys
-                    .iter()
-                    .any(|key| report.settings[*key].effective.line.is_some())
+                && keys.iter().any(|key| was_imported(report, key))
         };
         let defaults = EngineConfig::default();
         if imported(&["iMinGrassSize"], Some("--grass-min-spacing")) {
@@ -188,7 +195,7 @@ impl EngineConfig {
     pub(crate) fn apply_grass_settings(&mut self, report: Report) {
         let defaults = GrassSettings::default();
         // Explicit INI assignments are launch overrides, just like numeric CLI values.
-        if report.settings["bDrawShaderGrass"].effective.line.is_some() {
+        if was_imported(&report, "bDrawShaderGrass") {
             self.settings_overrides.push("ini:grass".into());
         }
         self.grass &= report
@@ -213,9 +220,11 @@ impl EngineConfig {
     /// Apply accepted INI assignments while preserving unmentioned or malformed values.
     fn map_grass_settings(&mut self, report: &Report) {
         // A source named "default" can be a real file; line provenance identifies imports.
-        let imported = |key: &str| report.settings[key].effective.line.is_some();
-        if imported("iMinGrassSize") {
-            let value = report.integer("iMinGrassSize").unwrap() as f32;
+        let imported = |key| was_imported(report, key);
+        let integer = |key| report.integer(key).filter(|_| imported(key));
+        let float = |key| report.float(key).filter(|_| imported(key));
+        if let Some(value) = integer("iMinGrassSize") {
+            let value = value as f32;
             if value >= 8.0 {
                 self.grass_min_spacing = value;
             } else {
@@ -226,8 +235,8 @@ impl EngineConfig {
             }
         }
         self.map_grass_radius(report);
-        if imported("iMaxGrassTypesPerTexure") {
-            match usize::try_from(report.integer("iMaxGrassTypesPerTexure").unwrap()) {
+        if let Some(value) = integer("iMaxGrassTypesPerTexure") {
+            match usize::try_from(value) {
                 Ok(value) => self.grass_max_types_per_texture = value,
                 Err(_) => self.grass_settings_diagnostics.push(
                     "negative iMaxGrassTypesPerTexure ignored; retaining supported type limit"
@@ -235,16 +244,20 @@ impl EngineConfig {
                 ),
             }
         }
-        if imported("fTexturePctThreshold") {
-            self.grass_texture_threshold = report.float("fTexturePctThreshold").unwrap();
+        if let Some(value) = float("fTexturePctThreshold") {
+            self.grass_texture_threshold = value;
         }
-        if imported("bEnableGrassFade") {
-            self.grass_enable_fade = report.boolean("bEnableGrassFade").unwrap();
+        if let Some(value) = report
+            .boolean("bEnableGrassFade")
+            .filter(|_| imported("bEnableGrassFade"))
+        {
+            self.grass_enable_fade = value;
         }
-        if imported("fGrassStartFadeDistance") || imported("fGrassFadeRange") {
+        let imported_start = float("fGrassStartFadeDistance");
+        let imported_range = float("fGrassFadeRange");
+        if imported_start.is_some() || imported_range.is_some() {
             let mut range = self.grass_fade_end - self.grass_fade_start;
-            if imported("fGrassFadeRange") {
-                let value = report.float("fGrassFadeRange").unwrap();
+            if let Some(value) = imported_range {
                 if value.is_finite() && value >= 0.0 && (!self.grass_enable_fade || value > 0.0) {
                     range = value;
                 } else {
@@ -254,8 +267,7 @@ impl EngineConfig {
                 }
             }
             let mut start = self.grass_fade_start;
-            if imported("fGrassStartFadeDistance") {
-                let value = report.float("fGrassStartFadeDistance").unwrap();
+            if let Some(value) = imported_start {
                 if value.is_finite() && value >= 0.0 {
                     start = value;
                 } else {
@@ -282,10 +294,12 @@ impl EngineConfig {
 
     /// Ignore unsupported imported coverage while keeping explicit CLI validation strict.
     fn map_grass_radius(&mut self, report: &Report) {
-        if report.settings["iGrassCellRadius"].effective.line.is_none() {
+        let Some(radius) = report
+            .integer("iGrassCellRadius")
+            .filter(|_| was_imported(report, "iGrassCellRadius"))
+        else {
             return;
-        }
-        let radius = report.integer("iGrassCellRadius").unwrap();
+        };
         let explicit_terrain = self
             .settings_overrides
             .iter()

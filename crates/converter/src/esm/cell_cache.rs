@@ -530,9 +530,9 @@ pub(crate) fn malformed_texture_items(subrecords: &[(Vec<u8>, Vec<u8>)]) -> usiz
                     continue;
                 }
                 omitted += usize::from(!data.len().is_multiple_of(8));
-                for item in data.as_chunks::<8>().0 {
-                    let vertex = u16::from_le_bytes([item[0], item[1]]);
-                    let opacity = f32::from_le_bytes(item[4..8].try_into().expect("fixed chunk"));
+                for &[lo, hi, _, _, a, b, c, d] in data.as_chunks::<8>().0 {
+                    let vertex = u16::from_le_bytes([lo, hi]);
+                    let opacity = f32::from_le_bytes([a, b, c, d]);
                     omitted += usize::from(
                         vertex >= 289 || !opacity.is_finite() || !(0.0..=1.0).contains(&opacity),
                     );

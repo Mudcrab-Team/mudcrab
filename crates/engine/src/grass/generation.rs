@@ -557,7 +557,9 @@ fn generate_field<const OBSERVE: bool>(
         // retained vector exact capacity while preserving the staged instance order.
         let mut values = values.into_boxed_slice().into_vec();
         fade_sort::sort(&mut values);
-        let rule = cache.species(id).expect("generated species is mapped");
+        let Some(rule) = cache.species(id) else {
+            continue;
+        };
         result.bytes += values.capacity() * std::mem::size_of::<GrassInstance>()
             + rule.model_path.len()
             + std::mem::size_of::<Vec<GrassInstance>>()

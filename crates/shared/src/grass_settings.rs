@@ -183,12 +183,13 @@ impl Source {
 impl GrassSettings {
     /// Describe these values against built-in defaults, before explicit CLI overrides.
     pub fn report(&self) -> Report {
-        let defaults = serde_json::to_value(Self::default()).expect("grass defaults serialize");
-        let values = serde_json::to_value(self).expect("grass values serialize");
+        let defaults = serde_json::to_value(Self::default()).ok();
+        let values = serde_json::to_value(self).ok();
         let settings = defaults
-            .as_object()
-            .expect("grass defaults are an object")
-            .iter()
+            .as_ref()
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
             .map(|(name, default)| {
                 let assignment = Assignment {
                     value: default.clone(),
@@ -234,8 +235,17 @@ impl GrassSettings {
                 "Hashes cover effective values only; placement cache identity must also fingerprint terrain, grass definitions, obstructions and generator version.",
             ],
         };
-        for (name, value) in values.as_object().expect("grass values are an object") {
-            if value != &report.settings[name].default {
+        for (name, value) in values
+            .as_ref()
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            if report
+                .settings
+                .get(name)
+                .is_some_and(|setting| *value != setting.default)
+            {
                 report.assign(name, value.clone(), "default".into(), None);
             }
         }
@@ -297,7 +307,7 @@ fn hash(bytes: &[u8]) -> String {
 
 /// Hash the settings schema version and deterministically ordered effective values.
 fn settings_hash(settings: &BTreeMap<String, Value>) -> String {
-    hash(&serde_json::to_vec(&json!((SETTINGS_VERSION, settings))).expect("JSON values serialize"))
+    hash(json!((SETTINGS_VERSION, settings)).to_string().as_bytes())
 }
 
 #[cfg(test)]

@@ -40,7 +40,7 @@ pub(super) fn restore_layers(land: &mut CachedLand, records: &[Vec<u8>]) -> Resu
                 omitted += 1;
                 continue;
             }
-            let texture = u32::from_le_bytes(data[..4].try_into().expect("checked length"));
+            let texture = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
             let slot = if base {
                 0
             } else {
@@ -72,9 +72,9 @@ pub(super) fn restore_layers(land: &mut CachedLand, records: &[Vec<u8>]) -> Resu
                     .iter()
                     .map(|weight| (weight.vertex, weight.opacity))
                     .collect();
-                for bytes in weights.as_chunks::<8>().0 {
-                    let vertex = u16::from_le_bytes([bytes[0], bytes[1]]);
-                    let opacity = f32::from_le_bytes(bytes[4..8].try_into().expect("fixed chunk"));
+                for &[lo, hi, _, _, a, b, c, d] in weights.as_chunks::<8>().0 {
+                    let vertex = u16::from_le_bytes([lo, hi]);
+                    let opacity = f32::from_le_bytes([a, b, c, d]);
                     if vertex >= 289 || !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
                         omitted += 1;
                         continue;

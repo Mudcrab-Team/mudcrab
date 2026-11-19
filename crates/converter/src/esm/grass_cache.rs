@@ -312,15 +312,18 @@ impl GeometryCache {
         match result {
             Ok(mesh) => {
                 let bytes = mesh.capacity() * std::mem::size_of::<Triangle>();
-                while self.bytes + bytes > GEOMETRY_BUDGET && !self.meshes.is_empty() {
-                    let oldest = self
+                while self.bytes + bytes > GEOMETRY_BUDGET {
+                    let Some(oldest) = self
                         .meshes
                         .iter()
                         .min_by_key(|(_, (_, stamp))| *stamp)
-                        .unwrap()
-                        .0
-                        .clone();
-                    let (removed, _) = self.meshes.remove(&oldest).unwrap();
+                        .map(|(key, _)| key.clone())
+                    else {
+                        break;
+                    };
+                    let Some((removed, _)) = self.meshes.remove(&oldest) else {
+                        break;
+                    };
                     self.bytes -= removed.capacity() * std::mem::size_of::<Triangle>();
                 }
                 // A single oversized mesh is processed transiently, never added to the cache.
@@ -767,7 +770,10 @@ fn scene_triangles(glb: &gltf::Gltf, evaluate_skin: bool) -> Result<Vec<Triangle
                     .map(|p| DVec3::from_array(p.map(f64::from)))
                     .collect();
                 let vertices = if let Some(skin) = node.skin() {
-                    skinning::positions(&primitive, skin, globals.unwrap(), blob, &positions)?
+                    let globals = globals.ok_or_else(|| {
+                        color_eyre::eyre::eyre!("missing scene transforms for skinned model")
+                    })?;
+                    skinning::positions(&primitive, skin, globals, blob, &positions)?
                 } else {
                     positions
                         .into_iter()
