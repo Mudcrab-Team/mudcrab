@@ -28,6 +28,7 @@ pub mod load_order;
 pub mod lodsettings;
 pub mod mmap_reader;
 mod object_materials;
+pub mod placement_edits;
 pub mod plugins_txt;
 pub mod projection_omissions;
 pub mod records;

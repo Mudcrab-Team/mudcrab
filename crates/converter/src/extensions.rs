@@ -103,6 +103,8 @@ const MAIN_CORE_TABLES: &[&str] = &[
     "room_model_bounds",
     "room_occluder_links",
     "room_occluders",
+    "room_placement_edits",
+    "room_placement_layers",
     "room_portals",
     "room_reference_rules",
     "schema_info",

@@ -228,6 +228,9 @@ async fn main() -> Result<()> {
         let command_line = std::env::args().collect::<Vec<String>>();
         return derive_outfits(&args[1..], command_line);
     }
+    if args.first().and_then(|argument| argument.to_str()) == Some("apply-room-placements") {
+        return apply_room_placements(&args[1..]);
+    }
     let command = parse_command(args)?;
     let mo2 = match &command {
         Command::Convert(cli) => cli.mo2.as_ref(),
@@ -803,6 +806,30 @@ fn format_check_report(report: &converter::CheckReport) -> String {
 }
 
 /// Parse conversion, check, or repair arguments with boxed pipeline commands.
+fn apply_room_placements(args: &[OsString]) -> Result<()> {
+    use converter::esm::placement_edits::{PlacementSource, apply};
+
+    let [pack, format, input] = args else {
+        bail!(
+            "usage: converter apply-room-placements <asset directory> (--plugin FILE | --native FILE)"
+        );
+    };
+    let input = Path::new(input);
+    let source = match format.to_str() {
+        Some("--plugin") => PlacementSource::SkyrimPlugin(input),
+        Some("--native") => PlacementSource::NativeJson(input),
+        _ => bail!("select --plugin or --native"),
+    };
+    let report = apply(Path::new(pack), source)?;
+    println!(
+        "Applied {} room placements in {} cells ({} certified)",
+        report.changed_references,
+        report.affected_cells.len(),
+        report.certified_cells.len(),
+    );
+    Ok(())
+}
+
 fn parse_command(args: Vec<OsString>) -> Result<Command> {
     if args.first().and_then(|argument| argument.to_str()) == Some("check") {
         return parse_check(args.into_iter().skip(1)).map(Command::Check);
@@ -1308,6 +1335,7 @@ fn usage() -> &'static str {
                  [--plugins-file FILE] [--skyrim-ccc-file FILE] [--skyrim-ini-file FILE]
        converter -V | --version
        converter check <output directory> [--full]
+       converter apply-room-placements <asset directory> (--plugin FILE | --native FILE)
        converter derive-outfits <target> --registry <packs.json> --clone-of <pack> [--replace] [--converter-head <sha>]
        converter repair-failed <Skyrim Data> <output directory> [--mo2-instance DIR]
                  [--mo2-profile NAME] [--no-lod] [--apply]
