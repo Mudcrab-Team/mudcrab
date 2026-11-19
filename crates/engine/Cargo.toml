@@ -24,7 +24,6 @@ serde_json.workspace = true
 sha2.workspace = true
 ktx2.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png"] }
-tempfile = "3.20"
 libc = "0.2"
 regex = "1.12"
 time = { version = "0.3.55", features = ["formatting"] }
@@ -41,6 +40,7 @@ objc2-foundation = { version = "0.2.2", default-features = false, features = ["s
 windows-sys = { version = "0.61", features = ["Win32_System_Com", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+tempfile = "3.20"
 # Used only by examples/model_inspector_export (the inspector GIF encoder), not by the engine.
 gif = "=0.13.3"
 converter = { path = "../converter" }

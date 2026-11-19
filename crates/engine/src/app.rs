@@ -3119,59 +3119,13 @@ pub(crate) fn save_acceptance_screenshot(
 }
 
 fn write_acceptance_screenshot(image: Image, path: &Path) -> Result<()> {
-    use std::io::{BufWriter, Write};
-
     let format = image::ImageFormat::from_path(path)?;
     let rgb = crate::shots::decode_shot(image).map_err(color_eyre::eyre::Error::msg)?;
-    // Choose the format from the requested name, then publish beside the link's target.
-    let mut target = path.to_owned();
-    let mut hops = 0;
-    while target.is_symlink() {
-        color_eyre::eyre::ensure!(
-            hops < 40,
-            "too many screenshot symlinks at {}",
-            path.display()
-        );
-        let next = fs::read_link(&target)
-            .wrap_err_with(|| format!("cannot read screenshot symlink {}", target.display()))?;
-        target = target.with_file_name(next);
-        hops += 1;
-    }
-    let parent = target
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-
-    #[cfg(unix)]
-    let (mut file, previous_mode) = {
-        use std::os::unix::fs::PermissionsExt;
-        let mut builder = tempfile::Builder::new();
-        let mode = match target.metadata() {
-            Ok(meta) => meta.is_file().then(|| meta.permissions().mode() & 0o777),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // As with File::create, the process umask applies to a new screenshot.
-                builder.permissions(fs::Permissions::from_mode(0o666));
-                None
-            }
-            Err(e) => return Err(e.into()),
-        };
-        (builder.tempfile_in(parent)?, mode)
-    };
-    #[cfg(not(unix))]
-    let mut file = tempfile::NamedTempFile::new_in(parent)?;
-
-    {
-        let mut writer = BufWriter::new(file.as_file_mut());
-        rgb.write_to(&mut writer, format)?;
-        writer.flush()?;
-    }
-    #[cfg(unix)]
-    if let Some(mode) = previous_mode {
-        use std::os::unix::fs::PermissionsExt;
-        file.as_file()
-            .set_permissions(fs::Permissions::from_mode(mode))?;
-    }
-    file.persist(target)?;
+    // Finish encoding before opening the destination. Writing in place follows symlinks
+    // and preserves the existing file's ownership and access permissions.
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    rgb.write_to(&mut encoded, format)?;
+    fs::write(path, encoded.into_inner())?;
     Ok(())
 }
 
@@ -3180,7 +3134,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn acceptance_screenshot_follows_links_and_preserves_access_modes() {
-        use std::os::unix::fs::{PermissionsExt, symlink};
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 
         let dir = tempfile::tempdir().unwrap();
         let target_dir = dir.path().join("frames");
@@ -3203,15 +3157,28 @@ mod tests {
             reference.metadata().unwrap().permissions().mode()
         );
 
+        let inode = target.metadata().unwrap().ino();
         fs::write(&target, b"old frame").unwrap();
         fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
         write_acceptance_screenshot(Image::default(), &link).unwrap();
+        assert_eq!(target.metadata().unwrap().ino(), inode);
         assert_eq!(fs::read_link(&link).unwrap(), Path::new("frames/current"));
         assert!(image::open(&target).is_ok());
         assert_eq!(
             target.metadata().unwrap().permissions().mode() & 0o777,
             0o640
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acceptance_screenshot_leaves_a_socket_in_place() {
+        use std::os::unix::{fs::FileTypeExt, net::UnixListener};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("acceptance.png");
+        let _listener = UnixListener::bind(&path).unwrap();
+        assert!(write_acceptance_screenshot(Image::default(), &path).is_err());
+        assert!(path.metadata().unwrap().file_type().is_socket());
     }
 
     /// Hidden macOS runs skip Bevy's GPU timing recorder. Visible runs, other platforms and the

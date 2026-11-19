@@ -2063,7 +2063,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_screenshot_rename_cleans_up_and_fails_the_report() {
+    fn failed_screenshot_write_fails_the_report() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("acceptance.png");
         fs::create_dir(&path).unwrap();
@@ -2073,12 +2073,7 @@ mod tests {
             std::time::Duration::from_secs(11),
         );
         deliver_acceptance_screenshot(&mut app, &path);
-        let entries: Vec<_> = fs::read_dir(directory.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .collect();
         assert!(path.is_dir());
-        assert_eq!(entries, [path]);
         assert!(!matches!(
             *app.world().resource::<AcceptanceCapture>(),
             AcceptanceCapture::Saved
