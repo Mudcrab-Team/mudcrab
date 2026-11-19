@@ -65,12 +65,18 @@ fn invalid_movement_field(form_id: u32, field: &str) -> rusqlite::Error {
     )))
 }
 
-/// Decode the eight directional walk and run speeds of a `MOVT` `SPED`.
+/// Decode the editor ID and the eight directional walk and run speeds of a `MOVT`.
 ///
 /// Retail movement types can hold zero speeds (a creature that cannot strafe has
 /// zero lateral speeds), so only negative and non-finite values are rejected. The
-/// engine checks the forward speed that a selected profile must supply.
-fn decode_movement_speeds(view: &SubrecordView<'_>, form_id: u32) -> Result<[f32; 8]> {
+/// engine checks the forward speed that a selected profile must supply. A `MOVT`
+/// with no editor ID is malformed: the table never holds an empty name as if it
+/// were authored.
+fn decode_movement_type(view: &SubrecordView<'_>, form_id: u32) -> Result<(String, [f32; 8])> {
+    let editor_id = view
+        .get_string(b"EDID")
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| invalid_movement_field(form_id, "MOVT EDID (missing)"))?;
     let data = view
         .find(b"SPED")
         .ok_or_else(|| invalid_movement_field(form_id, "MOVT SPED"))?;
@@ -90,7 +96,7 @@ fn decode_movement_speeds(view: &SubrecordView<'_>, form_id: u32) -> Result<[f32
             ));
         }
     }
-    Ok(speeds)
+    Ok((editor_id, speeds))
 }
 
 fn decode_movement_setting(view: &SubrecordView<'_>, form_id: u32) -> Result<f32> {
@@ -608,7 +614,7 @@ pub(crate) fn validate_inhouse_record(record: &RawRecord) -> Result<()> {
     let view = SubrecordView::new(&record.subrecords);
     match &record.record_type {
         b"MOVT" => {
-            decode_movement_speeds(&view, record.form_id)?;
+            decode_movement_type(&view, record.form_id)?;
         }
         b"GMST"
             if view.get_string(b"EDID").is_some_and(|name| {
@@ -928,10 +934,10 @@ fn export_records(
                 )?;
             }
             "MOVT" => {
-                let speeds = decode_movement_speeds(&view, form_id)?;
+                let (editor_id, speeds) = decode_movement_type(&view, form_id)?;
                 tx.prepare_cached(
                     "INSERT OR REPLACE INTO movement_types(id, editor_id, left_walk, left_run, right_walk, right_run, forward_walk, forward_run, back_walk, back_run, load_order) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)")?.execute(
-                    params![form_id, view.get_string(b"EDID").unwrap_or_default(), speeds[0], speeds[1], speeds[2], speeds[3], speeds[4], speeds[5], speeds[6], speeds[7], record.load_order],
+                    params![form_id, editor_id, speeds[0], speeds[1], speeds[2], speeds[3], speeds[4], speeds[5], speeds[6], speeds[7], record.load_order],
                 )?;
             }
             // The readers merge overrides key by key before export (see `merge_default_objects`).
@@ -1975,6 +1981,19 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(after_null, ["DMWL"]);
+
+        // A MOVT with no editor ID is malformed, not published under an empty name.
+        let mut unnamed = movement.clone();
+        unnamed.form_id = 0x000C_EFD0;
+        unnamed.subrecords.remove(0);
+        let error = export_to_db(&conn, &HashMap::from([(unnamed.form_id, unnamed)])).unwrap_err();
+        assert!(error.to_string().contains("MOVT EDID"), "{error}");
+        let mut empty_name = movement.clone();
+        empty_name.form_id = 0x000C_EFD1;
+        empty_name.subrecords[0].1 = b"\0".to_vec();
+        let error =
+            export_to_db(&conn, &HashMap::from([(empty_name.form_id, empty_name)])).unwrap_err();
+        assert!(error.to_string().contains("MOVT EDID"), "{error}");
 
         let mut negative = movement.clone();
         negative.subrecords[1].1[4..8].copy_from_slice(&(-1.0f32).to_le_bytes());

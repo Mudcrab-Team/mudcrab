@@ -12,6 +12,7 @@ use std::{fs, path::Path};
 const DEFAULT_MT: u32 = 0x0003_580D;
 const CREATURE_MT: u32 = 0x0003_5810;
 const BROKEN_MT: u32 = 0x0003_5811;
+const UNNAMED_MT: u32 = 0x0003_5812;
 const DEFAULT_OBJECTS: u32 = 0x0000_0031;
 /// The mod's own movement type, authored with its master count (1) as the file index, and in
 /// load-order numbering: the mod is the third plugin.
@@ -122,6 +123,8 @@ fn master_plugin() -> Vec<u8> {
                     "NPC_Broken_MT",
                     [-1.0, 0.0, 0.0, 0.0, 90.0, 200.0, 0.0, 0.0],
                 ),
+                // A movement type with no editor ID is malformed. It is skipped, not named "".
+                named_movement_type(UNNAMED_MT, None, RETAIL),
             ],
         ),
         top(
@@ -226,7 +229,7 @@ fn both_record_readers_publish_the_same_default_movement_types() {
             i64::from(CREATURE_MT),
             i64::from(MOD_MT)
         ],
-        "every usable movement type exports, and the unusable one is skipped"
+        "every usable movement type exports, and the negative and unnamed ones are skipped"
     );
     let zero_strafe: f64 = inhouse
         .query_row(
@@ -236,4 +239,41 @@ fn both_record_readers_publish_the_same_default_movement_types() {
         )
         .unwrap();
     assert_eq!(zero_strafe, 0.0);
+}
+
+/// A plugin whose `DOBJ` lists a key with a null link, and padding pairs with a zero key.
+fn nulling_plugin() -> Vec<u8> {
+    [
+        header(1, &["Skyrim.esm"]),
+        top(
+            b"DOBJ",
+            &[default_objects(&[
+                // Update.esm holds hundreds of all-zero padding pairs like this one.
+                (b"\0\0\0\0", 0),
+                // A zero key never names a default, even with a target.
+                (b"\0\0\0\0", DEFAULT_MT),
+                (b"DMWL", 0),
+            ])],
+        ),
+    ]
+    .concat()
+}
+
+#[test]
+fn a_later_plugin_that_nulls_a_key_removes_the_default_in_both_readers() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("Skyrim.esm"), master_plugin()).unwrap();
+    fs::write(root.path().join("Update.esm"), nulling_plugin()).unwrap();
+    fs::write(root.path().join("Mod.esp"), header(0, &["Skyrim.esm"])).unwrap();
+
+    let legacy = publish(RecordReader::Legacy, root.path());
+    let inhouse = publish(RecordReader::Inhouse, root.path());
+    let defaults = "SELECT key, form_id FROM default_objects ORDER BY key";
+    assert_eq!(rows(&legacy, defaults), rows(&inhouse, defaults));
+    let text = |key: &str, id: u32| vec![Value::Text(key.into()), Value::Integer(i64::from(id))];
+    assert_eq!(
+        rows(&inhouse, defaults),
+        [text("DMRN", DEFAULT_MT), text("DMSW", CREATURE_MT)],
+        "the null link removes DMWL; DMRN and DMSW survive; the zero key adds no row"
+    );
 }

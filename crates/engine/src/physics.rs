@@ -164,8 +164,9 @@ impl DefaultObjects {
         Ok(Self::Exported(rows))
     }
 
-    /// The movement type of the default object `key` (`DMWL` or `DMRN`) and how it was chosen.
-    fn movement_type(&self, key: &str) -> Result<(u32, String)> {
+    /// The movement type of the default object `key` (`DMWL` or `DMRN`) for the race slot
+    /// `slot`, and how it was chosen.
+    fn movement_type(&self, slot: &str, key: &str) -> Result<(u32, String)> {
         match self {
             Self::Absent => Ok((
                 NPC_DEFAULT_MOVT_FORM_ID,
@@ -177,7 +178,7 @@ impl DefaultObjects {
                 .map(|(_, id)| (*id, format!("DOBJ {key}")))
                 .ok_or_else(|| {
                     color_eyre::eyre::eyre!(
-                        "the package has a default_objects table but no row for {key}; run a metadata rebuild (--reuse-assets)"
+                        "RACE {slot} is unset and the package has a default_objects table but no row for {key}. Run a metadata rebuild (--reuse-assets). If the load order has no DOBJ with {key}, the data holds no default"
                     )
                 }),
         }
@@ -187,7 +188,7 @@ impl DefaultObjects {
 /// Load a MOVT's speeds. Retail profiles hold zero speeds in some directions, so every
 /// speed must be finite and non-negative. A zero forward speed is data, not an error;
 /// the caller flags it.
-fn load_movement_profile(conn: &Connection, form_id: u32) -> Result<MovementProfile> {
+fn load_movement_profile(conn: &Connection, form_id: u32, via: &str) -> Result<MovementProfile> {
     let selected: Option<MovementProfile> = conn
         .query_row(
             "SELECT m.editor_id, m.left_walk, m.left_run, m.right_walk, m.right_run, \
@@ -217,13 +218,13 @@ fn load_movement_profile(conn: &Connection, form_id: u32) -> Result<MovementProf
         .optional()?;
     let profile = selected.ok_or_else(|| {
         color_eyre::eyre::eyre!(
-            "MOVT {form_id:08X} is missing from movement_types; reconvert assets"
+            "{via}: MOVT {form_id:08X} is missing from movement_types. Run a metadata rebuild (--reuse-assets)"
         )
     })?;
     for (index, value) in profile.values.iter().enumerate() {
         ensure!(
             value.is_finite() && *value >= 0.0,
-            "MOVT {form_id:08X} SPED[{index}] is invalid: {value}"
+            "{via}: MOVT {form_id:08X} SPED[{index}] is invalid: {value}"
         );
     }
     Ok(profile)
@@ -260,13 +261,11 @@ fn load_race_movement_type(
     let (id, via) = match link {
         Some(id) => (id, format!("{slot} {id:08X}")),
         None => {
-            let (id, origin) = defaults
-                .movement_type(key)
-                .wrap_err_with(|| format!("RACE {slot} is unset"))?;
+            let (id, origin) = defaults.movement_type(slot, key)?;
             (id, format!("{slot} unset, {origin}"))
         }
     };
-    let profile = load_movement_profile(conn, id)?;
+    let profile = load_movement_profile(conn, id, &via)?;
     if legacy_rule {
         ensure!(
             profile.editor_id == "NPC_Default_MT",
@@ -335,7 +334,7 @@ impl MovementTuning {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .wrap_err_with(|| {
-                format!("RACE {race_id:08X} movement links missing; reconvert assets")
+                format!("RACE {race_id:08X} movement links missing; run a metadata rebuild (--reuse-assets)")
             })?;
         let defaults = DefaultObjects::read(&conn)?;
         let walk = load_race_movement_type(&conn, walk_link, "WKMV", &defaults, 4)?;
@@ -1827,9 +1826,12 @@ mod tests {
             .unwrap();
         let error = MovementTuning::from_world_database(&path).unwrap_err();
         assert!(
-            error.to_string().contains("MOVT 000003E7 is missing"),
+            error
+                .to_string()
+                .contains("WKMV 000003E7: MOVT 000003E7 is missing"),
             "{error}"
         );
+        assert!(error.to_string().contains("metadata rebuild"), "{error}");
     }
 
     #[test]

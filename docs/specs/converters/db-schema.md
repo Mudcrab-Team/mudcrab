@@ -1145,6 +1145,13 @@ CREATE TABLE IF NOT EXISTS default_objects (    -- DOBJ DNAM, merged key by key 
     key TEXT PRIMARY KEY,                       -- use code, for example DMWL (walk) or DMRN (run)
     form_id INTEGER NOT NULL                    -- load-order FormID; a null link has no row
 );
+-- `default_objects` follows the game loader: a later `DOBJ` changes only the keys it lists, a null
+-- link removes the key, and a zero key (Update.esm holds hundreds of padding pairs) is skipped.
+-- Both record readers feed the key-merged `DOBJ` into the runtime projection, so `records.data`
+-- for DOBJ 00000031 holds the merged `DNAM` under the winning plugin's `load_order`. It is a
+-- derived record, not the winner's bytes. With the in-house reader, the winner's exact source
+-- bytes stay in `inhouse_source_records`, and every version's header is in the source history. A package with no `default_objects` table was
+-- converted before the table existed; the engine flags it and uses the earlier rule.
 CREATE TABLE IF NOT EXISTS movement_game_settings ( -- fMoveCharWalkBase and fJumpHeightMin only
     id INTEGER PRIMARY KEY, editor_id TEXT NOT NULL,
     value REAL NOT NULL, load_order INTEGER NOT NULL

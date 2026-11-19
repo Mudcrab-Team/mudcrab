@@ -360,7 +360,7 @@ impl EsmParser {
 }
 
 /// The `(use code, FormID)` pairs of a `DOBJ`'s `DNAM` subrecords, in stored order.
-/// A trailing partial pair is ignored.
+/// A trailing partial pair and a pair with a zero key are ignored.
 pub(crate) fn default_object_pairs(subrecords: &[(Vec<u8>, Vec<u8>)]) -> Vec<([u8; 4], u32)> {
     subrecords
         .iter()
@@ -372,6 +372,9 @@ pub(crate) fn default_object_pairs(subrecords: &[(Vec<u8>, Vec<u8>)]) -> Vec<([u
                 u32::from_le_bytes([pair[4], pair[5], pair[6], pair[7]]),
             )
         })
+        // The game's loader skips a zero key. Retail Update.esm holds hundreds of all-zero
+        // padding pairs, and none of them names a default object.
+        .filter(|(key, _)| *key != [0; 4])
         .collect()
 }
 
@@ -1405,6 +1408,12 @@ mod tests {
         empty.subrecords.clear();
         merge_default_objects(&base, &mut empty);
         assert_eq!(empty.subrecords, base.subrecords);
+    }
+
+    #[test]
+    fn zero_keys_are_not_default_objects() {
+        let record = default_objects(&[(b"\0\0\0\0", 0), (b"\0\0\0\0", 5), (b"DMWL", 7)]);
+        assert_eq!(default_object_pairs(&record.subrecords), [(*b"DMWL", 7)]);
     }
 
     #[test]
