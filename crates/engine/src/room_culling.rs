@@ -2740,7 +2740,7 @@ mod tests {
         );
     }
 
-    fn insert_room(connection: &Connection, id: u32, cell: u32, position: [f32; 3]) {
+    pub(super) fn insert_room(connection: &Connection, id: u32, cell: u32, position: [f32; 3]) {
         connection
             .execute(
                 "INSERT INTO room_bounds (ref_id,cell_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_y,half_z) \
