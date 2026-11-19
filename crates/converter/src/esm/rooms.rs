@@ -1239,9 +1239,6 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
 /// `finalize_world_database` has read the converted models. Safe to run again: it replaces
 /// every `contained = 0` row. Returns the number of rows written.
 pub fn add_overlap_rows(conn: &mut Connection) -> Result<u64> {
-    if !table_exists(conn, "room_bounds")? || !table_exists(conn, "reference_rooms")? {
-        return Ok(0);
-    }
     let tx = conn.transaction()?;
     let written = refresh_overlap_rows(&tx)?;
     tx.commit()?;
@@ -1250,6 +1247,9 @@ pub fn add_overlap_rows(conn: &mut Connection) -> Result<u64> {
 
 /// Refresh the published overlap memberships from the current bounds within a transaction.
 pub(crate) fn refresh_overlap_rows(tx: &Transaction<'_>) -> Result<u64> {
+    if !table_exists(tx, "room_bounds")? || !table_exists(tx, "reference_rooms")? {
+        return Ok(0);
+    }
     write_overlap_rows(tx, None)
 }
 

@@ -9,10 +9,11 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, ensure},
 };
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, Transaction, params};
 use serde::{Deserialize, Serialize};
+use shared::{Bounds3, asset_lock::AssetLock, room_assignment::ModelSphere};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -20,6 +21,9 @@ use std::{
 use walkdir::WalkDir;
 
 const MAX_REPORTED_ISSUES: usize = 100;
+const CREATE_MODEL_SPHERES: &str = "CREATE TABLE IF NOT EXISTS room_model_bounds (
+    base_form_id INTEGER PRIMARY KEY,center_x REAL NOT NULL,center_y REAL NOT NULL,
+    center_z REAL NOT NULL,radius REAL NOT NULL)";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IntegrationReport {
@@ -48,6 +52,109 @@ pub struct IntegrationReport {
     pub unavailable_texture_source_count: u64,
     pub issues: Vec<String>,
     pub passed: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct NativeModelBoundsRefresh {
+    pub updated_base_forms: usize,
+    pub cleared_base_forms: usize,
+    pub unbounded_models: BTreeMap<String, String>,
+}
+
+/// Refreshes model projections in a private, offline runtime pack after installing or
+/// removing native GLBs. Paths name winners under the pack's `meshes` directory.
+/// The SQLite update leaves placement rules, graph certification and producer files intact.
+pub fn refresh_native_model_bounds(
+    assets_root: &Path,
+    changed_paths: &[String],
+) -> Result<NativeModelBoundsRefresh> {
+    ensure!(!changed_paths.is_empty(), "no changed GLB paths provided");
+    let root = assets_root.canonicalize()?;
+    let _lock = AssetLock::acquire_exclusive(&root)?;
+    let mut report = NativeModelBoundsRefresh::default();
+    let mut models = BTreeMap::new();
+    for path in changed_paths {
+        let key = canonical_asset_path(path, AssetKind::Mesh, "glb")?;
+        ensure!(
+            path == &key,
+            "expected canonical GLB path {key}, got {path}"
+        );
+        models.entry(key).or_insert(None);
+    }
+    for (key, bounds) in &mut models {
+        let path = root.join(key);
+        let resolved = match path.canonicalize() {
+            Ok(resolved) => resolved,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        ensure!(resolved.starts_with(&root), "GLB escapes pack: {key}");
+        ensure!(resolved.is_file(), "not a GLB file: {key}");
+        match read_glb_bounds(&resolved) {
+            Ok(projected) => *bounds = Some(projected),
+            Err(error) => {
+                report
+                    .unbounded_models
+                    .insert(key.clone(), format!("{error:#}"));
+            }
+        }
+    }
+
+    let database = root.join("skyrim_world.db");
+    let metadata = fs::symlink_metadata(&database)?;
+    ensure!(
+        metadata.is_file(),
+        "not a world database: {}",
+        database.display()
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        ensure!(
+            metadata.nlink() == 1,
+            "use a private copy of skyrim_world.db"
+        );
+    }
+    let mut connection = Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    let transaction = connection.transaction()?;
+    let affected = {
+        let mut statement =
+            transaction.prepare("SELECT id,model_path FROM statics WHERE model_path <> ''")?;
+        let mut rows = statement.query([])?;
+        let mut affected = Vec::new();
+        while let Some(row) = rows.next()? {
+            let path: String = row.get(1)?;
+            if let Ok(key) = canonical_asset_path(&path, AssetKind::Mesh, "glb")
+                && let Some(bounds) = models.get(&key)
+            {
+                affected.push((row.get::<_, u32>(0)?, *bounds));
+            }
+        }
+        affected
+    };
+    if affected.is_empty() {
+        return Ok(report);
+    }
+    transaction.execute(CREATE_MODEL_SPHERES, [])?;
+    for (id, bounds) in affected {
+        transaction
+            .prepare_cached("DELETE FROM room_model_bounds WHERE base_form_id=?1")?
+            .execute([id])?;
+        if let Some(bounds) = bounds {
+            write_model_bounds(&transaction, id, bounds)?;
+            report.updated_base_forms += 1;
+        } else {
+            transaction
+                .prepare_cached(
+                    "UPDATE statics SET bounds_valid=0 WHERE id=?1 AND bounds_valid<>0",
+                )?
+                .execute([id])?;
+            report.cleared_base_forms += 1;
+        }
+    }
+    crate::esm::rooms::refresh_overlap_rows(&transaction)?;
+    transaction.commit()?;
+    Ok(report)
 }
 
 pub fn finalize_world_database(staging: &Path) -> Result<Option<IntegrationReport>> {
@@ -122,11 +229,19 @@ pub fn finalize_world_database_with_sources(
     // this pass, so both successful bounds and errors can be shared by key.
     let mut model_bounds = HashMap::new();
     let transaction = connection.transaction()?;
-    transaction.execute_batch(
-        "CREATE TABLE IF NOT EXISTS room_model_bounds (
-         base_form_id INTEGER PRIMARY KEY,center_x REAL NOT NULL,center_y REAL NOT NULL,
-         center_z REAL NOT NULL,radius REAL NOT NULL); DELETE FROM room_model_bounds;",
+    transaction.execute(CREATE_MODEL_SPHERES, [])?;
+    transaction.execute("DELETE FROM room_model_bounds", [])?;
+    let has_bounds_valid: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('statics') WHERE name='bounds_valid')",
+        [],
+        |row| row.get(0),
     )?;
+    if has_bounds_valid {
+        transaction.execute(
+            "UPDATE statics SET bounds_valid=0 WHERE bounds_valid<>0",
+            [],
+        )?;
+    }
     for (form_id, model_path, record_type, plugin) in static_models {
         let key = match converted_key(&model_path, "meshes", "glb") {
             Ok(key) => key,
@@ -174,24 +289,9 @@ pub fn finalize_world_database_with_sources(
             .entry(key)
             .or_insert_with(|| read_glb_bounds(path).map_err(|error| format!("{error:#}")));
         match bounds {
-            Ok((bounds, sphere)) => {
-                transaction.execute(
-                    "UPDATE statics SET bounds_min_x=?1,bounds_min_y=?2,bounds_min_z=?3,bounds_max_x=?4,bounds_max_y=?5,bounds_max_z=?6,bounds_valid=1 WHERE id=?7",
-                    params![bounds.min[0], bounds.min[1], bounds.min[2], bounds.max[0], bounds.max[1], bounds.max[2], form_id],
-                )?;
+            Ok(bounds) => {
+                write_model_bounds(&transaction, form_id, *bounds)?;
                 report.bounds_updated += 1;
-                if let Some(sphere) = sphere {
-                    transaction.execute(
-                        "INSERT INTO room_model_bounds VALUES (?1,?2,?3,?4,?5)",
-                        params![
-                            form_id,
-                            sphere.center[0],
-                            sphere.center[1],
-                            sphere.center[2],
-                            sphere.radius
-                        ],
-                    )?;
-                }
             }
             Err(error) => {
                 report.unbounded_model_count += 1;
@@ -202,13 +302,12 @@ pub fn finalize_world_database_with_sources(
             }
         }
     }
+    crate::esm::rooms::refresh_overlap_rows(&transaction)?;
     transaction.commit()?;
     report.statics_with_models = count(
         &connection,
         "SELECT count(*) FROM statics WHERE model_path IS NOT NULL AND model_path <> ''",
     )?;
-    // Room membership by model bounds needs the bounds just written.
-    crate::esm::rooms::add_overlap_rows(&mut connection)?;
     report.room_graph = crate::esm::rooms::RoomGraphReport::read(&connection)?;
     report.projection_omissions = ProjectionOmissions::read(&connection)?;
 
@@ -337,12 +436,31 @@ fn asset_file_index(root: &Path, folders: &[&str]) -> Result<HashMap<String, Pat
     Ok(files)
 }
 
-fn read_glb_bounds(
-    path: &Path,
-) -> Result<(
-    shared::Bounds3,
-    Option<shared::room_assignment::ModelSphere>,
-)> {
+#[derive(Clone, Copy)]
+struct ModelBounds {
+    render: Bounds3,
+    room: Option<ModelSphere>,
+}
+
+fn write_model_bounds(tx: &Transaction<'_>, id: u32, bounds: ModelBounds) -> rusqlite::Result<()> {
+    let Bounds3 { min, max } = bounds.render;
+    tx.prepare_cached(
+        "UPDATE statics SET bounds_min_x=?1,bounds_min_y=?2,bounds_min_z=?3,bounds_max_x=?4,bounds_max_y=?5,bounds_max_z=?6,bounds_valid=1 WHERE id=?7",
+    )?.execute(params![min[0], min[1], min[2], max[0], max[1], max[2], id])?;
+    if let Some(sphere) = bounds.room {
+        tx.prepare_cached("INSERT INTO room_model_bounds VALUES (?1,?2,?3,?4,?5)")?
+            .execute(params![
+                id,
+                sphere.center[0],
+                sphere.center[1],
+                sphere.center[2],
+                sphere.radius
+            ])?;
+    }
+    Ok(())
+}
+
+fn read_glb_bounds(path: &Path) -> Result<ModelBounds> {
     let mut file =
         fs::File::open(path).wrap_err_with(|| format!("failed to open {}", path.display()))?;
     let file_length = file.metadata()?.len();
@@ -351,12 +469,13 @@ fn read_glb_bounds(
     let document: serde_json::Value = serde_json::from_slice(&prefix[20..])?;
     let metadata = &document["extras"]["mudcrabRoomSphere"];
     let sphere = (metadata["version"].as_u64() == Some(1))
-        .then(|| {
-            serde_json::from_value::<shared::room_assignment::ModelSphere>(metadata.clone()).ok()
-        })
+        .then(|| serde_json::from_value::<ModelSphere>(metadata.clone()).ok())
         .flatten()
         .filter(|sphere| sphere.valid() && sphere.radius > 0.0);
-    Ok((glb_bounds_from_bytes(&prefix)?, sphere))
+    Ok(ModelBounds {
+        render: glb_bounds_from_bytes(&prefix)?,
+        room: sphere,
+    })
 }
 
 #[cfg(test)]
@@ -690,6 +809,51 @@ mod tests {
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
         assert_eq!(spheres, [(1, 9.0, 6.0), (2, 9.0, 6.0)]);
+    }
+
+    #[test]
+    fn finalization_clears_validity_and_overlap_when_a_staged_winner_is_lost() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let connection = Connection::open(root.join("skyrim_world.db")).unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        connection.execute_batch(
+            r#"INSERT INTO statics(id,model_path,flags) VALUES (500,'wall.nif',0);
+               INSERT INTO room_bounds(ref_id,cell_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_y,half_z)
+               VALUES(1,7,0,0,0,0,0,0,4,4,4);
+               INSERT INTO "references"(id,cell_id,base_form_id,is_exterior,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z)
+               VALUES(100,7,500,0,10,0,0,0,0,0);"#,
+        ).unwrap();
+        let winner = bounded_glb([-12.0, -1.0, -1.0], [-8.0, 1.0, 1.0], [0.0; 3]);
+        empty_cache(root);
+        let state =
+            || {
+                connection.query_row(
+                "SELECT bounds_valid,(SELECT count(*) FROM reference_rooms WHERE contained=0)
+                 FROM statics WHERE id=500",
+                [], |row| Ok((row.get::<_, bool>(0)?, row.get::<_, u32>(1)?)),
+            ).unwrap()
+            };
+        for invalid in [true, false] {
+            write_file(root, "meshes/wall.glb", &winner);
+            assert_eq!(
+                finalize_world_database(root)
+                    .unwrap()
+                    .unwrap()
+                    .bounds_updated,
+                1
+            );
+            assert_eq!(state(), (true, 1));
+            if invalid {
+                write_file(root, "meshes/wall.glb", b"invalid");
+            } else {
+                fs::remove_file(root.join("meshes/wall.glb")).unwrap();
+            }
+            let report = finalize_world_database(root).unwrap().unwrap();
+            assert_eq!(report.unbounded_model_count, u64::from(invalid));
+            assert_eq!(report.unavailable_model_source_count, u64::from(!invalid));
+            assert_eq!(state(), (false, 0));
+        }
     }
 
     #[test]

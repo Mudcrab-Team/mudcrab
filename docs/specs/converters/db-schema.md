@@ -1398,6 +1398,14 @@ Authored assignment metadata:
   native order, ignoring the placed root's source transform. Models with disconnected exported geometry
   retain no assignment sphere. Skinned/specialized or unsupported
   trees have no row. Render AABBs are not substituted for missing native assignment bounds.
+  Incremental Skyrim conversion and failed-asset repair project both bounds from the final
+  staged GLB winner. Missing or unreadable winners clear the validity flag and prior sphere.
+  For native GLBs installed in a private runtime copy of a pack, close the engine and run
+  `room-model-bounds-refresh <assets-dir> <meshes/path.glb>...` after replacing or removing the
+  files. List each changed lowercase runtime path. Native GLBs can supply a sphere in the same
+  version 1 root extra. The command updates all matching base forms and geometric room overlaps
+  in one SQLite transaction. Keep the original conversion pack for manifest verification and
+  later Skyrim conversion or repair.
 - **`room_graph_cells`** marks cells whose authored geometry was fully exported. A skipped
   unsupported room shape or invalid/missing marker size makes the cell incomplete. Incomplete
   cells retain full rendering in authored mode.
