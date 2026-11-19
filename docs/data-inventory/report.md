@@ -95,11 +95,11 @@ Prepare dependencies are not executed rows, mapped rows, semantic use, populatio
 | `crates/engine/src/object_materials.rs:97` prepare | literal |
 | `crates/engine/src/object_materials.rs:111` query_row | unknown |
 | `crates/engine/src/physics/carry.rs:223` prepare | literal |
-| `crates/engine/src/physics.rs:116` query_row | literal |
-| `crates/engine/src/physics.rs:124` query_row | literal |
-| `crates/engine/src/physics.rs:127` query_row | literal |
-| `crates/engine/src/physics.rs:138` query_row | literal |
-| `crates/engine/src/physics.rs:151` query_row | literal |
+| `crates/engine/src/physics.rs:121` query_row | literal |
+| `crates/engine/src/physics.rs:129` query_row | literal |
+| `crates/engine/src/physics.rs:132` query_row | literal |
+| `crates/engine/src/physics.rs:143` query_row | literal |
+| `crates/engine/src/physics.rs:156` query_row | literal |
 | `crates/engine/src/room_culling.rs:655` prepare_cached | literal |
 | `crates/engine/src/room_culling.rs:657` query_row | unknown |
 | `crates/engine/src/room_culling.rs:670` prepare_cached | literal |
