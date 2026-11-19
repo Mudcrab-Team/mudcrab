@@ -67,6 +67,12 @@ pub(crate) struct RecordConversion {
     pub(crate) phases: std::collections::BTreeMap<String, f64>,
 }
 
+struct LegacyPluginMerge {
+    conversion: RecordConversion,
+    damaged_cells: HashSet<u32>,
+    room_link_layouts: HashMap<u32, rooms::RoomLinkLayout>,
+}
+
 /// Populate the common plugin metadata contract without allocating each complete input.
 fn insert_plugins(conn: &Connection, plugin_paths: &[PathBuf]) -> Result<()> {
     let mut statement = conn.prepare_cached(
@@ -207,8 +213,11 @@ impl EsmParser {
         string_sources: inhouse::StringSources<'_>,
     ) -> Result<RecordConversion> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
-        let (mut master, damaged_cells) =
-            Self::merge_plugins_with_load_order(plugin_paths, &order)?;
+        let LegacyPluginMerge {
+            conversion: mut master,
+            damaged_cells,
+            room_link_layouts,
+        } = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
         let (unresolved, localization_warnings, localization_notices) =
             legacy_text::resolve_localized_fields(
                 &mut master.records,
@@ -225,6 +234,7 @@ impl EsmParser {
             plugin_paths,
             &unresolved,
             &damaged_cells,
+            &room_link_layouts,
         )?;
 
         for diagnostic in localization_warnings.iter().chain(&localization_notices) {
@@ -239,16 +249,17 @@ impl EsmParser {
     pub fn merge_plugins(plugin_paths: &[PathBuf]) -> Result<HashMap<u32, RawRecord>> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
         Self::merge_plugins_with_load_order(plugin_paths, &order)
-            .map(|(conversion, _)| conversion.records)
+            .map(|merged| merged.conversion.records)
     }
 
     /// Use one load-order mapping for merge/export and retain all printed reader summaries.
     fn merge_plugins_with_load_order(
         plugin_paths: &[PathBuf],
         order: &load_order::LoadOrder,
-    ) -> Result<(RecordConversion, HashSet<u32>)> {
+    ) -> Result<LegacyPluginMerge> {
         let mut merged = HashMap::new();
         let mut damaged_placements = HashMap::new();
+        let mut room_link_layouts = HashMap::new();
         let mut summaries = Vec::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
         // the first definition's key/owner while taking the last setting value.
@@ -270,6 +281,16 @@ impl EsmParser {
                 record.load_order = priority as u32;
                 let source_id = record.form_id;
                 let out_of_range = (source_id >> 24) as usize > masters.len();
+                // Optional-field remapping can remove a field between XLRMs. Capture the
+                // source positions before that can make a noncontiguous run look contiguous.
+                let room_link_layout = (!damaged
+                    && !record.is_deleted()
+                    && record.record_type == *b"REFR"
+                    && record.cell_form_id.is_some()
+                    && extractors::SubrecordView::new(&record.subrecords)
+                        .get_form_id(b"NAME")
+                        .is_some_and(|base| base & 0x00ff_ffff == rooms::ROOM_MARKER_BASE))
+                .then(|| rooms::RoomLinkLayout::from_raw(&record));
                 let admission = remap_record_form_ids(
                     &mut record,
                     &order.names[priority],
@@ -358,6 +379,10 @@ impl EsmParser {
                 }
                 sources.insert(remapped_source_id, (source_id, out_of_range));
                 damaged_placements.remove(&record.form_id);
+                room_link_layouts.remove(&record.form_id);
+                if let Some(layout) = room_link_layout {
+                    room_link_layouts.insert(record.form_id, layout);
+                }
                 if record.is_deleted() {
                     merged.remove(&record.form_id);
                 } else {
@@ -367,15 +392,16 @@ impl EsmParser {
         }
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
-        Ok((
-            RecordConversion {
+        Ok(LegacyPluginMerge {
+            conversion: RecordConversion {
                 records: merged,
                 warnings: summaries,
                 notices,
                 phases: BTreeMap::new(),
             },
-            damaged_placements.into_values().collect(),
-        ))
+            damaged_cells: damaged_placements.into_values().collect(),
+            room_link_layouts,
+        })
     }
 }
 

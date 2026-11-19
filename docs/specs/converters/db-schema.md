@@ -1295,6 +1295,11 @@ Columns and rules:
 - **`room_links`**: one row per `XLRM` as stored on the room, with no mirror rows. A link joins
   rooms that may have no portal between them but must be seen together: if one is visible, so is
   the other. The target is stored as written, even if it is not a `room_bounds` row.
+  Both readers check the source order before publishing resolved links. One four-byte `XRMR`
+  header precedes four-byte `LNAM` and `INAM` fields, in that order, when their flags are set.
+  The lower 14 bits of the first `XRMR` word give the number of contiguous four-byte `XLRM`
+  slots that follow. A misplaced field or count mismatch marks the cell incomplete. The export
+  retains links from the valid prefix of this run, up to the declared count.
 - **`reference_rooms`**: written for every placed object (`REFR`, `ACHR`, `ACRE`, `PGRE`,
   `PMIS`) in an interior cell that has at least one room, except the room and portal markers
   themselves. `contained = 1` rows come from the ESM export: the object's pivot (its position)
@@ -1322,9 +1327,10 @@ Columns and rules:
   `visibility_version = 2` additionally marks graphs whose outside endpoints have verified
   source provenance. The typed reader publishes this marker and the flags in the source-data
   transaction. Until that transaction commits, the runtime uses legacy fallback behavior.
-- **`room_link_anomalies`** counts markers with `XRMR` header or linked-count anomalies for each
+- **`room_link_anomalies`** counts markers with `XRMR` header, field order, or link count anomalies for each
   supplying plugin. The lowest affected marker FormID and its cell are stored with the count.
-  `integration-report.json` shows these rows under `room_graph.room_link_anomalies`.
+  Each plugin has one warning with that count and example. `integration-report.json` shows
+  the counts under `room_graph.room_link_anomalies`.
 
 The tables are derived data: a full load-order export clears and rebuilds them from the winning
 records on every conversion, like the grass tables. Subsets without placed references, including
