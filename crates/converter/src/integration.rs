@@ -292,13 +292,10 @@ pub fn finalize_world_database_with_sources(
         && report.missing_texture_count == 0
         && report.cache_cells == report.terrain_cells;
     let output = staging.join("integration-report.json");
-    // Staged outputs may share an inode with a previous pack via
-    // hard link; replace the path instead of writing through it.
-    if output.is_file() {
-        fs::remove_file(&output)?;
-    }
-    fs::write(&output, serde_json::to_vec_pretty(&report)?)
-        .wrap_err_with(|| format!("failed to write {}", output.display()))?;
+    let mut file = tempfile::NamedTempFile::new_in(staging)?;
+    serde_json::to_writer_pretty(file.as_file_mut(), &report)?;
+    file.persist(&output)
+        .wrap_err_with(|| format!("failed to publish {}", output.display()))?;
     Ok(Some(report))
 }
 
@@ -510,6 +507,27 @@ mod tests {
             rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
         )
         .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn finalization_replaces_a_dangling_report_link() {
+        let root = tempfile::tempdir().unwrap();
+        let staging = root.path().join("assets");
+        fs::create_dir(&staging).unwrap();
+        let connection = Connection::open(staging.join("skyrim_world.db")).unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        drop(connection);
+        let outside = root.path().join("outside.json");
+        let report = staging.join("integration-report.json");
+        std::os::unix::fs::symlink(&outside, &report).unwrap();
+
+        let result = finalize_world_database(&staging).unwrap().unwrap();
+        assert!(!outside.exists());
+        assert!(report.symlink_metadata().unwrap().is_file());
+        let published: serde_json::Value =
+            serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
+        assert_eq!(published, serde_json::to_value(result).unwrap());
     }
 
     #[test]
