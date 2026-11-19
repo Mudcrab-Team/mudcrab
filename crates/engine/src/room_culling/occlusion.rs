@@ -267,6 +267,20 @@ impl Occluder {
         if !visible.iter().any(|&face| face) {
             return None;
         }
+        if let Some(forward) = view.parallel {
+            // Projecting a box along parallel rays gives a strip for each edge direction.
+            // Work in box space so a nearly parallel edge needs no subtraction of world corners.
+            let local_ray = rotation.conjugate() * forward;
+            for axis in [DVec3::X, DVec3::Y, DVec3::Z] {
+                if let Some(normal) = axis.cross(local_ray).try_normalize() {
+                    let extent = normal.abs().dot(half);
+                    let inward = rotation * normal;
+                    planes.push(through_point(inward, center - inward * extent)?);
+                    planes.push(through_point(-inward, center + inward * extent)?);
+                }
+            }
+            return Some(OcclusionVolume { planes });
+        }
         for index in 0..8 {
             for along in 0..3 {
                 if index & (1 << along) != 0 {
