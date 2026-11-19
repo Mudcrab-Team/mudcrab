@@ -31,11 +31,16 @@ PINNED_EVIDENCE = {
     'tools/skyrim-recorder/reference/jump-v3/manifest.json': '9166561625570b6f016e29f9918e24e47389eb6902a2319f1b74f539d623e7fc',
     'tools/skyrim-recorder/reference/jump-cadence-v3/manifest.json': 'e7a70ab8d7c094c644489587af21358cddacd98e29af6c63ef750bf75f9e08d8',
     'docs/research/evidence/skyrim-physics-221/publication.json': '9e136d6de79095772715ca1bd4175dabe42d46a8d1a97ae7545652c8b25fe2ac',
+    'tools/skyrim-recorder/reference/jump-v3/train-capture.json': '58f9b31bc954312b26ba390f38da9130e04288f59968ea087f77719124256b0e',
+    'tools/skyrim-recorder/reference/jump-v3/heldout-capture.json': 'ebac2b3f2d1208d6359e0c3572d429adf24e8c82521d7ffbc69cfc44c80b1c48',
+    'tools/skyrim-recorder/reference/jump-cadence-v3/heldout-capture.json': 'd6ac25240be8b648480f80f5181dcda04c64aeb6533ffab8c09b9f952ed1beaf',
+    'docs/research/evidence/skyrim-physics-221/captured-source.zip': '0813eb775ffbff8dade16beff8ca33e0d41c38287fc89e9d3c4b72eab92345b8',
+    'docs/research/evidence/skyrim-physics-221/cadence-source.zip': '3e48f477a938aa53a27662e901b66ec033b6c7c094adc8b75144ffc8029c4f0b',
 }
 BRIDGE = 'physics::jump_replay_tests::export_production_jump_replay'
 SOURCES = ('scripts/check_skyrim_jump_runtime.py',
            'crates/engine/src/physics/jump_replay_tests.rs',
-           'crates/engine/src/physics.rs', 'crates/engine/src/physics/vertical.rs',
+           'crates/engine/src/physics.rs',
            'crates/engine/Cargo.toml', 'Cargo.lock')
 
 
@@ -46,6 +51,16 @@ def require(condition, message):
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def production_source_hashes():
+    hashes = {name: sha((ROOT / name).read_bytes()) for name in SOURCES}
+    # The retained baseline implements vertical motion entirely in physics.rs.
+    baseline_physics = '20ac61681d3c91de54f8ecd986f6e72f9fe2347323f8a252859545f108f0fc7c'
+    if hashes['crates/engine/src/physics.rs'] != baseline_physics:
+        vertical = 'crates/engine/src/physics/vertical.rs'
+        hashes[vertical] = sha((ROOT / vertical).read_bytes())
+    return hashes
 
 
 def canonical(value):
@@ -247,17 +262,20 @@ def score(output, observations):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True, help='new directory for this replay')
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--test-binary', type=Path, help='existing engine library test executable; skips Cargo')
     parser.add_argument('--require-heldout-pass', action='store_true')
     args = parser.parse_args()
     destination = args.output.resolve()
-    destination.mkdir(parents=True, exist_ok=True)
+    try:
+        destination.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        parser.error(f'output already exists: {destination}; choose a new directory')
     payload, observations, provenance = prepare()
     input_path = destination / 'input.json'
     input_hash = write_json(input_path, payload)
-    sources = {name: sha((ROOT / name).read_bytes()) for name in SOURCES}
+    sources = production_source_hashes()
     source_hash = sha(canonical(sources))
     provenance.update({'schema': 1, 'input_sha256': input_hash, 'source_sha256': source_hash, 'sources': sources})
     source_receipt_hash = write_json(destination / 'source.json', provenance)
@@ -267,14 +285,13 @@ def main():
                           'profile': payload['profile']}))
         return 0
     prediction_path = destination / 'predictions.json'
-    prediction_path.unlink(missing_ok=True)
     command = ([str(args.test_binary.resolve()), BRIDGE, '--ignored', '--exact', '--nocapture']
                if args.test_binary else
                ['cargo', 'test', '-p', 'engine', '--lib', BRIDGE, '--', '--ignored', '--exact', '--nocapture'])
     env = dict(os.environ, MUDCRAB_JUMP_REPLAY_INPUT=str(input_path),
                MUDCRAB_JUMP_REPLAY_OUTPUT=str(prediction_path))
     subprocess.run(command, cwd=ROOT, env=env, check=True)
-    require(sources == {name: sha((ROOT / name).read_bytes()) for name in SOURCES},
+    require(sources == production_source_hashes(),
             'production replay sources changed during execution')
     output = load_json(prediction_path)
     results = score(output, observations)
