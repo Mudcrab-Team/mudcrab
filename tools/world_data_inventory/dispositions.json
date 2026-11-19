@@ -921,6 +921,16 @@
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "A subset update with unusable placement DATA removes stale links involving that reference. Field-level semantics remain deferred."
     },
+    "room_placement_edits": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#744)",
+      "reason": "Maps edited runtime FormIDs to their supplying layer, source FormID and deletion state."
+    },
+    "room_placement_layers": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#744)",
+      "reason": "Retains placement files and the plugin headers needed to preserve FormID slots across imports."
+    },
     "room_portals": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",

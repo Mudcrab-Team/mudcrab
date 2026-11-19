@@ -667,14 +667,97 @@ pub(super) fn export_room_graph_with_sources(
     damaged_placement_cells: Option<&HashSet<u32>>,
 ) -> Result<RoomGraphReport> {
     clear(tx)?;
+    let report = project_room_graph(
+        tx,
+        master,
+        interior_cells,
+        sources,
+        plugin_names,
+        damaged_placement_cells,
+        false,
+    )?;
+    report.write(tx)?;
+    tx.execute(
+        "INSERT INTO room_graph_stats(name,value) VALUES ('visibility_version',2)",
+        [],
+    )?;
+    Ok(report)
+}
+
+/// Reproject the old and new cells of an edit using the effective runtime placements.
+/// Source rejections can be absent from runtime rows, so require a pre-edit certificate.
+pub(super) fn refresh_placement_cells(
+    tx: &Transaction<'_>,
+    cells: &HashSet<u32>,
+    edits: &HashMap<u32, RawRecord>,
+    layouts: &HashMap<u32, RoomLinkLayout>,
+    plugin_name: &str,
+) -> Result<Vec<u32>> {
+    let mut incomplete = HashSet::new();
+    for &cell in cells {
+        let was_complete = tx
+            .prepare_cached("DELETE FROM room_graph_cells WHERE cell_id=?1 RETURNING complete")?
+            .query_row([cell], |row| row.get::<_, i64>(0))
+            .optional()?;
+        if was_complete != Some(1) {
+            incomplete.insert(cell);
+        }
+        tx.prepare_cached(
+            "DELETE FROM reference_rooms WHERE room_ref IN (SELECT ref_id FROM room_bounds WHERE cell_id=?1)",
+        )?
+        .execute([cell])?;
+    }
+    for &id in edits.keys() {
+        for sql in [
+            "DELETE FROM room_links WHERE room_ref=?1",
+            "DELETE FROM room_portals WHERE ref_id=?1",
+            "DELETE FROM room_bounds WHERE ref_id=?1",
+        ] {
+            tx.prepare_cached(sql)?.execute([id])?;
+        }
+    }
+    project_room_graph(
+        tx,
+        edits,
+        cells,
+        Some(RoomLinkSources::Legacy(layouts)),
+        &[plugin_name.to_owned()],
+        Some(&incomplete),
+        true,
+    )?;
+    let mut certified = Vec::new();
+    for &cell in cells {
+        write_overlap_rows(tx, Some(cell))?;
+        if tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM room_graph_cells WHERE cell_id=?1 AND complete=1)",
+            [cell],
+            |row| row.get(0),
+        )? {
+            certified.push(cell);
+        }
+    }
+    certified.sort_unstable();
+    Ok(certified)
+}
+
+fn project_room_graph(
+    tx: &Transaction<'_>,
+    records: &HashMap<u32, RawRecord>,
+    interior_cells: &HashSet<u32>,
+    sources: Option<RoomLinkSources<'_>>,
+    plugin_names: &[String],
+    damaged_placement_cells: Option<&HashSet<u32>>,
+    refresh: bool,
+) -> Result<RoomGraphReport> {
     let mut report = RoomGraphReport::default();
     let mut link_anomalies: BTreeMap<&str, (RoomLinkAnomalies, String)> = BTreeMap::new();
     let mut incomplete = HashSet::new();
     incomplete.extend(damaged_placement_cells.into_iter().flatten().copied());
-    let mut ordered: Vec<(&u32, &RawRecord)> = master
+    let mut ordered: Vec<(&u32, &RawRecord)> = records
         .iter()
         .filter(|(_, record)| {
-            is_placed(&record.record_type)
+            !record.is_deleted()
+                && is_placed(&record.record_type)
                 && record
                     .cell_form_id
                     .is_some_and(|cell| interior_cells.contains(&cell))
@@ -690,6 +773,11 @@ pub(super) fn export_room_graph_with_sources(
 
     // Rooms first: portals and links refer to them.
     let mut rooms_by_cell: BTreeMap<u32, Vec<Room>> = BTreeMap::new();
+    if refresh {
+        for &cell in interior_cells {
+            rooms_by_cell.extend(stored_room_boxes(tx, Some(cell))?);
+        }
+    }
     for &(&form_id, record) in &ordered {
         if &record.record_type != b"REFR" || base_of(record) != ROOM_MARKER_BASE {
             continue;
@@ -907,19 +995,40 @@ pub(super) fn export_room_graph_with_sources(
         report.portals += 1;
     }
 
-    // Marker validation above needs to see missing transforms to flag incomplete cells.
-    ordered.retain(|(_, record)| {
-        SubrecordView::new(&record.subrecords)
-            .find(b"DATA")
-            .is_some_and(|data| data.len() >= 24)
-    });
-
-    // Membership: every placed object of a cell with rooms except the markers themselves.
-    {
-        let mut insert = tx.prepare(
-            "INSERT OR IGNORE INTO reference_rooms(reference_id, room_ref, contained) VALUES (?1, ?2, 1)",
+    if refresh {
+        for &cell in interior_cells {
+            if refresh_portal_endpoints_and_check_links(tx, cell)? {
+                incomplete.insert(cell);
+            }
+        }
+    }
+    let mut insert = tx.prepare_cached(
+        "INSERT OR IGNORE INTO reference_rooms(reference_id, room_ref, contained) VALUES (?1, ?2, 1)",
+    )?;
+    for (&cell, rooms) in &rooms_by_cell {
+        if refresh {
+            let mut placements = tx.prepare_cached(
+                "SELECT id,pos_x,pos_y,pos_z FROM [references] WHERE cell_id=?1
+                 AND base_form_id NOT IN (?2,?3) AND (header_flags & ?4)=0",
+            )?;
+            let mut rows = placements.query(params![
+                cell,
+                ROOM_MARKER_BASE,
+                PORTAL_MARKER_BASE,
+                shared::records::MULTIBOUND_REFERENCE_FLAG
+            ])?;
+            while let Some(row) = rows.next()? {
+                let position = [row.get(1)?, row.get(2)?, row.get(3)?];
+                write_pivot_rows(&mut insert, rooms, row.get(0)?, position)?;
+            }
+        }
+        tx.execute(
+            "INSERT INTO room_graph_cells VALUES (?1,?2)",
+            params![cell, !incomplete.contains(&cell)],
         )?;
-        for &(&form_id, record) in &ordered {
+    }
+    if !refresh {
+        for (&form_id, record) in ordered {
             let base = base_of(record);
             if base == ROOM_MARKER_BASE
                 || base == PORTAL_MARKER_BASE
@@ -933,39 +1042,55 @@ pub(super) fn export_room_graph_with_sources(
             else {
                 continue;
             };
-            let data = SubrecordView::new(&record.subrecords)
-                .get_f32_slice(b"DATA")
-                .unwrap_or_default();
-            let position = [
-                *data.first().unwrap_or(&0.0),
-                *data.get(1).unwrap_or(&0.0),
-                *data.get(2).unwrap_or(&0.0),
-            ];
-            let pivot = position.map(f64::from);
-            let mut inside = 0u32;
-            for room in rooms.iter().filter(|room| room.shape.contains(pivot)) {
-                insert.execute(params![form_id, room.ref_id])?;
-                inside += 1;
+            let view = SubrecordView::new(&record.subrecords);
+            if !view.find(b"DATA").is_some_and(|data| data.len() >= 24) {
+                continue;
             }
-            match inside {
+            let data = view.get_f32_slice(b"DATA").unwrap_or_default();
+            let position = [0, 1, 2].map(|index| data.get(index).copied().unwrap_or_default());
+            match write_pivot_rows(&mut insert, rooms, form_id, position)? {
                 0 => report.objects_in_no_room += 1,
                 1 => {}
                 _ => report.objects_in_several_rooms += 1,
             }
         }
     }
-    for &cell in rooms_by_cell.keys() {
-        tx.execute(
-            "INSERT INTO room_graph_cells VALUES (?1,?2)",
-            params![cell, !incomplete.contains(&cell)],
-        )?;
-    }
-    report.write(tx)?;
-    tx.execute(
-        "INSERT INTO room_graph_stats(name,value) VALUES ('visibility_version',2)",
-        [],
-    )?;
     Ok(report)
+}
+
+fn write_pivot_rows(
+    insert: &mut rusqlite::Statement<'_>,
+    rooms: &[Room],
+    id: u32,
+    position: [f32; 3],
+) -> Result<usize> {
+    let pivot = position.map(f64::from);
+    let mut containing_rooms = 0;
+    for room in rooms.iter().filter(|room| room.shape.contains(pivot)) {
+        insert.execute(params![id, room.ref_id])?;
+        containing_rooms += 1;
+    }
+    Ok(containing_rooms)
+}
+
+fn refresh_portal_endpoints_and_check_links(tx: &Transaction<'_>, cell: u32) -> Result<bool> {
+    // The published rows carry the original endpoint proof. A dangling room never becomes outside.
+    for sql in [
+        "UPDATE room_portals SET room_a=NULL,unbounded_a=0 WHERE cell_id=?1 AND room_a IS NOT NULL
+         AND NOT EXISTS(SELECT 1 FROM room_bounds WHERE ref_id=room_a AND cell_id=?1)",
+        "UPDATE room_portals SET room_b=NULL,unbounded_b=0 WHERE cell_id=?1 AND room_b IS NOT NULL
+         AND NOT EXISTS(SELECT 1 FROM room_bounds WHERE ref_id=room_b AND cell_id=?1)",
+    ] {
+        tx.prepare_cached(sql)?.execute([cell])?;
+    }
+    tx.prepare_cached(
+        "SELECT EXISTS(SELECT 1 FROM room_portals WHERE cell_id=?1
+             AND ((room_a IS NULL AND NOT unbounded_a) OR (room_b IS NULL AND NOT unbounded_b)))
+         OR EXISTS(SELECT 1 FROM room_bounds source JOIN room_links l ON l.room_ref=source.ref_id
+             WHERE source.cell_id=?1 AND NOT EXISTS(
+                 SELECT 1 FROM room_bounds target WHERE target.ref_id=l.linked_ref AND target.cell_id=?1))",
+    )?
+    .query_row([cell], |row| row.get(0))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -988,43 +1113,33 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
 /// `finalize_world_database` has read the converted models. Safe to run again: it replaces
 /// every `contained = 0` row. Returns the number of rows written.
 pub fn add_overlap_rows(conn: &mut Connection) -> Result<u64> {
-    if !table_exists(conn, "room_bounds")? || !table_exists(conn, "reference_rooms")? {
-        return Ok(0);
-    }
-    // A reused older database may lack the bounds columns; with no rooms there is nothing to do.
-    let has_rooms: bool =
-        conn.query_row("SELECT EXISTS(SELECT 1 FROM room_bounds)", [], |row| {
-            row.get(0)
-        })?;
-    let has_bounds: bool = conn.query_row(
-        "SELECT count(*) = 2 FROM pragma_table_info('statics') WHERE name IN ('bounds_valid', 'bounds_min_x')",
-        [],
-        |row| row.get(0),
-    )?;
-    let has_header_flags: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('references') WHERE name='header_flags')",
-        [],
-        |row| row.get(0),
-    )?;
     let tx = conn.transaction()?;
-    if has_header_flags {
-        // Repair geometric memberships left by previous conversions as well as new output.
-        tx.execute(
-            "DELETE FROM reference_rooms WHERE reference_id IN (
-                SELECT id FROM \"references\" WHERE (header_flags & ?1) != 0)",
-            [shared::records::MULTIBOUND_REFERENCE_FLAG],
-        )?;
-    }
-    if !has_rooms || !has_bounds {
-        tx.commit()?;
+    let written = refresh_overlap_rows(&tx)?;
+    tx.commit()?;
+    Ok(written)
+}
+
+/// Refresh the published overlap memberships from the current bounds within a transaction.
+pub(crate) fn refresh_overlap_rows(tx: &Transaction<'_>) -> Result<u64> {
+    if !table_exists(tx, "room_bounds")? || !table_exists(tx, "reference_rooms")? {
         return Ok(0);
     }
+    write_overlap_rows(tx, None)
+}
+
+fn stored_room_boxes(tx: &Transaction<'_>, cell: Option<u32>) -> Result<BTreeMap<u32, Vec<Room>>> {
     let mut rooms_by_cell: BTreeMap<u32, Vec<Room>> = BTreeMap::new();
     {
-        let mut statement = tx.prepare(
-            "SELECT ref_id, cell_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, half_x, half_y, half_z FROM room_bounds ORDER BY ref_id",
-        )?;
-        let rows = statement.query_map([], |row| {
+        let table = if cell.is_some() {
+            "room_bounds WHERE cell_id=?1"
+        } else {
+            "room_bounds"
+        };
+        let mut statement = tx.prepare_cached(&format!(
+            "SELECT ref_id, cell_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, half_x, half_y, half_z
+             FROM {table} ORDER BY ref_id",
+        ))?;
+        let rows = statement.query_map(rusqlite::params_from_iter(cell), |row| {
             let f = |index: usize| row.get::<_, f32>(index);
             Ok((
                 row.get::<_, u32>(0)?,
@@ -1042,7 +1157,39 @@ pub fn add_overlap_rows(conn: &mut Connection) -> Result<u64> {
             });
         }
     }
-    tx.execute("DELETE FROM reference_rooms WHERE contained = 0", [])?;
+    Ok(rooms_by_cell)
+}
+
+fn write_overlap_rows(tx: &Transaction<'_>, cell: Option<u32>) -> Result<u64> {
+    // A reused older database may lack the bounds columns; with no rooms there is nothing to do.
+    let has_bounds: bool = tx.query_row(
+        "SELECT count(*) = 2 FROM pragma_table_info('statics') WHERE name IN ('bounds_valid', 'bounds_min_x')",
+        [],
+        |row| row.get(0),
+    )?;
+    let has_header_flags: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('references') WHERE name='header_flags')",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_header_flags && cell.is_none() {
+        // Repair geometric memberships left by previous conversions as well as new output.
+        tx.execute(
+            "DELETE FROM reference_rooms WHERE reference_id IN (
+                SELECT id FROM \"references\" WHERE (header_flags & ?1) != 0)",
+            [shared::records::MULTIBOUND_REFERENCE_FLAG],
+        )?;
+    }
+    if !has_bounds {
+        return Ok(0);
+    }
+    let rooms_by_cell = stored_room_boxes(tx, cell)?;
+    if rooms_by_cell.is_empty() {
+        return Ok(0);
+    }
+    if cell.is_none() {
+        tx.execute("DELETE FROM reference_rooms WHERE contained = 0", [])?;
+    }
     let mut written = 0u64;
     {
         let header_flags = if has_header_flags {
@@ -1050,23 +1197,30 @@ pub fn add_overlap_rows(conn: &mut Connection) -> Result<u64> {
         } else {
             "0"
         };
-        let mut select = tx.prepare(&format!(
+        let cell_filter = if cell.is_some() {
+            "r.cell_id=?4"
+        } else {
+            "r.cell_id IN (SELECT cell_id FROM room_bounds)"
+        };
+        let mut select = tx.prepare_cached(&format!(
             "SELECT r.id, r.cell_id, r.pos_x, r.pos_y, r.pos_z, r.rot_x, r.rot_y, r.rot_z, r.scale,
                     s.bounds_min_x, s.bounds_min_y, s.bounds_min_z, s.bounds_max_x, s.bounds_max_y, s.bounds_max_z
              FROM \"references\" r JOIN statics s ON s.id = r.base_form_id
              WHERE s.bounds_valid = 1 AND r.base_form_id NOT IN (?1, ?2)
-               AND r.cell_id IN (SELECT cell_id FROM room_bounds)
+               AND {cell_filter}
                AND ({header_flags} & ?3) = 0
              ORDER BY r.id",
         ))?;
         let mut insert = tx.prepare(
             "INSERT OR IGNORE INTO reference_rooms(reference_id, room_ref, contained) VALUES (?1, ?2, 0)",
         )?;
-        let mut rows = select.query(params![
+        let bindings = [
             ROOM_MARKER_BASE,
             PORTAL_MARKER_BASE,
-            shared::records::MULTIBOUND_REFERENCE_FLAG
-        ])?;
+            shared::records::MULTIBOUND_REFERENCE_FLAG,
+        ];
+        let mut rows =
+            select.query(rusqlite::params_from_iter(bindings.into_iter().chain(cell)))?;
         while let Some(row) = rows.next()? {
             let f = |index: usize| row.get::<_, f32>(index);
             let id: u32 = row.get(0)?;
@@ -1090,11 +1244,12 @@ pub fn add_overlap_rows(conn: &mut Connection) -> Result<u64> {
             }
         }
     }
-    tx.execute(
-        "INSERT OR REPLACE INTO room_graph_stats(name, value) VALUES ('overlap_rows', ?1)",
-        [written as i64],
-    )?;
-    tx.commit()?;
+    if cell.is_none() {
+        tx.execute(
+            "INSERT OR REPLACE INTO room_graph_stats(name, value) VALUES ('overlap_rows', ?1)",
+            [written as i64],
+        )?;
+    }
     Ok(written)
 }
 
