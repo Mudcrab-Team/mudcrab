@@ -403,10 +403,14 @@
         {
           "anchor": "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
           "path": "crates/engine/src/world/imagespace.rs"
+        },
+        {
+          "anchor": "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
+          "path": "crates/engine/src/physics.rs"
         }
       ],
       "owner": "Mudcrab maintainers (#298)",
-      "reason": "Opaque archive/payload disposition. Published payloads still use the compatibility representation after native FormKey resolution, including reader-specific clearing or rejection of unrepresentable links and identities. Preservation does not establish interpretation of every subrecord. The image-space reader decodes selected archives.",
+      "reason": "Opaque archive/payload disposition. Published payloads still use the compatibility representation after native FormKey resolution, including reader-specific clearing or rejection of unrepresentable links and identities. Preservation does not establish interpretation of every subrecord. The image-space reader decodes selected records. Jump physics decodes the player NPC and race height inputs from winning records. Other subrecords in this payload remain unclassified.",
       "roles": [
         "provenance"
       ],
