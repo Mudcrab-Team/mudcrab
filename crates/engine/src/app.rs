@@ -45,7 +45,7 @@ use bevy::{
     render::occlusion_culling::OcclusionCulling,
     render::render_asset::RenderAssetBytesPerFrame,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
-    render::view::screenshot::{Screenshot, save_to_disk},
+    render::view::screenshot::{Screenshot, ScreenshotCaptured},
     tasks::{IoTaskPool, TaskPoolBuilder},
     window::{MonitorSelection, PresentMode, WindowLevel, WindowPlugin, WindowPosition},
     winit::WinitSettings,
@@ -3036,7 +3036,7 @@ fn bounded_auto_flight_direction(
 /// `refresh_console_ui` hides the overlay on the closing frame, before the capture resumes on the
 /// next update.
 fn add_camera_and_capture_systems(app: &mut App) {
-    app.add_systems(
+    app.init_resource::<AcceptanceCapture>().add_systems(
         Update,
         (
             fly_camera.run_if(console_closed),
@@ -3052,6 +3052,7 @@ fn fly_camera(
     mut camera: Query<&mut Transform, With<StreamingCamera>>,
     mut profiler: ResMut<ProfilingState>,
     mut auto_flight: Local<AutoFlightState>,
+    capture: Res<AcceptanceCapture>,
 ) {
     // Interactive player paths own the camera; automated camera paths keep legacy controls. A
     // shots run poses the camera itself, and a key press must not move a pose.
@@ -3088,10 +3089,6 @@ fn fly_camera(
     if keyboard.pressed(KeyCode::ShiftLeft) {
         direction -= Vec3::Y;
     }
-    let acceptance_capture_pending = config
-        .acceptance_screenshot
-        .as_ref()
-        .is_some_and(|path| !path.is_file());
     let speed = if config.auto_fly_speed > 0.0 {
         config.auto_fly_speed
     } else if keyboard.pressed(KeyCode::ControlLeft) {
@@ -3099,7 +3096,7 @@ fn fly_camera(
     } else {
         900.0
     };
-    if config.auto_fly_speed > 0.0 && !acceptance_capture_pending {
+    if config.auto_fly_speed > 0.0 && capture.ready(&config) {
         direction += bounded_auto_flight_direction(
             *transform.forward(),
             speed * time.delta_secs(),
@@ -3124,7 +3121,8 @@ const SCREENSHOT_GPU_WARMUP: std::time::Duration = std::time::Duration::from_sec
 fn capture_acceptance_screenshot(
     mut commands: Commands,
     config: Res<EngineConfig>,
-    mut state: Local<ScreenshotCaptureState>,
+    mut frames: Local<u32>,
+    mut capture: ResMut<AcceptanceCapture>,
     real_time: Res<Time<Real>>,
     streaming: Option<Res<StreamingMetrics>>,
     world_database: Option<Res<WorldDatabase>>,
@@ -3150,12 +3148,12 @@ fn capture_acceptance_screenshot(
         exit.write(AppExit::error());
         return;
     }
-    state.frames = state.frames.saturating_add(1);
+    *frames = frames.saturating_add(1);
     let settled_frames = config
         .benchmark_warmup_frames
         .saturating_add(SCREENSHOT_SETTLE_FRAMES);
-    if state.captured
-        || state.frames < settled_frames
+    if *capture != AcceptanceCapture::Waiting
+        || *frames < settled_frames
         || real_time.elapsed() < SCREENSHOT_GPU_WARMUP
         || windows.is_empty()
     {
@@ -3183,8 +3181,8 @@ fn capture_acceptance_screenshot(
     }
     commands
         .spawn(Screenshot::primary_window())
-        .observe(save_to_disk(path.clone()));
-    state.captured = true;
+        .observe(save_acceptance_screenshot(path.clone()));
+    *capture = AcceptanceCapture::Requested;
 }
 
 /// Require successful grass generation and rendering when world grass is enabled.
@@ -3227,14 +3225,100 @@ fn screenshot_assets_ready(
         && (!config.physics_fixture || metrics.physics_fixture_validated)
 }
 
-#[derive(Default)]
-struct ScreenshotCaptureState {
-    frames: u32,
-    captured: bool,
+#[derive(Resource, Default, PartialEq, Eq)]
+pub(crate) enum AcceptanceCapture {
+    #[default]
+    Waiting,
+    Requested,
+    Saved,
+}
+
+impl AcceptanceCapture {
+    pub(crate) fn ready(&self, config: &EngineConfig) -> bool {
+        config
+            .acceptance_screenshot
+            .as_ref()
+            .is_none_or(|path| *self == Self::Saved && path.is_file())
+    }
+}
+
+pub(crate) fn save_acceptance_screenshot(
+    path: PathBuf,
+) -> impl FnMut(On<ScreenshotCaptured>, ResMut<AcceptanceCapture>) {
+    move |event, mut capture| match write_acceptance_screenshot(event.image.clone(), &path) {
+        Ok(()) => {
+            *capture = AcceptanceCapture::Saved;
+            info!(path = %path.display(), "saved acceptance screenshot");
+        }
+        Err(error) => {
+            error!(%error, path = %path.display(), "failed to save acceptance screenshot")
+        }
+    }
+}
+
+fn write_acceptance_screenshot(image: Image, path: &Path) -> Result<()> {
+    let format = image::ImageFormat::from_path(path)?;
+    let rgb = crate::shots::decode_shot(image).map_err(color_eyre::eyre::Error::msg)?;
+    // Finish encoding before opening the destination. Writing in place follows symlinks
+    // and preserves the existing file's ownership and access permissions.
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    rgb.write_to(&mut encoded, format)?;
+    fs::write(path, encoded.into_inner())?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn acceptance_screenshot_follows_links_and_preserves_access_modes() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+        let dir = tempfile::tempdir().unwrap();
+        let target_dir = dir.path().join("frames");
+        fs::create_dir(&target_dir).unwrap();
+        let reference = target_dir.join("reference");
+        fs::File::create(&reference).unwrap();
+        let target = target_dir.join("frame.png");
+        let link = dir.path().join("latest.png");
+        let intermediate = target_dir.join("current");
+        symlink("frames/current", &link).unwrap();
+        symlink("frame.png", &intermediate).unwrap();
+        write_acceptance_screenshot(Image::default(), &link).unwrap();
+        assert!(image::open(&target).is_ok());
+        assert_eq!(
+            fs::read_link(&intermediate).unwrap(),
+            Path::new("frame.png")
+        );
+        assert_eq!(
+            target.metadata().unwrap().permissions().mode(),
+            reference.metadata().unwrap().permissions().mode()
+        );
+
+        let inode = target.metadata().unwrap().ino();
+        fs::write(&target, b"old frame").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+        write_acceptance_screenshot(Image::default(), &link).unwrap();
+        assert_eq!(target.metadata().unwrap().ino(), inode);
+        assert_eq!(fs::read_link(&link).unwrap(), Path::new("frames/current"));
+        assert!(image::open(&target).is_ok());
+        assert_eq!(
+            target.metadata().unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acceptance_screenshot_leaves_a_socket_in_place() {
+        use std::os::unix::{fs::FileTypeExt, net::UnixListener};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("acceptance.png");
+        let _listener = UnixListener::bind(&path).unwrap();
+        assert!(write_acceptance_screenshot(Image::default(), &path).is_err());
+        assert!(path.metadata().unwrap().file_type().is_socket());
+    }
+
     /// Hidden macOS runs skip Bevy's GPU timing recorder. Visible runs, other platforms and the
     /// existing flag keep their behaviour.
     #[test]
@@ -4607,6 +4691,15 @@ mod tests {
         let step = capture_step_below_the_time_warmup();
         let mut app = acceptance_capture_app(directory.path(), step);
 
+        fs::write(directory.path().join("acceptance.png"), b"previous run").unwrap();
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .auto_fly_speed = 10.0;
+        let camera = app
+            .world_mut()
+            .spawn((StreamingCamera, Transform::default()))
+            .id();
+
         // The frame gate opens here and the time gate does not: the capture is held back still.
         for _ in 0..capture_warmup_frames() {
             step_capture(&mut app, step);
@@ -4632,9 +4725,25 @@ mod tests {
             1,
             "later updates do not queue a second capture"
         );
-        // The PNG is written by the render world's observer, which needs a GPU: this test pins the
-        // queue decision the schedule makes, not the write.
-        assert!(!directory.path().join("acceptance.png").exists());
+        assert_eq!(
+            app.world().get::<Transform>(camera).unwrap().translation,
+            Vec3::ZERO
+        );
+        let world = app.world_mut();
+        let request = world
+            .query_filtered::<Entity, With<Screenshot>>()
+            .single(world)
+            .unwrap();
+        world.trigger(ScreenshotCaptured {
+            entity: request,
+            image: Image::default(),
+        });
+        step_capture(&mut app, step);
+        assert_ne!(
+            app.world().get::<Transform>(camera).unwrap().translation,
+            Vec3::ZERO
+        );
+        assert!(image::open(directory.path().join("acceptance.png")).is_ok());
     }
 
     /// The console's real close transition: no capture while it is open or on the closing frame,
@@ -5882,6 +5991,7 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ProfilingState>()
+            .init_resource::<AcceptanceCapture>()
             .insert_resource(EngineConfig {
                 headless: true,
                 ..default()

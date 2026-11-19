@@ -1,4 +1,5 @@
 use crate::{
+    app::AcceptanceCapture,
     config::EngineConfig,
     fingerprint::{RunFingerprint, records_measurements},
     frame_budget::{FrameBudgetReport, FrameSides, ScoredFrame, attribute},
@@ -50,6 +51,7 @@ impl Plugin for AcceptanceMetricsPlugin {
     /// Install benchmark collection and enable frame tracing when profile output is configured.
     fn build(&self, app: &mut App) {
         app.init_resource::<BenchmarkSamples>()
+            .init_resource::<AcceptanceCapture>()
             .add_plugins((
                 EntityCountDiagnosticsPlugin::default(),
                 SystemInformationDiagnosticsPlugin,
@@ -475,6 +477,7 @@ struct Thresholds {
 /// grouped so that `collect_and_finish` stays within Bevy's system-parameter limit.
 #[derive(SystemParam)]
 struct MeasurementInputs<'w> {
+    capture: Res<'w, AcceptanceCapture>,
     fingerprint: Option<Res<'w, RunFingerprint>>,
     render_measurement_probe: Option<Res<'w, RenderMeasurementProbe>>,
     meshes: Res<'w, Assets<Mesh>>,
@@ -586,10 +589,7 @@ fn collect_and_finish(
         samples.measurement_complete = true;
         render_timings.set_recording(false);
     }
-    let screenshot_captured = config
-        .acceptance_screenshot
-        .as_ref()
-        .is_none_or(|path| path.is_file());
+    let screenshot_captured = measurements.capture.ready(&config);
     if !screenshot_captured {
         let waiting_since = samples
             .screenshot_wait_started
@@ -1605,7 +1605,7 @@ mod tests {
         assert!(benchmark.measurement_complete);
         assert!(!benchmark.finished);
 
-        std::fs::write(directory.path().join("pending.png"), []).unwrap();
+        deliver_acceptance_screenshot(&mut app, &directory.path().join("pending.png"));
         app.update();
         let saved: serde_json::Value = serde_json::from_slice(
             &std::fs::read(directory.path().join("profile/streaming-frames.json")).unwrap(),
@@ -1993,6 +1993,7 @@ mod tests {
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<Image>>()
             .insert_resource(ProfilingState::default())
+            .init_resource::<AcceptanceCapture>()
             .add_systems(Update, collect_and_finish);
         app
     }
@@ -2002,52 +2003,86 @@ mod tests {
         serde_json::from_str(&report).unwrap()
     }
 
-    /// A missing acceptance screenshot fails the run once the 10-second wait is past, instead of
-    /// passing on it or hanging; the same run with the PNG written passes. The wait is seeded past
-    /// rather than slept through.
+    fn deliver_acceptance_screenshot(app: &mut App, path: &std::path::Path) {
+        use bevy::render::view::screenshot::ScreenshotCaptured;
+
+        let world = app.world_mut();
+        let request = world
+            .spawn_empty()
+            .observe(crate::app::save_acceptance_screenshot(path.to_owned()))
+            .id();
+        world.trigger(ScreenshotCaptured {
+            entity: request,
+            image: Image::default(),
+        });
+    }
+
     #[test]
-    fn the_screenshot_wait_fails_a_missing_capture_instead_of_passing_it() {
-        use bevy::app::AppExit;
-        use bevy::ecs::message::Messages;
+    fn acceptance_report_waits_for_its_own_screenshot_write() {
         use std::time::Duration;
 
         let directory = tempfile::tempdir().unwrap();
-        let missing = directory.path().join("acceptance.png");
-
-        // The wait has only just started: the run waits for the screenshot instead of finishing.
-        let mut waiting = acceptance_report_app(directory.path(), Some(&missing), Duration::ZERO);
-        waiting.update();
-        assert!(!waiting.world().resource::<BenchmarkSamples>().finished);
+        let path = directory.path().join("acceptance.png");
+        fs::write(&path, b"previous run").unwrap();
+        let mut app = acceptance_report_app(directory.path(), Some(&path), Duration::ZERO);
+        app.update();
         assert!(!directory.path().join("benchmark-report.json").exists());
+        assert_eq!(fs::read(&path).unwrap(), b"previous run");
 
-        // Past the wait: the run finishes with the screenshot gate failed, and says so.
-        let mut expired =
-            acceptance_report_app(directory.path(), Some(&missing), Duration::from_secs(11));
-        expired.update();
-        assert!(expired.world().resource::<BenchmarkSamples>().finished);
-        let exits: Vec<AppExit> = expired
-            .world()
-            .resource::<Messages<AppExit>>()
-            .iter_current_update_messages()
-            .cloned()
-            .collect();
-        assert_eq!(
-            exits,
-            vec![AppExit::error()],
-            "a missing screenshot fails the run"
-        );
-        let report = written_report(directory.path());
-        assert_eq!(report["thresholds"]["screenshot_captured"], false);
-        assert_eq!(report["passed"], false);
-
-        // The screenshot the capture system queues is what that gate reads: write it and the same
-        // run passes without waiting at all.
-        fs::write(&missing, b"png").unwrap();
-        let mut captured = acceptance_report_app(directory.path(), Some(&missing), Duration::ZERO);
-        captured.update();
+        deliver_acceptance_screenshot(&mut app, &path);
+        app.update();
+        assert!(image::open(&path).is_ok());
         let report = written_report(directory.path());
         assert_eq!(report["thresholds"]["screenshot_captured"], true);
         assert_eq!(report["passed"], true);
+    }
+
+    #[test]
+    fn acceptance_report_fails_when_the_capture_times_out() {
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("acceptance.unsupported");
+        for stale in [false, true] {
+            if stale {
+                fs::write(&path, b"previous run").unwrap();
+            }
+            let mut app =
+                acceptance_report_app(directory.path(), Some(&path), Duration::from_secs(11));
+            if stale {
+                // The renderer delivers the image, but this destination cannot be encoded.
+                deliver_acceptance_screenshot(&mut app, &path);
+                assert_eq!(fs::read(&path).unwrap(), b"previous run");
+            }
+            app.update();
+            assert_eq!(app.should_exit(), Some(AppExit::error()));
+            let report = written_report(directory.path());
+            assert_eq!(report["thresholds"]["screenshot_captured"], false);
+            assert_eq!(report["passed"], false);
+        }
+    }
+
+    #[test]
+    fn failed_screenshot_write_fails_the_report() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("acceptance.png");
+        fs::create_dir(&path).unwrap();
+        let mut app = acceptance_report_app(
+            directory.path(),
+            Some(&path),
+            std::time::Duration::from_secs(11),
+        );
+        deliver_acceptance_screenshot(&mut app, &path);
+        assert!(path.is_dir());
+        assert!(!matches!(
+            *app.world().resource::<AcceptanceCapture>(),
+            AcceptanceCapture::Saved
+        ));
+        app.update();
+        assert_eq!(app.should_exit(), Some(AppExit::error()));
+        let report = written_report(directory.path());
+        assert_eq!(report["thresholds"]["screenshot_captured"], false);
+        assert_eq!(report["passed"], false);
     }
 
     /// `--accept-frame-pass-bar` is off by default, so a 40 ms hitch is reported and does not fail
