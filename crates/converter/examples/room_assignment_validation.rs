@@ -33,15 +33,8 @@ fn run(args: &[String]) -> Result<()> {
     let assets = Path::new(&args[1]);
     validate_private_assets(assets)?;
     let _asset_lock = shared::asset_lock::AssetLock::acquire_exclusive(assets)?;
-    let report_path = assets
-        .parent()
-        .unwrap()
-        .join("room-assignment-preparation.json");
     // Any failure below leaves a visible incomplete marker instead of a previous success receipt.
-    fs::write(
-        &report_path,
-        serde_json::to_vec_pretty(&serde_json::json!({"complete": false}))?,
-    )?;
+    write_receipt(assets, &serde_json::json!({"complete": false}))?;
     let cells: HashSet<u32> = args[2]
         .split(',')
         .map(str::parse)
@@ -54,6 +47,14 @@ fn run(args: &[String]) -> Result<()> {
     let mut master = HashMap::new();
     let mut models = BTreeSet::new();
     for &cell in &cells {
+        ensure!(
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM cells WHERE id=?1)",
+                [cell],
+                |row| row.get::<_, bool>(0)
+            )?,
+            "requested cell {cell:#010x} is absent from the fixture database"
+        );
         let mut query=conn.prepare("SELECT r.form_id,r.record_type,r.load_order,r.data,p.header_flags FROM records r JOIN \"references\" p ON p.id=r.form_id WHERE p.cell_id=?1")?;
         let mut rows = query.query([cell])?;
         while let Some(row) = rows.next()? {
@@ -116,11 +117,18 @@ fn run(args: &[String]) -> Result<()> {
         "base_records_with_source_bounds": bounds,
         "results": results,
     });
-    fs::write(&report_path, serde_json::to_vec_pretty(&report)?)?;
+    write_receipt(assets, &report)?;
     println!(
         "Prepared {} models, {bounds} base records with source bounds",
         models.len()
     );
+    Ok(())
+}
+
+fn write_receipt(assets: &Path, report: &serde_json::Value) -> Result<()> {
+    let mut file = tempfile::NamedTempFile::new_in(assets)?;
+    serde_json::to_writer_pretty(file.as_file_mut(), report)?;
+    file.persist(assets.join("room-assignment-preparation.json"))?;
     Ok(())
 }
 
@@ -372,7 +380,7 @@ mod tests {
         fs::create_dir(&assets).unwrap();
         let database = assets.join("skyrim_world.db");
         fs::write(&database, b"independent database").unwrap();
-        let report = root.join("room-assignment-preparation.json");
+        let report = assets.join("room-assignment-preparation.json");
         fs::write(&report, b"previous receipt").unwrap();
         let reader = shared::asset_lock::AssetLock::acquire_shared(&assets).unwrap();
         let args = vec![
@@ -397,6 +405,52 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn missing_cell_preserves_graph_and_sibling_receipt() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let first = root.join("first");
+        let second = root.join("second");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        let successful = serde_json::json!({"complete": true});
+        write_receipt(&first, &successful).unwrap();
+        let db = second.join("skyrim_world.db");
+        let conn = Connection::open(&db).unwrap();
+        create_tables(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO cells(id,flags) VALUES(7,0);
+          INSERT INTO room_graph_stats(name,value) VALUES('visibility_version',2);
+          INSERT INTO room_graph_cells(cell_id,complete) VALUES(7,1);",
+        )
+        .unwrap();
+        let args = [
+            root.display().to_string(),
+            second.display().to_string(),
+            "7,8".into(),
+        ];
+        assert!(run(&args).unwrap_err().to_string().contains("0x00000008"));
+        assert!(
+            conn.query_row(
+                "SELECT complete FROM room_graph_cells WHERE cell_id=7",
+                [],
+                |r| r.get::<_, bool>(0)
+            )
+            .unwrap()
+        );
+        for (copy, expected) in [
+            (first, successful),
+            (second, serde_json::json!({"complete":false})),
+        ] {
+            let saved = fs::read(copy.join("room-assignment-preparation.json")).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&saved).unwrap(),
+                expected
+            );
+        }
+    }
+
     #[cfg(not(unix))]
     #[test]
     fn capture_preparation_refuses_unverified_database_independence() {
@@ -417,12 +471,7 @@ mod tests {
                 .contains("requires Unix hard-link validation")
         );
         assert_eq!(fs::read(&database).unwrap(), b"independent database");
-        assert!(
-            !root
-                .path()
-                .join("room-assignment-preparation.json")
-                .exists()
-        );
+        assert!(!assets.join("room-assignment-preparation.json").exists());
     }
 
     #[cfg(unix)]

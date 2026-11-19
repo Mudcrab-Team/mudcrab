@@ -272,7 +272,7 @@ impl MeshConverter {
             retain_bodies_with_nodes(&mut collision, &[], false);
             return write_glb_atomic(
                 output,
-                &embed_collision(empty_scene_glb(&name), &collision)?,
+                &embed_scene_metadata(empty_scene_glb(&name), &collision, None)?,
             );
         }
         let output = glb_output_path;
@@ -361,14 +361,12 @@ impl MeshConverter {
             .map(|node| node.name.clone().unwrap_or_default())
             .collect();
         retain_bodies_for_written_glb(&mut collision, &glb, Some(&source_order))?;
-        let mut glb = embed_collision(glb, &collision)?;
-        if !declares_skin && let Some(sphere) = room_bounds::source_sphere(&nif) {
-            let mut document = glb_json_from_bytes(&glb)?;
-            document["extras"]["mudcrabRoomSphere"] = serde_json::json!({
-                "version": 1, "center": sphere.center, "radius": sphere.radius
-            });
-            glb = rebuild_glb_with_document(&glb, &document)?;
-        }
+        let sphere = if declares_skin {
+            None
+        } else {
+            room_bounds::source_sphere(&nif)
+        };
+        let glb = embed_scene_metadata(glb, &collision, sphere)?;
         if !model.skeletal_meshes.is_empty() {
             validate_declared_skin_glb(&glb, nif_path)?;
         }
@@ -386,7 +384,7 @@ impl MeshConverter {
                 .wrap_err_with(|| format!("cannot annotate {}", glb_path.display()))?;
         }
         retain_bodies_for_written_glb(&mut collision, &glb, None)?;
-        write_glb_atomic(glb_path, &embed_collision(glb, &collision)?)?;
+        write_glb_atomic(glb_path, &embed_scene_metadata(glb, &collision, None)?)?;
         Ok(collision)
     }
 
@@ -992,7 +990,11 @@ fn retain_bodies_with_nodes(
     }
 }
 
-fn embed_collision(glb: Vec<u8>, collision: &CollisionAsset) -> Result<Vec<u8>> {
+fn embed_scene_metadata(
+    glb: Vec<u8>,
+    collision: &CollisionAsset,
+    sphere: Option<shared::room_assignment::ModelSphere>,
+) -> Result<Vec<u8>> {
     let mut document = glb_json_from_bytes(&glb)?;
     let scene = document
         .get_mut("scenes")
@@ -1000,6 +1002,11 @@ fn embed_collision(glb: Vec<u8>, collision: &CollisionAsset) -> Result<Vec<u8>> 
         .and_then(|scenes| scenes.first_mut())
         .ok_or_else(|| color_eyre::eyre::eyre!("GLB has no scene for collision metadata"))?;
     scene["extras"]["mudcrabCollision"] = serde_json::to_value(collision)?;
+    if let Some(sphere) = sphere {
+        document["extras"]["mudcrabRoomSphere"] = serde_json::json!({
+            "version": 1, "center": sphere.center, "radius": sphere.radius
+        });
+    }
     rebuild_glb_with_document(&glb, &document)
 }
 
@@ -4982,6 +4989,32 @@ mod tests {
             assert!(model.to_glb("rotation".into()).is_ok());
             assert!(room_bounds::source_sphere(&nif).is_none());
         }
+    }
+
+    #[test]
+    fn assignment_sphere_declines_accumulated_shear() {
+        use project_wormhole_shared::glam::{Mat3, Vec3};
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("composed-shear.nif");
+        fs::write(&input, static_scene_chain_nif(4)).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let NifBlock::BSTriShape(shape) = &mut nif.blocks[1] else {
+            unreachable!()
+        };
+        shape.bounding_sphere.radius = 1.0;
+        assert!(room_bounds::source_sphere(&nif).is_some());
+        let shear = Mat3::from_cols(Vec3::X, Vec3::new(8e-5, 1.0, 0.0), Vec3::Z);
+        let NifBlock::BSTriShape(shape) = &mut nif.blocks[1] else {
+            unreachable!()
+        };
+        shape.av.rotation.0.0 = shear;
+        assert!(room_bounds::source_sphere(&nif).is_some());
+        for block in nif.blocks.iter_mut().skip(1) {
+            if let NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) = block {
+                node.av.rotation.0.0 = shear;
+            }
+        }
+        assert!(room_bounds::source_sphere(&nif).is_none());
     }
 
     fn static_nif() -> Vec<u8> {

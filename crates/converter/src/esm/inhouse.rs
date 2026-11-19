@@ -1244,13 +1244,19 @@ fn convert_plugins_with_text_sources_report_impl(
     }
     let source_count = decoded.records.len();
     if mode == RecordBundleMode::Full {
+        let portal_ids = tx
+            .prepare("SELECT DISTINCT ref_id FROM room_portals")?
+            .query_map([], |row| row.get::<_, u32>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         super::rooms::restore_portal_endpoint_provenance(
             &tx,
-            decoded
-                .records
-                .values()
-                .filter(|record| record.record_type == *b"REFR")
-                .map(|record| (record.form_id, record.unique_source_subrecord(b"XPOD"))),
+            portal_ids.into_iter().map(|id| {
+                let source = decoded
+                    .records
+                    .get(&id)
+                    .and_then(|record| record.unique_source_subrecord(b"XPOD"));
+                (id, source)
+            }),
         )?;
         super::rooms::restore_rejected_room_fields(
             &tx,

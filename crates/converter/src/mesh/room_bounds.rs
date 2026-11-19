@@ -57,6 +57,17 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
             parent * Affine3A::from_mat3_translation(rotation * local_scale, av.translation.0.0)
         };
         let scale = scale * local_scale;
+        let basis = Mat3::from(world.matrix3);
+        if scale == 0.0 {
+            if basis != Mat3::ZERO {
+                return None;
+            }
+        } else {
+            let rotation = basis / scale;
+            if !(rotation.transpose() * rotation).abs_diff_eq(Mat3::IDENTITY, 1.0e-4) {
+                return None;
+            }
+        }
         let mut result = if let Some(sphere) = sphere {
             ModelSphere {
                 center: world
