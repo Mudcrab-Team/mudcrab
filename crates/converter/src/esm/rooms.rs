@@ -508,9 +508,6 @@ pub fn export_room_graph(
         .iter()
         .filter(|(_, record)| {
             is_placed(&record.record_type)
-                && SubrecordView::new(&record.subrecords)
-                    .find(b"DATA")
-                    .is_some_and(|data| data.len() >= 24)
                 && record
                     .cell_form_id
                     .is_some_and(|cell| interior_cells.contains(&cell))
@@ -690,6 +687,13 @@ pub fn export_room_graph(
         }
         report.portals += 1;
     }
+
+    // Marker validation above needs to see missing transforms to flag incomplete cells.
+    ordered.retain(|(_, record)| {
+        SubrecordView::new(&record.subrecords)
+            .find(b"DATA")
+            .is_some_and(|data| data.len() >= 24)
+    });
 
     // Membership: every placed object of a cell with rooms except the markers themselves.
     {
