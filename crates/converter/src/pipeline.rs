@@ -2550,8 +2550,8 @@ impl ConversionBatch<'_> {
                             match remove_invalid_staged_output(&target) {
                                 Err(error) => (Err(error), true),
                                 Ok(()) => {
-                                    let conversion = match source_kind.as_str() {
-                                        "dds" => {
+                                    let conversion = match (source_kind.as_str(), nif.as_ref()) {
+                                        ("dds", None) => {
                                             TextureConverter::convert_dds_to_ktx2_with_options(
                                                 &source,
                                                 &target,
@@ -2563,16 +2563,21 @@ impl ConversionBatch<'_> {
                                             )
                                             .map(|_| ())
                                         }
-                                        "nif" => MeshConverter::convert_nif_snapshot(
-                                            nif.as_ref().expect("NIF input was read"),
-                                            &target,
-                                            skeleton.as_ref(),
-                                            unresolved_skin.as_deref(),
-                                        ),
-                                        "pex" => {
+                                        ("nif", Some(snapshot)) => {
+                                            MeshConverter::convert_nif_snapshot(
+                                                snapshot,
+                                                &target,
+                                                skeleton.as_ref(),
+                                                unresolved_skin.as_deref(),
+                                            )
+                                        }
+                                        ("pex", None) => {
                                             ScriptConverter::convert_pex_to_luau(&source, &target)
                                         }
-                                        _ => unreachable!(),
+                                        _ => Err(eyre!(
+                                            "invalid conversion input for {}",
+                                            source.display()
+                                        )),
                                     };
                                     remove_partial_output_after_failure(&target, conversion)
                                 }
