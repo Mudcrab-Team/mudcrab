@@ -1,0 +1,13 @@
+{
+  "plan_sha256": "6ea26cdb4e536ec5ef7c5eecca737dcc268e2de76a92555b0bff7d7197595550",
+  "session_sha256": "2ef5eb6affa701471643293ffa5d0866838e83e691f9024fa0831af8450ee10e",
+  "sources": {
+    "scripts/capture_skyrim_jump.py": "2f13734224754bf7994aad33ddc5f7936e0a8054264453e92df92249c7faacd9",
+    "scripts/record_skyrim_motion.py": "1e75537335560e9b0672020a5da142d177768c9af66e4d4e7d768dd155aaa6ab",
+    "tools/skyrim-recorder/probe.cpp": "5a6e6cbb59db249b10c0f643050eea5963cc8788bf1870fb03b038e000ae26a8",
+    "tools/skyrim-recorder/runtime.json": "85c137814e5efe6ba9b5dee676e2be366ca3ea6d347b1e71d123e5f3bc4ebf47",
+    "tools/skyrim-recorder/build.py": "f94075ecb765f6434112f878ac1fbd0e8838b1ddf702a3efe27d40b60bd85a9f",
+    "tools/skyrim-recorder/input.c": "115631931125dca681f185bb56790ed426102670ccc4c911b3b0ebe30bd5ac13"
+  },
+  "frozen_sha256": null
+}
