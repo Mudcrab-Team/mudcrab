@@ -1337,7 +1337,7 @@ fn project_room_graph(
          WHERE source.cell_id=?1 AND NOT EXISTS(SELECT 1 FROM room_bounds target \
          WHERE target.ref_id=l.linked_ref AND target.cell_id=?1))",
     )?;
-    let cells: HashSet<_> = rooms_by_cell
+    let cells: BTreeSet<_> = rooms_by_cell
         .keys()
         .copied()
         .chain(occluders.cells)
