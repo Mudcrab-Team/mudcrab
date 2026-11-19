@@ -431,7 +431,12 @@ async fn combined_export_keeps_grass_links_lod_origins_and_payloads() {
         .concat()
     }
     let mut plugin = record(b"TES4", 0, &[]);
-    plugin.extend(record(b"GRAS", 0x801, &sub(b"EDID", b"CombinedGrass\0")));
+    // This is a complete-export control, not a malformed-GRAS recovery fixture.
+    plugin.extend(record(
+        b"GRAS",
+        0x801,
+        &[sub(b"EDID", b"CombinedGrass\0"), sub(b"DATA", &[0; 32])].concat(),
+    ));
     plugin.extend(record(
         b"LTEX",
         0x802,

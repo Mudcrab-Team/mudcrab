@@ -802,10 +802,11 @@ fn export_records(
                     &crate::esm::environment::Links { master },
                     record,
                     &view,
+                    &mut omissions,
                 )?;
             }
             "GRAS" => {
-                insert_grass(&tx, form_id, &view, record.load_order)?;
+                insert_grass(&tx, form_id, &view, record.load_order, &mut omissions)?;
             }
             "WRLD" => {
                 let view = SubrecordView::new(&record.subrecords);
@@ -825,7 +826,7 @@ fn export_records(
             }
             _ if super::is_placed_record_type(&record.record_type) => {
                 let cell_id = record.cell_form_id.unwrap_or(0);
-                insert_reference_with_canonical_data(
+                let inserted = insert_reference_with_canonical_data(
                     &tx,
                     form_id,
                     cell_id,
@@ -834,6 +835,18 @@ fn export_records(
                     &record.subrecords,
                     &canonical_record.subrecords,
                 )?;
+                if !inserted {
+                    omissions.record(
+                        OmissionCategory::ReferenceUnusableData,
+                        form_id,
+                        format!(
+                            "{} DATA is {} in the runtime projection; expected at least 24 bytes; no placement or spatial row",
+                            type_str,
+                            view.find(b"DATA").map_or_else(|| "unavailable".to_owned(), |data| format!("{} bytes", data.len())),
+                        ),
+                    );
+                    continue;
+                }
                 crate::esm::reference_links::insert(
                     &tx,
                     &crate::esm::reference_links::Context { master, order },
@@ -1215,14 +1228,29 @@ fn insert_emittance_sources(
 
 /// Projects xEdit's TES5 GRAS/DATA layout without inventing missing fields.
 /// The complete payload is 32 bytes; unknown padding stays in records.data.
-/// See the primary definitions linked in the database schema specification.
+/// Short DATA retains each complete scalar at its known offset; unavailable values are NULL.
+/// Missing/short DATA is still a reported omission, and the model and identity survive.
+/// See xEdit xedit-4.1.5f Core/wbDefinitionsTES5.pas:10199-10230.
 fn insert_grass(
     tx: &Transaction<'_>,
     form_id: u32,
     view: &SubrecordView<'_>,
     load_order: u32,
+    omissions: &mut ProjectionOmissions,
 ) -> Result<()> {
-    let data = view.find(b"DATA").unwrap_or_default();
+    let data = view.find(b"DATA");
+    if !matches!(data, Some(data) if data.len() >= 32) {
+        let extent = data.map_or_else(
+            || "missing".to_owned(),
+            |data| format!("{} bytes", data.len()),
+        );
+        omissions.record(
+            OmissionCategory::GrassUnusableData,
+            form_id,
+            format!("GRAS DATA is {extent}; expected at least 32 bytes; unavailable scalar columns remain NULL"),
+        );
+    }
+    let data = data.unwrap_or_default();
     let float = |offset| {
         data.get(offset..offset + 4)
             .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
@@ -1452,7 +1480,10 @@ fn insert_light(
     Ok(())
 }
 
-/// Write a reference and its exterior spatial projection.
+/// Write a reference and its exterior spatial projection when DATA holds all six floats.
+/// An unusable transform removes any stale placement and warns; canonical records remain owned
+/// by the caller. This low-level subset helper has no report sink: its warning is terminal-only.
+/// Full exports separately persist placement omissions in their integration report.
 pub fn insert_reference(
     tx: &Transaction<'_>,
     form_id: u32,
@@ -1461,10 +1492,42 @@ pub fn insert_reference(
     header_flags: u32,
     subs: &[(Vec<u8>, Vec<u8>)],
 ) -> Result<()> {
-    insert_reference_with_canonical_data(tx, form_id, cell_id, cell, header_flags, subs, subs)
+    if !insert_reference_with_canonical_data(tx, form_id, cell_id, cell, header_flags, subs, subs)?
+    {
+        eprintln!(
+            "warning: placed record {form_id:08X} has missing or short DATA; no placement row"
+        );
+    }
+    Ok(())
 }
 
-/// Extract runtime reference columns from projected fields and preserve the canonical data mirror.
+/// Removes one unusable placement and every owned or spatially dependent runtime row.
+/// Incoming authored links may still name the canonical record; usable neighbors stay intact.
+/// Extend the table list when adding a placement table keyed on `reference_id`.
+fn clear_reference_placement(tx: &Transaction<'_>, form_id: u32) -> Result<()> {
+    for table in super::reference_links::REFERENCE_LINK_TABLES {
+        tx.prepare_cached(&format!("DELETE FROM {table} WHERE reference_id=?1"))?
+            .execute([form_id])?;
+    }
+    for sql in [
+        "DELETE FROM door_links WHERE ref_id=?1 OR destination_ref_id=?1",
+        "DELETE FROM reference_rooms WHERE reference_id=?1 OR room_ref=?1",
+        "DELETE FROM room_links WHERE room_ref=?1 OR linked_ref=?1",
+        "DELETE FROM room_portals WHERE ref_id=?1",
+        "UPDATE room_portals SET room_a=NULL WHERE room_a=?1",
+        "UPDATE room_portals SET room_b=NULL WHERE room_b=?1",
+        "DELETE FROM room_bounds WHERE ref_id=?1",
+        "DELETE FROM exterior_spatial WHERE id=?1",
+        "DELETE FROM \"references\" WHERE id=?1",
+    ] {
+        tx.prepare_cached(sql)?.execute([form_id])?;
+    }
+    Ok(())
+}
+
+/// Extract runtime columns from projected fields and preserve the canonical data mirror.
+/// Returns false after removing a placement whose required 24-byte DATA cannot be read.
+/// xEdit xedit-4.1.5f Core/wbDefinitionsTES5.pas:5320-5323 uses wbDATAPosRot for 3D data.
 fn insert_reference_with_canonical_data(
     tx: &Transaction<'_>,
     form_id: u32,
@@ -1473,19 +1536,24 @@ fn insert_reference_with_canonical_data(
     header_flags: u32,
     projected_subrecords: &[(Vec<u8>, Vec<u8>)],
     canonical_subrecords: &[(Vec<u8>, Vec<u8>)],
-) -> Result<()> {
+) -> Result<bool> {
     let view = SubrecordView::new(projected_subrecords);
-    let transform = view.get_f32_slice(b"DATA").unwrap_or_default();
-    let pos = [
-        *transform.first().unwrap_or(&0.0),
-        *transform.get(1).unwrap_or(&0.0),
-        *transform.get(2).unwrap_or(&0.0),
-    ];
-    let rot = [
-        *transform.get(3).unwrap_or(&0.0),
-        *transform.get(4).unwrap_or(&0.0),
-        *transform.get(5).unwrap_or(&0.0),
-    ];
+    let Some(transform) = view.find(b"DATA").and_then(|data| data.first_chunk::<24>()) else {
+        // A subset update must also clear a formerly usable placement. The complete export
+        // already replaced its snapshot; either route keeps records.data for inspection.
+        clear_reference_placement(tx, form_id)?;
+        return Ok(false);
+    };
+    let component = |offset| {
+        f32::from_le_bytes([
+            transform[offset],
+            transform[offset + 1],
+            transform[offset + 2],
+            transform[offset + 3],
+        ])
+    };
+    let pos = [component(0), component(4), component(8)];
+    let rot = [component(12), component(16), component(20)];
     let scale = view
         .find(b"XSCL")
         .filter(|data| data.len() >= 4)
@@ -1537,7 +1605,7 @@ fn insert_reference_with_canonical_data(
     if is_exterior {
         tx.prepare_cached("INSERT OR REPLACE INTO exterior_spatial(id, minX, maxX, minY, maxY, minZ, maxZ, cell_id, worldspace_id) VALUES (?1, ?2, ?2, ?3, ?3, ?4, ?4, ?5, ?6)")?.execute( params![form_id, pos[0], pos[1], pos[2], cell_id, worldspace_id])?;
     }
-    Ok(())
+    Ok(true)
 }
 
 struct CellRow<'a> {
