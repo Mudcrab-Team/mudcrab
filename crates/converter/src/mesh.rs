@@ -5004,9 +5004,9 @@ mod tests {
             value_node_flags: 1,
         }));
         let container = nif.blocks.len() as u32;
-        let mut bound_ref = root.av.collision_object.clone();
+        let mut bound_ref = root.av.collision_object;
         bound_ref.0 = Some(container + 1);
-        let mut data_ref = bound_ref.clone();
+        let mut data_ref = bound_ref;
         data_ref.0 = Some(container + 2);
         nif.blocks
             .push(NifBlock::BSMultiBoundNode(BSMultiBoundNode {
