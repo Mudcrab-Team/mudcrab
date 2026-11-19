@@ -11,6 +11,10 @@ use crate::sun_shadow::{SunShadowDirection, SunShadowSettings};
 use crate::{config::EngineConfig, streaming::ActiveSpace, world::environment::EnvironmentCatalog};
 use bevy::prelude::*;
 
+/// A single frame that advances the game clock by at least this many game seconds (15 game
+/// minutes) counts as a time jump, so shadows refresh at once.
+const IMMEDIATE_REFRESH_GAME_SECONDS: f64 = 900.0;
+
 /// Retail `GameHour` (GLOB record, form id 0x38, editor id `GameHour`): 8.0 in the registered pack
 /// data. It is the default start hour and the replacement for a non-finite hour. The matching
 /// `TimeScale` record (GLOB 0x3A, editor id `TimeScale`) is 20.0; see `EngineConfig::timescale`.
@@ -339,10 +343,17 @@ pub(crate) fn update_sun(
             config.sun_shadow.max_hold_seconds
         );
         if config.sun_shadow.transition_seconds > 0.0 {
-            warn!(
-                "sun shadows: fSunShadowUpdateTime is reserved for cross-fading; \
-                 shadow transitions are not implemented yet, so shadows snap"
-            );
+            // The default value is expected, so it is only informational. A value the user set
+            // has no effect yet, so it is worth a warning.
+            let message = "sun shadows: fSunShadowUpdateTime is reserved for cross-fading; \
+                           shadow transitions are not implemented yet, so shadows snap";
+            if config.sun_shadow.transition_seconds
+                == SunShadowSettings::default().transition_seconds
+            {
+                info!("{message}");
+            } else {
+                warn!("{message}");
+            }
         }
         state.transition_reported = true;
     }
@@ -387,7 +398,8 @@ pub(crate) fn update_sun(
             || previous.path != path
             || previous.shadow_settings.threshold_degrees != config.sun_shadow.threshold_degrees
             || previous.shadow_settings.max_hold_seconds != config.sun_shadow.max_hold_seconds
-    }) || (time.delta_secs_f64() * clock.timescale).abs() >= 900.0;
+    }) || (time.delta_secs_f64() * clock.timescale).abs()
+        >= IMMEDIATE_REFRESH_GAME_SECONDS;
     if immediate {
         state.refreshes = state.refreshes.wrapping_add(1);
     }
