@@ -8,6 +8,7 @@ use crate::esm::{
 use crate::{
     asset_path::{AssetKind, canonical_asset_path},
     esm::records::record_type::vmad::parse_vmad,
+    records::DecodedRecord,
 };
 use rusqlite::{Connection, Result, Statement, ToSql, Transaction, params};
 use std::{
@@ -395,13 +396,15 @@ const LIGHT_DETAIL_COLUMNS: &[(&str, &str)] = &[
 type CellMetadata = (Option<i32>, Option<i32>, Option<u32>);
 
 /// Select runtime projections and script storage independently of snapshot ownership.
-struct ExportOptions {
+struct ExportOptions<'a> {
     /// Emit runtime views as well as the canonical record archive.
     runtime_views: bool,
     /// Replace in-house script snapshots using their normalized scalar layout.
     scalar_scripts: bool,
     /// Source remapping preserves authored nulls; typed canonical nulls need source verification.
     trusted_portal_nulls: bool,
+    /// Typed export counts room link occurrences in winning source payloads.
+    decoded_records: Option<&'a HashMap<u32, DecodedRecord>>,
 }
 
 /// Export selected records without changing existing provenance. Grass records
@@ -420,6 +423,7 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
             runtime_views: true,
             scalar_scripts: false,
             trusted_portal_nulls: true,
+            decoded_records: None,
         },
     )
 }
@@ -444,6 +448,7 @@ pub fn export_to_db_with_load_order(
             runtime_views: true,
             scalar_scripts: false,
             trusted_portal_nulls: true,
+            decoded_records: None,
         },
     )
 }
@@ -469,6 +474,7 @@ pub(super) fn export_plugins_to_db(
             runtime_views: true,
             scalar_scripts: false,
             trusted_portal_nulls: true,
+            decoded_records: None,
         },
     )
 }
@@ -481,6 +487,7 @@ pub(crate) fn export_inhouse_to_db(
     plugin_paths: &[PathBuf],
     unresolved_fields: &HashMap<u32, BTreeSet<usize>>,
     terrain_offsets: &HashMap<u32, u64>,
+    decoded_records: &HashMap<u32, DecodedRecord>,
 ) -> Result<()> {
     export_records(
         conn,
@@ -493,6 +500,7 @@ pub(crate) fn export_inhouse_to_db(
             runtime_views: true,
             scalar_scripts: true,
             trusted_portal_nulls: false,
+            decoded_records: Some(decoded_records),
         },
     )
 }
@@ -516,6 +524,7 @@ pub(crate) fn export_inhouse_record_archive_to_db(
             runtime_views: false,
             scalar_scripts: true,
             trusted_portal_nulls: false,
+            decoded_records: None,
         },
     )
 }
@@ -641,12 +650,13 @@ fn export_records(
     plugin_paths: Option<&[PathBuf]>,
     unresolved_fields: Option<&HashMap<u32, BTreeSet<usize>>>,
     terrain_offsets: Option<&HashMap<u32, u64>>,
-    options: ExportOptions,
+    options: ExportOptions<'_>,
 ) -> Result<()> {
     let ExportOptions {
         runtime_views,
         scalar_scripts,
         trusted_portal_nulls,
+        decoded_records,
     } = options;
     conn.set_prepared_statement_cache_capacity(64);
     let tx = conn.unchecked_transaction()?;
@@ -1047,7 +1057,12 @@ fn export_records(
             );
         }
         crate::animation::authoring::replace_race_projection(&tx, authoring)?;
-        crate::esm::rooms::export_room_graph(&tx, master, &interior_cells)?;
+        crate::esm::rooms::export_room_graph_with_sources(
+            &tx,
+            master,
+            &interior_cells,
+            decoded_records,
+        )?;
         if !trusted_portal_nulls {
             // Canonical nulls need their source provenance. Keep legacy-safe semantics until
             // the full in-house source transaction verifies and publishes them.
@@ -3164,6 +3179,7 @@ mod tests {
             &paths,
             &HashMap::new(),
             &HashMap::new(),
+            &HashMap::new(),
         )
         .unwrap();
         let expected = rooms::RoomGraphReport::read(&conn).unwrap();
@@ -3238,6 +3254,7 @@ mod tests {
             &master,
             &order,
             &paths,
+            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
         )
@@ -3336,6 +3353,7 @@ mod tests {
                 &master,
                 &order,
                 &paths,
+                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
             )
@@ -3481,7 +3499,7 @@ mod tests {
 
     #[test]
     fn writes_room_bounds_with_lighting_template_image_space_flags_and_links() {
-        let xrmr = vec![2, 0xC0, 1, 0];
+        let xrmr = vec![3, 0xC0, 1, 0];
         let (conn, report) = export_rooms(vec![
             interior_cell(0x100),
             room(
@@ -4161,7 +4179,7 @@ mod tests {
                     [0.0; 3],
                     [0.0; 3],
                     [10.0; 3],
-                    vec![(b"XRMR", vec![0, 0, 1, 0]), (b"XLRM", word(target))],
+                    vec![(b"XRMR", vec![1, 0, 1, 0]), (b"XLRM", word(target))],
                 ),
                 room(
                     0x1002,

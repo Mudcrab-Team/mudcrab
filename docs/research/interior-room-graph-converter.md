@@ -44,6 +44,9 @@ Subrecords on a marker reference, besides the usual `NAME` and `DATA` (position,
 
 Checked against bytes:
 
+- Of the 2,612 portal markers in `Skyrim.esm`, 2,611 have exactly one 32-byte `XPRM` with
+  shape 3. The remaining marker has no primitive. The same check passed for all 312
+  portal markers in `Dawnguard.esm` and all 301 in `Dragonborn.esm`.
 - The `XRMR` count equals the number of `XLRM` on every one of the 1,991 rooms.
 - The flags match the public names exactly: `0x80` with `LNAM` on 537 + 81 rooms, `0x40` with
   `INAM` on 5 + 81, never one without the other. So rooms can carry their own lighting template

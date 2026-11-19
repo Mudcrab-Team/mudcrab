@@ -6,7 +6,8 @@ use dummy_content::nif::{
     BodyShape, BoxBody, DYNAMIC_POSITION_OFFSET, LegacySkin, SkinInstanceKind, SkinNormals,
     StaticShape, legacy_dynamic_skinned_shape, legacy_dynamic_skinned_shape_with_normals,
     legacy_lod_skinned_shape, legacy_nested_skinned_shape, legacy_skinned_shape,
-    legacy_skinned_shape_with_normals, static_shape, static_shape_with_bodies,
+    legacy_skinned_shape_with_normals, legacy_skinned_shape_with_transform_track, static_shape,
+    static_shape_with_bodies,
 };
 use serde_json::Value;
 use std::{
@@ -478,6 +479,37 @@ fn legacy_bsdismember_skin_exports_skin() {
             .unwrap()
             > 0.0
     );
+}
+
+#[test]
+fn transform_track_on_a_skin_bone_omits_the_room_sphere() {
+    let directory = tempfile::tempdir().unwrap();
+    let skin = spec(
+        SkinInstanceKind::Plain,
+        &SHUFFLED_PALETTE,
+        &WEIGHTS,
+        true,
+        None,
+    );
+    let convert = |label: &str, target_bone| {
+        let input = directory.path().join(format!("{label}.nif"));
+        let output = input.with_extension("glb");
+        fs::write(
+            &input,
+            legacy_skinned_shape_with_transform_track(&skin, target_bone).unwrap(),
+        )
+        .unwrap();
+        MeshConverter::convert_nif_to_glb_with_skeleton(&input, &output, None).unwrap();
+        let glb = read_glb(&output);
+        assert_skinned_primitives(&glb);
+        glb
+    };
+
+    let root_track = convert("root-track", false);
+    assert!(root_track.json["extras"]["mudcrabRoomSphere"].is_object());
+    let bone_track = convert("bone-track", true);
+    assert!(bone_track.json["extras"]["mudcrabRoomSphere"].is_null());
+    assert_eq!(root_track.bin, bone_track.bin);
 }
 
 #[test]

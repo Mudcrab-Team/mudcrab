@@ -208,7 +208,7 @@ impl MeshConverter {
         let room_sphere = if !declares_skin
             || (skeleton_path.is_none()
                 && unresolved_skin.is_none()
-                && collision::skin_pose_is_fixed(nif_path, source)?)
+                && collision::skin_pose_is_fixed(nif_path, source, &nif.blocks)?)
         {
             room_bounds::source_sphere(&nif)
         } else {

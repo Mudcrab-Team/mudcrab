@@ -183,6 +183,10 @@ pub struct DecodedRecord {
 }
 
 impl DecodedRecord {
+    pub(crate) fn framed_source_subrecords(&self) -> Option<Vec<([u8; 4], &[u8])>> {
+        decoder::framed_source_subrecords(&self.raw_payload)
+    }
+
     pub(crate) fn unique_source_subrecord(&self, signature: &[u8; 4]) -> Option<&[u8]> {
         if self.rejected_fields.contains(signature) {
             return None;
