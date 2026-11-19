@@ -258,8 +258,9 @@ pose changes 320,661 pixels, Gallows Rock outside-away changes 366,348, and its 
 view changes 207,106. These historical equality failures were recorded before a retail oracle
 was available. The [2026-11-17 retail comparison](room-assignment-review-20261117.md) now shows
 that Skyrim also omits the large background shells at the Bleak Falls and inside-out Gallows
-poses. Fog, lighting, props, and material sampling still differ. The new outside-camera policy
-keeps full rendering at outside-away, deliberately drawing extra geometry to protect gaps.
+poses. Fog, lighting, props, and material sampling still differ. At `b3a1793e`, the outside-away pose kept full rendering. With a complete reconverted graph,
+the camera now traverses unbounded space and retains the five meshes of the stair arch.
+See the [Gallows Rock seam replay](skyrim-culling-rea-parity.md#gallows-rock-west-doorway).
 The two new [joined-room views](../../crates/engine/tests/fixtures/room-assignment-shots.json),
 inside the master and slave cave geometry, match in every pairing while exercising culling.
 No final capture timed out or retained pending/failed room-graph reads. These results support the

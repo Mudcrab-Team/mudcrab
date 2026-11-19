@@ -130,6 +130,7 @@ fn native_portal_fixture_comparison() {
             .visibility_volumes(eye, runtime(observation.near_shifted), clip)
             .unwrap();
         let mut bits: BTreeMap<String, String> = BTreeMap::new();
+        let mut native_bits: BTreeMap<String, String> = BTreeMap::new();
         let mut judgments = Vec::new();
         for marker in &observation.markers {
             let source = observation
@@ -174,12 +175,21 @@ fn native_portal_fixture_comparison() {
             bits.entry(marker.room.clone())
                 .or_default()
                 .push(if actual { '1' } else { '0' });
+            native_bits
+                .entry(marker.room.clone())
+                .or_default()
+                .push(if marker.native { '1' } else { '0' });
             judgments.push(
                 serde_json::json!({"room": marker.room, "marker": marker.label,
                 "native": marker.native, "mudcrab_mesh_aabb": actual,
                 "mudcrab_native_sphere_cube": expanded, "mudcrab_center": collapsed}),
             );
         }
+        assert_eq!(
+            native_bits, observation.native_controls,
+            "{} native marker controls, window {}",
+            observation.name, observation.window
+        );
         assert_eq!(bits, observation.native_controls, "{}", observation.name);
         results.push(
             serde_json::json!({"case": observation.name, "window": observation.window,

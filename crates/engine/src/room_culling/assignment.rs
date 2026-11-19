@@ -343,6 +343,37 @@ pub(super) fn load(
 mod tests {
     use super::*;
 
+    #[test]
+    #[ignore = "requires a reconverted Gallows Rock database in MUDCRAB_SEAM_DATABASE"]
+    fn gallows_rock_seam_model_owners() {
+        let database = std::env::var_os("MUDCRAB_SEAM_DATABASE").unwrap();
+        let db = Connection::open_with_flags(database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+        let graph = super::super::load_room_graph(&db, 86643).unwrap();
+        let authored = graph.authored.as_ref().unwrap();
+        let owner = graph
+            .rooms
+            .iter()
+            .position(|room| room.ref_id == 0x000A_A079)
+            .unwrap();
+        for id in [0x0004_2177, 0x0004_2178, 0x0005_A22A] {
+            assert!(
+                authored.has_source_bound(id),
+                "missing model sphere for {id:08X}"
+            );
+            assert_eq!(
+                authored.initial_owners(
+                    id,
+                    authored.rules[&id].placed,
+                    &graph.rooms,
+                    &graph.portals
+                ),
+                [Owner::Room(owner)],
+                "retail room ancestor of {id:08X}"
+            );
+        }
+    }
+
     fn room(id: u32, x: f32) -> Room {
         Room {
             ref_id: id,

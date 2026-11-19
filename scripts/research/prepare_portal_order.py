@@ -16,6 +16,15 @@ def prepare(source, output, cell, portals):
         with closing(sqlite3.connect(staged)) as db:
             with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as src:
                 src.backup(db)
+            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+            endpoint_columns = {row[1] for row in db.execute("PRAGMA table_info(room_portals)")}
+            if (not {"room_graph_cells", "room_graph_stats"} <= tables
+                    or not {"unbounded_a", "unbounded_b"} <= endpoint_columns
+                    or not db.execute("SELECT 1 FROM room_graph_cells WHERE cell_id=? AND complete=1",
+                                      (cell,)).fetchone()
+                    or not db.execute("SELECT 1 FROM room_graph_stats WHERE name='visibility_version' "
+                                      "AND value=2").fetchone()):
+                raise ValueError("captured order requires a complete visibility-v2 cell with endpoint provenance")
             rows = sorted(row[0] for row in db.execute(
                 "SELECT ref_id FROM room_portals WHERE cell_id=?", (cell,)
             ))

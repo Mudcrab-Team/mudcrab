@@ -94,7 +94,7 @@ def scene_metrics(document):
 
 
 def primitive_geometry(document):
-    return [
+    primitives = [
         [
             {key: primitive[key] for key in ("attributes", "indices", "mode", "targets")
              if key in primitive}
@@ -102,6 +102,22 @@ def primitive_geometry(document):
         ]
         for mesh in document.get("meshes", [])
     ]
+    referenced = set()
+    for mesh in primitives:
+        for primitive in mesh:
+            referenced.update(primitive["attributes"].values())
+            if "indices" in primitive:
+                referenced.add(primitive["indices"])
+            for target in primitive.get("targets", []):
+                referenced.update(target.values())
+    accessors = {i: document["accessors"][i] for i in referenced}
+    views = set()
+    for accessor in accessors.values():
+        if "bufferView" in accessor:
+            views.add(accessor["bufferView"])
+        if "sparse" in accessor:
+            views.update(accessor["sparse"][part]["bufferView"] for part in ("indices", "values"))
+    return primitives, accessors, {i: document["bufferViews"][i] for i in views}
 
 
 def compare(model, expected, baseline_assets, output):
@@ -133,6 +149,8 @@ def run(worktree, output, sources, baseline_assets, hashes):
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=worktree, text=True).strip()
 
+    if output.is_relative_to(Path(git("rev-parse", "--show-toplevel"))):
+        raise ValueError("Choose an output directory outside the worktree")
     head = git("rev-parse", "HEAD")
     if git("status", "--porcelain"):
         raise ValueError(f"Expected a clean committed HEAD in {worktree}")
