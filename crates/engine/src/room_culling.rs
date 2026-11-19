@@ -27,8 +27,9 @@
 //! volume. The mesh's current AABB is transformed into cell-local space with its full affine
 //! transform, including rotation, scale, and shear. Missing or invalid bounds and `NoFrustumCulling`
 //! skip the aperture test but retain the unreached-space test. Versioned graphs also track
-//! references whose pivots are in no room as unbounded; their conservative overlap memberships
-//! remain candidates. Multiple containing rooms, unknown references, and legacy unassigned
+//! references whose pivots are in no room. Those with overlap rows can use the overlap and
+//! unbounded volumes. Those without either kind of row stay drawn in roomed cells.
+//! Multiple containing rooms, unknown references, and legacy unassigned
 //! references stay drawn. References whose aggregate model bounds touch an attached portal gain
 //! the union of both endpoint volumes. Mesh filtering never inserts duplicate entries.
 //!
@@ -537,7 +538,13 @@ impl RoomGraph {
         let Some(membership) = self.membership.get(&form_id) else {
             return true;
         };
-        if membership.contained.len() > 1 {
+        // A cell-local reference ID proves identity, but empty geometric membership
+        // does not establish ownership by the unbounded node of a roomed cell.
+        if membership.contained.len() > 1
+            || (!self.rooms.is_empty()
+                && membership.contained.is_empty()
+                && membership.overlapping.is_empty())
+        {
             return true;
         }
         // Portal overlap adds endpoint candidates. Keep geometric overlap candidates too:
@@ -1764,7 +1771,7 @@ mod tests {
     }
 
     #[test]
-    fn a_room_can_see_unbounded_geometry_only_through_its_aperture() {
+    fn unassigned_geometry_stays_visible_beside_a_clipped_outside_aperture() {
         let graph = outside_graph();
         let eye = Vec3::new(0.0, 0.0, -20.0);
         let clip = clip_from_local()
@@ -1780,12 +1787,19 @@ mod tests {
         };
         assert!(visible.unbounded.is_reached());
         assert!(graph.mesh_is_drawn(102, &visible, Some(&bounds_at(0.0)), None));
-        assert!(!graph.mesh_is_drawn(102, &visible, Some(&bounds_at(8.0)), None));
+        assert!(!visible.unbounded.intersects(Some(&bounds_at(8.0))));
+        assert!(graph.mesh_is_drawn(102, &visible, Some(&bounds_at(8.0)), None));
         let away = graph
             .visibility_volumes(eye, clip_from_local() * Mat4::from_translation(-eye))
             .unwrap();
         assert!(!away.unbounded.is_reached());
-        assert!(!graph.mesh_is_drawn(102, &away, None, None));
+        let in_front = MeshBounds::transformed(
+            &Aabb::from_min_max(-Vec3::splat(0.1), Vec3::splat(0.1)),
+            Affine3A::from_translation(Vec3::new(0.0, 0.0, -35.0)),
+        )
+        .unwrap();
+        assert!(away.rooms[0].intersects(Some(&in_front)));
+        assert!(graph.mesh_is_drawn(102, &away, Some(&in_front), None));
     }
 
     #[test]

@@ -30,7 +30,7 @@ Subrecords on a marker reference, besides the usual `NAME` and `DATA` (position,
 |---|---|---|---|
 | `XPRM` | 32 | `float[3]` half-extents, `float[3]` colour/255, `float` unknown (0.2 room, 0.25 portal), `u32` shape (1 box, 2 sphere, 3 portal box) | every room, 2,611 portals |
 | `XMBO` | 12 | `float[3]`, equal to `XPRM[0..12]` on every room (the Creation Kit rejects a mismatch) | every room |
-| `XPOD` | 8 per pair | array of (origin, destination) `u32` FormID pairs (xEdit 4.1.5f defs, `wbArray` of a two-FormID struct): the rooms on either side; the masters only have one pair | 2,592 portals (121 with the second id 0, 20 without `XPOD`) |
+| `XPOD` | 8 per pair | array of (origin, destination) `u32` FormID pairs (xEdit 4.1.5f defs, `wbArray` of a two-FormID struct): the rooms on either side; the masters only have one pair | 2,592 fields on 2,612 portal markers. 17 fields have a literal zero destination and 20 markers have no `XPOD` |
 | `XRMR` | 4 | Two little-endian `u16` words. The first word's low 14 bits count the `XLRM` entries and its high two bits are flags. | 1,991 rooms |
 | `LNAM` | 4 | `u32` FormID of the room's lighting template | follows `XRMR` when flag `0x8000` is set in the first word |
 | `INAM` | 4 | `u32` FormID of the room's image space | follows `XRMR` when flag `0x4000` is set in the first word |

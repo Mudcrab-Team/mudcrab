@@ -115,8 +115,7 @@ Mudcrab keeps whole-cell rendering when the camera is outside every room, includ
 graphs, because gaps between bounds are not verified outside space. From a containing room,
 versioned graphs can traverse an authored outside endpoint through its portal aperture. Legacy
 NULL endpoints cannot distinguish authored outside from invalid links. Unknown references remain
-drawn. This conservative camera-start policy differs from the traced native null-room traversal;
-it does not change versioned object membership to draw every unassigned reference.
+drawn. This conservative camera-start policy differs from the traced native null-room traversal.
 
 Its dropped-object warning also shows why a reference's original placement is insufficient for
 moving objects. Our actor and movable-object exemptions deliberately avoid culling by stale
@@ -147,8 +146,8 @@ negative scale, and shear. A touching or straddling bound stays visible even if 
 outside the aperture. Missing or invalid bounds and `NoFrustumCulling` skip aperture filtering
 while retaining the prior unreached-room rule.
 
-Known references with no pivot-containing room use the unbounded volume in versioned graphs.
-Their bounds-overlap room memberships remain candidates too. The runtime recognizes portal-shared
+In a roomed cell, a reference with no geometric membership stays eligible for ordinary view
+culling. A reference with overlap rows alone can use their volumes and the unbounded volume. The runtime recognizes portal-shared
 geometry when a reference's aggregate model bounds overlap a portal attached to its containing
 space. Each child mesh can then use either endpoint's volume, including the unbounded endpoint.
 This adds visibility candidates without discarding existing overlap memberships. It filters each
