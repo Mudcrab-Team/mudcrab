@@ -415,9 +415,9 @@ fn validate_new_cell(record: &RawRecord, localized: bool) -> Result<()> {
             b"XCLL" => {
                 matches!(data.len(), 72 | 92)
                     && [12, 16, 28, 32, 36, 76, 80, 84].into_iter().all(|offset| {
-                        data.get(offset..offset + 4).is_none_or(|word| {
-                            f32::from_le_bytes(word.try_into().unwrap()).is_finite()
-                        })
+                        data.get(offset..)
+                            .and_then(<[u8]>::first_chunk::<4>)
+                            .is_none_or(|word| f32::from_le_bytes(*word).is_finite())
                     })
             }
             _ => bail!("unsupported CELL field {name} in {id:08X}"),
