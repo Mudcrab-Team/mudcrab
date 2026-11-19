@@ -583,7 +583,7 @@ pub fn export_room_graph(
             ],
         )?;
         for (_, link) in record.subrecords.iter().filter(|(tag, _)| tag == b"XLRM") {
-            // A zero id is "no room": the plugin remap clears an invalid link to 0.
+            // Remapping can clear a failed link to zero; that does not prove no join existed.
             if let Some(linked) = u32_at(link, 0)
                 .filter(|_| link.len() == 4)
                 .filter(|id| *id != 0)
@@ -593,6 +593,8 @@ pub fn export_room_graph(
                     params![form_id, linked],
                 )?;
                 report.links += inserted as u64;
+            } else {
+                incomplete.insert(cell);
             }
         }
         report.rooms += 1;

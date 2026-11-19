@@ -2214,6 +2214,39 @@ fn conflicting_portal_occurrences_keep_both_readers_conservative() {
 }
 
 #[test]
+fn failed_room_link_remapping_keeps_both_readers_conservative() {
+    for typed in [false, true] {
+        for link in [None, Some(0x801), Some(0x0900_0801)] {
+            let directory = tempfile::tempdir().unwrap();
+            let data = directory.path().join("Data");
+            room_graph_review_fixture(&data, link, None);
+            let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+            let conn = rusqlite::Connection::open(db).unwrap();
+            let complete: bool = conn
+                .query_row(
+                    "SELECT complete FROM room_graph_cells WHERE cell_id=0x900",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                complete,
+                link != Some(0x0900_0801),
+                "typed={typed}, link={link:?}"
+            );
+            let links: i64 = conn
+                .query_row("SELECT COUNT(*) FROM room_links", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(links, i64::from(link == Some(0x801)));
+            let rooms: i64 = conn
+                .query_row("SELECT COUNT(*) FROM room_bounds", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(rooms, 2);
+        }
+    }
+}
+
+#[test]
 fn trailing_portal_endpoints_keep_both_readers_conservative() {
     for typed in [false, true] {
         let directory = tempfile::tempdir().unwrap();
