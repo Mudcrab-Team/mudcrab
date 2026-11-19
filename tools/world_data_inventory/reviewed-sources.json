@@ -182,7 +182,7 @@
     "crates/shared/src/coordinates.rs": "7da8c9ebfc9be72fdc408201878cb3c4abf313599241169c5deccb0c168ee423",
     "crates/shared/src/creature_idle.rs": "6f50bf64fee16c3eacafb81430a47cdc7fb95e89e65c5e1a3270916965241159",
     "crates/shared/src/extensions.rs": "2ad870d957f709d47329ac4865a6dfbbe7c142c92262a39bacaaccf1a48cca2d",
-    "crates/shared/src/lib.rs": "2ae7c4fc8377313da761269e80ccce85ff09f12525e36803903a5a6d08bfb591",
+    "crates/shared/src/lib.rs": "cd042a7d195fbb56cb92d1e6149bbbac33166d9e88d33687f08da4f8f84006dc",
     "crates/shared/src/lod.rs": "8fbb4541b75f4d7778d2005d0733aed3beb2fc52c76ad2bfa1094abc88f4fe88",
     "crates/shared/src/lod/object.rs": "93bfd611aa5fc46a4afdff7b945a42d4bea830f387fb088f44a9c6599bf463bc",
     "crates/shared/src/plugin_selection.rs": "95d5ba23722fcecd406a414cbddc30ec9f258a6eab3ec156b42e678230919516",
