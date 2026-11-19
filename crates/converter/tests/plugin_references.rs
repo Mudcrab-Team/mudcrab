@@ -2096,7 +2096,7 @@ fn load_order_export_ignores_markers_in_exterior_cells() {
 
 fn room_graph_review_fixture(
     data: &Path,
-    link: Option<u32>,
+    link: Option<&[u8]>,
     endpoints: Option<Vec<u8>>,
 ) -> PathBuf {
     fs::create_dir_all(data).unwrap();
@@ -2123,7 +2123,7 @@ fn room_graph_review_fixture(
     };
     let mut extra = sub(b"XRMR", &[u8::from(link.is_some()), 0, 1, 0]);
     if let Some(link) = link {
-        extra.extend(sub(b"XLRM", &link.to_le_bytes()));
+        extra.extend(sub(b"XLRM", link));
     }
     let mut markers = vec![
         marker(0x800, 0x1F, 1, 0.0, extra),
@@ -2216,7 +2216,14 @@ fn conflicting_portal_occurrences_keep_both_readers_conservative() {
 #[test]
 fn failed_room_link_remapping_keeps_both_readers_conservative() {
     for typed in [false, true] {
-        for link in [None, Some(0x801), Some(0x0900_0801)] {
+        let valid = 0x801u32.to_le_bytes();
+        let bad_index = 0x0900_0801u32.to_le_bytes();
+        for (link, expected_complete, expected_links) in [
+            (None, true, 0),
+            (Some(valid.as_slice()), true, 1),
+            (Some(bad_index.as_slice()), false, 0),
+            (Some(&valid[..3]), false, 0),
+        ] {
             let directory = tempfile::tempdir().unwrap();
             let data = directory.path().join("Data");
             room_graph_review_fixture(&data, link, None);
@@ -2229,15 +2236,11 @@ fn failed_room_link_remapping_keeps_both_readers_conservative() {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(
-                complete,
-                link != Some(0x0900_0801),
-                "typed={typed}, link={link:?}"
-            );
+            assert_eq!(complete, expected_complete, "typed={typed}, link={link:?}");
             let links: i64 = conn
                 .query_row("SELECT COUNT(*) FROM room_links", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(links, i64::from(link == Some(0x801)));
+            assert_eq!(links, expected_links);
             let rooms: i64 = conn
                 .query_row("SELECT COUNT(*) FROM room_bounds", [], |r| r.get(0))
                 .unwrap();

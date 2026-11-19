@@ -876,14 +876,14 @@ fn remap_record_form_ids(
         }
     }
     if !malformed_subrecords.is_empty() {
-        // Keep an empty XPOD occurrence: dropping it could make conflicting source fields
-        // appear unique. It carries no usable endpoints and keeps the room graph incomplete.
+        // Empty room links and portal endpoint fields keep the graph incomplete. Dropping
+        // them would erase a broken link or make conflicting endpoint fields appear unique.
         // Other optional fields retain their valid siblings and their relative order.
         let mut index = 0;
         record.subrecords.retain_mut(|(tag, data)| {
             let malformed = malformed_subrecords.binary_search(&index).is_ok();
             index += 1;
-            if malformed && record_type == *b"REFR" && tag.as_slice() == b"XPOD" {
+            if malformed && record_type == *b"REFR" && matches!(tag.as_slice(), b"XPOD" | b"XLRM") {
                 data.clear();
                 true
             } else {

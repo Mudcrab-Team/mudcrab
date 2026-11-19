@@ -1249,6 +1249,16 @@ fn convert_plugins_with_text_sources_report_impl(
                 .filter(|record| record.record_type == *b"REFR")
                 .map(|record| (record.form_id, record.unique_source_subrecord(b"XPOD"))),
         )?;
+        // The canonical record omits rejected XLRM fields, but its room graph still lost a link.
+        let mut incomplete = tx.prepare_cached(
+            "UPDATE room_graph_cells SET complete=0 WHERE cell_id IN \
+             (SELECT cell_id FROM room_bounds WHERE ref_id=?1)",
+        )?;
+        for record in decoded.records.values() {
+            if record.rejected_fields.contains(b"XLRM") {
+                incomplete.execute([record.form_id])?;
+            }
+        }
         tx.execute(
             "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES ('visibility_version',2)",
             [],
