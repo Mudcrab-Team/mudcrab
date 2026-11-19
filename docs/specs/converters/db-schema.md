@@ -1492,7 +1492,7 @@ converter apply-room-placements path/to/assets --native decorations.json
 The pack must retain the in-house reader's plugin headers. Masters can come from the original
 conversion or earlier placement imports. Existing FormID slots stay stable. The command reads
 `REFR` adds, full overrides, moves, and deleted headers for existing interiors. The supported
-bases are existing `STAT` records and Skyrim's room and portal markers. A `CELL` record can
+bases are existing `STAT` records and Skyrim's room, portal, and occlusion markers. A `CELL` record can
 identify an existing interior for its children. Its fields are ignored. Supported `REFR` fields
 are `EDID`, `NAME`, `DATA`, `XSCL`, `XESP`, `XMBR`, and the room and portal marker fields
 `XPRM`, `XRMR`, `XLRM`, `XPOD`, `LNAM`, and `INAM`. Static primitives, actor references, doors,
@@ -1520,6 +1520,13 @@ target, or `{"kind": "target", "room": 2048}` for a named room.
   ]
 }
 ```
+
+For a PlaneMarker, use base 23 and supply a shape such as
+`{"kind":"plane","half_width":8,"half_height":8}` or
+`{"kind":"box","half_extents":[8,12,16]}`. Optional `links` holds four
+runtime FormIDs in physical XORD order. Use zero for an empty slot. Skyrim
+placement plugins can supply the same fields on a PlaneMarker. Occluder edits
+require a pack with a source-verified occluder projection.
 
 One transaction updates runtime `references`, the edited ownership rules, and the room geometry
 and legacy memberships of affected cells. Moves refresh both the source and destination cells.

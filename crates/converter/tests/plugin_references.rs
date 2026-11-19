@@ -3982,3 +3982,62 @@ fn later_placement_edits_preserve_the_original_room_link_order() {
     assert_eq!(outgoing(), 0);
     assert!(!placement_certificate(&db, PLACEMENT_CELL_A));
 }
+
+#[test]
+fn room_placement_command_updates_skyrim_and_native_occluders() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    let mut shape = [0u8; 32];
+    shape[..4].copy_from_slice(&8f32.to_le_bytes());
+    shape[8..12].copy_from_slice(&8f32.to_le_bytes());
+    shape[28..].copy_from_slice(&3u32.to_le_bytes());
+    let path = plugin(
+        dir.path(),
+        "Plane.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(
+            PLACEMENT_CELL_A,
+            placement(0x0100_0800, 23, 0, 0.0, sub(b"XPRM", &shape)),
+        ),
+    );
+    assert_placement_import(
+        run_placement_import(&assets, "--plugin", &path),
+        "Applied 1 room placements in 1 cells (1 certified)",
+    );
+    let native = dir.path().join("plane.json");
+    fs::write(
+        &native,
+        serde_json::json!({"edits":[{"op":"put","id":0xff00_0800u32,
+        "cell":PLACEMENT_CELL_A,"base":23,"position":[0,0,0],
+        "shape":{"kind":"plane","half_width":8,"half_height":8}}]})
+        .to_string(),
+    )
+    .unwrap();
+    assert_placement_import(
+        run_placement_import(&assets, "--native", &native),
+        "Applied 1 room placements in 1 cells (1 certified)",
+    );
+    let count = || {
+        db.query_row(
+            "SELECT count(*) FROM room_occluders WHERE cell_id=?1",
+            [PLACEMENT_CELL_A],
+            |row| row.get::<_, u32>(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(count(), 2);
+    fs::write(
+        &native,
+        serde_json::json!({"edits":[{"op":"delete","id":0x0100_0800u32},
+        {"op":"delete","id":0xff00_0800u32}]})
+        .to_string(),
+    )
+    .unwrap();
+    assert_placement_import(
+        run_placement_import(&assets, "--native", &native),
+        "Applied 2 room placements in 1 cells (1 certified)",
+    );
+    assert_eq!(count(), 0);
+}
