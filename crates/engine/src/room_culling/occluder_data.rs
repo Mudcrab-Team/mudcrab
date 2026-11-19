@@ -65,7 +65,7 @@ pub(super) fn load(conn: &Connection, cell: u32, graph: &RoomGraph) -> Result<Ve
     let mut statement = conn.prepare_cached(
         "SELECT ref_id,shape,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_y,half_z,scale,\
          header_flags,has_enable_parent,has_links,target_ref \
-         FROM room_occluders WHERE cell_id=?1 ORDER BY ref_id",
+         FROM room_occluders WHERE cell_id=?1 AND typeof(scale) IN ('real','integer') ORDER BY ref_id",
     )?;
     let rows = statement.query_map([cell], |row| {
         Ok((

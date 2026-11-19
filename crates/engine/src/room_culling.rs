@@ -1602,6 +1602,36 @@ mod tests {
     }
 
     #[test]
+    fn occluder_scale_keeps_spheres_beyond_the_conservative_edge_visible() {
+        let clip = Mat4::perspective_infinite_reverse_rh(std::f32::consts::TAU / 3.0, 1.0, 0.1);
+        let visible = |shape, scale, edge| {
+            let connection = occluder_database();
+            connection
+                .execute(
+                    "UPDATE room_occluders SET shape=?1,scale=?2,half_x=5,half_y=5,half_z=5",
+                    rusqlite::params![shape, scale],
+                )
+                .unwrap();
+            let graph = load_room_graph(&connection, 7).unwrap();
+            let view = graph.visibility_volumes(Vec3::ZERO, clip).unwrap();
+            [0.0, edge, 44.0].map(|x| {
+                let bounds = MeshBounds::transformed(
+                    &Aabb::from_min_max(-Vec3::splat(0.2), Vec3::splat(0.2)),
+                    bevy::math::Affine3A::from_translation(Vec3::new(x, 0.0, -40.0)),
+                )
+                .unwrap();
+                view.unbounded.intersects(Some(&bounds))
+            })
+        };
+        let cases = [(3, 2.0, 14.0), (1, 2.0, 14.0), (3, 0.5, 7.0), (1, 0.5, 7.0)];
+        assert_eq!(
+            cases.map(|(shape, scale, edge)| visible(shape, scale, edge)),
+            [[false, true, true]; 4],
+            "centerline, edge, and far visibility for {cases:?}"
+        );
+    }
+
+    #[test]
     fn a_roomless_cell_keeps_meshes_visible_when_its_shadow_budget_overflows() {
         let connection = occluder_database();
         let single = load_room_graph(&connection, 7).unwrap();
@@ -1692,6 +1722,10 @@ mod tests {
             "UPDATE room_occluders SET has_links=1",
             "INSERT INTO room_occluder_links VALUES(999,0,500)",
             "UPDATE room_occluders SET scale=0",
+            "UPDATE room_occluders SET scale=-1",
+            "UPDATE room_occluders SET scale=1e999",
+            "UPDATE room_occluders SET scale='invalid'",
+            "UPDATE room_occluders SET scale=NULL",
         ] {
             let connection = occluder_database();
             connection.execute_batch(change).unwrap();

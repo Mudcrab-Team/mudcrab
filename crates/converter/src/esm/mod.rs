@@ -644,6 +644,9 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         },
         b"XLRM" | b"LNAM" | b"INAM" if record_type == b"REFR" => Fixed(SINGLE),
         b"XMBR" if is_placed_record_type(record_type) => Fixed(SINGLE),
+        // xEdit 4.1.5f defines four nullable REFR FormIDs, each an itU32 via wbFormIDCk.
+        // https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsTES5.pas#L12272-L12278
+        // https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbInterface.pas#L9585-L9595
         b"XORD" if record_type == b"REFR" => Fixed(&[(16, &[0, 4, 8, 12])]),
         // Regions.
         b"XCLR" if record_type == b"CELL" => Array {
