@@ -158,7 +158,9 @@ fn vendored_copy(edited: &str, edit: impl Fn(String) -> String) -> tempfile::Tem
     let source = vendored_bevy_pbr();
     let copy = tempfile::tempdir().unwrap();
     for relative in ["Cargo.toml", SHADOWS_WGSL, PBR_FUNCTIONS_WGSL] {
-        let text = std::fs::read_to_string(source.join(relative)).unwrap();
+        // Read through the shared helper, so the copy and the checks see the same text (the
+        // helper is where line endings are normalised, once, for every guard).
+        let text = required_source(&source, relative);
         let text = if relative == edited { edit(text) } else { text };
         let path = copy.path().join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

@@ -15,8 +15,11 @@
 //!
 //! `S` in that hunk is the last cascade's far bound, that is the effective cascade range:
 //! `sun_shadow_cascades` sets it to the smaller of the drawn-grid fit (about 23,200 units at the
-//! default radius) and `[Display] fShadowDistance`. A run without the INI key therefore fades over
-//! about 17,400 to 23,200 units, not over 8000.
+//! default radius) and `[Display] fShadowDistance`, and the "Sun shadow-distance multiplier"
+//! setting (`settings.rs`, `shadow_distance_scale`) then rescales the last cascade. At a scale of
+//! 1.0 a run without the INI key therefore fades over about 17,400 to 23,200 units, not over 8000.
+//! At another scale the range moves with it: with `fShadowDistance=8000` and a multiplier of 1.25
+//! the cascade ends at 10,000, so a receiver at 8,000 still has about 97% of its shadow.
 
 /// The exponent on `d / S` in the retail fade (`RF-LIGHT-GPU-020`). The retail shader squares
 /// `saturate(d^2 / S^2)` three times, which is `(d / S)^16`. It is a power of two: the vendored
@@ -81,13 +84,16 @@ mod tests {
     }
 
     /// The effective range is the cascade range, not 8000: with no INI key it is the grid fit, so
-    /// a shadow at 8000 units is still at full strength there.
+    /// a shadow at 8000 units is still at full strength there. The multiplier rescales it:
+    /// `fShadowDistance=8000` with a multiplier of 1.25 ends at 10,000.
     #[test]
     fn the_fade_follows_the_cascade_range() {
         let grid_fit = 23_200.0;
         assert!(sun_shadow_fade(8_000.0, grid_fit) > 0.999);
         assert!((sun_shadow_fade(0.75 * grid_fit, grid_fit) - 0.990).abs() < 0.001);
         assert_eq!(sun_shadow_fade(grid_fit, grid_fit), 0.0);
+        // fShadowDistance 8000 times the 1.25 multiplier: a receiver at 8000 keeps about 97%.
+        assert!((sun_shadow_fade(8_000.0, 8_000.0 * 1.25) - 0.972).abs() < 0.001);
     }
 
     /// The mask value: a lit pixel stays lit, a shadowed one fades toward lit with the fade.
