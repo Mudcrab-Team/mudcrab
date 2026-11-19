@@ -225,6 +225,7 @@ fn prepare_model_sources(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     use converter::esm::exporter::create_tables;
 
     #[cfg(unix)]
