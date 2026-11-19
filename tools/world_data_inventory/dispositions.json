@@ -30,6 +30,90 @@
         "semantic_use": "unknown"
       }
     },
+    "default_objects.form_id": {
+      "evidence": [
+        {
+          "anchor": "form_id INTEGER NOT NULL",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "(*id, format!(\"DOBJ {key}\"))",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "form_id",
+        "ordinal": 1,
+        "query": "SELECT key, form_id"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "The default movement type's FormID. It is looked up in movement_types for the Player race's unset WKMV or RNMV.",
+      "roles": [
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "(*id, format!(\"DOBJ {key}\"))",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn a_race_without_links_takes_the_default_movement_types()",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ]
+    },
+    "default_objects.key": {
+      "evidence": [
+        {
+          "anchor": "key TEXT PRIMARY KEY,",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "row_key == key",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "key",
+        "ordinal": 0,
+        "query": "SELECT key, form_id"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "The DOBJ use code (DMWL or DMRN) selects the default walk or run movement type for a race slot with no link.",
+      "roles": [
+        "lookup"
+      ],
+      "sink": [
+        {
+          "anchor": "row_key == key",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn a_race_without_links_takes_the_default_movement_types()",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ]
+    },
     "emittance.day_b": {
       "evidence": [
         {
@@ -299,7 +383,7 @@
           "path": "crates/converter/src/esm/exporter.rs"
         },
         {
-          "anchor": "run_speed: values[5]",
+          "anchor": "run_speed: run.profile.values[5]",
           "path": "crates/engine/src/physics.rs"
         }
       ],
@@ -319,7 +403,7 @@
           "path": "crates/engine/src/physics.rs"
         },
         {
-          "anchor": "let longitudinal = speeds.directions",
+          "anchor": "let longitudinal = directions[",
           "path": "crates/engine/src/physics.rs"
         }
       ],
@@ -345,7 +429,7 @@
           "path": "crates/converter/src/esm/exporter.rs"
         },
         {
-          "anchor": "walk_link.is_none() && run_link.is_none()",
+          "anchor": "load_race_movement_type(&conn, run_link",
           "path": "crates/engine/src/physics.rs"
         }
       ],
@@ -355,13 +439,13 @@
         "query": "SELECT walk_movt_id, run_movt_id"
       },
       "owner": "Mudcrab maintainers (#298)",
-      "reason": "Read to reject unsupported non-null race selection; not proof that the linked movement profile controls speed. Active PR #246 owns selection changes.",
+      "reason": "Selects the Player race's run movement type. A null link uses the default object for that slot (DMWL or DMRN); whether the game blends two different slots is not established.",
       "roles": [
-        "validation"
+        "lookup"
       ],
       "sink": [
         {
-          "anchor": "first-pass NPC_Default_MT selection supports only unset race links",
+          "anchor": "load_race_movement_type(&conn, run_link",
           "path": "crates/engine/src/physics.rs"
         }
       ],
@@ -387,7 +471,7 @@
           "path": "crates/converter/src/esm/exporter.rs"
         },
         {
-          "anchor": "walk_link.is_none() && run_link.is_none()",
+          "anchor": "load_race_movement_type(&conn, walk_link",
           "path": "crates/engine/src/physics.rs"
         }
       ],
@@ -397,13 +481,13 @@
         "query": "SELECT walk_movt_id, run_movt_id"
       },
       "owner": "Mudcrab maintainers (#298)",
-      "reason": "Read to reject unsupported non-null race selection; not proof that the linked movement profile controls speed. Active PR #246 owns selection changes.",
+      "reason": "Selects the Player race's walk movement type. A null link uses the default object for that slot (DMWL or DMRN); whether the game blends two different slots is not established.",
       "roles": [
-        "validation"
+        "lookup"
       ],
       "sink": [
         {
-          "anchor": "first-pass NPC_Default_MT selection supports only unset race links",
+          "anchor": "load_race_movement_type(&conn, walk_link",
           "path": "crates/engine/src/physics.rs"
         }
       ],
@@ -732,6 +816,11 @@
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+    },
+    "default_objects": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
     },
     "door_links": {
       "classification": "deferred",
