@@ -1412,7 +1412,7 @@ mod tests {
                 .query_filtered::<(&Transform, &crate::physics::WalkState), With<PlayerBody>>();
             let (body, state) = query.single(app.world()).unwrap();
             apex = apex.max(body.translation.y - ground);
-            launched |= state.jump_active;
+            launched |= state.jump_active();
             landings += usize::from(state.landed);
             air_ticks += usize::from(state.airborne);
         }
@@ -1431,7 +1431,7 @@ mod tests {
             .single(app.world())
             .unwrap();
         assert!(
-            !state.airborne && state.grounded,
+            !state.airborne && state.grounded(),
             "standing again: {state:?}"
         );
     }
