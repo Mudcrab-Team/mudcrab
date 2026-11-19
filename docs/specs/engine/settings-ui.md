@@ -12,9 +12,9 @@ Settings are grouped under headings (for example Point lights, Sun shadows, Wate
 
 - Grass and grass radius, saved with other preferences and applied on next start. Grass defaults on for packs with a valid cache. The group heading marks both controls as next-start settings; runtime plugin/cache installation is unchanged. Launch flags and explicitly imported INI values remain session-only overrides. See [runtime grass](grass.md#skyrim-ini-settings) for precedence, cache fallback and automatic `grass.toml` discovery.
 - Point lights, enabled-light budget, point-light shadows and shadow-map resolution. Enabling lights also creates them in already loaded cells; disabling them hides those lights. Authored invalid, negative, and initially off lights retain their existing exclusion rules.
-- Sun lighting, illuminance and RGB color; ambient brightness and RGB color.
+- Sun lighting, illuminance and RGB color; ambient brightness and RGB color. These are exterior settings. An interior in sky mode 1 or 2 uses the cell's own key light and ambient colour instead, so the sun toggle, illuminance, colour and shadows do not change it (ambient brightness still applies). Leaving the interior restores the current settings.
 - Sun shadows, shadow-map resolution, cascade count and distance multiplier. The underlying shadow range follows the full-detail unload grid.
-- Sky dome, sky-brightness multiplier, exterior distance fog and fog-density multiplier. Interior cells retain their existing sky/fog rules.
+- Sky dome, sky-brightness multiplier, exterior distance fog and fog-density multiplier. Indoors the sky dome is hidden. An interior in sky mode 1 or 2 uses the cell's own fog, which the fog switch turns off and the fog-density multiplier does not scale.
 - Water reflections and reflection multiplier; waves, flow normals, wave scale, speed and strength. The reflection multiplier layers over each water's converted Fresnel and reflectivity values.
 - CPU frustum culling, room culling, GPU indirect drawing, GPU occlusion culling and depth prepass. Room culling defaults to On, applies to interiors, and changes immediately without rebuilding assets. Enabling occlusion enables its depth-prepass and indirect-drawing dependencies; disabling either dependency disables occlusion.
 - MSAA, exposure, tone mapping, vertical FOV, VSync, window mode and windowed resolution.

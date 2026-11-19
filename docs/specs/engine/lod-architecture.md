@@ -99,9 +99,39 @@ distance (34,756).
 
 The query and keep radius of a tier is its parent's split distance plus the
 parent's cells: 17 / 33 / 92 cells at the defaults
-(`TerrainLodDistances::reach_cells`). Object LOD (Phase 2) will use
-`fBlockLevel0Distance`, `fBlockLevel1Distance` and the worldspace NAMA
-multiplier, and drop beyond `fBlockMaximumDistance` (RF-LOD-004).
+(`TerrainLodDistances::reach_cells`).
+
+### Object LOD at run time (first slice)
+
+The converter publishes object chunks (retail `.bto` imports) as separate files listed in the
+additive table `lod_object_chunks`, with its own R-tree and the same row contract as terrain
+chunks. A pack without the table has no object LOD and the engine does nothing for it. The
+object path (`streaming/lod_objects.rs`) works as follows.
+
+- **Rule (RF-LOD-004, RF-LOD-005).** A block is dropped when its box distance is at or beyond
+  `fBlockMaximumDistance`, checked at every visited block and never scaled. Otherwise a level-16
+  block splits under `fBlockLevel1Distance` x sqrt(NAMA) and a level-8 block under
+  `fBlockLevel0Distance` x sqrt(NAMA). NAMA is 1.0 for every worldspace until the pack carries
+  the WRLD value (retail uses 0.25 for Whiterun, Markarth, Windhelm and Alftand).
+- **Tier 16 only.** Only tier-16 chunks are selected, which draw between 70,000 and 250,000
+  units at the defaults and never meet the loaded grid. Tier 8 and tier 4 rows are ignored until
+  object chunks hand off to full detail.
+- **Fail closed.** The rows are validated (canonical path, SHA-256, bounds, build identity) and
+  every tier-16 file is hash-checked, one IO-pool task per file; rows of tiers that do not draw
+  are not read. A bad row, a missing file or a wrong hash logs one error and turns object LOD off
+  for the pack. No chunk is skipped on its own, and the failure stays through worldspace changes
+  until the pack changes.
+- **Order and limits.** The system runs inside the commit window: after `plan_lod_chunks`,
+  `collect_cells` and `collect_lod_chunks`, before
+  `finish_streaming_commit_budget` and before `update_render_origin`, so a root spawned in the
+  frame the origin shifts is rebased in that frame (it carries
+  `LodChunkGridOrigin`, like a terrain chunk). Spawns follow `cell_requests_allowed` and the
+  commit budget. They do not use the scene-request admission, which is for terrain's streaming
+  controls: an object chunk is one asset-server load, bounded by the commit budget.
+- **Doors.** The verified rows are kept while the worldspace is unchanged, so an interior visit
+  drops the roots but does not read or hash the rows again.
+- **Not yet.** No hand-off to full detail, no scene-name validation of object chunk GLBs, and no
+  tier 8 or tier 4 drawing.
 
 Defaults are Skyrim Special Edition's own `SkyrimPrefs.ini` values: 35000,
 70000 and 250000 with a multiplier of 1.5

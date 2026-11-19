@@ -75,6 +75,10 @@ const SETTLE_FRAMES: u32 = 2;
 
 pub struct DoorCrossingPlugin;
 
+/// Door transitions and their queued scene switches must precede scene environment consumers.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct DoorCrossingSet;
+
 impl Plugin for DoorCrossingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DoorCrossing>()
@@ -82,7 +86,7 @@ impl Plugin for DoorCrossingPlugin {
             .add_message::<TeleportPlayer>()
             .add_systems(Startup, spawn_fade_overlay)
             // After the streaming chain in `Update`, so the pending counts are this frame's.
-            .add_systems(PostUpdate, drive_door_crossing);
+            .add_systems(PostUpdate, drive_door_crossing.in_set(DoorCrossingSet));
     }
 }
 
@@ -682,7 +686,19 @@ fn set_alpha(overlay: &mut Query<&mut BackgroundColor, With<FadeOverlay>>, alpha
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Where the player's feet are, for the return point of a crossing. In WALK it comes from the body:
+/// the shown camera carries the follow spring's lag (RF-CAM-001), so it can sit off the body by
+/// more than a stair rise. In NOCLIP the camera is authoritative. The camera sits an eye height
+/// above the body, and the body a capsule half-extent above the feet.
+fn crossing_feet(walking: bool, body: Option<Vec3>, camera: Vec3, tuning: &MovementTuning) -> Vec3 {
+    let (body_offset, _) = body_and_camera_for_feet(tuning, Vec3::ZERO);
+    match (walking, body) {
+        (true, Some(body)) => body - body_offset,
+        _ => camera - Vec3::Y * tuning.eye_height - body_offset,
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn drive_door_crossing(
     keyboard: Res<ButtonInput<KeyCode>>,
     capture: Res<CursorCapture>,
@@ -695,7 +711,11 @@ fn drive_door_crossing(
     streaming: Res<StreamingWorld>,
     camera: Query<&Transform, With<StreamingCamera>>,
     doors: Query<(&LoadDoor, &GlobalTransform, Option<&ExpectedModelBounds>)>,
-    (physics, player): (ReadRapierContext, Query<Entity, With<PlayerBody>>),
+    (physics, player, mode): (
+        ReadRapierContext,
+        Query<(Entity, &Transform), With<PlayerBody>>,
+        Res<crate::physics::MoveMode>,
+    ),
     mut crossing: ResMut<DoorCrossing>,
     mut overlay: Query<&mut BackgroundColor, With<FadeOverlay>>,
     (mut budget, landing_assets, pending_under, walk_landing): (
@@ -738,7 +758,7 @@ fn drive_door_crossing(
         // Without a physics world (a run with no colliders) nothing can block.
         if let Ok(physics) = physics.single() {
             let filter = match player.single() {
-                Ok(player) => QueryFilter::default().exclude_rigid_body(player),
+                Ok((player, _)) => QueryFilter::default().exclude_rigid_body(player),
                 Err(_) => QueryFilter::default(),
             };
             let nearest = physics
@@ -749,10 +769,12 @@ fn drive_door_crossing(
             }
         }
         let (yaw, _, _) = view.rotation.to_euler(EulerRot::YXZ);
-        // The camera sits an eye height above the body, and the body a capsule half-extent above
-        // the feet.
-        let (body_offset, _) = body_and_camera_for_feet(&tuning, Vec3::ZERO);
-        let feet = view.translation - Vec3::Y * tuning.eye_height - body_offset;
+        let feet = crossing_feet(
+            *mode == crate::physics::MoveMode::Walk,
+            player.single().ok().map(|(_, body)| body.translation),
+            view.translation,
+            &tuning,
+        );
         let restore = Restore {
             space: *space,
             camera_space: *camera_space,
@@ -1017,6 +1039,16 @@ mod tests {
     /// whose bounds are a 100-unit cube, and one resident old-space cell.
     fn app_with(door: LoadDoor) -> (App, Entity) {
         app_with_extra(door, |_| {})
+    }
+
+    fn app_with_environment(
+        door: LoadDoor,
+        environment: crate::world::environment::EnvironmentCatalog,
+    ) -> (App, Entity) {
+        app_with_extra(door, |app| {
+            app.insert_resource(environment)
+                .add_plugins(crate::world::environment::interior::InteriorEnvironmentPlugin);
+        })
     }
 
     fn app_with_extra(door: LoadDoor, extra: impl FnOnce(&mut App)) -> (App, Entity) {
@@ -1454,6 +1486,27 @@ mod tests {
     }
 
     #[test]
+    fn the_return_point_comes_from_the_body_in_walk_and_from_the_camera_in_noclip() {
+        let tuning = MovementTuning::default();
+        let feet = Vec3::new(120.0, 40.0, -300.0);
+        let (body, camera) = body_and_camera_for_feet(&tuning, feet);
+        // The shown camera lags the eye by a stair rise and sits a little to the side.
+        let lagged = camera + Vec3::new(2.0, -18.0, 1.0);
+        let walking = crossing_feet(true, Some(body), lagged, &tuning);
+        assert!(
+            walking.abs_diff_eq(feet, 1.0e-3),
+            "WALK return point {walking:?} is not the body's feet {feet:?}"
+        );
+        let flying = crossing_feet(false, Some(body), camera, &tuning);
+        assert!(
+            flying.abs_diff_eq(feet, 1.0e-3),
+            "NOCLIP uses the camera: {flying:?}"
+        );
+        // WALK without a body falls back to the camera.
+        assert!(crossing_feet(true, None, camera, &tuning).abs_diff_eq(feet, 1.0e-3));
+    }
+
+    #[test]
     fn walk_collision_failure_rolls_back_then_requires_explicit_recovery() {
         for blocked in [false, true] {
             let mut app = walking_app(interior_door(), false);
@@ -1619,6 +1672,83 @@ mod tests {
             teleports[0].position,
             creation_to_bevy(Vec3::new(100.0, 200.0, 300.0))
         );
+    }
+
+    #[test]
+    fn crossing_and_timed_out_landing_switch_scene_environment_in_the_scene_switch_frame() {
+        check_crossing_switches_scene_environment(false);
+    }
+
+    #[test]
+    fn crossing_and_failed_cell_switch_scene_environment_in_the_scene_switch_frame() {
+        check_crossing_switches_scene_environment(true);
+    }
+
+    fn check_crossing_switches_scene_environment(fail_destination: bool) {
+        use crate::world::environment::{EnvironmentCatalog, interior::SceneEnvironment};
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO cell_environment(cell_id,data_flags) VALUES(77,1);
+             INSERT INTO cell_lighting(cell_id,xcll_size,inherit_flags,
+                ambient_r,ambient_g,ambient_b,directional_r,directional_g,directional_b,
+                directional_rotation_xy,directional_rotation_z,directional_fade)
+             VALUES(77,92,0,10,20,30,40,50,60,90,30,0.5);",
+            )
+            .unwrap();
+        let (mut app, _) = app_with_environment(
+            interior_door(),
+            EnvironmentCatalog::from_connection(&connection),
+        );
+        let exterior_rotation = Quat::from_rotation_y(0.4);
+        let sun = app
+            .world_mut()
+            .spawn((
+                DirectionalLight::default(),
+                crate::world::environment::interior::WorldSun,
+                Transform::from_rotation(exterior_rotation),
+            ))
+            .id();
+        press_e(&mut app);
+        let mut saw_interior = false;
+        let mut saw_restore = false;
+        for _ in 0..300 {
+            app.update();
+            let cell = app.world().resource::<ActiveSpace>().interior;
+            let scene = app.world().resource::<SceneEnvironment>();
+            assert_eq!(
+                scene.interior.as_ref().map(|lighting| lighting.cell_id),
+                cell
+            );
+            if cell.is_some() {
+                saw_interior = true;
+                assert_eq!(
+                    scene.interior.as_ref().unwrap().lighting.directional,
+                    Some([40, 50, 60])
+                );
+                // RF-LIGHT-CPU-012: rotation XY 90, Z 30. Creation travel = (cos90 cos30,
+                // -sin90 cos30, sin30) = (0, -0.8660254, 0.5). Engine (x, z, -y) =
+                // (0, 0.5, 0.8660254).
+                let rays = app.world().get::<Transform>(sun).unwrap().rotation * Vec3::NEG_Z;
+                assert!(rays.distance(Vec3::new(0.0, 0.5, 0.866_025_4)) < 1.0e-5);
+                if fail_destination {
+                    app.world_mut()
+                        .resource_mut::<StreamingWorld>()
+                        .set_failed_for_test(CellKey::Interior(77));
+                }
+            } else if saw_interior {
+                // The real failure or timeout path queues the exterior restoration.
+                saw_restore = true;
+                assert!(scene.show_sky && scene.use_sky_lighting);
+                assert_eq!(
+                    app.world().get::<Transform>(sun).unwrap().rotation,
+                    exterior_rotation
+                );
+                break;
+            }
+        }
+        assert!(saw_interior && saw_restore);
     }
 
     #[test]
