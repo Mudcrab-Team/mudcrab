@@ -207,8 +207,10 @@ fn project(
             || authored(*tag).next().is_some()
             || source.is_some_and(|(record, _)| record.rejected_fields.contains(tag))
     };
-    let complete = !matches!(provenance, MarkerSource::DamagedPlugin)
-        && source.is_none_or(|(record, _)| record.payload_complete);
+    let payload_complete = source.is_none_or(|(record, _)| record.payload_complete);
+    // An unframed tail can contain outgoing links to markers in other cells.
+    result.unverified_link_targets |= !payload_complete;
+    let complete = payload_complete && !matches!(provenance, MarkerSource::DamagedPlugin);
     if !complete {
         result.incomplete_cells.insert(cell);
     }

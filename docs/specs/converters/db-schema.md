@@ -1348,7 +1348,9 @@ Columns and rules:
   remain when the converter skips source geometry, so a linked target cannot become an
   independent occluder. An unreadable occurrence sets the source cell's `complete` flag to
   false. In-house exports also clear that flag for unresolved FormIDs. A full in-house export
-  publishes `occlusion_version = 1` and `occlusion_links_verified = 1` in `room_graph_stats`.
+  publishes `occlusion_version = 1` in `room_graph_stats`. It sets `occlusion_links_verified`
+  to zero if a marker payload is truncated or an `XORD` has the wrong length, since either
+  can hide a link to another cell. Otherwise it sets `occlusion_links_verified` to one.
   These markers let the loader keep unrelated occluders in a complete cell that contains an
   all-null `XORD`. Subset exports invalidate cells at the other end of cross-cell or unverified
   links. A verified same-cell edge can be replaced or removed while the engine reloads its

@@ -731,7 +731,8 @@ impl ArchiveExtractor {
     }
 
     /// Selects canonical paths and extracts their payloads from the same open archive.
-    /// Replacing the archive path does not change the open source.
+    /// Replacing the archive path does not change the open source. Keep the archive contents
+    /// unchanged throughout extraction, including during the filter callbacks.
     pub fn extract_matching(
         archive_path: &Path,
         output_root: &Path,
@@ -742,7 +743,8 @@ impl ArchiveExtractor {
 
     /// Filters original entry names before canonicalization and collision checks, then selects
     /// canonical paths and extracts their payloads from the same open archive.
-    /// Replacing the archive path does not change the open source.
+    /// Replacing the archive path does not change the open source. Keep the archive contents
+    /// unchanged throughout extraction, including during the filter callbacks.
     pub fn extract_matching_with_name_filter(
         archive_path: &Path,
         output_root: &Path,
@@ -2053,6 +2055,45 @@ mod tests {
             )
             .unwrap();
             assert_eq!(fs::read(output.join(key)).unwrap(), b"replaced");
+        }
+    }
+
+    #[test]
+    fn extracts_large_stored_and_compressed_payloads_from_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut rng = dummy_content::rng::Rng::new(42);
+        let payload: Vec<_> = (0..12_289)
+            .flat_map(|_| rng.next_u64().to_le_bytes())
+            .collect();
+        let key = "meshes/test.nif";
+        let entries = [dummy_content::Entry::new(key, &payload)];
+        let cases = [
+            (
+                "stored.bsa",
+                dummy_content::bsa::v104(&entries, dummy_content::bsa::Compression::None),
+            ),
+            (
+                "compressed.bsa",
+                dummy_content::bsa::v104(&entries, dummy_content::bsa::Compression::Zlib),
+            ),
+            (
+                "stored.ba2",
+                dummy_content::ba2::general(&entries, dummy_content::ba2::Compression::None),
+            ),
+            (
+                "compressed.ba2",
+                dummy_content::ba2::general(&entries, dummy_content::ba2::Compression::Zlib),
+            ),
+        ];
+        for (name, archive) in cases {
+            let path = directory.path().join(name);
+            let output = directory.path().join(format!("{name}-out"));
+            fs::write(&path, archive.unwrap()).unwrap();
+            let extracted = ArchiveExtractor::extract_matching(&path, &output, |_| true).unwrap();
+            assert_eq!(extracted.len(), 1, "{name}");
+            assert_eq!(extracted[0].bytes_written, payload.len() as u64, "{name}");
+            assert_eq!(extracted[0].sha256, hash_bytes(&payload), "{name}");
+            assert_eq!(fs::read(output.join(key)).unwrap(), payload, "{name}");
         }
     }
 
