@@ -653,6 +653,30 @@ fn validate_live_candidate(
     validate(record)
 }
 
+// A rejected, fully framed REFR can still have authored links from an ambiguous PlaneMarker.
+fn ambiguous_occluder_links(record: &DecodedRecord, plugin: usize, order: &LoadOrder) -> bool {
+    if !record
+        .fields
+        .iter()
+        .any(|field| field.signature == *b"XORD")
+        && !record.rejected_fields.contains(b"XORD")
+    {
+        return false;
+    }
+    let fields = record.framed_source_prefix();
+    if !fields
+        .iter()
+        .any(|(tag, bytes)| tag == b"XORD" && crate::esm::rooms::xord_may_link(bytes))
+    {
+        return false;
+    }
+    let names = fields
+        .iter()
+        .filter_map(|(tag, bytes)| (tag == b"NAME").then_some(*bytes));
+    names.clone().nth(1).is_some()
+        && crate::esm::rooms::names_occlusion_marker(names, plugin, order)
+}
+
 fn incomplete_override(record: &DecodedRecord, previous: Option<&DecodedRecord>) -> bool {
     !record.payload_complete && previous.is_some_and(|previous| previous.payload_complete)
 }
@@ -787,6 +811,13 @@ fn read_plugins_with_prepared(
                 Ok(record) => record,
                 Err(error) => {
                     if let Some(entry) = history.borrow_mut().last_mut() {
+                        if entry.record_type == *b"REFR" && entry.flags & 0x20 == 0 {
+                            let id = entry
+                                .form_id
+                                .or(diagnostics.event_context.form_id)
+                                .filter(|&id| id != 0);
+                            unreadable_refs.insert(id, (index as u32, offset));
+                        }
                         entry.reason = Some(error.clone());
                     }
                     if diagnostics
@@ -801,8 +832,8 @@ fn read_plugins_with_prepared(
                 }
             };
             if record.record_type == *b"REFR"
-                && !record.payload_complete
                 && record.flags & 0x20 == 0
+                && (!record.payload_complete || ambiguous_occluder_links(&record, index, order))
             {
                 unreadable_refs.insert(Some(record.form_id), (index as u32, offset));
             }

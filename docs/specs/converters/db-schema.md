@@ -1358,7 +1358,9 @@ Columns and rules:
   publishes `occlusion_version = 1` in `room_graph_stats`. It sets `occlusion_links_verified`
   to zero when a truncated marker payload or a malformed `XORD` can hide a cross-cell link.
   Full in-house exports and plugin placement imports also clear the flag when a discarded
-  frame has unknown scope or a `REFR` header or payload is unreadable. An unreadable
+  frame has unknown scope, a `REFR` fails before its links can be read, or a rejected
+  placement has a possible `XORD` target and duplicate `NAME` fields that can name a PlaneMarker.
+  An unreadable
   `REFR` can introduce a PlaneMarker even if its predecessor used an ordinary base or
   the placement is new. A later usable replacement or deletion of the same FormID
   supersedes that evidence within the conversion or import.
