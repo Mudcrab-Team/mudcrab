@@ -548,6 +548,25 @@ impl From<Option<u32>> for DiscardedFrameScope {
 }
 
 impl DiscardedFrameScope {
+    /// A partial kind can still identify a possible child cell. Without the whole
+    /// label we cannot bound the damage to a particular cell.
+    pub(crate) fn from_group_prefix(bytes: &[u8]) -> Option<Self> {
+        if !bytes.starts_with(b"GRUP") {
+            return None;
+        }
+        let Some((label, tail)) = bytes
+            .get(8..)
+            .and_then(|rest| rest.split_first_chunk::<4>())
+        else {
+            return Some(Self::Unknown);
+        };
+        let kind_prefix = &tail[..tail.len().min(4)];
+        crate::esm::types::CELL_CHILD_GROUP_KINDS
+            .iter()
+            .any(|kind| kind.to_le_bytes().starts_with(kind_prefix))
+            .then(|| Self::Cell(u32::from_le_bytes(*label)))
+    }
+
     /// A complete unread header can override a placement previously stored in any cell.
     pub(crate) fn unread_tail(cell: Option<u32>, remaining: usize) -> Self {
         if remaining >= 24 {
