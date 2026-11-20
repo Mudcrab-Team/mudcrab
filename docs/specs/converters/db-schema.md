@@ -1465,6 +1465,9 @@ edits in the same transaction.
 A subset that changes or removes an existing base model also deletes that base's source sphere
 and marks every referencing cell incomplete in the same transaction. An unchanged model retains
 its sphere and cell completeness. A full room export restores completeness after rebuilding.
+The certificate stores one completeness bit for the whole cell. A model-bounds refresh cannot
+distinguish an outdated model from an unresolved room or portal in the same cell. Restoring
+culling after a base-model change therefore requires a full room export.
 `create_tables` adds these tables to an older reused database.
 
 **These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`.** The engine reads
