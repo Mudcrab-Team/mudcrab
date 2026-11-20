@@ -851,6 +851,7 @@ fn write_batch(
     Ok(written)
 }
 
+/// Names a pack directory only for the current proven input recipes.
 fn pack_directory(cache: &Path, source_hash: &str, recipe: &str) -> Result<PathBuf> {
     // The same validation as a blob key prevents provenance-controlled paths.
     blob_path(cache, source_hash)?;
@@ -1632,6 +1633,63 @@ mod tests {
         let restored = read_pack(&path, &source, 0, ArchiveSelection::RuntimeEnglishV1).unwrap();
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].1.item.sha256, hash_bytes(data));
+    }
+
+    /// Restores an older all-files pack whose control path kept its archive case.
+    #[test]
+    fn mixed_case_control_path_restores_from_an_existing_all_v1_pack() {
+        let directory = tempfile::tempdir().unwrap();
+        let original_path = "Interface/Controls/PC/ControlMap.TXT";
+        let canonical_path = Path::new("interface/controls/pc/controlmap.txt");
+        let data = b"old control map";
+        let archive = fixture(directory.path(), "controls.bsa", &[(original_path, data)]);
+        let source_hash = hash_file(&archive).unwrap();
+        let previous_cache = directory.path().join("previous-cache");
+        let pack_dir = previous_cache
+            .join("batches")
+            .join(&source_hash)
+            .join("all-v1");
+        fs::create_dir_all(&pack_dir).unwrap();
+
+        // Build the old index directly so today's writer cannot lowercase the fixture path.
+        let index = serde_json::to_vec(&PackIndex {
+            version: 2,
+            source_hash,
+            recipe: "all-v1".into(),
+            reader_version: BSA_READER_VERSION,
+            files: vec![PackItem {
+                path: original_path.into(),
+                size: data.len() as u64,
+                sha256: hash_bytes(data),
+                offset: 0,
+            }],
+        })
+        .unwrap();
+        let mut bytes = Vec::from(PACK_MAGIC.as_slice());
+        bytes.extend_from_slice(&(index.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&index);
+        bytes.extend_from_slice(data);
+        fs::write(pack_dir.join(format!("{}.pack", hash_bytes(&bytes))), bytes).unwrap();
+
+        let output = directory.path().join("vfs");
+        let mut options = options();
+        options.selection = ArchiveSelection::All;
+        let restored = ArchiveExtractor::extract_batched(
+            &archive,
+            &output,
+            &previous_cache,
+            &directory.path().join("current-cache"),
+            None,
+            true,
+            &options,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(restored.cache_hit, "mixed-case all-v1 pack was not reused");
+        assert_eq!(restored.files.len(), 1);
+        assert_eq!(restored.files[0].path, canonical_path);
+        assert_eq!(fs::read(output.join(canonical_path)).unwrap(), data);
     }
 
     fn write_test_pack(root: &Path, source: &str, reader_version: u32, data: &[u8]) -> PathBuf {

@@ -837,6 +837,10 @@ impl AssetPipeline {
         fs::remove_dir_all(&vfs_dir)?;
         fs::create_dir_all(&vfs_dir)?;
 
+        let mut control_sources = BTreeMap::new();
+        // Optional controls are additive: existing v4 packs keep their exact coverage and identity.
+        let control_scratch = tempfile::tempdir_in(staging.parent().unwrap_or(staging))?;
+
         // Bytes already extracted, so each archive reports progress against the whole run instead
         // of restarting at zero.
         let mut extracted_bytes = 0u64;
@@ -979,8 +983,24 @@ impl AssetPipeline {
             )
             .await;
 
+            // Controls have independent payloads and survive unrelated asset extraction failures.
+            let control_warning = match crate::controls::extract_archive(
+                &mut control_sources,
+                archive,
+                &archive_key,
+                &control_scratch.path().join(index.to_string()),
+            ) {
+                Ok(warnings) => {
+                    report.warnings.extend(warnings);
+                    None
+                }
+                Err(warning) => Some(warning),
+            };
             match result {
                 Ok(outcome) => {
+                    if let Some(warning) = control_warning {
+                        report.warnings.push(warning);
+                    }
                     report
                         .archive_timings
                         .insert(archive_key.clone(), outcome.timings);
@@ -1025,6 +1045,29 @@ impl AssetPipeline {
                 },
             )?;
         }
+        if config.mo2.is_some() {
+            for (relative, source) in &resolved_files {
+                crate::controls::record_loose(&mut control_sources, Path::new(relative), source);
+            }
+        } else {
+            for source in &files {
+                if let Ok(relative) = source.strip_prefix(&config.data_dir) {
+                    crate::controls::record_loose(&mut control_sources, relative, source);
+                }
+            }
+        }
+        // Scratch-backed controls need the same unknown-loose-winner masking as the VFS.
+        let blocked_control_prefixes: BTreeSet<_> = undiscovered
+            .iter()
+            .filter_map(|path| path.strip_prefix(&config.data_dir).ok())
+            .map(|relative| PathBuf::from(normalize_separators(relative).to_ascii_lowercase()))
+            .collect();
+        control_sources.retain(|key, _| {
+            !blocked_control_prefixes
+                .iter()
+                .any(|prefix| Path::new(key).starts_with(prefix))
+        });
+        crate::controls::publish(staging, control_sources, &mut report)?;
         report.phase_elapsed_ms.insert(
             "archive_ingestion_and_loose_overlay".into(),
             extraction_started.elapsed().as_millis(),
@@ -3710,7 +3753,10 @@ fn discover_inputs(
     mut failed: impl FnMut(&Path, color_eyre::Report) -> Result<()>,
 ) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    for entry in WalkDir::new(root).follow_links(false) {
+    let mut walker = WalkDir::new(root).follow_links(false).into_iter();
+    // The test denial hook needs the iterator to skip an inaccessible directory's descendants.
+    #[allow(clippy::while_let_on_iterator)]
+    while let Some(entry) = walker.next() {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
@@ -3725,12 +3771,61 @@ fn discover_inputs(
                 continue;
             }
         };
+        #[cfg(test)]
+        if discovery_failure_hook::is_blocked(entry.path()) {
+            walker.skip_current_dir();
+            failed(
+                entry.path(),
+                color_eyre::Report::from(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "synthetic directory traversal denial",
+                ))
+                .wrap_err(format!("failed to discover inputs in {}", root.display())),
+            )?;
+            continue;
+        }
         if entry.file_type().is_file() {
             files.push(entry.into_path());
         }
     }
     files.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
     Ok(files)
+}
+
+/// Inject a path-scoped traversal denial without depending on Windows ACLs or Unix privilege.
+#[cfg(test)]
+mod discovery_failure_hook {
+    use std::{
+        cell::RefCell,
+        path::{Path, PathBuf},
+    };
+
+    thread_local! {
+        static BLOCKED: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    pub(super) struct Guard;
+
+    impl Drop for Guard {
+        /// Restore discovery even if the regression panics.
+        fn drop(&mut self) {
+            BLOCKED.with(|blocked| *blocked.borrow_mut() = None);
+        }
+    }
+
+    /// Deny one directory on the current test's single-threaded Tokio runtime.
+    pub(super) fn block(path: &Path) -> Guard {
+        BLOCKED.with(|blocked| {
+            assert!(blocked.borrow().is_none());
+            *blocked.borrow_mut() = Some(path.to_owned());
+        });
+        Guard
+    }
+
+    /// Match only the selected directory; the iterator skips its descendants.
+    pub(super) fn is_blocked(path: &Path) -> bool {
+        BLOCKED.with(|blocked| blocked.borrow().as_deref() == Some(path))
+    }
 }
 
 /// Fails closed when unreadable source paths would make a run publish an incomplete pack over a
@@ -15537,6 +15632,343 @@ mod tests {
         assert!(time_artifact_validation(output, &[], &semantics, 2).is_err());
     }
 
+    /// Reuse pre-existing v4 packs while publishing additive controls, provider winners and valid rows.
+    #[tokio::test]
+    async fn control_files_publish_winners_and_recover_malformed_lines() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        let control = b"Forward\t0x11\t0xff\t0x0001\t1\t1\t1\t0x1\r\nBack\t0x1f\t0xff\t0x0002\t1\t1\t1\r\nbroken row\r\n\r\nAccept\t0x1c\t0x00\t0x1000\t1\t0\t1\r\nTween Menu\t0x0f\t0xff\t!0,Pause\t1\t1\t1\r\n";
+        let path = "interface/controls/pc/controlmap.txt";
+        for (name, entries) in [
+            ("a.bsa", vec![dummy_content::Entry::new(path, b"earlier")]),
+            (
+                "z.bsa",
+                vec![
+                    dummy_content::Entry::new("Interface/Controls/PC/ControlMap.TXT", control),
+                    dummy_content::Entry::new(
+                        "interface/controls/pc/keyboard_english.txt",
+                        b"Synth\xa5\t0x11\r\n",
+                    ),
+                    dummy_content::Entry::new(
+                        "interface/controls/pc/gamepad.txt",
+                        b"SYNTH_A\t0x1000\r\n",
+                    ),
+                    dummy_content::Entry::new("interface/controls/pc/notes.txt", b"not runtime"),
+                    dummy_content::Entry::new("strings/review_english.strings", b"cached input"),
+                ],
+            ),
+        ] {
+            fs::write(
+                data.join(name),
+                dummy_content::bsa::v105(&entries, dummy_content::bsa::Compression::None).unwrap(),
+            )
+            .unwrap();
+        }
+        let config = cpu_lod_config(&data, &output);
+        // Seed exactly the pre-feature v4 coverage: controls are absent from its inventory.
+        let cache = config.ingestion_cache_dir().join(".ingestion-cache");
+        let mut options = ExtractOptions::converter(1, 1, None);
+        options.selection = IngestionSelection::RuntimeEnglishV1;
+        for name in ["a.bsa", "z.bsa"] {
+            let seeded = ArchiveExtractor::extract_batched(
+                &data.join(name),
+                &temp.path().join("legacy-vfs"),
+                &temp.path().join("unused-cache"),
+                &cache,
+                None,
+                true,
+                &options,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(seeded.cache_entry.recipe, "runtime-english-v4");
+            assert!(
+                seeded
+                    .files
+                    .iter()
+                    .all(|file| crate::controls::input_key(&file.path).is_none())
+            );
+        }
+        let pack_inventory = || -> BTreeMap<PathBuf, String> {
+            WalkDir::new(cache.join("batches"))
+                .into_iter()
+                .map(Result::unwrap)
+                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "pack"))
+                .map(|entry| {
+                    (
+                        entry.path().strip_prefix(&cache).unwrap().to_owned(),
+                        hash_bytes(&fs::read(entry.path()).unwrap()),
+                    )
+                })
+                .collect()
+        };
+        let original_packs = pack_inventory();
+        assert!(!original_packs.is_empty());
+        let report = run_without_progress(config.clone()).await;
+        assert!(report.cache_hits > 0, "pre-existing v4 pack must be reused");
+        assert_eq!(
+            report.converted, 0,
+            "controls must not force archive reingestion"
+        );
+        assert_eq!(
+            pack_inventory(),
+            original_packs,
+            "no second pack generation"
+        );
+        assert!(
+            output.join(path).is_file(),
+            "controlmap must reach published pack"
+        );
+        let sanitized = fs::read(output.join(path)).unwrap();
+        assert_eq!(sanitized, b"Forward\t0x11\t0xff\t0x0001\t1\t1\t1\t0x1\r\nBack\t0x1f\t0xff\t0x0002\t1\t1\t1\r\n\r\nAccept\t0x1c\t0x00\t0x1000\t1\t0\t1\r\nTween Menu\t0x0f\t0xff\t!0,Pause\t1\t1\t1\r\n");
+        assert_eq!(
+            sanitized
+                .split(|byte| *byte == b'\n')
+                .filter(|line| line.contains(&b'\t'))
+                .count(),
+            4
+        );
+        assert!(sanitized.windows(4).any(|bytes| bytes == b"\r\n\r\n"));
+        assert_eq!(
+            fs::read(output.join("interface/controls/pc/keyboard_english.txt")).unwrap(),
+            b"Synth\xa5\t0x11\r\n"
+        );
+        assert!(!output.join("interface/controls/pc/notes.txt").exists());
+        assert_eq!(
+            report
+                .warnings
+                .iter()
+                .filter(|warning| warning.contains("controlmap.txt:3"))
+                .count(),
+            1
+        );
+        let provenance: serde_json::Value = serde_json::from_slice(
+            &fs::read(output.join("interface/controls/pc/provenance.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(provenance[path]["provider"], "archive:z.bsa");
+        assert_eq!(provenance[path]["source_sha256"], hash_bytes(control));
+        assert_eq!(provenance[path]["output_sha256"], hash_bytes(&sanitized));
+        assert_eq!(provenance[path]["skipped_lines"], serde_json::json!([3]));
+        assert!(!conversion_is_complete(&report));
+        let warm = run_without_progress(config.clone()).await;
+        assert_eq!(fs::read(output.join(path)).unwrap(), sanitized);
+        assert!(warm.cache_hits > 0);
+        assert_eq!(pack_inventory(), original_packs);
+        let loose = data.join("Interface/Controls/PC/ControlMap.TXT");
+        fs::create_dir_all(loose.parent().unwrap()).unwrap();
+        let replacement = b"Mod Event\t0x12\t0xff\t0x2000\t1\t0\t1\r\n";
+        fs::write(&loose, replacement).unwrap();
+        let overridden = run_without_progress(config).await;
+        assert_eq!(fs::read(output.join(path)).unwrap(), replacement);
+        assert!(overridden.warnings.is_empty(), "{:?}", overridden.warnings);
+        let provenance: serde_json::Value = serde_json::from_slice(
+            &fs::read(output.join("interface/controls/pc/provenance.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            provenance[path]["provider"],
+            "loose:interface/controls/pc/controlmap.txt"
+        );
+    }
+
+    /// Valid controls survive a corrupt compressed texture in the same enabled archive.
+    #[tokio::test]
+    async fn review_741_controls_survive_unrelated_archive_decompression_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        let path = "interface/controls/pc/controlmap.txt";
+        let controls = b"Forward\t0x11\t0xff\t0x1000\t1\t0\t1\n";
+        let gamepad = b"Button\t0x1000\n";
+        let mut archive = dummy_content::ba2::general(
+            &[
+                dummy_content::Entry::new("textures/broken.dds", b"synthetic texture payload"),
+                dummy_content::Entry::new(path, controls),
+                dummy_content::Entry::new("interface/controls/pc/gamepad.txt", gamepad),
+            ],
+            dummy_content::ba2::Compression::Zlib,
+        )
+        .unwrap();
+        // GNRL record zero: offset at 24+16 and compressed length at 24+24.
+        let offset = u64::from_le_bytes(archive[40..48].try_into().unwrap()) as usize;
+        let length = u32::from_le_bytes(archive[48..52].try_into().unwrap()) as usize;
+        archive[offset..offset + length].fill(0xff);
+        fs::write(data.join("controls.ba2"), archive).unwrap();
+        let mut config = cpu_lod_config(&data, &output);
+        config.enable_ba2 = true;
+        let report = run_without_progress(config).await;
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning
+                    .contains("failed to decompress BA2 payload: textures/broken.dds")),
+            "{:?}",
+            report.warnings
+        );
+        assert!(!report.complete);
+        assert!(
+            output.join(path).is_file(),
+            "readable controls must survive unrelated archive decompression failure"
+        );
+        assert_eq!(fs::read(output.join(path)).unwrap(), controls);
+        assert_eq!(
+            fs::read(output.join("interface/controls/pc/gamepad.txt")).unwrap(),
+            gamepad
+        );
+        let provenance: serde_json::Value = serde_json::from_slice(
+            &fs::read(output.join("interface/controls/pc/provenance.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(provenance[path]["provider"], "archive:controls.ba2");
+        assert_eq!(provenance[path]["source_sha256"], hash_bytes(controls));
+        assert!(!output.join("textures/broken.ktx2").exists());
+    }
+
+    /// A broken optional file preserves readable siblings and only its own earlier provider.
+    #[tokio::test]
+    async fn greptile_741_bad_gamepad_preserves_other_controls() {
+        let temp = tempfile::tempdir().unwrap();
+        for earlier_gamepad in [true, false] {
+            let case = temp.path().join(if earlier_gamepad {
+                "fallback"
+            } else {
+                "absent"
+            });
+            let data = case.join("Data");
+            let output = case.join("modern");
+            fs::create_dir_all(&data).unwrap();
+            let controlmap = "interface/controls/pc/controlmap.txt";
+            let gamepad = "interface/controls/pc/gamepad.txt";
+            let keyboard = "interface/controls/pc/keyboard_english.txt";
+            let old_controlmap = b"Old\t0x10\t0xff\t0x1000\t1\t0\t1\n";
+            let new_controlmap = b"New\t0x11\t0xff\t0x1000\t1\t0\t1\n";
+            let old_gamepad = b"Earlier\t0x1000\n";
+            let new_keyboard = b"New Key\t0x11\n";
+            let mut earlier = vec![dummy_content::Entry::new(controlmap, old_controlmap)];
+            if earlier_gamepad {
+                earlier.push(dummy_content::Entry::new(gamepad, old_gamepad));
+            }
+            fs::write(
+                data.join("a.bsa"),
+                dummy_content::bsa::v105(&earlier, dummy_content::bsa::Compression::None).unwrap(),
+            )
+            .unwrap();
+            let mut archive = dummy_content::ba2::general(
+                &[
+                    dummy_content::Entry::new(gamepad, b"Later\t0x2000\n"),
+                    dummy_content::Entry::new(controlmap, new_controlmap),
+                    dummy_content::Entry::new(keyboard, new_keyboard),
+                ],
+                dummy_content::ba2::Compression::Zlib,
+            )
+            .unwrap();
+            // Corrupt only GNRL record zero's compressed gamepad payload.
+            let offset = u64::from_le_bytes(archive[40..48].try_into().unwrap()) as usize;
+            let length = u32::from_le_bytes(archive[48..52].try_into().unwrap()) as usize;
+            archive[offset..offset + length].fill(0xff);
+            fs::write(data.join("z.ba2"), archive).unwrap();
+            let mut config = cpu_lod_config(&data, &output);
+            config.enable_ba2 = true;
+            let report = run_without_progress(config).await;
+            assert!(!report.complete);
+            assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+            assert!(
+                report.warnings[0].contains("z.ba2") && report.warnings[0].contains("gamepad.txt")
+            );
+            assert_eq!(
+                fs::read(output.join(controlmap)).unwrap(),
+                new_controlmap,
+                "a corrupt gamepad must not discard the later archive's readable controlmap"
+            );
+            assert_eq!(fs::read(output.join(keyboard)).unwrap(), new_keyboard);
+            let provenance: serde_json::Value = serde_json::from_slice(
+                &fs::read(output.join("interface/controls/pc/provenance.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(provenance[controlmap]["provider"], "archive:z.ba2");
+            assert_eq!(
+                provenance[controlmap]["source_sha256"],
+                hash_bytes(new_controlmap)
+            );
+            assert_eq!(provenance[keyboard]["provider"], "archive:z.ba2");
+            if earlier_gamepad {
+                assert_eq!(fs::read(output.join(gamepad)).unwrap(), old_gamepad);
+                assert_eq!(provenance[gamepad]["provider"], "archive:a.bsa");
+                assert_eq!(
+                    provenance[gamepad]["source_sha256"],
+                    hash_bytes(old_gamepad)
+                );
+            } else {
+                assert!(!output.join(gamepad).exists());
+                assert!(provenance.get(gamepad).is_none());
+            }
+        }
+    }
+
+    /// Unknown loose winners mask archived controls while a readable neighboring subtree publishes.
+    #[tokio::test]
+    async fn review_741_undiscovered_loose_prefix_masks_archive_controls() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        let blocked = data.join("Interface/Controls/PC");
+        fs::create_dir_all(&blocked).unwrap();
+        fs::write(blocked.join("ControlMap.TXT"), b"unknown loose override").unwrap();
+        fs::create_dir_all(data.join("scripts")).unwrap();
+        fs::write(
+            data.join("scripts/neighbor.pex"),
+            dummy_content::pex::minimal("Neighbor").unwrap(),
+        )
+        .unwrap();
+        let entries = [
+            dummy_content::Entry::new(
+                "interface/controls/pc/controlmap.txt",
+                b"Forward\t0x11\t0xff\t0x1000\t1\t0\t1\n",
+            ),
+            dummy_content::Entry::new("interface/controls/pc/keyboard_english.txt", b"Key\t0x11\n"),
+            dummy_content::Entry::new("interface/controls/pc/gamepad.txt", b"Button\t0x1000\n"),
+        ];
+        fs::write(
+            data.join("controls.bsa"),
+            dummy_content::bsa::v105(&entries, dummy_content::bsa::Compression::None).unwrap(),
+        )
+        .unwrap();
+        let _deny = discovery_failure_hook::block(&blocked);
+        let report = run_without_progress(cpu_lod_config(&data, &output)).await;
+        assert!(!report.complete);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("interface/controls/pc")
+                    && warning.contains("failed to discover inputs")),
+            "{:?}",
+            report.warnings
+        );
+        assert!(output.join("scripts/neighbor.luau").is_file());
+        let manifest = ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+        assert!(!manifest.complete);
+        assert!(manifest.failures.contains_key("interface/controls/pc"));
+        assert!(
+            crate::controls::PATHS
+                .iter()
+                .all(|path| !output.join(path).exists()),
+            "undiscovered loose controls must mask archived control sources"
+        );
+        assert!(
+            !output
+                .join("interface/controls/pc/provenance.json")
+                .exists()
+        );
+    }
+
+    /// Classifies a validation fixture by its output extension.
     fn artifact_kind(relative: &Path) -> String {
         relative
             .extension()
