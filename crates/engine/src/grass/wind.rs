@@ -7,16 +7,16 @@
 
 use std::f32::consts::TAU;
 
-/// Retail cap on the wind constant.
+/// Retail value: cap 60 on the wind constant, reached at w >= 0.4583.
 pub const WIND_CONSTANT_CAP: f32 = 60.0;
 
-/// `fWindGrassMultiplier:Display` retail default.
+/// Retail value: `fWindGrassMultiplier:Display` default 1.0.
 pub const WIND_GRASS_MULTIPLIER: f32 = 1.0;
 
-/// The retail phase scale `1/600`.
+/// Retail value: phase scale `1/600` (stored as 0.00166667).
 pub const WIND_PHASE_RATE: f32 = 1.0 / 600.0;
 
-/// `A = fGrassWindMagnitudeMin + (fGrassWindMagnitudeMax - Min) * w`.
+/// Retail value: `A = fGrassWindMagnitudeMin + (fGrassWindMagnitudeMax - Min) * w`.
 ///
 /// `w` is the blended weather wind speed in 0..1 (`WTHR` wind-speed byte / 255 blended across a
 /// weather transition). The defaults 5 and 125 give `5 + 120 * w`.
@@ -24,12 +24,12 @@ pub fn wind_amplitude(magnitude_min: f32, magnitude_max: f32, w: f32) -> f32 {
     magnitude_min + (magnitude_max - magnitude_min) * w
 }
 
-/// The value the retail grass shader receives, `min(A, 60) * fWindGrassMultiplier`.
+/// Retail value: the value the retail grass shader receives, `min(A, 60) * fWindGrassMultiplier`.
 pub fn wind_shader_constant(amplitude: f32, wind_grass_multiplier: f32) -> f32 {
     amplitude.min(WIND_CONSTANT_CAP) * wind_grass_multiplier
 }
 
-/// `phase = TotalTime * (1/600) * 2*pi * value`.
+/// Retail value: `phase = TotalTime * (1/600) * 2*pi * value`.
 ///
 /// That `value` is the GRAS wave period (grass shader property field) is uncertain: the field is
 /// not named.

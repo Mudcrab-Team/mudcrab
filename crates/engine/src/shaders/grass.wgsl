@@ -85,16 +85,19 @@ fn tuning_diffuse(normal:vec3<f32>, sun:vec3<f32>, light:vec4<f32>, surface:vec4
     return mix(1.0,wrapped,light.w) + surface.w * max(-cosine,0.0);
 }
 fn tuning_illumination(ambient:vec3<f32>, direct:vec3<f32>, shadow:f32, exposure:f32, light:vec4<f32>, surface:vec4<f32>, specular:vec4<f32>) -> vec3<f32> {
-    // surface.z is the shadow floor (fShadowClampValue, 0.3 by default).
+    // Retail value: surface.z is the shadow floor (fShadowClampValue, 0.3 by default).
     let visibility = surface.z + (1.0-surface.z) * mix(1.0,shadow,surface.y);
+    // Not retail: retail applies grass ambient at factor 1.0; MudCrab keeps 1/pi until the
+    // raw-domain lighting work (#362).
     return (ambient*light.y + direct*light.z*visibility) * exposure / 3.14159265;
 }
 fn tuning_finish(color:vec3<f32>, root_fraction:f32, light:vec4<f32>, tint:vec4<f32>) -> vec3<f32> {
+    // Not retail: Rec.709 luma (0.2126, 0.7152, 0.0722); retail uses 0.31/0.37/0.32 on the CPU.
     let luminance = dot(color,vec3(0.2126,0.7152,0.0722));
     return max(mix(vec3(luminance),color,tint.x),vec3(0.0)) * light.x * (1.0-tint.w*root_fraction);
 }
-// Bevy 0.19 pbr_lighting.wgsl: D_GGX, V_SmithGGXCorrelated and F_Schlick.
-// Dielectric F0=.04; perceptual roughness squared to alpha, clamped away from zero.
+// Not retail: Bevy GGX specular; retail grass has no specular term. Dielectric F0=.04;
+// perceptual roughness squared to alpha, clamped at 0.007921.
 fn tuning_ggx(ndh:f32, ndv:f32, ndl:f32, vdh:f32, perceptual_roughness:f32) -> f32 {
     let roughness = max(perceptual_roughness*perceptual_roughness,0.007921);
     let a = ndh * roughness;
@@ -202,6 +205,8 @@ fn vertex(input: Vertex) -> Varyings {
 // discard avoids dynamic sample_mask exports, which crash AMD's Vulkan shader
 // compiler on the tested RX 9070 XT driver. The surviving sample prefix is
 // identical to the original (1 << count) - 1 mask; MSAA remains enabled.
+// Retail differs: retail multiplies fade into the alpha test; MudCrab fades by whole-instance
+// prefix culling and tests texture/vertex alpha only (tracked separately).
 fn coverage(alpha:f32,sample_index:u32) -> u32 {
 #if SAMPLES == 1
     // A negative threshold encodes an authored opaque material.
@@ -210,6 +215,7 @@ fn coverage(alpha:f32,sample_index:u32) -> u32 {
     return 1u;
 #else
     // Evaluate derivatives before branching; opaque materials ignore all alpha inputs.
+    // Not retail: MudCrab's fwidth antialiasing band; retail uses a plain test and discard.
     let width = fwidth(alpha);
     if grass.height_wind.w < 0.0 { return (1u << #{SAMPLES}u) - 1u; }
     let edge = clamp((alpha-grass.height_wind.w)/max(width,0.0001)+0.5,0.0,1.0);
@@ -296,10 +302,10 @@ fn fragment(vertex_input:Varyings,@builtin(sample_index) sample_index:u32) -> Fr
     //   (NdotL * C * DirLightColor * albedo * lerp(0.3, 1, shadowMask) + C * AmbientColor * albedo) * outputScale
     // `base` is albedo * C (vertex colour times the per-instance brightness); input.light is
     // NdotL * DirLightColor from the vertex shader; the shadow floor 0.3 is grass.tuning_surface.z
-    // (fShadowClampValue); the ambient term is not shadowed; grass.fade.z is the
-    // output scale 1/FramebufferRange. Only grass applies it
+    // (fShadowClampValue); the ambient term is not shadowed; grass.fade.z is the per-pass
+    // output scale 1/FramebufferRange (~0.8333; retail value). Only grass applies it
     // today; terrain, sky and water do not (open question: does retail apply it there too?).
-    // Exposure and 1/pi: 1/pi is exact for the sun (it equals Bevy's Lambert for the sun
+    // Not retail: 1/pi is exact for the sun (it equals Bevy's Lambert for the sun
     // illuminance). Bevy's own ambient has no 1/pi, so this ambient is about pi times darker
     // than a Bevy PBR surface with the same ambient input. Retail has no such factor. The
     // sun:ambient balance is unverified until the engine light units match retail (#706).

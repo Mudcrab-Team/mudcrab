@@ -390,6 +390,7 @@ fn build_templates(
                 }
                 let node = nodes.get(&handle).ok_or("missing loaded grass node")?;
                 let model = parent * node.transform.to_matrix();
+                // Not retail: MudCrab's finite-transform guard.
                 if !model.is_finite() || model.determinant().abs() < 1.0e-12 {
                     return Err("invalid grass node transform");
                 }
@@ -459,6 +460,8 @@ fn build_templates(
                         color: material.map_or(Vec4::ONE, |material| {
                             Vec4::from_array(material.base_color.to_linear().to_f32_array())
                         }),
+                        // Not retail: the 0.5 fallback cutoff for non-mask, non-opaque modes;
+                        // retail uses the material alpha threshold.
                         cutoff: material.map_or(-1.0, |material| match material.alpha_mode {
                             AlphaMode::Opaque => -1.0,
                             AlphaMode::Mask(cutoff) => cutoff,
@@ -581,6 +584,7 @@ fn attach_grass_primitives(
                                     .model
                                     .transform_point3(Vec3::from_array(*position))
                                     .length()
+                                    // Not retail: MudCrab bounds margin (blade reach x2.3).
                                     * 2.3
                             })
                             .fold(0.0_f32, f32::max)
@@ -1418,6 +1422,8 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
         let Some(vertices) = allocator.mesh_vertex_slice(&data.mesh.id()) else {
             return RenderCommandResult::Skip;
         };
+        // Retail differs: retail clamps each geometry to 960 instances before upload and does
+        // not re-batch; MudCrab draws every visible instance (tracked separately).
         let count = visible_instance_count(data, view.world_from_view.translation()) as u32;
         if count == 0 {
             return RenderCommandResult::Skip;

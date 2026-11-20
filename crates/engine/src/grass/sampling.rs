@@ -7,7 +7,7 @@ pub(super) struct Sample {
     pub nearest: usize,
 }
 
-/// Round to the reference's binary16 coordinate precision, including ties to even.
+/// Retail value: IEEE binary16 limits (65520 and 2^-24), with ties to even.
 pub(super) fn half_round(value: f32) -> f32 {
     let magnitude = value.abs();
     if !value.is_finite() || magnitude >= 65_520.0 {
@@ -124,7 +124,7 @@ pub(super) fn committed_height(x: f32, y: f32, heights: &[f32]) -> f32 {
     }
 }
 
-/// Compare the normalized authored normal with the reference's 512-sample cosine table.
+/// Retail value: 1.4222221 (512/360) and a 512-entry cosine table.
 #[cfg(test)]
 pub(super) fn slope_allowed(normal_z: f32, min: u8, max: u8) -> bool {
     let cosine = |angle: u8| {
@@ -134,7 +134,7 @@ pub(super) fn slope_allowed(normal_z: f32, min: u8, max: u8) -> bool {
     cosine(max) <= normal_z && normal_z <= cosine(min)
 }
 
-/// Evaluate the reference's 512-sample cosine bounds once per species nomination.
+/// Retail value: 1.4222221 (512/360) and a 512-entry cosine table.
 pub(super) fn slope_bounds(min: u8, max: u8) -> [f32; 2] {
     let cosine = |angle: u8| {
         let index = ((f32::from(angle) * 1.422_222_1) as usize) & 511;

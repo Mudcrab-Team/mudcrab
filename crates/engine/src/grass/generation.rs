@@ -19,7 +19,8 @@ use random::{CellRandom, signed};
 
 /// The historical majority-support experiment is not part of per-spot selection.
 pub const MAJORITY_GRASS_SUPPORT: bool = false;
-/// An independent spatial fade rank fits the renderer's existing 18-bit contract.
+/// Not retail: MudCrab spatial fade ranks (2^18 slots), because retail fades per vertex through
+/// the alpha test. The rank hash below is likewise MudCrab.
 const FADE_SLOTS: u32 = 1 << 18;
 
 pub struct GeneratedGrass {
@@ -42,6 +43,7 @@ fn entries(
     config: &EngineConfig,
 ) -> Vec<Entry> {
     let mut result = Vec::with_capacity(16);
+    // Retail value: nine-sample support at ±1, ±16, ±17 and ±18 around the centre.
     let center = y * 17 + x;
     let nine = [
         center - 18,
@@ -57,6 +59,9 @@ fn entries(
     for layer in quadrant.layers.iter() {
         let support = nine.map(|i| f32::from(layer.weights[i]));
         if !layer.is_base
+            // Retail value: a layer needs one of the nine coverage bytes above 25/255 and at
+            // least fTexturePctThreshold. Retail differs: a threshold above 1 becomes 0.9 in
+            // retail; MudCrab keeps the raw value (tracked separately).
             && !support
                 .iter()
                 .any(|weight| *weight > 25.0 / 255.0 && *weight >= config.grass_texture_threshold)
@@ -69,6 +74,7 @@ fn entries(
             .take(config.effective_grass_species_cap())
         {
             if result.len() == 16 {
+                // Retail value: at most 16 entries per spot.
                 return result;
             }
             result.push(Entry {
@@ -92,7 +98,8 @@ fn support(weights: &[f32; 9], x: f32, y: f32) -> f32 {
         + ((1.0 - fx) * weights[i + 3] + weights[i + 4] * fx) * fy
 }
 
-/// Water modes follow the reference, including its no-water sentinel and unconstrained modes 6/7.
+/// Retail differs: retail has water modes 0..5 only; modes 6 and 7 are unconstrained here
+/// (tracked separately).
 pub fn water_allowed(height: f32, water: Option<f32>, distance: u16, mode: u32) -> bool {
     let w = water.unwrap_or(-f32::MAX);
     let u = f32::from(distance);
@@ -107,7 +114,10 @@ pub fn water_allowed(height: f32, water: Option<f32>, distance: u16, mode: u32) 
     }
 }
 
-/// The authored range bounds grid spacing; zero range uses the configured minimum safely.
+/// Retail value: the 256-unit tile caps candidates per axis at
+/// `min(256 / posRange, 256 / spacing)` for posRange > 0.
+/// Retail differs: posRange = 0 places nothing in retail while MudCrab uses the spacing cap;
+/// posRange < 0 uses the spacing cap in retail while MudCrab rejects the layer (tracked separately).
 fn grid_side(position_range: f32, minimum: f32) -> usize {
     if position_range < 0.0 {
         return 0;
@@ -125,7 +135,8 @@ fn quantize(value: f32, span: f32) -> u16 {
     (value / span * 65535.0).round().clamp(0.0, 65535.0) as u16
 }
 
-/// Keep an already rounded, finite binary16 height in the unpublished Z lane.
+/// Retail differs: retail keeps binary16 height values; this staging byte encoding is MudCrab
+/// (tracked separately).
 fn stage_height(height: f32) -> u16 {
     debug_assert!(height.is_finite());
     let bits = height.to_bits();
@@ -168,7 +179,8 @@ fn fade_rank(mut value: u32) -> u32 {
     (value ^ (value >> 16)) & (FADE_SLOTS - 1)
 }
 
-/// Apply the reference brightness range before adapting binary16 intensity to our byte contract.
+/// Retail value: colour random `r * 2^-33 - 0.25` times the range, with values at or above 1
+/// becoming 0.99.
 fn brightness(luma: f32, range: f32, word: u32) -> (u8, f32) {
     let factor = (word as f32 * 1.164_153_2e-10 - 0.25) * range + (1.0 - range);
     let value = luma * factor;
@@ -181,7 +193,8 @@ fn brightness(luma: f32, range: f32, word: u32) -> (u8, f32) {
     )
 }
 
-/// Adapt the reference sine/cosine orientation to the existing byte-angle contract.
+/// Retail differs: retail keeps sine/cosine floats; the 8-bit angle is a MudCrab encoding of
+/// the same yaw (tracked separately).
 fn rotation(word: u32, fit_to_slope: bool) -> u8 {
     let sine = signed(word).clamp(-1.0, 1.0);
     let cosine = (1.0 - sine * sine).max(0.0).sqrt();
@@ -351,6 +364,7 @@ fn generate_field<const OBSERVE: bool>(
     let cx = i32::from(cell.grid_x);
     let cy = i32::from(cell.grid_y);
     let cell_origin = [cx as f32 * 4096.0, cy as f32 * 4096.0];
+    // Retail value: 4096-unit cell, 2048-unit quadrant, 256-unit spots.
     let block_origin = [
         (cx / 12 * 12) as f32 * 4096.0,
         (cy / 12 * 12) as f32 * 4096.0,
@@ -386,7 +400,9 @@ fn generate_field<const OBSERVE: bool>(
                             let identity = ordinal;
                             ordinal = ordinal.wrapping_add(1);
                             let if_ = i as f32 + 0.5;
+                            // Retail value: density byte times 0.01.
                             let density = f32::from(rule.density) * 0.01;
+                            // Retail value: acceptance is 32768 and the draw keeps 15 bits.
                             let chance = (support(
                                 &entry.weights.map(|weight| weight * density),
                                 two * jf,
@@ -397,6 +413,7 @@ fn generate_field<const OBSERVE: bool>(
                             if chance == 0 || (rng.next() & 0x7fff) as i32 >= chance {
                                 continue;
                             }
+                            // Retail value: jitter is rand(-1, 1) times half the spacing.
                             let u1 = rng.next();
                             let u2 = rng.next();
                             let (world_x, px) = root_coordinates(
@@ -460,6 +477,7 @@ fn generate_field<const OBSERVE: bool>(
                                 .unwrap_or_else(|| {
                                     if cell.vertex_colors.len() == 3267 {
                                         let i = sample.nearest * 3;
+                                        // Retail value: CPU tint luma weights 0.31, 0.37, 0.32.
                                         (f32::from(cell.vertex_colors[i]) * 0.003_921_569 * 0.31
                                             + f32::from(cell.vertex_colors[i + 1])
                                                 * 0.003_921_569
@@ -481,6 +499,8 @@ fn generate_field<const OBSERVE: bool>(
                                     stage_height(rounded_height),
                                 ],
                                 rotation: rotation(u4, rule.flags & 4 != 0),
+                                // Retail differs: retail uses a half-float `1 + v * range`; this
+                                // byte encoding is MudCrab (tracked separately).
                                 scale: ((1.0 + signed(u5) * range).clamp(0.0, 2.0) * 127.5).round()
                                     as u8,
                                 color,

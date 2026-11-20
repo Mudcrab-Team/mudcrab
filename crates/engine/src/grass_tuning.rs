@@ -4,7 +4,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{io::Read, path::PathBuf, time::Duration};
 
-/// Retail grass shadow floor, `fShadowClampValue:Display` defaults to 0.3. Its pixel-shader
+/// Retail value: grass shadow floor, `fShadowClampValue:Display` defaults to 0.3. Its pixel-shader
 /// use is uncertain.
 pub const SHADOW_CLAMP_VALUE: f32 = 0.3;
 
@@ -42,8 +42,8 @@ pub struct GrassTuning {
 }
 
 impl Default for GrassTuning {
-    /// Retail grass light: the sun direction, diffuse colour and ambient
-    /// colour reach the shader unscaled, so every multiplier is the identity (1.0) and the
+    /// Retail value: grass light passes the sun direction, diffuse colour and ambient
+    /// colour to the shader unscaled, so every multiplier is the identity (1.0) and the
     /// sun-angle weight is the full Lambert response. The only retail number is
     /// the shadow floor, `fShadowClampValue:Display` 0.3.
     /// Authored colour variation stays on.
@@ -58,6 +58,7 @@ impl Default for GrassTuning {
             shadow_strength: 1.0,
             shadow_floor: SHADOW_CLAMP_VALUE,
             backlight: 0.0,
+            // Not retail: specular is off by default; retail grass has no specular term.
             specular_strength: 0.0,
             specular_roughness: 0.5,
             saturation: 1.0,
@@ -126,6 +127,8 @@ impl GrassTuning {
         let mut values = Self::preset(mode);
         let mut warnings = Vec::new();
         for (key, item) in document.iter() {
+            // Not retail: MudCrab editor bounds (brightness and strengths 8, saturation 4,
+            // roughness floor 0.089).
             let (target, min, max) = match key {
                 "mode" => continue,
                 "brightness" => (&mut values.brightness, 0.0, 8.0),
