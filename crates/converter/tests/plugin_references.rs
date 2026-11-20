@@ -8073,9 +8073,65 @@ fn typed_incoming_links_restore_after_target_only_edits() {
     assert_links(None);
 
     // A typed subset supplies its own authored link words, independent of the base archive.
-    delete();
     export_placed_subset_with_sources(&db, &[(source, subset_source)].into(), &[], &subset_order)
         .unwrap();
+    assert_links(Some(target));
+    let flags: u32 = db
+        .query_row(
+            "SELECT activate_parent_flags FROM reference_details WHERE reference_id=?1",
+            [source],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(flags, 3);
+    delete();
+    assert_links(None);
     add();
     assert_links(Some(target));
+}
+
+#[test]
+fn sourced_placement_cannot_replace_an_unmapped_static() {
+    use converter::esm::exporter::{
+        create_tables, export_placed_subset_with_sources, export_to_db,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let id = 0x880;
+    let paths = [plugin(
+        dir.path(),
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"STAT", PLACEMENT_STAT, 0, Vec::new()),
+            record(b"CELL", PLACEMENT_CELL_A, 0, sub(b"DATA", &[1, 0])),
+            placement_group(
+                PLACEMENT_CELL_A,
+                placement(id, PLACEMENT_STAT, 0, 0.0, Vec::new()),
+            ),
+        ]
+        .concat(),
+    )];
+    let order = LoadOrder::read(&paths).unwrap();
+    let mut decoded = converter::records::read_plugins(&paths, &order).unwrap();
+    let mut static_record = decoded.records[&PLACEMENT_STAT].to_raw_record();
+    static_record.form_id = id;
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    create_tables(&db).unwrap();
+    export_to_db(&db, &[(id, static_record)].into()).unwrap();
+    let edits = [(id, decoded.records.remove(&id).unwrap())].into();
+    let error = export_placed_subset_with_sources(&db, &edits, &[], &order).unwrap_err();
+    assert!(error.to_string().contains("record type"), "{error}");
+    let preserved: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM records WHERE form_id=?1 AND record_type='STAT')
+            AND EXISTS(SELECT 1 FROM statics WHERE id=?1)
+            AND NOT EXISTS(SELECT 1 FROM formid_map WHERE form_id=?1)
+            AND NOT EXISTS(SELECT 1 FROM [references] WHERE id=?1)",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(preserved);
 }

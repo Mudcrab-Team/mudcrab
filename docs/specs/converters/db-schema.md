@@ -722,6 +722,7 @@ Rules:
   list to recover authored IDs that full conversion cleared. A slot stays NULL if surviving
   occurrences cannot be matched unambiguously. `reference_link_subset_sources` records
   which source a subset replaced and retains recoverable link fields for typed subsets.
+  Typed subset edits also resolve these recovered fields against targets already present in the pack.
   A later placement-layer edit removes that entry and supplies the effective source.
 - A field whose length the in-house schema rejects is skipped for both readers: `XLKR` must be 4
   or 8 bytes, `XAPR` 8, `XAPD` 1, `XOWN`/`XRNK`/`XLCN`/`XLRL`/`XEZN`/`XATR` 4, `FNAM` 1 and `TNAM`
@@ -935,6 +936,7 @@ were remapped. A future consumer of these fields must account for old packs.
 example movement annotations), preserving established `formid_map` ownership;
 it neither resolves plugin-local IDs nor upgrades an old pack.
 
+A live sourced placement must match the record type already stored for its FormID.
 A sourced placement deletion checks the owning plugin, local ID and record type
 against the pack before removing the placement and its scripts. The owning
 identity survives deletion. For a low FormID without a stored identity, a subset
