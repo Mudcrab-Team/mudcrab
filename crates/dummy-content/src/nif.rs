@@ -341,10 +341,12 @@ pub enum SkinController {
     Direct,
     MultiTarget,
     NamedTrack,
+    LagBone,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum SkinControllerTarget {
+    Joint,
     Ancestor,
     Unrelated,
     AboveSkinRoot,
@@ -746,6 +748,7 @@ fn legacy_skinned_shape_with_shader(
             block_types.extend(["NiNode", "NiNode"]);
             strings.extend(["OuterParent", "Unrelated"]);
             let (name, block) = match target {
+                SkinControllerTarget::Joint => (1, bone0),
                 SkinControllerTarget::Ancestor => (3, 2),
                 SkinControllerTarget::Unrelated => (5, unrelated),
                 SkinControllerTarget::AboveSkinRoot => (4, outer),
@@ -783,6 +786,15 @@ fn legacy_skinned_shape_with_shader(
 
         let mut controller = time_controller(NULL_REF, 0x6c);
         let controller_type = match kind {
+            SkinController::LagBone => {
+                controller[22..26].copy_from_slice(&target_block_index.to_le_bytes());
+                blocks[target_block_index as usize][8..12]
+                    .copy_from_slice(&controller_index.to_le_bytes());
+                for value in [3.0, 1.0, 400.0] {
+                    push_f32(&mut controller, value);
+                }
+                "BSLagBoneController"
+            }
             SkinController::Direct => {
                 controller[22..26].copy_from_slice(&target_block_index.to_le_bytes());
                 push_u32(&mut controller, interpolator_index);

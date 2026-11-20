@@ -211,10 +211,7 @@ fn scene_fits(glb: &[u8], sphere: ModelSphere) -> Option<bool> {
         }
     }
     let center = Vec3::from_array(sphere.center).as_dvec3();
-    let contains = |point: DVec3| {
-        // Authored radii are stored as f32, including when a vertex lies on the bound.
-        ((point - center).length() as f32) <= sphere.radius
-    };
+    let contains = |point: DVec3| point.distance(center) <= f64::from(sphere.radius);
     let mut seen_position = false;
     for (mesh, skin, world) in drawables {
         let joint_transforms = if let Some(skin) = skin {

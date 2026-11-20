@@ -74,7 +74,7 @@ pub(crate) fn skin_pose_is_fixed(path: &Path, bytes: &[u8], blocks: &[NifBlock])
             .map_err(|_| color_eyre::eyre::eyre!("invalid NIF block type"))?;
         if !motion_targets.is_empty() {
             let moves_skin = match (kind, blocks.get(index)) {
-                ("NiTransformController" | "NiKeyframeController", _) => {
+                ("NiTransformController" | "NiKeyframeController" | "BSLagBoneController", _) => {
                     NiTimeController::parse(raw)
                         .ok()
                         .is_none_or(|(_, controller)| motion_targets.contains(&controller.target))
