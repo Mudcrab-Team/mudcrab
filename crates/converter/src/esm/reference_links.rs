@@ -90,9 +90,12 @@ impl Context<'_> {
             return Ok(None);
         };
         if let Some(record) = self.master.get(&id) {
-            return Ok(
-                (!record.is_deleted() && targets.contains(&&record.record_type)).then_some(id),
-            );
+            if record.is_deleted() || !targets.contains(&&record.record_type) {
+                return Ok(None);
+            }
+            if !self.subset || !super::is_placed_record_type(&record.record_type) {
+                return Ok(Some(id));
+            }
         }
         if self.subset {
             let (kind, placed): (Option<String>, bool) = tx
