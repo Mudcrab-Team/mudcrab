@@ -7123,3 +7123,173 @@ fn placement_winner_uses_forward_and_effective_catalogue_targets() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+#[test]
+fn placement_winner_rejects_deleted_low_base_and_accepts_never_defined_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = plugin(
+        dir.path(),
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            record(b"STAT", 0x730, 0, sub(b"EDID", b"LowStatic\0")),
+            record(b"STAT", 0x830, 0, sub(b"EDID", b"FallbackStatic\0")),
+            placement_group(
+                0x900,
+                [
+                    placement(0x850, 0x830, 0, 1.0, Vec::new()),
+                    placement_marker(0x851, 0x1f, Vec::new()),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    );
+    let patch = plugin(
+        dir.path(),
+        "Patch.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(0x900, placement(0x850, 0x730, 0, 2.0, Vec::new())),
+    );
+    let delete = plugin(
+        dir.path(),
+        "Delete.esp",
+        &["Skyrim.esm"],
+        0,
+        record(b"STAT", 0x730, 0x20, Vec::new()),
+    );
+    let restore = plugin(
+        dir.path(),
+        "Restore.esp",
+        &["Skyrim.esm"],
+        0,
+        record(b"STAT", 0x730, 0, sub(b"EDID", b"RestoredStatic\0")),
+    );
+    let mut failures = Vec::new();
+    for (label, plugins, expected) in [
+        ("live", vec![base.clone(), patch.clone()], 0x730),
+        (
+            "deleted",
+            vec![base.clone(), patch.clone(), delete.clone()],
+            0x830,
+        ),
+        ("restored", vec![base, patch, delete, restore], 0x730),
+    ] {
+        check_placement_winners(
+            &plugins,
+            label,
+            &[
+                (0x850, Some((Some(0x900), expected))),
+                (0x851, Some((Some(0x900), 0x1f))),
+            ],
+            &mut failures,
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+fn check_placement_winners(
+    plugins: &[PathBuf],
+    label: &str,
+    expected: &[(u32, Option<(Option<u32>, u32)>)],
+    failures: &mut Vec<String>,
+) {
+    use converter::config::RecordReader;
+
+    let output = tempfile::tempdir().unwrap();
+    let data = plugins[0].parent().unwrap();
+    for (reader, name) in [
+        (RecordReader::Legacy, "legacy"),
+        (RecordReader::Inhouse, "typed"),
+    ] {
+        let db = output.path().join(format!("{name}.db"));
+        let records = EsmParser::convert_plugins_with_reader(plugins, &db, reader, data).unwrap();
+        for &(id, expected) in expected {
+            let actual = records.get(&id).map(|record| {
+                let base = SubrecordView::new(&record.subrecords)
+                    .get_form_id(b"NAME")
+                    .unwrap();
+                (record.cell_form_id, base)
+            });
+            if actual != expected {
+                failures.push(format!(
+                    "{name} {label} {id:08X}: {actual:08X?}, expected {expected:08X?}"
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn placement_winner_checks_ungrouped_override_against_usable_predecessor() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = plugin(
+        dir.path(),
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            record(b"STAT", 0x830, 0, sub(b"EDID", b"OriginalStatic\0")),
+            record(b"STAT", 0x831, 0, sub(b"EDID", b"ReplacementStatic\0")),
+            placement_group(
+                0x900,
+                [
+                    placement(0x850, 0x832, 0, 1.0, Vec::new()),
+                    placement(0x851, 0x830, 0, 1.0, Vec::new()),
+                    placement(0x852, 0x832, 0, 1.0, Vec::new()),
+                    placement(0x853, 0x830, 0, 1.0, Vec::new()),
+                    placement(0x854, 0x830, 0, 1.0, Vec::new()),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    );
+    let patch = plugin(
+        dir.path(),
+        "Patch.esp",
+        &["Skyrim.esm"],
+        0,
+        [
+            placement(0x850, 0x831, 0, 2.0, Vec::new()),
+            placement(0x851, 0x831, 0, 2.0, Vec::new()),
+            placement(0x852, 0x832, 0, 2.0, Vec::new()),
+            placement_group(
+                0x900,
+                [
+                    placement(0x853, 0x831, 0, 2.0, Vec::new()),
+                    placement(0x854, 0x832, 0, 2.0, Vec::new()),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    );
+
+    let later = plugin(
+        dir.path(),
+        "Later.esp",
+        &["Skyrim.esm"],
+        0,
+        placement(0x854, 0x831, 0, 3.0, Vec::new()),
+    );
+
+    let mut failures = Vec::new();
+    check_placement_winners(
+        &[base, patch, later],
+        "ungrouped",
+        &[
+            (0x850, Some((None, 0x831))),
+            (0x851, Some((Some(0x900), 0x830))),
+            (0x852, None),
+            (0x853, Some((Some(0x900), 0x831))),
+            (0x854, Some((Some(0x900), 0x830))),
+        ],
+        &mut failures,
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

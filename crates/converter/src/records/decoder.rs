@@ -2902,34 +2902,52 @@ fn target_allowed(id: u32, kind: Option<[u8; 4]>, field: &FieldSchema) -> bool {
     })
 }
 
-/// Check the two required placement links against the same catalogue as optional links.
+/// Check required placement links and resolve parent ownership against the same catalogue.
 pub(crate) fn validate_placement_targets(
     prepared: Option<&PreparedSchemas>,
     kind: &[u8; 4],
-    cell: Option<u32>,
-    base: Option<u32>,
+    dependencies: &crate::esm::PlacementDependencies,
+    cycle: Option<&std::collections::HashSet<u32>>,
     winning_kind: impl Fn(u32) -> Option<[u8; 4]>,
+    was_deleted: impl Fn(u32) -> bool,
 ) -> Result<(), String> {
-    if let Some(cell) = cell
-        && winning_kind(cell) != Some(*b"CELL")
-    {
-        return Err(format!(
-            "placement parent {cell:08X} is absent or is not CELL"
-        ));
-    }
     let schemas = match prepared {
         Some(prepared) => prepared,
         None => self::prepared(),
     };
-    if let Some(base) = base
-        && let Some(field) = placement_base_field(schemas, kind)
-        && !target_allowed(base, winning_kind(base), field)
-    {
-        return Err(format!(
-            "required NAME {base:08X} is absent or has a disallowed target type"
-        ));
-    }
-    Ok(())
+    let check_targets = |kind: &[u8; 4], [cell, base]: [Option<u32>; 2]| {
+        if let Some(cell) = cell
+            && winning_kind(cell) != Some(*b"CELL")
+        {
+            return Err(format!(
+                "placement parent {cell:08X} is absent or is not CELL"
+            ));
+        }
+        if let Some(base) = base
+            && let Some(field) = placement_base_field(schemas, kind)
+            && {
+                let kind = winning_kind(base);
+                !target_allowed(base, kind, field) || (kind.is_none() && was_deleted(base))
+            }
+        {
+            return Err(format!(
+                "required NAME {base:08X} is absent or has a disallowed target type"
+            ));
+        }
+        Ok(())
+    };
+    let internal = |id: &u32| cycle.is_some_and(|members| members.contains(id));
+    check_targets(
+        kind,
+        dependencies.own.map(|link| link.filter(|id| !internal(id))),
+    )?;
+    crate::esm::validate_placement_parent(kind, dependencies.own[0], || {
+        dependencies
+            .grouped
+            .iter()
+            .filter(|(_, links)| !links.iter().flatten().any(internal))
+            .find_map(|(kind, links)| check_targets(kind, *links).ok().and(links[0]))
+    })
 }
 
 fn placement_links(record: &DecodedRecord) -> [Option<u32>; 2] {
@@ -2944,8 +2962,31 @@ fn placement_links(record: &DecodedRecord) -> [Option<u32>; 2] {
     [record.cell_form_id, base]
 }
 
+fn grouped_predecessors<'a>(
+    record: &DecodedRecord,
+    predecessors: &'a HashMap<u32, Vec<DecodedRecord>>,
+) -> impl Iterator<Item = &'a DecodedRecord> {
+    let chain = if record.cell_form_id.is_none() {
+        predecessors
+            .get(&record.form_id)
+            .map_or(&[][..], Vec::as_slice)
+    } else {
+        &[]
+    };
+    // A non-placement replacement ends the earlier placement's ownership.
+    let start = chain
+        .iter()
+        .rposition(|prior| !crate::esm::is_placed_record_type(&prior.record_type))
+        .map_or(0, |index| index + 1);
+    chain[start..]
+        .iter()
+        .rev()
+        .filter(|prior| prior.cell_form_id.is_some())
+}
+
 #[derive(Default)]
 pub(super) struct RecoveryCandidates {
+    deleted_low_ids: std::collections::HashSet<u32>,
     pub(super) predecessors: HashMap<u32, Vec<DecodedRecord>>,
     // A tentative placement owns this queue until it fails or keeps its slot.
     // Key by physical occurrence so a later plugin can have its own queue.
@@ -2996,6 +3037,9 @@ impl RecoveryCandidates {
                     }
                     super::merge_typed_default_objects(result, &next);
                     if deleted {
+                        if id < 0x800 {
+                            self.deleted_low_ids.insert(id);
+                        }
                         self.predecessors.remove(&id);
                         return None;
                     }
@@ -3082,6 +3126,12 @@ pub(crate) fn resolve_deferred(
     }
     if !kinds.is_empty() || !recovery.duplicates.is_empty() {
         for (index, entry) in result.history.iter().enumerate() {
+            if entry.accepted
+                && entry.flags & 0x20 != 0
+                && let Some(id) = entry.form_id.filter(|id| *id < 0x800)
+            {
+                recovery.deleted_low_ids.insert(id);
+            }
             history_index
                 .entry((entry.plugin_index, entry.source_record_offset))
                 .or_insert(index);
@@ -3230,17 +3280,24 @@ pub(crate) fn resolve_deferred(
         let rejected = crate::esm::invalid_placement_candidates(
             placements.iter().copied(),
             |id| {
-                placements
-                    .contains(&id)
-                    .then(|| placement_links(&result.records[&id]))
+                placements.contains(&id).then(|| {
+                    let record = &result.records[&id];
+                    crate::esm::PlacementDependencies {
+                        own: placement_links(record),
+                        grouped: grouped_predecessors(record, &recovery.predecessors)
+                            .map(|prior| (prior.record_type, placement_links(prior)))
+                            .collect(),
+                    }
+                })
             },
-            |id, [cell, base]| {
+            |id, dependencies, cycle| {
                 validate_placement_targets(
                     Some(prepared),
                     &result.records[&id].record_type,
-                    cell,
-                    base,
+                    dependencies,
+                    cycle,
                     |target| kinds.get(&target).copied(),
+                    |target| recovery.deleted_low_ids.contains(&target),
                 )
             },
         );
