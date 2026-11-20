@@ -31,7 +31,9 @@ If someone is assigned to an issue, has claimed it in a comment, or has an open 
 - **Inventory stores:** each external store has its own file under
   `tools/world_data_inventory/stores/` with its own `reviewed_at_commit`. Add or edit only
   the file for your store; do not add a shared `stores` block to `dispositions.json`. Two
-  PRs that add different stores then merge without a conflict. See
+  PRs that add different stores then merge without a conflict. The per-store commit records
+  the last human review of that store and is provenance only; the gate does not check
+  reachability. See
   [data-inventory/README.md](../data-inventory/README.md#migrating-a-branch-that-adds-a-store).
 
 ## 4. Open the pull request

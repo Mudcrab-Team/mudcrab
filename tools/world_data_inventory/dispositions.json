@@ -693,7 +693,6 @@
     "Python SQLite version, R-tree support and authorizer behavior may differ from bundled rusqlite. Rust prepares composed variants independently; cross-version failures remain visible.",
     "Schema-driven decoding and reader identities remain authoritative. No second record decoder, live engine instrumentation, conversion campaign or native semantic/parity evidence is provided."
   ],
-  "reviewed_at_commit": "99ac022c441810f0a8e0e571e1c950f80a6f9c71",
   "tables": {
     "actor_model_parts": {
       "classification": "deferred",

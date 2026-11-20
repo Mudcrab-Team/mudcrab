@@ -23,7 +23,7 @@ record reader needs a reviewed disposition. Only the reviewed, stable facts are 
 | File | Content | Changes when |
 |---|---|---|
 | `tools/world_data_inventory/dispositions.json` | Human dispositions: owner, reason, states and anchors per table and traced field | A person classifies a table or field |
-| `tools/world_data_inventory/stores/<store>.json` | One external store: owner, reason, states, anchors and its own `reviewed_at_commit` | A person adds or edits that store |
+| `tools/world_data_inventory/stores/<store>.json` | One external store: owner, reason, states, anchors and its own review-provenance `reviewed_at_commit` | A person adds or edits that store |
 | `tools/world_data_inventory/reviewed-surface.json` | One line per reviewed record reader (call-site key and hash of its SQL) and one line per reviewed `table.column` | A reader or a column is added, changed or removed |
 
 The key of a reader holds the file path, the method, a hash of the call expression and an
@@ -33,6 +33,11 @@ catches a changed constant behind an unchanged call.
 Each external store has its own file and its own reviewed commit. A pull request that adds
 or changes a store edits only that file. Two pull requests that add different stores
 therefore never conflict on a shared line.
+
+The per-store `reviewed_at_commit` records the last human review of that store. It is
+provenance only. The gate checks the store anchors against the checked-out tree and does not
+check that the commit exists or is reachable. The report shows the commit under test from
+`git rev-parse HEAD` as "Checked at". `dispositions.json` has no stored top-level commit.
 
 These are generated, never committed, and gitignored: `docs/data-inventory/inventory.json`,
 `docs/data-inventory/report.md` and the old `tools/world_data_inventory/reviewed-sources.json`.
@@ -60,15 +65,21 @@ dispositions, run `inventory.py --review-sources` and commit `reviewed-surface.j
 Main moved the `stores` block out of `dispositions.json`. A branch that adds a store there
 gets a conflict on the next merge. Move the entry to its own file:
 
-1. Create `tools/world_data_inventory/stores/<name>.json` with a lowercase hyphenated
-   filename, for example `interface-controls-pc.json`. Use the entry's `owner`, `reason`,
-   `states` and `evidence`, add `"format_version": 1`, `"store": "<name>"` and a
-   `reviewed_at_commit` that holds your review commit.
+1. Create `tools/world_data_inventory/stores/<filename>.json`. Choose a lowercase hyphenated
+   filename, for example `conversion-manifest.json`. The `store` value is the old key, which
+   may already end in `.json`; do not repeat the suffix. Use the entry's `owner`, `reason`,
+   `states` and `evidence`, add `"format_version": 1`, `"store": "<old key>"` and a
+   `reviewed_at_commit` that records your review of that store.
 2. Delete the entry and the now-empty `stores` block from `dispositions.json`.
 3. Run `python3 -B tools/world_data_inventory/inventory.py --check`.
 
-The tool refuses a `stores` block in `dispositions.json` and names the directory in its
-error message.
+Only lowercase `.json` files are loaded. Any other regular file in `stores/` fails the check
+instead of disappearing from the report. The tool refuses a `stores` block in
+`dispositions.json` and names the directory in its error message.
+
+A branch that changes the old top-level `reviewed_at_commit` in `dispositions.json` gets one
+conflict after this change. Resolve it by deleting that line and taking main's version. The
+line no longer exists, and the report takes the commit under test from `git rev-parse HEAD`.
 
 ## Generate and check
 
@@ -133,7 +144,8 @@ mapping ordinals/expressions and sink/test references. Existing test references 
 relevant evidence; they do not assert that those tests ran in this task. All other table
 fields have explicit deferred/provenance policies; BLOBs have an opaque disposition.
 Named external stores remain separate from SQL accounting. Each store has its own file and
-`reviewed_at_commit`, so a store change touches one file and one review commit.
+`reviewed_at_commit`, so a store change touches one file and one review record. That commit
+is provenance for the last human review, not a reachability check.
 
 The committed gate is deliberately narrow, so it stays stable. The scripts job checks every
 record reader that the lexical scan finds: a new reader, a reader whose SQL changed, or a

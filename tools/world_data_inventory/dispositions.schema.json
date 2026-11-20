@@ -223,9 +223,6 @@
       },
       "type": "array"
     },
-    "reviewed_at_commit": {
-      "$ref": "#/$defs/commit"
-    },
     "tables": {
       "additionalProperties": {
         "$ref": "#/$defs/policy"
@@ -235,7 +232,6 @@
   },
   "required": [
     "format_version",
-    "reviewed_at_commit",
     "fields",
     "tables",
     "blob_default",

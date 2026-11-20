@@ -31,7 +31,7 @@ def fixture():
 
 
 def manual():
-    return {"reviewed_at_commit": "disposable-fixture", "fields": {}, "stores": {}, "legacy_shapes": [],
+    return {"fields": {}, "stores": {}, "legacy_shapes": [],
             "limitations": ["Synthetic fixture only."],
             "tables": {name: {"classification": "deferred", "owner": "fixture", "reason": "Future feature allowed."}
                        for name in ("lights", "placements", "future_gameplay", "spatial")},
@@ -343,7 +343,61 @@ class StoreFiles(unittest.TestCase):
             root, here, _ = make_tree(directory)
             self.write_store(here, "broken.json",
                              store_document("broken", anchor="anchor that is not in the file"))
-            with self.assertRaisesRegex(ValueError, "broken evidence reference"):
+            with self.assertRaisesRegex(ValueError, r"store broken \(stores/broken\.json\): broken evidence reference"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_a_missing_store_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            (here / "stores").rmdir()
+            with self.assertRaisesRegex(ValueError, "missing stores/ directory"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_a_missing_store_field(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            document = store_document("partial")
+            document.pop("owner")
+            self.write_store(here, "partial.json", document)
+            with self.assertRaisesRegex(ValueError, "invalid store file stores/partial.json: missing owner"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_an_unknown_store_field(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            document = store_document("extra")
+            document["unexpected"] = 1
+            self.write_store(here, "extra.json", document)
+            with self.assertRaisesRegex(ValueError, "invalid store file stores/extra.json: unknown unexpected"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_a_non_object_store_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            self.write_store(here, "list.json", [])
+            with self.assertRaisesRegex(ValueError, "store file is not an object: stores/list.json"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_an_unexpected_file_in_the_store_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            (here / "stores" / "conversion-manifest.JSON").write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError,
+                                        "unexpected file in store directory: stores/conversion-manifest.JSON"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_a_store_file_that_is_not_utf8(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            (here / "stores" / "binary.json").write_bytes(b"\xff\xfe")
+            with self.assertRaisesRegex(ValueError, "cannot read store file stores/binary.json"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_a_store_path_that_cannot_be_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            (here / "stores" / "unreadable.json").mkdir()
+            with self.assertRaisesRegex(ValueError, "cannot read store file stores/unreadable.json"):
                 run_tool(root, here, "--check")
 
     def test_check_fails_closed_on_a_duplicate_store(self):
