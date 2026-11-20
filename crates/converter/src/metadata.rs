@@ -1,9 +1,10 @@
 //! Rebuild world metadata from package-matched plugins and verified retained assets.
 //!
-//! Models and textures retain the source package's verified bytes. Scripts with a stale
-//! ABI or proof regenerate from checksum-matched Data, with local failures reported as
-//! incomplete publication. Data also supplies matched plugins, LOD settings and terrain
-//! diffuse inputs. Mesh and texture changes require normal conversion.
+//! Retained models, textures and scripts are verified against the source package's
+//! manifest, not refreshed from current Data; scripts with a stale ABI or proof
+//! regenerate from checksum-matched Data, with local failures reported as incomplete
+//! publication. Data supplies checksum-matched plugins, LOD settings, optional PC
+//! controls and terrain diffuse inputs. Use normal conversion after asset changes.
 
 use crate::{
     AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage,
@@ -801,6 +802,31 @@ async fn rebuild_into(
     for archive in &archives {
         ArchiveExtractor::extract_lod_settings(archive, &vfs)?;
     }
+    // Reingest only the optional controls; verified meshes/textures/scripts remain retained.
+    let control_scratch = tempfile::tempdir_in(staging.parent().unwrap_or(staging))?;
+    let mut control_sources = BTreeMap::new();
+    for (index, archive) in archives.iter().enumerate() {
+        let root = control_scratch.path().join(index.to_string());
+        let provider = archive
+            .strip_prefix(&config.data_dir)
+            .unwrap_or(archive)
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        let warnings =
+            match crate::controls::extract_archive(&mut control_sources, archive, &provider, &root)
+            {
+                Ok(warnings) => warnings,
+                Err(warning) => vec![warning],
+            };
+        report.warnings.extend(warnings);
+    }
+    for file in &files {
+        if let Ok(relative) = file.strip_prefix(&config.data_dir) {
+            crate::controls::record_loose(&mut control_sources, relative, file);
+        }
+    }
+    crate::controls::publish(staging, control_sources, &mut report)?;
     let loose: Vec<_> = files
         .iter()
         .filter(|path| {
