@@ -6103,11 +6103,21 @@ mod tests {
                 document["meshes"][0]["primitives"][0]["extras"]["mudcrabGeometryIndex"], 0,
                 "{name}: the single shape carries its geometry index"
             );
-            if let Some(extras) = document["extras"].as_object_mut() {
-                extras.remove("mudcrabRoomSphere");
-                if extras.is_empty() {
-                    document.as_object_mut().unwrap().remove("extras");
+            // These additive bounds postdate the reference GLBs. Every other byte must match.
+            let strip_bound = |owner: &mut serde_json::Value, key: &str| {
+                if let Some(extras) = owner
+                    .get_mut("extras")
+                    .and_then(|value| value.as_object_mut())
+                {
+                    extras.remove(key);
+                    if extras.is_empty() {
+                        owner.as_object_mut().unwrap().remove("extras");
+                    }
                 }
+            };
+            strip_bound(&mut document, "mudcrabRoomSphere");
+            for mesh in document["meshes"].as_array_mut().unwrap() {
+                strip_bound(mesh, shared::room_assignment::DRAWABLE_SPHERE_EXTRA);
             }
             assert_eq!(
                 crate::cache::hash_bytes(&rebuild_glb_with_document(&glb, &document).unwrap()),
