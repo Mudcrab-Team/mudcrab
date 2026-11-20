@@ -351,6 +351,17 @@ impl EsmParser {
                         (record, true)
                     }
                     ParsedRecord::DamagedRecord(_) => continue,
+                    ParsedRecord::TruncatedPlacement(placement) => {
+                        if let Some(id) = placement.runtime_id(priority, order) {
+                            damaged_placements
+                                .cells_by_reference
+                                .entry(Some(id))
+                                .or_default();
+                        } else {
+                            unknown_discarded_scope = true;
+                        }
+                        continue;
+                    }
                     ParsedRecord::DiscardedFrame(scope) => {
                         match scope.resolve(priority, order) {
                             DiscardedFrameScope::Cell(cell) => {
@@ -396,10 +407,15 @@ impl EsmParser {
                                     .and_then(|prior: &RawRecord| prior.cell_form_id)
                             })
                             .map_err(color_eyre::eyre::Report::msg)?;
+                            let view = extractors::SubrecordView::new(&record.subrecords);
+                            if merged.contains_key(&record.form_id) {
+                                color_eyre::eyre::ensure!(
+                                    valid_placement_transform(view.find_all(b"DATA")),
+                                    "invalid placement override transform"
+                                );
+                            }
                             color_eyre::eyre::ensure!(
-                                extractors::SubrecordView::new(&record.subrecords)
-                                    .get_form_id(b"NAME")
-                                    .is_some_and(|id| id != 0),
+                                view.get_form_id(b"NAME").is_some_and(|id| id != 0),
                                 "missing or null required NAME reference"
                             );
                         }
@@ -871,6 +887,22 @@ impl GameSettingIdentities {
 /// Required placed base links cannot use the optional field's null/drop policy.
 fn is_required_form_id_subrecord(record_type: &[u8; 4], tag: &[u8]) -> bool {
     tag == b"NAME" && is_placed_record_type(record_type)
+}
+
+/// A publishable placement transform is exactly one position/rotation tuple.
+pub(crate) fn valid_placement_transform<'a>(mut fields: impl Iterator<Item = &'a [u8]>) -> bool {
+    let Some(data) = fields
+        .next()
+        .and_then(|bytes| <&[u8; 24]>::try_from(bytes).ok())
+    else {
+        return false;
+    };
+    fields.next().is_none()
+        && data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|word| f32::from_le_bytes(*word).is_finite())
 }
 
 /// An ungrouped first definition has no earlier room to lose. An override of a
