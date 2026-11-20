@@ -1352,7 +1352,8 @@ Columns and rules:
   in stored order; the geometry columns repeat on every row. A portal whose `XPOD` is absent,
   empty or shorter than one pair gets one row with `pair_index` 0 and both sides NULL.
   Missing, empty, truncated, or repeated `XPOD` fields mark the cell incomplete; conflicting
-  occurrences are not exported. Trailing bytes are omitted from rows without proving completeness. Every `XPOD` in the official masters is one pair, so
+  occurrences are not exported. Both outside flags are zero for a truncated field, including on any
+  retained leading pair. Every `XPOD` in the official masters is one pair, so
   vanilla output has `pair_index` 0 only. **Readers must not assume `ref_id` is unique**: join
   or group on `(ref_id, pair_index)`, or on `ref_id` and expect several rows. The key changed
   from `ref_id` alone, and `create_tables` migrates an older-shaped `room_portals` (no
