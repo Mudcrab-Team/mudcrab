@@ -188,6 +188,12 @@ semantics are validated before winner selection; rejected candidates leave an
 earlier usable winner intact and are counted in per-plugin diagnostics. The pack's
 `record-reader.json` identifies the frontend and schema.
 
+When a later plugin deletes a previously defined base of a compatible type, both readers omit
+placements that depended on it and count them in the conversion notices. Each notice includes
+a sample placement and base FormID. This preserves record-data completeness. A placement that
+names an already deleted, never-defined, or incompatible base still counts as a recovery warning,
+subject to the engine's existing hardcoded low-FormID fallback.
+
 ```sql
 CREATE TABLE IF NOT EXISTS records (
     form_id INTEGER PRIMARY KEY,        -- winning record, load-order numbering
