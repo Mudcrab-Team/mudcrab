@@ -32,6 +32,8 @@ mod walk_support_tests;
 
 use vertical::VerticalMotion;
 pub use vertical::{JumpHeight, ResolvedWalk};
+#[cfg(test)]
+mod jump_replay_tests;
 
 use crate::{
     console::{AppConsoleExt, ConsoleCommand, ConsoleState, console_closed},
@@ -5301,37 +5303,41 @@ pub fn clamp_pitch(pitch: f32) -> f32 {
 
 /// Mouse yaw in radians per count: `fMouseHeadingSensitivity * fMouseHeadingXScale` times the
 /// movement type's rotate speed. 0.000785 for walk and run, half of that while sprinting
-/// (RF-CAM-010).
-pub fn yaw_radians_per_count(sprinting: bool) -> f32 {
+/// (RF-CAM-010), at 1.0x. The multiplier scales only `fMouseHeadingSensitivity`.
+pub fn yaw_radians_per_count(sprinting: bool, sensitivity_multiplier: f32) -> f32 {
     let rotate_speed = if sprinting {
         ROTATE_SPEED_SPRINTING_MT
     } else {
         ROTATE_SPEED_DEFAULT_MT
     };
-    MOUSE_HEADING_SENSITIVITY * MOUSE_HEADING_X_SCALE * rotate_speed
+    let heading_sensitivity = MOUSE_HEADING_SENSITIVITY * sensitivity_multiplier;
+    heading_sensitivity * MOUSE_HEADING_X_SCALE * rotate_speed
 }
 
 /// Mouse pitch in radians per count: `fMouseHeadingSensitivity * fMouseHeadingYScale *
 /// fLookingSpeed`, 0.0010625 (RF-CAM-011). Retail also multiplies by a zoom ratio, which is 1
-/// outside zoom; the engine has no zoom state.
-pub fn pitch_radians_per_count() -> f32 {
-    MOUSE_HEADING_SENSITIVITY * MOUSE_HEADING_Y_SCALE * LOOKING_SPEED
+/// outside zoom; the engine has no zoom state. The multiplier scales `fMouseHeadingSensitivity`.
+pub fn pitch_radians_per_count(sensitivity_multiplier: f32) -> f32 {
+    let heading_sensitivity = MOUSE_HEADING_SENSITIVITY * sensitivity_multiplier;
+    heading_sensitivity * MOUSE_HEADING_Y_SCALE * LOOKING_SPEED
 }
 
 /// Sample mouse motion into look intent; uncaptured pointer yields nothing (V6). Retail applies
 /// counts directly: no smoothing, no acceleration and no frame-time scaling (RF-CAM-010,
-/// RF-CAM-011).
+/// RF-CAM-011). The sensitivity multiplier scales the heading setting before axis factors.
 pub fn sample_look_intent(
     capture: &CursorCapture,
     mouse_delta: Vec2,
     sprinting: bool,
+    sensitivity_multiplier: f32,
     intent: &mut LookIntent,
 ) {
     if *capture != CursorCapture::Captured {
         return;
     }
-    intent.yaw -= mouse_delta.x * yaw_radians_per_count(sprinting);
-    intent.pitch = clamp_pitch(intent.pitch - mouse_delta.y * pitch_radians_per_count());
+    intent.yaw -= mouse_delta.x * yaw_radians_per_count(sprinting, sensitivity_multiplier);
+    intent.pitch =
+        clamp_pitch(intent.pitch - mouse_delta.y * pitch_radians_per_count(sensitivity_multiplier));
 }
 
 /// Noclip displacement from held keys relative to the view (V6).
@@ -5611,10 +5617,12 @@ fn cursor_lifecycle_system(
     }
 }
 
+/// Applies live heading sensitivity while retaining WALK sprint and NOCLIP movement types.
 fn look_input_system(
     capture: Res<CursorCapture>,
     mode: Res<MoveMode>,
     sprint: Res<SprintLatch>,
+    settings: Option<Res<crate::settings::RenderingSettings>>,
     mut mouse_motion: MessageReader<MouseMotion>,
     mut intent: ResMut<LookIntent>,
 ) {
@@ -5624,7 +5632,10 @@ fn look_input_system(
     }
     // Only WALK has a sprinting movement type; NOCLIP flight uses the default one.
     let sprinting = *mode == MoveMode::Walk && sprint.0;
-    sample_look_intent(&capture, delta, sprinting, &mut intent);
+    let sensitivity = settings
+        .as_deref()
+        .map_or(1.0, |settings| settings.mouse_sensitivity);
+    sample_look_intent(&capture, delta, sprinting, sensitivity, &mut intent);
 }
 
 fn noclip_flight_system(
@@ -6024,21 +6035,27 @@ mod noclip_tests {
         assert_eq!(clamp_pitch(0.3), 0.3);
     }
 
+    /// The default multiplier preserves main's walk/run and sprint movement-type yaw rates.
     #[test]
     fn mouse_yaw_per_count_follows_retail_rates() {
         // RF-CAM-010: 0.0125 * 0.02 * pi = 0.000785 rad per count walking and running,
         // 0.0125 * 0.02 * pi / 2 = 0.0003925 sprinting.
-        assert!((yaw_radians_per_count(false) - 0.000_785).abs() < 1.0e-6);
-        assert!((yaw_radians_per_count(true) - 0.000_392_5).abs() < 1.0e-6);
-        assert!((yaw_radians_per_count(true) * 2.0 - yaw_radians_per_count(false)).abs() < 1.0e-9);
+        assert!((yaw_radians_per_count(false, 1.0) - 0.000_785).abs() < 1.0e-6);
+        assert!((yaw_radians_per_count(true, 1.0) - 0.000_392_5).abs() < 1.0e-6);
+        assert!(
+            (yaw_radians_per_count(true, 1.0) * 2.0 - yaw_radians_per_count(false, 1.0)).abs()
+                < 1.0e-9
+        );
     }
 
+    /// The default multiplier preserves main's retail vertical rate.
     #[test]
     fn mouse_pitch_per_count_follows_retail_rate() {
         // RF-CAM-011: 0.0125 * 0.85 * 0.1 = 0.0010625 rad per count.
-        assert!((pitch_radians_per_count() - 0.001_062_5).abs() < 1.0e-7);
+        assert!((pitch_radians_per_count(1.0) - 0.001_062_5).abs() < 1.0e-7);
     }
 
+    /// Default-sensitivity counts retain distinct normal and sprint yaw rates.
     #[test]
     fn sampled_counts_turn_by_the_retail_rates() {
         let mut intent = LookIntent::default();
@@ -6046,6 +6063,7 @@ mod noclip_tests {
             &CursorCapture::Captured,
             Vec2::new(100.0, 200.0),
             false,
+            1.0,
             &mut intent,
         );
         assert!((intent.yaw + 100.0 * 0.000_785).abs() < 1.0e-4);
@@ -6055,11 +6073,13 @@ mod noclip_tests {
             &CursorCapture::Captured,
             Vec2::new(100.0, 0.0),
             true,
+            1.0,
             &mut sprinting,
         );
         assert!((sprinting.yaw + 100.0 * 0.000_392_5).abs() < 1.0e-4);
     }
 
+    /// Default-sensitivity input retains both exact standing pitch bounds.
     #[test]
     fn sampled_pitch_stops_at_plus_or_minus_ninety_degrees() {
         let mut intent = LookIntent::default();
@@ -6067,6 +6087,7 @@ mod noclip_tests {
             &CursorCapture::Captured,
             Vec2::new(0.0, 1.0e6),
             false,
+            1.0,
             &mut intent,
         );
         assert_eq!(intent.pitch, -std::f32::consts::FRAC_PI_2);
@@ -6074,6 +6095,7 @@ mod noclip_tests {
             &CursorCapture::Captured,
             Vec2::new(0.0, -2.0e6),
             false,
+            1.0,
             &mut intent,
         );
         assert_eq!(intent.pitch, std::f32::consts::FRAC_PI_2);
@@ -6163,6 +6185,7 @@ mod noclip_tests {
         assert!((stopping - 100.0 * 0.000_785).abs() < 1.0e-4, "{stopping}");
     }
 
+    /// Cursor release blocks look input even when sensitivity is explicitly supplied.
     #[test]
     fn uncaptured_pointer_yields_no_look_intent() {
         let mut intent = LookIntent::default();
@@ -6170,6 +6193,7 @@ mod noclip_tests {
             &CursorCapture::Released,
             Vec2::new(40.0, 20.0),
             false,
+            1.0,
             &mut intent,
         );
         assert_eq!(intent.yaw, 0.0);
@@ -6178,10 +6202,152 @@ mod noclip_tests {
             &CursorCapture::Captured,
             Vec2::new(40.0, 20.0),
             false,
+            1.0,
             &mut intent,
         );
         assert!(intent.yaw < 0.0);
         assert!(intent.pitch < 0.0);
+    }
+
+    /// The default look input preserves the unrounded retail rates used by #709.
+    #[test]
+    fn mouse_sensitivity_default_uses_retail_axis_rates() {
+        let mut intent = LookIntent::default();
+        sample_look_intent(
+            &CursorCapture::Captured,
+            Vec2::new(100.0, 200.0),
+            false,
+            1.0,
+            &mut intent,
+        );
+        assert!((intent.yaw + 0.078_539_82).abs() < 1.0e-7, "{}", intent.yaw);
+        assert!((intent.pitch + 0.212_5).abs() < 1.0e-7, "{}", intent.pitch);
+    }
+
+    /// Scaling heading sensitivity retains sprint's half yaw and NOCLIP's default movement type.
+    #[test]
+    fn mouse_sensitivity_scales_heading_for_each_movement_type() {
+        let turn = |mode: MoveMode, sprinting: bool, mouse_sensitivity: f32| {
+            let mut app = App::new();
+            app.add_message::<MouseMotion>()
+                .insert_resource(CursorCapture::Captured)
+                .insert_resource(mode)
+                .insert_resource(SprintLatch(sprinting))
+                .insert_resource(LookIntent::default())
+                .insert_resource(crate::settings::RenderingSettings {
+                    mouse_sensitivity,
+                    ..default()
+                });
+            app.world_mut().write_message(MouseMotion {
+                delta: Vec2::new(100.0, 200.0),
+            });
+            app.world_mut().run_system_once(look_input_system).unwrap();
+            let look = app.world().resource::<LookIntent>();
+            Vec2::new(look.yaw, look.pitch)
+        };
+        for multiplier in [0.8, 1.0, 2.0, 4.0] {
+            let walk = turn(MoveMode::Walk, false, multiplier);
+            let sprint = turn(MoveMode::Walk, true, multiplier);
+            let noclip = turn(MoveMode::Noclip, true, multiplier);
+            let expected_walk = Vec2::new(-0.078_539_82, -0.212_5) * multiplier;
+            let expected_sprint = Vec2::new(-0.039_269_91, -0.212_5) * multiplier;
+            assert!((walk - expected_walk).length() < 1.0e-6, "{walk:?}");
+            assert!((sprint - expected_sprint).length() < 1.0e-6, "{sprint:?}");
+            assert_eq!(sprint.y, walk.y);
+            assert_eq!(noclip, walk, "NOCLIP must not use the WALK sprint latch");
+        }
+    }
+
+    /// Every multiplier retains the same exact retail standing pitch bounds.
+    #[test]
+    fn mouse_sensitivity_keeps_retail_pitch_limits_at_every_scale() {
+        assert_eq!(MAX_PITCH_RADIANS, std::f32::consts::FRAC_PI_2);
+        for multiplier in [0.8, 1.0, 2.0, 4.0] {
+            for sprinting in [false, true] {
+                let mut intent = LookIntent::default();
+                sample_look_intent(
+                    &CursorCapture::Captured,
+                    Vec2::new(0.0, 1.0e6),
+                    sprinting,
+                    multiplier,
+                    &mut intent,
+                );
+                assert_eq!(intent.pitch, -std::f32::consts::FRAC_PI_2);
+                sample_look_intent(
+                    &CursorCapture::Captured,
+                    Vec2::new(0.0, -2.0e6),
+                    sprinting,
+                    multiplier,
+                    &mut intent,
+                );
+                assert_eq!(intent.pitch, std::f32::consts::FRAC_PI_2);
+            }
+        }
+    }
+
+    /// Actual mouse input reads live preferences without a renderer or frame-time scaling.
+    #[test]
+    fn mouse_sensitivity_live_edits_scale_both_axes_without_time_scaling() {
+        let turn = |sensitivity: Option<f32>, seconds: f32| {
+            let mut app = App::new();
+            app.add_message::<MouseMotion>()
+                .insert_resource(CursorCapture::Captured)
+                .insert_resource(MoveMode::Walk)
+                .insert_resource(SprintLatch(false))
+                .insert_resource(LookIntent::default())
+                .insert_resource(Time::<()>::default());
+            if let Some(mouse_sensitivity) = sensitivity {
+                app.insert_resource(crate::settings::RenderingSettings {
+                    mouse_sensitivity,
+                    ..default()
+                });
+            }
+            app.world_mut()
+                .resource_mut::<Time<()>>()
+                .advance_by(std::time::Duration::from_secs_f32(seconds));
+            app.world_mut().write_message(MouseMotion {
+                delta: Vec2::new(100.0, 200.0),
+            });
+            app.world_mut().run_system_once(look_input_system).unwrap();
+            let intent = app.world().resource::<LookIntent>();
+            Vec2::new(intent.yaw, intent.pitch)
+        };
+        let baseline = turn(Some(1.0), 1.0 / 240.0);
+        assert_eq!(baseline, turn(Some(1.0), 1.0 / 20.0));
+        assert_eq!(baseline, turn(None, 1.0 / 60.0));
+        let double = turn(Some(2.0), 1.0 / 60.0);
+        assert!((double.x + 0.157_079_64).abs() < 1.0e-7);
+        assert!((double.y + 0.425).abs() < 1.0e-7);
+        assert!((turn(Some(0.8), 1.0 / 60.0) - baseline * 0.8).length() < 1.0e-7);
+
+        let mut app = App::new();
+        app.add_message::<MouseMotion>()
+            .insert_resource(CursorCapture::Captured)
+            .insert_resource(MoveMode::Walk)
+            .insert_resource(SprintLatch(false))
+            .insert_resource(LookIntent::default())
+            .insert_resource(crate::settings::RenderingSettings::default())
+            .add_systems(Update, look_input_system);
+        app.world_mut().write_message(MouseMotion {
+            delta: Vec2::new(100.0, 200.0),
+        });
+        app.update();
+        app.world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .mouse_sensitivity = 2.0;
+        app.world_mut().write_message(MouseMotion {
+            delta: Vec2::new(100.0, 200.0),
+        });
+        app.update();
+        let intent = app.world().resource::<LookIntent>();
+        assert!((Vec2::new(intent.yaw, intent.pitch) - baseline * 3.0).length() < 1.0e-7);
+        app.insert_resource(CursorCapture::Released);
+        app.world_mut().write_message(MouseMotion {
+            delta: Vec2::splat(100.0),
+        });
+        app.update();
+        let stopped = app.world().resource::<LookIntent>();
+        assert!((Vec2::new(stopped.yaw, stopped.pitch) - baseline * 3.0).length() < 1.0e-7);
     }
 
     #[test]

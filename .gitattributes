@@ -10,3 +10,11 @@ vendor/** text=auto eol=lf
 *.wgsl text eol=lf
 *.toml text eol=lf
 Cargo.lock text eol=lf
+
+# These acquisition artifacts and the frozen evaluator are verified byte-for-byte. They come last
+# on purpose: the LF rules above must not rewrite them. No protected path has an `.rs`, `.wgsl` or
+# `.toml` file today, and a new one needs a review of both rules.
+docs/research/evidence/skyrim-physics-221/** -text
+tools/skyrim-recorder/reference/** -text
+tools/skyrim-recorder/fixtures/jump*.json -text
+scripts/evaluate_skyrim_jump.py -text

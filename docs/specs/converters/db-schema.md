@@ -14,6 +14,71 @@ for both frontends. MOD3 is an ARMA model slot, not an ARMO world-model path.
 
 ---
 
+## Optional PC control files
+
+The converter publishes `interface/controls/pc/controlmap.txt`,
+`keyboard_english.txt`, and `gamepad.txt` as optional copied files beside the
+world database. Their presence adds no database tables or required capability;
+older packs without these paths remain readable. This preserves the original
+text contract for future input/menu consumers without a SQL-specific parser.
+
+These three paths are additive inputs, extracted separately from each enabled
+archive on every conversion. Only archive headers and the selected control
+payloads are read by this extra pass; unrelated payloads are not decompressed
+or repacked. Existing `converter-inputs-v4` and `runtime-english-v4` inventories
+retain their original coverage and remain reusable, without a second archive
+pack generation. Mesh, texture, database and script schema/cache versions stay
+the same.
+Archives overlay in the existing plugin load order, last provider wins, then
+loose Data files (or the effective MO2 loose winner) override archives. Paths
+match case-insensitively and publish in lowercase.
+Each control payload is extracted independently. A failed payload emits one
+warning for that path and leaves its earlier archive provider intact (or absent),
+while readable files from the same archive still win normally. An unreadable
+archive retains one archive-level warning rather than repeating it per path.
+
+Rows receive structural validation, preserving binding expressions as opaque
+text for the input layer. Controlmap rows have seven tab-separated fields
+(event, keyboard, mouse, gamepad, three 0/1 remap flags), optionally followed by
+hexadecimal event flags. Consecutive tabs provide alignment; spaces inside
+names and aliases remain meaningful. Keyboard rows contain a key name and hex
+hardware code, optionally a decimal Flash code; gamepad rows contain a name
+and hex hardware code. Alias, alternative and chord binding expressions are
+retained; this pass does not resolve or semantically validate them.
+
+Original bytes, comments (`//`), blank context separators and line endings are
+preserved, including legacy Windows-1252 names and an optional leading UTF-8
+BOM. A malformed physical line is removed entirely, including its newline, so
+it cannot introduce a new context. One warning per affected file summarizes
+the skipped-line count and first original 1-based line number, making the report
+and manifest incomplete while valid neighboring lines and files still publish.
+LF, CRLF and CR-only files retain their original endings.
+If removing a malformed row would join a retained CR to a later blank LF row,
+the CR is completed to CRLF so the blank context separator remains distinct.
+Control extraction runs independently of ordinary archive payload failures;
+readable controls still publish with the asset failure warning. Undiscovered
+loose prefixes mask affected control sources as well as ordinary VFS inputs,
+so an unknown loose override cannot expose an older archive binding.
+An unreadable winning file warns and is omitted. Output I/O failures remain
+errors. An empty or absent optional file is permitted.
+
+`interface/controls/pc/provenance.json` is an object keyed by published logical
+path. Each entry has `provider` (`archive:<relative archive path>` or
+`loose:<logical path>`), `source_sha256` (original bytes), `output_sha256`
+(sanitized bytes), and `skipped_lines` (original 1-based line numbers). Loose
+provider paths describe the effective logical winner, including MO2, rather
+than machine-specific installation paths. The source hash identifies its exact
+content. The sidecar is absent when no control files publish.
+
+A metadata rebuild (`--reuse-assets <source-pack>` into a new output) can add or
+refresh these files: it extracts only the three paths from the existing matched
+plugin archive selection and applies loose overrides, retaining verified
+GLB/KTX2/Luau bytes. Existing metadata restrictions still apply (complete
+compatible source pack, matching plugins, disjoint new output, no MO2 mode).
+An ingestion-only extraction does not publish runtime files. Normal conversion
+also refreshes the files while reusing unrelated compatible assets; a full
+mesh/texture reconversion is unnecessary for this addition.
+
 ## 1. Schema Overview
 
 `skyrim_world.db` is built by `crates/converter` by parsing master files (`Skyrim.esm`) and plugin files (`.esp`/`.esl`). With `PipelineConfig.plugins_file` (CLI `--plugins-file`), the converter reads Windows-1252 selection, keeps the last duplicate entry's position and checkbox, and matches installed filenames case-insensitively. Installed Skyrim, Update, Dawnguard, HearthFires and Dragonborn masters are always active in that fixed order, followed by installed entries of readable `Skyrim.ccc`. `skyrim_ccc_file` (`--skyrim-ccc-file`) overrides the default file beside Data. Only checked player entries load, including mod masters; official and Creation entries keep their implicit positions. An explicit `skyrim_ini_file` (`--skyrim-ini-file`) supplies General `sTestFile1` through `sTestFile10`: listed plugins retain their listed positions even if unchecked, while unlisted entries append by ascending file modification time (filename breaks ties). No ambient user profile is read. Missing entries and optional CCC/INI read errors warn and continue. Plugins with missing, disabled or unusable masters and their transitive dependents are omitted with bounded notices; an empty usable selection gives a clear error.
@@ -1087,6 +1152,7 @@ CREATE TABLE IF NOT EXISTS grass_types (
 CREATE TABLE IF NOT EXISTS landscape_texture_grasses (
     ltex_id INTEGER NOT NULL,           -- resolved LTEX FormID
     gras_id INTEGER NOT NULL,           -- resolved GNAM GRAS FormID
+    ordinal INTEGER NOT NULL DEFAULT 0, -- first GNAM occurrence in the winning list
     PRIMARY KEY (ltex_id, gras_id)
 );
 ```
@@ -1097,9 +1163,17 @@ Either At Most Above and Either At Most Below, respectively. `flags` bits 0,
 1 and 2 mean Vertex Lighting, Uniform Scaling and Fit to Slope. These definitions
 establish the authored contract, not Skyrim's exact placement equations.
 
-Each non-null repeated `LTEX.GNAM` yields an association; duplicate pairs collapse.
-The winning LTEX list replaces the earlier list in full. There is no foreign key on
-the grass target: a deleted or unresolved grass can still be named by a texture,
+Each non-null repeated `LTEX.GNAM` yields an association; duplicate pairs collapse,
+retaining the first occurrence's zero-based `ordinal`. Both record readers use this
+projection. Consumers read each texture's species in `ordinal` order (with `gras_id`
+as a deterministic tie fallback), preserving source order rather than sorting species
+by FormID. Gaps after discarded or duplicate occurrences are allowed.
+The winning LTEX list replaces the earlier list in full, including its order and an
+empty replacement. `create_tables` adds `ordinal` to older association tables with a
+negative sentinel, preserving unrelated rows during subset exports. The grass baker
+recovers those lists, and lists in databases without the column, from winning raw
+LTEX records without mutating the database. A complete export writes explicit ordinals.
+There is no foreign key on the grass target: a deleted or unresolved grass can still be named by a texture,
 and consumers resolve it against `grass_types`. Both projections refresh atomically
 from a complete effective load-order export, removing stale grass and associations
 on deletions or later overrides. Deleted GRAS records therefore do not reappear as
@@ -1667,11 +1741,10 @@ actors in their skin when it is absent or invalid.
 ### 19. Projection Omissions (`projection_omission_stats`, `projection_omission_samples`)
 
 Runtime projections omit unusable rows or fields without inventing authored data. Each
-omission is counted under a stable category, so the conversion report can account for it instead of
-a terminal message alone (#297). Light, grass and placed-record projections in
+omission is counted under a stable category so the conversion report can include it (#297).
+Light, grass, placed-record and RACE animation projections in
 `crates/converter/src/esm/exporter.rs`, lighting-template projection in `esm/environment.rs`,
-and emittance resolution contribute categories. Readable GRAS scalar prefixes remain
-available even when the complete DATA field is short. The category code is
+and emittance resolution contribute categories. The category code is
 `crates/converter/src/esm/projection_omissions.rs`.
 
 ```sql
@@ -1695,15 +1768,17 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 | `grass_unusable_data` | `GRAS` with missing or short `DATA`: unavailable scalar columns NULL, readable scalar prefix/model/identity retained | data loss |
 | `reference_unusable_data` | Placed record with missing or short `DATA`: no placement or spatial row; canonical record retained | data loss |
 | `lighting_template_unusable_data` | `LGTM` with missing or unsupported-size `DATA`: DATA lighting columns NULL, other fields retained | data loss |
+| `race_unreadable_authoring` | `RACE` with unreadable animation model slots: no `race_animation_sources` row | data loss |
 | `emittance_target_absent` | `XEMI` target not in the load order, or deleted: no `emittance` row | fallback |
 | `emittance_light_unusable_data` | `XEMI` target `LIGH` without a usable `DATA`: no `emittance` row | fallback |
 | `emittance_region_no_weather` | `XEMI` target `REGN` whose `RDWT` names no weather: no `emittance` row | fallback |
 | `emittance_weather_no_lighting` | `XEMI` target `REGN` whose weather has no Effect Lighting colours: no `emittance` row | fallback |
 | `emittance_target_wrong_type` | `XEMI` target that is neither a `LIGH` nor a `REGN`: no `emittance` row | fallback |
 
-**Severity.** A missing light or placement row, or an incomplete grass/template DATA field,
-loses all or part of a supported projection. Readable GRAS scalars remain authored values;
-only unavailable scalar spans become NULL. A
+**Severity.** A missing light or placement row, incomplete grass or template DATA, or
+unreadable RACE animation authoring loses all or part of a supported projection. Readable
+GRAS scalars remain authored values. Only unavailable scalar spans become NULL. Each
+unreadable RACE is counted once, regardless of how many NPCs use it. A
 `data_loss` category adds one line to the conversion's `warnings` and makes the output
 incomplete. A reference whose emittance target does not resolve keeps the model's own emission
 (section 16), the documented fallback, so a `fallback` category adds one line to `notices` and the

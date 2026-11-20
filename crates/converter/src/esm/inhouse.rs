@@ -26,12 +26,15 @@ use std::{
 };
 
 /// Decoder/adapter behavior version for output changes outside the authored schema.
+/// Version 14 projects STAT MODS texture swaps.
+/// Later LAND item recovery shares this identity; reconvert to pick up recovered paint.
 pub const ADAPTER_VERSION: u32 = 14;
 
 /// Legacy metadata projection contract: preserve WRLD payloads and record-aware VMAD links.
 /// Version 4 resolves localized string fields to the in-house reader's text (`legacy_text`).
 /// Version 5 changes database placement coverage.
 /// Version 6 projects STAT MODS alternate-texture entries (3D Index, TXST link) and remaps their TXST links.
+/// Later LAND paint recovery shares version 6; reconvert to pick up recovered paint.
 /// This identity does not change the independent converted-asset producer/settings proofs.
 pub const LEGACY_PROJECTION_VERSION: u32 = 6;
 
@@ -901,15 +904,39 @@ fn convert_plugins_with_text_sources_report_impl(
         )
     };
     let mut preserved_layers = HashMap::new();
+    let mut land_sources = HashMap::new();
     let preserve = |accepted: &records::ReadResult| {
         for record in accepted
             .records
             .values()
             .filter(|record| record.record_type == *b"LAND")
         {
-            match crate::esm::cell_cache::preserved_texture_layers(&record.to_raw_record()) {
-                Ok(layers) => {
+            match original_land_record(record, &order).and_then(|(raw, unresolved, orphaned)| {
+                let layers = crate::esm::cell_cache::preserved_texture_layers(&raw)?;
+                Ok((raw, layers, unresolved, orphaned))
+            }) {
+                Ok((raw, layers, unresolved, orphaned)) => {
+                    // Weight blocks outside an open assignment were dropped during recovery.
+                    let omitted =
+                        crate::esm::cell_cache::malformed_texture_items(&raw.subrecords) + orphaned;
+                    if omitted != 0 || unresolved != 0 {
+                        warnings.skipped(
+                            &order.names[record.load_order as usize],
+                            adapter_context(record, "terrain_recovery", Some("texture_layers".into()), "omitted"),
+                            format!("{:08X} omitted {omitted} malformed LAND texture items and cleared {unresolved} unresolved texture links; usable layers retained", record.form_id),
+                            false,
+                        );
+                    }
                     preserved_layers.insert(record.form_id, layers);
+                    // Only rejected paint needs a second runtime projection. Ordinary
+                    // LAND keeps the canonical path without retaining another raw copy.
+                    if record
+                        .rejected_fields
+                        .iter()
+                        .any(|tag| matches!(tag, b"BTXT" | b"ATXT" | b"VTXT"))
+                    {
+                        land_sources.insert(record.form_id, raw);
+                    }
                 }
                 Err(error) => warnings.skipped(
                     &order.names[record.load_order as usize],
@@ -968,6 +995,12 @@ fn convert_plugins_with_text_sources_report_impl(
         .transpose()?;
     let projection_stage = records::profile::ProfileStage::start("typed_export_runtime_projection");
     let mut master = HashMap::with_capacity(decoded.records.len());
+    let landscape_textures = decoded
+        .records
+        .values()
+        .filter(|record| record.record_type == *b"LTEX" && record.flags & 0x20 == 0)
+        .map(|record| record.form_id)
+        .collect::<BTreeSet<_>>();
     let mut opaque_fields = HashMap::new();
     // Sort compact keys, leaving record payloads in place and streaming one JSON line at a time.
     // The same traversal fixes localized provenance rowids when no typed dump is requested.
@@ -1116,8 +1149,63 @@ fn convert_plugins_with_text_sources_report_impl(
         }
         // Typed fields and the source digest have been written before ownership moves.
         let mut raw = take_canonical_record(record);
+        // These indices still refer to the decoded field vector; apply translations
+        // before paint recovery can change the canonical occurrence positions.
         for (index, text) in runtime_text_updates {
             raw.subrecords[index].1 = text;
+        }
+        if let Some(mut source) = land_sources.remove(&raw.form_id) {
+            source
+                .subrecords
+                .retain(|(tag, _)| matches!(tag.as_slice(), b"BTXT" | b"ATXT" | b"VTXT"));
+            for (tag, data) in &mut source.subrecords {
+                if matches!(tag.as_slice(), b"BTXT" | b"ATXT") && data.len() >= 4 {
+                    let id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+                    if id != 0 && !landscape_textures.contains(&id) {
+                        data[..4].fill(0);
+                    }
+                }
+            }
+            let current_paint: Vec<_> = raw
+                .subrecords
+                .iter()
+                .filter(|(tag, _)| matches!(tag.as_slice(), b"BTXT" | b"ATXT" | b"VTXT"))
+                .cloned()
+                .collect();
+            if current_paint != source.subrecords {
+                // Recover only paint. Other fields keep the decoder's final canonical
+                // bytes, including missing-target clearing in VTEX and opaque policy.
+                let previous_omitted = opaque_fields.remove(&raw.form_id).unwrap_or_default();
+                let mut omitted = BTreeSet::new();
+                let mut reindexed = HashMap::new();
+                let mut retained = Vec::new();
+                for (index, field) in raw.subrecords.into_iter().enumerate() {
+                    if !matches!(field.0.as_slice(), b"BTXT" | b"ATXT" | b"VTXT") {
+                        reindexed.insert(index, retained.len());
+                        if previous_omitted.contains(&index) {
+                            omitted.insert(retained.len());
+                        }
+                        retained.push(field);
+                    }
+                }
+                retained.extend(source.subrecords);
+                raw.subrecords = retained;
+                unresolved = unresolved
+                    .iter()
+                    .filter_map(|index| reindexed.get(index).copied())
+                    .collect();
+                localized.retain_mut(|field| {
+                    if let Some(index) = reindexed.get(&field.field_index) {
+                        field.field_index = *index;
+                        true
+                    } else {
+                        false
+                    }
+                });
+                if !omitted.is_empty() {
+                    opaque_fields.insert(raw.form_id, omitted);
+                }
+            }
         }
         // The runtime default-object table follows the key-merged record, like the legacy reader.
         if let Some(merged) = decoded.default_objects.get(&raw.form_id)
@@ -1369,7 +1457,7 @@ fn validate_candidate_with_string_sources(
             .rejected_fields
             .iter()
             .copied()
-            .find(|signature| matches!(signature, b"VHGT" | b"BTXT" | b"ATXT" | b"VTXT"))
+            .find(|signature| signature == b"VHGT")
         {
             return Err(format!(
                 "rejected authored terrain field {}",
@@ -1413,6 +1501,96 @@ fn validate_candidate_with_string_sources(
         });
     }
     validate_runtime_record(&raw)
+}
+
+/// Recover original LAND framing without losing a valid weight beside a malformed one.
+/// Keep the decoded header and resolve usable texture items with optional-link recovery.
+fn original_land_record(
+    record: &records::DecodedRecord,
+    order: &LoadOrder,
+) -> Result<(RawRecord, usize, usize)> {
+    if !record
+        .rejected_fields
+        .iter()
+        .any(|tag| matches!(tag, b"BTXT" | b"ATXT" | b"VTXT"))
+    {
+        return Ok((record.to_raw_record(), 0, 0));
+    }
+    let priority = record.load_order as usize;
+    // Keep only paint fields, and keep a VTXT only while an ATXT assignment is still
+    // open in source order. A BTXT or any other field closes the assignment, the same way
+    // `extract_texture_layers` reads the full record, so filtering never re-attaches
+    // a weight block to an earlier texture.
+    let mut assignment_open = false;
+    let mut orphaned = 0;
+    let mut paint = Vec::new();
+    for (tag, data) in crate::esm::extractors::extract_subrecords(&record.raw_payload)? {
+        match tag.as_slice() {
+            b"ATXT" => {
+                assignment_open = true;
+                paint.push((tag, data));
+            }
+            b"BTXT" => {
+                assignment_open = false;
+                paint.push((tag, data));
+            }
+            b"VTXT" if assignment_open => paint.push((tag, data)),
+            b"VTXT" => orphaned += 1,
+            _ => assignment_open = false,
+        }
+    }
+    let mut raw = RawRecord {
+        form_id: record.form_id,
+        record_type: record.record_type,
+        flags: record.flags,
+        subrecords: paint,
+        cell_form_id: None,
+        worldspace_form_id: None,
+        load_order: record.load_order,
+    };
+    let mut unresolved = 0;
+    for (tag, data) in &mut raw.subrecords {
+        let minimum = match tag.as_slice() {
+            b"BTXT" => 6,
+            b"ATXT" => 8,
+            _ => continue,
+        };
+        // The tolerant layer projection omits these assignments before reading links.
+        if data.len() < minimum || data[4] >= 4 {
+            continue;
+        }
+        let value = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let resolved = resolve_land_texture(value, priority, order).unwrap_or_else(|| {
+            unresolved += 1;
+            0
+        });
+        data[..4].copy_from_slice(&resolved.to_le_bytes());
+    }
+    // Only selection fields are reconstructed. Callers retain their independently
+    // decoded non-paint fields and use this projection solely for source layers.
+    Ok((raw, unresolved, orphaned))
+}
+
+/// Resolve one optional LAND texture link using the typed decoder's ownership/width rules.
+fn resolve_land_texture(value: u32, priority: usize, order: &LoadOrder) -> Option<u32> {
+    if value == 0 {
+        return Some(0);
+    }
+    let masters = &order.metadata[priority].masters;
+    let index = (value >> 24) as usize;
+    if index > masters.len() {
+        return None;
+    }
+    let owner = super::load_order::normalize_plugin_name(
+        masters.get(index).unwrap_or(&order.names[priority]),
+    );
+    if let Some(slot) = order.light.get(&owner) {
+        return (value & 0x00ff_ffff <= 0xfff).then_some(0xfe00_0000 | slot << 12 | value & 0xfff);
+    }
+    order
+        .normal
+        .get(&owner)
+        .map(|slot| slot << 24 | value & 0x00ff_ffff)
 }
 
 /// Keep candidate admission and the final defensive check on one validator contract.
@@ -1961,6 +2139,159 @@ mod runtime_move_tests {
             supported: false,
             deferred_fields: Vec::new(),
         }
+    }
+
+    /// LAND recovery keeps the decoded header, skips unusable assignments and nulls bad links.
+    #[test]
+    fn original_land_recovery_uses_decoded_header_and_item_local_links() {
+        use crate::esm::binary::PluginMetadata;
+
+        let mut order = LoadOrder::from_metadata(
+            vec![
+                "Filler.esm".into(),
+                "Master.esm".into(),
+                "Light.esl".into(),
+                "Paint.esp".into(),
+            ],
+            vec![
+                PluginMetadata::default(),
+                PluginMetadata::default(),
+                PluginMetadata::default(),
+                PluginMetadata {
+                    masters: vec!["Master.esm".into(), "Light.esl".into()],
+                    flags: 0,
+                },
+            ],
+        )
+        .unwrap();
+        let fields = [
+            (
+                b"BTXT".to_vec(),
+                [0x0000_0900u32.to_le_bytes(), [0; 4]].concat(),
+            ),
+            (
+                b"ATXT".to_vec(),
+                [0x0100_00abu32.to_le_bytes(), [0, 0, 1, 0]].concat(),
+            ),
+            (
+                b"ATXT".to_vec(),
+                [0x0100_1000u32.to_le_bytes(), [0, 0, 2, 0]].concat(),
+            ),
+            (
+                b"ATXT".to_vec(),
+                [0xff00_0001u32.to_le_bytes(), [0, 0, 3, 0]].concat(),
+            ),
+            (b"ATXT".to_vec(), vec![0xff, 0xff, 0xff, 0xff, 0]),
+            (
+                b"BTXT".to_vec(),
+                [0xff00_0001u32.to_le_bytes(), [4, 0, 0, 0]].concat(),
+            ),
+        ];
+        let mut decoded = record();
+        decoded.record_type = *b"LAND";
+        decoded.form_id = 0x0200_5678;
+        decoded.source_form_id = 0xff00_5678;
+        decoded.load_order = 3;
+        decoded.rejected_fields = vec![*b"ATXT"];
+        decoded.raw_payload = fields
+            .iter()
+            .flat_map(|(tag, data)| {
+                [tag.as_slice(), &(data.len() as u16).to_le_bytes(), data].concat()
+            })
+            .collect();
+        let (raw, unresolved, _) = original_land_record(&decoded, &order).unwrap();
+        assert_eq!(raw.form_id, 0x0200_5678);
+        assert_eq!(unresolved, 2, "only usable assignments resolve their links");
+        assert_eq!(&raw.subrecords[0].1[..4], &0x0100_0900u32.to_le_bytes());
+        assert_eq!(&raw.subrecords[1].1[..4], &0xfe00_00abu32.to_le_bytes());
+        for index in [2, 3] {
+            assert_eq!(&raw.subrecords[index].1[..4], &[0; 4]);
+        }
+        assert_eq!(raw.subrecords[4..], fields[4..]);
+        order.normal.remove("master.esm");
+        let (raw, unresolved, _) = original_land_record(&decoded, &order).unwrap();
+        assert_eq!(unresolved, 3, "absent owners also recover locally");
+        assert_eq!(&raw.subrecords[0].1[..4], &[0; 4]);
+    }
+
+    #[test]
+    fn original_land_recovery_keeps_weights_with_their_own_assignment() {
+        use crate::esm::binary::PluginMetadata;
+
+        let order =
+            LoadOrder::from_metadata(vec!["Paint.esp".into()], vec![PluginMetadata::default()])
+                .unwrap();
+        let weight = |vertex: u16, opacity: f32| {
+            [
+                vertex.to_le_bytes().as_slice(),
+                &[0, 0],
+                &opacity.to_le_bytes(),
+            ]
+            .concat()
+        };
+        let fields = [
+            (b"VTXT".to_vec(), weight(4, 0.5)),
+            (
+                b"ATXT".to_vec(),
+                [0x0000_0abcu32.to_le_bytes(), [0, 0, 1, 0]].concat(),
+            ),
+            (b"VTXT".to_vec(), weight(1, 0.25)),
+            // Any other field closes the open assignment in source order.
+            (b"VHGT".to_vec(), vec![0; 4]),
+            (b"VTXT".to_vec(), weight(2, 0.5)),
+            (
+                b"ATXT".to_vec(),
+                [0x0000_0abdu32.to_le_bytes(), [1, 0, 2, 0]].concat(),
+            ),
+            (b"VTXT".to_vec(), weight(3, 0.75)),
+            (
+                b"BTXT".to_vec(),
+                [0x0000_0abeu32.to_le_bytes(), [2, 0, 0, 0]].concat(),
+            ),
+            (b"VTXT".to_vec(), weight(5, 0.5)),
+        ];
+        let mut decoded = record();
+        decoded.record_type = *b"LAND";
+        decoded.load_order = 0;
+        decoded.rejected_fields = vec![*b"VTXT"];
+        decoded.raw_payload = fields
+            .iter()
+            .flat_map(|(tag, data)| {
+                [tag.as_slice(), &(data.len() as u16).to_le_bytes(), data].concat()
+            })
+            .collect();
+        let (raw, unresolved, orphaned) = original_land_record(&decoded, &order).unwrap();
+        assert_eq!(unresolved, 0);
+        assert_eq!(orphaned, 3, "every dropped weight block is reported");
+        let tags: Vec<&[u8]> = raw
+            .subrecords
+            .iter()
+            .map(|(tag, _)| tag.as_slice())
+            .collect();
+        assert_eq!(
+            tags,
+            [b"ATXT", b"VTXT", b"ATXT", b"VTXT", b"BTXT"].map(|tag| tag.as_slice())
+        );
+        let (layers, _) = crate::esm::cell_cache::extract_texture_layers(&raw.subrecords).unwrap();
+        let first = layers.iter().find(|layer| layer.layer == 1).unwrap();
+        let second = layers.iter().find(|layer| layer.layer == 2).unwrap();
+        assert_eq!(
+            first
+                .weights
+                .iter()
+                .map(|weight| weight.vertex)
+                .collect::<Vec<_>>(),
+            [1],
+            "the orphaned block after VHGT stays unassigned"
+        );
+        assert_eq!(
+            second
+                .weights
+                .iter()
+                .map(|weight| weight.vertex)
+                .collect::<Vec<_>>(),
+            [3]
+        );
     }
 
     /// Hide invalid opaque links around valid repeated signatures and asymmetric payloads.
