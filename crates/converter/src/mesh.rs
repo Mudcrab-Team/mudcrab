@@ -5742,7 +5742,7 @@ mod tests {
         let (data, header) = parse_skyrim_header(&bytes, &input).unwrap();
         // BSTriShape's authored radius follows its 72-byte AV object and sphere center.
         let radius_offset = bytes.len() - data.len() + header.block_size_index[0] as usize + 84;
-        let [enclosing, undersized] = [2.0f32, 0.25].map(|radius| {
+        let [enclosing, undersized, rounded_down] = [2.0f32, 0.25, 2.0f32.sqrt()].map(|radius| {
             bytes[radius_offset..radius_offset + 4].copy_from_slice(&radius.to_le_bytes());
             fs::write(&input, &bytes).unwrap();
             MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
@@ -5766,6 +5766,8 @@ mod tests {
         assert_eq!(drawable[key]["center"], serde_json::json!([0.0, 0.0, 0.0]));
         assert_eq!(drawable[key]["radius"], 2.0);
         assert!(undersized_json["meshes"][0]["extras"][key].is_null());
+        let rounded_down_json = glb_json_from_bytes(&rounded_down).unwrap();
+        assert!(rounded_down_json["meshes"][0]["extras"][key].is_null());
         for key in ["nodes", "meshes", "accessors", "scenes"] {
             assert_eq!(enclosing_json[key], undersized_json[key]);
         }

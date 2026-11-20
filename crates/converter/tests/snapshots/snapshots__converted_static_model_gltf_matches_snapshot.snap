@@ -144,16 +144,6 @@ expression: document
   ],
   "meshes": [
     {
-      "extras": {
-        "mudcrabDrawableSphere": {
-          "center": [
-            0.0,
-            0.0,
-            0.0
-          ],
-          "radius": 1.4142135381698608
-        }
-      },
       "name": "GeneratedQuad",
       "primitives": [
         {
