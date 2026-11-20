@@ -2878,6 +2878,94 @@ fn reject_deferred_candidate(
         });
 }
 
+fn placement_base_field<'a>(
+    prepared: &'a PreparedSchemas,
+    kind: &[u8; 4],
+) -> Option<&'a FieldSchema> {
+    prepared.get(kind)?.entries.iter().find_map(|entry| {
+        (entry.field.signature.as_deref() == Some("NAME")).then_some(&entry.field)
+    })
+}
+
+fn target_allowed(id: u32, kind: Option<[u8; 4]>, field: &FieldSchema) -> bool {
+    // Hardcoded IDs (including room markers and the player) can be absent from plugins.
+    kind.map_or(id < 0x800, |kind| {
+        field
+            .targets
+            .iter()
+            .any(|target| target == "*" || target == "ANY_" || target.as_bytes() == kind)
+    })
+}
+
+/// Check the two required placement links against the same catalogue as optional links.
+pub(crate) fn validate_placement_targets(
+    prepared: Option<&PreparedSchemas>,
+    kind: &[u8; 4],
+    cell: Option<u32>,
+    base: Option<u32>,
+    winning_kind: impl Fn(u32) -> Option<[u8; 4]>,
+) -> Result<(), String> {
+    if let Some(cell) = cell
+        && winning_kind(cell) != Some(*b"CELL")
+    {
+        return Err(format!(
+            "placement parent {cell:08X} is absent or is not CELL"
+        ));
+    }
+    let schemas = match prepared {
+        Some(prepared) => prepared,
+        None => self::prepared(),
+    };
+    if let Some(base) = base
+        && let Some(field) = placement_base_field(schemas, kind)
+        && !target_allowed(base, winning_kind(base), field)
+    {
+        return Err(format!(
+            "required NAME {base:08X} is absent or has a disallowed target type"
+        ));
+    }
+    Ok(())
+}
+
+fn placement_links(record: &DecodedRecord) -> [Option<u32>; 2] {
+    let base = record
+        .fields
+        .iter()
+        .find(|field| field.signature == *b"NAME")
+        .and_then(|field| match field.value {
+            Value::FormId(id) if id != 0 => Some(id),
+            _ => None,
+        });
+    [record.cell_form_id, base]
+}
+
+fn recover_predecessor(
+    result: &mut ReadResult,
+    history_index: &HashMap<(u32, u64), usize>,
+    order: &LoadOrder,
+    predecessors: &mut Vec<DecodedRecord>,
+    validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+    require_complete: bool,
+) -> Option<DecodedRecord> {
+    while let Some(previous) = predecessors.pop() {
+        let failure = if require_complete && !previous.payload_complete {
+            Some("recovery predecessor has incomplete payload".to_owned())
+        } else if record_contains_deferred(&previous) {
+            None
+        } else {
+            validate(&previous)
+                .err()
+                .map(|error| format!("recovery predecessor unusable: {error}"))
+        };
+        if let Some(reason) = failure {
+            reject_deferred_candidate(result, history_index, &previous, order, reason);
+        } else {
+            return Some(previous);
+        }
+    }
+    None
+}
+
 /// Finalize tentative winners against a stable catalogue, preserving only selective fallback chains.
 pub(crate) fn resolve_deferred(
     result: &mut ReadResult,
@@ -2888,18 +2976,15 @@ pub(crate) fn resolve_deferred(
     validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
 ) {
     let mut pending = BTreeMap::new();
+    let mut placements = std::collections::BTreeSet::new();
     for (&id, record) in &mut result.records {
         if record_contains_deferred(record) {
             pending.insert(id, DeferredSource::take(record));
         }
+        if crate::esm::is_placed_record_type(&record.record_type) {
+            placements.insert(id);
+        }
     }
-    let affected: Vec<_> = pending.keys().copied().collect();
-    let candidate_count = pending.len()
-        + affected
-            .iter()
-            .filter_map(|id| predecessors.get(id))
-            .map(Vec::len)
-            .sum::<usize>();
     let mut replay_diagnostics = HashMap::new();
     let mut changed_chains: HashMap<u32, Vec<super::RecordSource>> = HashMap::new();
     // Only a fallback replaces a record, so the winning-kind map follows each
@@ -2908,8 +2993,7 @@ pub(crate) fn resolve_deferred(
     // History is complete before resolution and only its entries change here, so
     // one key index serves every acceptance and rejection without rescanning it.
     let mut history_index: HashMap<(u32, u64), usize> = HashMap::new();
-    // A conversion with nothing deferred pays neither pass over its records.
-    if !pending.is_empty() {
+    if !pending.is_empty() || !placements.is_empty() {
         kinds.extend(
             result
                 .records
@@ -2922,7 +3006,9 @@ pub(crate) fn resolve_deferred(
                 .or_insert(index);
         }
         #[cfg(test)]
-        record_deferred_catalogue_build();
+        if !pending.is_empty() {
+            record_deferred_catalogue_build();
+        }
     }
     // Every failure consumes a candidate or finishes its safe prefix. Stable
     // winners visit only their originally deferred leaves once more. A changed
@@ -2930,10 +3016,7 @@ pub(crate) fn resolve_deferred(
     // stable normal fields and siblings are not decoded again. A failed deferred
     // ownership anchor can change a later grammar binding or EDID selector
     // context; only those dependent occurrences require reinterpretation.
-    for _ in 0..=candidate_count {
-        if pending.is_empty() {
-            break;
-        }
+    loop {
         let ids: Vec<_> = pending.keys().copied().collect();
         let mut recovered = false;
         for id in ids {
@@ -2983,35 +3066,22 @@ pub(crate) fn resolve_deferred(
             replay_diagnostics.remove(&id);
             changed_chains.entry(id).or_default();
             let source = pending.remove(&id).expect("selected deferred source");
-            if let Some(mut previous) = predecessors.get_mut(&id).and_then(|chain| chain.pop()) {
+            if let Some(chain) = predecessors.get_mut(&id).filter(|chain| !chain.is_empty()) {
                 reject_deferred_candidate(result, &history_index, &record, order, reason);
-                loop {
-                    let failure = if !previous.payload_complete {
-                        Some("deferred recovery predecessor has incomplete payload".to_owned())
-                    } else if record_contains_deferred(&previous) {
-                        None
-                    } else {
-                        validate(&previous)
-                            .err()
-                            .map(|error| format!("deferred recovery predecessor unusable: {error}"))
-                    };
-                    if let Some(reason) = failure {
-                        reject_deferred_candidate(result, &history_index, &previous, order, reason);
-                        if let Some(earlier) =
-                            predecessors.get_mut(&id).and_then(|chain| chain.pop())
-                        {
-                            previous = earlier;
-                            continue;
-                        }
-                    } else {
-                        if record_contains_deferred(&previous) {
-                            pending.insert(id, DeferredSource::take(&mut previous));
-                        }
-                        let record_type = previous.record_type;
-                        result.records.insert(id, previous);
-                        kinds.insert(id, record_type);
+                if let Some(mut previous) =
+                    recover_predecessor(result, &history_index, order, chain, validate, true)
+                {
+                    if record_contains_deferred(&previous) {
+                        pending.insert(id, DeferredSource::take(&mut previous));
                     }
-                    break;
+                    let kind = previous.record_type;
+                    if crate::esm::is_placed_record_type(&kind) {
+                        placements.insert(id);
+                    } else {
+                        placements.remove(&id);
+                    }
+                    result.records.insert(id, previous);
+                    kinds.insert(id, kind);
                 }
             } else {
                 let omitted = source.safe_prefix(&mut record);
@@ -3070,21 +3140,78 @@ pub(crate) fn resolve_deferred(
             // A record rejected without a successor leaves the winning catalogue.
             if !result.records.contains_key(&id) {
                 kinds.remove(&id);
+                placements.remove(&id);
             }
             recovered = true;
             // A changed kind can affect a previously successful dependent. Restart
             // before rejecting any other candidate against the superseded catalogue.
             break;
         }
+        if recovered {
+            continue;
+        }
+
+        // Wait for deferred candidates to settle before checking placement targets.
+        let mut unresolved = std::collections::HashSet::new();
+        let selected = crate::esm::placement_dependency_order(placements.iter().copied(), |id| {
+            placements
+                .contains(&id)
+                .then(|| placement_links(&result.records[&id]))
+        });
+        for id in selected {
+            let record = &result.records[&id];
+            let links = placement_links(record);
+            if links
+                .into_iter()
+                .flatten()
+                .any(|target| unresolved.contains(&target))
+            {
+                unresolved.insert(id);
+                continue;
+            }
+            let [cell, base] = links;
+            let Err(reason) = validate_placement_targets(
+                Some(prepared),
+                &record.record_type,
+                cell,
+                base,
+                |target| kinds.get(&target).copied(),
+            ) else {
+                continue;
+            };
+            recovered = true;
+            unresolved.insert(id);
+            let record = result.records.remove(&id).expect("checked candidate");
+            reject_deferred_candidate(result, &history_index, &record, order, reason);
+            replay_diagnostics.remove(&id);
+            pending.remove(&id);
+            changed_chains.entry(id).or_default();
+            let previous = predecessors.get_mut(&id).and_then(|chain| {
+                recover_predecessor(result, &history_index, order, chain, validate, false)
+            });
+            placements.remove(&id);
+            if let Some(mut previous) = previous {
+                let kind = previous.record_type;
+                if crate::esm::is_placed_record_type(&kind) {
+                    placements.insert(id);
+                }
+                let deferred = record_contains_deferred(&previous);
+                if deferred {
+                    pending.insert(id, DeferredSource::take(&mut previous));
+                }
+                kinds.insert(id, kind);
+                result.records.insert(id, previous);
+                if deferred {
+                    break;
+                }
+            } else {
+                kinds.remove(&id);
+            }
+        }
         if !recovered {
-            pending.clear();
             break;
         }
     }
-    debug_assert!(
-        pending.is_empty(),
-        "finite deferred candidate population exhausted"
-    );
     for (id, (baseline, replay)) in replay_diagnostics {
         if let Some(record) = result.records.get(&id) {
             merge_new_diagnostics(
@@ -3452,13 +3579,7 @@ impl TargetValidation<'_> {
         match decoded {
             Value::FormId(id) if *id != 0 => {
                 self.diagnostics.link(*id);
-                // Hardcoded IDs (including the player) need not have a plugin record.
-                let allowed = self.kinds.get(id).map_or(*id < 0x800, |kind| {
-                    field.targets.iter().any(|target| {
-                        target == "*" || target == "ANY_" || target.as_bytes() == kind
-                    })
-                });
-                if !allowed {
+                if !target_allowed(*id, self.kinds.get(id).copied(), &field) {
                     self.diagnostics.note("link", || {
                         format!(
                             "{} link {:08X} is absent or has a disallowed target type",
