@@ -5112,12 +5112,13 @@ fn source_backed_door_edits_refresh_only_affected_links() {
             [sub(b"DATA", &[1]), sub(b"FULL", name)].concat(),
         )
     };
-    let door = |id, target: u32, arrival: f32| {
+    let teleport = |target: u32, arrival: f32| {
         let mut xtel = [0; 32];
         xtel[..4].copy_from_slice(&target.to_le_bytes());
         xtel[4..8].copy_from_slice(&arrival.to_le_bytes());
-        placement(id, base, 0, 0.0, sub(b"XTEL", &xtel))
+        sub(b"XTEL", &xtel)
     };
+    let door = |id, target, arrival| placement(id, base, 0, 0.0, teleport(target, arrival));
     let original = plugin(
         root,
         "Skyrim.esm",
@@ -5273,8 +5274,13 @@ fn source_backed_door_edits_refresh_only_affected_links() {
     let mut invalid_target = [0; 32];
     invalid_target[..4].copy_from_slice(&0x9900_0801u32.to_le_bytes());
     for (name, xtel, arrival) in [
-        ("WrongWidth.esp", &[0; 28][..], 21.0),
-        ("InvalidMaster.esp", &invalid_target[..], 22.0),
+        ("WrongWidth.esp", sub(b"XTEL", &[0; 28]), 21.0),
+        ("InvalidMaster.esp", sub(b"XTEL", &invalid_target), 22.0),
+        (
+            "ConflictingDestinations.esp",
+            [teleport(entry, 2.0), teleport(neighbor, 3.0)].concat(),
+            23.0,
+        ),
     ] {
         let malformed = plugin(
             root,
@@ -5282,7 +5288,7 @@ fn source_backed_door_edits_refresh_only_affected_links() {
             &["Skyrim.esm"],
             0,
             [
-                placement_group(cellar, placement(moved, base, 0, 0.0, sub(b"XTEL", xtel))),
+                placement_group(cellar, placement(moved, base, 0, 0.0, xtel)),
                 placement_group(hall, door(neighbor, entry, arrival)),
             ]
             .concat(),

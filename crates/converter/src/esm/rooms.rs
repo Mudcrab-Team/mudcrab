@@ -1358,11 +1358,20 @@ fn write_overlap_rows(tx: &Transaction<'_>, cell: Option<u32>) -> Result<u64> {
     )?;
     if has_header_flags {
         // Repair geometric memberships left by previous conversions as well as new output.
-        tx.execute(
-            "DELETE FROM reference_rooms WHERE reference_id IN (
-                SELECT id FROM \"references\" WHERE (header_flags & ?1) != 0 AND (?2 IS NULL OR cell_id=?2))",
-            params![shared::records::MULTIBOUND_REFERENCE_FLAG, cell],
-        )?;
+        let flag = shared::records::MULTIBOUND_REFERENCE_FLAG;
+        if let Some(cell) = cell {
+            tx.prepare_cached(
+                "DELETE FROM reference_rooms WHERE reference_id IN (
+                    SELECT id FROM \"references\" WHERE cell_id=?2 AND (header_flags & ?1) != 0)",
+            )?
+            .execute(params![flag, cell])?;
+        } else {
+            tx.execute(
+                "DELETE FROM reference_rooms WHERE reference_id IN (
+                    SELECT id FROM \"references\" WHERE (header_flags & ?1) != 0)",
+                [flag],
+            )?;
+        }
     }
     if !has_rooms || !has_bounds {
         return Ok(0);

@@ -469,7 +469,7 @@ fn write_model_bounds(tx: &Transaction<'_>, id: u32, bounds: ModelBounds) -> rus
         "UPDATE statics SET bounds_min_x=?1,bounds_min_y=?2,bounds_min_z=?3,bounds_max_x=?4,bounds_max_y=?5,bounds_max_z=?6,bounds_valid=1 WHERE id=?7",
     )?.execute(params![min[0], min[1], min[2], max[0], max[1], max[2], id])?;
     if let Some(sphere) = bounds.room {
-        tx.prepare_cached("INSERT INTO room_model_bounds VALUES (?1,?2,?3,?4,?5)")?
+        tx.prepare_cached("INSERT INTO room_model_bounds(base_form_id,center_x,center_y,center_z,radius) VALUES (?1,?2,?3,?4,?5)")?
             .execute(params![
                 id,
                 sphere.center[0],
