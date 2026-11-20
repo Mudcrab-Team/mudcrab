@@ -172,10 +172,12 @@ CREATE TABLE IF NOT EXISTS plugins (
 ```
 
 Once admitted, a plugin keeps its `id`, `name` and `priority` even if its source
-becomes unreadable before record parsing or checksum collection. Both readers
-publish usable neighboring plugins without renumbering full/light slots or master
-indices. An unavailable input has an empty checksum BLOB (not NULL and not a
-SHA-256 digest); already decoded usable records may remain. The input's first
+becomes unreadable before record parsing. The checksum comes from the same
+opened view those records are decoded from, so there is no separate checksum
+phase to reach. Both readers publish usable neighboring plugins without
+renumbering full/light slots or master indices. An unavailable input has an
+empty checksum BLOB (not NULL and not a SHA-256 digest); already decoded usable
+records may remain. The input's first
 recovery decision supplies the warning, and later metadata/proof stages do not
 reopen a known skipped source or emit it again. Such output is incomplete and its
 unavailable source cannot authenticate cache reuse or source-version decoding.

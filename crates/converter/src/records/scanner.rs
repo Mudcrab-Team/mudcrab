@@ -524,6 +524,7 @@ mod tests {
         assert_eq!(ids, [0, 0x101, 0x103]);
         assert_eq!(diagnostics.skipped_records, 1);
         assert_eq!(diagnostics.skipped_fields, 0);
+        assert_eq!(diagnostics.event_context.action, Some("kept_snapshot"));
         let warnings = diagnostics.warning_summary_lines("MutableMod.esp");
         assert!(
             warnings
