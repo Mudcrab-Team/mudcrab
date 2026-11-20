@@ -539,6 +539,7 @@ fn controllers_on_joint_ancestors_omit_the_room_sphere() {
             (SkinControllerTarget::Ancestor, false),
             (SkinControllerTarget::Unrelated, true),
             (SkinControllerTarget::AboveSkinRoot, false),
+            (SkinControllerTarget::WeightedRoot, false),
         ] {
             fs::write(
                 &input,

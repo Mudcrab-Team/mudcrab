@@ -988,9 +988,16 @@ fn project_room_graph(
 
     let base_of = |record: &RawRecord| {
         SubrecordView::new(&record.subrecords)
-            .get_form_id(b"NAME")
+            .unique_form_id(b"NAME")
             .unwrap_or(0)
     };
+    ordered.retain(|(_, record)| {
+        let valid = base_of(record) != 0;
+        if !valid {
+            incomplete.extend(record.cell_form_id);
+        }
+        valid
+    });
 
     // Keep unchanged room geometry and links exactly as the source reader published them.
     let mut rooms_by_cell = BTreeMap::new();

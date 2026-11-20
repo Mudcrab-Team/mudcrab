@@ -296,7 +296,7 @@ pub(super) fn extract_with_session(
             .collect(),
         Some(b"BTDX") => ba2::iter_raw_entries(&bytes)?
             .into_iter()
-            .map(|entry| (entry.name.clone(), Payload::Ba2(entry)))
+            .map(|entry| (entry.entry.name.clone(), Payload::Ba2(entry)))
             .collect(),
         _ => bail!("unsupported archive magic in {}", archive_path.display()),
     };

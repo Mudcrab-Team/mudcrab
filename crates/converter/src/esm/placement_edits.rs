@@ -376,16 +376,17 @@ fn plugin_edits(
     parse_plugin_bytes(bytes, name, |candidate| candidates.push(candidate))?;
     let warnings = RemapWarnings::default();
     let mut import = Import::default();
+    let mut damage_after = HashMap::new();
     for candidate in candidates {
         let mut record = match candidate {
             ParsedRecord::Usable(record) => record,
             ParsedRecord::DamagedRecord(record) => {
-                record_damage(tx, &mut import, &record, priority, &order)?;
+                record_damage(&mut damage_after, &mut import, &record, priority, &order);
                 continue;
             }
             ParsedRecord::TruncatedPlacement(placement) => {
                 if let Some(id) = placement.runtime_id(priority, &order) {
-                    mark_predecessor_damage(tx, &mut import, id)?;
+                    damage_after.insert(id, import.edits.len());
                 } else {
                     import.damage.insert(DiscardedFrameScope::Unknown);
                 }
@@ -424,36 +425,34 @@ fn plugin_edits(
             "{name}: unsupported {} record {source_id:08X}",
             String::from_utf8_lossy(&record.record_type)
         );
+        let view = SubrecordView::new(&record.subrecords);
+        let base = view.unique_form_id(b"NAME");
         if !record.is_deleted() {
             validate_room_field_tags(&record.subrecords)?;
-            // Reject malformed arrivals before they replace the last usable door placement.
-            if SubrecordView::new(&record.subrecords)
-                .find_all(b"XTEL")
-                .enumerate()
-                .any(|(index, data)| {
-                    let Some((target, arrival_and_flags)) = data.split_first_chunk::<4>() else {
-                        return true;
-                    };
-                    let target = u32::from_le_bytes(*target);
-                    index != 0
-                        || arrival_and_flags.len() != 28
-                        || !super::valid_placement_transform(std::iter::once(
-                            &arrival_and_flags[..24],
-                        ))
-                        || (target != 0
-                            && source_identity::header_runtime_id(
-                                b"REFR", target, priority, &order,
-                            )
+            if base.is_none_or(|id| id == 0) {
+                eprintln!("warning: {name}: skipped placement {source_id:08X} with malformed NAME");
+                record_damage(&mut damage_after, &mut import, &record, priority, &order);
+                continue;
+            }
+            // Retain the previous link when the new arrival or destination is unusable.
+            if view.find_all(b"XTEL").enumerate().any(|(index, data)| {
+                let Some((target, arrival_and_flags)) = data.split_first_chunk::<4>() else {
+                    return true;
+                };
+                let target = u32::from_le_bytes(*target);
+                index != 0
+                    || arrival_and_flags.len() != 28
+                    || !super::valid_placement_transform(std::iter::once(&arrival_and_flags[..24]))
+                    || (target != 0
+                        && source_identity::header_runtime_id(b"REFR", target, priority, &order)
                             .is_none_or(|id| id == 0))
-                })
-            {
+            }) {
                 eprintln!("warning: {name}: skipped placement {source_id:08X} with malformed XTEL");
-                record_damage(tx, &mut import, &record, priority, &order)?;
+                record_damage(&mut damage_after, &mut import, &record, priority, &order);
                 continue;
             }
         }
-        let room_links = SubrecordView::new(&record.subrecords)
-            .get_form_id(b"NAME")
+        let room_links = base
             .filter(|id| id & 0x00ff_ffff == ROOM_MARKER_BASE)
             .map(|_| RoomLinkLayout::from_raw(&record));
         let occluder = SubrecordView::new(&record.subrecords)
@@ -495,16 +494,29 @@ fn plugin_edits(
         });
     }
     warnings.report();
+    for (index, edit) in import.edits.iter().enumerate() {
+        if damage_after
+            .get(&edit.record.form_id)
+            .is_some_and(|&end| index < end)
+            && !edit.record.is_deleted()
+            && let Some(cell) = edit.record.cell_form_id
+        {
+            import.damage.insert(DiscardedFrameScope::Cell(cell));
+        }
+    }
+    for id in damage_after.into_keys() {
+        mark_predecessor_damage(tx, &mut import, id)?;
+    }
     Ok(import)
 }
 
 fn record_damage(
-    tx: &Transaction<'_>,
+    damage_after: &mut HashMap<u32, usize>,
     import: &mut Import,
     record: &RawRecord,
     priority: usize,
     order: &LoadOrder,
-) -> Result<()> {
+) {
     let scoped_cell = |cell: Option<u32>| DiscardedFrameScope::from(cell).resolve(priority, order);
     if record.record_type == CELL {
         let scope = scoped_cell(Some(record.form_id));
@@ -520,10 +532,9 @@ fn record_damage(
             source_identity::header_runtime_id(&record.record_type, record.form_id, priority, order)
                 .filter(|&id| id != 0)
         {
-            mark_predecessor_damage(tx, import, id)?;
+            damage_after.insert(id, import.edits.len());
         }
     }
-    Ok(())
 }
 
 fn mark_predecessor_damage(tx: &Transaction<'_>, import: &mut Import, id: u32) -> Result<()> {
@@ -838,12 +849,8 @@ fn validate_room_fields(
 ) -> Result<()> {
     validate_room_field_tags(subrecords)?;
     let view = SubrecordView::new(subrecords);
-    let mut bases = view.find_all(b"NAME");
-    let base = bases
-        .next()
-        .and_then(|data| <[u8; 4]>::try_from(data).ok())
-        .map(u32::from_le_bytes)
-        .filter(|_| bases.next().is_none())
+    let base = view
+        .unique_form_id(b"NAME")
         .ok_or_else(|| color_eyre::eyre::eyre!("placement requires one base FormID"))?;
     let mut marker_bounds = view.find_all(b"XMBO");
     if let Some(bounds) = marker_bounds.next() {

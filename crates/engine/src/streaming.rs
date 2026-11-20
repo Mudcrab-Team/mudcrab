@@ -4731,18 +4731,29 @@ pub(crate) fn converted_model_path(path: String) -> Option<String> {
     // `Is Marker` flag (`spawned_model_path`) and, inside a mesh, by the converter's
     // `EditorMarker` shape rule; the folder rules below stay as path-convention guards.
     let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    let without_prefix = normalized.strip_prefix("meshes/").unwrap_or(&normalized);
-    if without_prefix.starts_with("sky/")
-        || without_prefix.starts_with("markers/")
-        || (without_prefix.starts_with("effects/")
-            && without_prefix != "effects/fxcobwebroundwall01.nif")
+    let normalized = normalized.trim_start_matches("./");
+    let without_prefix = normalized
+        .strip_prefix("meshes/")
+        .unwrap_or(normalized)
+        .trim_start_matches("./");
+    if !is_safe_relative_asset_path(without_prefix) {
+        return None;
+    }
+    let relative = without_prefix
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    let relative = std::path::Path::new(&relative);
+    if relative.as_os_str().is_empty()
+        || relative.starts_with("sky")
+        || relative.starts_with("markers")
+        || (relative.starts_with("effects")
+            && relative != std::path::Path::new("effects/fxcobwebroundwall01.nif"))
     {
         return None;
     }
-    if without_prefix.is_empty() || !is_safe_relative_asset_path(without_prefix) {
-        return None;
-    }
-    let mut converted = std::path::PathBuf::from("meshes").join(without_prefix);
+    let mut converted = std::path::PathBuf::from("meshes").join(relative);
     converted.set_extension("glb");
     Some(converted.to_string_lossy().replace('\\', "/"))
 }
@@ -7032,6 +7043,8 @@ mod tests {
         );
         for path in [
             r"Effects\FXcobwebRoundWall01.nif",
+            "Effects/./FXcobwebRoundWall01.nif",
+            "./Meshes/Effects/./FXcobwebRoundWall01.nif",
             "meshes/effects/fxcobwebroundwall01.nif",
         ] {
             assert_eq!(
@@ -7040,7 +7053,13 @@ mod tests {
             );
             assert!(spawned_model_path(Some(path.into()), true).is_none());
         }
-        assert_eq!(converted_model_path("Effects/FXRapids.nif".into()), None);
+        for path in [
+            "Effects/FXRapids.nif",
+            "Effects/./FXRapids.nif",
+            "Effects/../Effects/FXcobwebRoundWall01.nif",
+        ] {
+            assert_eq!(converted_model_path(path.into()), None);
+        }
     }
 
     #[test]
