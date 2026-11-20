@@ -6896,3 +6896,97 @@ fn placement_winner_checks_ungrouped_override_against_usable_predecessor() {
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+#[test]
+fn typed_placement_winner_checks_grouped_duplicates_before_ungrouped_override() {
+    use converter::config::RecordReader;
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    let base = plugin(
+        data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            record(b"CELL", 0x901, 0, sub(b"DATA", &[1, 0])),
+            record(b"CELL", 0x902, 0, sub(b"DATA", &[1, 0])),
+            record(b"STAT", 0x830, 0, sub(b"EDID", b"OriginalStatic\0")),
+            record(b"STAT", 0x831, 0, sub(b"EDID", b"ReplacementStatic\0")),
+            placement_group(0x900, placement(0x853, 0x830, 0, 1.0, Vec::new())),
+        ]
+        .concat(),
+    );
+    let grouped = plugin(
+        data,
+        "Grouped.esp",
+        &["Skyrim.esm"],
+        0,
+        [
+            placement_group(
+                0x900,
+                [
+                    placement(0x850, 0x832, 0, 1.0, Vec::new()),
+                    placement(0x851, 0x830, 0, 1.0, Vec::new()),
+                    placement(0x852, 0x832, 0, 1.0, Vec::new()),
+                    placement(0x853, 0x832, 0, 1.0, Vec::new()),
+                    placement(0x854, 0x832, 0, 1.0, Vec::new()),
+                ]
+                .concat(),
+            ),
+            record(b"REFR", 0x853, 0x20, Vec::new()),
+            placement(0x854, 0x830, 0, 2.0, Vec::new()),
+            placement_group(
+                0x901,
+                [
+                    placement(0x850, 0x830, 0, 2.0, Vec::new()),
+                    placement(0x851, 0x831, 0, 2.0, Vec::new()),
+                    placement(0x852, 0x833, 0, 2.0, Vec::new()),
+                    placement(0x853, 0x831, 0, 2.0, Vec::new()),
+                    placement(0x854, 0x830, 0, 3.0, Vec::new()),
+                ]
+                .concat(),
+            ),
+            placement_group(0x902, placement(0x850, 0x831, 0, 3.0, Vec::new())),
+        ]
+        .concat(),
+    );
+    let ungrouped = plugin(
+        data,
+        "Ungrouped.esp",
+        &["Skyrim.esm"],
+        0,
+        (0x850..=0x854)
+            .flat_map(|id| placement(id, 0x831, 0, 4.0, Vec::new()))
+            .collect(),
+    );
+
+    let output = data.join("world.db");
+    let records = EsmParser::convert_plugins_with_reader(
+        &[base, grouped, ungrouped],
+        &output,
+        RecordReader::Inhouse,
+        data,
+    )
+    .unwrap();
+    let db = rusqlite::Connection::open(output).unwrap();
+    for (id, cell, base) in [
+        (0x850, Some(0x901), 0x830),
+        (0x851, Some(0x900), 0x830),
+        (0x852, None, 0x831),
+        (0x853, None, 0x831),
+        (0x854, None, 0x831),
+    ] {
+        assert_eq!(
+            placement_winner_cell(&db, id),
+            Some(cell.unwrap_or(0)),
+            "{id:08X}"
+        );
+        assert_eq!(
+            SubrecordView::new(&records[&id].subrecords).get_form_id(b"NAME"),
+            Some(base),
+            "{id:08X}"
+        );
+    }
+}
