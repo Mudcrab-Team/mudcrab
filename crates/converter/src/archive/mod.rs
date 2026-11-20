@@ -16,7 +16,7 @@ use crate::{
 };
 use color_eyre::{
     Result,
-    eyre::{WrapErr, bail},
+    eyre::{ContextCompat, WrapErr, bail},
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
