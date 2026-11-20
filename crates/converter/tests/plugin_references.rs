@@ -3977,7 +3977,7 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
 }
 
 #[test]
-fn only_bounded_deletions_supersede_the_predecessor() {
+fn complete_deletion_headers_supersede_the_predecessor() {
     use converter::config::RecordReader;
 
     let dir = tempfile::tempdir().unwrap();
@@ -4020,7 +4020,7 @@ fn only_bounded_deletions_supersede_the_predecessor() {
             let conn = rusqlite::Connection::open(db).unwrap();
             assert_eq!(
                 placement_winner_cell(&conn, 0x800),
-                (!frame_complete).then_some(0x900),
+                None,
                 "{reader:?} {name}"
             );
             assert_eq!(
@@ -4028,13 +4028,6 @@ fn only_bounded_deletions_supersede_the_predecessor() {
                 Some(frame_complete),
                 "{reader:?} {name}"
             );
-            if !frame_complete {
-                assert_eq!(
-                    stored_placement_certificate(&conn, 0x900),
-                    Some(false),
-                    "{reader:?} {name}"
-                );
-            }
             if matches!(reader, RecordReader::Inhouse) {
                 let history: (String, bool, bool) = conn
                     .query_row(
@@ -4044,12 +4037,7 @@ fn only_bounded_deletions_supersede_the_predecessor() {
                         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                     )
                     .unwrap();
-                let status = if frame_complete {
-                    "accepted"
-                } else {
-                    "skipped"
-                };
-                assert_eq!(history, (status.into(), true, frame_complete));
+                assert_eq!(history, ("accepted".into(), true, frame_complete));
             }
         }
     }

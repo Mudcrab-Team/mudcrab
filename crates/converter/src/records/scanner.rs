@@ -195,11 +195,14 @@ fn scan_bytes_observed(
                 .map(|(_, offset)| offset),
             failure: None,
         };
-        if size > end - position - 24 {
+        let source_record_offset = position as u64;
+        let flags = u32_at(header, 8);
+        let payload = if observed.frame_complete {
+            let start = position + 24;
+            position = start + size;
+            &bytes[start..position]
+        } else {
             discarded_frames.insert(DiscardedFrameScope::unread_tail(cell, end - position - 24));
-            observed.failure =
-                Some("truncated record payload; containing group remainder skipped".into());
-            observe(observed);
             diagnostics.note("record", || {
                 format!(
                     "truncated {} {:08X} at byte {position}; skipping containing group remainder",
@@ -208,17 +211,19 @@ fn scan_bytes_observed(
                 )
             });
             position = end;
-            continue;
-        }
-        let source_record_offset = position as u64;
-        let payload = &bytes[position + 24..position + 24 + size];
-        position += 24 + size;
-        let flags = u32_at(header, 8);
+            if flags & 0x20 == 0 {
+                observed.failure =
+                    Some("truncated record payload; containing group remainder skipped".into());
+                observe(observed);
+                continue;
+            }
+            &[]
+        };
         let source_form_id = u32_at(header, 12);
         let inflated = if flags & 0x0004_0000 != 0 {
             match inflate(payload) {
                 Ok(bytes) => bytes,
-                // A bounded native deletion is authoritative even without a decodable body.
+                // A native deletion is authoritative even without a decodable body.
                 // Keep usable bytes above so a GMST tombstone can still name its alias.
                 Err(_) if flags & 0x20 != 0 => Vec::new(),
                 Err(error) => {
