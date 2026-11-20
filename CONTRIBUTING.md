@@ -123,6 +123,12 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    tests separately. CI also runs `cargo audit` and a release-mode
    performance check; see `.github/workflows/run_tests.yml` for the exact commands.
 
+   Every WGSL file under `crates/engine/src/shaders` and `vendor/` is composed with `naga_oil`
+   and validated by Naga in the `engine` tests (`crates/engine/src/shader_validation.rs`). It
+   needs no GPU and runs with the normal test suite. Add a variant there when a pipeline uses new
+   shader defs; a shader that cannot be composed outside the app goes in its `KNOWN_EXCEPTIONS`
+   with a reason.
+
    CI also counts `.unwrap()`, `.expect(` and `panic!(` in production code (not in `#[cfg(test)]`
    code, and not in `#[test]` functions). It fails when a crate's count is higher in your pull request
    than at its base commit, so it judges only the sites you add and needs no upkeep. Prefer returning an
