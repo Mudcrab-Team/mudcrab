@@ -18,6 +18,9 @@ pub mod vmad;
 #[cfg(test)]
 pub(crate) mod review_recovery_tests;
 
+#[cfg(fuzzing)]
+pub use scanner::{fuzz_inflate, fuzz_scan};
+
 use crate::esm::{load_order::LoadOrder, records::RawRecord};
 use color_eyre::Result;
 use schema_format::Schema;
@@ -315,6 +318,16 @@ pub struct PluginDiagnostics {
 }
 
 impl PluginDiagnostics {
+    /// Summary-only diagnostics for the fuzz targets: counters and bounded examples,
+    /// no per-input disk journal. Ordinary builds do not compile this.
+    #[cfg(fuzzing)]
+    pub(crate) fn fuzz_summary_only() -> Self {
+        Self {
+            event_log: diagnostics::EventLog::summary_only(),
+            ..Self::default()
+        }
+    }
+
     /// Summarize omitted records, fields and unexpected subrecords as bounded warnings.
     pub(crate) fn warning_summary_lines(&self, plugin: &str) -> Vec<String> {
         let mut lines = Vec::new();

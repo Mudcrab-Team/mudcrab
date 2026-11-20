@@ -68,6 +68,11 @@ bevy_image = { path = "vendor/bevy_image" }
 bevy_pbr = { path = "vendor/bevy_pbr" }
 bevy_render = { path = "vendor/bevy_render" }
 
+[workspace.lints.rust]
+# `cargo fuzz` builds the converter with this cfg. It is not a Cargo feature, so
+# declare it to keep the workspace's `-D warnings` clean for fuzz builds.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
 # Every `unsafe` block, impl and fn body needs a `// SAFETY:` comment that states the invariant.
 # Each workspace crate opts in with `[lints] workspace = true`. Vendored crates keep their own.
 [workspace.lints.clippy]
