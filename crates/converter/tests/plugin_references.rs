@@ -3505,6 +3505,175 @@ fn placement_winner_uses_forward_and_effective_catalogue_targets() {
 }
 
 #[test]
+fn placement_cycle_recovers_static_before_checking_its_dependent() {
+    use converter::config::RecordReader;
+    use rusqlite::OptionalExtension;
+
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let base = plugin(
+        data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            record(b"STAT", 0x830, 0, sub(b"EDID", b"OriginalStatic\0")),
+        ]
+        .concat(),
+    );
+    let patch = plugin(
+        data,
+        "Patch.esp",
+        &["Skyrim.esm"],
+        0,
+        [
+            placement_group(0x901, placement(0x830, 0x850, 0, 0.0, Vec::new())),
+            placement_group(0x900, placement(0x850, 0x830, 0, 1.0, Vec::new())),
+        ]
+        .concat(),
+    );
+    let mut failures = Vec::new();
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let output = data.join("cycle.db");
+        EsmParser::convert_plugins_with_reader(
+            &[base.clone(), patch.clone()],
+            &output,
+            reader,
+            data,
+        )
+        .unwrap();
+        let db = rusqlite::Connection::open(output).unwrap();
+        let winner = db
+            .query_row(
+                "SELECT cell_id, base_form_id FROM [references] WHERE id=0x850",
+                [],
+                |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)),
+            )
+            .optional()
+            .unwrap();
+        if winner != Some((0x900, 0x830)) {
+            failures.push(format!(
+                "{reader:?}: missing dependent on restored STAT: {winner:?}"
+            ));
+        }
+        assert_eq!(placement_winner_cell(&db, 0x830), None, "{reader:?}");
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn typed_placement_duplicates_claim_the_slot_only_after_admission() {
+    use converter::config::RecordReader;
+
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let portal = |room: u32| {
+        placement_marker(
+            0x850,
+            0x20,
+            sub(b"XPOD", &[room.to_le_bytes(), [0; 4]].concat()),
+        )
+    };
+    let mut contents = Vec::new();
+    for (cell, room) in [(0x900, 0x800), (0x901, 0x810), (0x902, 0x820)] {
+        contents.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
+        let mut placements = placement_marker(room, 0x1f, Vec::new());
+        if cell == 0x900 {
+            placements.extend(portal(room));
+        }
+        contents.extend(placement_group(cell, placements));
+    }
+    let base = plugin(data, "Skyrim.esm", &[], 1, contents);
+    let invalid = placement_group(0x901, placement(0x850, 0x832, 0, 0.0, Vec::new()));
+    let invalid_transform = placement_group(0x901, placement(0x850, 0x20, 0, f32::NAN, Vec::new()));
+    let first = placement_group(0x901, portal(0x810));
+    let second = placement_group(0x902, portal(0x820));
+    let deletion = record(b"REFR", 0x850, 0x20, Vec::new());
+    let cases = [
+        (
+            "late rejection",
+            vec![&invalid, &second],
+            Some(0x902),
+            vec!["skipped", "accepted"],
+        ),
+        (
+            "first usable fallback in file order",
+            vec![&invalid, &invalid_transform, &first, &second],
+            Some(0x901),
+            vec!["skipped", "skipped", "accepted", "skipped"],
+        ),
+        (
+            "valid first",
+            vec![&first, &second],
+            Some(0x901),
+            vec!["accepted", "skipped"],
+        ),
+        (
+            "late rejection before deletion",
+            vec![&invalid, &deletion],
+            None,
+            vec!["skipped", "accepted"],
+        ),
+        (
+            "valid first before deletion",
+            vec![&first, &deletion],
+            Some(0x901),
+            vec!["accepted", "skipped"],
+        ),
+        (
+            "deletion first",
+            vec![&deletion, &second],
+            None,
+            vec!["accepted", "skipped"],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, placements, expected_cell, expected_history) in cases {
+        let patch = plugin(
+            data,
+            "Patch.esp",
+            &["Skyrim.esm"],
+            0,
+            placements.into_iter().flatten().copied().collect(),
+        );
+        let output = data.join("duplicates.db");
+        EsmParser::convert_plugins_with_reader(
+            &[base.clone(), patch],
+            &output,
+            RecordReader::Inhouse,
+            data,
+        )
+        .unwrap();
+        let db = rusqlite::Connection::open(output).unwrap();
+        let winner = placement_winner_cell(&db, 0x850);
+        let projected: Option<u32> = db
+            .query_row(
+                "SELECT max(cell_id) FROM room_portals WHERE ref_id=0x850",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let history = db
+            .prepare(
+                "SELECT status FROM record_overrides WHERE form_id=0x850 AND plugin_id=1
+                 ORDER BY chain_position",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        if winner != expected_cell || projected != expected_cell || history != expected_history {
+            failures.push(format!(
+                "{name}: winner={winner:?}, portal={projected:?}, history={history:?}; expected {expected_cell:?}, {expected_history:?}"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
 fn rejected_placement_collision_keeps_destination_open_without_a_proven_alias() {
     use converter::config::RecordReader;
 
