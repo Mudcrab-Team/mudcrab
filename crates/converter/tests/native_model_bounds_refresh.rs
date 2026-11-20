@@ -202,3 +202,83 @@ fn installed_native_winners_refresh_all_matching_bases_and_room_ownership_inputs
         .unwrap();
     assert_eq!(certification, (true, false, 100, true));
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn refresh_resolves_case_aliases_and_rejects_colliding_winners() {
+    const KEY: &str = "meshes/architecture/wall.glb";
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let path = root.join("Meshes/Architecture/Wall.GLB");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let connection = Connection::open(root.join("skyrim_world.db")).unwrap();
+    create_tables(&connection).unwrap();
+    connection
+        .execute(
+            "INSERT INTO statics(id,model_path,flags) VALUES (10,'architecture/wall.nif',0)",
+            [],
+        )
+        .unwrap();
+    let projection = || {
+        connection
+            .query_row(
+                "SELECT CASE WHEN bounds_valid=1 THEN bounds_min_x END FROM statics WHERE id=10",
+                [],
+                |row| row.get::<_, Option<f64>>(0),
+            )
+            .unwrap()
+    };
+    write_glb(&path, 10.0);
+    refresh(root, &[KEY]);
+    assert_eq!(projection(), Some(10.0));
+
+    let collision = root.join(KEY);
+    fs::create_dir_all(collision.parent().unwrap()).unwrap();
+    write_glb(&collision, 20.0);
+    let result = run_refresh(root, &[KEY]);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("multiple installed GLBs"));
+    assert_eq!(projection(), Some(10.0));
+    fs::remove_file(collision).unwrap();
+
+    fs::remove_file(path).unwrap();
+    refresh(root, &[KEY]);
+    assert_eq!(projection(), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn refresh_rejects_an_escaping_mixed_case_glb_path() {
+    const KEY: &str = "meshes/architecture/wall.glb";
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("pack");
+    fs::create_dir_all(root.join("Meshes")).unwrap();
+    let outside = directory.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    write_glb(&outside.join("Wall.GLB"), 20.0);
+    let connection = Connection::open(root.join("skyrim_world.db")).unwrap();
+    create_tables(&connection).unwrap();
+    connection
+        .execute("INSERT INTO statics(id,model_path,flags,bounds_valid,bounds_min_x) VALUES (10,'architecture/wall.nif',0,1,10)", [])
+        .unwrap();
+    let linked_dir = root.join("Meshes/Architecture");
+    std::os::unix::fs::symlink(&outside, &linked_dir).unwrap();
+    let result = run_refresh(&root, &[KEY]);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("GLB escapes pack"));
+
+    fs::remove_file(&linked_dir).unwrap();
+    fs::create_dir(&linked_dir).unwrap();
+    std::os::unix::fs::symlink(outside.join("Wall.GLB"), linked_dir.join("Wall.GLB")).unwrap();
+    let result = run_refresh(&root, &[KEY]);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("GLB escapes pack"));
+    let projection: (bool, f64) = connection
+        .query_row(
+            "SELECT bounds_valid,bounds_min_x FROM statics WHERE id=10",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(projection, (true, 10.0));
+}
