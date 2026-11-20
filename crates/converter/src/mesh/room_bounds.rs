@@ -35,7 +35,7 @@ pub(super) fn tag_drawable_spheres(
         if mesh
             .positions
             .iter()
-            .all(|pos| ((pos.as_dvec3() - center).length() as f32) <= sphere.radius)
+            .all(|pos| pos.as_dvec3().distance(center) <= f64::from(sphere.radius))
         {
             output["extras"][DRAWABLE_SPHERE_EXTRA] = serde_json::to_value(sphere)?;
         }
