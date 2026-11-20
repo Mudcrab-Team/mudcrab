@@ -7605,7 +7605,29 @@ fn check_discarded_occluder_override(import: bool) {
         (name, contents, expected)
     });
     let wrong_parent = || placement_group(0, placement_marker(0x801, 0x17, xord()));
+    let invalid_transform =
+        || placement_group(0x900, placement_marker_at(0x801, 0x17, f32::NAN, xord()));
     let typed_only = [
+        ("single-marker-invalid-transform", invalid_transform(), 0),
+        (
+            "single-marker-restored",
+            [
+                invalid_transform(),
+                placement_group(0x900, restored.clone()),
+            ]
+            .concat(),
+            1,
+        ),
+        (
+            "single-marker-deleted",
+            [invalid_transform(), placement_group(0x900, deleted.clone())].concat(),
+            1,
+        ),
+        (
+            "single-marker-linked",
+            placement_group(0x900, placement_marker(0x801, 0x17, xord())),
+            1,
+        ),
         ("invalid-parent", wrong_parent(), 0),
         (
             "invalid-parent-unrelated-replacement",
@@ -7675,6 +7697,15 @@ fn check_discarded_occluder_override(import: bool) {
             failures.push(format!(
                 "{name}: cell 0x901 expected complete={other_complete}"
             ));
+        }
+        if name == "single-marker-linked" {
+            assert_eq!(
+                read(
+                    &conn,
+                    "SELECT count(*) FROM room_occluder_links WHERE ref_id=0x801 AND linked_ref=0x802"
+                ),
+                1
+            );
         }
         if name == "bounded-zlib" {
             assert_eq!(stored_placement_certificate(&conn, 0x900), Some(false));
