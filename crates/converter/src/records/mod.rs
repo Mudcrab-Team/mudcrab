@@ -511,21 +511,24 @@ pub struct RecordSource {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TruncatedPlacement {
     record_type: [u8; 4],
-    source_id: u32,
+    source_id: Option<u32>,
 }
 
 impl TruncatedPlacement {
     pub(crate) fn from_prefix(bytes: &[u8]) -> Option<Self> {
         let record_type = *bytes.first_chunk()?;
-        let source_id = u32::from_le_bytes(*bytes.get(12..)?.first_chunk()?);
-        crate::esm::is_placed_record_type(&record_type).then_some(Self {
+        crate::esm::is_placed_record_type(&record_type).then(|| Self {
             record_type,
-            source_id,
+            source_id: bytes
+                .get(12..)
+                .and_then(|tail| tail.first_chunk())
+                .copied()
+                .map(u32::from_le_bytes),
         })
     }
 
     pub(crate) fn runtime_id(self, plugin: usize, order: &LoadOrder) -> Option<u32> {
-        source_identity::header_runtime_id(&self.record_type, self.source_id, plugin, order)
+        source_identity::header_runtime_id(&self.record_type, self.source_id?, plugin, order)
             .filter(|&id| id != 0)
     }
 }

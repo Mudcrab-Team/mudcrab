@@ -10,7 +10,10 @@ use super::{
     exporter::{insert_reference, project_cell},
     extractors::SubrecordView,
     load_order::{LoadOrder, normalize_plugin_name},
-    records::RawRecord,
+    records::{
+        RawRecord,
+        achr::{SubrecordXESP, flags::INITIALLY_DISABLED},
+    },
     remap_record_form_ids,
     rooms::{
         PORTAL_MARKER_BASE, ROOM_MARKER_BASE, RoomLinkLayout, SHAPE_BOX, SHAPE_PORTAL,
@@ -123,6 +126,21 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     if already_applied {
         return Ok(PlacementEditReport::default());
     }
+    if is_plugin {
+        let name_taken: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM room_placement_layers
+             WHERE plugin_flags IS NOT NULL AND name=?1)",
+            [&name],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            !name_taken,
+            "{name} is already imported with different contents. To replace it, replay the \
+             placement layers on a fresh conversion with the corrected file in the original \
+             position. To add a follow-up, author a patch with a new filename and use {name} \
+             as a master for its forms."
+        );
+    }
     if assignment_version.is_none() {
         // Older packs keep geometric ownership. Migrate storage for the shared projector
         // without publishing an authored-assignment certificate.
@@ -188,7 +206,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     let mut cells = fresh_cells.clone();
     let mut changed = HashSet::new();
     let mut layouts = HashMap::new();
-    for edit in import.edits {
+    for mut edit in import.edits {
         let id = edit.record.form_id;
         let in_fresh_cell = edit
             .record
@@ -227,11 +245,12 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
             }
         }
         ensure!(changed.insert(id), "duplicate placement edit for {id:08X}");
+        let must_be_new = in_fresh_cell || (is_plugin && edit.owns_new_id);
         apply_edit(
             &tx,
-            &edit,
+            &mut edit,
             &mut cells,
-            in_fresh_cell || (is_plugin && edit.owns_new_id),
+            must_be_new,
             has_history,
             is_plugin,
         )
@@ -287,6 +306,14 @@ struct Edit {
     record: RawRecord,
     owns_new_id: bool,
     room_links: Option<RoomLinkLayout>,
+}
+
+struct PreviousPlacement {
+    cell: u32,
+    data: Vec<u8>,
+    flags: u32,
+    enable_parent_id: Option<u32>,
+    enable_parent_flags: Option<u32>,
 }
 
 fn plugin_edits(
@@ -381,7 +408,7 @@ fn plugin_edits(
         );
         if !record.is_deleted() {
             validate_room_field_tags(&record.subrecords)?;
-            // Remapping drops a wrong-width XTEL and clears an unresolvable destination.
+            // Reject malformed arrivals before they replace the last usable door placement.
             if SubrecordView::new(&record.subrecords)
                 .find_all(b"XTEL")
                 .enumerate()
@@ -392,6 +419,9 @@ fn plugin_edits(
                     let target = u32::from_le_bytes(*target);
                     index != 0
                         || arrival_and_flags.len() != 28
+                        || !super::valid_placement_transform(std::iter::once(
+                            &arrival_and_flags[..24],
+                        ))
                         || (target != 0
                             && source_identity::header_runtime_id(
                                 b"REFR", target, priority, &order,
@@ -606,13 +636,13 @@ fn require_interior(tx: &Transaction<'_>, cell: u32) -> Result<()> {
 
 fn apply_edit(
     tx: &Transaction<'_>,
-    edit: &Edit,
+    edit: &mut Edit,
     cells: &mut HashSet<u32>,
     must_be_new: bool,
     has_history: bool,
-    allow_doors: bool,
+    is_plugin: bool,
 ) -> Result<()> {
-    let record = &edit.record;
+    let record = &mut edit.record;
     let id = record.form_id;
     if must_be_new {
         ensure!(
@@ -632,11 +662,20 @@ fn apply_edit(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    let previous: Option<(u32, Vec<u8>)> = tx
+    let previous = tx
         .query_row(
-            "SELECT cell_id,data FROM [references] WHERE id=?1",
+            "SELECT cell_id,data,header_flags,enable_parent_id,enable_parent_flags
+             FROM [references] WHERE id=?1",
             [id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| {
+                Ok(PreviousPlacement {
+                    cell: row.get(0)?,
+                    data: row.get(1)?,
+                    flags: row.get(2)?,
+                    enable_parent_id: row.get(3)?,
+                    enable_parent_flags: row.get(4)?,
+                })
+            },
         )
         .optional()?;
     let previously_edited: bool = tx.query_row(
@@ -646,7 +685,7 @@ fn apply_edit(
     )?;
     let (old_cell, old_data) = match (&canonical, &previous) {
         (Some((kind, _, _)), _) if kind != "REFR" => bail!("FormID belongs to a {kind} record"),
-        (_, Some((cell, data))) => (Some(*cell), Some(data.as_slice())),
+        (_, Some(previous)) => (Some(previous.cell), Some(previous.data.as_slice())),
         (Some((_, cell, data)), None) if !previously_edited => (*cell, Some(data.as_slice())),
         (_, None) => (None, None),
     };
@@ -661,7 +700,27 @@ fn apply_edit(
             .into_iter()
             .map(|s| (s.tag.to_vec(), s.data))
             .collect::<Vec<_>>();
-        validate_room_fields(tx, &subrecords, allow_doors)?;
+        validate_room_fields(tx, &subrecords, is_plugin)?;
+        if !is_plugin && !record.is_deleted() {
+            let previous = previous.as_ref().ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "native replacement requires an existing runtime enable state"
+                )
+            })?;
+            let parent = SubrecordView::new(&subrecords)
+                .find(b"XESP")
+                .and_then(SubrecordXESP::parse)
+                .map(|parent| (parent.parent_ref, parent.flags))
+                .unzip();
+            ensure!(
+                parent == (previous.enable_parent_id, previous.enable_parent_flags),
+                "native replacement cannot preserve existing enable-parent data"
+            );
+            record.flags |= previous.flags & INITIALLY_DISABLED;
+            record
+                .subrecords
+                .extend(subrecords.into_iter().filter(|(tag, _)| tag == b"XESP"));
+        }
     }
     ensure!(
         old_data.is_some() || ((edit.owns_new_id || previously_edited) && !record.is_deleted()),
@@ -686,7 +745,7 @@ fn apply_edit(
         .filter(|_| record.worldspace_form_id.is_none())
         .ok_or_else(|| color_eyre::eyre::eyre!("placement has no interior parent cell"))?;
     require_interior(tx, cell)?;
-    validate_placement(tx, record, allow_doors)?;
+    validate_placement(tx, record, is_plugin)?;
     cells.insert(cell);
     insert_reference(tx, id, cell, None, record.flags, &record.subrecords)?;
     Ok(())
@@ -956,6 +1015,12 @@ impl NativeEdit {
                 half_extents,
                 links,
             } => {
+                ensure!(
+                    half_extents
+                        .iter()
+                        .all(|value| value.is_finite() && *value >= 0.0),
+                    "room half-extents must be finite and nonnegative"
+                );
                 let mut record = native_reference(id, cell, ROOM_MARKER_BASE, position, rotation);
                 record
                     .subrecords
