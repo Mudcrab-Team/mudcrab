@@ -19,7 +19,7 @@ A short guide for anyone sending work here, written by hand or with an AI assist
 
 PR titles must strictly adhere to the [Conventional Commits](https://www.conventionalcommits.org/) specification (`type(scope): description` or `type(scope)!: description`).
 
-With a squash merge, the PR title becomes the exact commit message on `main` (the repository's squash-merge setting uses the PR title as the commit title). These titles drive changelog generation via `git-cliff` and tell maintainers which SemVer bump a release needs. See [releasing.md](releasing.md). Non-conventional titles are blocked in CI.
+With a squash merge, the PR title becomes the exact commit message on `main` (the repository's squash-merge setting uses the PR title as the commit title). A stack layer lands with a merge commit, which also takes the PR title as its title. Its inner commits come into `main` too, so give them Conventional Commit titles as well. These titles drive changelog generation via `git-cliff` and tell maintainers which SemVer bump a release needs. See [releasing.md](releasing.md). Non-conventional titles are blocked in CI.
 
 - **Format:** `type(scope): plain effect`, at most 72 characters, lowercase after the colon unless the description starts with a listed acronym (for example `fix(engine): NIF parser panic`). Leave out PR numbers and notes like "part 2".
 - **Types:**
