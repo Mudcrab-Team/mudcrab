@@ -120,6 +120,25 @@ impl Context<'_> {
     }
 }
 
+/// Preserve link positions and delays when a subset removes their targets.
+pub(super) fn clear_incoming(tx: &Transaction<'_>, unavailable: &[u32]) -> Result<()> {
+    if unavailable.is_empty() {
+        return Ok(());
+    }
+    let ids = serde_json::json!(unavailable).to_string();
+    for (table, column) in [
+        ("reference_linked_refs", "linked_ref_id"),
+        ("reference_linked_refs", "keyword_id"),
+        ("reference_activate_parents", "parent_ref_id"),
+    ] {
+        tx.prepare_cached(&format!(
+            "UPDATE {table} SET {column}=NULL WHERE {column} IN (SELECT value FROM json_each(?1))"
+        ))?
+        .execute([&ids])?;
+    }
+    Ok(())
+}
+
 fn u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes(
         bytes.get(offset..offset + 4)?.try_into().ok()?,

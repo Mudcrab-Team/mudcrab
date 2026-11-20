@@ -768,6 +768,18 @@ fn decode_with_identity_inner(
     let mut rejected_land_layer: Option<(usize, usize)> = None;
     diagnostics.set_field("payload_framing".into());
     let framed = subrecords(&scanned.payload, diagnostics, scanned.source_form_id);
+    if scanned.flags & 0x20 == 0
+        && crate::esm::is_placed_record_type(&scanned.record_type)
+        && framed
+            .fields
+            .iter()
+            .filter(|(tag, _)| tag == b"NAME")
+            .nth(1)
+            .is_some()
+    {
+        diagnostics.set_field("NAME".into());
+        return Err("placement contains multiple NAME fields".into());
+    }
     let link_kind = |source_id| {
         let id = remap(source_id, context, true, &mut PluginDiagnostics::default()).ok()?;
         context.winning_types?.get(&id).copied()
@@ -3485,6 +3497,13 @@ pub(crate) fn resolve_deferred(
         // Wait for deferred candidates to settle before checking placement targets.
         let rejected = crate::esm::invalid_placement_candidates(
             placements.iter().copied(),
+            |id| {
+                recovery
+                    .predecessors
+                    .get(&id)
+                    .and_then(|chain| chain.last())
+                    .is_some_and(|record| !crate::esm::is_placed_record_type(&record.record_type))
+            },
             |id| {
                 placements.contains(&id).then(|| {
                     let record = &result.records[&id];
