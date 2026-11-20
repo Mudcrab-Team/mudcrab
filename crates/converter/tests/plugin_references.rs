@@ -3644,32 +3644,38 @@ fn placement_cycle_recovers_static_before_checking_its_dependent() {
         ]
         .concat(),
     );
+    let second_override = plugin(
+        data,
+        "Later.esp",
+        &["Skyrim.esm", "Patch.esp"],
+        0,
+        placement_group(0x901, placement(0x830, 0x850, 0, 3.0, Vec::new())),
+    );
     let mut failures = Vec::new();
-    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
-        let output = data.join("cycle.db");
-        EsmParser::convert_plugins_with_reader(
-            &[base.clone(), patch.clone()],
-            &output,
-            reader,
-            data,
-        )
-        .unwrap();
-        let db = rusqlite::Connection::open(output).unwrap();
-        let winner = db
-            .query_row(
-                "SELECT cell_id, base_form_id FROM [references] WHERE id=0x850",
-                [],
-                |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)),
-            )
-            .optional()
-            .unwrap();
-        if winner != Some((0x900, 0x830)) {
-            failures.push(format!(
-                "{reader:?}: missing dependent on restored STAT: {winner:?}"
-            ));
+    let mut layers = vec![base, patch];
+    for extra in [None, Some(second_override)] {
+        layers.extend(extra);
+        for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+            let output = data.join("cycle.db");
+            EsmParser::convert_plugins_with_reader(&layers, &output, reader, data).unwrap();
+            let db = rusqlite::Connection::open(output).unwrap();
+            let winner = db
+                .query_row(
+                    "SELECT cell_id, base_form_id FROM [references] WHERE id=0x850",
+                    [],
+                    |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)),
+                )
+                .optional()
+                .unwrap();
+            if winner != Some((0x900, 0x830)) {
+                failures.push(format!(
+                    "{reader:?}, {} layers: missing dependent on restored STAT: {winner:?}",
+                    layers.len()
+                ));
+            }
+            assert_eq!(placement_winner_cell(&db, 0x851), Some(0x901), "{reader:?}");
+            assert_eq!(placement_winner_cell(&db, 0x830), None, "{reader:?}");
         }
-        assert_eq!(placement_winner_cell(&db, 0x851), Some(0x901), "{reader:?}");
-        assert_eq!(placement_winner_cell(&db, 0x830), None, "{reader:?}");
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -5018,6 +5024,39 @@ fn plugin_placement_import_skips_children_of_a_damaged_new_interior() {
         )
         .unwrap();
     assert_eq!(skipped, (0, 0));
+}
+
+#[test]
+fn plugin_placement_import_uses_good_declaration_of_damaged_new_cell() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let cell = 0x0100_0900;
+    let child = 0x0100_0800;
+    let source = plugin(
+        dir.path(),
+        "Recovered.esp",
+        &["Skyrim.esm"],
+        0,
+        [
+            record(b"CELL", cell, 0, vec![0]),
+            record(
+                b"CELL",
+                cell,
+                0,
+                [sub(b"EDID", b"RecoveredInterior\0"), sub(b"DATA", &[1])].concat(),
+            ),
+            placement_group(cell, placement(child, PLACEMENT_STAT, 0, 12.0, Vec::new())),
+        ]
+        .concat(),
+    );
+    let result = run_placement_import(&assets, "--plugin", &source);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    assert_eq!(placement_winner_cell(&db, child), Some(cell));
 }
 
 #[test]
@@ -7118,13 +7157,14 @@ fn portal_geometry_requires_one_valid_transform_and_positive_aperture() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");
     fs::create_dir(&data).unwrap();
-    let aperture = |x: f32, z: f32| {
-        let mut shape = vec![0; 32];
-        shape[..4].copy_from_slice(&x.to_le_bytes());
-        shape[8..12].copy_from_slice(&z.to_le_bytes());
-        shape[28..].copy_from_slice(&3u32.to_le_bytes());
-        sub(b"XPRM", &shape)
+    let shape = |x: f32, z: f32, kind: u32| {
+        let mut bytes = [0; 32];
+        bytes[..4].copy_from_slice(&x.to_le_bytes());
+        bytes[8..12].copy_from_slice(&z.to_le_bytes());
+        bytes[28..].copy_from_slice(&kind.to_le_bytes());
+        bytes
     };
+    let aperture = |x, z| sub(b"XPRM", &shape(x, z, 3));
     let transform = sub(b"DATA", &[0; 24]);
     let aperture_valid = aperture(40.0, 60.0);
     let mut source = Vec::new();
@@ -7152,6 +7192,16 @@ fn portal_geometry_requires_one_valid_transform_and_positive_aperture() {
             aperture_valid.clone(),
         ),
         ("missing aperture", transform.clone(), Vec::new()),
+        (
+            "12-byte aperture",
+            transform.clone(),
+            sub(b"XPRM", &shape(40.0, 60.0, 3)[..12]),
+        ),
+        (
+            "wrong shape",
+            transform.clone(),
+            sub(b"XPRM", &shape(40.0, 60.0, 1)),
+        ),
         ("zero width", transform.clone(), aperture(0.0, 60.0)),
         ("zero height", transform, aperture(40.0, 0.0)),
     ];
@@ -7395,6 +7445,108 @@ fn malformed_placed_base_keeps_its_known_cell_open() {
             )
             .unwrap();
         assert!(!admitted, "{name} admitted a damaged placement");
+    }
+}
+
+#[tokio::test]
+async fn later_base_deletion_is_a_reported_omission() {
+    use converter::AssetPipeline;
+    use converter::config::RecordReader;
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let base = 0x000B_D6A5;
+    let omitted = 0x0010_C5CD;
+    let cell = 0x900;
+    plugin(
+        &data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])),
+            record(b"STAT", base, 0, sub(b"EDID", b"RemovedStatic\0")),
+            placement_group(
+                cell,
+                [
+                    placement(omitted, base, 0, 10.0, Vec::new()),
+                    placement(0x851, 0x1f, 0, 11.0, Vec::new()),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    );
+    plugin(
+        &data,
+        "Dawnguard.esm",
+        &["Skyrim.esm"],
+        1,
+        record(b"STAT", base, 0x20, Vec::new()),
+    );
+    let list = dir.path().join("plugins.txt");
+    for damaged in [false, true] {
+        let mut selection = String::from("*Skyrim.esm\n*Dawnguard.esm\n");
+        if damaged {
+            // An author referring to a base already deleted, or never defined, has lost data.
+            plugin(
+                &data,
+                "Broken.esp",
+                &["Skyrim.esm", "Dawnguard.esm"],
+                0,
+                placement_group(
+                    cell,
+                    [
+                        placement(0x0200_0852, base, 0, 12.0, Vec::new()),
+                        placement(0x0200_0853, 0x875, 0, 13.0, Vec::new()),
+                    ]
+                    .concat(),
+                ),
+            );
+            selection.push_str("*Broken.esp\n");
+        }
+        fs::write(&list, selection).unwrap();
+        for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+            let output = dir.path().join(format!("{reader:?}-{damaged}"));
+            let mut config = common::cpu_lod_config(&data, &output);
+            config.record_reader = reader;
+            config.no_lod = true;
+            config.plugins_file = Some(list.clone());
+            let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+            let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+            let report = AssetPipeline::run_async(config, tx).await.unwrap();
+            drain.await.unwrap();
+            assert!(
+                report
+                    .notices
+                    .iter()
+                    .any(|line| line.contains("omitted 1 placement candidate")
+                        && line.contains("0010C5CD")
+                        && line.contains("000BD6A5")),
+                "{:?}",
+                report.notices
+            );
+            assert_eq!(report.complete, !damaged, "{:?}", report.warnings);
+            if damaged {
+                assert!(
+                    report
+                        .warnings
+                        .iter()
+                        .any(|line| line.to_lowercase().contains("broken.esp")
+                            && (line.contains("skipped 2 records")
+                                || line.contains("skipped 2 unusable"))),
+                    "{:?}",
+                    report.warnings
+                );
+            }
+            let manifest: converter::cache::ConversionManifest =
+                serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
+                    .unwrap();
+            assert_eq!(manifest.record_data_complete, Some(!damaged));
+            let db = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+            assert_eq!(placement_winner_cell(&db, omitted), None);
+            assert_eq!(placement_winner_cell(&db, 0x851), Some(cell));
+        }
     }
 }
 

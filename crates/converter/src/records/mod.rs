@@ -293,6 +293,7 @@ impl DiagnosticSummaryKey {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct PluginDiagnostics {
     pub skipped_records: u64,
+    pub retired_base_placements: u64,
     pub skipped_fields: u64,
     pub unexpected_subrecords: u64,
     /// Links faithfully cleared when their targets are absent, disallowed or outside the master list.
@@ -347,6 +348,12 @@ impl PluginDiagnostics {
                 self.compatibility_headers
             ));
         }
+        if let Some(example) = self.first_by_category.get("retired_base") {
+            lines.push(format!(
+                "notice: {plugin}: omitted {} placement candidate(s) whose base was deleted by a later plugin (first: {example})",
+                self.retired_base_placements
+            ));
+        }
         if self.invalid_links != 0
             && let Some(example) = self.first_by_category.get("link")
         {
@@ -362,6 +369,10 @@ impl PluginDiagnostics {
     /// Unrecognized recovery categories remain field-loss warnings rather than link notices.
     pub(crate) fn note(&mut self, category: &str, example: impl FnOnce() -> String) {
         let summary_category = match category {
+            "retired_base" => {
+                self.retired_base_placements += 1;
+                category
+            }
             "record" => {
                 self.skipped_records += 1;
                 category
@@ -637,8 +648,8 @@ pub(crate) fn decode_text(bytes: &[u8]) -> String {
 }
 
 pub(crate) use decoder::{
-    PreparedSchemas, framed_source_prefix, localized_field_bank, prepare_runtime_schema,
-    string_table_with_prepared, validate_placement_targets,
+    DeletedBases, PlacementFailure, PreparedSchemas, framed_source_prefix, localized_field_bank,
+    prepare_runtime_schema, string_table_with_prepared, validate_placement_targets,
 };
 
 fn validate_live_candidate(
@@ -1075,7 +1086,13 @@ fn read_plugins_with_prepared(
             }
             recovery.record_default_object(&record);
             if deleted {
-                result.records.remove(&record.form_id);
+                let previous = result.records.remove(&record.form_id);
+                recovery.deleted.record(
+                    record.form_id,
+                    record.load_order,
+                    record.record_type,
+                    previous.map(|prior| prior.record_type),
+                );
                 recovery.predecessors.remove(&record.form_id);
             } else {
                 let id = record.form_id;
