@@ -1281,7 +1281,9 @@ CREATE TABLE IF NOT EXISTS room_link_anomalies (
 Columns and rules:
 
 - **`room_bounds`**: the box is centred on the marker's position and oriented by its rotation
-  (the same Euler convention as any reference, `shared::coordinates`). `half_*` are the `XPRM`
+  (the same Euler convention as any reference, `shared::coordinates`). Exactly one 24-byte `DATA`
+  supplies the transform. An invalid transform omits the room and marks its cell incomplete.
+  `half_*` are the `XPRM`
   half-extents in the room's own frame. `lighting_template_id` (`LNAM`) and `image_space_id`
   (`INAM`) are decoded for the lighting work in #129-#135; nothing in the engine uses them yet.
 - **`room_portals`**: a portal's doorway is the marker's local X-Z rectangle (normal along local
@@ -1310,7 +1312,8 @@ Columns and rules:
   pairs; its canonical cleared links cannot establish outside connectivity.
 - **`room_links`**: one row per `XLRM` as stored on the room, with no mirror rows. A link joins
   rooms that may have no portal between them but must be seen together: if one is visible, so is
-  the other. The target is stored as written, even if it is not a `room_bounds` row.
+  the other. The target is stored as written. A missing target or a target in another cell marks
+  the source cell incomplete.
   Both readers check the source order before publishing resolved links. One four-byte `XRMR`
   header precedes four-byte `LNAM` and `INAM` fields, in that order, when their flags are set.
   The lower 14 bits of the first `XRMR` word give the number of contiguous four-byte `XLRM`
