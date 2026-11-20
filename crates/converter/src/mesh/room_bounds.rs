@@ -143,6 +143,28 @@ pub(super) fn encloses_scene(glb: &[u8], sphere: ModelSphere) -> bool {
     scene_fits(glb, sphere).unwrap_or(false)
 }
 
+// These extensions affect shading or UVs and leave the positions used for enclosure intact.
+fn material_or_uv_extension(name: &str) -> bool {
+    matches!(
+        name,
+        "KHR_materials_anisotropy"
+            | "KHR_materials_clearcoat"
+            | "KHR_materials_diffuse_transmission"
+            | "KHR_materials_dispersion"
+            | "KHR_materials_emissive_strength"
+            | "KHR_materials_ior"
+            | "KHR_materials_iridescence"
+            | "KHR_materials_pbrSpecularGlossiness"
+            | "KHR_materials_sheen"
+            | "KHR_materials_specular"
+            | "KHR_materials_transmission"
+            | "KHR_materials_unlit"
+            | "KHR_materials_variants"
+            | "KHR_materials_volume"
+            | "KHR_texture_transform"
+    )
+}
+
 pub(crate) fn encloses_native_scene(
     glb: &[u8],
     document: &serde_json::Value,
@@ -150,12 +172,21 @@ pub(crate) fn encloses_native_scene(
 ) -> bool {
     // Streaming instantiates scene 0. Prove enclosure only for embedded, rigid geometry.
     document["scene"].as_u64() == Some(0)
-        && ["animations", "skins", "extensionsUsed"]
+        && ["animations", "skins"].into_iter().all(|key| {
+            document
+                .get(key)
+                .is_none_or(|value| value.as_array().is_some_and(Vec::is_empty))
+        })
+        && ["extensionsUsed", "extensionsRequired"]
             .into_iter()
             .all(|key| {
-                document
-                    .get(key)
-                    .is_none_or(|value| value.as_array().is_some_and(Vec::is_empty))
+                document.get(key).is_none_or(|value| {
+                    value.as_array().is_some_and(|names| {
+                        names
+                            .iter()
+                            .all(|name| name.as_str().is_some_and(material_or_uv_extension))
+                    })
+                })
             })
         && document["buffers"].as_array().is_some_and(
             |buffers| matches!(buffers.as_slice(), [buffer] if buffer.get("uri").is_none()),
@@ -163,9 +194,17 @@ pub(crate) fn encloses_native_scene(
         && encloses_scene(glb, sphere)
 }
 
+fn geometry_document(mut root: gltf::json::Root) -> Option<gltf::Document> {
+    // gltf validates required renderer features too. Only geometry is consumed here.
+    root.extensions_required
+        .retain(|name| !material_or_uv_extension(name));
+    gltf::Document::from_json(root).ok()
+}
+
 fn scene_fits(glb: &[u8], sphere: ModelSphere) -> Option<bool> {
     let chunks = gltf::binary::Glb::from_slice(glb).ok()?;
-    let gltf = gltf::Gltf::from_slice(&chunks.json).ok()?;
+    let root = serde_json::from_slice(&chunks.json).ok()?;
+    let gltf = geometry_document(root)?;
     let scene = gltf.default_scene()?;
     let blob = chunks.bin.as_deref()?;
     let buffer = |buffer: gltf::Buffer<'_>| (buffer.index() == 0).then_some(blob);

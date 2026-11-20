@@ -1577,6 +1577,77 @@ mod tests {
     }
 
     #[test]
+    fn offscreen_movement_only_releases_the_named_target_in_its_own_cell() {
+        let db = authored_database();
+        db.execute("INSERT INTO room_graph_cells VALUES(8,1)", [])
+            .unwrap();
+        let mut app = App::new();
+        app.insert_resource(RoomCullingState::new(PathBuf::new()))
+            .add_systems(Update, cull_room_views);
+        let camera = app
+            .world_mut()
+            .spawn((
+                StreamingCamera,
+                GlobalTransform::IDENTITY,
+                Projection::Perspective(PerspectiveProjection::default()),
+                VisibleEntities::default(),
+            ))
+            .id();
+        let [(moved, mesh_a), (_, mesh_b)] = [(7, 100), (8, 200)].map(|(cell, id)| {
+            insert_room(&db, id + 1, cell, [0.0; 3]);
+            insert_room(&db, id + 2, cell, [0.0, 25.0, 0.0]);
+            db.execute(
+                r#"INSERT INTO "references"(id,cell_id,base_form_id) VALUES(?1,?2,99)"#,
+                [id, cell],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO room_reference_rules VALUES(?1,?2,'target',?3)",
+                [id, cell, id + 2],
+            )
+            .unwrap();
+            let graph = load_room_graph(&db, cell).unwrap();
+            let world = app.world_mut();
+            let root = world
+                .spawn((StreamedCellRoot, CellRef(cell), GlobalTransform::IDENTITY))
+                .id();
+            world
+                .resource_mut::<RoomCullingState>()
+                .insert_graph(cell, root, graph);
+            let reference = world
+                .spawn((
+                    FormId(id),
+                    ChildOf(root),
+                    Transform::IDENTITY,
+                    GlobalTransform::IDENTITY,
+                ))
+                .id();
+            (reference, world.spawn(ChildOf(reference)).id())
+        });
+        let list_both = |app: &mut App| {
+            app.world_mut()
+                .get_mut::<VisibleEntities>(camera)
+                .unwrap()
+                .get_mut(TypeId::of::<Mesh3d>())
+                .extend([mesh_a, mesh_b]);
+        };
+        list_both(&mut app);
+        app.world_mut().run_schedule(Update);
+        assert!(mesh_list(&app, camera).is_empty());
+
+        // Both meshes are off screen while only the first reference moves and returns.
+        for transform in [Transform::from_xyz(1.0, 0.0, 0.0), Transform::IDENTITY] {
+            app.world_mut()
+                .entity_mut(moved)
+                .insert((transform, GlobalTransform::from(transform)));
+            app.world_mut().run_schedule(Update);
+        }
+        list_both(&mut app);
+        app.world_mut().run_schedule(Update);
+        assert_eq!(mesh_list(&app, camera), [mesh_a]);
+    }
+
+    #[test]
     fn tiny_scale_changes_reassign_a_cached_offset_source_sphere() {
         let connection = authored_database();
         insert_room(&connection, 1, 7, [10003.0, 0.0, 0.0]);
