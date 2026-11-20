@@ -18,7 +18,10 @@ use super::{
     },
     types::ArchivedRecordData,
 };
-use crate::{cache::hash_bytes, records::source_identity};
+use crate::{
+    cache::hash_bytes,
+    records::{DiscardedFrameScope, source_identity},
+};
 use color_eyre::{
     Result,
     eyre::{WrapErr, bail, ensure},
@@ -126,7 +129,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         (native.into_import()?, None)
     };
     ensure!(
-        !import.cells.is_empty() || !import.edits.is_empty(),
+        !import.cells.is_empty() || !import.edits.is_empty() || !import.damage.is_empty(),
         "{name} contains no cells or placement edits"
     );
 
@@ -175,9 +178,10 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     }
     let mut cells = fresh_cells.clone();
     let mut changed = HashSet::new();
-    for edit in &import.edits {
+    let mut layouts = HashMap::new();
+    let mut records = HashMap::new();
+    for edit in import.edits {
         let id = edit.record.form_id;
-        ensure!(changed.insert(id), "duplicate placement edit for {id:08X}");
         let in_fresh_cell = edit
             .record
             .cell_form_id
@@ -190,10 +194,34 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
                     && view.find_all(b"XSCL").count() <= 1,
                 "placement {id:08X} has unsupported primitive or scale data"
             );
+            if !in_fresh_cell
+                && edit
+                    .record
+                    .cell_form_id
+                    .is_some_and(|cell| import.damaged_creations.contains(&cell))
+            {
+                ensure!(
+                    edit.owns_new_id,
+                    "placement needs a new source-owned FormID"
+                );
+                ensure!(
+                    edit.record.worldspace_form_id.is_none(),
+                    "placement has no interior parent cell"
+                );
+                require_unused_id(&tx, id, has_history)?;
+                validate_placement(&tx, &edit.record, is_plugin)
+                    .wrap_err_with(|| format!("placement {id:08X}"))?;
+                eprintln!(
+                    "warning: {name}: skipped placement {:08X} because its new CELL is damaged",
+                    edit.source_id
+                );
+                continue;
+            }
         }
+        ensure!(changed.insert(id), "duplicate placement edit for {id:08X}");
         apply_edit(
             &tx,
-            edit,
+            &edit,
             &mut cells,
             in_fresh_cell || (is_plugin && edit.owns_new_id),
             has_history,
@@ -204,18 +232,16 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
             "INSERT INTO room_placement_edits VALUES (?1,?2,?3,?4)",
             params![layer, id, edit.source_id, edit.record.is_deleted()],
         )?;
-    }
-    let mut layouts = HashMap::new();
-    let mut records = HashMap::new();
-    for edit in import.edits {
-        let id = edit.record.form_id;
         if let Some(layout) = edit.room_links {
             layouts.insert(id, layout);
         }
         records.insert(id, edit.record);
     }
-    let certified_cells =
+    let mut certified_cells =
         refresh_placement_cells(&tx, &cells, &fresh_cells, &records, &layouts, &name)?;
+    let incomplete = mark_incomplete(&tx, &import.damage)?;
+    certified_cells.retain(|cell| !incomplete.contains(cell));
+    cells.extend(incomplete);
     super::doors::refresh_placement_links(&tx, &changed)?;
     tx.commit()?;
     let mut affected_cells = cells.into_iter().collect::<Vec<_>>();
@@ -234,6 +260,8 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
 struct Import {
     cells: Vec<CellCreation>,
     edits: Vec<Edit>,
+    damage: HashSet<DiscardedFrameScope>,
+    damaged_creations: HashSet<u32>,
 }
 
 struct CellCreation {
@@ -287,16 +315,20 @@ fn plugin_edits(
     order.metadata.push(metadata.clone());
     let order = LoadOrder::from_metadata(order.names, order.metadata)?;
     let mut candidates = Vec::new();
-    let parse_warnings = parse_plugin_bytes(bytes, name, |candidate| candidates.push(candidate))?;
-    ensure!(
-        parse_warnings.is_empty(),
-        "{name} contains malformed records or groups"
-    );
+    parse_plugin_bytes(bytes, name, |candidate| candidates.push(candidate))?;
     let warnings = RemapWarnings::default();
     let mut import = Import::default();
     for candidate in candidates {
-        let ParsedRecord::Usable(mut record) = candidate else {
-            bail!("{name} contains a damaged placement");
+        let mut record = match candidate {
+            ParsedRecord::Usable(record) => record,
+            ParsedRecord::DamagedRecord(record) => {
+                record_damage(tx, &mut import, &record, priority, &order)?;
+                continue;
+            }
+            ParsedRecord::DiscardedFrame(scope) => {
+                import.damage.insert(scope.resolve(priority, &order));
+                continue;
+            }
         };
         let source_id = record.form_id;
         let remapped =
@@ -350,6 +382,76 @@ fn plugin_edits(
     }
     warnings.report();
     Ok(import)
+}
+
+fn record_damage(
+    tx: &Transaction<'_>,
+    import: &mut Import,
+    record: &RawRecord,
+    priority: usize,
+    order: &LoadOrder,
+) -> Result<()> {
+    let scoped_cell = |cell: Option<u32>| DiscardedFrameScope::from(cell).resolve(priority, order);
+    if record.record_type == CELL {
+        let scope = scoped_cell(Some(record.form_id));
+        import.damage.insert(scope);
+        if let DiscardedFrameScope::Cell(cell) = scope
+            && (record.form_id >> 24) as usize == order.metadata[priority].masters.len()
+        {
+            import.damaged_creations.insert(cell);
+        }
+    } else if super::is_placed_record_type(&record.record_type) {
+        import.damage.insert(scoped_cell(record.cell_form_id));
+        if let Some(id) =
+            source_identity::header_runtime_id(&record.record_type, record.form_id, priority, order)
+                .filter(|&id| id != 0)
+        {
+            // A prior import can move or delete the canonical placement.
+            let predecessor = tx
+                .prepare_cached(
+                    "SELECT coalesce(
+                        (SELECT cell_id FROM [references] WHERE id=?1),
+                        (SELECT cell_id FROM records WHERE form_id=?1 AND record_type='REFR'
+                         AND NOT EXISTS(SELECT 1 FROM room_placement_edits WHERE form_id=?1)))",
+                )?
+                .query_row([id], |row| row.get::<_, Option<u32>>(0))?;
+            if let Some(cell) = predecessor {
+                import.damage.insert(DiscardedFrameScope::Cell(cell));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn mark_incomplete(
+    tx: &Transaction<'_>,
+    damage: &HashSet<DiscardedFrameScope>,
+) -> Result<HashSet<u32>> {
+    const INTERIORS: &str = "INSERT INTO room_graph_cells(cell_id,complete)
+         SELECT id,0 FROM cells WHERE id<>0 AND worldspace_id IS NULL
+         AND grid_x IS NULL AND grid_y IS NULL";
+    const INCOMPLETE: &str = "ON CONFLICT(cell_id) DO UPDATE SET complete=0 RETURNING cell_id";
+    if damage.is_empty() {
+        return Ok(HashSet::new());
+    }
+    if damage.contains(&DiscardedFrameScope::Unknown) {
+        return Ok(tx
+            .prepare(&format!("{INTERIORS} {INCOMPLETE}"))?
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?);
+    }
+    let mut statement = tx.prepare(&format!("{INTERIORS} AND id=?1 {INCOMPLETE}"))?;
+    let mut cells = HashSet::new();
+    for &scope in damage {
+        if let DiscardedFrameScope::Cell(id) = scope {
+            cells.extend(
+                statement
+                    .query_row([id], |row| row.get::<_, u32>(0))
+                    .optional()?,
+            );
+        }
+    }
+    Ok(cells)
 }
 
 fn validate_new_cell(record: &RawRecord, localized: bool) -> Result<()> {
@@ -530,6 +632,13 @@ fn apply_edit(
         .filter(|_| record.worldspace_form_id.is_none())
         .ok_or_else(|| color_eyre::eyre::eyre!("placement has no interior parent cell"))?;
     require_interior(tx, cell)?;
+    validate_placement(tx, record, allow_doors)?;
+    cells.insert(cell);
+    insert_reference(tx, id, cell, None, record.flags, &record.subrecords)?;
+    Ok(())
+}
+
+fn validate_placement(tx: &Transaction<'_>, record: &RawRecord, allow_doors: bool) -> Result<()> {
     validate_room_fields(tx, &record.subrecords, allow_doors)?;
     let view = SubrecordView::new(&record.subrecords);
     if let Some(bounds) = view.find(b"XMBO") {
@@ -560,8 +669,6 @@ fn apply_edit(
             ),
         "invalid placement scale"
     );
-    cells.insert(cell);
-    insert_reference(tx, id, cell, None, record.flags, &record.subrecords)?;
     Ok(())
 }
 
@@ -658,6 +765,7 @@ impl NativePlacements {
                 .into_iter()
                 .map(NativeEdit::into_edit)
                 .collect::<Result<_>>()?,
+            ..Import::default()
         })
     }
 }

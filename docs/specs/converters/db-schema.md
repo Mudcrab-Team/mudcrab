@@ -1447,6 +1447,14 @@ On import its three extents must match the first 12 bytes of `XPRM`. A door can 
 Static primitives, actor references, scripts, new base records, exterior changes, and other
 `CELL` fields require a normal conversion.
 
+The command warns when it skips a damaged record or discards the unread part of a group.
+The parser resumes at a verified record or group boundary, and the command applies the usable
+placements and interiors it reads. A damaged placement leaves its destination and any retained
+predecessor's cell incomplete. A discarded group leaves its enclosing cell incomplete. If the
+command cannot resolve the damage to a cell, all interiors use the whole-cell fallback. The
+command also warns and skips placements that require a damaged new interior. Usable records
+with unsupported content still roll back the import.
+
 `--native` accepts a `cells` array for new interiors and an `edits` array for placements.
 Provide at least one cell or edit. A cell declaration takes an `id`, an `editor_id`, and an optional
 `full_name`. `put` adds or replaces a static placement, and `delete` removes a placement by
