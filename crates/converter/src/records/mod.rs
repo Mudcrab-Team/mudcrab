@@ -508,8 +508,7 @@ pub struct RecordSource {
     pub deleted: bool,
 }
 
-/// A discarded frame tail is scoped by its enclosing cell group. A malformed
-/// child header cannot identify the cells in any unread siblings.
+/// The cells whose room graph may depend on unread records in a discarded frame.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum DiscardedFrameScope {
     Cell(u32),
@@ -524,6 +523,15 @@ impl From<Option<u32>> for DiscardedFrameScope {
 }
 
 impl DiscardedFrameScope {
+    /// A complete unread header can override a placement previously stored in any cell.
+    pub(crate) fn unread_tail(cell: Option<u32>, remaining: usize) -> Self {
+        if remaining >= 24 {
+            Self::Unknown
+        } else {
+            cell.into()
+        }
+    }
+
     pub(crate) fn resolve(self, plugin: usize, order: &LoadOrder) -> Self {
         match self {
             Self::Cell(label) => source_identity::header_runtime_id(b"CELL", label, plugin, order)
@@ -726,7 +734,17 @@ fn read_plugins_with_prepared(
                     .flatten();
             }
             if record.flags & 0x20 == 0
-                && let Err(error) = validate(&record)
+                && let Err(error) = crate::esm::validate_placement_parent(
+                    &record.record_type,
+                    record.cell_form_id,
+                    || {
+                        result
+                            .records
+                            .get(&record.form_id)
+                            .and_then(|prior| prior.cell_form_id)
+                    },
+                )
+                .and_then(|()| validate(&record))
             {
                 if let Some(entry) = history.borrow_mut().last_mut() {
                     entry.reason = Some(format!("unusable runtime candidate: {error}"));

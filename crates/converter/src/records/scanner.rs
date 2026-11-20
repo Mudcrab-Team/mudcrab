@@ -138,7 +138,8 @@ fn scan_bytes_observed(
                 diagnostics.note("record", || {
                     format!("invalid group boundary/nesting at byte {position}")
                 });
-                discarded_frames.insert(cell.into());
+                discarded_frames
+                    .insert(DiscardedFrameScope::unread_tail(cell, end - position - 24));
                 discarded_frames.extend(cell_child.map(DiscardedFrameScope::Cell));
                 position = end;
                 continue;
@@ -179,7 +180,7 @@ fn scan_bytes_observed(
             failure: None,
         };
         if size > end - position - 24 {
-            discarded_frames.insert(cell.into());
+            discarded_frames.insert(DiscardedFrameScope::unread_tail(cell, end - position - 24));
             observed.failure =
                 Some("truncated record payload; containing group remainder skipped".into());
             observe(observed);

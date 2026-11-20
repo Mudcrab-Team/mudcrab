@@ -1294,9 +1294,11 @@ Columns and rules:
   supplies the transform. An invalid transform omits the room and marks its cell incomplete.
   Exactly one 32-byte box `XPRM` supplies the `half_*` extents in the room’s own frame. `lighting_template_id` (`LNAM`) and `image_space_id`
   (`INAM`) are decoded for the lighting work in #129-#135; nothing in the engine uses them yet.
-- **`room_portals`**: a portal's doorway is the marker's local X-Z rectangle (normal along local
-  +Y); `half_x`/`half_z` are its half-width and half-height. The converter requires a 32-byte `XPRM` with shape 3.
-  A missing or malformed primitive gets no portal row and marks its cell incomplete. `XPOD` is an array of 8-byte (origin, destination) FormID pairs
+- A **`room_portals`** row describes a doorway in the marker's local X-Z plane, with its normal along +Y.
+  The converter requires exactly one 24-byte `DATA` with finite position and rotation values and exactly
+  one 32-byte shape-3 `XPRM` with finite, strictly positive X and Z half-extents (`half_x` and
+  `half_z`). If either field is missing, duplicated, or invalid, the converter skips the portal
+  and marks its cell incomplete. `XPOD` is an array of 8-byte (origin, destination) FormID pairs
   (xEdit 4.1.5f defs, `Core/wbDefinitionsTES5.pas`: `wbArray(XPOD, 'Portal Data',
   wbStruct('References', [wbFormIDCk('Origin', [REFR, NULL]), wbFormIDCk('Destination',
   [REFR, NULL])]))`), so a portal gets **one row per pair**, numbered by `pair_index` from 0
@@ -1359,13 +1361,15 @@ Columns and rules:
   Each plugin has one warning with that count and example. `integration-report.json` shows
   the counts under `room_graph.room_link_anomalies`.
 
-Both plugin readers require a usable `NAME` base on live placements. Rejecting an override
+Both plugin readers require a nonzero, resolved `NAME` base on live placements. A live override
+of a cell-owned placement also needs a usable destination cell. Rejecting an override
 preserves its predecessor and marks the affected interiors incomplete. If only the reference
 ID resolves, the reader can still identify the predecessor’s cell. A later accepted override or
 deletion clears damage tied to that ID. If only the destination cell resolves, the damage stays
-with that cell. When a malformed record or group consumes the rest of its enclosing frame,
-the reader marks the enclosing cell incomplete. If that cell cannot be identified, all surviving
-interiors use the whole-cell fallback. Parsing resumes at the next trusted frame boundary.
+with that cell. If a discarded frame tail could hide a placement header, an unseen override
+could refer to a placement from another cell. All surviving interiors then use the whole-cell
+fallback. A shorter tail marks only the enclosing cell incomplete when that cell is known.
+Parsing resumes at the next trusted frame boundary.
 
 The tables are derived data: a full load-order export clears and rebuilds them from the winning
 records on every conversion, like the grass tables. Subsets without placed references, including
@@ -1452,8 +1456,8 @@ Static primitives, actor references, scripts, new base records, exterior changes
 The command warns when it skips a damaged record or discards the unread part of a group.
 The parser resumes at a verified record or group boundary, and the command applies the usable
 placements and interiors it reads. A damaged placement leaves its destination and any retained
-predecessor's cell incomplete. A discarded group leaves its enclosing cell incomplete. If the
-command cannot resolve the damage to a cell, all interiors use the whole-cell fallback. The
+predecessor's cell incomplete. When a discarded tail could hide a placement header or the
+command cannot identify the affected cell, all interiors use the whole-cell fallback. The
 command also warns and skips placements that require a damaged new interior. Usable records
 with unsupported content still roll back the import.
 

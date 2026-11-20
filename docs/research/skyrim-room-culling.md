@@ -147,9 +147,10 @@ outside the aperture. Missing or invalid bounds and `NoFrustumCulling` skip aper
 while retaining the prior unreached-room rule.
 
 In a roomed cell, a reference with no geometric membership stays eligible for ordinary view
-culling. A reference with overlap rows alone can use their volumes and the unbounded volume. The runtime recognizes portal-shared
-geometry when a reference's aggregate model bounds overlap a portal attached to its containing
-space. Each child mesh can then use either endpoint's volume, including the unbounded endpoint.
+culling. A reference with overlap rows alone can use their volumes and the unbounded volume.
+If the aggregate model bounds intersect a doorway attached to a containing or overlapping room,
+each child mesh can use either endpoint's visible volume. A pivot outside all rooms can also
+share a doorway attached to the unbounded space.
 This adds visibility candidates without discarding existing overlap memberships. It filters each
 mesh once and does not duplicate render submissions. Missing aggregate bounds use the mesh bounds.
 The affine-box overlap test is conservative; it does not reproduce native sphere assignment,
