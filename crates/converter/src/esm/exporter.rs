@@ -885,6 +885,7 @@ fn export_records(
             tx.prepare_cached("DELETE FROM reference_rooms WHERE reference_id=?1")?
                 .execute([form_id])?;
             if record.is_deleted() {
+                delete_reference_scripts(&tx, form_id, scalar_script_storage)?;
                 clear_reference_placement(&tx, form_id)?;
                 tx.prepare_cached("DELETE FROM records WHERE form_id=?1")?
                     .execute([form_id])?;
@@ -1781,6 +1782,23 @@ pub fn insert_reference(
             "warning: placed record {form_id:08X} has missing or short DATA; no placement row"
         );
     }
+    Ok(())
+}
+
+/// A deleted reference no longer owns scripts in either runtime layout.
+fn delete_reference_scripts(
+    tx: &Transaction<'_>,
+    form_id: u32,
+    scalar_storage: bool,
+) -> Result<()> {
+    if scalar_storage {
+        tx.prepare_cached("DELETE FROM script_property_values WHERE form_id=?1")?
+            .execute([form_id])?;
+        tx.prepare_cached("DELETE FROM script_properties WHERE form_id=?1")?
+            .execute([form_id])?;
+    }
+    tx.prepare_cached("DELETE FROM scripts WHERE form_id=?1")?
+        .execute([form_id])?;
     Ok(())
 }
 
@@ -3747,6 +3765,59 @@ mod tests {
                 )
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn subset_reference_deletion_clears_only_its_script_projections() {
+        use dummy_content::inhouse_vmad as fixture;
+        let vmad = fixture::field(
+            5,
+            2,
+            &[fixture::script(
+                5,
+                "DoorScript",
+                0,
+                &[fixture::property(5, "Limit", 3, 1, &42i32.to_le_bytes())],
+            )],
+            &[],
+        );
+        let scripted = |id| {
+            let mut row = reference(id, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+            row.subrecords.push((b"VMAD".to_vec(), vmad.clone()));
+            (id, row)
+        };
+        for normalized in [false, true] {
+            let mut db = Connection::open_in_memory().unwrap();
+            create_tables(&db).unwrap();
+            if normalized {
+                let tx = db.transaction().unwrap();
+                super::super::inhouse_script_properties::replace_snapshot_tables(&tx).unwrap();
+                tx.commit().unwrap();
+            }
+            let tables = if normalized {
+                &["scripts", "script_properties", "script_property_values"][..]
+            } else {
+                &["scripts"][..]
+            };
+            let owners = |table: &str| {
+                db.prepare(&format!("SELECT form_id FROM {table} ORDER BY form_id"))
+                    .unwrap()
+                    .query_map([], |row| row.get::<_, u32>(0))
+                    .unwrap()
+                    .collect::<Result<Vec<_>>>()
+                    .unwrap()
+            };
+            export_to_db(&db, &[scripted(0x801), scripted(0x802)].into()).unwrap();
+            for table in tables {
+                assert_eq!(owners(table), [0x801, 0x802], "{table}");
+            }
+            let mut deleted = record(0x801, b"REFR", None, None, Vec::new());
+            deleted.flags = 0x20;
+            export_to_db(&db, &[(0x801, deleted)].into()).unwrap();
+            for table in tables {
+                assert_eq!(owners(table), [0x802], "{table}");
+            }
+        }
     }
 
     // ---- Load door links (db-schema.md section 17) ----

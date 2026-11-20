@@ -391,6 +391,26 @@ fn plugin_edits(
         );
         if !record.is_deleted() {
             validate_room_field_tags(&record.subrecords)?;
+            // Remapping drops a wrong-width XTEL and clears an unresolvable destination.
+            if SubrecordView::new(&record.subrecords)
+                .find_all(b"XTEL")
+                .any(|data| {
+                    let Some((target, arrival_and_flags)) = data.split_first_chunk::<4>() else {
+                        return true;
+                    };
+                    let target = u32::from_le_bytes(*target);
+                    arrival_and_flags.len() != 28
+                        || (target != 0
+                            && source_identity::header_runtime_id(
+                                b"REFR", target, priority, &order,
+                            )
+                            .is_none_or(|id| id == 0))
+                })
+            {
+                eprintln!("warning: {name}: skipped placement {source_id:08X} with malformed XTEL");
+                record_damage(tx, &mut import, &record, priority, &order)?;
+                continue;
+            }
         }
         let room_links = SubrecordView::new(&record.subrecords)
             .get_form_id(b"NAME")
@@ -1042,6 +1062,10 @@ impl NativeEdit {
                 half_extents: [x, z],
                 endpoints,
             } => {
+                ensure!(
+                    x.is_finite() && x > 0.0 && z.is_finite() && z > 0.0,
+                    "portal half-extents must be finite and positive"
+                );
                 let mut record = native_reference(id, cell, PORTAL_MARKER_BASE, position, rotation);
                 record
                     .subrecords
