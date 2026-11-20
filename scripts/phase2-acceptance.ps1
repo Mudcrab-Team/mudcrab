@@ -321,7 +321,7 @@ else {
                     $runDirectory = Join-Path $directories.profiling "$($scenario.name)\run-$run"
                     New-Item -ItemType Directory -Force -Path $runDirectory | Out-Null
                     $screenshot = Join-Path $directories.screenshots "$($scenario.name).png"
-                    $arguments = $scenario.arguments + @(
+                    $arguments = @("--no-grass") + $scenario.arguments + @(
                         "--benchmark-duration", "$($scenario.seconds)", "--benchmark-output", (Join-Path $runDirectory "acceptance.json"),
                         "--profile-output", $runDirectory, "--profile-scenario", $scenario.name, "--profile-run-id", "run-$run",
                         "--profile-commit", $commit, "--profile-hardware", $hardware,

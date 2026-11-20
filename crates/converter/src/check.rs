@@ -475,6 +475,34 @@ mod tests {
         directory
     }
 
+    /// The derived grass entry uses the same presence and digest checks as assets.
+    #[test]
+    fn grass_archive_is_checked_for_missing_and_modified_bytes() {
+        let directory = output_with_one_artifact(3);
+        let root = directory.path();
+        let path = root.join("grass_cache.rkyv");
+        fs::write(&path, b"grass").unwrap();
+        let mut manifest: ConversionManifest =
+            serde_json::from_slice(&fs::read(root.join(MANIFEST_FILE_NAME)).unwrap()).unwrap();
+        crate::cache::record_grass_artifact(&mut manifest, root).unwrap();
+        manifest.save(&root.join(MANIFEST_FILE_NAME)).unwrap();
+        assert!(
+            check_output(root, CheckMode::Quick, |_, _| {})
+                .unwrap()
+                .is_ok()
+        );
+        fs::write(&path, b"wrong").unwrap();
+        assert!(
+            check_output(root, CheckMode::Full, |_, _| {})
+                .unwrap()
+                .problems
+                .iter()
+                .any(|problem| format!("{problem}").contains("grass_cache.rkyv"))
+        );
+        fs::remove_file(path).unwrap();
+        assert!(check_output(root, CheckMode::Quick, |_, _| {}).unwrap().problems.iter().any(|problem| matches!(problem, CheckProblem::Missing { output } if output == "grass_cache.rkyv")));
+    }
+
     #[test]
     fn checks_an_output_folder_it_can_resolve() {
         let directory = output_with_one_artifact(3);
