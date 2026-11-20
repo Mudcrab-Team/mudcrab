@@ -3154,7 +3154,7 @@ fn damaged_groups_and_roomless_placements_keep_negative_certificates() {
             cell(0x901),
             placement_group(0x901, room(0x801)),
             cell(0x902),
-            group(0, u32::from_le_bytes(*b"CELL"), truncated_group(6, 0x902)),
+            group(6, 0x902, truncated_group(9, 0x902)),
             cell(0x903),
             placement_group(0x903, torn_placement),
             cell(0x904),
@@ -3201,6 +3201,144 @@ fn damaged_groups_and_roomless_placements_keep_negative_certificates() {
         );
     }
 }
+
+#[test]
+fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
+    use converter::config::RecordReader;
+
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let a = 0x900;
+    let b = 0x901;
+    let c = 0x902;
+    let cells = [(a, 0x800u32), (b, 0x810), (c, 0x820)];
+    let base = plugin(
+        data,
+        "Skyrim.esm",
+        &[],
+        1,
+        cells
+            .into_iter()
+            .flat_map(|(cell, room)| {
+                [
+                    record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])),
+                    placement_group(cell, placement_marker(room, 0x1f, Vec::new())),
+                ]
+                .concat()
+            })
+            .collect(),
+    );
+    let portal = |room: u32| {
+        let endpoints = [room.to_le_bytes(), 0u32.to_le_bytes()].concat();
+        placement_marker(room + 1, 0x20, sub(b"XPOD", &endpoints))
+    };
+    let mut bad_group = group(6, a, Vec::new());
+    bad_group[4..8].copy_from_slice(&0xffffu32.to_le_bytes());
+    let mut overrun = record(b"NAVM", 0x0100_0803, 0, Vec::new());
+    overrun[4..8].copy_from_slice(&0xffffu32.to_le_bytes());
+    let unknown_frame = |prefix| {
+        group(
+            0,
+            u32::from_le_bytes(*b"CELL"),
+            [prefix, placement_group(b, portal(0x810))].concat(),
+        )
+    };
+    let broken_compressed_record = |tag: &[u8; 4], flags: u32| {
+        record(
+            tag,
+            0x0100_0804,
+            flags | 0x40000,
+            vec![4, 0, 0, 0, 0xff, 0xff, 0xff, 0xff],
+        )
+    };
+    let cases = [
+        (
+            "bad-group",
+            unknown_frame(bad_group),
+            [false, false, false],
+            [false, false, true],
+        ),
+        (
+            "unscoped-navmesh-overrun",
+            unknown_frame(overrun.clone()),
+            [false, false, false],
+            [false, false, true],
+        ),
+        (
+            "cell-navmesh-overrun",
+            [
+                placement_group(a, [overrun, portal(0x800)].concat()),
+                placement_group(b, portal(0x810)),
+            ]
+            .concat(),
+            [false, true, true],
+            [false, true, true],
+        ),
+        (
+            "invalid-compressed-placement",
+            placement_group(
+                a,
+                [broken_compressed_record(b"REFR", 0), portal(0x800)].concat(),
+            ),
+            [false, true, true],
+            [true, false, true],
+        ),
+        (
+            "invalid-compressed-deletion",
+            placement_group(
+                a,
+                [broken_compressed_record(b"REFR", 0x20), portal(0x800)].concat(),
+            ),
+            [true, true, true],
+            [true, false, true],
+        ),
+        (
+            "invalid-compressed-navmesh",
+            placement_group(
+                a,
+                [broken_compressed_record(b"NAVM", 0), portal(0x800)].concat(),
+            ),
+            [true, true, true],
+            [true, false, true],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, mut contents, expected_complete, expected_portals) in cases {
+        contents.extend(placement_group(c, portal(0x820)));
+        let patch = plugin(data, &format!("{name}.esp"), &["Skyrim.esm"], 0, contents);
+        for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+            let output = data.join(format!("{name}-{reader:?}.db"));
+            EsmParser::convert_plugins_with_reader(
+                &[base.clone(), patch.clone()],
+                &output,
+                reader,
+                data,
+            )
+            .unwrap();
+            let db = rusqlite::Connection::open(output).unwrap();
+            for (index, (cell, room)) in cells.into_iter().enumerate() {
+                let actual: (bool, bool, bool) = db
+                    .query_row(
+                        "SELECT complete,
+                            EXISTS(SELECT 1 FROM room_bounds WHERE ref_id=?2 AND cell_id=?1),
+                            EXISTS(SELECT 1 FROM room_portals WHERE ref_id=?3 AND cell_id=?1)
+                         FROM room_graph_cells WHERE cell_id=?1",
+                        [cell, room, room + 1],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .unwrap();
+                let expected = (expected_complete[index], true, expected_portals[index]);
+                if actual != expected {
+                    failures.push(format!(
+                        "{reader:?} {name} cell {cell:X}: (complete, room, portal)={actual:?}, expected {expected:?}"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 const PLACEMENT_CELL_A: u32 = 0x900;
 const PLACEMENT_CELL_B: u32 = 0x901;
 const PLACEMENT_CELL_UNRELATED: u32 = 0x902;
