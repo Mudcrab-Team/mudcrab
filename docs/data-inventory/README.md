@@ -23,11 +23,16 @@ record reader needs a reviewed disposition. Only the reviewed, stable facts are 
 | File | Content | Changes when |
 |---|---|---|
 | `tools/world_data_inventory/dispositions.json` | Human dispositions: owner, reason, states and anchors per table and traced field | A person classifies a table or field |
+| `tools/world_data_inventory/stores/<store>.json` | One external store: owner, reason, states, anchors and its own `reviewed_at_commit` | A person adds or edits that store |
 | `tools/world_data_inventory/reviewed-surface.json` | One line per reviewed record reader (call-site key and hash of its SQL) and one line per reviewed `table.column` | A reader or a column is added, changed or removed |
 
 The key of a reader holds the file path, the method, a hash of the call expression and an
 occurrence number. It holds no line number and no hash of the whole file. The SQL hash
 catches a changed constant behind an unchanged call.
+
+Each external store has its own file and its own reviewed commit. A pull request that adds
+or changes a store edits only that file. Two pull requests that add different stores
+therefore never conflict on a shared line.
 
 These are generated, never committed, and gitignored: `docs/data-inventory/inventory.json`,
 `docs/data-inventory/report.md` and the old `tools/world_data_inventory/reviewed-sources.json`.
@@ -49,6 +54,21 @@ During a rebase, run the `git rm` part, then `git rebase --continue`. Do not tak
 copy and do not re-add the files. Then run `python3 -B tools/world_data_inventory/inventory.py --check`.
 If your branch adds, changes or removes a record reader, the check lists it. Review the
 dispositions, run `inventory.py --review-sources` and commit `reviewed-surface.json`.
+
+## Migrating a branch that adds a store
+
+Main moved the `stores` block out of `dispositions.json`. A branch that adds a store there
+gets a conflict on the next merge. Move the entry to its own file:
+
+1. Create `tools/world_data_inventory/stores/<name>.json` with a lowercase hyphenated
+   filename, for example `interface-controls-pc.json`. Use the entry's `owner`, `reason`,
+   `states` and `evidence`, add `"format_version": 1`, `"store": "<name>"` and a
+   `reviewed_at_commit` that holds your review commit.
+2. Delete the entry and the now-empty `stores` block from `dispositions.json`.
+3. Run `python3 -B tools/world_data_inventory/inventory.py --check`.
+
+The tool refuses a `stores` block in `dispositions.json` and names the directory in its
+error message.
 
 ## Generate and check
 
@@ -106,11 +126,14 @@ extracted report identity; incompatible replay/preparation fails visibly.
 
 [dispositions.json](../../tools/world_data_inventory/dispositions.json) follows
 [dispositions.schema.json](../../tools/world_data_inventory/dispositions.schema.json).
+Each file under [stores/](../../tools/world_data_inventory/stores) follows
+[store.schema.json](../../tools/world_data_inventory/store.schema.json).
 Selected fields carry independent states, roles, owner, reason, exact source anchors,
 mapping ordinals/expressions and sink/test references. Existing test references identify
 relevant evidence; they do not assert that those tests ran in this task. All other table
 fields have explicit deferred/provenance policies; BLOBs have an opaque disposition.
-Named external stores remain separate from SQL accounting.
+Named external stores remain separate from SQL accounting. Each store has its own file and
+`reviewed_at_commit`, so a store change touches one file and one review commit.
 
 The committed gate is deliberately narrow, so it stays stable. The scripts job checks every
 record reader that the lexical scan finds: a new reader, a reader whose SQL changed, or a

@@ -1,0 +1,33 @@
+{
+  "evidence": [
+    {
+      "anchor": "serde_json::from_str(&text)",
+      "path": "crates/engine/src/terrain_merge/mod.rs"
+    },
+    {
+      "anchor": "rkyv::deserialize::<TerrainCellMesh, RkyvError>(cell)",
+      "path": "crates/engine/src/terrain_merge/mod.rs"
+    },
+    {
+      "anchor": "pub fn check_ktx2_header(",
+      "path": "crates/engine/src/terrain_merge/mod.rs"
+    },
+    {
+      "anchor": "pub const LAND_TEXTURE_TABLE_PATH: &str = \"terrain/land-textures.json\";",
+      "path": "crates/shared/src/terrain_mesh.rs"
+    }
+  ],
+  "format_version": 1,
+  "owner": "terrain merge maintainers (#236 merged)",
+  "reason": "terrain/land-textures.json, KTX2 texture arrays and terrain/<worldspace>/chunk_<x>_<y>.rkyv form an alternative terrain path with per-cell fallback. Mapping is not GPU residency or draw confirmation.",
+  "reviewed_at_commit": "99ac022c441810f0a8e0e571e1c950f80a6f9c71",
+  "states": {
+    "decoded": "source_decoded",
+    "mapped": "source_mapping",
+    "preserved": "source_preserved",
+    "projected": "source_projected",
+    "query_dependent": "unknown",
+    "semantic_use": "unknown"
+  },
+  "store": "merged-terrain JSON/KTX2/rkyv"
+}

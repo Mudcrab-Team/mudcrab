@@ -119,12 +119,23 @@ class Dependencies(unittest.TestCase):
 READER = 'fn query(db: &Connection) { db.prepare("SELECT radius FROM lights"); }\n'
 
 
+def store_document(name, anchor="fn query", commit="0" * 40):
+    """One committed store file. Its own reviewed commit keeps store pull requests in separate files."""
+    return {"format_version": 1, "store": name, "reviewed_at_commit": commit,
+            "owner": "fixture", "reason": "Fixture external store.",
+            "states": {state: "unknown" for state in inv.STATES},
+            "evidence": [{"path": "crates/engine/src/world.rs", "anchor": anchor}]}
+
+
 def make_tree(directory, source=READER):
     """A disposable checkout: one reader, the fixture dispositions and the converter/shared source roots."""
     root = Path(directory)
     here = root / "tools/world_data_inventory"
     here.mkdir(parents=True)
-    (here / "dispositions.json").write_text(json.dumps(manual()), encoding="utf-8")
+    dispositions = manual()
+    dispositions.pop("stores")
+    (here / "stores").mkdir()
+    (here / "dispositions.json").write_text(json.dumps(dispositions), encoding="utf-8")
     for folder in ("crates/converter/src", "crates/converter/records", "crates/shared/src"):
         (root / folder).mkdir(parents=True)
     (root / "crates/shared/src/lib.rs").write_text("pub const VERSION: u32 = 1;\n", encoding="utf-8")
@@ -283,6 +294,75 @@ class CommittedSurface(unittest.TestCase):
         self.assertEqual(inv.tracked_generated_files(inv.ROOT), [])
 
 
+class StoreFiles(unittest.TestCase):
+    """Each store owns its file and reviewed commit, so two store PRs never share a line."""
+
+    def write_store(self, here, filename, document):
+        (here / "stores").mkdir(exist_ok=True)
+        (here / "stores" / filename).write_text(json.dumps(document), encoding="utf-8")
+
+    def test_two_branches_that_add_different_stores_merge_without_conflict(self):
+        # Both merge orders. A shared `stores` block or a shared reviewed commit would conflict here.
+        for first, second in (("alpha", "beta"), ("beta", "alpha")):
+            with self.subTest(order=(first, second)), tempfile.TemporaryDirectory() as directory:
+                root, here, _ = make_tree(directory)
+                git = lambda *args: subprocess.run(
+                    ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                     "-c", "commit.gpgsign=false", *args],
+                    cwd=root, capture_output=True, text=True, check=True)
+                git("init", "-q")
+                git("symbolic-ref", "HEAD", "refs/heads/main")
+                git("add", "-A")
+                git("commit", "-q", "-m", "base")
+                for name in (first, second):
+                    git("checkout", "-q", "-b", f"store-{name}", "main")
+                    self.write_store(here, f"{name}.json", store_document(name))
+                    git("add", "tools/world_data_inventory/stores")
+                    git("commit", "-q", "-m", f"add {name} store")
+                git("checkout", "-q", "main")
+                for name in (first, second):
+                    merged = subprocess.run(
+                        ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                         "-c", "commit.gpgsign=false", "merge", "--no-edit", f"store-{name}"],
+                        cwd=root, capture_output=True, text=True)
+                    self.assertEqual(merged.returncode, 0, merged.stdout + merged.stderr)
+                self.assertEqual(sorted(inv.load_stores(here)), sorted([first, second]))
+                inv.validate_manual(root, inv.load_manual(here))
+
+    def test_each_store_keeps_its_own_reviewed_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, here, _ = make_tree(directory)
+            self.write_store(here, "alpha.json", store_document("alpha", commit="1" * 40))
+            self.write_store(here, "beta.json", store_document("beta", commit="2" * 40))
+            stores = inv.load_stores(here)
+            self.assertEqual(stores["alpha"]["reviewed_at_commit"], "1" * 40)
+            self.assertEqual(stores["beta"]["reviewed_at_commit"], "2" * 40)
+
+    def test_check_fails_closed_on_a_missing_store_anchor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            self.write_store(here, "broken.json",
+                             store_document("broken", anchor="anchor that is not in the file"))
+            with self.assertRaisesRegex(ValueError, "broken evidence reference"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_a_malformed_store_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            self.write_store(here, "bad-commit.json", store_document("bad-commit", commit="HEAD"))
+            with self.assertRaisesRegex(ValueError, "invalid store reviewed_at_commit: bad-commit"):
+                run_tool(root, here, "--check")
+
+    def test_a_legacy_stores_block_fails_with_the_migration_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            dispositions = json.loads((here / "dispositions.json").read_text(encoding="utf-8"))
+            dispositions["stores"] = {"legacy": store_document("legacy")}
+            (here / "dispositions.json").write_text(json.dumps(dispositions), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"must not contain a stores block.*stores/"):
+                run_tool(root, here, "--check")
+
+
 class SourceAndDrift(unittest.TestCase):
     def test_literal_constants_comments_tests_and_dynamic_macro(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -399,7 +479,7 @@ class SourceAndDrift(unittest.TestCase):
             self.assertFalse(any(c["prepare_dependencies"] for c in changed_lights["columns"]))
 
     def test_committed_manual_anchors(self):
-        inv.validate_manual(inv.ROOT, json.loads((inv.HERE / "dispositions.json").read_text(encoding="utf-8")))
+        inv.validate_manual(inv.ROOT, inv.load_manual(inv.HERE))
 
     def test_cli_rejects_stale_extraction_before_replay(self):
         with tempfile.TemporaryDirectory() as directory:
