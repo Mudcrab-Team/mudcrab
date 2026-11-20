@@ -4202,6 +4202,18 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
             [false, false, true],
         ),
         (
+            "possible-placement-tag",
+            placement_group(a, b"REF".to_vec()),
+            [false, false, false],
+            [false, false, true],
+        ),
+        (
+            "non-placement-tag-prefix",
+            placement_group(a, b"REG".to_vec()),
+            [false, true, true],
+            [false, false, true],
+        ),
+        (
             "placement-tag-alone",
             placement_group(a, b"REFR".to_vec()),
             [false, false, false],
