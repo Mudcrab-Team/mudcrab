@@ -914,6 +914,12 @@ pub(super) fn refresh_placement_cells(
     )?;
     let mut certified = Vec::new();
     for &cell in cells {
+        // The projection writes every negative certificate, including cells without rooms.
+        // A remaining empty cell had complete input and may receive its first room later.
+        tx.prepare_cached(
+            "INSERT OR IGNORE INTO room_graph_cells(cell_id,complete) VALUES (?1,1)",
+        )?
+        .execute([cell])?;
         write_overlap_rows(tx, Some(cell))?;
         if tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM room_graph_cells WHERE cell_id=?1 AND complete=1)",
