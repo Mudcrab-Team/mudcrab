@@ -2199,6 +2199,10 @@ mod tests {
         ("workspace.py", "--no-run"),
         ("workspace.py", "--open"),
         ("workspace.py", "--timings"),
+        // The retail-claim checker owns its diff range and repository path.
+        ("check_retail_claims.py", "--base"),
+        ("check_retail_claims.py", "--head"),
+        ("check_retail_claims.py", "--repo"),
     ];
 
     /// Flags consumed by Cargo, Git, `world-inspect`, the dynamic loader,
