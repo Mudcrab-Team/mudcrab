@@ -574,7 +574,8 @@ impl DiscardedFrameScope {
     /// A partial kind can still identify a possible child cell. Without the whole
     /// label we cannot bound the damage to a particular cell.
     pub(crate) fn from_group_prefix(bytes: &[u8]) -> Option<Self> {
-        if !bytes.starts_with(b"GRUP") {
+        let tag = &bytes[..bytes.len().min(4)];
+        if tag.is_empty() || !b"GRUP".starts_with(tag) {
             return None;
         }
         let Some((label, tail)) = bytes

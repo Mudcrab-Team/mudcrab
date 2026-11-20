@@ -3095,37 +3095,39 @@ fn placement_links(record: &DecodedRecord) -> [Option<u32>; 2] {
     [record.cell_form_id, base]
 }
 
-fn grouped_predecessors(chain: &[DecodedRecord]) -> impl Iterator<Item = &DecodedRecord> {
+fn placement_chain_start(chain: &[DecodedRecord]) -> usize {
     // A non-placement replacement ends the earlier placement's ownership.
-    let start = chain
+    chain
         .iter()
         .rposition(|prior| !crate::esm::is_placed_record_type(&prior.record_type))
-        .map_or(0, |index| index + 1);
-    chain[start..]
+        .map_or(0, |index| index + 1)
+}
+
+fn grouped_predecessors(chain: &[DecodedRecord]) -> impl Iterator<Item = &DecodedRecord> {
+    chain[placement_chain_start(chain)..]
         .iter()
         .rev()
         .filter(|prior| prior.cell_form_id.is_some())
 }
 
-fn placement_dependencies(
+fn validate_live_duplicate(
     record: &DecodedRecord,
-    predecessors: &[DecodedRecord],
-) -> crate::esm::PlacementDependencies {
-    crate::esm::PlacementDependencies {
-        own: placement_links(record),
-        grouped: if record.cell_form_id.is_none() {
-            grouped_predecessors(predecessors)
-                .map(|prior| (prior.record_type, placement_links(prior)))
-                .collect()
-        } else {
-            Vec::new()
-        },
+    previous: Option<&DecodedRecord>,
+    validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+) -> Result<(), String> {
+    super::validate_live_candidate(record, previous, validate)
+        .map_err(|error| format!("unusable runtime candidate: {error}"))?;
+    if super::incomplete_override(record, previous) {
+        return Err(super::INCOMPLETE_OVERRIDE.to_owned());
     }
+    Ok(())
 }
+
+type GroupedPlacement = ([u8; 4], [Option<u32>; 2]);
 
 struct PlacementClaimant {
     record: DecodedRecord,
-    grouped: Vec<([u8; 4], [Option<u32>; 2])>,
+    grouped: Vec<GroupedPlacement>,
     previous: Option<DecodedRecord>,
 }
 
@@ -3142,6 +3144,101 @@ pub(super) struct RecoveryCandidates {
 }
 
 impl RecoveryCandidates {
+    fn predecessor_chain(&self, id: u32) -> &[DecodedRecord] {
+        self.predecessors.get(&id).map_or(&[], Vec::as_slice)
+    }
+
+    fn duplicate_queue(&self, record: &DecodedRecord) -> Option<&VecDeque<DecodedRecord>> {
+        self.duplicates
+            .get(&(record.load_order, record.source_record_offset))
+    }
+
+    fn has_queued_predecessor(&self, chain: &[DecodedRecord]) -> bool {
+        !self.duplicates.is_empty()
+            && chain[placement_chain_start(chain)..]
+                .iter()
+                .any(|record| self.duplicate_queue(record).is_some())
+    }
+
+    fn placement_dependencies(&self, record: &DecodedRecord) -> crate::esm::PlacementDependencies {
+        let mut dependencies = crate::esm::PlacementDependencies {
+            own: placement_links(record),
+            grouped: Vec::new(),
+        };
+        if record.cell_form_id.is_none() {
+            let chain = self.predecessor_chain(record.form_id);
+            dependencies.grouped = if self.has_queued_predecessor(chain) {
+                chain[placement_chain_start(chain)..]
+                    .iter()
+                    .flat_map(|prior| {
+                        std::iter::once(prior)
+                            .chain(self.duplicate_queue(prior).into_iter().flatten())
+                            .take_while(|record| record.flags & 0x20 == 0)
+                    })
+                    .filter(|record| crate::esm::is_placed_record_type(&record.record_type))
+                    .map(|record| (record.record_type, placement_links(record)))
+                    .collect()
+            } else {
+                grouped_predecessors(chain)
+                    .map(|prior| (prior.record_type, placement_links(prior)))
+                    .collect()
+            };
+        }
+        dependencies
+    }
+
+    fn resolve_grouped_ownership(
+        &self,
+        chain: &[DecodedRecord],
+        catalogue: &PlacementCatalogue<'_>,
+        validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+    ) -> Option<GroupedPlacement> {
+        let mut grouped = None;
+        for (index, primary) in chain.iter().enumerate().skip(placement_chain_start(chain)) {
+            let previous = chain[..index].last();
+            let mut candidates = std::iter::once(primary)
+                .chain(self.duplicate_queue(primary).into_iter().flatten())
+                .enumerate();
+            let admitted = candidates.find_map(|(position, candidate)| {
+                if candidate.flags & 0x20 != 0 {
+                    return Some(std::borrow::Cow::Borrowed(candidate));
+                }
+                if position != 0 && validate_live_duplicate(candidate, previous, validate).is_err()
+                {
+                    return None;
+                }
+                let mut candidate = std::borrow::Cow::Borrowed(candidate);
+                if record_contains_deferred(&candidate) {
+                    catalogue.validate_superseded(
+                        candidate.to_mut(),
+                        previous.is_some(),
+                        grouped.as_slice(),
+                        &self.deleted,
+                        validate,
+                    )
+                } else {
+                    catalogue.validate_superseded_targets(
+                        &candidate,
+                        grouped.as_slice(),
+                        &self.deleted,
+                    )
+                }
+                .ok()?;
+                Some(candidate)
+            });
+            if let Some(candidate) = admitted {
+                if candidate.flags & 0x20 != 0
+                    || !crate::esm::is_placed_record_type(&candidate.record_type)
+                {
+                    grouped = None
+                } else if candidate.cell_form_id.is_some() {
+                    grouped = Some((candidate.record_type, placement_links(&candidate)));
+                }
+            }
+        }
+        grouped
+    }
+
     pub(super) fn queue_duplicate(
         &mut self,
         claimant: (u32, u64),
@@ -3228,13 +3325,7 @@ impl RecoveryCandidates {
                         {
                             Some("recovery predecessor has incomplete payload".to_owned())
                         } else {
-                            super::validate_live_candidate(&next, prior, validate)
-                                .err()
-                                .map(|error| format!("unusable runtime candidate: {error}"))
-                                .or_else(|| {
-                                    super::incomplete_override(&next, prior)
-                                        .then(|| super::INCOMPLETE_OVERRIDE.to_owned())
-                                })
+                            validate_live_duplicate(&next, prior, validate).err()
                         };
                         if let Some(reason) = failure {
                             reject_deferred_candidate(result, history_index, &next, order, reason);
@@ -3324,16 +3415,9 @@ impl RecoveryCandidates {
                             None
                         } else {
                             let previous = claimant.previous.as_ref();
-                            super::validate_live_candidate(&next, previous, validate)
-                                .map_err(|error| {
-                                    PlacementFailure::Invalid(format!(
-                                        "unusable runtime candidate: {error}"
-                                    ))
-                                })
+                            validate_live_duplicate(&next, previous, validate)
+                                .map_err(PlacementFailure::Invalid)
                                 .and_then(|()| {
-                                    if super::incomplete_override(&next, previous) {
-                                        return Err(super::INCOMPLETE_OVERRIDE.to_owned().into());
-                                    }
                                     catalogue.validate_superseded(
                                         &mut next,
                                         previous.is_some(),
@@ -3376,7 +3460,7 @@ impl PlacementCatalogue<'_> {
         &self,
         record: &mut DecodedRecord,
         has_previous: bool,
-        grouped: &[([u8; 4], [Option<u32>; 2])],
+        grouped: &[GroupedPlacement],
         deleted: &DeletedBases,
         validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
     ) -> Result<(), PlacementFailure> {
@@ -3412,6 +3496,15 @@ impl PlacementCatalogue<'_> {
             }
         }
 
+        self.validate_superseded_targets(record, grouped, deleted)
+    }
+
+    fn validate_superseded_targets(
+        &self,
+        record: &DecodedRecord,
+        grouped: &[GroupedPlacement],
+        deleted: &DeletedBases,
+    ) -> Result<(), PlacementFailure> {
         if crate::esm::is_placed_record_type(&record.record_type) {
             let dependencies = crate::esm::PlacementDependencies {
                 own: placement_links(record),
@@ -3624,6 +3717,13 @@ pub(crate) fn resolve_deferred(
         }
 
         // Wait for deferred candidates to settle before checking placement targets.
+        let catalogue = PlacementCatalogue {
+            order,
+            schema,
+            prepared,
+            kinds: &kinds,
+        };
+        let validate_candidate = std::cell::RefCell::new(&mut *validate);
         let rejected = crate::esm::invalid_placement_candidates(
             placements.iter().copied(),
             |id| {
@@ -3634,20 +3734,48 @@ pub(crate) fn resolve_deferred(
                 })
             },
             |id| {
-                placements.contains(&id).then(|| {
-                    let record = &result.records[&id];
-                    let predecessors = recovery
-                        .predecessors
-                        .get(&id)
-                        .map_or(&[][..], Vec::as_slice);
-                    placement_dependencies(record, predecessors)
-                })
+                placements
+                    .contains(&id)
+                    .then(|| recovery.placement_dependencies(&result.records[&id]))
             },
             |id, dependencies, cycle| {
+                let record = &result.records[&id];
+                let chain = recovery.predecessor_chain(id);
+                let resolved;
+                let dependencies =
+                    if record.cell_form_id.is_none() && recovery.has_queued_predecessor(chain) {
+                        let depends_on_cycle = cycle.is_some_and(|members| {
+                            dependencies.grouped.iter().any(|(_, links)| {
+                                links
+                                    .iter()
+                                    .flatten()
+                                    .any(|target| members.contains(target))
+                            })
+                        });
+                        let grouped = if depends_on_cycle {
+                            Vec::new()
+                        } else {
+                            recovery
+                                .resolve_grouped_ownership(
+                                    chain,
+                                    &catalogue,
+                                    &mut **validate_candidate.borrow_mut(),
+                                )
+                                .into_iter()
+                                .collect()
+                        };
+                        resolved = crate::esm::PlacementDependencies {
+                            own: dependencies.own,
+                            grouped,
+                        };
+                        &resolved
+                    } else {
+                        dependencies
+                    };
                 validate_placement_targets(
                     Some(prepared),
-                    &result.records[&id].record_type,
-                    result.records[&id].load_order,
+                    &record.record_type,
+                    record.load_order,
                     dependencies,
                     cycle,
                     |target| kinds.get(&target).copied(),

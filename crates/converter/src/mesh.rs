@@ -2300,8 +2300,17 @@ pub(crate) fn glb_bounds_from_document(document: &serde_json::Value) -> Result<s
         .unwrap_or_default();
     let roots = scene_roots(document, nodes);
     let mut bounds = BoundsAccumulator::default();
+    let mut remaining_visits = nodes.len();
     for root in roots {
-        visit_node(document, nodes, root, Mat4::IDENTITY, 0, &mut bounds)?;
+        visit_node(
+            document,
+            nodes,
+            root,
+            Mat4::IDENTITY,
+            0,
+            &mut remaining_visits,
+            &mut bounds,
+        )?;
     }
     bounds.finish()
 }
@@ -2347,12 +2356,18 @@ fn visit_node(
     index: usize,
     parent: Mat4,
     depth: usize,
+    remaining_visits: &mut usize,
     bounds: &mut BoundsAccumulator,
 ) -> Result<()> {
     ensure!(depth <= nodes.len(), "cyclic glTF node hierarchy");
     let node = nodes
         .get(index)
         .ok_or_else(|| color_eyre::eyre::eyre!("glTF node {index} is out of range"))?;
+    ensure!(
+        *remaining_visits > 0,
+        "glTF node traversal exceeds the node count"
+    );
+    *remaining_visits -= 1;
     let transform = parent.mul(Mat4::from_node(node));
     if let Some(mesh_index) = node.get("mesh").and_then(serde_json::Value::as_u64) {
         accumulate_mesh(document, mesh_index as usize, transform, bounds)?;
@@ -2365,6 +2380,7 @@ fn visit_node(
                 child as usize,
                 transform,
                 depth + 1,
+                remaining_visits,
                 bounds,
             )?;
         }
@@ -4560,6 +4576,32 @@ mod tests {
         for (actual, expected) in bounds.max.into_iter().zip([10.0, 4.0, 3.0]) {
             assert!((actual - expected).abs() < 1.0e-5);
         }
+    }
+
+    #[test]
+    fn glb_bounds_share_visit_budget_across_scene_roots() {
+        let mut document = serde_json::json!({
+            "scenes": [{"nodes": [0, 1]}],
+            "nodes": [
+                {"children": [2], "translation": [3, 0, 0]},
+                {"children": [3], "translation": [-4, 0, 0]},
+                {"mesh": 0},
+                {"mesh": 0}
+            ],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "accessors": [{"min": [-1, -1, -1], "max": [1, 1, 1]}]
+        });
+        let bounds = glb_bounds_from_document(&document).unwrap();
+        assert_eq!(bounds.min, [-5.0, -1.0, -1.0]);
+        assert_eq!(bounds.max, [4.0, 1.0, 1.0]);
+
+        document["nodes"][1]["children"][0] = 2.into();
+        document["nodes"].as_array_mut().unwrap().pop();
+        let error = glb_bounds_from_document(&document).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "glTF node traversal exceeds the node count"
+        );
     }
 
     #[test]
