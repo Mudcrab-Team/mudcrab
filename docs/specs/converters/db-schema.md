@@ -715,9 +715,9 @@ Rules:
   targets resolve to NULL. Valid-length `XLKR` and `XAPR` rows are kept in source order with
   contiguous positions among accepted-length entries, even when a target resolves to NULL. This
   makes legacy projection match the in-house reader's invalid-link clearing behavior.
-- When a subset removes a placement, incoming `XAPR` and `XLKR` slots that referenced it become
-  NULL in the same transaction. Restoring the target resolves the affected slots from the
-  effective source payload, including sources omitted from the subset.
+- When a subset export or placement layer removes a placement, its incoming `XAPR` and `XLKR`
+  slots become NULL in the same transaction. Adding or restoring a target resolves matching
+  slots from the effective source payload, including sources outside the edit batch.
 - A field whose length the in-house schema rejects is skipped for both readers: `XLKR` must be 4
   or 8 bytes, `XAPR` 8, `XAPD` 1, `XOWN`/`XRNK`/`XLCN`/`XLRL`/`XEZN`/`XATR` 4, `FNAM` 1 and `TNAM`
   2.
@@ -1362,7 +1362,10 @@ Columns and rules:
   publishes `occlusion_version = 1` in `room_graph_stats`. It sets `occlusion_links_verified`
   to zero when a truncated marker payload or a malformed `XORD` can hide a cross-cell link.
   Full in-house exports and plugin placement imports also clear the flag when a discarded
-  override of a known occluder remains unresolved or the discarded frame has unknown scope.
+  frame has unknown scope or a `REFR` header or payload is unreadable. An unreadable
+  `REFR` can introduce a PlaneMarker even if its predecessor used an ordinary base or
+  the placement is new. A later usable replacement or deletion of the same FormID
+  supersedes that evidence within the conversion or import.
   These markers let the loader keep unrelated occluders in a complete cell that contains an
   all-null `XORD`. Subset exports invalidate cells at the other end of cross-cell or unverified
   links. A verified same-cell edge can be replaced or removed while the engine reloads its

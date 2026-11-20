@@ -4975,7 +4975,11 @@ fn plugin_placement_import_skips_children_of_a_damaged_new_interior() {
             record(b"CELL", damaged_cell, 0, vec![0]),
             placement_group(
                 damaged_cell,
-                placement(0x0100_0800, PLACEMENT_STAT, 0, 0.0, Vec::new()),
+                [
+                    record(b"REFR", 0x0100_0800, 0, vec![0]),
+                    placement(0x0100_0800, PLACEMENT_STAT, 0, 0.0, Vec::new()),
+                ]
+                .concat(),
             ),
             record(
                 b"CELL",
@@ -4987,6 +4991,16 @@ fn plugin_placement_import_skips_children_of_a_damaged_new_interior() {
         ]
         .concat(),
     );
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    let links_verified = || {
+        db.query_row(
+            "SELECT value FROM room_graph_stats WHERE name='occlusion_links_verified'",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap()
+    };
+    assert!(links_verified());
     let result = run_placement_import(&assets, "--plugin", &source);
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(stderr.contains("its new CELL is damaged"), "{stderr}");
@@ -4994,7 +5008,7 @@ fn plugin_placement_import_skips_children_of_a_damaged_new_interior() {
         result,
         "Applied 1 room placements in 1 cells (1 created, 1 certified)",
     );
-    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    assert!(!links_verified());
     assert!(placement_certificate(&db, good_cell));
     assert!(placement_certificate(&db, PLACEMENT_CELL_A));
     let skipped: (u32, u32) = db
@@ -7649,29 +7663,53 @@ fn check_discarded_occluder_override(import: bool) {
             ),
             record(b"CELL", 0x901, 0, sub(b"DATA", &[1, 0])),
             placement_group(0x901, placement_marker(0x802, 0x17, Vec::new())),
+            record(b"CELL", 0x902, 0, sub(b"DATA", &[1, 0])),
         ]
         .concat(),
     );
     let mut failures = Vec::new();
-    for (name, id, header_len, superseded, expected) in [
-        ("ordinary", 0x803, 20, false, 1),
-        ("ordinary-overrun", 0x803, 24, false, 1),
-        ("superseded", 0x801, 20, true, 1),
-        ("superseded-overrun", 0x801, 24, true, 1),
-        ("unknown", 0x801, 15, false, 0),
-        ("marker", 0x801, 20, false, 0),
-        ("marker-overrun", 0x801, 24, false, 0),
+    let partial = |id, len| {
+        let links = sub(b"XORD", &[0x802u32, 0, 0, 0].map(u32::to_le_bytes).concat());
+        placement_marker(id, 0x17, links)[..len].to_vec()
+    };
+    let compressed = |tag, id| record(tag, id, 0x40000, vec![4, 0, 0, 0, 0xff]);
+    let restored = placement_marker(0x801, 0x17, Vec::new());
+    let deleted = record(b"REFR", 0x801, 0x20, Vec::new());
+    for (name, damaged, later, expected) in [
+        ("ordinary", partial(0x803, 20), None, 0),
+        ("ordinary-overrun", partial(0x803, 24), None, 0),
+        ("new", partial(0x0100_0801, 20), None, 0),
+        ("superseded", partial(0x801, 20), Some(&restored), 1),
+        ("superseded-overrun", partial(0x801, 24), Some(&restored), 1),
+        ("unknown", partial(0x801, 15), None, 0),
+        ("marker", partial(0x801, 20), None, 0),
+        ("marker-overrun", partial(0x801, 24), None, 0),
+        ("bounded-zlib", compressed(b"REFR", 0x801), None, 0),
+        (
+            "bounded-subrecord",
+            record(b"REFR", 0x801, 0, b"NAME".to_vec()),
+            None,
+            0,
+        ),
+        ("new-zlib", compressed(b"REFR", 0x0100_0801), None, 0),
+        ("actor-zlib", compressed(b"ACHR", 0x0100_0804), None, 1),
+        (
+            "zlib-restored",
+            compressed(b"REFR", 0x801),
+            Some(&restored),
+            1,
+        ),
+        (
+            "zlib-deleted",
+            compressed(b"REFR", 0x801),
+            Some(&deleted),
+            1,
+        ),
     ] {
-        let xord = sub(b"XORD", &[0x802u32, 0, 0, 0].map(u32::to_le_bytes).concat());
-        let mut contents = placement_group(
-            0x900,
-            placement_marker(id, 0x17, xord)[..header_len].to_vec(),
-        );
-        if superseded {
-            contents.extend(placement_group(
-                0x900,
-                placement_marker(id, 0x17, Vec::new()),
-            ));
+        let cell = if name == "bounded-zlib" { 0x902 } else { 0x900 };
+        let mut contents = placement_group(cell, damaged);
+        if let Some(later) = later {
+            contents.extend(placement_group(0x900, later.clone()));
         }
         let patch = plugin(data, &format!("{name}.esp"), &["Skyrim.esm"], 0, contents);
         let assets = data.join(name);
@@ -7711,6 +7749,27 @@ fn check_discarded_occluder_override(import: bool) {
             Some(name != "unknown"),
             "{name}"
         );
+        if name == "bounded-zlib" {
+            assert_eq!(stored_placement_certificate(&conn, 0x900), Some(false));
+            assert_eq!(stored_placement_certificate(&conn, 0x902), Some(false));
+            assert_eq!(
+                read(
+                    &conn,
+                    "SELECT count(*) FROM room_occluders WHERE ref_id=0x801"
+                ),
+                1
+            );
+            if !import {
+                assert_eq!(
+                    read(
+                        &conn,
+                        "SELECT count(*) FROM record_overrides WHERE form_id=0x801
+                    AND status='skipped' AND frame_complete=1 AND reason IS NOT NULL"
+                    ),
+                    1
+                );
+            }
+        }
         let actual = read(&conn, certificate);
         if actual != expected {
             failures.push(format!("{name}: certificate {actual}, expected {expected}"));
@@ -7727,4 +7786,182 @@ fn discarded_occluder_override_revokes_full_conversion_link_certificate() {
 #[test]
 fn discarded_occluder_override_revokes_plugin_import_link_certificate() {
     check_discarded_occluder_override(true);
+}
+
+#[test]
+fn placement_layers_refresh_incoming_links_for_changed_targets() {
+    use converter::esm::{
+        exporter::export_to_db,
+        placement_edits::{PlacementSource, apply},
+        records::RawRecord,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let assets = converted_placement_fixture(root);
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    let source = 0x880u32;
+    let existing = 0x802u32;
+    let unrelated = 0x823u32;
+    // Remove.esp reserves the first regular plugin slot before Add.esp.
+    let plugin_target = 0x0200_0910u32;
+    let native_target = 0xff00_0001u32;
+    let targets = [existing, plugin_target, native_target, unrelated];
+    let mut subrecords = vec![
+        (b"NAME".to_vec(), PLACEMENT_STAT.to_le_bytes().to_vec()),
+        (b"DATA".to_vec(), vec![0; 24]),
+        (b"XAPD".to_vec(), vec![3]),
+    ];
+    for (index, target) in targets.into_iter().enumerate() {
+        let word = target.to_le_bytes();
+        subrecords.push((b"XLKR".to_vec(), [unrelated.to_le_bytes(), word].concat()));
+        subrecords.push((
+            b"XAPR".to_vec(),
+            [word, (index as f32 + 0.5).to_le_bytes()].concat(),
+        ));
+    }
+    subrecords.push((
+        b"XLKR".to_vec(),
+        [existing.to_le_bytes(), unrelated.to_le_bytes()].concat(),
+    ));
+    subrecords.push((b"XLKR".to_vec(), native_target.to_le_bytes().to_vec()));
+    subrecords.push((b"XLKR".to_vec(), vec![0; 4]));
+    export_to_db(
+        &db,
+        &[(
+            source,
+            RawRecord {
+                form_id: source,
+                record_type: *b"REFR",
+                flags: 0,
+                subrecords,
+                cell_form_id: Some(PLACEMENT_CELL_B),
+                worldspace_form_id: None,
+                load_order: 0,
+            },
+        )]
+        .into(),
+    )
+    .unwrap();
+
+    let source_data = || {
+        db.query_row(
+            "SELECT records.data, r.data, d.activate_parent_flags
+             FROM records JOIN [references] r ON r.id=records.form_id
+             JOIN reference_details d ON d.reference_id=r.id WHERE r.id=?1",
+            [source],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, u8>(2)?,
+                ))
+            },
+        )
+        .unwrap()
+    };
+    let original_source = source_data();
+    let assert_links = |expected: [Option<u32>; 4]| {
+        let linked = db
+            .prepare("SELECT keyword_id,linked_ref_id FROM reference_linked_refs WHERE reference_id=?1 ORDER BY position")
+            .unwrap()
+            .query_map([source], |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, Option<u32>>(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let parents = db
+            .prepare("SELECT parent_ref_id,delay FROM reference_activate_parents WHERE reference_id=?1 ORDER BY position")
+            .unwrap()
+            .query_map([source], |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, f32>(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let mut expected_linked = expected.map(|target| (Some(unrelated), target)).to_vec();
+        expected_linked.push((expected[0], Some(unrelated)));
+        expected_linked.push((None, expected[2]));
+        expected_linked.push((None, None));
+        assert_eq!(linked, expected_linked, "XLKR");
+        assert_eq!(
+            parents,
+            expected
+                .into_iter()
+                .enumerate()
+                .map(|(index, target)| (target, index as f32 + 0.5))
+                .collect::<Vec<_>>(),
+            "XAPR",
+        );
+        assert_eq!(source_data(), original_source);
+    };
+    let native_put = |name, id| {
+        let path = root.join(name);
+        fs::write(&path, serde_json::json!({"edits":[{
+            "op":"put","id":id,"cell":PLACEMENT_CELL_A,"base":PLACEMENT_STAT,"position":[16,0,0],
+        }]}).to_string()).unwrap();
+        path
+    };
+    assert_links([Some(existing), None, None, Some(unrelated)]);
+
+    let remove = plugin(
+        root,
+        "Remove.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(
+            PLACEMENT_CELL_A,
+            record(b"REFR", existing, 0x20, Vec::new()),
+        ),
+    );
+    apply(&assets, PlacementSource::SkyrimPlugin(&remove)).unwrap();
+    assert_links([None, None, None, Some(unrelated)]);
+
+    let add = plugin(
+        root,
+        "Add.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(
+            PLACEMENT_CELL_A,
+            placement(0x0100_0910, PLACEMENT_STAT, 0, 24.0, Vec::new()),
+        ),
+    );
+    apply(&assets, PlacementSource::SkyrimPlugin(&add)).unwrap();
+    assert_links([None, Some(plugin_target), None, Some(unrelated)]);
+
+    let add_native = native_put("add-native.json", native_target);
+    apply(&assets, PlacementSource::NativeJson(&add_native)).unwrap();
+    let absent = [
+        None,
+        Some(plugin_target),
+        Some(native_target),
+        Some(unrelated),
+    ];
+    assert_links(absent);
+
+    let restore = native_put("restore.json", existing);
+    db.execute_batch(
+        "CREATE TRIGGER reject_incoming BEFORE UPDATE OF parent_ref_id ON reference_activate_parents
+         WHEN NEW.parent_ref_id=0x802 BEGIN SELECT RAISE(ABORT, 'reject incoming link'); END;",
+    )
+    .unwrap();
+    let error = apply(&assets, PlacementSource::NativeJson(&restore)).unwrap_err();
+    assert!(
+        error.to_string().contains("reject incoming link"),
+        "{error}"
+    );
+    assert_links(absent);
+    assert_eq!(
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM [references] WHERE id=?1),
+                    EXISTS(SELECT 1 FROM room_placement_layers WHERE name='restore.json')",
+            [existing],
+            |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
+        )
+        .unwrap(),
+        (false, false),
+    );
+    db.execute_batch("DROP TRIGGER reject_incoming").unwrap();
+    apply(&assets, PlacementSource::NativeJson(&restore)).unwrap();
+    let mut restored = absent;
+    restored[0] = Some(existing);
+    assert_links(restored);
 }

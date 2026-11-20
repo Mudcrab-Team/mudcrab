@@ -514,7 +514,7 @@ pub struct RecordSource {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TruncatedPlacement {
-    record_type: [u8; 4],
+    pub(crate) record_type: [u8; 4],
     source_id: Option<u32>,
 }
 
@@ -601,9 +601,8 @@ pub struct ReadResult {
     pub history: Vec<history::HistoryEntry>,
     /// Runtime cell IDs potentially affected by discarded source frames.
     pub(crate) damaged_cell_groups: HashSet<u32>,
-    pub(crate) unknown_discarded_scope: bool,
-    /// Discarded placements later than the retained winner for their FormID.
-    pub(crate) discarded_placement_overrides: HashSet<u32>,
+    /// An unread frame or REFR could hide outgoing PlaneMarker links into another cell.
+    pub(crate) unverified_occluder_links: bool,
     /// Each winning `DOBJ` with its `DNAM` pairs merged key by key over every accepted
     /// earlier version, as the legacy reader does. A winning record alone would lose
     /// the keys that only an earlier plugin sets. The winners stay unmerged.
@@ -738,6 +737,8 @@ fn read_plugins_with_prepared(
     );
     let mut result = ReadResult::default();
     let mut truncated_placements = HashMap::new();
+    let mut unknown_cell_scope = false;
+    let mut unreadable_refs = HashMap::new();
     let mut recovery = decoder::RecoveryCandidates::default();
     let mut gmst_ids: HashMap<String, u32> = HashMap::new();
     let mut gmst_aliases: HashMap<u32, u32> = HashMap::new();
@@ -747,10 +748,14 @@ fn read_plugins_with_prepared(
         let mut diagnostics = PluginDiagnostics::default();
         let mut seen = HashMap::new();
         let history = std::cell::RefCell::new(Vec::<history::HistoryEntry>::new());
-        let observe = |header| {
-            history
-                .borrow_mut()
-                .push(history::header_entry(header, order, index));
+        let mut unreadable_headers = Vec::new();
+        let observe = |header: scanner::ObservedHeader| {
+            let unreadable = header.failure.is_some() && header.record_type == *b"REFR";
+            let entry = history::header_entry(header, order, index);
+            if unreadable {
+                unreadable_headers.push((entry.source_record_offset, entry.form_id));
+            }
+            history.borrow_mut().push(entry);
         };
         let receive = |scanned: scanner::ScannedRecord, diagnostics: &mut PluginDiagnostics| {
             let offset = scanned.source_record_offset;
@@ -789,6 +794,12 @@ fn read_plugins_with_prepared(
                     return;
                 }
             };
+            if record.record_type == *b"REFR"
+                && !record.payload_complete
+                && record.flags & 0x20 == 0
+            {
+                unreadable_refs.insert(Some(record.form_id), (index as u32, offset));
+            }
             if record.record_type == *b"TES4" {
                 result.headers.push(record);
                 return;
@@ -1040,6 +1051,20 @@ fn read_plugins_with_prepared(
                     entry.form_id.filter(|&id| id != 0),
                 )
             });
+        unreadable_headers.extend(
+            damage
+                .truncated_placements
+                .iter()
+                .filter(|(_, placement)| placement.record_type == *b"REFR")
+                .map(|(offset, placement)| (*offset, placement.runtime_id(index, order))),
+        );
+        for (offset, id) in unreadable_headers {
+            let position = (index as u32, offset);
+            let latest = unreadable_refs
+                .entry(id.filter(|&id| id != 0))
+                .or_insert(position);
+            *latest = (*latest).max(position);
+        }
         let partial_headers = damage
             .truncated_placements
             .into_iter()
@@ -1051,7 +1076,7 @@ fn read_plugins_with_prepared(
                     .or_insert((index as u32, offset));
                 *latest = (*latest).max((index as u32, offset));
             } else {
-                result.unknown_discarded_scope = true;
+                unknown_cell_scope = true;
             }
         }
         for scope in damage.frames {
@@ -1059,7 +1084,10 @@ fn read_plugins_with_prepared(
                 DiscardedFrameScope::Cell(cell) => {
                     result.damaged_cell_groups.insert(cell);
                 }
-                DiscardedFrameScope::Unknown => result.unknown_discarded_scope = true,
+                DiscardedFrameScope::Unknown => {
+                    unknown_cell_scope = true;
+                    result.unverified_occluder_links = true;
+                }
             }
         }
         result.history.extend(history);
@@ -1085,10 +1113,23 @@ fn read_plugins_with_prepared(
             && (winner.load_order, winner.source_record_offset) < truncated_at
         {
             result.damaged_cell_groups.extend(winner.cell_form_id);
-            result.discarded_placement_overrides.insert(id);
         }
     }
-    if result.unknown_discarded_scope {
+    // Only a later admitted record (including a tombstone) settles the identity.
+    // An old non-marker base cannot establish what the unread replacement contained.
+    if !unreadable_refs.is_empty() {
+        for entry in result.history.iter().filter(|entry| entry.accepted) {
+            if entry.form_id.is_some()
+                && unreadable_refs.get(&entry.form_id).is_some_and(|&damage| {
+                    damage < (entry.plugin_index, entry.source_record_offset)
+                })
+            {
+                unreadable_refs.remove(&entry.form_id);
+            }
+        }
+        result.unverified_occluder_links |= !unreadable_refs.is_empty();
+    }
+    if unknown_cell_scope {
         result.damaged_cell_groups.extend(
             result
                 .records

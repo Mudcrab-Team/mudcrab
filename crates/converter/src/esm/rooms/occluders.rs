@@ -112,7 +112,7 @@ pub(super) fn export(
 ) -> Result<Exported> {
     let mut result = Exported {
         unverified_link_targets: sources
-            .is_some_and(|(decoded, _)| decoded.unknown_discarded_scope),
+            .is_some_and(|(decoded, _)| decoded.unverified_occluder_links),
         ..Exported::default()
     };
     let in_interior = |record: &RawRecord| {
@@ -131,14 +131,6 @@ pub(super) fn export(
     markers.sort_unstable_by_key(|record| record.form_id);
     for record in markers {
         let source = sources.and_then(|(decoded, order)| {
-            if decoded
-                .discarded_placement_overrides
-                .contains(&record.form_id)
-            {
-                // The retained marker's links are available, but its discarded override
-                // could have introduced links into any cell.
-                result.unverified_link_targets = true;
-            }
             decoded
                 .records
                 .get(&record.form_id)
