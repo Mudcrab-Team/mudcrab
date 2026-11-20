@@ -523,6 +523,8 @@ pub struct RecordSource {
 pub struct ReadResult {
     /// Admitted sources unavailable for later proof; slots and decoded records remain allocated.
     pub skipped_inputs: BTreeSet<usize>,
+    /// Digest of the exact verified bytes each plugin's records were decoded from.
+    pub plugin_checksums: Vec<Vec<u8>>,
     pub records: HashMap<u32, DecodedRecord>,
     pub headers: Vec<DecodedRecord>,
     pub diagnostics: BTreeMap<String, PluginDiagnostics>,
@@ -628,7 +630,10 @@ fn read_plugins_with_prepared(
         plugin_paths.len() == order.names.len(),
         "plugin/order length mismatch"
     );
-    let mut result = ReadResult::default();
+    let mut result = ReadResult {
+        plugin_checksums: vec![Vec::new(); plugin_paths.len()],
+        ..ReadResult::default()
+    };
     // Retain payloads only while an admitted winner still needs catalogue replay.
     let mut deferred_predecessors: HashMap<u32, Vec<DecodedRecord>> = HashMap::new();
     let mut gmst_ids: HashMap<String, u32> = HashMap::new();
@@ -645,7 +650,7 @@ fn read_plugins_with_prepared(
                 .push(history::header_entry(header, order, index));
         };
         let input = (path.as_path(), &order.metadata[index]);
-        let usable = scan_plugin(input, &mut diagnostics, observe, |scanned, diagnostics| {
+        let digest = scan_plugin(input, &mut diagnostics, observe, |scanned, diagnostics| {
             let offset = scanned.source_record_offset;
             let context = decoder::Context {
                 order,
@@ -923,8 +928,11 @@ fn read_plugins_with_prepared(
                 }
             }
         })?;
-        if !usable {
-            result.skipped_inputs.insert(index);
+        match digest {
+            Some(digest) => result.plugin_checksums[index] = digest.to_vec(),
+            None => {
+                result.skipped_inputs.insert(index);
+            }
         }
         result.history.extend(history.into_inner());
         result.diagnostics.insert(name.clone(), diagnostics);

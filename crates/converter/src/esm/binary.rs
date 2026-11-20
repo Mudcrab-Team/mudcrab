@@ -99,8 +99,8 @@ pub(crate) fn verify_admitted_metadata(data: &[u8], admitted: &PluginMetadata) -
     Ok(())
 }
 
-/// Bind a checksum to admitted header facts on one checked source view, never two reopens.
-/// Optional cache/checksum callers treat failure as absent proof, not a conversion-wide error.
+/// Bind an optional cache proof to admitted header facts on one checked source view.
+/// Its callers treat failure as absent proof, not a conversion-wide error.
 pub(crate) fn admitted_plugin_proof(
     path: &Path,
     admitted: &PluginMetadata,
@@ -420,14 +420,16 @@ pub(crate) fn parse_plugin_file_with_warnings(
     path: &Path,
 ) -> Result<(Vec<RawRecord>, Vec<String>)> {
     parse_plugin_file_inner(path, None)
+        .map(|(records, warnings, _)| (records, warnings))
         .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))
 }
 
 /// Parse only bytes whose master/flag interpretation still matches the captured admission.
+/// The returned digest covers the exact view the records were decoded from.
 pub(crate) fn parse_admitted_plugin_file_with_warnings(
     path: &Path,
     admitted: &PluginMetadata,
-) -> Result<(Vec<RawRecord>, Vec<String>)> {
+) -> Result<(Vec<RawRecord>, Vec<String>, [u8; 32])> {
     parse_plugin_file_inner(path, Some(admitted))
         .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))
 }
@@ -436,7 +438,7 @@ pub(crate) fn parse_admitted_plugin_file_with_warnings(
 fn parse_plugin_file_inner(
     path: &Path,
     admitted: Option<&PluginMetadata>,
-) -> Result<(Vec<RawRecord>, Vec<String>)> {
+) -> Result<(Vec<RawRecord>, Vec<String>, [u8; 32])> {
     let reader = EsmReader::open(path)?;
     let data = reader.as_slice();
     if let Some(admitted) = admitted {
@@ -479,7 +481,9 @@ fn parse_plugin_file_inner(
     let summaries = warnings.report(&path.file_name().unwrap_or_default().to_string_lossy());
 
     reader.verify_source()?;
-    Ok((records, summaries))
+    // Digest the same checked view the records were decoded from, never a later reopen.
+    let checksum = super::plugin_checksum(&mut &data[..])?;
+    Ok((records, summaries, checksum))
 }
 
 /// Parses REFR payload for Position and Base Form ID pointers

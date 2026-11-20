@@ -186,7 +186,9 @@ Master-name comparison ignores case; compression is only a physical encoding det
 A mismatch skips that input before any records are merged and reports one bounded
 warning containing `changed after load order was read`. Its original plugin row and
 slot remain, with an empty checksum, so neighboring plugin identities do not shift.
-Checksums and database-cache proofs check the header and hash the same source view;
+Each plugin's checksum is the digest of the exact opened view its records were
+decoded from; an input whose decode view cannot be verified keeps an empty
+checksum. Database-cache proofs check the header and hash one checked source view;
 cache eligibility is checked before restore, after restore and before storage.
 These checks also apply with `--no-lod`.
 

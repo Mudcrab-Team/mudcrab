@@ -1215,7 +1215,12 @@ impl AssetPipeline {
                     Some(config.schemas()?.as_ref()),
                     admitted_order.clone(),
                 )?;
-                clear_unavailable_plugin_hashes(&mut plugin_hashes, &conversion.skipped_inputs);
+                apply_decoded_plugin_hashes(
+                    &mut plugin_hashes,
+                    &conversion.plugin_checksums,
+                    &plugins,
+                    &mut report.notices,
+                );
                 database_cache::write_conversion_notes(
                     staging,
                     &database_cache::ConversionNotes {
@@ -5816,7 +5821,39 @@ pub(crate) fn clear_unavailable_plugin_hashes(hashes: &mut [String], skipped: &B
     }
 }
 
-/// Retain healthy-input mutation checks, but unavailable sources only remove optional proof.
+/// Replace file-inspection hashes with the digests the reader verified while decoding.
+/// A plugin that recovered after the initial hash keeps a proof of the bytes that supplied
+/// its records, so the post-export mutation check still covers it. A plugin without a
+/// verified digest keeps an empty slot and gets one short notice.
+fn apply_decoded_plugin_hashes(
+    hashes: &mut [String],
+    digests: &[Vec<u8>],
+    plugins: &[PathBuf],
+    notices: &mut Vec<String>,
+) {
+    for (index, digest) in digests.iter().enumerate() {
+        let Some(hash) = hashes.get_mut(index) else {
+            continue;
+        };
+        if digest.is_empty() {
+            hash.clear();
+            notices.push(format!(
+                "note: {}: no verified plugin checksum from the reader; a later source change is not detected",
+                plugins
+                    .get(index)
+                    .and_then(|path| path.file_name())
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+            ));
+        } else {
+            *hash = crate::cache::hash_bytes(digest);
+        }
+    }
+}
+
+/// Compare each expected digest with the bytes still on disk after export.
+/// Expected digests come from the reader's verified decode view; unavailable sources only
+/// remove optional proof, while a readable change still refuses a mixed-generation LOD build.
 fn recheck_lod_plugin_hashes(
     plugins: &[PathBuf],
     expected: &[String],
@@ -6828,6 +6865,39 @@ mod tests {
         assert!(report.warnings[0].contains("Missing.esp"));
         fs::write(&paths[0], b"changed").unwrap();
         assert!(recheck_lod_plugin_hashes(&paths, &expected, &mut report).is_err());
+    }
+
+    /// A plugin that recovered after the initial hash still gets a reader-verified proof.
+    #[test]
+    fn recovered_plugin_keeps_reader_digest_and_later_change_fails() {
+        use sha2::{Digest, Sha256};
+        let directory = tempfile::tempdir().unwrap();
+        let paths = ["A.esm", "Missing.esp", "C.esp"].map(|name| directory.path().join(name));
+        for (path, bytes) in paths.iter().zip([b"a".as_slice(), b"recovered", b"c"]) {
+            fs::write(path, bytes).unwrap();
+        }
+        let mut expected = admitted_plugin_hashes(&paths);
+        // The initial hash failed, so the slot is empty before the reader supplies records.
+        expected[1].clear();
+        let digest = |bytes: &[u8]| Sha256::digest(bytes).to_vec();
+        let digests = vec![digest(b"a"), digest(b"recovered"), digest(b"c")];
+        let mut notices = Vec::new();
+        apply_decoded_plugin_hashes(&mut expected, &digests, &paths, &mut notices);
+        assert_eq!(expected[1], hash_bytes(b"recovered"));
+        assert!(notices.is_empty(), "{notices:?}");
+        let mut report = PipelineReport::default();
+        recheck_lod_plugin_hashes(&paths, &expected, &mut report).unwrap();
+        // A later readable change is now covered by the reader-verified digest.
+        fs::write(&paths[1], b"changed").unwrap();
+        assert!(recheck_lod_plugin_hashes(&paths, &expected, &mut report).is_err());
+        // Without a verified digest the slot stays empty and the run explains why.
+        let mut without_digest = admitted_plugin_hashes(&paths);
+        let digests = vec![digest(b"a"), Vec::new(), digest(b"c")];
+        let mut notices = Vec::new();
+        apply_decoded_plugin_hashes(&mut without_digest, &digests, &paths, &mut notices);
+        assert!(without_digest[1].is_empty());
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("Missing.esp") && notices[0].contains("not detected"));
     }
 
     /// Failed staging must actually remove a surviving stale copy before permitting defaults.

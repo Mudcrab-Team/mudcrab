@@ -1834,6 +1834,47 @@ async fn metadata_rebuild_rejects_changed_plugins_and_assets_without_publication
 }
 
 #[tokio::test]
+async fn metadata_rebuild_rejects_readable_replacement_after_source_matching() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("derived");
+    generate(&data);
+    convert(&data, &source).await;
+    let plugin = data.join("Skyrim.esm");
+    // A readable replacement keeps the TES4 header facts but changes exported records.
+    let mut replacement = fs::read(&plugin).unwrap();
+    let payload = b"EDID\x05\x00Edit\0";
+    replacement.extend(b"STAT");
+    replacement.extend(u32::try_from(payload.len()).unwrap().to_le_bytes());
+    replacement.extend(0u32.to_le_bytes());
+    replacement.extend(0x0000_0F99u32.to_le_bytes());
+    replacement.extend(0u32.to_le_bytes());
+    replacement.extend(44u16.to_le_bytes());
+    replacement.extend(0u16.to_le_bytes());
+    replacement.extend(payload);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<converter::ProgressEvent>(64);
+    let watcher = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            if event.stage == converter::ProgressStage::Extracting {
+                fs::write(&plugin, &replacement).unwrap();
+            }
+        }
+    });
+    let error =
+        AssetPipeline::rebuild_metadata_async(common::cpu_lod_config(&data, &output), &source, tx)
+            .await
+            .unwrap_err()
+            .to_string();
+    watcher.await.unwrap();
+    assert!(
+        error.contains("decoded bytes differ from the authenticated source package"),
+        "a readable replacement must be refused at decode authentication: {error}"
+    );
+    assert!(!output.exists());
+}
+
+#[tokio::test]
 async fn metadata_rebuild_requires_new_disjoint_output() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");

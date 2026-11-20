@@ -985,6 +985,8 @@ fn convert_plugins_with_text_sources_report_impl(
         validate,
         preserve,
     )?;
+    #[cfg(test)]
+    super::after_plugin_decode_for_test();
     // Winner validation and the observer have finished; physical history and
     // winning source payloads stay alive for the established provenance SQL pass.
     release_reader_metadata(&mut decoded);
@@ -1272,16 +1274,9 @@ fn convert_plugins_with_text_sources_report_impl(
     } else {
         "canonical_record_database_export"
     });
-    let mut checksum_warnings = Vec::new();
-    let checksums = super::prepare_plugin_checksums(
-        plugin_paths,
-        &order,
-        &mut decoded.skipped_inputs,
-        &mut checksum_warnings,
-    );
     let plugin_rows = super::PluginRows {
         paths: plugin_paths,
-        checksums: &checksums,
+        checksums: &decoded.plugin_checksums,
     };
     if mode == RecordBundleMode::Full {
         export_inhouse_with_plugins_to_db(
@@ -1414,10 +1409,10 @@ fn convert_plugins_with_text_sources_report_impl(
         .collect::<Vec<_>>();
     let release_stage = records::profile::ProfileStage::start("decoded_release");
     let skipped_inputs = std::mem::take(&mut decoded.skipped_inputs);
+    let plugin_checksums = std::mem::take(&mut decoded.plugin_checksums);
     drop(decoded);
     release_stage.finish(master.len());
     report_warnings.extend(warnings.report());
-    report_warnings.extend(checksum_warnings);
     report_notices.extend(warnings.report_notices());
     phases.insert(
         "reader_target_validation_and_diagnostics".into(),
@@ -1431,6 +1426,7 @@ fn convert_plugins_with_text_sources_report_impl(
         records: master,
         warnings: report_warnings,
         notices: report_notices,
+        plugin_checksums,
     })
 }
 

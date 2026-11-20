@@ -79,6 +79,20 @@ pub(crate) fn after_plugin_admission_for_test() {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// A deterministic source change after records are decoded, before export bookkeeping.
+    pub(crate) static AFTER_PLUGIN_DECODE: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn after_plugin_decode_for_test() {
+    let hook = AFTER_PLUGIN_DECODE.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 /// Winning records with bounded data-loss warnings and faithful-outcome notices.
 #[derive(Debug)]
 pub(crate) struct RecordConversion {
@@ -88,6 +102,8 @@ pub(crate) struct RecordConversion {
     pub(crate) records: HashMap<u32, RawRecord>,
     pub(crate) warnings: Vec<String>,
     pub(crate) notices: Vec<String>,
+    /// Digest of the exact bytes each plugin's records were decoded from; empty when unverified.
+    pub(crate) plugin_checksums: Vec<Vec<u8>>,
     /// In-house stage seconds for the database profile; legacy exports record none.
     pub(crate) phases: std::collections::BTreeMap<String, f64>,
 }
@@ -97,21 +113,6 @@ pub(crate) struct RecordConversion {
 pub(super) struct PluginRows<'a> {
     paths: &'a [PathBuf],
     checksums: &'a [Vec<u8>],
-}
-
-/// Bind production checksums to the admitted metadata on the same opened source view.
-fn prepare_plugin_checksums(
-    paths: &[PathBuf],
-    admitted: &load_order::LoadOrder,
-    skipped: &mut BTreeSet<usize>,
-    warnings: &mut Vec<String>,
-) -> Vec<Vec<u8>> {
-    prepare_plugin_checksum_rows(paths, skipped, warnings, |index, path| {
-        let metadata = admitted.metadata.get(index).ok_or_else(|| {
-            color_eyre::eyre::eyre!("missing admitted plugin metadata at {index}")
-        })?;
-        binary::admitted_plugin_proof(path, metadata).map(|(_, checksum)| checksum)
-    })
 }
 
 /// Exporter-only fixtures without source admission still exercise streaming row insertion.
@@ -131,6 +132,7 @@ fn prepare_plugin_checksums_for_test(
 }
 
 /// Missing checksum proof is local to its admitted slot, not a publication failure.
+#[cfg(test)]
 fn prepare_plugin_checksum_rows(
     paths: &[PathBuf],
     skipped: &mut BTreeSet<usize>,
@@ -337,6 +339,8 @@ impl EsmParser {
         #[cfg(test)]
         after_plugin_admission_for_test();
         let mut master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
+        #[cfg(test)]
+        after_plugin_decode_for_test();
         let (unresolved, localization_warnings, localization_notices) =
             legacy_text::resolve_localized_fields(
                 &mut master.records,
@@ -346,19 +350,13 @@ impl EsmParser {
             );
         let conn = Connection::open(db_path)?;
         create_tables(&conn)?;
-        let checksums = prepare_plugin_checksums(
-            plugin_paths,
-            &order,
-            &mut master.skipped_inputs,
-            &mut master.warnings,
-        );
         exporter::export_plugins_to_db(
             &conn,
             &master.records,
             &order,
             PluginRows {
                 paths: plugin_paths,
-                checksums: &checksums,
+                checksums: &master.plugin_checksums,
             },
             &unresolved,
         )?;
@@ -387,6 +385,8 @@ impl EsmParser {
         let mut merged = HashMap::new();
         let mut summaries = Vec::new();
         let mut skipped_inputs = BTreeSet::new();
+        // The checksum is the digest of the exact view each plugin's records were decoded from.
+        let mut plugin_checksums = vec![Vec::new(); plugin_paths.len()];
         // Unlike ordinary forms, game settings override by EditorID. Retain
         // the first definition's key/owner while taking the last setting value.
         // Keep keys through deletions so a later restoration has the same ID.
@@ -399,7 +399,10 @@ impl EsmParser {
             let mut sources: HashMap<u32, (u32, bool)> = HashMap::new();
             let (records, parser_summaries) =
                 match parse_admitted_plugin_file_with_warnings(path, &order.metadata[priority]) {
-                    Ok(parsed) => parsed,
+                    Ok((records, summaries, checksum)) => {
+                        plugin_checksums[priority] = checksum.to_vec();
+                        (records, summaries)
+                    }
                     Err(error) => {
                         let message = format!(
                             "warning: {}: skipped unusable plugin input: {error:#}",
@@ -513,6 +516,7 @@ impl EsmParser {
             records: merged,
             warnings: summaries,
             notices,
+            plugin_checksums,
             phases: std::collections::BTreeMap::new(),
         })
     }

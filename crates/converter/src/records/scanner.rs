@@ -3,6 +3,7 @@ use super::PluginDiagnostics;
 use crate::esm::binary::PluginMetadata;
 use color_eyre::{Result, eyre::WrapErr};
 use flate2::{Decompress, FlushDecompress, Status};
+use sha2::{Digest, Sha256};
 use std::{fs::File, path::Path};
 
 /// A framed, inflated record before any schema interpretation or ID resolution.
@@ -48,14 +49,15 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
 }
 
 /// Read source inputs only; ownership and slot assignment remain with LoadOrder.
-/// False means later proof stages must not reopen this unavailable or changed source;
-/// already decoded records can still be retained. Local record errors alone return true.
+/// `None` means later proof stages must not reopen this unavailable or changed source;
+/// already decoded records can still be retained. A digest covers the verified decode view.
+/// Local record errors alone still return the digest.
 pub(crate) fn scan_admitted_plugin(
     (path, admitted): (&Path, &PluginMetadata),
     diagnostics: &mut PluginDiagnostics,
     observe: impl FnMut(ObservedHeader),
     receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
-) -> Result<bool> {
+) -> Result<Option<[u8; 32]>> {
     scan_plugin_impl(path, Some(admitted), diagnostics, observe, receive)
 }
 
@@ -66,7 +68,7 @@ pub(crate) fn scan_plugin(
     diagnostics: &mut PluginDiagnostics,
     observe: impl FnMut(ObservedHeader),
     receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
-) -> Result<bool> {
+) -> Result<Option<[u8; 32]>> {
     scan_plugin_impl(path, None, diagnostics, observe, receive)
 }
 
@@ -77,7 +79,7 @@ fn scan_plugin_impl(
     diagnostics: &mut PluginDiagnostics,
     mut observe: impl FnMut(ObservedHeader),
     mut receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
-) -> Result<bool> {
+) -> Result<Option<[u8; 32]>> {
     diagnostics.set_record(0, None, None, None, "framing");
     let input = (|| -> Result<_> {
         let file = File::open(path).wrap_err_with(|| format!("open {}", path.display()))?;
@@ -90,12 +92,12 @@ fn scan_plugin_impl(
             diagnostics.note("record", || {
                 format!("unusable input {}: {error:#}", path.display())
             });
-            return Ok(false);
+            return Ok(None);
         }
     };
     if map.len() < 24 || &map[..4] != b"TES4" {
         diagnostics.note("record", || "input has no complete TES4 header".into());
-        return Ok(false);
+        return Ok(None);
     }
     if let Some(admitted) = admitted
         && let Err(error) = crate::esm::binary::verify_admitted_metadata(&map, admitted)
@@ -105,7 +107,7 @@ fn scan_plugin_impl(
         diagnostics.note("record", || {
             format!("unusable input {}: {error:#}", path.display())
         });
-        return Ok(false);
+        return Ok(None);
     }
     scan_bytes_observed(&map, diagnostics, &mut receive, &mut observe);
     if let Err(error) = map.verify(&file, path) {
@@ -122,9 +124,9 @@ fn scan_plugin_impl(
                 format!("{error:#}; retained decoded records may mix versions of the large input and be inconsistent")
             }
         });
-        return Ok(false);
+        return Ok(None);
     }
-    Ok(true)
+    Ok(Some(Sha256::digest(&map[..]).into()))
 }
 
 /// Traverse groups iteratively, retaining siblings when an inner boundary is corrupt.
@@ -353,14 +355,14 @@ mod tests {
             let mut diagnostics = PluginDiagnostics::default();
             let mut observed = 0;
             let mut received = 0;
-            let usable = scan_admitted_plugin(
+            let digest = scan_admitted_plugin(
                 (&path, &admitted),
                 &mut diagnostics,
                 |_| observed += 1,
                 |_, _| received += 1,
             )
             .unwrap();
-            assert!(!usable);
+            assert!(digest.is_none());
             assert_eq!((observed, received), (0, 0));
             assert_eq!(diagnostics.skipped_records, 1);
             assert_eq!(diagnostics.event_context.action, Some("skipped"));
@@ -389,14 +391,14 @@ mod tests {
         let mut diagnostics = PluginDiagnostics::default();
         let mut observed = Vec::new();
         let mut received = Vec::new();
-        let usable = scan_admitted_plugin(
+        let digest = scan_admitted_plugin(
             (&path, &admitted),
             &mut diagnostics,
             |header| observed.push(header.source_form_id),
             |record, _| received.push(record.source_form_id),
         )
         .unwrap();
-        assert!(usable);
+        assert!(digest.is_some());
         assert_eq!(observed, [0, 0x101, 0x102]);
         assert_eq!(received, [0, 0x102]);
         assert_eq!(diagnostics.skipped_records, 1);

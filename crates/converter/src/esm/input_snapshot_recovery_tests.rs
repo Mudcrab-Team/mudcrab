@@ -546,37 +546,83 @@ fn changed_admitted_localized_inhouse_keep_neighbor_slots() {
     );
 }
 
-/// A checksum cannot authenticate changed header facts, even after records were read earlier.
-#[test]
-fn admitted_checksum_uses_semantic_header_and_warns_once_for_replacement() {
+/// A record set keeps the digest of the bytes it was decoded from, not a later replacement.
+fn assert_decoded_checksum_survives_body_edit(reader: crate::config::RecordReader) {
     let directory = tempfile::tempdir().unwrap();
     let paths = [
         directory.path().join("HealthyA.esm"),
         directory.path().join("MutableMod.esp"),
+        directory.path().join("HealthyC.esp"),
     ];
     plugin(&paths[0], 0x811);
-    plugin_with_master(&paths[1], 0x0100_0822, Some("HealthyA.esm"));
-    let order = load_order::LoadOrder::read(&paths).unwrap();
-    // A case-only spelling change preserves the ordered master authority.
-    plugin_with_master(&paths[1], 0x0100_0822, Some("HEALTHYA.ESM"));
-    let mut skipped = BTreeSet::new();
-    let mut warnings = Vec::new();
-    let proof = super::prepare_plugin_checksums(&paths, &order, &mut skipped, &mut warnings);
-    assert_eq!(proof.iter().map(Vec::len).collect::<Vec<_>>(), [32, 32]);
-    assert!(skipped.is_empty() && warnings.is_empty());
-    // Removing the master changes every source index; do not attach that digest to old facts.
-    plugin(&paths[1], 0x822);
-    let proof = super::prepare_plugin_checksums(&paths, &order, &mut skipped, &mut warnings);
-    assert_eq!(proof.iter().map(Vec::len).collect::<Vec<_>>(), [32, 0]);
-    assert_eq!(skipped, BTreeSet::from([1]));
-    assert_eq!(warnings.len(), 1);
-    assert!(warnings[0].contains("changed after load order was read"));
-    plugin_with_master(&paths[1], 0x0100_0822, Some("HealthyA.esm"));
-    let proof = super::prepare_plugin_checksums(&paths, &order, &mut skipped, &mut warnings);
-    assert_eq!(proof[1].len(), 0);
-    assert_eq!(
-        warnings.len(),
-        1,
-        "known unavailable sources must not be reopened or warn again"
+    plugin_with_master(&paths[1], 0x822, Some("HealthyA.esm"));
+    plugin_with_master(&paths[2], 0x0100_0933, Some("MutableMod.esp"));
+    let decoded_bytes = std::fs::read(&paths[1]).unwrap();
+    let decoded_digest = crate::cache::hash_bytes(&decoded_bytes);
+    // The replacement keeps the TES4 flags and ordered masters but changes the body.
+    let replacement = directory.path().join("replacement.native");
+    plugin_with_master(&replacement, 0x833, Some("HealthyA.esm"));
+    let replacement_digest = crate::cache::hash_bytes(&std::fs::read(&replacement).unwrap());
+    assert_ne!(decoded_digest, replacement_digest);
+    let changed = paths[1].clone();
+    let retained = directory.path().join("original-middle.retained");
+    struct ClearHook;
+    impl Drop for ClearHook {
+        fn drop(&mut self) {
+            AFTER_PLUGIN_DECODE.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+    let clear = ClearHook;
+    AFTER_PLUGIN_DECODE.with(|slot| {
+        assert!(slot.borrow().is_none());
+        *slot.borrow_mut() = Some(Box::new(move || {
+            std::fs::rename(&changed, retained).unwrap();
+            std::fs::rename(replacement, changed).unwrap();
+        }));
+    });
+    let database = directory.path().join("world.db");
+    let result = EsmParser::convert_plugins_with_reader_and_schemas(
+        &paths,
+        &database,
+        reader,
+        directory.path(),
+        crate::config::DEFAULT_LANGUAGE,
+        None,
     );
+    drop(clear);
+    assert!(
+        result.is_ok(),
+        "a body-only replacement must not abort neighbors: {result:?}"
+    );
+    let conversion = result.unwrap();
+    assert!(conversion.records.contains_key(&0x0000_0822));
+    assert!(!conversion.records.contains_key(&0x0000_0833));
+    let connection = Connection::open(database).unwrap();
+    let stored: String = connection
+        .query_row(
+            "SELECT lower(hex(checksum)) FROM plugins WHERE priority=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stored, decoded_digest,
+        "the stored checksum must cover the bytes the records were decoded from"
+    );
+    assert_ne!(
+        stored, replacement_digest,
+        "a later replacement generation must never supply the decoded records' checksum: {reader:?}"
+    );
+}
+
+/// The legacy reader binds the stored checksum to its decoded view.
+#[test]
+fn decoded_checksum_legacy_ignores_body_edit_after_decode() {
+    assert_decoded_checksum_survives_body_edit(crate::config::RecordReader::Legacy);
+}
+
+/// The in-house reader binds the stored checksum to its decoded view.
+#[test]
+fn decoded_checksum_inhouse_ignores_body_edit_after_decode() {
+    assert_decoded_checksum_survives_body_edit(crate::config::RecordReader::Inhouse);
 }

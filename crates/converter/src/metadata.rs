@@ -643,6 +643,34 @@ fn stage_optional_default_source(
     Ok(())
 }
 
+/// Require the rebuild to decode the same source generation `matched_plugins` authenticated.
+/// A readable replacement with unchanged header facts is a mixed-generation refusal, not a
+/// malformed-plugin recovery: retained assets cannot pair with another generation's records.
+fn verify_decoded_plugin_sources(
+    conversion: &crate::esm::RecordConversion,
+    expected: &[String],
+) -> Result<()> {
+    ensure!(
+        conversion.plugin_checksums.len() == expected.len(),
+        "plugin proof/order length mismatch"
+    );
+    for (index, digest) in conversion.plugin_checksums.iter().enumerate() {
+        if conversion.skipped_inputs.contains(&index) || digest.is_empty() {
+            continue;
+        }
+        let expected = &expected[index];
+        if expected.is_empty() {
+            continue;
+        }
+        ensure!(
+            hash_bytes(digest) == *expected,
+            "plugin {}: decoded bytes differ from the authenticated source package; refusing to rebuild metadata from a mixed input generation",
+            conversion.load_order.names[index]
+        );
+    }
+    Ok(())
+}
+
 /// Rebuild requested metadata while publishing the already verified original asset provenance.
 async fn rebuild_into(
     config: &PipelineConfig,
@@ -889,6 +917,7 @@ async fn rebuild_into(
         Some(config.schemas()?.as_ref()),
         admitted_order,
     )?;
+    verify_decoded_plugin_sources(&conversion, plugin_hashes)?;
     let admitted_order = conversion.load_order;
     let mut plugin_hashes = plugin_hashes.to_vec();
     crate::pipeline::clear_unavailable_plugin_hashes(
@@ -1823,6 +1852,52 @@ async fn progress_event(progress: &Sender<ProgressEvent>, stage: ProgressStage, 
 mod tests {
     use super::*;
     use crate::cache::CacheEntry;
+
+    /// The rebuild accepts only decode digests that match the authenticated source package.
+    #[test]
+    fn decoded_plugin_sources_must_match_the_authenticated_package() {
+        use sha2::{Digest, Sha256};
+        let directory = tempfile::tempdir().unwrap();
+        let paths = ["A.esm", "B.esp"].map(|name| directory.path().join(name));
+        for path in &paths {
+            let mut header = b"TES4".to_vec();
+            header.extend(0u32.to_le_bytes());
+            header.extend(0u32.to_le_bytes());
+            header.extend(0u32.to_le_bytes());
+            header.extend(0u32.to_le_bytes());
+            header.extend(44u16.to_le_bytes());
+            header.extend(0u16.to_le_bytes());
+            fs::write(path, header).unwrap();
+        }
+        let order = crate::esm::load_order::LoadOrder::read(&paths).unwrap();
+        let digest = |bytes: &[u8]| Sha256::digest(bytes).to_vec();
+        let expected = vec![hash_bytes(b"source A"), hash_bytes(b"source B")];
+        let mut conversion = crate::esm::RecordConversion {
+            load_order: order,
+            skipped_inputs: BTreeSet::new(),
+            records: HashMap::new(),
+            warnings: Vec::new(),
+            notices: Vec::new(),
+            plugin_checksums: vec![digest(b"source A"), digest(b"source B")],
+            phases: BTreeMap::new(),
+        };
+        verify_decoded_plugin_sources(&conversion, &expected).unwrap();
+        // A readable replacement with unchanged header facts is a mixed generation.
+        conversion.plugin_checksums[1] = digest(b"replacement B");
+        let error = verify_decoded_plugin_sources(&conversion, &expected).unwrap_err();
+        assert!(
+            format!("{error:#}")
+                .contains("decoded bytes differ from the authenticated source package"),
+            "{error:#}"
+        );
+        // Genuinely unavailable inputs keep their separate recovery, and empty proofs never match.
+        conversion.skipped_inputs.insert(1);
+        verify_decoded_plugin_sources(&conversion, &expected).unwrap();
+        conversion.skipped_inputs.clear();
+        let mut without_proof = expected.clone();
+        without_proof[1].clear();
+        verify_decoded_plugin_sources(&conversion, &without_proof).unwrap();
+    }
 
     /// Failed optional-copy cleanup is counted once per output while verified neighbors survive.
     #[test]
