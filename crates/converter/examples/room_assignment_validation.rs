@@ -211,10 +211,15 @@ fn prepare_model_sources(
     let plugins: Vec<_> = plugins.iter().map(PathBuf::from).collect();
     let archives = active_data_bsa_paths(data, &plugins)?;
     let mut staged = BTreeSet::new();
-    let loose = AssetSourceIndex::build(&[data.to_path_buf()], AssetKind::Mesh)?;
+    let is_runtime = |name: &str| !is_authoring_resource(name);
+    let loose = AssetSourceIndex::build_with_name_filter(
+        &[data.to_path_buf()],
+        AssetKind::Mesh,
+        is_runtime,
+    )?;
     for source in loose.assets() {
         let path = Path::new(&source.key);
-        if needed(path) && !is_authoring_resource(&source.relative_source) {
+        if needed(path) {
             staged.insert(path.to_owned());
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(sources.path().join(parent))?;
@@ -226,9 +231,12 @@ fn prepare_model_sources(
     // use one open archive, so replacing its filename cannot mix revisions.
     let mut extracted = 0;
     for archive in archives.iter().rev() {
-        let files = ArchiveExtractor::extract_matching(archive, sources.path(), |path| {
-            needed(path) && !staged.contains(path)
-        })?;
+        let files = ArchiveExtractor::extract_matching_with_name_filter(
+            archive,
+            sources.path(),
+            is_runtime,
+            |path| needed(path) && !staged.contains(path),
+        )?;
         extracted += files.len();
         staged.extend(files.into_iter().map(|file| file.path));
     }
@@ -619,6 +627,102 @@ mod tests {
             fs::read(sources.path().join("meshes/test.nif")).unwrap(),
             b"loose"
         );
+    }
+
+    #[test]
+    fn raw_authoring_loose_meshes_do_not_collide_with_runtime_meshes() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("Data");
+        archive(&data);
+        for (directory, bytes) in [
+            ("Meshes", b"runtime".as_slice()),
+            ("CalienteTools/Meshes", b"authoring".as_slice()),
+        ] {
+            fs::create_dir_all(data.join(directory)).unwrap();
+            fs::write(data.join(directory).join("Test.NIF"), bytes).unwrap();
+        }
+        let model = PathBuf::from("meshes/test.nif");
+        let models = BTreeSet::from([model.clone()]);
+        let plugins = ["Skyrim.esm".into()];
+        let (sources, count) =
+            prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(fs::read(sources.path().join(model)).unwrap(), b"runtime");
+
+        fs::create_dir_all(data.join("Runtime/Meshes")).unwrap();
+        fs::write(data.join("Runtime/Meshes/Test.NIF"), b"collision").unwrap();
+        let error = prepare_model_sources(&data, root.path(), &models, &plugins).unwrap_err();
+        assert!(error.to_string().contains("normalized asset collision"));
+    }
+
+    #[test]
+    fn raw_authoring_archive_mesh_does_not_override_an_earlier_runtime_mesh() {
+        use dummy_content::{Entry, bsa};
+
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("Data");
+        archive(&data);
+        fs::write(
+            data.join("Later.bsa"),
+            bsa::v105(
+                &[
+                    Entry::new("CaLiEnTeToOlS/Meshes/Test.NIF", b"authoring"),
+                    Entry::new("meshes/other.nif", b"runtime sibling"),
+                ],
+                bsa::Compression::Lz4,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let model = PathBuf::from("meshes/test.nif");
+        let models = BTreeSet::from([model.clone()]);
+        let plugins = ["Skyrim.esm".into(), "Later.esp".into()];
+        let (sources, count) =
+            prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(fs::read(sources.path().join(model)).unwrap(), b"archive");
+        assert_eq!(
+            fs::read(sources.path().join("meshes/other.nif")).unwrap(),
+            b"runtime sibling"
+        );
+    }
+
+    #[test]
+    fn raw_authoring_archive_mesh_does_not_collide_with_a_later_runtime_mesh() {
+        use dummy_content::{Entry, bsa};
+
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("Data");
+        archive(&data);
+        let model = PathBuf::from("meshes/test.nif");
+        let models = BTreeSet::from([model.clone()]);
+        let plugins = ["Skyrim.esm".into(), "Later.esp".into()];
+        let write_later = |alias| {
+            fs::write(
+                data.join("Later.bsa"),
+                bsa::v105(
+                    &[
+                        Entry::new("meshes/test.nif", b"later runtime"),
+                        Entry::new(alias, b"alias"),
+                    ],
+                    bsa::Compression::None,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        };
+        write_later("CalienteTools/Meshes/Test.NIF");
+        let (sources, count) =
+            prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(
+            fs::read(sources.path().join(model)).unwrap(),
+            b"later runtime"
+        );
+
+        write_later("Runtime/Meshes/Test.NIF");
+        let error = prepare_model_sources(&data, root.path(), &models, &plugins).unwrap_err();
+        assert!(error.to_string().contains("normalized path collision"));
     }
 
     #[test]
