@@ -1507,12 +1507,12 @@ fn validate_candidate_with_string_sources(
         if record.rejected_fields.contains(b"NAME") {
             return Err("rejected placed base NAME".into());
         }
-        if !record
+        let base = record
             .fields
             .iter()
-            .any(|field| field.signature == *b"NAME" && matches!(field.value, Value::FormId(_)))
-        {
-            return Err("missing required NAME reference".into());
+            .find(|field| field.signature == *b"NAME");
+        if !base.is_some_and(|field| matches!(field.value, Value::FormId(id) if id != 0)) {
+            return Err("missing or null required NAME reference".into());
         }
     }
     if !matches!(&record.record_type, b"LAND" | b"MOVT" | b"GMST" | b"RACE") {
