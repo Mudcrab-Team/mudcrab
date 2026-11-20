@@ -433,6 +433,7 @@ fn settings_for_source_reader_in_lineage(
                     crate::cache::inhouse_adapter10_reader_identity(&schemas),
                     crate::cache::inhouse_adapter11_reader_identity(&schemas),
                     crate::cache::inhouse_adapter12_reader_identity(&schemas, &language),
+                    crate::cache::inhouse_adapter13_reader_identity(&schemas, &language),
                 ]
                 .into_iter()
                 .flatten()
@@ -448,12 +449,8 @@ fn settings_for_source_reader_in_lineage(
                 .any(|prior| prior.as_ref() == Some(identity)))
             || (reader == crate::config::RecordReader::Legacy
                 && schemas.identities().is_empty()
-                && [
-                    crate::cache::legacy_projection4_reader_identity(&language),
-                    crate::cache::legacy_projection5_reader_identity(&language),
-                ]
-                .iter()
-                .any(|prior| prior.as_ref() == Some(identity)))
+                && crate::cache::legacy_asset_reader_identities(&language)
+                    .any(|prior| &prior == identity))
             || (reader == crate::config::RecordReader::Legacy
                 && (identity == &serde_json::json!({"mode": "legacy"})
                     || identity
@@ -2387,8 +2384,12 @@ mod metadata_schema_controls {
             serde_json::json!({"mode": "legacy", "projection_version": 1}),
             serde_json::json!({"mode": "legacy", "projection_version": 2}),
             serde_json::json!({"mode": "legacy", "projection_version": 3}),
-            crate::cache::legacy_projection4_reader_identity("english").unwrap(),
-            crate::cache::legacy_projection5_reader_identity("english").unwrap(),
+            serde_json::json!({"mode": "legacy", "projection_version": 4,
+                "language": "english", "text_encoding": "windows-1252"}),
+            serde_json::json!({"mode": "legacy", "projection_version": 5,
+                "language": "english", "text_encoding": "windows-1252"}),
+            serde_json::json!({"mode": "legacy", "projection_version": 6,
+                "language": "english", "text_encoding": "windows-1252"}),
             crate::esm::inhouse::reader_identity(RecordReader::Legacy),
         ] {
             let settings = settings_for_source_reader(
@@ -2402,7 +2403,6 @@ mod metadata_schema_controls {
         for identity in [
             serde_json::json!({"mode": "legacy", "projection_version": 0}),
             serde_json::json!({"mode": "legacy", "projection_version": 99}),
-            serde_json::json!({"mode": "legacy", "projection_version": 7}),
             serde_json::json!({"mode": "legacy", "unproven": true}),
         ] {
             assert!(
@@ -2695,6 +2695,25 @@ mod per_kind_tests {
         assert!(settings_for_source_reader(&config, &identity, schemas()).is_err());
         settings_for_source_reader_in_lineage(&config, &identity, schemas(), Some(earlier))
             .unwrap();
+        let mut prior = identity.clone();
+        prior["adapter_version"] = serde_json::json!(13);
+        settings_for_source_reader_in_lineage(&config, &prior, schemas(), Some(earlier))
+            .expect("adapter 13 retains the same trusted schema lineage");
+        let mut producer = config.clone();
+        producer.record_reader = RecordReader::Inhouse;
+        let proof = combined_settings_proof(&producer, &prior);
+        assert!(
+            recover_script_abi(
+                &producer,
+                CONVERTER_SCHEMA_VERSION,
+                &proof,
+                &prior,
+                Some(earlier)
+            )
+            .unwrap()
+            .is_some(),
+            "adapter 13 combined proof must survive lineage normalization"
+        );
         let mut other_adapter = identity.clone();
         other_adapter["adapter_version"] = serde_json::json!(1);
         assert!(
@@ -2717,6 +2736,22 @@ mod per_kind_tests {
             )
             .is_err()
         );
+    }
+
+    /// Reproduce the old combined settings payload independently of reader compatibility.
+    fn combined_settings_proof(config: &PipelineConfig, identity: &serde_json::Value) -> String {
+        hash_bytes(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema": CONVERTER_SCHEMA_VERSION,
+                "texture_etc1s_quality": config.texture_fallback_quality,
+                "texture_uastc_level": config.texture_uastc_level,
+                "texture_zstd_level": config.texture_zstd_level,
+                "texture_encoder": {"mode":"cpu"},
+                "script_abi_version": config.script_abi_version,
+                "record_reader": identity,
+            }))
+            .unwrap(),
+        )
     }
 
     /// The combined proof names its script ABI, and nothing else may differ.

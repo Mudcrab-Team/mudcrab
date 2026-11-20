@@ -513,6 +513,10 @@
           "path": "crates/converter/src/esm/exporter.rs"
         },
         {
+          "anchor": "fn export_legacy_records(",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
           "anchor": "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
           "path": "crates/engine/src/world/imagespace.rs"
         },
@@ -522,7 +526,7 @@
         }
       ],
       "owner": "Mudcrab maintainers (#298)",
-      "reason": "The image-space reader decodes selected records. Jump physics decodes the player NPC and race height inputs from winning records. Other subrecords in this payload remain unclassified.",
+      "reason": "Opaque archive/payload disposition. Published payloads still use the compatibility representation after native FormKey resolution, including reader-specific clearing or rejection of unrepresentable links and identities. Preservation does not establish interpretation of every subrecord. The image-space reader decodes selected records. Jump physics decodes the player NPC and race height inputs from winning records. Other subrecords in this payload remain unclassified.",
       "roles": [
         "provenance"
       ],
@@ -757,7 +761,7 @@
     "emittance": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "Declared projection; field-level semantics not yet traced beyond the selected fields. The writer iterates distinct resolved source IDs in ascending compatibility ID order. Query dependencies remain independent; no unused verdict."
     },
     "exterior_spatial": {
       "classification": "deferred",
@@ -767,7 +771,7 @@
     "formid_map": {
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+      "reason": "Compatibility identity provenance. Both readers resolve original owner and local ID as FormKeys before projecting to the existing u32 writer. Complete exports iterate in full-then-light owner priority and local ID order. Native resolution may retain owners beyond legacy slots; the extended conversion declines legacy publication when owners cannot fit."
     },
     "grass_types": {
       "classification": "deferred",

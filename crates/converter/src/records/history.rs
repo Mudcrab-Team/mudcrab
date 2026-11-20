@@ -346,17 +346,57 @@ fn read_normalized_masters(statement: &mut Statement<'_>, plugin_id: u32) -> Res
     Ok(masters)
 }
 
+/// Reconstruct source-header authority, retaining rejected versions and GMST aliases.
+/// Current packs keep the exact four signature bytes; old layouts retain TEXT fallback.
+fn history_source_ids(
+    conn: &Connection,
+    order: &LoadOrder,
+    raw_signatures: bool,
+) -> Result<std::collections::HashSet<u32>> {
+    let signature = if raw_signatures {
+        "record_signature"
+    } else {
+        "CAST(record_type AS BLOB)"
+    };
+    let mut statement = conn.prepare(&format!(
+        "SELECT {signature},source_form_id,plugin_id FROM record_overrides WHERE source_form_id IS NOT NULL AND {signature} IS NOT NULL AND plugin_id IS NOT NULL"
+    ))?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, Vec<u8>>(0)?,
+            row.get::<_, u32>(1)?,
+            row.get::<_, usize>(2)?,
+        ))
+    })?;
+    let mut ids = std::collections::HashSet::new();
+    for row in rows {
+        let (signature, raw, supplier) = row?;
+        if let Ok(signature) = signature.as_slice().try_into()
+            && supplier < order.names.len()
+            && let Some(id) =
+                super::source_identity::header_runtime_id(&signature, raw, supplier, order)
+        {
+            ids.insert(id);
+        }
+    }
+    Ok(ids)
+}
+
 /// Hash a source handle, then read only the requested native record with bounded allocation.
-fn decode_version(
+fn decode_version<'a>(
     path: &Path,
     expected: &[u8],
     entry: &HistoryEntry,
     order: &LoadOrder,
-    kinds: &HashMap<u32, [u8; 4]>,
+    catalogues: (
+        &HashMap<u32, [u8; 4]>,
+        &mut impl FnMut() -> Result<&'a std::collections::HashSet<u32>>,
+    ),
     runtime: (&RuntimeSchemas, &decoder::PreparedSchemas),
     diagnostics: &mut PluginDiagnostics,
 ) -> Result<DecodedRecord> {
     let (schemas, prepared) = runtime;
+    let (kinds, source_ids) = catalogues;
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
@@ -422,15 +462,30 @@ fn decode_version(
         source_record_offset: entry.source_record_offset,
         payload,
     };
+    let source_ids = std::cell::RefCell::new(source_ids);
+    let catalogue_error = std::cell::RefCell::new(None);
+    let lazy_ids = decoder::LazySourceHeaders(|id| match (source_ids.borrow_mut())() {
+        Ok(ids) => Ok(ids.contains(&id)),
+        Err(error) => {
+            let error = error.to_string();
+            *catalogue_error.borrow_mut() = Some(error.clone());
+            Err(error)
+        }
+    });
     let context = decoder::Context {
         order,
         plugin_index: entry.plugin_index as usize,
         localized: order.metadata[entry.plugin_index as usize].flags & 0x80 != 0,
+        source_ids: Some(&lazy_ids),
         winning_types: Some(kinds),
     };
-    let mut record =
-        decoder::decode_with_prepared(scanned, schemas.schema(), prepared, &context, diagnostics)
-            .map_err(color_eyre::eyre::Error::msg)?;
+    let decoded =
+        decoder::decode_with_prepared(scanned, schemas.schema(), prepared, &context, diagnostics);
+    // Optional-link recovery cannot hide a failed provenance query from the history caller.
+    if let Some(error) = catalogue_error.into_inner() {
+        return Err(color_eyre::eyre::eyre!("{error}"));
+    }
+    let mut record = decoded.map_err(color_eyre::eyre::Error::msg)?;
     record.form_id = entry.form_id.unwrap_or(record.form_id);
     ensure!(
         record.payload_complete && record.rejected_fields.is_empty(),
@@ -548,6 +603,22 @@ pub fn read_history(pack: &Path, data: Option<&Path>, form_id: u32) -> Result<Hi
     let columns = layout
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    // Do not scan all provenance for histories that cannot authenticate a source.
+    // Cache success and failure once per request, only when a decoded link needs presence.
+    let source_ids = std::cell::OnceCell::new();
+    let mut load_source_ids = || {
+        source_ids
+            .get_or_init(|| {
+                history_source_ids(
+                    &conn,
+                    &order,
+                    columns.iter().any(|c| c == "record_signature"),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(|error| color_eyre::eyre::eyre!("{error}"))
+    };
     let retained_column = |name: &str| {
         if columns.iter().any(|column| column == name) {
             name.to_owned()
@@ -670,7 +741,7 @@ pub fn read_history(pack: &Path, data: Option<&Path>, form_id: u32) -> Result<Hi
                 checksum,
                 &entry,
                 &order,
-                &kinds,
+                (&kinds, &mut load_source_ids),
                 (schemas, prepared),
                 &mut version.diagnostics,
             )
@@ -777,6 +848,29 @@ pub fn display(report: &HistoryReport) -> String {
 #[cfg(test)]
 mod normalized_masters_tests {
     use super::*;
+
+    /// Raw signatures remain authoritative even when their display text is lossy.
+    #[test]
+    fn source_catalogue_uses_raw_signature_and_supports_retained_text() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE record_overrides(record_type TEXT,record_signature BLOB,source_form_id INTEGER,plugin_id INTEGER);
+             INSERT INTO record_overrides VALUES('TES4',X'FF414243',1280,3);
+             INSERT INTO record_overrides VALUES('STAT',X'53544154',16777507,3);
+             INSERT INTO record_overrides VALUES('TES4',X'54455334',0,0);
+             INSERT INTO record_overrides VALUES(NULL,NULL,NULL,NULL);",
+        ).unwrap();
+        let order = fixture_order();
+        let ids = history_source_ids(&conn, &order, true).unwrap();
+        assert_eq!(
+            ids,
+            std::collections::HashSet::from([0xfe00_0500, 0x0000_0123])
+        );
+        conn.execute_batch("ALTER TABLE record_overrides DROP COLUMN record_signature;")
+            .unwrap();
+        let ids = history_source_ids(&conn, &order, false).unwrap();
+        assert_eq!(ids, std::collections::HashSet::from([0x0000_0123]));
+    }
 
     /// Use a different native master order from global full/light slot order.
     fn fixture_order() -> LoadOrder {
@@ -1099,5 +1193,144 @@ mod schema_addon_controls {
         assert_eq!(count(&conn), 1);
         write_tables(&conn, &[], &order, &[]).unwrap();
         assert_eq!(count(&conn), 0);
+    }
+}
+
+#[cfg(test)]
+mod lazy_presence_tests {
+    use super::*;
+    use std::{cell::Cell, collections::HashSet};
+
+    /// Frame synthetic source bytes inside the test, including their authenticated history bounds.
+    fn decode_fixture(
+        kind: [u8; 4],
+        link: Option<u32>,
+        ids: &HashSet<u32>,
+    ) -> (DecodedRecord, usize) {
+        let calls = Cell::new(0);
+        let mut load = || {
+            calls.set(calls.get() + 1);
+            Ok(ids)
+        };
+        let decoded = decode_fixture_with_loader(kind, link, &mut load).unwrap();
+        (decoded, calls.get())
+    }
+
+    /// Exercise source-authority failures through the same authenticated native frame.
+    fn decode_fixture_with_loader<'a>(
+        kind: [u8; 4],
+        link: Option<u32>,
+        load: &mut impl FnMut() -> Result<&'a HashSet<u32>>,
+    ) -> Result<DecodedRecord> {
+        let mut payload = Vec::new();
+        if let Some(link) = link {
+            payload.extend(b"LTMP");
+            payload.extend(4u16.to_le_bytes());
+            payload.extend(link.to_le_bytes());
+        }
+        let mut bytes = Vec::new();
+        bytes.extend(kind);
+        bytes.extend((payload.len() as u32).to_le_bytes());
+        bytes.extend(0u32.to_le_bytes());
+        bytes.extend(0x800u32.to_le_bytes());
+        bytes.extend([0; 8]);
+        bytes.extend(&payload);
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("Base.esm");
+        std::fs::write(&path, &bytes).unwrap();
+        let order =
+            LoadOrder::from_metadata(vec!["Base.esm".into()], vec![PluginMetadata::default()])
+                .unwrap();
+        let entry = HistoryEntry {
+            form_id: Some(0x800),
+            plugin_index: 0,
+            source_form_id: 0x800,
+            record_type: kind,
+            flags: 0,
+            source_record_offset: 0,
+            source_record_size: payload.len() as u32,
+            source_group_end: bytes.len() as u64,
+            frame_complete: true,
+            accepted: true,
+            reason: None,
+            source_cell_form_id: None,
+            source_worldspace_form_id: None,
+            source_topic_form_id: None,
+            topic_group_offset: None,
+            editor_id: None,
+        };
+        let schemas = RuntimeSchemas::from_addon_bytes(&[]).unwrap();
+        let prepared = decoder::prepare_runtime_schema(&schemas);
+        decode_version(
+            &path,
+            &Sha256::digest(&bytes),
+            &entry,
+            &order,
+            (&HashMap::new(), load),
+            (&schemas, &prepared),
+            &mut PluginDiagnostics::default(),
+        )
+    }
+
+    /// A failed loader surfaces for a link needing presence; an unrelated version still decodes.
+    #[test]
+    fn history_loader_error_is_reported_only_when_presence_is_needed() {
+        for (kind, link, expected_calls) in [(*b"CELL", Some(0x0500_1880), 1), (*b"STAT", None, 0)]
+        {
+            let calls = Cell::new(0);
+            let mut load = || -> Result<&HashSet<u32>> {
+                calls.set(calls.get() + 1);
+                Err(color_eyre::eyre::eyre!("synthetic catalogue query failure"))
+            };
+            let decoded = decode_fixture_with_loader(kind, link, &mut load);
+            assert_eq!(calls.get(), expected_calls);
+            if expected_calls == 1 {
+                assert_eq!(
+                    decoded.unwrap_err().to_string(),
+                    "synthetic catalogue query failure"
+                );
+            } else {
+                assert!(decoded.is_ok(), "{decoded:?}");
+            }
+        }
+    }
+
+    /// Ordinary history, in-range links, and hardcoded low IDs need no full provenance catalogue.
+    #[test]
+    fn history_without_presence_check_avoids_catalogue() {
+        for (kind, link) in [
+            (*b"STAT", None),
+            (*b"CELL", Some(0x0500_0001)),
+            (*b"CELL", Some(0x1880)),
+        ] {
+            let (_, calls) = decode_fixture(kind, link, &HashSet::new());
+            assert_eq!(
+                calls, 0,
+                "history must load presence authority only for a link that needs it"
+            );
+        }
+    }
+
+    /// A lazy lookup still distinguishes absent past-master targets from observed headers.
+    #[test]
+    fn history_lazy_presence_preserves_missing_and_observed_targets() {
+        for present in [false, true] {
+            let ids = if present {
+                HashSet::from([0x1880])
+            } else {
+                HashSet::new()
+            };
+            let (decoded, calls) = decode_fixture(*b"CELL", Some(0x0500_1880), &ids);
+            assert_eq!(calls, 1);
+            let field = decoded
+                .fields
+                .iter()
+                .find(|f| f.signature == *b"LTMP")
+                .unwrap();
+            assert_eq!(
+                field.canonical_bytes,
+                (if present { 0x1880u32 } else { 0 }).to_le_bytes()
+            );
+        }
     }
 }

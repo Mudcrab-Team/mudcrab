@@ -1980,12 +1980,7 @@ fn reusable_manifest(
                     }
                 }
                 if reader == crate::config::RecordReader::Legacy {
-                    for identity in [
-                        crate::cache::legacy_projection4_reader_identity(&settings.language),
-                        crate::cache::legacy_projection5_reader_identity(&settings.language),
-                    ]
-                    .into_iter()
-                    .flatten()
+                    for identity in crate::cache::legacy_asset_reader_identities(&settings.language)
                     {
                         matched |= crate::cache::retained_configuration_matches_for_reader(
                             &settings, producer, recorded, &identity,
@@ -4221,7 +4216,11 @@ fn plugin_paths_with_diagnostics(
     }
     let discovered: Vec<_> = files
         .iter()
-        .filter(|path| extension(path, &["esm", "esp", "esl"]))
+        .filter(|path| {
+            crate::esm::plugins_txt::plugin_name(
+                &path.file_name().unwrap_or_default().to_string_lossy(),
+            )
+        })
         .collect();
     let mut plugins: Vec<_> = discovered
         .iter()
@@ -7183,13 +7182,15 @@ mod tests {
         );
     }
 
+    /// Database-only legacy revisions preserve combined DDS/PEX proofs in either language.
     #[test]
     fn prior_language_bound_combined_proofs_reuse_only_proven_asset_kinds() {
-        for (reader, prior) in [
+        for (reader, version) in [
+            (crate::config::RecordReader::Legacy, 5),
+            (crate::config::RecordReader::Legacy, 4),
             (crate::config::RecordReader::Inhouse, 12),
             (crate::config::RecordReader::Inhouse, 13),
-            (crate::config::RecordReader::Legacy, 4),
-            (crate::config::RecordReader::Legacy, 5),
+            (crate::config::RecordReader::Legacy, 6),
         ] {
             for language in ["english", "french"] {
                 let directory = tempfile::tempdir().unwrap();
@@ -7203,9 +7204,9 @@ mod tests {
                 let mut identity =
                     crate::esm::inhouse::reader_identity_in_language(reader, language);
                 if reader == crate::config::RecordReader::Inhouse {
-                    identity["adapter_version"] = serde_json::json!(prior);
+                    identity["adapter_version"] = serde_json::json!(version);
                 } else {
-                    identity["projection_version"] = serde_json::json!(prior);
+                    identity["projection_version"] = serde_json::json!(version);
                 }
                 let historical = serde_json::json!({
                     "schema": CONVERTER_SCHEMA_VERSION,
@@ -7243,7 +7244,7 @@ mod tests {
                     ..Default::default()
                 };
                 let reused = reusable_manifest(&config, manifest.clone()).unwrap();
-                assert_eq!(reused.entries.len(), 2, "{reader:?}/{language}");
+                assert_eq!(reused.entries.len(), 2, "{reader:?}/{version}/{language}");
                 assert_eq!(
                     reused.entries["textures/prior.dds"],
                     manifest.entries["textures/prior.dds"]
@@ -15856,3 +15857,7 @@ mod tests {
             .unwrap_or_default()
     }
 }
+
+#[cfg(test)]
+#[path = "pipeline/formkey_recovery_tests.rs"]
+mod formkey_recovery_tests;

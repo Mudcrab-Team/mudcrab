@@ -353,7 +353,9 @@ fn incomplete(report: &PipelineReport, output: &Path, warning_count: usize) {
 /// Match a compatibility category without confusing it with a data-loss summary.
 fn compatibility_kind(reader: RecordReader) -> &'static str {
     match reader {
-        RecordReader::Legacy => "FormID occurrences name a master index past",
+        RecordReader::Legacy => {
+            "FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own"
+        }
         RecordReader::Inhouse => "used supplier-self runtime compatibility",
     }
 }
@@ -373,6 +375,10 @@ fn compatibility_notice(report: &PipelineReport, reader: RecordReader) {
         report.notices
     );
     let message = messages[0];
+    if reader == RecordReader::Legacy {
+        assert!(message.starts_with("notice:"), "{message}");
+        assert!(message.contains("in ACTI)"), "{message}");
+    }
     let count = match reader {
         RecordReader::Legacy => "2 FormID occurrences",
         RecordReader::Inhouse => "for 1 headers",
@@ -992,7 +998,7 @@ async fn severity_reuse_assets_cli_replays_compatibility_notices_and_exits_zero(
     }
 }
 
-/// Real ESL-width truncation and cleared optional ownership remain warnings, with no compatibility notice.
+/// Real ESL-width truncation and wide optional clearing remain warnings, without self projection.
 #[tokio::test]
 async fn severity_legacy_light_truncation_and_optional_clear_remain_warnings() {
     let directory = tempfile::tempdir().unwrap();
@@ -1012,7 +1018,7 @@ async fn severity_legacy_light_truncation_and_optional_clear_remain_warnings() {
             0,
             &[
                 field(b"DATA", &[1, 0]),
-                field(b"XOWN", &0x0700_0900u32.to_le_bytes()),
+                field(b"XOWN", &0x0000_1900u32.to_le_bytes()),
             ]
             .concat(),
         ),
@@ -1044,6 +1050,6 @@ async fn severity_legacy_light_truncation_and_optional_clear_remain_warnings() {
         optional.contains("1 invalid optional FormID links"),
         "{optional}"
     );
-    assert!(optional.contains("07000900"), "{optional}");
+    assert!(optional.contains("00001900"), "{optional}");
     incomplete(&report, &output, 2);
 }

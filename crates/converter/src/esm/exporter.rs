@@ -423,7 +423,7 @@ struct ExportOptions {
 /// Synthetic records without a source load order have no formid_map entry.
 /// Export a legacy subset without replacing complete-load-order metadata.
 pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Result<()> {
-    export_records(
+    export_record_adapter(
         conn,
         master,
         None,
@@ -446,7 +446,7 @@ pub fn export_to_db_with_load_order(
     master: &HashMap<u32, RawRecord>,
     order: &LoadOrder,
 ) -> Result<()> {
-    export_records(
+    export_record_adapter(
         conn,
         master,
         Some(order),
@@ -470,7 +470,7 @@ pub(super) fn export_plugins_to_db(
     plugin_paths: &[PathBuf],
     unresolved_fields: &HashMap<u32, BTreeSet<usize>>,
 ) -> Result<()> {
-    export_records(
+    export_record_adapter(
         conn,
         master,
         Some(order),
@@ -493,7 +493,7 @@ pub(crate) fn export_inhouse_to_db(
     unresolved_fields: &HashMap<u32, BTreeSet<usize>>,
     terrain_offsets: &HashMap<u32, u64>,
 ) -> Result<()> {
-    export_records(
+    export_record_adapter(
         conn,
         master,
         Some(order),
@@ -515,7 +515,7 @@ pub(crate) fn export_inhouse_record_archive_to_db(
     order: &LoadOrder,
     plugin_paths: &[PathBuf],
 ) -> Result<()> {
-    export_records(
+    export_record_adapter(
         conn,
         master,
         Some(order),
@@ -642,9 +642,14 @@ pub(crate) fn validate_inhouse_record(record: &RawRecord) -> Result<()> {
     Ok(())
 }
 
-/// Writes every merged record; with a load order, also records each record's
-/// owning plugin and plugin-local ID in `formid_map`.
-fn export_records(
+/// The old-format projection owns a lookup view and an explicitly ordered traversal.
+struct LegacyRecords<'a> {
+    by_id: &'a HashMap<u32, RawRecord>,
+    ordered: Vec<(&'a u32, &'a RawRecord)>,
+}
+
+/// Preserve existing u32 export APIs while complete exports enter through FormKey identities.
+fn export_record_adapter(
     conn: &Connection,
     master: &HashMap<u32, RawRecord>,
     order: Option<&LoadOrder>,
@@ -653,6 +658,116 @@ fn export_records(
     terrain_offsets: Option<&HashMap<u32, u64>>,
     options: ExportOptions,
 ) -> Result<()> {
+    let Some(order) = order else {
+        let mut ordered: Vec<_> = master.iter().collect();
+        ordered.sort_unstable_by_key(|(id, _)| **id);
+        return export_legacy_records(
+            conn,
+            LegacyRecords {
+                by_id: master,
+                ordered,
+            },
+            None,
+            plugin_paths,
+            unresolved_fields,
+            terrain_offsets,
+            options,
+        );
+    };
+    let identities = order.form_key_context().map_err(sql_identity_error)?;
+    let legacy = identities.legacy_view().map_err(sql_identity_error)?;
+    let mut keyed = HashMap::with_capacity(master.len());
+    for record in master.values() {
+        let key = legacy
+            .from_legacy_u32(record.form_id)
+            .map_err(sql_identity_error)?
+            .ok_or_else(|| sql_identity_error("record identity is null"))?;
+        keyed.insert(key, record);
+    }
+    export_records(
+        conn,
+        &keyed,
+        LegacyExport {
+            lookup: master,
+            order,
+            plugin_paths,
+            unresolved_fields,
+            terrain_offsets,
+            options,
+        },
+    )
+}
+
+/// Compatibility projections remain u32 until the versioned writer/reader transition.
+struct LegacyExport<'a> {
+    lookup: &'a HashMap<u32, RawRecord>,
+    order: &'a LoadOrder,
+    plugin_paths: Option<&'a [PathBuf]>,
+    unresolved_fields: Option<&'a HashMap<u32, BTreeSet<usize>>>,
+    terrain_offsets: Option<&'a HashMap<u32, u64>>,
+    options: ExportOptions,
+}
+
+/// Write FormKey-keyed winners in explicit original-owner priority and local-key order.
+/// The checked legacy projection preserves unsigned full-then-light Skyrim identity order.
+fn export_records(
+    conn: &Connection,
+    master: &HashMap<shared::form_key::FormKey, &RawRecord>,
+    export: LegacyExport<'_>,
+) -> Result<()> {
+    let identities = export
+        .order
+        .form_key_context()
+        .map_err(sql_identity_error)?;
+    let mut ordered = master
+        .iter()
+        .map(|(&key, &record)| {
+            identities
+                .identity_sort_tuple(key)
+                .map(|rank| (rank, record))
+                .map_err(sql_identity_error)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ordered.sort_unstable_by_key(|(rank, _)| *rank);
+    let ordered = ordered
+        .into_iter()
+        .map(|(_, record)| (&record.form_id, record))
+        .collect();
+    export_legacy_records(
+        conn,
+        LegacyRecords {
+            by_id: export.lookup,
+            ordered,
+        },
+        Some(export.order),
+        export.plugin_paths,
+        export.unresolved_fields,
+        export.terrain_offsets,
+        export.options,
+    )
+}
+
+/// Surface a writer-context/programming mismatch without guessing an identity.
+fn sql_identity_error(error: impl std::fmt::Display) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(error.to_string())))
+}
+
+/// Writes every merged record; with a load order, also records each record's
+/// owning plugin and plugin-local ID in `formid_map`. SQL insertion follows unsigned
+/// legacy owner identity order, independently of the winning supplier's load order.
+fn export_legacy_records(
+    conn: &Connection,
+    records: LegacyRecords<'_>,
+    order: Option<&LoadOrder>,
+    plugin_paths: Option<&[PathBuf]>,
+    unresolved_fields: Option<&HashMap<u32, BTreeSet<usize>>>,
+    terrain_offsets: Option<&HashMap<u32, u64>>,
+    options: ExportOptions,
+) -> Result<()> {
+    let LegacyRecords {
+        by_id: master,
+        ordered,
+    } = records;
     let ExportOptions {
         runtime_views,
         scalar_scripts,
@@ -701,7 +816,7 @@ fn export_records(
     };
 
     if runtime_views {
-        for (&form_id, record) in master
+        for &(&form_id, record) in ordered
             .iter()
             .filter(|(_, record)| &record.record_type == b"CELL")
         {
@@ -741,8 +856,6 @@ fn export_records(
         .map(|(&form_id, _)| form_id)
         .collect();
 
-    let mut ordered: Vec<_> = master.iter().collect();
-    ordered.sort_unstable_by_key(|(form_id, _)| **form_id);
     // Keep the hot statement checked out. Repeated cache checkout/return recreates
     // its owned SQL key and cache entry for every record. Prepare lazily for an
     // empty legacy subset, and clear each row's bindings as before.
@@ -1187,7 +1300,8 @@ fn report_actor_model_diagnostics(diagnostics: &[crate::actor_models::ActorModel
 /// Lighting colour at each time of day (see [`crate::esm::emittance`]). A target that is missing
 /// or does not resolve gets no row, so the runtime keeps the model's own emission for its
 /// references. Rows from an earlier export into the same database are dropped first, so a target
-/// that no longer resolves loses its old colour.
+/// that no longer resolves loses its old colour. Targets use unsigned legacy owner
+/// identity order so SQL insertion does not depend on the query planner.
 fn insert_emittance_sources(
     tx: &Transaction<'_>,
     master: &HashMap<u32, RawRecord>,
@@ -1195,7 +1309,7 @@ fn insert_emittance_sources(
 ) -> Result<()> {
     tx.execute("DELETE FROM emittance", [])?;
     let targets: Vec<u32> = tx
-        .prepare("SELECT DISTINCT emittance_id FROM \"references\" WHERE emittance_id IS NOT NULL")?
+        .prepare("SELECT DISTINCT emittance_id FROM \"references\" WHERE emittance_id IS NOT NULL ORDER BY emittance_id")?
         .query_map([], |row| row.get(0))?
         .collect::<Result<_>>()?;
     for target in targets {

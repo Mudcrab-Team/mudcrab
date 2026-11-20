@@ -341,6 +341,25 @@ pub(crate) fn order_explicit_plugins_with_notices(
     notices: &mut Vec<String>,
     skipped_plugins: &mut Vec<String>,
 ) -> Result<Vec<PathBuf>> {
+    order_explicit_plugins_with_capacity(paths, notices, skipped_plugins, true)
+}
+
+/// Recover the same official/CCC priority without applying legacy publication slot caps.
+pub(crate) fn order_explicit_form_key_plugins(
+    paths: Vec<PathBuf>,
+    notices: &mut Vec<String>,
+    skipped_plugins: &mut Vec<String>,
+) -> Result<Vec<PathBuf>> {
+    order_explicit_plugins_with_capacity(paths, notices, skipped_plugins, false)
+}
+
+/// Keep dependency recovery common while choosing capacity only at the writer boundary.
+fn order_explicit_plugins_with_capacity(
+    paths: Vec<PathBuf>,
+    notices: &mut Vec<String>,
+    skipped_plugins: &mut Vec<String>,
+    legacy_caps: bool,
+) -> Result<Vec<PathBuf>> {
     let headers = PluginHeaders::read(&paths)?;
     let skipped = headers.skip_cycles(notices);
     let master_files: Vec<_> = paths
@@ -379,6 +398,12 @@ pub(crate) fn order_explicit_plugins_with_notices(
     ordered.extend((0..paths.len()).filter(|&index| !emitted[index] && !skipped[index]));
     let skipped = headers.skip_inversions(&ordered, skipped, notices);
     ordered.retain(|&index| !skipped[index]);
+    if !legacy_caps {
+        return Ok(ordered
+            .into_iter()
+            .map(|index| paths[index].clone())
+            .collect());
+    }
     Ok(admit_slots(
         paths,
         &headers,
@@ -492,6 +517,7 @@ pub struct LoadOrder {
     pub metadata: Vec<PluginMetadata>,
     pub normal: HashMap<String, u32>,
     pub light: HashMap<String, u32>,
+    form_keys: std::sync::OnceLock<Result<super::form_keys::FormKeyOrder, String>>,
     normal_by_slot: Vec<String>,
     light_by_slot: Vec<String>,
 }
@@ -540,6 +566,7 @@ impl LoadOrder {
             metadata: Vec::new(),
             normal: HashMap::new(),
             light: HashMap::new(),
+            form_keys: std::sync::OnceLock::new(),
             normal_by_slot: Vec::new(),
             light_by_slot: Vec::new(),
         };
@@ -570,6 +597,37 @@ impl LoadOrder {
             result.metadata.push(metadata);
         }
         Ok(result)
+    }
+
+    /// Cache a cap-free identity authority for both legacy readers without changing u32 APIs.
+    /// Metadata-only orders have unknown HEDR versions; low light locals retain converter policy.
+    pub fn form_key_context(&self) -> Result<&super::form_keys::FormKeyOrder, String> {
+        self.form_keys
+            .get_or_init(|| {
+                super::form_keys::FormKeyOrder::from_facts(
+                    self.names
+                        .iter()
+                        .zip(&self.metadata)
+                        .map(|(name, metadata)| {
+                            (
+                                name.clone(),
+                                shared::plugin_table::PluginFacts {
+                                    flags: shared::plugin_table::PluginFlags {
+                                        master: metadata.flags & 1 != 0,
+                                        light: metadata.flags & 0x200 != 0,
+                                        medium: metadata.flags & 0x400 != 0,
+                                    },
+                                    masters: metadata.masters.clone(),
+                                    ..Default::default()
+                                },
+                            )
+                        })
+                        .collect(),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)
     }
 
     /// Resolve the original owning plugin, rejecting null, absent, or inconsistent slots.

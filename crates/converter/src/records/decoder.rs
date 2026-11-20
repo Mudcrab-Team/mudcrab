@@ -82,11 +82,33 @@ fn record_decode_visit(field: &FieldSchema, diagnostics: &PluginDiagnostics) {
     });
 }
 
+/// Presence authority can be materialized by conversion or loaded on demand by history.
+pub(crate) trait SourceHeaders {
+    fn contains_source(&self, id: u32) -> Result<bool, String>;
+}
+
+impl SourceHeaders for std::collections::HashSet<u32> {
+    fn contains_source(&self, id: u32) -> Result<bool, String> {
+        Ok(self.contains(&id))
+    }
+}
+
+/// Adapt a history loader without invoking it until the decoder needs a presence check.
+pub(crate) struct LazySourceHeaders<F>(pub F);
+
+impl<F: Fn(u32) -> Result<bool, String>> SourceHeaders for LazySourceHeaders<F> {
+    fn contains_source(&self, id: u32) -> Result<bool, String> {
+        (self.0)(id)
+    }
+}
+
 /// Per-file interpretation supplied by the shared load-order authority.
 pub(crate) struct Context<'a> {
     pub order: &'a LoadOrder,
     pub plugin_index: usize,
     pub localized: bool,
+    /// All safely observed source headers, including forward optional-link targets.
+    pub source_ids: Option<&'a dyn SourceHeaders>,
     pub winning_types: Option<&'a HashMap<u32, [u8; 4]>>,
 }
 
@@ -506,7 +528,7 @@ fn subrecords<'a>(
     }
 }
 
-/// Resolve a file-relative link; invalid optional values become null with one counted diagnostic.
+/// Resolve native words before the named legacy projection; optional failures clear locally.
 fn remap(
     value: u32,
     context: &Context<'_>,
@@ -514,51 +536,123 @@ fn remap(
     diagnostics: &mut PluginDiagnostics,
 ) -> Result<u32, String> {
     diagnostics.link(value);
-    if value == 0 {
-        return Ok(0);
-    }
-    let masters = &context.order.metadata[context.plugin_index].masters;
-    let index = (value >> 24) as usize;
-    if optional && index > masters.len() {
-        note_decode_link(
-            diagnostics,
-            format!("optional FormID {value:08X} exceeds master list"),
+    let result: Result<u32, String> = (|| {
+        let order = context.order.form_key_context()?;
+        let observed = order.note_typed_source(
+            context.plugin_index,
+            value,
+            diagnostics.event_context.source_record_offset,
+            diagnostics.event_context.field.as_deref(),
+            diagnostics.event_context.occurrence,
         );
-        return Ok(0);
-    }
-    let owner = if index < masters.len() {
-        crate::esm::load_order::normalize_plugin_name(&masters[index])
-    } else {
-        crate::esm::load_order::normalize_plugin_name(&context.order.names[context.plugin_index])
-    };
-    if let Some(&slot) = context.order.light.get(&owner) {
-        if value & 0x00ff_ffff > 0xfff {
-            if optional {
+        let key = order
+            .resolve(
+                context.plugin_index,
+                value,
+                shared::source_form_id::ZeroPolicy::Null,
+            )
+            .map_err(|error| error.to_string())?;
+        if crate::esm::legacy_projection::LegacyTypedReaderProjection::maps_to_null(
+            value,
+            context.order.metadata[context.plugin_index].masters.len(),
+            optional,
+            diagnostics.event_context.record_type,
+            diagnostics.event_context.field.as_deref(),
+        ) {
+            if observed {
+                order.note_typed_null(context.plugin_index, value);
+            }
+            note_decode_link(
+                diagnostics,
+                format!("optional FormID {value:08X} exceeds master list"),
+            );
+            return Ok(0);
+        }
+        let projected = order
+            .legacy_view()
+            .map_err(|error| error.to_string())?
+            .to_nullable_legacy_u32(key)
+            .map_err(|error| {
+                let wide = matches!(
+                    error,
+                    shared::legacy_id_view::LegacyError::LightLocalTooWide(_)
+                );
+                let category = match (optional, wide) {
+                    (true, true) => "cleared wide-light optional link",
+                    (false, true) => "rejected wide-light required identity",
+                    (true, false) => "cleared unrepresentable optional link",
+                    (false, false) => "rejected unrepresentable required identity",
+                };
+                order.note_typed_loss(
+                    context.plugin_index,
+                    category,
+                    (
+                        diagnostics.event_context.source_record_offset,
+                        diagnostics.event_context.field.as_deref(),
+                        diagnostics.event_context.occurrence,
+                        value,
+                    ),
+                );
+                if wide {
+                    format!(
+                        "{} light FormID {value:08X} is wider than 12 bits",
+                        if optional { "optional" } else { "record" }
+                    )
+                } else {
+                    error.to_string()
+                }
+            })?;
+        // Ownership is self; an optional link to an absent target still publishes NULL.
+        // Preserve the old source-context diagnostic, including losing/rejected versions.
+        let past_master =
+            (value >> 24) as usize > context.order.metadata[context.plugin_index].masters.len();
+        // Only runtime schema fields have the ordinary dangling-target NULL policy. Group labels
+        // and catalogue probes still project self without an extra presence requirement.
+        let source_tag = diagnostics
+            .event_context
+            .field
+            .as_deref()
+            .and_then(|field| field.split_once("[source:"))
+            .map(|(tag, _)| tag);
+        if optional
+            && past_master
+            && diagnostics.event_context.record_type != Some(*b"TES4")
+            && let Some(tag) = source_tag
+            && projected >= 0x800
+            && match context.source_ids {
+                Some(ids) => !ids.contains_source(projected)?,
+                None => false,
+            }
+        {
+            if diagnostics.event_context.record_type == Some(*b"DOBJ") && tag == "DNAM" {
+                let reason = format!(
+                    "{tag} optional FormID {value:08X} exceeds master list and its self target is absent"
+                );
+                diagnostics.note("field", || reason);
+            } else {
                 note_decode_link(
                     diagnostics,
-                    format!("optional light FormID {value:08X} is wider than 12 bits"),
+                    format!("optional FormID {value:08X} exceeds master list"),
                 );
-                return Ok(0);
             }
-            return Err(format!(
-                "record light FormID {value:08X} is wider than 12 bits"
-            ));
+            return Ok(0);
         }
-        return Ok(0xfe00_0000 | slot << 12 | value & 0xfff);
-    }
-    if let Some(slot) = context.order.normal.get(&owner) {
-        return Ok(slot << 24 | value & 0x00ff_ffff);
-    }
-    if optional {
-        note_decode_link(
-            diagnostics,
-            format!("optional FormID {value:08X} has absent owner {owner}"),
-        );
-        Ok(0)
-    } else {
-        Err(format!(
-            "record FormID {value:08X} has absent owner {owner}"
-        ))
+        if observed && projected != 0 {
+            order.note_projection(context.plugin_index, value);
+        }
+        Ok(projected)
+    })();
+    match result {
+        Err(error) if optional => {
+            let reason = if error.starts_with("optional light FormID ") {
+                error
+            } else {
+                format!("optional FormID {value:08X}: {error}")
+            };
+            note_decode_link(diagnostics, reason);
+            Ok(0)
+        }
+        result => result,
     }
 }
 
@@ -652,7 +746,7 @@ fn decode_with_identity_inner(
         "decode",
     );
     diagnostics.set_field("record_header".into());
-    // Original ownership stays strict; required headers retain supplier-self runtime compatibility.
+    // Runtime ownership uses the common self rule; original source provenance stays distinct.
     let source_identity = super::source_identity::resolve(
         &scanned.record_type,
         scanned.source_form_id,
@@ -661,11 +755,7 @@ fn decode_with_identity_inner(
     );
     let id = remap(scanned.source_form_id, context, false, diagnostics)?;
     diagnostics.event_context.form_id = Some(id);
-    if id == 0 && !matches!(&scanned.record_type, b"GMST" | b"TES4") {
-        return Err("non-GMST record has null FormID".into());
-    }
     if source_identity.state == super::source_identity::SourceIdentityState::MasterIndexOutOfRange {
-        // Count header projection, not final admission; later body/collision checks remain independent.
         diagnostics.note("compatibility", || {
             format!(
                 "{} {:08X}: original owner unresolved; supplier-self runtime projection {id:08X}",
@@ -673,6 +763,9 @@ fn decode_with_identity_inner(
                 scanned.source_form_id
             )
         });
+    }
+    if id == 0 && !matches!(&scanned.record_type, b"GMST" | b"TES4") {
+        return Err("non-GMST record has null FormID".into());
     }
     let before_groups = DiagnosticCounts::read(diagnostics);
     let cell = scanned
@@ -1848,6 +1941,9 @@ fn merge_new_diagnostics(
             _ => target.invalid_links += count,
         }
         target.merge_summary_category(&resolved, category);
+        if category == "link" {
+            target.merge_summary_category(&resolved, super::RACE_MOVEMENT_LINK_WARNING);
+        }
     }
 }
 
@@ -2925,6 +3021,7 @@ pub(crate) fn resolve_deferred(
     prepared: &PreparedSchemas,
     order: &LoadOrder,
     predecessors: &mut HashMap<u32, Vec<DecodedRecord>>,
+    source_ids: &std::collections::HashSet<u32>,
     validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
 ) {
     let mut pending = BTreeMap::new();
@@ -2948,6 +3045,7 @@ pub(crate) fn resolve_deferred(
     // History is complete before resolution and only its entries change here, so
     // one key index serves every acceptance and rejection without rescanning it.
     let mut history_index: HashMap<(u32, u64), usize> = HashMap::new();
+    let source_catalogued = !result.history.is_empty();
     // A conversion with nothing deferred pays neither pass over its records.
     if !pending.is_empty() {
         kinds.extend(
@@ -2986,6 +3084,7 @@ pub(crate) fn resolve_deferred(
                 order,
                 plugin_index: priority,
                 localized: order.metadata[priority].flags & 0x80 != 0,
+                source_ids: source_catalogued.then_some(source_ids),
                 winning_types: Some(&kinds),
             };
             let mut baseline = PluginDiagnostics::default();
@@ -3492,12 +3591,20 @@ impl TargetValidation<'_> {
         match decoded {
             Value::FormId(id) if *id != 0 => {
                 self.diagnostics.link(*id);
-                // Hardcoded IDs (including the player) need not have a plugin record.
-                let allowed = self.kinds.get(id).map_or(*id < 0x800, |kind| {
-                    field.targets.iter().any(|target| {
-                        target == "*" || target == "ANY_" || target.as_bytes() == kind
-                    })
-                });
+                let race_movement = selection.record_type == *b"RACE"
+                    && field
+                        .signature
+                        .as_deref()
+                        .is_some_and(|tag| crate::esm::is_race_movement_link(tag.as_bytes()));
+                // Hardcoded IDs such as the player need no record, but a movement link needs a MOVT.
+                let allowed = self
+                    .kinds
+                    .get(id)
+                    .map_or(*id < 0x800 && !race_movement, |kind| {
+                        field.targets.iter().any(|target| {
+                            target == "*" || target == "ANY_" || target.as_bytes() == kind
+                        })
+                    });
                 if !allowed {
                     self.diagnostics.note("link", || {
                         format!(
@@ -3732,13 +3839,17 @@ mod tests {
                 source_record_offset: header.len() as u64,
                 payload: payload.clone(),
             };
+            // Source headers are independent of the injected winning-kind probe.
+            let source_ids = std::collections::HashSet::from([0x1880]);
             let first_context = Context {
                 order: &order,
                 plugin_index: 0,
                 localized: false,
+                source_ids: Some(&source_ids),
                 winning_types: None,
             };
             let resolved_context = Context {
+                source_ids: Some(&source_ids),
                 winning_types: Some(&kinds),
                 ..first_context
             };
@@ -3952,9 +4063,11 @@ mod tests {
                 order: &order,
                 plugin_index: 0,
                 localized: false,
+                source_ids: None,
                 winning_types: None,
             };
             let resolved_context = Context {
+                source_ids: None,
                 winning_types: Some(&kinds),
                 ..first_context
             };
@@ -4136,9 +4249,11 @@ mod tests {
                 order: &order,
                 plugin_index: 0,
                 localized: false,
+                source_ids: None,
                 winning_types: None,
             };
             let resolved_context = Context {
+                source_ids: None,
                 winning_types: Some(&kinds),
                 ..first_context
             };
@@ -4338,6 +4453,7 @@ mod tests {
                 order: &order,
                 plugin_index: 0,
                 localized: false,
+                source_ids: None,
                 winning_types: Some(&kinds),
             },
             &mut diagnostics,
@@ -4599,6 +4715,8 @@ mod tests {
             source_record_offset: record.source_record_offset,
             payload: probe_payload.clone(),
         };
+        // Independently enumerated source headers: two TESTs and their NPC_ owner.
+        let source_ids = std::collections::HashSet::from([0x0100_1880, 0x0100_1881, 0x0100_1900]);
         let mut baseline = PluginDiagnostics::default();
         decode_with_prepared(
             scan(),
@@ -4608,6 +4726,7 @@ mod tests {
                 order: &order,
                 plugin_index: 1,
                 localized: false,
+                source_ids: Some(&source_ids),
                 winning_types: None,
             },
             &mut baseline,
@@ -4622,6 +4741,7 @@ mod tests {
                 order: &order,
                 plugin_index: 1,
                 localized: false,
+                source_ids: Some(&source_ids),
                 winning_types: Some(&kinds),
             },
             &mut replay,
@@ -4686,6 +4806,7 @@ mod tests {
             order: &order,
             plugin_index: 0,
             localized: false,
+            source_ids: None,
             winning_types: None,
         };
         let selection = super::super::deciders::Context {
@@ -4825,6 +4946,7 @@ mod tests {
             order: &order,
             plugin_index: 0,
             localized: false,
+            source_ids: None,
             winning_types: None,
         };
         let selection = super::super::deciders::Context {
@@ -5046,6 +5168,7 @@ mod tests {
             order: &order,
             plugin_index: 0,
             localized: false,
+            source_ids: None,
             winning_types: None,
         };
         let selection = super::super::deciders::Context {
@@ -5160,6 +5283,7 @@ mod tests {
             order: &order,
             plugin_index: 0,
             localized: false,
+            source_ids: None,
             winning_types: None,
         };
         let mut diagnostics = PluginDiagnostics::default();

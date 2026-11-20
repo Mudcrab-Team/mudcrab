@@ -3,7 +3,7 @@ use crate::{
     form_key::{FormKey, PluginId},
     plugin_table::PluginTable,
 };
-use std::{collections::HashMap, fmt};
+use std::{borrow::Cow, collections::HashMap, fmt};
 
 /// Unrepresentable/missing identities are reported explicitly; never invent stand-in IDs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,8 +38,9 @@ enum Slot {
 }
 /// A table plus an explicit current order; it neither selects nor reorders plugins.
 /// Official/CCC order is supplied by the existing selection authority. Never mix tables.
+#[derive(Debug)]
 pub struct LegacyIdView<'a> {
-    table: &'a PluginTable,
+    table: Cow<'a, PluginTable>,
     slots: HashMap<PluginId, Slot>,
     full: Vec<PluginId>,
     light: Vec<PluginId>,
@@ -53,7 +54,7 @@ impl<'a> LegacyIdView<'a> {
     ) -> Result<Self, LegacyError> {
         table.check_order(order)?;
         let mut view = Self {
-            table,
+            table: Cow::Borrowed(table),
             slots: HashMap::new(),
             full: Vec::new(),
             light: Vec::new(),
@@ -71,6 +72,16 @@ impl<'a> LegacyIdView<'a> {
             view.slots.insert(id, slot);
         }
         Ok(view)
+    }
+    /// Own the snapshot so converter contexts can cache one adapter for all decoded links.
+    /// Existing borrowed views and all packing rules are unchanged.
+    pub fn into_owned(self) -> LegacyIdView<'static> {
+        LegacyIdView {
+            table: Cow::Owned(self.table.into_owned()),
+            slots: self.slots,
+            full: self.full,
+            light: self.light,
+        }
     }
     /// Pack a non-null key exactly as Skyrim does when the owner and local are representable.
     pub fn to_legacy_u32(&self, key: FormKey) -> Result<u32, LegacyError> {

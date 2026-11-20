@@ -430,6 +430,7 @@ fn legal_master_override_deletion_and_restore_share_runtime_not_original_owner_p
 }
 
 #[test]
+/// A decoded header has a self runtime ID even when its body is rejected; no winner is published.
 fn malformed_body_and_unusable_candidate_counts_do_not_masquerade_as_winners() {
     let (_fixture, data) = test_data();
     let compressed = [5, 0, 0, 0, 0x78, 0x9c, 0];
@@ -447,7 +448,14 @@ fn malformed_body_and_unusable_candidate_counts_do_not_masquerade_as_winners() {
     assert_eq!(diagnostic(&output, "base.esm", "compatibility_headers"), 2); // MOVT remaps before candidate rejection; compressed body never reaches remap.
     assert_eq!(diagnostic(&output, "base.esm", "skipped_records"), 2);
     assert_eq!(diagnostic(&output, "base.esm", "invalid_links"), 0);
-    unknown_source(&output, 0, 0x0100_1800, None, "skipped", &compressed);
+    unknown_source(
+        &output,
+        0,
+        0x0100_1800,
+        Some(0x1800),
+        "skipped",
+        &compressed,
+    );
     unknown_source(&output, 0, 0x0103_580d, Some(0x3580d), "skipped", &movt);
 }
 

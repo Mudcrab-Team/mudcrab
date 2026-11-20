@@ -545,19 +545,6 @@ async fn check_broken_null_paint(reader: RecordReader, broken_links: bool) {
         65.0 / 255.0
     );
     assert!(config.output_dir.join("conversion-manifest.json").exists());
-    if broken_links && reader == RecordReader::Legacy {
-        // Pin existing legacy behavior: item-local LAND texture-link recovery is a follow-up.
-        assert!(cache.cells.iter().all(|cell| cell.cell_id != 0x30));
-        assert!(
-            report.warnings.iter().any(|warning| {
-                warning.contains("unusable record candidate")
-                    && warning.contains("FF000001 has invalid master index 255")
-            }),
-            "{:?}",
-            report.warnings
-        );
-        return;
-    }
     let affected = cache
         .cells
         .iter()
@@ -589,11 +576,15 @@ async fn check_broken_null_paint(reader: RecordReader, broken_links: bool) {
         report.warnings
     );
     if broken_links {
+        // A past-master LAND texture selector resolves to the supplying plugin under
+        // FormKey, so the malformed items are omitted while no link stays unresolved.
         assert!(
-            report
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("cleared 1 unresolved texture links")),
+            report.warnings.iter().any(|warning| {
+                warning.contains("00000031")
+                    && warning.contains("omitted 7 malformed")
+                    && (reader == RecordReader::Legacy
+                        || warning.contains("cleared 0 unresolved texture links"))
+            }),
             "{:?}",
             report.warnings
         );

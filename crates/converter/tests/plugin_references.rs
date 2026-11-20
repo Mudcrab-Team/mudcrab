@@ -127,7 +127,13 @@ fn every_single_form_id_field_remaps_relocated_full_and_light_plugins() {
                 ));
             }
         }
-        let mut records = Vec::new();
+        // The RACE movement fields require a live MOVT at the remapped target ID.
+        let mut records = record(
+            b"MOVT",
+            0x0100_0801,
+            0,
+            [sub(b"EDID", b"MovementTarget\0"), sub(b"SPED", &[0; 40])].concat(),
+        );
         let mut all_cases = cases.to_vec();
         for record_type in [
             b"CELL", b"REFR", b"ACHR", b"ACRE", b"PGRE", b"PMIS", b"PHZD", b"PARW", b"PBAR",
@@ -502,7 +508,8 @@ fn overrides_replace_grass_and_deletions_do_not_resurrect_it() {
 }
 
 #[test]
-fn rejects_duplicate_plugins_missing_masters_and_invalid_indices() {
+/// Duplicate/missing owners reject the order; past-master headers use self, wide light locals reject.
+fn rejects_duplicate_plugins_missing_masters_and_wide_light_locals() {
     let dir = tempfile::tempdir().unwrap();
     // Non-grass GMST identity is a separate legacy path; do not reject it here.
     let base = plugin(
@@ -524,8 +531,9 @@ fn rejects_duplicate_plugins_missing_masters_and_invalid_indices() {
     assert!(LoadOrder::read(std::slice::from_ref(&patch)).is_err());
     assert!(LoadOrder::read(&[patch.clone(), base.clone()]).is_err());
     let merged = EsmParser::merge_plugins(&[base, patch]).unwrap();
-    assert_eq!(merged.len(), 1);
+    assert_eq!(merged.len(), 2);
     assert!(merged.contains_key(&0x120));
+    assert!(merged.contains_key(&0x0100_0800));
     let oversized = plugin(dir.path(), "Oversized.esl", &[], 0x200, grass(0x1800, 35));
     assert!(EsmParser::merge_plugins(&[oversized]).unwrap().is_empty());
 }
@@ -1045,9 +1053,9 @@ fn light_plugin_reference_fields_use_the_light_slot() {
     );
 }
 
-/// An invalid optional cell link is cleared without rejecting an otherwise valid cell.
+/// Past-master optional CELL links resolve to the containing full plugin.
 #[test]
-fn cell_fields_skip_out_of_range_master_indices() {
+fn cell_fields_resolve_past_master_indices_to_self() {
     let dir = tempfile::tempdir().unwrap();
     let path = plugin(
         dir.path(),
@@ -1064,14 +1072,13 @@ fn cell_fields_skip_out_of_range_master_indices() {
     let merged = EsmParser::merge_plugins(&[path]).unwrap();
     assert_eq!(
         SubrecordView::new(&merged[&0x800].subrecords).get_form_id(b"LTMP"),
-        Some(0)
+        Some(1)
     );
 }
 
-/// Invalid optional links do not block other records or corrupt the payload's
-/// remaining bytes. Cover both bad master indices and wide light-master IDs.
+/// Present self targets survive; absent self and wide light links clear beside unchanged bytes.
 #[test]
-fn reference_fields_skip_invalid_master_and_light_ids() {
+fn reference_fields_resolve_self_and_clear_wide_light_ids() {
     for (tag, len, offset) in [
         (b"XTEL", 32, 0),
         (b"XESP", 8, 0),
@@ -1079,9 +1086,17 @@ fn reference_fields_skip_invalid_master_and_light_ids() {
         (b"XNDP", 8, 0),
         (b"XAPR", 8, 0),
     ] {
-        for (name, flags, value, record_id) in [
-            ("Patch.esp", 0, 0x0200_0801u32, 0x0200_0800),
-            ("Patch.esl", 0x200, 0x0100_1801, 0xFE00_0800),
+        for (name, flags, value, record_id, projected, present) in [
+            (
+                "Patch.esp",
+                0,
+                0x0200_0801u32,
+                0x0200_0800,
+                0x0200_0801u32,
+                true,
+            ),
+            ("Patch.esp", 0, 0x0200_0801u32, 0x0200_0800, 0, false),
+            ("Patch.esl", 0x200, 0x0100_1801, 0xFE00_0800, 0, false),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
@@ -1092,7 +1107,17 @@ fn reference_fields_skip_invalid_master_and_light_ids() {
             }
             payload[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
             let mut expected = payload.clone();
-            expected[offset..offset + 4].copy_from_slice(&0u32.to_le_bytes());
+            expected[offset..offset + 4].copy_from_slice(&projected.to_le_bytes());
+            let target = if present {
+                record(
+                    b"REFR",
+                    0x0100_0801,
+                    0,
+                    sub(b"NAME", &0x42u32.to_le_bytes()),
+                )
+            } else {
+                Vec::new()
+            };
             let patch = plugin(
                 dir.path(),
                 name,
@@ -1106,6 +1131,7 @@ fn reference_fields_skip_invalid_master_and_light_ids() {
                         0,
                         sub(b"XEMI", &0x42u32.to_le_bytes()),
                     ),
+                    target,
                 ]
                 .concat(),
             );
@@ -1414,6 +1440,8 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
         config.record_reader = reader;
     }
     let mut expected_asset_rebuilds = 0;
+    // The self-resolved target is absent: both readers clear the link and retain its flags.
+    let projected_parent = 0u32;
     for pass in 0..2 {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -1462,7 +1490,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
             );
             assert_eq!(
                 database_field(&conn, table, 0x0300_0806, b"XESP"),
-                [0u32.to_le_bytes(), [2, 0x35, 0x6B, 0xC4]].concat()
+                [projected_parent.to_le_bytes(), [2, 0x35, 0x6B, 0xC4]].concat()
             );
             assert_eq!(
                 database_field(&conn, table, 0x0300_0800, b"XTEL"),
@@ -1484,8 +1512,8 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
                 ]
             );
         }
-        // The enable-parent columns follow the remapped XESP: valid, cleared to
-        // zero with its flags kept, and NULL when the malformed subrecord was dropped.
+        // Both readers clear the absent self parent and retain its flags;
+        // malformed subrecords still leave SQL NULL.
         for (id, expected) in [
             (0x0300_0800u32, (Some(0xFE00_0802i64), Some(3i64))),
             (0x0300_0806, (Some(0), Some(2))),

@@ -3,7 +3,10 @@ use crate::esm::{
     exporter::{create_tables, validate_inhouse_record},
     records::RawRecord,
 };
-use color_eyre::{Result, eyre::WrapErr};
+use color_eyre::{
+    Result,
+    eyre::{WrapErr, eyre},
+};
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 use std::{
@@ -20,10 +23,13 @@ pub mod emittance;
 mod environment;
 pub mod exporter;
 pub mod extractors;
+pub mod form_key_merge;
+pub mod form_keys;
 pub mod grass_cache;
 pub mod inhouse;
 mod inhouse_script_properties;
 mod inhouse_terrain_diagnostics;
+pub(crate) mod legacy_projection;
 mod legacy_text;
 pub mod load_order;
 pub mod lodsettings;
@@ -161,7 +167,7 @@ impl EsmParser {
     ) -> Result<RecordConversion> {
         match reader {
             crate::config::RecordReader::Legacy => {
-                Self::convert_legacy_plugins_report(plugin_paths, db_path, string_sources)
+                Self::convert_legacy_plugins_report(plugin_paths, db_path, Some(string_sources))
             }
             crate::config::RecordReader::Inhouse => {
                 inhouse::convert_plugins_with_string_sources_report(
@@ -193,26 +199,27 @@ impl EsmParser {
         plugin_paths: &[PathBuf],
         db_path: &Path,
     ) -> Result<RecordConversion> {
-        // Without a staged archive VFS, string tables come from each plugin's loose folder.
-        let loose = plugin_paths
-            .first()
-            .and_then(|path| path.parent())
-            .unwrap_or(Path::new("."));
-        Self::convert_legacy_plugins_report(
-            plugin_paths,
-            db_path,
-            inhouse::StringSources::default_language(inhouse::StringRoots::PluginLooseFirst(loose)),
-        )
+        Self::convert_legacy_plugins_report(plugin_paths, db_path, None)
     }
 
     /// Export legacy records, resolving localized text through the in-house string sources.
     fn convert_legacy_plugins_report(
         plugin_paths: &[PathBuf],
         db_path: &Path,
-        string_sources: inhouse::StringSources<'_>,
+        string_sources: Option<inhouse::StringSources<'_>>,
     ) -> Result<RecordConversion> {
+        let (accepted_paths, name_warnings) = form_keys::recover_plugin_paths(plugin_paths)?;
+        let plugin_paths = accepted_paths.as_slice();
+        let string_sources = string_sources.unwrap_or_else(|| {
+            let loose = plugin_paths
+                .first()
+                .and_then(|path| path.parent())
+                .unwrap_or(Path::new("."));
+            inhouse::StringSources::default_language(inhouse::StringRoots::PluginLooseFirst(loose))
+        });
         let order = load_order::LoadOrder::read(plugin_paths)?;
         let mut master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
+        master.warnings.extend(name_warnings);
         let (unresolved, localization_warnings, localization_notices) =
             legacy_text::resolve_localized_fields(
                 &mut master.records,
@@ -234,6 +241,8 @@ impl EsmParser {
 
     /// Merge plugin records with validated slots and EditorID-based game settings.
     pub fn merge_plugins(plugin_paths: &[PathBuf]) -> Result<HashMap<u32, RawRecord>> {
+        let (accepted_paths, _) = form_keys::recover_plugin_paths(plugin_paths)?;
+        let plugin_paths = accepted_paths.as_slice();
         let order = load_order::LoadOrder::read(plugin_paths)?;
         Self::merge_plugins_with_load_order(plugin_paths, &order)
             .map(|conversion| conversion.records)
@@ -244,31 +253,160 @@ impl EsmParser {
         plugin_paths: &[PathBuf],
         order: &load_order::LoadOrder,
     ) -> Result<RecordConversion> {
-        let mut merged = HashMap::new();
+        let mut merged = HashMap::<shared::form_key::FormKey, RawRecord>::new();
+        let identities = order
+            .form_key_context()
+            .map_err(|error| color_eyre::eyre::eyre!(error))?;
+        identities.start_resolution_run();
+        let legacy = identities.legacy_view()?;
         let mut summaries = Vec::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
         // the first definition's key/owner while taking the last setting value.
         // Keep keys through deletions so a later restoration has the same ID.
         let mut game_settings = GameSettingIdentities::default();
         let warnings = RemapWarnings::default();
+        let mut source_ids = std::collections::HashSet::new();
         for (priority, path) in plugin_paths.iter().enumerate() {
-            let masters = &order.metadata[priority].masters;
-            // Final ID -> (source ID, whether its master index was out of range). Two different
-            // source IDs that resolve to one final ID would silently replace each other.
-            let mut sources: HashMap<u32, (u32, bool)> = HashMap::new();
-            let (records, parser_summaries) = parse_plugin_file_with_warnings(path)?;
-            summaries.extend(parser_summaries);
+            crate::records::scanner::scan_plugin_headers(
+                path,
+                &mut Default::default(),
+                |header| {
+                    if let Some(id) = crate::records::source_identity::header_runtime_id(
+                        &header.record_type,
+                        header.source_form_id,
+                        priority,
+                        order,
+                    ) {
+                        source_ids.insert(id);
+                    }
+                },
+            )?;
+        }
+        let pack_wide_light = |key: shared::form_key::FormKey| -> Result<u32> {
+            Ok(legacy.to_legacy_u32(shared::form_key::FormKey::new(
+                key.plugin(),
+                key.local() & 0xfff,
+            )?)?)
+        };
+        let mut admitted_exact_lights = std::collections::HashSet::new();
+        let mut wide_candidates = BTreeMap::<usize, Vec<RawRecord>>::new();
+        // A header locates potential conflicts, but only an admitted exact record can
+        // reject a fallback. Replay just the contested wide records in supplier order.
+        let suppliers = [false, true].into_iter().flat_map(|replay| {
+            plugin_paths
+                .iter()
+                .enumerate()
+                .map(move |(priority, path)| (priority, path, replay))
+        });
+        for (priority, path, replay) in suppliers {
+            let mut sources = HashMap::<shared::form_key::FormKey, (u32, bool)>::new();
+            let records = if replay {
+                let Some(records) = wide_candidates.remove(&priority) else {
+                    continue;
+                };
+                records
+            } else {
+                let (records, parser_summaries) = parse_plugin_file_with_warnings(path)?;
+                summaries.extend(parser_summaries);
+                records
+            };
             for mut record in records {
                 record.load_order = priority as u32;
                 let source_id = record.form_id;
-                let out_of_range = (source_id >> 24) as usize > masters.len();
-                let admission = remap_record_form_ids(
+                let key = if record.record_type == *b"GMST" {
+                    identities.gmst_header_key(priority, source_id)
+                } else {
+                    identities.resolve(
+                        priority,
+                        source_id,
+                        shared::source_form_id::ZeroPolicy::Null,
+                    )
+                };
+                let mut key = match key {
+                    Ok(key) => key,
+                    Err(error) => {
+                        warnings.skipped_record(
+                            &order.names[priority],
+                            &record,
+                            source_id,
+                            error.to_string(),
+                        );
+                        continue;
+                    }
+                };
+                let wide_light = key
+                    .filter(|key| key.local() > 0xfff && identities.table.is_light(key.plugin()));
+                if !replay
+                    && let Some(wide) = wide_light
+                    && let Ok(packed) = pack_wide_light(wide)
+                    && source_ids.contains(&packed)
+                {
+                    wide_candidates.entry(priority).or_default().push(record);
+                    continue;
+                }
+                let kind = record.record_type;
+                let remap_word = |raw: u32, strict: bool, field: bool| -> Result<u32> {
+                    let key = if !strict && kind == *b"GMST" {
+                        identities.gmst_header_key(priority, raw)?
+                    } else {
+                        identities.resolve(
+                            priority,
+                            raw,
+                            shared::source_form_id::ZeroPolicy::Null,
+                        )?
+                    };
+                    let value: Result<u32> = match legacy.to_nullable_legacy_u32(key) {
+                        Ok(value) => Ok(value),
+                        Err(shared::legacy_id_view::LegacyError::LightLocalTooWide(_))
+                            if !strict =>
+                        {
+                            let key = key.ok_or_else(|| {
+                                eyre!("wide light FormID {raw:08X} has no identity")
+                            })?;
+                            let owner = &identities
+                                .table
+                                .entry(key.plugin())
+                                .ok_or_else(|| {
+                                    eyre!("wide light FormID {raw:08X} has no allocated owner")
+                                })?
+                                .normalized_name;
+                            let packed = pack_wide_light(key)?;
+                            warnings.truncated(owner, raw);
+                            Ok(packed)
+                        }
+                        Err(error) => Err(error.into()),
+                    };
+                    let value = value?;
+                    let past_master = (raw >> 24) as usize > order.metadata[priority].masters.len();
+                    // Every field layout (including NAME and VMAD) uses this decision.
+                    // Headers/group labels retain identity admission without a target lookup.
+                    if field && past_master && value >= 0x800 && !source_ids.contains(&value) {
+                        warnings.cleared_past_master(
+                            &order.names[priority],
+                            format!(
+                                "{} record source {source_id:08X}: optional FormID {raw:08X} exceeds master list",
+                                String::from_utf8_lossy(&kind)
+                            ),
+                        );
+                        return Ok(0);
+                    }
+                    if value != 0 && past_master {
+                        warnings.out_of_range(&order.names[priority], raw, kind);
+                    }
+                    Ok(value)
+                };
+                let remap = |raw, strict| remap_word(raw, strict, false);
+                let optional = |raw, strict| remap_word(raw, strict, true);
+                let admission = remap_record_using_optional(
                     &mut record,
                     &order.names[priority],
-                    masters,
-                    &order.normal,
-                    &order.light,
                     &warnings,
+                    remap,
+                    optional,
+                    matches!(
+                        &kind,
+                        b"GRAS" | b"LTEX" | b"TXST" | b"LAND" | b"CELL" | b"WRLD"
+                    ),
                 )
                 .and_then(|()| {
                     if !record.is_deleted() {
@@ -277,6 +415,12 @@ impl EsmParser {
                             cell_cache::validate_inhouse_land(&record)?;
                         }
                     }
+                    // Reject a surviving header collision after the usual remap diagnostics.
+                    color_eyre::eyre::ensure!(
+                        wide_light.is_none() || !admitted_exact_lights.contains(&record.form_id),
+                        "wide light FormID {source_id:08X} would collide with exact record {:08X}",
+                        record.form_id
+                    );
                     Ok(())
                 });
                 if let Err(error) = admission {
@@ -288,45 +432,77 @@ impl EsmParser {
                     );
                     continue;
                 }
-                let remapped_source_id = record.form_id;
-                if let Some((earlier, earlier_out_of_range)) = sources.get(&record.form_id) {
-                    // Light-ID truncation keeps its documented last-record-wins behaviour; only
-                    // an out-of-range master index is rejected when it lands on another record.
-                    if *earlier != source_id && (out_of_range || *earlier_out_of_range) {
-                        warnings.skipped_record(
-                            &order.names[priority],
-                            &record,
-                            source_id,
-                            format!("records {earlier:08X} and {source_id:08X} both resolve to {:08X}; an out-of-range master index would replace another record", record.form_id),
-                        );
+                // Preserve the old explicit malformed-light recovery at the legacy boundary;
+                // the native FormKey path retains the original full local without masking.
+                if wide_light.is_some() {
+                    key = match legacy.from_legacy_u32(record.form_id) {
+                        Ok(key) => key,
+                        Err(error) => {
+                            warnings.skipped_record(
+                                &order.names[priority],
+                                &record,
+                                source_id,
+                                error.to_string(),
+                            );
+                            continue;
+                        }
+                    };
+                }
+                if let Some(key) = key {
+                    let projected =
+                        (source_id >> 24) as usize > order.metadata[priority].masters.len();
+                    if let Some(&(earlier, earlier_projected)) = sources.get(&key)
+                        && earlier != source_id
+                        && (projected || earlier_projected)
+                    {
+                        warnings.skipped_record(&order.names[priority], &record, source_id,
+                            format!("records {earlier:08X} and {source_id:08X} resolve to the same key ({:08X}); an out-of-range master index would replace another record", record.form_id));
                         continue;
                     }
                 }
+                let source_key = key;
+                let packed_source_id = record.form_id;
                 if record.record_type == *b"GMST" {
-                    let canonical =
-                        match game_settings.resolve(&record, &order.names[priority], &merged) {
-                            Ok(Some(canonical)) => canonical,
-                            Ok(None) => {
-                                warnings.skipped_record(
-                                    &order.names[priority],
-                                    &record,
-                                    source_id,
-                                    "deleted GMST has no EditorID or known setting identity".into(),
-                                );
-                                continue;
-                            }
-                            Err(error) => {
-                                warnings.skipped_record(
-                                    &order.names[priority],
-                                    &record,
-                                    source_id,
-                                    error.to_string(),
-                                );
-                                continue;
-                            }
-                        };
-                    record.form_id = canonical;
-                } else if game_settings.aliases.contains_key(&record.form_id) {
+                    let canonical = match game_settings.resolve(
+                        &record,
+                        key,
+                        &order.names[priority],
+                        &merged,
+                    ) {
+                        Ok(Some(canonical)) => canonical,
+                        Ok(None) => {
+                            warnings.skipped_record(
+                                &order.names[priority],
+                                &record,
+                                source_id,
+                                "deleted GMST has no EditorID or known setting identity".into(),
+                            );
+                            continue;
+                        }
+                        Err(error) => {
+                            warnings.skipped_record(
+                                &order.names[priority],
+                                &record,
+                                source_id,
+                                error.to_string(),
+                            );
+                            continue;
+                        }
+                    };
+                    record.form_id = match legacy.to_legacy_u32(canonical) {
+                        Ok(id) => id,
+                        Err(error) => {
+                            warnings.skipped_record(
+                                &order.names[priority],
+                                &record,
+                                source_id,
+                                error.to_string(),
+                            );
+                            continue;
+                        }
+                    };
+                    key = Some(canonical);
+                } else if key.is_some_and(|key| game_settings.aliases.contains_key(&key)) {
                     warnings.skipped_record(
                         &order.names[priority],
                         &record,
@@ -338,27 +514,133 @@ impl EsmParser {
                     );
                     continue;
                 }
-                sources.insert(remapped_source_id, (source_id, out_of_range));
+                let Some(key) = key else {
+                    warnings.skipped_record(
+                        &order.names[priority],
+                        &record,
+                        source_id,
+                        "record has a null identity".into(),
+                    );
+                    continue;
+                };
+                // Reserve admitted tombstones too, using the source identity before EDID canonicalization.
+                if wide_light.is_none() && packed_source_id >> 24 == 0xfe {
+                    admitted_exact_lights.insert(packed_source_id);
+                }
+                if let Some(source_key) = source_key {
+                    sources.insert(
+                        source_key,
+                        (
+                            source_id,
+                            (source_id >> 24) as usize > order.metadata[priority].masters.len(),
+                        ),
+                    );
+                }
                 if record.is_deleted() {
-                    merged.remove(&record.form_id);
+                    merged.remove(&key);
                 } else {
                     if record.record_type == *b"DOBJ"
-                        && let Some(previous) = merged.get(&record.form_id)
+                        && let Some(previous) = merged.get(&key)
+                        && previous.record_type == *b"DOBJ"
                     {
                         merge_default_objects(previous, &mut record);
                     }
-                    merged.insert(record.form_id, record);
+                    merged.insert(key, record);
                 }
             }
+        }
+        let mut records: HashMap<_, _> = merged
+            .into_values()
+            .map(|record| (record.form_id, record))
+            .collect();
+        // Check live winners after admission, including forward links, deleted targets and
+        // rejected MOVTs. Packed IDs here are the checked projection of the FormKey winners.
+        let mut link_records: Vec<_> = records
+            .values()
+            .filter(|record| matches!(&record.record_type, b"DOBJ" | b"RACE"))
+            .map(|record| record.form_id)
+            .collect();
+        link_records.sort_unstable();
+        for id in link_records {
+            let Some(mut record) = records.remove(&id) else {
+                continue;
+            };
+            let kind = record.record_type;
+            let plugin = &order.names[record.load_order as usize];
+            clear_missing_movement_targets(
+                &mut record,
+                |target| {
+                    if target == id {
+                        Some(kind)
+                    } else {
+                        records.get(&target).map(|target| target.record_type)
+                    }
+                },
+                |field, target| {
+                    warnings.skipped_optional(
+                        plugin,
+                        format!(
+                            "record {id:08X} {field} target {target:08X} is absent or disallowed"
+                        ),
+                    );
+                },
+            );
+            records.insert(id, record);
         }
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
         Ok(RecordConversion {
-            records: merged,
+            records,
             warnings: summaries,
             notices,
             phases: std::collections::BTreeMap::new(),
         })
+    }
+}
+
+/// RACE fields that address a movement type.
+pub(crate) fn is_race_movement_link(tag: &[u8]) -> bool {
+    matches!(
+        tag,
+        b"WKMV" | b"RNMV" | b"SWMV" | b"FLMV" | b"SNMV" | b"SPMV"
+    )
+}
+
+/// Clear dangling links in packed movement records and merged default objects.
+pub(crate) fn clear_missing_movement_targets(
+    record: &mut RawRecord,
+    target_kind: impl Fn(u32) -> Option<[u8; 4]>,
+    mut warn: impl FnMut(&str, u32),
+) {
+    let mut check = |field: &str, word: &mut [u8; 4], movement_only: bool| {
+        let target = u32::from_le_bytes(*word);
+        if target != 0
+            && !target_kind(target).is_some_and(|kind| !movement_only || kind == *b"MOVT")
+        {
+            warn(field, target);
+            word.fill(0);
+        }
+    };
+    for (tag, data) in &mut record.subrecords {
+        match &record.record_type {
+            b"DOBJ" if tag == b"DNAM" => {
+                for pair in data.as_chunks_mut::<8>().0 {
+                    let [a, b, c, d, target @ ..] = pair;
+                    let key = [*a, *b, *c, *d];
+                    if key != [0; 4] {
+                        check("DNAM", target, matches!(&key, b"DMWL" | b"DMRN"));
+                    }
+                }
+            }
+            b"RACE" if is_race_movement_link(tag) => {
+                if let Ok(word) = <&mut [u8; 4]>::try_from(data.as_mut_slice()) {
+                    // The remap pass has already checked field framing.
+                    let field = std::str::from_utf8(tag).unwrap_or("movement link");
+                    check(field, word, true);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -399,7 +681,12 @@ pub(crate) fn merge_default_objects(previous: &RawRecord, record: &mut RawRecord
             None => merged.push((key, target)),
         }
     }
-    let bytes: Vec<u8> = merged
+    replace_default_object_pairs(record, &merged);
+}
+
+/// Replace DNAM without moving any existing subrecord positions.
+pub(crate) fn replace_default_object_pairs(record: &mut RawRecord, pairs: &[([u8; 4], u32)]) {
+    let bytes: Vec<u8> = pairs
         .iter()
         .flat_map(|(key, target)| [key.as_slice(), &target.to_le_bytes()].concat())
         .collect();
@@ -428,6 +715,9 @@ struct RemapWarnings {
     /// Keyed by the containing plugin, retaining the first record kind.
     /// Any separate truncation or candidate rejection remains a recovery warning.
     out_of_range: RefCell<OutOfRangeCounts>,
+    /// Optional links past the master list whose self target is absent. They point at nothing
+    /// in the source data too, so clearing them loses nothing and is reported as a notice.
+    cleared_past_master: RefCell<BTreeMap<String, (u64, String)>>,
     /// Invalid optional links, counted per containing plugin with the first diagnostic.
     skipped_optional: RefCell<BTreeMap<String, (u64, String)>>,
     /// Unusable candidates never replace an earlier complete record.
@@ -448,6 +738,13 @@ impl RemapWarnings {
         let entry = counts
             .entry(plugin.to_owned())
             .or_insert((0, form_id, record_type));
+        entry.0 += 1;
+    }
+
+    /// Count one cleared past-master link per plugin, keeping the first example.
+    fn cleared_past_master(&self, plugin: &str, example: String) {
+        let mut counts = self.cleared_past_master.borrow_mut();
+        let entry = counts.entry(plugin.to_owned()).or_insert((0, example));
         entry.0 += 1;
     }
 
@@ -492,6 +789,13 @@ impl RemapWarnings {
             eprintln!("{summary}");
             notice_lines.push(summary);
         }
+        for (plugin, (count, example)) in self.cleared_past_master.borrow().iter() {
+            let summary = format!(
+                "notice: {plugin}: cleared {count} optional FormID links past the master list whose self target is absent (they point at no record; first: {example})"
+            );
+            eprintln!("{summary}");
+            notice_lines.push(summary);
+        }
         for (plugin, (count, example)) in self.skipped_optional.borrow().iter() {
             let summary = format!(
                 "warning: {plugin}: skipped {count} invalid optional FormID links (cleared or removed; first: {example})"
@@ -514,8 +818,8 @@ impl RemapWarnings {
 /// earlier definition's FormID. Keep every non-null alias, even after deletion.
 #[derive(Default)]
 struct GameSettingIdentities {
-    canonical_ids: HashMap<String, u32>,
-    aliases: HashMap<u32, u32>,
+    canonical_ids: HashMap<String, shared::form_key::FormKey>,
+    aliases: HashMap<shared::form_key::FormKey, shared::form_key::FormKey>,
 }
 
 impl GameSettingIdentities {
@@ -523,9 +827,10 @@ impl GameSettingIdentities {
     fn resolve(
         &mut self,
         record: &RawRecord,
+        key: Option<shared::form_key::FormKey>,
         plugin: &str,
-        merged: &HashMap<u32, RawRecord>,
-    ) -> Result<Option<u32>> {
+        merged: &HashMap<shared::form_key::FormKey, impl std::borrow::Borrow<RawRecord>>,
+    ) -> Result<Option<shared::form_key::FormKey>> {
         let source_id = record.form_id;
         let editor_id = extractors::SubrecordView::new(&record.subrecords)
             .get_string(b"EDID")
@@ -533,7 +838,7 @@ impl GameSettingIdentities {
             .map(|name| name.to_ascii_lowercase());
         let Some(editor_id) = editor_id else {
             if record.is_deleted() {
-                if let Some(&canonical) = self.aliases.get(&source_id) {
+                if let Some(canonical) = key.and_then(|key| self.aliases.get(&key)).copied() {
                     return Ok(Some(canonical));
                 }
                 return Ok(None);
@@ -541,29 +846,24 @@ impl GameSettingIdentities {
             color_eyre::eyre::bail!("{plugin} GMST {source_id:08X} has no EditorID");
         };
         let known = self.canonical_ids.get(&editor_id).copied();
-        let canonical = known.unwrap_or(source_id);
-        color_eyre::eyre::ensure!(
-            canonical != 0,
-            "GMST {editor_id} has a null FormID; needs an EditorID-keyed database representation"
-        );
-        if source_id != 0 {
+        let canonical = known.or(key).ok_or_else(|| color_eyre::eyre::eyre!(
+            "GMST {editor_id} has a null FormID; needs an EditorID-keyed database representation"))?;
+        if let Some(key) = key {
             color_eyre::eyre::ensure!(
-                self.aliases
-                    .get(&source_id)
-                    .is_none_or(|id| known == Some(*id))
+                self.aliases.get(&key).is_none_or(|id| known == Some(*id))
                     && merged
-                        .get(&source_id)
-                        .is_none_or(|previous| previous.record_type == *b"GMST"),
+                        .get(&key)
+                        .is_none_or(|previous| previous.borrow().record_type == *b"GMST"),
                 "GMST {editor_id} collides with another record at {source_id:08X}"
             );
-            self.aliases.insert(source_id, canonical);
+            self.aliases.insert(key, canonical);
         }
         self.canonical_ids.insert(editor_id, canonical);
         Ok(Some(canonical))
     }
 }
 
-/// Required placed base links cannot use the optional field's null/drop policy.
+/// Placed NAME requires valid framing/packing; absent targets still clear like typed fields.
 fn is_required_form_id_subrecord(record_type: &[u8; 4], tag: &[u8]) -> bool {
     tag == b"NAME" && is_placed_record_type(record_type)
 }
@@ -620,20 +920,25 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         // Music (`ZNAM`) as well, which the in-house schema remaps too.
         b"NAM2" | b"NAM3" | b"WNAM" | b"CNAM" | b"ZNAM" if record_type == b"WRLD" => Fixed(SINGLE),
         b"RNAM" | b"CNAM" | b"INAM" if record_type == b"NPC_" => Fixed(SINGLE),
-        // NPC Traits links: both are optional FormIDs in the actor schema.
-        b"WNAM" | b"TPLT" if record_type == b"NPC_" => Fixed(SINGLE),
+        // NPC Traits and default outfit are optional FormIDs in the actor schema.
+        // Outfit layouts follow xEdit xedit-4.1.5f's TES5 definitions (OTFT:9964-9967).
+        b"WNAM" | b"TPLT" | b"DOFT" if record_type == b"NPC_" => Fixed(SINGLE),
+        // INAM holds all outfit items; each word resolves independently, including NULLs.
+        b"INAM" if record_type == b"OTFT" => Array {
+            stride: 4,
+            form_ids: &[0],
+        },
         // xEdit 9fb016884bec138ea6c7b872cec831537d464c3e,
         // wbDefinitionsTES5.pas:9463-9468. Match the in-house actors schema.
-        b"WKMV" | b"RNMV" | b"SWMV" | b"FLMV" | b"SNMV" | b"SPMV" if record_type == b"RACE" => {
-            Fixed(SINGLE)
-        }
+        tag if record_type == b"RACE" && is_race_movement_link(tag) => Fixed(SINGLE),
         // The body chain the actor model catalog follows: a race's skin armor, each armature
         // an armor lists (`MODL` repeats, one FormID per subrecord, so each malformed entry is
         // dropped alone), and an armature's race. The in-house actors and items schemas remap
         // all three, and the catalog reads them as load-order FormIDs.
         b"WNAM" if record_type == b"RACE" => Fixed(SINGLE),
         b"MODL" if record_type == b"ARMO" => Fixed(SINGLE),
-        b"RNAM" if record_type == b"ARMA" => Fixed(SINGLE),
+        // xEdit 4.1.5f / items.json: race and male/female skin texture sets are scalar links.
+        b"RNAM" | b"NAM0" | b"NAM1" if record_type == b"ARMA" => Fixed(SINGLE),
         // Additional races repeat as one FormID per MODL subrecord; malformed entries
         // are discarded independently, matching ARMO/MODL's existing clear policy.
         b"MODL" if record_type == b"ARMA" => Fixed(SINGLE),
@@ -709,8 +1014,9 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
     })
 }
 
-/// Remaps local FormIDs within a record header, parent cell/worldspace references,
-/// and relevant subrecords according to master plugin load-order indices.
+/// Frozen pre-FormKey remapper for differential controls on the old policy boundaries.
+/// Production uses FormKey resolution and `remap_record_using` instead.
+#[cfg(test)]
 fn remap_record_form_ids(
     record: &mut RawRecord,
     plugin_name: &str,
@@ -764,8 +1070,41 @@ fn remap_record_form_ids(
         })?;
         Ok((index << 24) | (form_id & 0x00FF_FFFF))
     };
+    remap_record_using(record, plugin_name, warnings, remap_with_validation, strict)
+}
+
+/// Adapt resolved identities to the unchanged four-byte projection fields.
+/// Caller errors reject only this candidate; optional link failures clear only that link.
+fn remap_record_using(
+    record: &mut RawRecord,
+    plugin_name: &str,
+    warnings: &RemapWarnings,
+    remap_with_validation: impl Fn(u32, bool) -> Result<u32>,
+    strict: bool,
+) -> Result<()> {
+    remap_record_using_optional(
+        record,
+        plugin_name,
+        warnings,
+        &remap_with_validation,
+        &remap_with_validation,
+        strict,
+    )
+}
+
+/// Apply one field-target policy to all layouts, separate from header/group identities.
+fn remap_record_using_optional(
+    record: &mut RawRecord,
+    plugin_name: &str,
+    warnings: &RemapWarnings,
+    remap_with_validation: impl Fn(u32, bool) -> Result<u32>,
+    remap_optional: impl Fn(u32, bool) -> Result<u32>,
+    strict: bool,
+) -> Result<()> {
+    let record_type = record.record_type;
     let remap = |form_id| remap_with_validation(form_id, strict);
-    let remap_link = |form_id| remap_with_validation(form_id, true);
+    let remap_group = |form_id| remap_with_validation(form_id, true);
+    let remap_link = |form_id| remap_optional(form_id, true);
     let source_id = record.form_id;
     record.form_id = remap(record.form_id)?;
     if record.is_deleted() {
@@ -775,8 +1114,8 @@ fn remap_record_form_ids(
         record.worldspace_form_id = None;
         return Ok(());
     }
-    record.cell_form_id = record.cell_form_id.map(&remap_link).transpose()?;
-    record.worldspace_form_id = record.worldspace_form_id.map(&remap_link).transpose()?;
+    record.cell_form_id = record.cell_form_id.map(&remap_group).transpose()?;
+    record.worldspace_form_id = record.worldspace_form_id.map(&remap_group).transpose()?;
     if record.record_type == *b"LAND" {
         let omitted = cell_cache::malformed_texture_items(&record.subrecords);
         if omitted != 0 {
@@ -850,10 +1189,12 @@ fn remap_record_form_ids(
             continue;
         }
         if tag.as_slice() == b"VMAD" {
-            // Primary script objects retain the record kind's established legacy
-            // ownership compatibility. Malformed framing still rejects the candidate.
-            records::record_type::vmad::remap_primary_form_ids(data, &remap)
-                .wrap_err("VMAD references")?;
+            // Object links use the same supplier-self selector rule as every field.
+            // The existing record-kind light-width policy and framing recovery are retained.
+            records::record_type::vmad::remap_primary_form_ids(data, |id| {
+                remap_optional(id, strict)
+            })
+            .wrap_err("VMAD references")?;
             continue;
         }
         // Legacy faction remapping recognizes only the exact eight-byte layout.
@@ -913,7 +1254,7 @@ fn remap_record_form_ids(
                 let value = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
                 // Keep valid payload bytes, but publish null for an invalid FormID rather
                 // than retaining a plugin-local value or guessing its owner.
-                let resolved = match remap_with_validation(value, true) {
+                let resolved = match remap_link(value) {
                     Ok(resolved) => resolved,
                     Err(error) => {
                         warnings.skipped_optional(

@@ -32,11 +32,18 @@ pub const ADAPTER_VERSION: u32 = 14;
 
 /// Legacy metadata projection contract: preserve WRLD payloads and record-aware VMAD links.
 /// Version 4 resolves localized string fields to the in-house reader's text (`legacy_text`).
-/// Version 5 changes database placement coverage.
-/// Version 6 projects STAT MODS alternate-texture entries (3D Index, TXST link) and remaps their TXST links.
+/// Version 5 expands placement coverage and clears absent past-master field targets.
+/// Version 6 resolves NPC outfits, outfit items and ARMA skin texture links before publication.
 /// Later LAND paint recovery shares version 6; reconvert to pick up recovered paint.
 /// This identity does not change the independent converted-asset producer/settings proofs.
-pub const LEGACY_PROJECTION_VERSION: u32 = 6;
+/// Version 7 adds STAT MODS alternate-texture rows (3D Index, TXST link) and remaps their TXST links.
+pub const LEGACY_PROJECTION_VERSION: u32 = 7;
+
+/// Earliest language-bound projection with the current converted-asset proof contract.
+/// Database-only changes bump `LEGACY_PROJECTION_VERSION`, leaving this floor unchanged.
+/// Raise this floor when shared asset settings cease to be compatible. Per-kind output
+/// changes (such as STAT geometry indices) are also gated by their own asset proof.
+pub(crate) const LEGACY_ASSET_PROOF_VERSION: u32 = 4;
 
 /// Where localized plugins' string tables are found, and in which language.
 #[derive(Clone, Copy)]
@@ -868,6 +875,8 @@ fn convert_plugins_with_text_sources_impl(
 }
 
 /// Return published records and summaries by severity without changing recovery semantics.
+/// Auxiliary SQL maps use unsigned legacy owner identity order; authored layer lists
+/// and the winning supplier metadata retain their original order and meaning.
 fn convert_plugins_with_text_sources_report_impl(
     plugin_paths: &[PathBuf],
     db_path: &Path,
@@ -886,6 +895,8 @@ fn convert_plugins_with_text_sources_report_impl(
             &builtin
         }
     };
+    let (accepted_paths, name_warnings) = super::form_keys::recover_plugin_paths(plugin_paths)?;
+    let plugin_paths = accepted_paths.as_slice();
     let total_started = Instant::now();
     let mut phases = BTreeMap::<String, f64>::new();
     let order_stage = records::profile::ProfileStage::start("read_load_order");
@@ -1211,7 +1222,10 @@ fn convert_plugins_with_text_sources_report_impl(
         if let Some(merged) = decoded.default_objects.get(&raw.form_id)
             && raw.record_type == *b"DOBJ"
         {
-            super::merge_default_objects(merged, &mut raw);
+            super::replace_default_object_pairs(
+                &mut raw,
+                &super::default_object_pairs(&merged.subrecords),
+            );
         }
         let omitted = opaque_fields.get(&raw.form_id);
         // Admission already validated these shared text/opaque transformations.
@@ -1301,6 +1315,8 @@ fn convert_plugins_with_text_sources_report_impl(
     tx.execute_batch("CREATE TABLE IF NOT EXISTS inhouse_source_records(form_id INTEGER PRIMARY KEY, source_form_id INTEGER NOT NULL, load_order INTEGER NOT NULL, record_type TEXT NOT NULL, flags INTEGER NOT NULL, payload BLOB NOT NULL); DELETE FROM inhouse_source_records;")?;
     tx.execute_batch("CREATE TABLE IF NOT EXISTS inhouse_localized_fields(form_id INTEGER NOT NULL, field_index INTEGER NOT NULL, signature TEXT NOT NULL, field_name TEXT NOT NULL, string_table TEXT NOT NULL, string_id INTEGER NOT NULL, load_order INTEGER NOT NULL, resolved_text TEXT, status TEXT NOT NULL CHECK(status IN ('resolved','null_id','missing')), PRIMARY KEY(form_id,field_index)); DELETE FROM inhouse_localized_fields; CREATE TABLE IF NOT EXISTS inhouse_terrain_source_order(form_id INTEGER PRIMARY KEY, source_record_offset INTEGER NOT NULL); DELETE FROM inhouse_terrain_source_order;")?;
     super::inhouse_terrain_diagnostics::replace_snapshot_tables(&tx)?;
+    let mut preserved_layers: Vec<_> = preserved_layers.into_iter().collect();
+    preserved_layers.sort_unstable_by_key(|(id, _)| *id);
     for (id, layers) in preserved_layers {
         let Some(record) = master.get(&id) else {
             continue;
@@ -1327,6 +1343,8 @@ fn convert_plugins_with_text_sources_report_impl(
             params![field.form_id, field.field_index as u64, String::from_utf8_lossy(&field.signature), field.field_name, field.string_table, field.string_id, field.load_order, field.resolved_text, field.status],
         )?;
     }
+    let mut terrain_offsets: Vec<_> = terrain_offsets.into_iter().collect();
+    terrain_offsets.sort_unstable_by_key(|(id, _)| *id);
     for (id, offset) in terrain_offsets {
         tx.prepare_cached(
             "INSERT INTO inhouse_terrain_source_order(form_id,source_record_offset) VALUES (?1,?2)",
@@ -1397,7 +1415,14 @@ fn convert_plugins_with_text_sources_report_impl(
     let release_stage = records::profile::ProfileStage::start("decoded_release");
     drop(decoded);
     release_stage.finish(master.len());
+    report_warnings.extend(name_warnings);
     report_warnings.extend(warnings.report());
+    if let Ok(context) = order.form_key_context() {
+        // Successful compatibility publication retains the existing completeness policy.
+        // Counted warning text is also emitted by the reader; actual data loss stays above.
+        report_notices.extend(context.projection_warnings());
+        report_notices.extend(context.legacy_projection_warnings());
+    }
     report_notices.extend(warnings.report_notices());
     phases.insert(
         "reader_target_validation_and_diagnostics".into(),
@@ -1571,26 +1596,11 @@ fn original_land_record(
     Ok((raw, unresolved, orphaned))
 }
 
-/// Resolve one optional LAND texture link using the typed decoder's ownership/width rules.
+/// Resolve one optional LAND texture link through the shared FormKey/self-link rules.
+/// Out-of-range master selectors refer to the supplying plugin, as every other link does;
+/// an unrepresentable owner or local clears only this link.
 fn resolve_land_texture(value: u32, priority: usize, order: &LoadOrder) -> Option<u32> {
-    if value == 0 {
-        return Some(0);
-    }
-    let masters = &order.metadata[priority].masters;
-    let index = (value >> 24) as usize;
-    if index > masters.len() {
-        return None;
-    }
-    let owner = super::load_order::normalize_plugin_name(
-        masters.get(index).unwrap_or(&order.names[priority]),
-    );
-    if let Some(slot) = order.light.get(&owner) {
-        return (value & 0x00ff_ffff <= 0xfff).then_some(0xfe00_0000 | slot << 12 | value & 0xfff);
-    }
-    order
-        .normal
-        .get(&owner)
-        .map(|slot| slot << 24 | value & 0x00ff_ffff)
+    crate::records::source_identity::header_runtime_id(b"LTEX", value, priority, order)
 }
 
 /// Keep candidate admission and the final defensive check on one validator contract.
@@ -2146,7 +2156,7 @@ mod runtime_move_tests {
     fn original_land_recovery_uses_decoded_header_and_item_local_links() {
         use crate::esm::binary::PluginMetadata;
 
-        let mut order = LoadOrder::from_metadata(
+        let order = LoadOrder::from_metadata(
             vec![
                 "Filler.esm".into(),
                 "Master.esm".into(),
@@ -2201,17 +2211,19 @@ mod runtime_move_tests {
             .collect();
         let (raw, unresolved, _) = original_land_record(&decoded, &order).unwrap();
         assert_eq!(raw.form_id, 0x0200_5678);
-        assert_eq!(unresolved, 2, "only usable assignments resolve their links");
+        assert_eq!(
+            unresolved, 1,
+            "only the light local wider than 12 bits cannot be packed"
+        );
         assert_eq!(&raw.subrecords[0].1[..4], &0x0100_0900u32.to_le_bytes());
         assert_eq!(&raw.subrecords[1].1[..4], &0xfe00_00abu32.to_le_bytes());
-        for index in [2, 3] {
-            assert_eq!(&raw.subrecords[index].1[..4], &[0; 4]);
-        }
+        assert_eq!(&raw.subrecords[2].1[..4], &[0; 4]);
+        assert_eq!(
+            &raw.subrecords[3].1[..4],
+            &0x0200_0001u32.to_le_bytes(),
+            "a past-master selector resolves to the supplying plugin"
+        );
         assert_eq!(raw.subrecords[4..], fields[4..]);
-        order.normal.remove("master.esm");
-        let (raw, unresolved, _) = original_land_record(&decoded, &order).unwrap();
-        assert_eq!(unresolved, 3, "absent owners also recover locally");
-        assert_eq!(&raw.subrecords[0].1[..4], &[0; 4]);
     }
 
     #[test]
@@ -2933,6 +2945,7 @@ mod runtime_move_tests {
             editor_id: Some("authored identity".into()),
         };
         let mut decoded = records::ReadResult {
+            load_order: Vec::new(),
             records: HashMap::from([(id, winner.clone())]),
             headers: vec![winner],
             overrides: HashMap::from([(

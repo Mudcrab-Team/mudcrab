@@ -4,6 +4,7 @@ use rusqlite::Connection;
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 fn sub(tag: &[u8; 4], bytes: &[u8]) -> Vec<u8> {
@@ -71,7 +72,208 @@ fn ids(conn: &Connection) -> Vec<u32> {
         .unwrap()
 }
 
+fn capture_test_stderr(test_name: &str, run: impl FnOnce()) -> Option<String> {
+    const CHILD: &str = "MUDCRAB_TEST_CAPTURE_STDERR";
+    if std::env::var(CHILD).is_ok_and(|name| name == test_name) {
+        run();
+        return None;
+    }
+    let child = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test_name, "--nocapture"])
+        .env(CHILD, test_name)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&child.stderr).into_owned();
+    assert!(child.status.success(), "{stderr}");
+    Some(stderr)
+}
+
 #[test]
+fn coderabbit_718_warns_once_for_rejected_filename() {
+    if let Some(stderr) =
+        capture_test_stderr("coderabbit_718_warns_once_for_rejected_filename", || {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = [
+                dir.path().join("Rejected.esp\u{2003}"),
+                plugin(dir.path(), "Accepted.esm", &[], 1, Vec::new()),
+            ];
+            let (native, writer) =
+                EsmParser::convert_form_key_plugins(&paths, &dir.path().join("world.db")).unwrap();
+            assert_eq!(native.warnings.len(), 1);
+            assert_eq!(
+                writer,
+                converter::esm::form_key_merge::LegacyWriterOutcome::Published
+            );
+        })
+    {
+        assert_eq!(
+            stderr.matches("skipped 1 invalid plugin name(s)").count(),
+            1,
+            "the same rejected filename should emit one warning: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn coderabbit_718_implicit_strings_root_uses_first_accepted_plugin() {
+    let dir = tempfile::tempdir().unwrap();
+    let rejected = dir.path().join("rejected");
+    let accepted = dir.path().join("accepted");
+    let localized = dir.path().join("localized");
+    for path in [&rejected, &accepted, &localized] {
+        fs::create_dir(path).unwrap();
+    }
+    for (root, text) in [(&rejected, b"Wrong\0"), (&accepted, b"Right\0")] {
+        let strings = root.join("Strings");
+        fs::create_dir(&strings).unwrap();
+        let bank = [
+            1u32.to_le_bytes().as_slice(),
+            &(text.len() as u32).to_le_bytes(),
+            &1u32.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            text,
+        ]
+        .concat();
+        fs::write(strings.join("Patch_English.strings"), bank).unwrap();
+    }
+    let paths = [
+        rejected.join("Rejected.esp\u{2003}"),
+        plugin(&accepted, "Base.esm", &[], 1, Vec::new()),
+        plugin(
+            &localized,
+            "Patch.esp",
+            &["Base.esm"],
+            0x80,
+            record(
+                b"CLAS",
+                0x0100_0800,
+                0,
+                [sub(b"EDID", b"Class\0"), sub(b"FULL", &1u32.to_le_bytes())].concat(),
+            ),
+        ),
+    ];
+    let db = dir.path().join("world.db");
+    EsmParser::convert_plugins(&paths, &db).unwrap();
+    let conn = Connection::open(db).unwrap();
+    assert_eq!(
+        fields(&conn, 0x0100_0800, b"FULL"),
+        [b"Right\0".to_vec()],
+        "fallback text should come from the first accepted plugin's directory"
+    );
+}
+
+#[test]
+fn coderabbit_718_exact_light_record_survives_wide_collisions() {
+    if let Some(stderr) = capture_test_stderr(
+        "coderabbit_718_exact_light_record_survives_wide_collisions",
+        check_exact_light_record_survives_wide_collisions,
+    ) {
+        assert_eq!(
+            stderr
+                .lines()
+                .filter(
+                    |line| line.contains("skipped 1 unusable record candidate(s)")
+                        && line.contains(
+                            "wide light FormID 00001840 would collide with exact record FE000840"
+                        )
+                )
+                .count(),
+            6,
+            "each colliding record or tombstone should emit a skip warning: {stderr}"
+        );
+    }
+}
+
+fn check_exact_light_record_survives_wide_collisions() {
+    for (wide_first, wide_flags, exact_flags) in [
+        (false, 0, 0),
+        (true, 0, 0),
+        (false, 0x20, 0),
+        (true, 0x20, 0),
+        (false, 0, 0x20),
+        (true, 0, 0x20),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let exact = record(b"STAT", 0x0840, exact_flags, sub(b"EDID", b"Exact\0"));
+        let wide = record(b"STAT", 0x1840, wide_flags, sub(b"EDID", b"Wide\0"));
+        let collision = if wide_first {
+            [wide, exact]
+        } else {
+            [exact, wide]
+        };
+        let fallback = record(b"STAT", 0x1841, 0, sub(b"EDID", b"Fallback\0"));
+        let path = plugin(
+            dir.path(),
+            "Light.esl",
+            &[],
+            0x201,
+            [collision.concat(), fallback].concat(),
+        );
+        let db = dir.path().join("world.db");
+        EsmParser::convert_plugins(&[path], &db).unwrap();
+        let conn = Connection::open(db).unwrap();
+        if exact_flags == 0x20 {
+            assert_eq!(ids(&conn), [0xfe00_0841], "the exact tombstone should win");
+        } else {
+            assert_eq!(ids(&conn), [0xfe00_0840, 0xfe00_0841]);
+            assert_eq!(
+                fields(&conn, 0xfe00_0840, b"EDID"),
+                [b"Exact\0".to_vec()],
+                "the exact light record should win (wide_first={wide_first}, wide_flags={wide_flags:#x})"
+            );
+        }
+        assert_eq!(
+            fields(&conn, 0xfe00_0841, b"EDID"),
+            [b"Fallback\0".to_vec()]
+        );
+    }
+}
+
+#[test]
+fn coderabbit_718_corrupt_exact_light_record_allows_wide_fallback() {
+    if let Some(stderr) = capture_test_stderr(
+        "coderabbit_718_corrupt_exact_light_record_allows_wide_fallback",
+        || {
+            for wide_first in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let exact = record(b"STAT", 0x0840, 0x40000, vec![0]);
+                let wide = record(b"STAT", 0x1840, 0, sub(b"EDID", b"Fallback\0"));
+                let candidates = if wide_first {
+                    [wide, exact]
+                } else {
+                    [exact, wide]
+                };
+                let path = plugin(dir.path(), "Light.esl", &[], 0x201, candidates.concat());
+                let db = dir.path().join("world.db");
+                EsmParser::convert_plugins(&[path], &db).unwrap();
+                let conn = Connection::open(db).unwrap();
+                assert_eq!(
+                    ids(&conn),
+                    [0xfe00_0840],
+                    "the corrupt exact record should leave a usable fallback (wide_first={wide_first})"
+                );
+                assert_eq!(
+                    fields(&conn, 0xfe00_0840, b"EDID"),
+                    [b"Fallback\0".to_vec()]
+                );
+            }
+        },
+    ) {
+        assert_eq!(
+            stderr
+                .lines()
+                .filter(|line| line.starts_with("warning:")
+                    && line.contains("STAT 00000840:")
+                    && line.contains("compressed"))
+                .count(),
+            2,
+            "the corrupt exact record should be reported in either order: {stderr}"
+        );
+    }
+}
+
+#[test]
+/// Absent past-master and wide light memberships clear while rank/padding survive.
 fn npc_faction_structures_publish_resolved_ids_and_preserve_rank_padding() {
     let dir = tempfile::tempdir().unwrap();
     let membership = |id: u32, rank: u8| [id.to_le_bytes(), [rank, 0xA1, 0xB2, 0xC3]].concat();
@@ -191,7 +393,8 @@ fn torn_payloads_preserve_earlier_winners_neighbors_and_authoritative_deletions(
 }
 
 #[test]
-fn scalar_optional_links_clear_or_drop_locally_before_sql_publication() {
+/// Absent past-master links and absent RACE movement links clear; valid neighbours survive.
+fn absent_optional_self_links_clear_while_required_links_and_neighbors_survive() {
     let dir = tempfile::tempdir().unwrap();
     let paths = vec![
         plugin(dir.path(), "Base.esm", &[], 1, Vec::new()),
@@ -238,13 +441,20 @@ fn scalar_optional_links_clear_or_drop_locally_before_sql_publication() {
     let db = dir.path().join("world.db");
     EsmParser::convert_plugins(&paths, &db).unwrap();
     let conn = Connection::open(db).unwrap();
-    assert_eq!(ids(&conn), [0x0200_0800, 0x0200_0801, 0x0200_0803]);
+    assert_eq!(
+        ids(&conn),
+        [0x0200_0800, 0x0200_0801, 0x0200_0802, 0x0200_0803]
+    );
     assert_eq!(
         fields(&conn, 0x0200_0800, b"XOWN"),
         [0u32.to_le_bytes().to_vec()]
     );
     assert_eq!(
         fields(&conn, 0x0200_0800, b"XCWT"),
+        [0u32.to_le_bytes().to_vec()]
+    );
+    assert_eq!(
+        fields(&conn, 0x0200_0802, b"NAME"),
         [0u32.to_le_bytes().to_vec()]
     );
     assert!(fields(&conn, 0x0200_0800, b"XLCN").is_empty());
@@ -259,7 +469,7 @@ fn scalar_optional_links_clear_or_drop_locally_before_sql_publication() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(movement, (None, Some(0x0200_0903)));
+    assert_eq!(movement, (None, None));
     assert!(fields(&conn, 0x0200_0801, b"WKMV").is_empty());
 }
 

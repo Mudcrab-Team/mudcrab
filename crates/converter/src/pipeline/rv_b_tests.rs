@@ -998,3 +998,87 @@ async fn unknown_output_producer_rebuilds_assets_without_reextracting_unchanged_
     assert_eq!(current.archives, recorded.archives);
     assert_eq!(current.schema_version, CONVERTER_SCHEMA_VERSION);
 }
+
+/// Projection-5/6 packs retain old DDS/NIF proofs while missing PEX proofs rebuild scripts.
+#[tokio::test]
+async fn prior_projection_packs_rebuild_metadata_and_keep_proven_asset_kinds() {
+    for (projection, language) in [(5, "english"), (5, "french"), (6, "english"), (6, "french")] {
+        let fixture = Fixture::new(true);
+        let mut config = fixture.config(RecordReader::Legacy);
+        config.language = language.into();
+        publish(config.clone()).await;
+        let expected = asset_bytes(&fixture.output);
+        let mut original = manifest(&fixture.output);
+        let mut identity = serde_json::json!({
+            "mode": "legacy", "projection_version": projection,
+            "language": language, "text_encoding": "windows-1252"
+        });
+        if language == "french" {
+            identity["string_table_encoding"] = serde_json::json!("utf-8-or-windows-1252");
+        }
+        let historical = serde_json::json!({
+            "schema": CONVERTER_SCHEMA_VERSION,
+            "texture_etc1s_quality": config.texture_fallback_quality,
+            "texture_uastc_level": config.texture_uastc_level,
+            "texture_zstd_level": config.texture_zstd_level,
+            "texture_encoder": {"mode": "cpu"},
+            "script_abi_version": config.script_abi_version,
+            "record_reader": identity,
+        });
+        original.configuration_hash = hash_bytes(&serde_json::to_vec(&historical).unwrap());
+        // Keep the independent current NIF proof; DDS/PEX must use the old combined proof.
+        original
+            .asset_configuration_hashes
+            .retain(|kind, _| kind == "nif");
+        original
+            .save(&fixture.output.join("conversion-manifest.json"))
+            .unwrap();
+        fs::write(
+            fixture.output.join("record-reader.json"),
+            serde_json::to_vec(&identity).unwrap(),
+        )
+        .unwrap();
+        let source_hash = hash_file(&fixture.output.join("conversion-manifest.json")).unwrap();
+        let output = fixture.sibling_output("projection7-metadata");
+        config.output_dir = output.clone();
+        publish_metadata(config.clone(), &fixture.output).await;
+        let retained = manifest(&output);
+        assert_eq!(
+            retained.retained_asset_configuration_hash.as_deref(),
+            Some(original.configuration_hash.as_str())
+        );
+        let mut expected_proofs = original.asset_configuration_hashes.clone();
+        expected_proofs.insert(
+            "pex".into(),
+            crate::cache::asset_configuration_hash_for_schema(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                "pex",
+            )
+            .unwrap(),
+        );
+        assert_eq!(retained.asset_configuration_hashes, expected_proofs);
+        let provenance = json_artifact(&output, "metadata-rebuild.json");
+        assert_eq!(provenance["asset_kinds"]["nif"]["action"], "reused");
+        assert_eq!(provenance["asset_kinds"]["dds"]["action"], "reused");
+        assert_eq!(provenance["asset_kinds"]["pex"]["action"], "rebuilt");
+        assert_ne!(retained.configuration_hash, original.configuration_hash);
+        assert_eq!(
+            json_artifact(&output, "record-reader.json")["projection_version"],
+            7
+        );
+        assert_eq!(
+            json_artifact(&output, "metadata-rebuild.json")["retained_asset_record_reader"],
+            identity
+        );
+        assert_asset_bytes(&output, &expected);
+        assert_eq!(
+            hash_file(&fixture.output.join("conversion-manifest.json")).unwrap(),
+            source_hash
+        );
+        let warm = publish(config).await;
+        assert_eq!(warm.converted, 1);
+        assert_eq!(warm.cache_hits, 5);
+        assert_asset_bytes(&output, &expected);
+    }
+}

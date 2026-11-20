@@ -400,8 +400,11 @@ text uses Windows-1252. Both record readers publish the same UTF-8 text:
   (`crates/converter/src/esm/legacy_text.rs`). That covers `FULL` on every record type, and
   `DESC`, `RNAM` and others where the subrecord is unambiguous. This changed the legacy
   projection; version 4 introduced language/encoding. Version 5 also publishes every schema-declared
-  projectile/hazard placement and its base model (#498). Version 6 adds the STAT MODS alternate-texture
-  table (`base_texture_swaps`). The in-house adapter is version 14.
+  projectile/hazard placement and its base model (#498). Version 6 resolves NPC default
+  outfits, outfit items and ARMA male/female skin texture links. Database-only projection
+  bumps retain language-bound asset proofs from the independent asset-proof floor.
+  Version 7 adds STAT MODS alternate-texture rows (`base_texture_swaps`) and TXST link
+  remapping, reconciling the two independent version-6 branches. The in-house adapter is version 14.
   Version-3 retained proofs are accepted only for their historical English setting; all older
   metadata rebuilds use the configured language. Retained assets keep their independent proof.
 
@@ -1221,6 +1224,9 @@ CREATE TABLE IF NOT EXISTS default_objects (    -- DOBJ DNAM, merged key by key 
 );
 -- `default_objects` follows the game loader: a later `DOBJ` changes only the keys it lists, a null
 -- link removes the key, and a zero key (Update.esm holds hundreds of padding pairs) is skipped.
+-- Both readers merge by owning plugin and local ID. DNAM and race movement links resolve
+-- through the supplying plugin's master list, with past-master indices referring to self.
+-- A default or race movement link to an absent target is cleared with a warning.
 -- Both record readers feed the key-merged `DOBJ` into the runtime projection, so `records.data`
 -- for DOBJ 00000031 holds the merged `DNAM` under the winning plugin's `load_order`. It is a
 -- derived record, not the winner's bytes. With the in-house reader, the winner's exact source

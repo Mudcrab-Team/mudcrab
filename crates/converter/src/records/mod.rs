@@ -8,7 +8,7 @@ pub mod fidelity;
 pub mod history;
 pub mod history_source;
 pub(crate) mod profile;
-mod scanner;
+pub(crate) mod scanner;
 pub mod schema_format;
 pub(crate) mod schema_lineage;
 pub mod source_identity;
@@ -305,6 +305,8 @@ pub struct PluginDiagnostics {
     pub(crate) deferred_link_events: Option<Vec<decoder::DeferredLinkEvent>>,
 }
 
+const RACE_MOVEMENT_LINK_WARNING: &str = "race_movement_link_warning";
+
 impl PluginDiagnostics {
     /// Summary-only diagnostics for the fuzz targets: counters and bounded examples,
     /// no per-input disk journal. Ordinary builds do not compile this.
@@ -316,9 +318,12 @@ impl PluginDiagnostics {
         }
     }
 
-    /// Summarize omitted records, fields and unexpected subrecords as bounded warnings.
+    /// Summarize discarded data and movement link recovery as bounded warnings.
     pub(crate) fn warning_summary_lines(&self, plugin: &str) -> Vec<String> {
         let mut lines = Vec::new();
+        if let Some(warning) = self.first_by_category.get("input") {
+            lines.push(warning.clone());
+        }
         if let Some(example) = ["record", "field", "unexpected"]
             .iter()
             .find_map(|category| self.first_by_category.get(*category))
@@ -328,6 +333,11 @@ impl PluginDiagnostics {
                 self.skipped_records,
                 self.skipped_fields,
                 self.unexpected_subrecords
+            ));
+        }
+        if let Some(example) = self.first_by_category.get(RACE_MOVEMENT_LINK_WARNING) {
+            lines.push(format!(
+                "warning: {plugin}: in-house reader cleared RACE movement links (first: {example})"
             ));
         }
         lines
@@ -393,7 +403,18 @@ impl PluginDiagnostics {
         }
         self.event_log.append(&context, category, &example);
         let key = DiagnosticSummaryKey::new(&context, category, &example);
-        self.remember_summary(summary_category, key, diagnostics::bounded_summary(example));
+        let example = diagnostics::bounded_summary(example);
+        if category == "link"
+            && context.record_type == Some(*b"RACE")
+            && context.field.as_deref().is_some_and(|field| {
+                let tag = field.split('[').next().unwrap_or(field);
+                crate::esm::is_race_movement_link(tag.as_bytes())
+            })
+        {
+            // Warning severity is independent of the cleared-link counter and journal category.
+            self.remember_summary(RACE_MOVEMENT_LINK_WARNING, key.clone(), example.clone());
+        }
+        self.remember_summary(summary_category, key, example);
     }
 
     /// Keep category and global examples under the same total order, without changing counts.
@@ -511,8 +532,12 @@ pub struct RecordSource {
 }
 
 /// Winners, nontrivial override chains and bounded scan/decode diagnostics.
+/// Indices address `load_order`, including when input recovery compacts the caller's order.
+/// Input-path recovery uses the reserved `<input>` diagnostics scope, never a plugin owner.
 #[derive(Debug, Default)]
 pub struct ReadResult {
+    /// Accepted supplier names; every returned plugin/load-order index addresses this list.
+    pub load_order: Vec<String>,
     pub records: HashMap<u32, DecodedRecord>,
     pub headers: Vec<DecodedRecord>,
     pub diagnostics: BTreeMap<String, PluginDiagnostics>,
@@ -541,6 +566,8 @@ pub(crate) use decoder::{
 };
 
 /// Scan in load order using the converter's single slot/master authority.
+/// Input recovery returns the accepted names in `ReadResult::load_order`; use that list
+/// for returned indices rather than the supplied order if paths were omitted.
 pub fn read_plugins(plugin_paths: &[PathBuf], order: &LoadOrder) -> Result<ReadResult> {
     read_plugins_with_validation(plugin_paths, order, |_| Ok(()))
 }
@@ -614,15 +641,82 @@ fn read_plugins_with_prepared(
     mut validate: impl FnMut(&DecodedRecord) -> std::result::Result<(), String>,
     mut observe: impl FnMut(&ReadResult),
 ) -> Result<ReadResult> {
+    let (accepted_paths, input_warnings) =
+        crate::esm::form_keys::recover_plugin_paths(plugin_paths)?;
+    if accepted_paths.len() != plugin_paths.len() {
+        let recovered_order = LoadOrder::read(&accepted_paths)?;
+        let mut result = read_plugins_with_prepared(
+            &accepted_paths,
+            &recovered_order,
+            schema,
+            prepared,
+            validate,
+            observe,
+        )?;
+        if !input_warnings.is_empty() {
+            // Expose input loss alongside the accepted order without
+            // pretending it belongs to an accepted plugin or a counted record.
+            let warning = input_warnings.join("\n");
+            let diagnostics = result.diagnostics.entry("<input>".into()).or_default();
+            diagnostics.first_example = Some(warning.clone());
+            diagnostics
+                .first_by_category
+                .insert("input".into(), warning);
+        }
+        return Ok(result);
+    }
     color_eyre::eyre::ensure!(
         plugin_paths.len() == order.names.len(),
         "plugin/order length mismatch"
     );
-    let mut result = ReadResult::default();
+    let identities = order
+        .form_key_context()
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    color_eyre::eyre::ensure!(
+        identities.plugin_order().len() == order.names.len(),
+        "load-order snapshot changed after identity allocation"
+    );
+    for (priority, metadata) in order.metadata.iter().enumerate() {
+        let entry = identities.supplier_entry(priority).ok_or_else(|| {
+            color_eyre::eyre::eyre!("load-order snapshot has no allocated supplier {priority}")
+        })?;
+        color_eyre::eyre::ensure!(
+            entry.normalized_name
+                == crate::esm::load_order::normalize_plugin_name(&order.names[priority])
+                && entry.facts.masters == metadata.masters
+                && entry.facts.flags.light == (metadata.flags & 0x200 != 0),
+            "load-order facts changed after identity allocation"
+        );
+    }
+    identities.start_resolution_run();
+    let legacy = identities.legacy_view()?;
+    let key_of = |word| legacy.from_legacy_u32(word).ok().flatten();
+    let mut default_objects = HashMap::new();
+    let mut winners = HashMap::<shared::form_key::FormKey, DecodedRecord>::new();
+    let mut result = ReadResult {
+        load_order: order.names.clone(),
+        ..Default::default()
+    };
     // Retain payloads only while an admitted winner still needs catalogue replay.
     let mut deferred_predecessors: HashMap<u32, Vec<DecodedRecord>> = HashMap::new();
     let mut gmst_ids: HashMap<String, u32> = HashMap::new();
     let mut gmst_aliases: HashMap<u32, u32> = HashMap::new();
+    let mut gmst_form_keys = HashMap::<u32, shared::form_key::FormKey>::new();
+    // A header catalogue distinguishes absent self targets from forward references.
+    // Keep old dangling-link diagnostics without changing ownership of usable self links.
+    let mut source_ids = std::collections::HashSet::new();
+    for (index, path) in plugin_paths.iter().enumerate() {
+        scanner::scan_plugin_headers(path, &mut PluginDiagnostics::default(), |header| {
+            if let Some(id) = source_identity::header_runtime_id(
+                &header.record_type,
+                header.source_form_id,
+                index,
+                order,
+            ) {
+                source_ids.insert(id);
+            }
+        })?;
+    }
     let scan_stage = profile::ProfileStage::start("scan_decode_merge");
     for (index, path) in plugin_paths.iter().enumerate() {
         let name = &order.names[index];
@@ -635,11 +729,21 @@ fn read_plugins_with_prepared(
                 .push(history::header_entry(header, order, index));
         };
         scanner::scan_plugin(path, &mut diagnostics, observe, |scanned, diagnostics| {
+            // Retain native identity before the decoder packs its compatibility fields.
+            let native_key = identities
+                .resolve(
+                    index,
+                    scanned.source_form_id,
+                    shared::source_form_id::ZeroPolicy::Null,
+                )
+                .ok()
+                .flatten();
             let offset = scanned.source_record_offset;
             let context = decoder::Context {
                 order,
                 plugin_index: index,
                 localized: order.metadata[index].flags & 0x80 != 0,
+                source_ids: Some(&source_ids),
                 winning_types: None,
             };
             let mut identity = |name: &str| {
@@ -647,30 +751,29 @@ fn read_plugins_with_prepared(
                     entry.editor_id = Some(name.to_ascii_lowercase());
                 }
             };
-            let mut record = match decoder::decode_with_identity(
-                scanned,
-                schema,
-                prepared,
-                &context,
-                diagnostics,
-                &mut identity,
-            ) {
-                Ok(record) => record,
-                Err(error) => {
-                    if let Some(entry) = history.borrow_mut().last_mut() {
-                        entry.reason = Some(error.clone());
+            let mut record =
+                match decoder::decode_with_identity(
+                    scanned,
+                    schema,
+                    prepared,
+                    &context,
+                    diagnostics,
+                    &mut identity,
+                ) {
+                    Ok(record) => record,
+                    Err(error) => {
+                        if let Some(entry) = history.borrow_mut().last_mut() {
+                            entry.reason = Some(error.clone());
+                        }
+                        if diagnostics.event_context.form_id.is_some_and(|id| {
+                            key_of(id).is_some_and(|key| winners.contains_key(&key))
+                        }) {
+                            diagnostics.event_context.action = Some("kept_earlier_version");
+                        }
+                        diagnostics.note("record", || error);
+                        return;
                     }
-                    if diagnostics
-                        .event_context
-                        .form_id
-                        .is_some_and(|id| result.records.contains_key(&id))
-                    {
-                        diagnostics.event_context.action = Some("kept_earlier_version");
-                    }
-                    diagnostics.note("record", || error);
-                    return;
-                }
-            };
+                };
             if record.record_type == *b"TES4" {
                 result.headers.push(record);
                 return;
@@ -704,7 +807,7 @@ fn read_plugins_with_prepared(
                 if let Some(entry) = history.borrow_mut().last_mut() {
                     entry.reason = Some(format!("unusable runtime candidate: {error}"));
                 }
-                if result.records.contains_key(&record.form_id) {
+                if key_of(record.form_id).is_some_and(|key| winners.contains_key(&key)) {
                     diagnostics.event_context.action = Some("kept_earlier_version");
                 }
                 diagnostics.note("record", || {
@@ -739,9 +842,8 @@ fn read_plugins_with_prepared(
             };
             if record.flags & 0x20 == 0
                 && !record.payload_complete
-                && result
-                    .records
-                    .get(&candidate_id)
+                && key_of(candidate_id)
+                    .and_then(|key| winners.get(&key))
                     .is_some_and(|previous| previous.payload_complete)
             {
                 if let Some(entry) = history.borrow_mut().last_mut() {
@@ -801,9 +903,8 @@ fn read_plugins_with_prepared(
                             && (gmst_aliases
                                 .get(&record.form_id)
                                 .is_some_and(|&previous| known != Some(previous))
-                                || result
-                                    .records
-                                    .get(&record.form_id)
+                                || key_of(record.form_id)
+                                    .and_then(|key| winners.get(&key))
                                     .is_some_and(|previous| previous.record_type != *b"GMST"))
                     {
                         if let Some(entry) = history.borrow_mut().last_mut() {
@@ -868,7 +969,25 @@ fn read_plugins_with_prepared(
                 entry.accepted = true;
                 entry.reason = None;
             }
-            if let Some(previous) = result.records.get(&record.form_id) {
+            let winner_key = if record.record_type == *b"GMST" {
+                let key = gmst_form_keys.get(&record.form_id).copied().or(native_key);
+                if let Some(key) = key {
+                    gmst_form_keys.insert(record.form_id, key);
+                }
+                key
+            } else {
+                native_key
+            };
+            let Some(winner_key) = winner_key else {
+                diagnostics.note("record", || {
+                    format!("record {:08X} has no legacy identity", record.form_id)
+                });
+                return;
+            };
+            if let Some(previous) = winners.get(&winner_key) {
+                if previous.record_type == *b"DOBJ" && record.record_type != *b"DOBJ" {
+                    default_objects.remove(&winner_key);
+                }
                 result
                     .overrides
                     .entry(record.form_id)
@@ -887,22 +1006,22 @@ fn read_plugins_with_prepared(
             }
             if record.record_type == *b"DOBJ" {
                 if record.flags & 0x20 != 0 {
-                    result.default_objects.remove(&record.form_id);
+                    default_objects.remove(&winner_key);
                 } else {
                     let mut raw = record.to_raw_record();
-                    if let Some(previous) = result.default_objects.get(&record.form_id) {
+                    if let Some(previous) = default_objects.get(&winner_key) {
                         crate::esm::merge_default_objects(previous, &mut raw);
                     }
-                    result.default_objects.insert(record.form_id, raw);
+                    default_objects.insert(winner_key, raw);
                 }
             }
             if record.flags & 0x20 != 0 {
-                result.records.remove(&record.form_id);
+                winners.remove(&winner_key);
                 deferred_predecessors.remove(&record.form_id);
             } else {
                 let id = record.form_id;
                 let tentative = decoder::record_contains_deferred(&record);
-                let previous = result.records.insert(id, record);
+                let previous = winners.insert(winner_key, record);
                 if tentative {
                     if let Some(previous) = previous {
                         deferred_predecessors.entry(id).or_default().push(previous);
@@ -915,6 +1034,12 @@ fn read_plugins_with_prepared(
         result.history.extend(history.into_inner());
         result.diagnostics.insert(name.clone(), diagnostics);
     }
+    // The unchanged decoder/catalogue APIs receive a checked legacy projection only
+    // after native winner identity has been merged using FormKey equality.
+    result.records = winners
+        .into_values()
+        .map(|record| (record.form_id, record))
+        .collect();
     scan_stage.finish(result.records.len());
     let deferred_stage = profile::ProfileStage::start("resolve_deferred");
     history::reconcile_gmst(&mut result.history, &gmst_ids);
@@ -924,6 +1049,7 @@ fn read_plugins_with_prepared(
         prepared,
         order,
         &mut deferred_predecessors,
+        &source_ids,
         &mut validate,
     );
     deferred_stage.finish(result.records.len());
@@ -932,7 +1058,41 @@ fn read_plugins_with_prepared(
     preservation_stage.finish(result.records.len());
     let targets_stage = profile::ProfileStage::start("validate_targets");
     decoder::validate_targets_with_prepared(&mut result, schema, prepared, order);
+    for mut raw in default_objects.into_values() {
+        let Some(winner) = result.records.get(&raw.form_id) else {
+            continue;
+        };
+        let diagnostics = result
+            .diagnostics
+            .entry(order.names[raw.load_order as usize].clone())
+            .or_default();
+        diagnostics.set_record(
+            winner.source_record_offset,
+            Some(raw.record_type),
+            Some(winner.source_form_id),
+            Some(raw.form_id),
+            "default_object_targets",
+        );
+        diagnostics.set_field("DNAM".into());
+        let id = raw.form_id;
+        crate::esm::clear_missing_movement_targets(
+            &mut raw,
+            |target| result.records.get(&target).map(|record| record.record_type),
+            |field, target| {
+                diagnostics.note("field", || {
+                    format!("DOBJ {id:08X} {field} target {target:08X} is absent or disallowed")
+                })
+            },
+        );
+        result.default_objects.insert(id, raw);
+    }
     targets_stage.finish(result.records.len());
+    for warning in identities.projection_warnings() {
+        eprintln!("{warning}");
+    }
+    for warning in identities.legacy_projection_warnings() {
+        eprintln!("{warning}");
+    }
     for (name, diagnostics) in &result.diagnostics {
         for line in diagnostics
             .warning_summary_lines(name)
