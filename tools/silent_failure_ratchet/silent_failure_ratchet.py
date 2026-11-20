@@ -22,8 +22,18 @@ comment on the same or the previous line gives a reason after `silent-ok:`, for 
   // silent-ok: an absent tag means this record has no tag
   let tag = record.tag().ok();
 
-A marker with nothing after the colon is not an exemption. Comments and string literals are
-blanked before matching, so the text inside them neither counts nor exempts.
+A multi-line chain puts the site on a later line than the `let`. A marker on the line of
+the `let`, or on the line above it, is an exemption too. A marker with nothing after the
+colon, or only the closing `*/` of a block comment, is not an exemption. Comments and
+string literals are blanked before matching, so the text inside them neither counts nor
+exempts.
+
+A `discarded-try` site is counted once per position: a nested
+`let _ = { let _ = g()?; }` counts once, not twice. A `?` inside a closure body in a
+`let _ =` statement is not counted, because the closure returns the error and the statement
+discards a different value. The closure body is read from its `|..|` header, so an unusual
+pattern can still be misread. The other counts are per pattern match: two `.ok()` calls on
+one line count twice, and one decision written on three lines counts three times.
 
 Not counted, because a syntax check cannot tell the two apart: `.flatten()` on
 `Result<Option<_>>` and on `Option<Option<_>>`; a bare `let _ = call();` whose call returns
@@ -31,8 +41,9 @@ Not counted, because a syntax check cannot tell the two apart: `.flatten()` on
 
 Production code means the modules reachable from `lib.rs`, `main.rs` and `src/bin/*.rs` of
 each `crates/<name>/src`, without `#[cfg(test)]` modules and items. `tests/`, `examples/`,
-`benches/` and `build.rs` are not counted. The walk and the test-code exclusion are the ones
-in `tools/unwrap_ratchet/unwrap_ratchet.py`, so both ratchets count the same code.
+`benches/` and `build.rs` are not counted. The walk, the test-code exclusion and the mask
+are the ones in `tools/unwrap_ratchet/unwrap_ratchet.py`, so both ratchets agree about
+what is code.
 
 Usage:
   python3 tools/silent_failure_ratchet/silent_failure_ratchet.py --base-root ../base   # what CI runs
@@ -74,9 +85,12 @@ crate_names = unwrap_ratchet.crate_names
 read_baseline = unwrap_ratchet.read_baseline
 read_revision = unwrap_ratchet.read_revision
 write_baseline = unwrap_ratchet.write_baseline
+matching_bracket = unwrap_ratchet.matching_bracket
+# The mask is shared with the unwrap ratchet, so both gates agree about what is code.
+mask = unwrap_ratchet.mask_with_comments
 
-# `silent-ok:` must be followed by a reason on the same comment.
-MARKER = re.compile(r"(?<![A-Za-z0-9_-])silent-ok:\s*\S")
+# `silent-ok:` must be followed by a reason; the closing `*/` of a block comment is not one.
+MARKER = re.compile(r"(?<![A-Za-z0-9_-])silent-ok:[ \t]*(?![*/])\S")
 # Patterns that turn a `Result` into `None`, a default value or an empty value.
 PATTERNS = (
     ("ok", re.compile(r"\.\s*ok\s*\(\s*\)")),
@@ -111,101 +125,6 @@ RAW_PATTERNS = (
 )
 # `let _ =` with an optional type annotation. The rest of the statement is checked for `?`.
 DISCARDED_LET = re.compile(r"\blet\s+_\s*(?::[^=;{}]+)?=")
-
-
-def identifier_char(text, index):
-    return index >= 0 and (text[index].isalnum() or text[index] == "_")
-
-
-def mask(text):
-    """Return `(code, comments)`.
-
-    `code` is `text` with comments, strings and char literals replaced by spaces.
-    Newlines and column positions are kept, so line numbers stay valid. `comments` holds
-    the `(start, end)` spans of the comments in `text`, for the `silent-ok:` markers.
-    This is the masking in `tools/unwrap_ratchet/unwrap_ratchet.py`, with the comment
-    spans recorded.
-    """
-    out = list(text)
-    comments = []
-    n = len(text)
-
-    def blank(start, end):
-        for k in range(start, min(end, n)):
-            if out[k] != "\n":
-                out[k] = " "
-
-    i = 0
-    while i < n:
-        c = text[i]
-        if text.startswith("//", i):
-            end = text.find("\n", i)
-            end = n if end < 0 else end
-            comments.append((i, end))
-            blank(i, end)
-            i = end
-            continue
-        if text.startswith("/*", i):
-            depth, j = 0, i
-            while j < n:
-                if text.startswith("/*", j):
-                    depth += 1
-                    j += 2
-                elif text.startswith("*/", j):
-                    depth -= 1
-                    j += 2
-                    if depth == 0:
-                        break
-                else:
-                    j += 1
-            comments.append((i, j))
-            blank(i, j)
-            i = j
-            continue
-        raw = re.match(r'(?:b|c)?r(#*)"', text[i : i + 80])
-        if raw and not identifier_char(text, i - 1):
-            closer = '"' + raw.group(1)
-            end = text.find(closer, i + raw.end())
-            end = n if end < 0 else end + len(closer)
-            blank(i, end)
-            i = end
-            continue
-        if c == '"' or (
-            c in "bc" and text[i + 1 : i + 2] == '"' and not identifier_char(text, i - 1)
-        ):
-            quote = i if c == '"' else i + 1
-            j = quote + 1
-            while j < n:
-                if text[j] == "\\":
-                    j += 2
-                elif text[j] == '"':
-                    j += 1
-                    break
-                else:
-                    j += 1
-            blank(quote, j)
-            i = j
-            continue
-        if c == "'" or (
-            c == "b" and text[i + 1 : i + 2] == "'" and not identifier_char(text, i - 1)
-        ):
-            quote = i if c == "'" else i + 1
-            if text[quote + 1 : quote + 2] == "\\":
-                j = quote + 2
-                while j < n and text[j] not in "'\n":
-                    j += 1
-                if j < n and text[j] == "'":
-                    blank(quote, j + 1)
-                    i = j + 1
-                    continue
-            elif text[quote + 2 : quote + 3] == "'" and text[quote + 1 : quote + 2] != "\n":
-                blank(quote, quote + 3)
-                i = quote + 3
-                continue
-            i = quote + 1  # a lifetime such as `'a`
-            continue
-        i += 1
-    return "".join(out), comments
 
 
 def statement_start(code, index):
@@ -244,9 +163,91 @@ def marker_lines(text, comments, line_of):
     """0-based line numbers of `silent-ok:` comments that give a reason."""
     lines = set()
     for start, end in comments:
-        for match in MARKER.finditer(text, start, end):
-            lines.add(line_of(match.start()))
+        body = text[start:end]
+        if body.endswith("*/"):
+            body = body[:-2]  # the closing delimiter is not a reason
+        for match in MARKER.finditer(body):
+            lines.add(line_of(start + match.start()))
     return lines
+
+
+def owning_let_line(code, position, line_of):
+    """0-based line of the `let` that starts the statement that holds `position`.
+
+    A multi-line method chain puts the site on a later line than the `let`. The marker is
+    accepted above the `let` too, so its placement does not depend on where the chain
+    breaks. A statement without a `let` returns the line of the site.
+    """
+    start = statement_start(code, position)
+    match = re.search(r"\blet\b", code[start:position])
+    return line_of(start + match.start()) if match else line_of(position)
+
+
+CLOSURE_HEADER = re.compile(r"(?:\bmove\s+)?\|[^|\n]{0,80}\|")
+
+
+def starts_a_closure(code, index):
+    """Whether the `|` at `index` can open a closure, rather than a bitwise or."""
+    before = index - 1
+    while before >= 0 and code[before].isspace():
+        before -= 1
+    if before < 0:
+        return True
+    if code[before] in "(,=;{[!>":
+        return True
+    if code[before] in ")]_" or code[before].isalnum():
+        end = before + 1
+        while before >= 0 and (code[before].isalnum() or code[before] == "_"):
+            before -= 1
+        return code[before + 1 : end] == "move"
+    return False
+
+
+def closure_bodies(code, start, end):
+    """Character spans of closure bodies in `code[start:end]`.
+
+    The body is the block after a `|..|` header, or the expression after it. The scan is a
+    heuristic for the common `|args| expression` and `move |args| { ... }` forms, so an
+    unusual pattern can still be misread.
+    """
+    bodies = []
+    for match in CLOSURE_HEADER.finditer(code, start, end):
+        if not starts_a_closure(code, match.start()):
+            continue
+        body = match.end()
+        while body < end and code[body].isspace():
+            body += 1
+        if body < end and code[body] == "{":
+            bodies.append((body, min(matching_bracket(code, body), end)))
+            continue
+        depth = 0
+        body_end = end
+        for position in range(body, end):
+            char = code[position]
+            if char in "([{":
+                depth += 1
+            elif char in ")]}":
+                if depth == 0:
+                    body_end = position
+                    break
+                depth -= 1
+            elif char in ",;" and depth == 0:
+                body_end = position
+                break
+        bodies.append((body, body_end))
+    return bodies
+
+
+def first_discarded_question(code, start, end):
+    """The first `?` in `code[start:end]` that is not inside a closure body, or -1."""
+    bodies = closure_bodies(code, start, end)
+    for position in range(start, end):
+        if code[position] != "?":
+            continue
+        if any(body_start <= position < body_end for body_start, body_end in bodies):
+            continue
+        return position
+    return -1
 
 
 def sites_in_file(path):
@@ -276,18 +277,23 @@ def sites_in_file(path):
 
     sites = []
     discarded = []
+    questions = set()
     for match in DISCARDED_LET.finditer(code):
         # `if let _ =` and `while let _ =` are conditions, not discarded values.
         if code[statement_start(code, match.start()) : match.start()].strip():
             continue
         end = statement_end(code, match.end())
-        question = code.find("?", match.end(), end)
+        question = first_discarded_question(code, match.end(), end)
         if question >= 0:
             discarded.append((match.start(), end))
+            questions.add(question)
 
     def add(label, position, skip_discarded=False):
         line = line_of(position)
-        if skipped[position] or line in marked or line - 1 in marked:
+        let_line = owning_let_line(code, position, line_of)
+        if skipped[position] or any(
+            candidate in marked for candidate in (line, line - 1, let_line, let_line - 1)
+        ):
             return
         if skip_discarded and any(start <= position <= end for start, end in discarded):
             return
@@ -300,10 +306,8 @@ def sites_in_file(path):
         for match in pattern.finditer(text):
             if code[match.start()] != " ":  # not in a comment or a string
                 add(label, match.start(), skip_discarded=True)
-    for start, end in discarded:
-        question = code.find("?", start, end)
-        if question >= 0:
-            add("discarded-try", question)
+    for question in questions:
+        add("discarded-try", question)
     sites.sort()
     return sites
 
@@ -329,25 +333,28 @@ def crate_sites(root, crate):
     return sites
 
 
-def limits_from_base(root, base_root, names, measured):
+def limits_from_base(root, base_root, names, measured, baseline_path):
     """Per crate, the count a pull request may not exceed: the count at its base commit.
 
-    A crate that the base lacks has no limit and is reported as new. A pull request accepts
-    more sites by running `--update`, which writes the measured counts and raises the
-    file's `revision`. A crate's entry then raises its limit when the pull request changed
-    the entry, or when the revision changed and the entry equals the measured count. An
-    entry the pull request left alone never raises a limit, so a stale baseline cannot hide
-    a rise or cause a false failure.
+    `baseline_path` is the head's baseline. The base tree is read at the same relative
+    path, so a custom `--baseline` is not silently ignored. A crate that the base lacks
+    has no limit and is reported as new. A pull request accepts more sites by running
+    `--update`, which writes the measured counts and raises the file's `revision`. A
+    crate's entry then raises its limit when the pull request changed the entry, or when
+    the revision changed and the entry equals the measured count. An entry the pull
+    request left alone never raises a limit, so a stale baseline cannot hide a rise or
+    cause a false failure.
     """
     try:
-        head = read_baseline(root / DEFAULT_BASELINE)
+        head = read_baseline(baseline_path)
     except (OSError, ValueError, KeyError):
         head = {}
+    base_path = base_root / baseline_path.relative_to(root)
     try:
-        base = read_baseline(base_root / DEFAULT_BASELINE)
+        base = read_baseline(base_path)
     except (OSError, ValueError, KeyError):
         base = {}
-    revised = read_revision(root / DEFAULT_BASELINE) != read_revision(base_root / DEFAULT_BASELINE)
+    revised = read_revision(baseline_path) != read_revision(base_path)
     limits = {}
     for name in names:
         if not (base_root / "crates" / name / "src").is_dir():
@@ -362,10 +369,11 @@ def limits_from_base(root, base_root, names, measured):
 
 
 def added_sites(root, base_root, crate):
-    """Sites in the head tree that are not in the base tree, as `(path, label, text)`.
+    """Sites in the head tree that are not in the base tree, as `(path, line, label, text)`.
 
-    The line number is left out, so a shift does not report every site below it. A site
-    that moved with the same text and label counts as unchanged.
+    The comparison key leaves the line number out, so a shift does not report every site
+    below it. A site that moved with the same text and label counts as unchanged. The head
+    line is kept for the report, where it helps a contributor find the new site.
     """
 
     def keyed(tree):
@@ -374,13 +382,20 @@ def added_sites(root, base_root, crate):
         )
 
     extra = keyed(root) - keyed(base_root)
-    return sorted(extra.elements())
+    kept = Counter()
+    added = []
+    for relative, label, line, text in crate_sites(root, crate):
+        key = (relative, label, text)
+        if extra[key] > kept[key]:
+            kept[key] += 1
+            added.append((relative, line, label, text))
+    return sorted(added)
 
 
 def report_added(sites, limit=12):
     print("New sites:", file=sys.stderr)
-    for relative, label, text in sites[:limit]:
-        print(f"  {relative}: {label}: {text}", file=sys.stderr)
+    for relative, line, label, text in sites[:limit]:
+        print(f"  {relative}:{line}: {label}: {text}", file=sys.stderr)
     if len(sites) > limit:
         print(f"  and {len(sites) - limit} more", file=sys.stderr)
 
@@ -400,7 +415,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     root = args.root.resolve()
-    baseline_path = args.baseline or root / DEFAULT_BASELINE
+    baseline_path = (args.baseline or root / DEFAULT_BASELINE).resolve()
     names = [args.crate] if args.crate else crate_names(root)
     for name in names:
         if not (root / "crates" / name / "src").is_dir():
@@ -423,7 +438,16 @@ def main(argv=None):
         if not (base_root / "crates").is_dir():
             print(f"silent failure ratchet: no crates directory in {base_root}", file=sys.stderr)
             return 2
-        allowed = limits_from_base(root, base_root, names, measured)
+        try:
+            baseline_path.relative_to(root)
+        except ValueError:
+            print(
+                "silent failure ratchet: --baseline must be inside --root when --base-root "
+                "is given, so the base tree can be read at the same relative path",
+                file=sys.stderr,
+            )
+            return 2
+        allowed = limits_from_base(root, base_root, names, measured, baseline_path)
     else:
         try:
             allowed = read_baseline(baseline_path)
@@ -463,7 +487,9 @@ def main(argv=None):
             + ", ".join(raised)
             + (" above its base" if args.base_root else " above the baseline")
             + ". Return the error with `?`, log it, or handle it. If the drop is intended, "
-            "put `// silent-ok: <reason>` on the same or the previous line.",
+            "put `// silent-ok: <reason>` on the line of the site, the line above it, or "
+            "the line of the `let` that starts a multi-line statement (or the line above "
+            "that `let`).",
             file=sys.stderr,
         )
         if args.base_root:

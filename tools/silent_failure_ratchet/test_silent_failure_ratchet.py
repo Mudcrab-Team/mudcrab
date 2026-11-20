@@ -58,6 +58,45 @@ class CountTests(unittest.TestCase):
             0,
         )
 
+    def test_a_nested_discarded_let_counts_once(self):
+        self.assertEqual(
+            count(
+                """
+                fn f() -> Result<(), Error> {
+                    let _ = { let _ = g()?; };
+                    Ok(())
+                }
+                """
+            ),
+            1,
+        )
+
+    def test_a_question_in_a_closure_is_not_a_discarded_try(self):
+        self.assertEqual(
+            count(
+                """
+                fn f(items: Vec<u8>) {
+                    let _ = items.iter().map(|x| h(x)?).count();
+                    let _ = items.iter().map(|x| { h(x)? }).count();
+                }
+                """
+            ),
+            0,
+        )
+
+    def test_a_question_after_a_closure_is_a_discarded_try(self):
+        self.assertEqual(
+            count(
+                """
+                fn f(items: Vec<u8>) -> Result<(), Error> {
+                    let _ = items.iter().map(|x| f(x)).collect::<Result<Vec<_>, _>>()?;
+                    Ok(())
+                }
+                """
+            ),
+            1,
+        )
+
     def test_counts_every_ok_conversion(self):
         self.assertEqual(
             count(
@@ -205,6 +244,64 @@ class MarkerTests(unittest.TestCase):
                 """
                 fn f() {
                     let _ = g().ok(); // silent-ok:
+                }
+                """
+            ),
+            1,
+        )
+
+    def test_a_block_comment_marker_without_a_reason_is_not_an_exception(self):
+        self.assertEqual(
+            count(
+                """
+                fn f() {
+                    let _ = g().ok(); /* silent-ok: */
+                }
+                """
+            ),
+            1,
+        )
+
+    def test_a_block_comment_marker_without_a_reason_on_the_previous_line_is_not_an_exception(
+        self,
+    ):
+        self.assertEqual(
+            count(
+                """
+                fn f() {
+                    /* silent-ok: */
+                    let _ = g().ok();
+                }
+                """
+            ),
+            1,
+        )
+
+    def test_a_marker_above_a_multi_line_statement_is_an_exception(self):
+        self.assertEqual(
+            count(
+                """
+                fn f() {
+                    // silent-ok: the optional tag may be absent
+                    let tag = record
+                        .tag()
+                        .ok();
+                }
+                """
+            ),
+            0,
+        )
+
+    def test_a_marker_above_a_multi_line_let_does_not_exempt_a_later_statement(self):
+        self.assertEqual(
+            count(
+                """
+                fn f() {
+                    // silent-ok: only the first lookup is optional
+                    let first = record
+                        .tag()
+                        .ok();
+                    let second = record.name().ok();
                 }
                 """
             ),
@@ -422,8 +519,7 @@ class BaseCompareTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("RAISED", output)
         self.assertIn("above its base", output)
-        self.assertIn("crates/demo/src/lib.rs", output)
-        self.assertIn("discarded-try", output)
+        self.assertIn("crates/demo/src/lib.rs:2: discarded-try:", output)
 
     def test_a_new_marked_site_passes(self):
         self.add("fn h() { let _ = g().ok(); // silent-ok: absence is expected\n}\n")
@@ -460,6 +556,24 @@ class BaseCompareTests(unittest.TestCase):
     def test_a_base_root_without_crates_is_a_usage_error(self):
         self.base = Path(self.directory.name) / "missing"
         self.assertEqual(self.run_ratchet()[0], 2)
+
+    def test_a_custom_baseline_is_read_with_a_base_root(self):
+        relative = "tools/silent_failure_ratchet/other.json"
+        (self.root / relative).write_text(
+            json.dumps({"counts": {"demo": 2}}), encoding="utf-8"
+        )
+        (self.base / relative).write_text(
+            json.dumps({"counts": {"demo": 1}}), encoding="utf-8"
+        )
+        self.add("fn h() { let _ = g().ok(); }\n")
+        self.assertEqual(self.run_ratchet("--baseline", str(self.root / relative))[0], 0)
+
+    def test_a_baseline_outside_the_root_is_a_usage_error_with_a_base_root(self):
+        outside = Path(self.directory.name) / "outside.json"
+        outside.write_text(json.dumps({"counts": {"demo": 1}}), encoding="utf-8")
+        code, output = self.run_ratchet("--baseline", str(outside))
+        self.assertEqual(code, 2)
+        self.assertIn("--baseline must be inside --root", output)
 
 
 if __name__ == "__main__":
