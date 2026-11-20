@@ -844,6 +844,11 @@ fn export_records(
                     params![form_id, script.name, vmad_bytes, properties],
                 )?;
                 }
+            } else if super::is_placed_record_type(&record.record_type) && !record.is_deleted() {
+                eprintln!(
+                    "warning: {type_str} {form_id:08X}: malformed VMAD ({} bytes), script rows omitted",
+                    vmad_bytes.len()
+                );
             }
         }
 
@@ -3746,6 +3751,10 @@ mod tests {
                 .unwrap();
             assert_eq!(actual, replacement_vmad);
             assert_ne!(owner_data(), before);
+
+            export_to_db(&db, &[scripted(0x801, &[5])].into()).unwrap();
+            assert_scripts(&[(0x802, "DoorScript")]);
+            export_to_db(&db, &replacement).unwrap();
 
             let plain = reference(0x801, 0x100, 0x500, [0.0; 3], [0.0; 3]);
             export_to_db(&db, &[(0x801, plain)].into()).unwrap();

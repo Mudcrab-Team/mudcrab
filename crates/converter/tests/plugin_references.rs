@@ -4062,6 +4062,42 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
             [false, false, true],
         ),
         (
+            "possible-reference-one",
+            placement_group(a, b"R".to_vec()),
+            [false, false, false],
+            [false, false, true],
+        ),
+        (
+            "possible-reference-two",
+            placement_group(a, b"RE".to_vec()),
+            [false, false, false],
+            [false, false, true],
+        ),
+        (
+            "possible-actor",
+            placement_group(a, b"A".to_vec()),
+            [false, false, false],
+            [false, false, true],
+        ),
+        (
+            "possible-character",
+            placement_group(a, b"AC".to_vec()),
+            [false, false, false],
+            [false, false, true],
+        ),
+        (
+            "possible-projectile",
+            placement_group(a, b"PMI".to_vec()),
+            [false, false, false],
+            [false, false, true],
+        ),
+        (
+            "possible-grenade",
+            placement_group(a, b"PGR".to_vec()),
+            [false, false, false],
+            [false, false, true],
+        ),
+        (
             "possible-placement-tag",
             placement_group(a, b"REF".to_vec()),
             [false, false, false],
@@ -4544,6 +4580,16 @@ fn plugin_placement_import_keeps_neighbors_of_damaged_records_and_frames() {
             3,
         ),
         (
+            "partial-actor-signature",
+            [
+                placement_group(a, b"AC".to_vec()),
+                placement_group(a, good_neighbor()),
+            ]
+            .concat(),
+            [false, false, false],
+            5,
+        ),
+        (
             "partial-move-id",
             [
                 placement_group(a, bad_move[..15].to_vec()),
@@ -4751,7 +4797,11 @@ fn plugin_placement_import_skips_children_of_a_damaged_new_interior() {
             record(b"CELL", damaged_cell, 0, vec![0]),
             placement_group(
                 damaged_cell,
-                placement(0x0100_0800, PLACEMENT_STAT, 0, 0.0, Vec::new()),
+                [
+                    placement(0x0100_0800, PLACEMENT_STAT, 0, 0.0, Vec::new()),
+                    placement(0x802, PLACEMENT_STAT, 0, 12.0, Vec::new()),
+                ]
+                .concat(),
             ),
             record(
                 b"CELL",
@@ -4768,11 +4818,12 @@ fn plugin_placement_import_skips_children_of_a_damaged_new_interior() {
     assert!(stderr.contains("its new CELL is damaged"), "{stderr}");
     assert_placement_import(
         result,
-        "Applied 1 room placements in 1 cells (1 created, 1 certified)",
+        "Applied 1 room placements in 2 cells (1 created, 1 certified)",
     );
     let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
     assert!(placement_certificate(&db, good_cell));
-    assert!(placement_certificate(&db, PLACEMENT_CELL_A));
+    assert!(!placement_certificate(&db, PLACEMENT_CELL_A));
+    assert_eq!(placement_winner_cell(&db, 0x802), Some(PLACEMENT_CELL_A));
     let skipped: (u32, u32) = db
         .query_row(
             "SELECT (SELECT count(*) FROM cells WHERE id=?1),
@@ -4782,6 +4833,80 @@ fn plugin_placement_import_skips_children_of_a_damaged_new_interior() {
         )
         .unwrap();
     assert_eq!(skipped, (0, 0));
+}
+
+#[test]
+fn plugin_placement_import_skips_bad_transforms_and_scales() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let a = PLACEMENT_CELL_A;
+    let b = PLACEMENT_CELL_B;
+    let source = plugin(
+        dir.path(),
+        "BadFields.esp",
+        &["Skyrim.esm"],
+        0,
+        [
+            placement_group(
+                b,
+                [
+                    placement(0x802, PLACEMENT_STAT, 0, f32::NAN, Vec::new()),
+                    placement(
+                        0x803,
+                        PLACEMENT_STAT,
+                        0,
+                        12.0,
+                        sub(b"XSCL", &0f32.to_le_bytes()),
+                    ),
+                    placement(0x0100_0800, PLACEMENT_STAT, 0, 12.0, sub(b"XSCL", &[0; 3])),
+                    placement(
+                        0x0100_0801,
+                        PLACEMENT_STAT,
+                        0,
+                        12.0,
+                        sub(b"XSCL", &1f32.to_le_bytes()).repeat(2),
+                    ),
+                    placement(0x0100_0802, PLACEMENT_STAT, 0, 12.0, sub(b"DATA", &[0; 24])),
+                ]
+                .concat(),
+            ),
+            placement_group(a, placement(0x822, PLACEMENT_STAT, 0, 32.0, Vec::new())),
+        ]
+        .concat(),
+    );
+    let result = run_placement_import(&assets, "--plugin", &source);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    for (id, field) in [
+        ("00000802", "DATA"),
+        ("00000803", "XSCL"),
+        ("01000800", "XSCL"),
+        ("01000801", "XSCL"),
+        ("01000802", "DATA"),
+    ] {
+        assert!(
+            stderr.contains(&format!("{id} with malformed {field}")),
+            "{stderr}"
+        );
+    }
+    assert_placement_import(result, "Applied 1 room placements in 2 cells (0 certified)");
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    assert_eq!(placement_winner_cell(&db, 0x802), Some(a));
+    assert_eq!(placement_winner_cell(&db, 0x803), Some(a));
+    assert_eq!(placement_winner_cell(&db, 0x0100_0800), None);
+    assert_eq!(stored_placement_certificate(&db, a), Some(false));
+    assert_eq!(stored_placement_certificate(&db, b), Some(false));
+    assert_eq!(
+        stored_placement_certificate(&db, PLACEMENT_CELL_UNRELATED),
+        Some(true)
+    );
+    assert_eq!(
+        db.query_row("SELECT pos_x FROM [references] WHERE id=0x822", [], |r| r
+            .get::<_, f32>(
+            0
+        ))
+        .unwrap(),
+        32.0
+    );
 }
 
 #[test]

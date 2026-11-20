@@ -510,21 +510,22 @@ pub struct RecordSource {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TruncatedPlacement {
-    record_type: [u8; 4],
+    signature: &'static [u8],
     source_id: Option<u32>,
 }
 
 impl TruncatedPlacement {
     pub(crate) fn from_prefix(bytes: &[u8]) -> Option<Self> {
-        let Some(&record_type) = bytes.first_chunk() else {
-            // A short signature can still hide a reference to a placement in another cell.
-            return (!bytes.is_empty() && b"REFR".starts_with(bytes)).then_some(Self {
-                record_type: *b"REFR",
-                source_id: None,
-            });
-        };
-        crate::esm::is_placed_record_type(&record_type).then(|| Self {
-            record_type,
+        let prefix = &bytes[..bytes.len().min(4)];
+        if prefix.is_empty() {
+            return None;
+        }
+        let kind = crate::esm::PLACED_RECORD_TYPES
+            .iter()
+            .find(|kind| kind.starts_with(prefix))?;
+        Some(Self {
+            // Keep only the bytes actually seen when several placed types share a prefix.
+            signature: &kind[..prefix.len()],
             source_id: bytes
                 .get(12..)
                 .and_then(|tail| tail.first_chunk())
@@ -534,8 +535,13 @@ impl TruncatedPlacement {
     }
 
     pub(crate) fn runtime_id(self, plugin: usize, order: &LoadOrder) -> Option<u32> {
-        source_identity::header_runtime_id(&self.record_type, self.source_id?, plugin, order)
-            .filter(|&id| id != 0)
+        source_identity::header_runtime_id(
+            self.signature.try_into().ok()?,
+            self.source_id?,
+            plugin,
+            order,
+        )
+        .filter(|&id| id != 0)
     }
 }
 
