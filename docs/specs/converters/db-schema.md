@@ -1378,6 +1378,14 @@ Columns and rules:
   Each plugin has one warning with that count and example. `integration-report.json` shows
   the counts under `room_graph.room_link_anomalies`.
 
+Both plugin readers require a usable `NAME` base on live placements. Rejecting an override
+preserves its predecessor and marks the affected interiors incomplete. If only the reference
+ID resolves, the reader can still identify the predecessor’s cell. A later accepted override or
+deletion clears damage tied to that ID. If only the destination cell resolves, the damage stays
+with that cell. When a malformed record or group consumes the rest of its enclosing frame,
+the reader marks the enclosing cell incomplete. If that cell cannot be identified, all surviving
+interiors use the whole-cell fallback. Parsing resumes at the next trusted frame boundary.
+
 The tables are derived data: a full load-order export clears and rebuilds them from the winning
 records on every conversion, like the grass tables. Subsets without placed references, including
 movement annotation, leave the graph alone. A subset that replaces a placed reference clears its
