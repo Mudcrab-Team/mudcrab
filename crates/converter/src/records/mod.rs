@@ -508,6 +508,32 @@ pub struct RecordSource {
     pub deleted: bool,
 }
 
+/// A discarded frame tail is scoped by its enclosing cell group. A malformed
+/// child header cannot identify the cells in any unread siblings.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum DiscardedFrameScope {
+    Cell(u32),
+    /// Unread children can belong to cells from other plugins in the load order.
+    Unknown,
+}
+
+impl From<Option<u32>> for DiscardedFrameScope {
+    fn from(cell: Option<u32>) -> Self {
+        cell.map_or(Self::Unknown, Self::Cell)
+    }
+}
+
+impl DiscardedFrameScope {
+    pub(crate) fn resolve(self, plugin: usize, order: &LoadOrder) -> Self {
+        match self {
+            Self::Cell(label) => source_identity::header_runtime_id(b"CELL", label, plugin, order)
+                .filter(|&id| id != 0)
+                .into(),
+            Self::Unknown => Self::Unknown,
+        }
+    }
+}
+
 /// Winners, nontrivial override chains and bounded scan/decode diagnostics.
 #[derive(Debug, Default)]
 pub struct ReadResult {
@@ -517,7 +543,7 @@ pub struct ReadResult {
     pub overrides: HashMap<u32, Vec<RecordSource>>,
     /// Physical header provenance includes accepted, deleted and rejected versions.
     pub history: Vec<history::HistoryEntry>,
-    /// Runtime cell IDs whose source child groups could not be read.
+    /// Runtime cell IDs potentially affected by discarded source frames.
     pub(crate) damaged_cell_groups: HashSet<u32>,
     /// Each winning `DOBJ` with its `DNAM` pairs merged key by key over every accepted
     /// earlier version, as the legacy reader does. A winning record alone would lose
@@ -619,6 +645,7 @@ fn read_plugins_with_prepared(
         "plugin/order length mismatch"
     );
     let mut result = ReadResult::default();
+    let mut unknown_discarded_scope = false;
     // Retain payloads only while an admitted winner still needs catalogue replay.
     let mut deferred_predecessors: HashMap<u32, Vec<DecodedRecord>> = HashMap::new();
     let mut gmst_ids: HashMap<String, u32> = HashMap::new();
@@ -912,12 +939,15 @@ fn read_plugins_with_prepared(
                 }
             }
         };
-        let damaged_cell_groups = scanner::scan_plugin(path, &mut diagnostics, observe, receive)?;
-        result.damaged_cell_groups.extend(
-            damaged_cell_groups.into_iter().filter_map(|label| {
-                source_identity::header_runtime_id(b"CELL", label, index, order)
-            }),
-        );
+        let discarded_frames = scanner::scan_plugin(path, &mut diagnostics, observe, receive)?;
+        for scope in discarded_frames {
+            match scope.resolve(index, order) {
+                DiscardedFrameScope::Cell(cell) => {
+                    result.damaged_cell_groups.insert(cell);
+                }
+                DiscardedFrameScope::Unknown => unknown_discarded_scope = true,
+            }
+        }
         result.history.extend(history.into_inner());
         result.diagnostics.insert(name.clone(), diagnostics);
     }
@@ -933,6 +963,15 @@ fn read_plugins_with_prepared(
         &mut validate,
     );
     deferred_stage.finish(result.records.len());
+    if unknown_discarded_scope {
+        result.damaged_cell_groups.extend(
+            result
+                .records
+                .values()
+                .filter(|record| record.record_type == *b"CELL")
+                .map(|record| record.form_id),
+        );
+    }
     let preservation_stage = profile::ProfileStage::start("preservation_observer");
     observe(&result);
     preservation_stage.finish(result.records.len());

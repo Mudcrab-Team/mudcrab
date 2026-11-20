@@ -4,6 +4,7 @@ use crate::esm::{
     records::RawRecord,
     types::{GroupHeader, RecordHeader, WorldReference},
 };
+use crate::records::DiscardedFrameScope;
 use color_eyre::{
     Result,
     eyre::{WrapErr, eyre},
@@ -239,7 +240,7 @@ pub(super) enum ParsedRecord {
     Usable(RawRecord),
     /// A placed record with a known header and parent cell but no usable payload.
     DamagedPlacement(RawRecord),
-    DamagedCellGroup(u32),
+    DiscardedFrame(DiscardedFrameScope),
 }
 
 fn parse_group_inner(
@@ -269,9 +270,7 @@ fn parse_group_inner(
                 "trailing {} bytes in bounded record frame",
                 curr.len(),
             ));
-            if let Some(cell) = current_cell {
-                visit(ParsedRecord::DamagedCellGroup(cell));
-            }
+            visit(ParsedRecord::DiscardedFrame(current_cell.into()));
             curr = &[];
             continue;
         }
@@ -279,6 +278,7 @@ fn parse_group_inner(
         if peek_tag == b"GRUP" {
             let Ok((rest, group)) = parse_group_header(curr) else {
                 warnings.skipped("invalid GRUP header".into());
+                visit(ParsedRecord::DiscardedFrame(current_cell.into()));
                 curr = &[];
                 continue;
             };
@@ -294,8 +294,11 @@ fn parse_group_inner(
                     ),
                     None => format!("invalid GRUP size {}", group.data_size),
                 });
-                for cell in [current_cell, cell_child].into_iter().flatten() {
-                    visit(ParsedRecord::DamagedCellGroup(cell));
+                visit(ParsedRecord::DiscardedFrame(current_cell.into()));
+                if let Some(child) = cell_child {
+                    visit(ParsedRecord::DiscardedFrame(DiscardedFrameScope::Cell(
+                        child,
+                    )));
                 }
                 curr = &[];
                 continue;
@@ -313,6 +316,7 @@ fn parse_group_inner(
         } else {
             let Ok((rest, header)) = parse_record_header(curr) else {
                 warnings.skipped("invalid record header".into());
+                visit(ParsedRecord::DiscardedFrame(current_cell.into()));
                 curr = &[];
                 continue;
             };
@@ -330,6 +334,7 @@ fn parse_group_inner(
                 curr = next;
                 decode_record_subrecords(&header, payload)
             } else {
+                visit(ParsedRecord::DiscardedFrame(current_cell.into()));
                 curr = &[];
                 Err(eyre!(
                     "truncated record payload: expected {record_len}, got {}",
@@ -397,7 +402,7 @@ pub fn parse_plugin_file(path: &Path) -> Result<Vec<RawRecord>> {
     Ok(records)
 }
 
-/// Keep usable records and known placement or cell-group damage in source order.
+/// Keep usable records, placement damage and discarded frames in source order.
 pub(super) fn parse_plugin_file_with_warnings(
     path: &Path,
 ) -> Result<(Vec<ParsedRecord>, Vec<String>)> {

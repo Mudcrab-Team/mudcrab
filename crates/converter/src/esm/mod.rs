@@ -3,6 +3,7 @@ use crate::esm::{
     exporter::{create_tables, validate_inhouse_record},
     records::RawRecord,
 };
+use crate::records::DiscardedFrameScope;
 use color_eyre::{Result, eyre::WrapErr};
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
@@ -309,6 +310,7 @@ impl EsmParser {
         let mut merged = HashMap::new();
         let mut damaged_placements = PlacementDamage::default();
         let mut damaged_cells = HashSet::new();
+        let mut unknown_discarded_scope = false;
         let mut room_link_layouts = HashMap::new();
         let mut summaries = Vec::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
@@ -327,10 +329,13 @@ impl EsmParser {
                 let (mut record, damaged) = match candidate {
                     ParsedRecord::Usable(record) => (record, false),
                     ParsedRecord::DamagedPlacement(record) => (record, true),
-                    ParsedRecord::DamagedCellGroup(label) => {
-                        damaged_cells.extend(crate::records::source_identity::header_runtime_id(
-                            b"CELL", label, priority, order,
-                        ));
+                    ParsedRecord::DiscardedFrame(scope) => {
+                        match scope.resolve(priority, order) {
+                            DiscardedFrameScope::Cell(cell) => {
+                                damaged_cells.insert(cell);
+                            }
+                            DiscardedFrameScope::Unknown => unknown_discarded_scope = true,
+                        }
                         continue;
                     }
                 };
@@ -456,6 +461,14 @@ impl EsmParser {
         }
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
+        if unknown_discarded_scope {
+            damaged_cells.extend(
+                merged
+                    .values()
+                    .filter(|record| record.record_type == *b"CELL")
+                    .map(|record| record.form_id),
+            );
+        }
         damaged_cells.extend(damaged_placements.affected_cells(&merged));
         Ok(LegacyPluginMerge {
             conversion: RecordConversion {
