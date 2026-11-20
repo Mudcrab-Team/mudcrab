@@ -52,6 +52,8 @@ mod emittance_parity_tests;
 #[cfg(test)]
 mod environment_parity_tests;
 #[cfg(test)]
+mod form_key_contract_tests;
+#[cfg(test)]
 mod light_details_parity_tests;
 #[cfg(test)]
 mod plugin_table_tests;
@@ -346,7 +348,7 @@ impl EsmParser {
         let mut unknown_discarded_scope = false;
         let mut room_link_layouts = HashMap::new();
         let mut placement_candidates = BTreeMap::new();
-        let mut deleted_ids = HashSet::new();
+        let mut deleted_ids = crate::records::DeletedBases::default();
         let mut summaries = Vec::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
         // the first definition's key/owner while taking the last setting value.
@@ -516,10 +518,13 @@ impl EsmParser {
                     room_link_layouts.insert(id, layout);
                 }
                 if record.is_deleted() {
-                    if id < 0x800 {
-                        deleted_ids.insert(id);
-                    }
-                    merged.remove(&id);
+                    let previous = merged.remove(&id);
+                    deleted_ids.record(
+                        id,
+                        record.load_order,
+                        record.record_type,
+                        previous.map(|prior| prior.record_type),
+                    );
                     placement_candidates.remove(&id);
                     damaged_placements.accepted(id);
                 } else {
@@ -597,7 +602,7 @@ fn resolve_legacy_placements(
     candidates: &mut BTreeMap<u32, LegacyPlacementCandidate>,
     layouts: &mut HashMap<u32, rooms::RoomLinkLayout>,
     damage: &mut PlacementDamage,
-    deleted_ids: &HashSet<u32>,
+    deleted_ids: &crate::records::DeletedBases,
     order: &load_order::LoadOrder,
     warnings: &RemapWarnings,
 ) {
@@ -605,11 +610,8 @@ fn resolve_legacy_placements(
         let rejected = invalid_placement_candidates(
             candidates.keys().copied(),
             |id| {
-                candidates[&id]
-                    .predecessor
-                    .as_ref()
-                    .and_then(|prior| prior.previous.as_ref())
-                    .is_some_and(|record| !is_placed_record_type(&record.record_type))
+                legacy_predecessors(&candidates[&id])
+                    .any(|record| !is_placed_record_type(&record.record_type))
             },
             |id| {
                 candidates.contains_key(&id).then(|| {
@@ -626,10 +628,11 @@ fn resolve_legacy_placements(
                 crate::records::validate_placement_targets(
                     None,
                     &winners[&id].record_type,
+                    winners[&id].load_order,
                     dependencies,
                     cycle,
                     |target| winners.get(&target).map(|record| record.record_type),
-                    |target| deleted_ids.contains(&target),
+                    deleted_ids,
                 )
             },
         );
@@ -642,7 +645,23 @@ fn resolve_legacy_placements(
             };
             let record = &winners[&id];
             let priority = record.load_order as usize;
-            warnings.skipped_record(&order.names[priority], record, candidate.source_id, reason);
+            match reason {
+                crate::records::PlacementFailure::Invalid(reason) => {
+                    warnings.skipped_record(
+                        &order.names[priority],
+                        record,
+                        candidate.source_id,
+                        reason,
+                    );
+                }
+                crate::records::PlacementFailure::RetiredBase(base) => {
+                    let mut counts = warnings.retired_base_placements.borrow_mut();
+                    let entry = counts
+                        .entry(order.names[priority].clone())
+                        .or_insert((0, id, base));
+                    entry.0 += 1;
+                }
+            }
             let source_slot = (candidate.source_id >> 24) as usize;
             let resolved = (source_slot <= order.metadata[priority].masters.len()).then_some(id);
             damage.reject_resolved(resolved, candidate.source_cell, priority, order);
@@ -677,16 +696,8 @@ fn legacy_placement_links(record: &RawRecord) -> [Option<u32>; 2] {
     ]
 }
 
-fn legacy_grouped_predecessors(
-    cell: Option<u32>,
-    candidate: &LegacyPlacementCandidate,
-) -> impl Iterator<Item = &RawRecord> {
-    let first = if cell.is_none() {
-        candidate.predecessor.as_deref()
-    } else {
-        None
-    };
-    std::iter::successors(first, |predecessor| {
+fn legacy_predecessors(candidate: &LegacyPlacementCandidate) -> impl Iterator<Item = &RawRecord> {
+    std::iter::successors(candidate.predecessor.as_deref(), |predecessor| {
         predecessor
             .previous_candidate
             .as_ref()?
@@ -694,8 +705,18 @@ fn legacy_grouped_predecessors(
             .as_deref()
     })
     .filter_map(|predecessor| predecessor.previous.as_ref())
-    .take_while(|previous| is_placed_record_type(&previous.record_type))
-    .filter(|previous| previous.cell_form_id.is_some())
+}
+
+fn legacy_grouped_predecessors(
+    cell: Option<u32>,
+    candidate: &LegacyPlacementCandidate,
+) -> impl Iterator<Item = &RawRecord> {
+    cell.is_none()
+        .then_some(candidate)
+        .into_iter()
+        .flat_map(legacy_predecessors)
+        .take_while(|previous| is_placed_record_type(&previous.record_type))
+        .filter(|previous| previous.cell_form_id.is_some())
 }
 
 /// Select failures against the current catalogue in dependency order. A caller
@@ -708,8 +729,8 @@ pub(crate) fn invalid_placement_candidates(
         u32,
         &PlacementDependencies,
         Option<&HashSet<u32>>,
-    ) -> std::result::Result<(), String>,
-) -> Vec<(u32, String)> {
+    ) -> std::result::Result<(), crate::records::PlacementFailure>,
+) -> Vec<(u32, crate::records::PlacementFailure)> {
     // Gabow's path-based strongly connected components algorithm. Discovery indices
     // are retained while a placement is active. Edges to active nodes merge roots.
     let mut visited = HashMap::new();
@@ -790,8 +811,8 @@ fn placement_component_failure(
         u32,
         &PlacementDependencies,
         Option<&HashSet<u32>>,
-    ) -> std::result::Result<(), String>,
-) -> Option<(u32, String)> {
+    ) -> std::result::Result<(), crate::records::PlacementFailure>,
+) -> Option<(u32, crate::records::PlacementFailure)> {
     if component.len() > 1
         || component
             .first()
@@ -886,6 +907,7 @@ struct RemapWarnings {
     out_of_range: RefCell<OutOfRangeCounts>,
     /// Invalid optional links, counted per containing plugin with the first diagnostic.
     skipped_optional: RefCell<BTreeMap<String, (u64, String)>>,
+    retired_base_placements: RefCell<BTreeMap<String, (u64, u32, u32)>>,
     /// Unusable candidates never replace an earlier complete record.
     skipped_records: RefCell<BTreeMap<String, (u64, String)>>,
 }
@@ -961,6 +983,13 @@ impl RemapWarnings {
             );
             eprintln!("{summary}");
             warning_lines.push(summary);
+        }
+        for (plugin, (count, id, base)) in self.retired_base_placements.borrow().iter() {
+            let summary = format!(
+                "notice: {plugin}: omitted {count} placement candidate(s) whose base was deleted by a later plugin (first: {id:08X}, required NAME {base:08X})"
+            );
+            eprintln!("{summary}");
+            notice_lines.push(summary);
         }
         (warning_lines, notice_lines)
     }

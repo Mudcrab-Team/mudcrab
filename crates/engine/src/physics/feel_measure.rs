@@ -880,6 +880,7 @@ fn measure_mouse_turn_and_body_scale() {
         &CursorCapture::Captured,
         Vec2::new(1.0, 0.0),
         false,
+        1.0,
         &mut look,
     );
     let yaw = look.yaw.abs();
@@ -888,6 +889,7 @@ fn measure_mouse_turn_and_body_scale() {
         &CursorCapture::Captured,
         Vec2::new(0.0, 1.0),
         false,
+        1.0,
         &mut look,
     );
     let pitch = look.pitch.abs();

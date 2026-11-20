@@ -547,6 +547,15 @@ async fn localized_union_definitions_publish_selected_banks_and_valid_neighbors(
     // Public replay reports rejected-field records as undecodable, preserving source provenance.
     assert_eq!(history.versions[0].decode_status, "undecodable");
     assert!(history.versions[0].record.is_none());
+    let diagnostic: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("inhouse-reader-diagnostics.json")).unwrap())
+            .unwrap();
+    assert_eq!(diagnostic["decoder"]["bankprobe.esp"]["skipped_fields"], 1);
+    let warning = diagnostic["decoder"]["bankprobe.esp"]["first_by_category"]["field"]
+        .as_str()
+        .unwrap();
+    assert!(warning.contains("01001811"), "{warning}");
+    assert!(warning.contains("ZTXT"), "{warning}");
     assert_eq!(fs::read(data.join("BankProbe.esp")).unwrap(), bytes);
 }
 

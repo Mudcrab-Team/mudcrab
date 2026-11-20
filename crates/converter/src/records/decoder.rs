@@ -877,7 +877,12 @@ fn decode_with_identity_inner(
                         fields.push(DecodedField {
                             signature,
                             localized_bank: selected_localized_bank(
-                                &common, bytes, schema, &selection, &value,
+                                &common,
+                                bytes,
+                                schema,
+                                &selection,
+                                &value,
+                                diagnostics,
                             ),
                             name: common.name,
                             value,
@@ -969,8 +974,14 @@ fn decode_with_identity_inner(
                         schema,
                         diagnostics,
                     )?;
-                    let localized_bank =
-                        selected_localized_bank(field_schema, bytes, schema, &selection, &value);
+                    let localized_bank = selected_localized_bank(
+                        field_schema,
+                        bytes,
+                        schema,
+                        &selection,
+                        &value,
+                        diagnostics,
+                    );
                     if signature == *b"EDID"
                         && let Value::String(name) = &value
                     {
@@ -1119,8 +1130,14 @@ fn decode_with_identity_inner(
                     schema,
                     diagnostics,
                 )?;
-                let localized_bank =
-                    selected_localized_bank(field_schema, bytes, schema, &selection, &value);
+                let localized_bank = selected_localized_bank(
+                    field_schema,
+                    bytes,
+                    schema,
+                    &selection,
+                    &value,
+                    diagnostics,
+                );
                 if signature == *b"EDID"
                     && let Value::String(name) = &value
                 {
@@ -1324,31 +1341,70 @@ fn array_stride(field: &FieldSchema, schema: &Schema) -> Result<usize, String> {
     Ok(stride)
 }
 
-/// Retain the most-specific selected bank without changing the serialized value contract.
+/// Keep the existing default-bank fallback while reporting a failed schema walk.
 fn selected_localized_bank(
     field: &FieldSchema,
     bytes: &[u8],
     schema: &Schema,
     selection: &super::deciders::Context<'_>,
     decoded: &Value,
+    diagnostics: &mut PluginDiagnostics,
 ) -> Option<String> {
+    match try_selected_localized_bank(field, bytes, schema, selection, decoded) {
+        Ok(bank) => bank,
+        Err(error) => {
+            let previous = diagnostics.push_field(&field.name);
+            let action = diagnostics.event_context.action.replace("defaulted");
+            let form_id = diagnostics.event_context.form_id.unwrap_or(0);
+            // For compatibility, the localization bucket counts this fallback in skipped_fields.
+            // The value is retained with the default bank, as the "defaulted" action records.
+            diagnostics.note("localization", || {
+                format!(
+                    "{} {:08X} {}: localized bank selection failed ({error}); using signature default bank",
+                    String::from_utf8_lossy(&selection.record_type),
+                    form_id,
+                    field.name
+                )
+            });
+            diagnostics.event_context.action = action;
+            diagnostics.pop_field(previous);
+            None
+        }
+    }
+}
+
+/// Retain the most-specific selected bank and preserve resolve/decide failures.
+fn try_selected_localized_bank(
+    field: &FieldSchema,
+    bytes: &[u8],
+    schema: &Schema,
+    selection: &super::deciders::Context<'_>,
+    decoded: &Value,
+) -> Result<Option<String>, String> {
     if !matches!(decoded, Value::LocalizedString(_)) {
-        return None;
+        return Ok(None);
     }
     let mut field = field.clone();
     let mut bank = None;
-    for _ in 0..32 {
-        field = schema.resolve(&field).ok()?;
+    for depth in 0..32 {
+        field = schema
+            .resolve(&field)
+            .map_err(|error| format!("resolve step {depth}: {error}"))?;
         if field.string_table.is_some() {
             bank.clone_from(&field.string_table);
         }
         if field.kind == "union" {
-            field = decide(&field, bytes, schema, selection).ok()??.into_owned();
+            let Some(selected) = decide(&field, bytes, schema, selection)
+                .map_err(|error| format!("decide step {depth}: {error}"))?
+            else {
+                return Ok(None);
+            };
+            field = selected.into_owned();
         } else {
-            return (field.kind == "lstring").then(|| bank.unwrap_or_else(|| "strings".into()));
+            return Ok((field.kind == "lstring").then(|| bank.unwrap_or_else(|| "strings".into())));
         }
     }
-    None
+    Err("localized bank selection exceeds 32 steps".into())
 }
 
 /// Choose a schema alternative using a small named Rust policy, never external tool code.
@@ -2269,6 +2325,7 @@ impl GrammarReplay<'_, '_> {
                         self.schema,
                         field.selection,
                         &decoded.value,
+                        local,
                     );
                 } else {
                     field.occurrence.counts.write(local);
@@ -2312,6 +2369,7 @@ impl GrammarReplay<'_, '_> {
                     self.schema,
                     field.selection,
                     &value,
+                    local,
                 ),
                 value,
                 canonical_bytes,
@@ -2774,8 +2832,14 @@ fn replay_deferred(
             rejections.push((deferred.source_position, signature));
             previous.push((original_counts, DiagnosticCounts::read(&local)));
         } else {
-            field.localized_bank =
-                selected_localized_bank(&deferred.field, bytes, schema, &selection, &field.value);
+            field.localized_bank = selected_localized_bank(
+                &deferred.field,
+                bytes,
+                schema,
+                &selection,
+                &field.value,
+                &mut local,
+            );
             previous.push((original_counts, DiagnosticCounts::read(&local)));
         }
         replay.event_log.merge_from(&local.event_log);
@@ -2863,8 +2927,10 @@ fn reject_deferred_candidate(
     history_index: &HashMap<(u32, u64), usize>,
     record: &DecodedRecord,
     order: &LoadOrder,
-    reason: String,
+    failure: impl Into<PlacementFailure>,
 ) {
+    let failure = failure.into();
+    let reason = failure.reason();
     set_deferred_history(result, history_index, record, false, Some(reason.clone()));
     let diagnostics = result
         .diagnostics
@@ -2877,17 +2943,17 @@ fn reject_deferred_candidate(
         Some(record.form_id),
         "admission",
     );
-    result
-        .diagnostics
-        .entry(order.names[record.load_order as usize].clone())
-        .or_default()
-        .note("record", || {
-            format!(
-                "{} {:08X}: {reason}",
-                String::from_utf8_lossy(&record.record_type),
-                record.form_id
-            )
-        });
+    let category = match failure {
+        PlacementFailure::Invalid(_) => "record",
+        PlacementFailure::RetiredBase(_) => "retired_base",
+    };
+    diagnostics.note(category, || {
+        format!(
+            "{} {:08X}: {reason}",
+            String::from_utf8_lossy(&record.record_type),
+            record.form_id
+        )
+    });
 }
 
 fn placement_base_field<'a>(
@@ -2909,15 +2975,60 @@ fn target_allowed(id: u32, kind: Option<[u8; 4]>, field: &FieldSchema) -> bool {
     })
 }
 
+/// An accepted tombstone may legitimately retire an older placement's required base.
+#[derive(Default)]
+pub(crate) struct DeletedBases(HashMap<u32, (u32, Option<[u8; 4]>)>);
+
+impl DeletedBases {
+    pub(crate) fn record(
+        &mut self,
+        id: u32,
+        priority: u32,
+        kind: [u8; 4],
+        previous: Option<[u8; 4]>,
+    ) {
+        if let Some(previous) = previous {
+            self.0
+                .insert(id, (priority, (previous == kind).then_some(kind)));
+        } else {
+            // A repeated deletion must not move the first deletion to a later layer.
+            self.0.entry(id).or_insert((priority, None));
+        }
+    }
+}
+
+pub(crate) enum PlacementFailure {
+    Invalid(String),
+    RetiredBase(u32),
+}
+
+impl From<String> for PlacementFailure {
+    fn from(reason: String) -> Self {
+        Self::Invalid(reason)
+    }
+}
+
+impl PlacementFailure {
+    pub(crate) fn reason(&self) -> String {
+        match self {
+            Self::Invalid(reason) => reason.clone(),
+            Self::RetiredBase(base) => {
+                format!("required NAME {base:08X} was deleted by a later plugin")
+            }
+        }
+    }
+}
+
 /// Check required placement links and resolve parent ownership against the same catalogue.
 pub(crate) fn validate_placement_targets(
     prepared: Option<&PreparedSchemas>,
     kind: &[u8; 4],
+    priority: u32,
     dependencies: &crate::esm::PlacementDependencies,
     cycle: Option<&std::collections::HashSet<u32>>,
     winning_kind: impl Fn(u32) -> Option<[u8; 4]>,
-    was_deleted: impl Fn(u32) -> bool,
-) -> Result<(), String> {
+    deleted: &DeletedBases,
+) -> Result<(), PlacementFailure> {
     let schemas = match prepared {
         Some(prepared) => prepared,
         None => self::prepared(),
@@ -2934,7 +3045,8 @@ pub(crate) fn validate_placement_targets(
             && let Some(field) = placement_base_field(schemas, kind)
             && {
                 let kind = winning_kind(base);
-                !target_allowed(base, kind, field) || (kind.is_none() && was_deleted(base))
+                !target_allowed(base, kind, field)
+                    || (kind.is_none() && deleted.0.contains_key(&base))
             }
         {
             return Err(format!(
@@ -2944,17 +3056,31 @@ pub(crate) fn validate_placement_targets(
         Ok(())
     };
     let internal = |id: &u32| cycle.is_some_and(|members| members.contains(id));
-    check_targets(
-        kind,
-        dependencies.own.map(|link| link.filter(|id| !internal(id))),
-    )?;
-    crate::esm::validate_placement_parent(kind, dependencies.own[0], || {
+    let own = dependencies.own.map(|link| link.filter(|id| !internal(id)));
+    let parent = crate::esm::validate_placement_parent(kind, dependencies.own[0], || {
         dependencies
             .grouped
             .iter()
             .filter(|(_, links)| !links.iter().flatten().any(internal))
             .find_map(|(kind, links)| check_targets(kind, *links).ok().and(links[0]))
-    })
+    });
+    if let Err(reason) = check_targets(kind, own) {
+        // A missing base is a faithful omission only if the placement's parent is
+        // independently usable and an accepted deletion removed a compatible live record.
+        if let Some(base) = own[1]
+            && winning_kind(base).is_none()
+            && let Some(&(deleted_at, Some(previous))) = deleted.0.get(&base)
+            && deleted_at > priority
+            && placement_base_field(schemas, kind)
+                .is_some_and(|field| target_allowed(base, Some(previous), field))
+            && dependencies.own[0].is_none_or(|cell| winning_kind(cell) == Some(*b"CELL"))
+            && parent.is_ok()
+        {
+            return Err(PlacementFailure::RetiredBase(base));
+        }
+        return Err(reason.into());
+    }
+    parent.map_err(Into::into)
 }
 
 fn placement_links(record: &DecodedRecord) -> [Option<u32>; 2] {
@@ -3005,7 +3131,7 @@ struct PlacementClaimant {
 
 #[derive(Default)]
 pub(super) struct RecoveryCandidates {
-    deleted_low_ids: std::collections::HashSet<u32>,
+    pub(super) deleted: DeletedBases,
     pub(super) predecessors: HashMap<u32, Vec<DecodedRecord>>,
     // A tentative placement owns this queue until it fails or keeps its slot.
     // Key by physical occurrence so a later plugin can have its own queue.
@@ -3122,9 +3248,13 @@ impl RecoveryCandidates {
                     }
                     self.record_default_object(&next);
                     if deleted {
-                        if id < 0x800 {
-                            self.deleted_low_ids.insert(id);
-                        }
+                        let previous = self.predecessors.get(&id).and_then(|chain| chain.last());
+                        self.deleted.record(
+                            id,
+                            next.load_order,
+                            next.record_type,
+                            previous.map(|record| record.record_type),
+                        );
                         self.predecessors.remove(&id);
                         return None;
                     }
@@ -3177,7 +3307,7 @@ impl RecoveryCandidates {
                         &mut claimant.record,
                         claimant.previous.is_some(),
                         &claimant.grouped,
-                        &self.deleted_low_ids,
+                        &self.deleted,
                         validate,
                     )
                 {
@@ -3195,16 +3325,20 @@ impl RecoveryCandidates {
                         } else {
                             let previous = claimant.previous.as_ref();
                             super::validate_live_candidate(&next, previous, validate)
-                                .map_err(|error| format!("unusable runtime candidate: {error}"))
+                                .map_err(|error| {
+                                    PlacementFailure::Invalid(format!(
+                                        "unusable runtime candidate: {error}"
+                                    ))
+                                })
                                 .and_then(|()| {
                                     if super::incomplete_override(&next, previous) {
-                                        return Err(super::INCOMPLETE_OVERRIDE.to_owned());
+                                        return Err(super::INCOMPLETE_OVERRIDE.to_owned().into());
                                     }
                                     catalogue.validate_superseded(
                                         &mut next,
                                         previous.is_some(),
                                         &claimant.grouped,
-                                        &self.deleted_low_ids,
+                                        &self.deleted,
                                         validate,
                                     )
                                 })
@@ -3243,9 +3377,9 @@ impl PlacementCatalogue<'_> {
         record: &mut DecodedRecord,
         has_previous: bool,
         grouped: &[([u8; 4], [Option<u32>; 2])],
-        deleted_low_ids: &std::collections::HashSet<u32>,
+        deleted: &DeletedBases,
         validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
-    ) -> Result<(), String> {
+    ) -> Result<(), PlacementFailure> {
         if record_contains_deferred(record) {
             let mut source = DeferredSource::take(record);
             let priority = record.load_order as usize;
@@ -3267,7 +3401,7 @@ impl PlacementCatalogue<'_> {
             .and_then(|()| validate(record));
             if let Err(reason) = resolved {
                 if has_previous {
-                    return Err(reason);
+                    return Err(reason.into());
                 }
                 for signature in source.safe_prefix(record) {
                     if !record.rejected_fields.contains(&signature) {
@@ -3290,10 +3424,11 @@ impl PlacementCatalogue<'_> {
             validate_placement_targets(
                 Some(self.prepared),
                 &record.record_type,
+                record.load_order,
                 &dependencies,
                 None,
                 |target| self.kinds.get(&target).copied(),
-                |target| deleted_low_ids.contains(&target),
+                deleted,
             )?;
         }
         Ok(())
@@ -3344,12 +3479,6 @@ pub(crate) fn resolve_deferred(
     }
     if !kinds.is_empty() || !recovery.duplicates.is_empty() {
         for (index, entry) in result.history.iter().enumerate() {
-            if entry.accepted
-                && entry.flags & 0x20 != 0
-                && let Some(id) = entry.form_id.filter(|id| *id < 0x800)
-            {
-                recovery.deleted_low_ids.insert(id);
-            }
             history_index
                 .entry((entry.plugin_index, entry.source_record_offset))
                 .or_insert(index);
@@ -3498,11 +3627,11 @@ pub(crate) fn resolve_deferred(
         let rejected = crate::esm::invalid_placement_candidates(
             placements.iter().copied(),
             |id| {
-                recovery
-                    .predecessors
-                    .get(&id)
-                    .and_then(|chain| chain.last())
-                    .is_some_and(|record| !crate::esm::is_placed_record_type(&record.record_type))
+                recovery.predecessors.get(&id).is_some_and(|chain| {
+                    chain
+                        .iter()
+                        .any(|prior| !crate::esm::is_placed_record_type(&prior.record_type))
+                })
             },
             |id| {
                 placements.contains(&id).then(|| {
@@ -3518,10 +3647,11 @@ pub(crate) fn resolve_deferred(
                 validate_placement_targets(
                     Some(prepared),
                     &result.records[&id].record_type,
+                    result.records[&id].load_order,
                     dependencies,
                     cycle,
                     |target| kinds.get(&target).copied(),
-                    |target| recovery.deleted_low_ids.contains(&target),
+                    &recovery.deleted,
                 )
             },
         );
@@ -5902,3 +6032,7 @@ mod tests {
         assert!(!record_contains_deferred(record));
     }
 }
+
+#[cfg(test)]
+#[path = "localized_bank_diagnostic_tests.rs"]
+mod localized_bank_diagnostic_tests;

@@ -183,7 +183,7 @@ def publication_identity(path, root):
         # Prefer the declared name. External aliases of retained evidence can still use its receipt.
         for candidate, base in ((path.absolute(), root.absolute()), (path.resolve(), root.resolve())):
             if candidate.is_relative_to(base):
-                name = str(candidate.relative_to(base))
+                name = candidate.relative_to(base).as_posix()
                 if name in changes:
                     record = changes[name]
                     if actual != record['published_sha256']:
@@ -245,7 +245,7 @@ def candidates(root):
             files.add(path)
     paths = sorted(files - {root / MANIFEST})
     for path in paths:
-        name = str(path.relative_to(root))
+        name = path.relative_to(root).as_posix()
         issues = content_findings(name, os.fsencode('/' + name))
         if issues:
             raise SystemExit('Rename the evidence file before publication: ' + ', '.join(issues))
@@ -363,7 +363,7 @@ def sanitize(root, paths, manifest):
     changes = {}
     pending = {}
     for path in paths:
-        name = str(path.relative_to(root))
+        name = path.relative_to(root).as_posix()
         raw = path.read_bytes()
         published = transform(name, raw, changes)
         issues = findings(name, published)
@@ -421,7 +421,7 @@ def main():
     issues = []
     for path in paths:
         issues.extend(link_findings(path))
-        issues.extend(findings(str(path.relative_to(root)), path.read_bytes()))
+        issues.extend(findings(path.relative_to(root).as_posix(), path.read_bytes()))
         artifact_digest(path, root)
     if issues:
         raise SystemExit('\n'.join(issues))
