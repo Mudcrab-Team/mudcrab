@@ -348,6 +348,7 @@ pub enum SkinControllerTarget {
     Ancestor,
     Unrelated,
     AboveSkinRoot,
+    WeightedRoot,
 }
 
 /// Generates a skin with a non-joint ancestor and a separate branch for controller tests.
@@ -749,6 +750,15 @@ fn legacy_skinned_shape_with_shader(
                 SkinControllerTarget::Ancestor => (3, 2),
                 SkinControllerTarget::Unrelated => (5, unrelated),
                 SkinControllerTarget::AboveSkinRoot => (4, outer),
+                SkinControllerTarget::WeightedRoot => {
+                    let name = u32::try_from(strings.len())?;
+                    strings.push("WeightedRoot");
+                    blocks[0][..4].copy_from_slice(&name.to_le_bytes());
+                    let instance = &mut blocks[instance_block as usize];
+                    instance[8..12].copy_from_slice(&0u32.to_le_bytes()); // skin root
+                    instance[16..20].copy_from_slice(&0u32.to_le_bytes()); // first joint
+                    (name, 0)
+                }
             };
             Some((kind, name, block))
         }
