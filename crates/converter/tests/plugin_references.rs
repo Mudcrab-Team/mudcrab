@@ -5738,6 +5738,16 @@ fn damaged_plugin_occluders_leave_valid_neighbors_and_verified_link_slots_intact
     assert!(!placement_certificate(&db, cell));
     assert!(placement_certificate(&db, PLACEMENT_CELL_B));
 
+    let links_verified = || {
+        db.query_row(
+            "SELECT value FROM room_graph_stats WHERE name='occlusion_links_verified'",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap()
+    };
+    assert!(links_verified());
+
     // The moved marker has one broken slot and one valid outgoing link. Dropping
     // the entire XORD would make the latter's target usable as an independent plane.
     let slots = [0x0100_0904u32, 0x9900_0000, 0, 0];
@@ -5768,6 +5778,7 @@ fn damaged_plugin_occluders_leave_valid_neighbors_and_verified_link_slots_intact
         result.status.success() && error.contains("01000903"),
         "{error}"
     );
+    assert!(!links_verified());
     assert_eq!(shape_count(cell + 3), 0);
     assert_eq!(shape_count(0x0200_0900), 1);
     assert_eq!(

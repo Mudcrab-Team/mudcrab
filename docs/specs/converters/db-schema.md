@@ -1349,6 +1349,8 @@ Columns and rules:
   can hide a link to another cell. Otherwise it sets `occlusion_links_verified` to one.
   These markers let the loader keep unrelated occluders in a complete cell that contains an
   all-null `XORD`. Subset exports invalidate cells that contain an old or new link target.
+  A plugin placement import also clears pack-wide link verification when remapping reports
+  damage on an occlusion marker. It retains each outgoing link it can resolve.
   Occluder shadows require both markers because an unverified source in another cell can have a
   missing incoming link to a local occluder. Legacy exports omit both markers.
 - **`room_bounds`**: the box is centred on the marker's position and oriented by its rotation
