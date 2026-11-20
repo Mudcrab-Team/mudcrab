@@ -2779,6 +2779,27 @@ fn room_link_anomalies_reach_both_readers_integration_reports() {
             "typed={typed}: attribute winning overrides to the supplying plugin"
         );
     }
+    // The same source populates the full projection above and exercises both archive modes.
+    let work = directory.path().join("archive-work");
+    for (name, working) in [("archive", None), ("archive-copied", Some(work.as_path()))] {
+        let output = directory.path().join(name);
+        converter::esm::inhouse::export_record_bundle_typed_with_options(
+            &data,
+            &order,
+            &output,
+            &[],
+            working,
+            converter::esm::inhouse::RecordBundleMode::RecordArchiveOnly,
+        )
+        .unwrap();
+        let db = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+        let rows: u32 = db
+            .query_row("SELECT count(*) FROM room_link_anomalies", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 0, "{name}");
+    }
 }
 
 #[test]
@@ -2833,6 +2854,14 @@ fn trailing_portal_endpoints_keep_both_readers_conservative() {
                 |r| r.get(0),
             )
             .unwrap();
+        let flags: (bool, bool) = conn
+            .query_row(
+                "SELECT unbounded_a,unbounded_b FROM room_portals WHERE ref_id=0x802 AND pair_index=0",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(flags, (false, false), "typed={typed}");
         assert!(
             !complete,
             "typed={typed}: an unmatched endpoint cannot prove complete connectivity"
