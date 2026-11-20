@@ -331,7 +331,14 @@ impl EsmParser {
             for candidate in records {
                 let (mut record, damaged) = match candidate {
                     ParsedRecord::Usable(record) => (record, false),
-                    ParsedRecord::DamagedPlacement(record) => (record, true),
+                    ParsedRecord::DamagedRecord(record)
+                        if record.cell_form_id.is_some()
+                            && !record.is_deleted()
+                            && is_placed_record_type(&record.record_type) =>
+                    {
+                        (record, true)
+                    }
+                    ParsedRecord::DamagedRecord(_) => continue,
                     ParsedRecord::DiscardedFrame(scope) => {
                         match scope.resolve(priority, order) {
                             DiscardedFrameScope::Cell(cell) => {
