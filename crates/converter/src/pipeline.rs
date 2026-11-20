@@ -1134,6 +1134,8 @@ impl AssetPipeline {
                 "database_cache_identity".into(),
                 identity_started.elapsed().as_millis(),
             );
+            #[cfg(test)]
+            after_database_cache_identity_for_test();
             let database_cache_root = config.ingestion_cache_dir().join(".database-cache");
             let lookup_started = Instant::now();
             // Merged terrain reads the records of a fresh conversion, so it never restores a database.
@@ -1325,24 +1327,38 @@ impl AssetPipeline {
                         .as_ref()
                         .is_some_and(|current| current.key == identity.key)
                     {
-                        let store_started = Instant::now();
-                        if let Err(error) = database_cache::store(
-                            &database_cache_root,
-                            identity,
-                            staging,
-                            cancellation,
+                        // A same-header replacement can be decoded under the original's key:
+                        // the recheck above reads whatever is on disk now, not the decode view.
+                        if !decoded_plugin_digests_match_identity(
+                            &identity.inputs,
+                            &conversion.plugin_checksums,
                         ) {
-                            if error.downcast_ref::<Interrupted>().is_some() {
-                                return Err(error);
+                            report.database_cache_key = None;
+                            report.notices.push(
+                                "base database cache was not stored because a decoded plugin \
+                                 digest differs from its proved input"
+                                    .into(),
+                            );
+                        } else {
+                            let store_started = Instant::now();
+                            if let Err(error) = database_cache::store(
+                                &database_cache_root,
+                                identity,
+                                staging,
+                                cancellation,
+                            ) {
+                                if error.downcast_ref::<Interrupted>().is_some() {
+                                    return Err(error);
+                                }
+                                report
+                                    .notices
+                                    .push(format!("base database cache was not stored: {error:#}"));
                             }
-                            report
-                                .notices
-                                .push(format!("base database cache was not stored: {error:#}"));
+                            report.phase_elapsed_ms.insert(
+                                "database_cache_persistence".into(),
+                                store_started.elapsed().as_millis(),
+                            );
                         }
-                        report.phase_elapsed_ms.insert(
-                            "database_cache_persistence".into(),
-                            store_started.elapsed().as_millis(),
-                        );
                     } else if current.is_some() {
                         report.notices.push("base database cache was not stored because its inputs changed during conversion".into());
                     } else {
@@ -5835,6 +5851,41 @@ pub(crate) fn clear_unavailable_plugin_hashes(hashes: &mut [String], skipped: &B
             hash.clear();
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A deterministic source change after the database cache identity is proved and before any
+    /// plugin is decoded. Take-once, like the reader's admission and decode hooks.
+    static AFTER_DATABASE_CACHE_IDENTITY: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn after_database_cache_identity_for_test() {
+    let hook = AFTER_DATABASE_CACHE_IDENTITY.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+/// The stored bundle must contain the bytes the reader actually decoded, not just the bytes that
+/// were on disk when the identity was proved. `inputs["plugins"][i]["sha256"]` is the lowercase
+/// hex of the raw SHA-256 over plugin `i`'s whole file (the admitted stream proof), and
+/// `digests[i]` is the reader's raw SHA-256 of the exact bytes it decoded. The decoded digest is
+/// encoded with `cache::digest_hex`; hashing it again would never match.
+fn decoded_plugin_digests_match_identity(inputs: &serde_json::Value, digests: &[Vec<u8>]) -> bool {
+    let Some(plugins) = inputs.get("plugins").and_then(|plugins| plugins.as_array()) else {
+        return false;
+    };
+    plugins.len() == digests.len()
+        && plugins.iter().zip(digests).all(|(input, digest)| {
+            !digest.is_empty()
+                && input
+                    .get("sha256")
+                    .and_then(|sha256| sha256.as_str())
+                    .is_some_and(|sha256| sha256 == crate::cache::digest_hex(digest).as_str())
+        })
 }
 
 /// Replace file-inspection hashes with the digests the reader verified while decoding.
@@ -14923,6 +14974,104 @@ mod tests {
         );
         config.record_reader = crate::config::RecordReader::Legacy;
         assert!(!run_without_progress(config).await.database_cache_hit);
+    }
+
+    /// A same-header replacement decoded under the original's proved cache key must not be stored.
+    /// The admission header (masters and ESM/ESL/localized flags) is identical, so the reader
+    /// decodes the replacement; only its HEDR author differs, which changes the decoded digest.
+    #[tokio::test(flavor = "current_thread")]
+    async fn database_cache_store_rejects_a_same_header_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("modern");
+        fs::create_dir(&data).unwrap();
+        let plugin = data.join("Skyrim.esm");
+        let fixture = |author| {
+            dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+                author,
+                worldspace: "CacheStoreWorld",
+                cells: &[dummy_content::esm::Cell {
+                    grid_x: 0,
+                    grid_y: 0,
+                }],
+                model_path: "test/cache.nif",
+                diffuse: "test/cache.dds",
+                normal_texture: "test/cache_n.dds",
+            })
+            .unwrap()
+        };
+        let original = fixture("OriginalFixture");
+        fs::write(&plugin, &original).unwrap();
+        let replacement_path = directory.path().join("replacement.native");
+        fs::write(&replacement_path, fixture("ReplacementFixture")).unwrap();
+        let mut config = cpu_lod_config(&data, &output);
+        config.record_reader = crate::config::RecordReader::Inhouse;
+        config.no_lod = true;
+        config.terrain_default_texture = crate::config::TerrainDefaultTexture::White;
+        let cache_root = config.ingestion_cache_dir().join(".database-cache");
+        struct ClearHooks;
+        impl Drop for ClearHooks {
+            fn drop(&mut self) {
+                AFTER_DATABASE_CACHE_IDENTITY.with(|slot| *slot.borrow_mut() = None);
+                crate::esm::AFTER_PLUGIN_DECODE.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        let clear = ClearHooks;
+        // After the cache identity proves the original, the path holds the replacement.
+        let retained_original = directory.path().join("original.retained");
+        let retained_replacement = directory.path().join("decoded-replacement.retained");
+        let (hook_plugin, hook_replacement, hook_retained) =
+            (plugin.clone(), replacement_path, retained_original.clone());
+        AFTER_DATABASE_CACHE_IDENTITY.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                fs::rename(&hook_plugin, &hook_retained).unwrap();
+                fs::rename(&hook_replacement, &hook_plugin).unwrap();
+            }));
+        });
+        // The reader has decoded the replacement; the original returns before the cache recheck.
+        let (hook_plugin, hook_retained, hook_replaced) = (
+            plugin.clone(),
+            retained_original,
+            retained_replacement.clone(),
+        );
+        crate::esm::AFTER_PLUGIN_DECODE.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                fs::rename(&hook_plugin, &hook_replaced).unwrap();
+                fs::rename(&hook_retained, &hook_plugin).unwrap();
+            }));
+        });
+        let report = run_without_progress(config).await;
+        drop(clear);
+        assert!(
+            retained_replacement.is_file(),
+            "the replacement must be the decoded view"
+        );
+        assert_eq!(
+            fs::read(&plugin).unwrap(),
+            original,
+            "the original must be back before the cache recheck"
+        );
+        assert!(
+            report.database_cache_key.is_none(),
+            "a replacement decoded under the original's key must not keep that key"
+        );
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("a decoded plugin digest differs")),
+            "{:?}",
+            report.notices
+        );
+        let entries = fs::read_dir(&cache_root)
+            .map(|entries| entries.filter_map(|entry| entry.ok()).count())
+            .unwrap_or(0);
+        assert_eq!(
+            entries, 0,
+            "the replacement's database must not be stored under the original's key"
+        );
     }
 
     /// Loads the manifest published in an output directory.
