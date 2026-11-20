@@ -616,6 +616,20 @@ fn transform_of(data: &[u8]) -> Option<([f32; 3], [f32; 3])> {
     Some(([x, y, z], [rx, ry, rz]))
 }
 
+fn unique_marker_geometry<'a>(
+    sources: &Option<RoomLinkSources<'a>>,
+    form_id: u32,
+    view: &SubrecordView<'a>,
+    tag: &[u8; 4],
+) -> Option<&'a [u8]> {
+    if let Some(RoomLinkSources::Typed(decoded)) = sources {
+        return decoded.records.get(&form_id)?.unique_source_subrecord(tag);
+    }
+    let mut fields = view.find_all(tag);
+    let data = fields.next()?;
+    fields.next().is_none().then_some(data)
+}
+
 fn is_placed(record_type: &[u8; 4]) -> bool {
     super::is_placed_record_type(record_type)
 }
@@ -1025,7 +1039,10 @@ fn project_room_graph(
             report.non_box_rooms_skipped += 1;
             continue;
         }
-        let Some((position, rotation)) = view.find(b"DATA").and_then(transform_of) else {
+        let Some((position, rotation)) = unique_marker_geometry(&sources, form_id, &view, b"DATA")
+            .filter(|data| data.len() == 24)
+            .and_then(transform_of)
+        else {
             incomplete.insert(cell);
             report.invalid_markers_skipped += 1;
             continue;
@@ -1117,31 +1134,19 @@ fn project_room_graph(
         }
         let cell = record.cell_form_id.unwrap_or(0);
         let view = SubrecordView::new(&record.subrecords);
-        let source = match &sources {
-            Some(RoomLinkSources::Typed(decoded)) => decoded.records.get(&form_id),
-            _ => None,
-        };
-        let unique_geometry = |tag: &[u8; 4]| {
-            if let Some(source) = source {
-                return source.unique_source_subrecord(tag);
-            }
-            let mut fields = view.find_all(tag);
-            let data = fields.next()?;
-            fields.next().is_none().then_some(data)
-        };
         if view.find(b"XPRM").is_none() {
             incomplete.insert(cell);
             report.portals_without_size_skipped += 1;
             continue;
         }
-        let Some(xprm) = unique_geometry(b"XPRM")
+        let Some(xprm) = unique_marker_geometry(&sources, form_id, &view, b"XPRM")
             .filter(|data| data.len() == 32 && u32_at(data, 28) == Some(SHAPE_PORTAL))
         else {
             incomplete.insert(cell);
             report.invalid_markers_skipped += 1;
             continue;
         };
-        let Some((position, rotation)) = unique_geometry(b"DATA")
+        let Some((position, rotation)) = unique_marker_geometry(&sources, form_id, &view, b"DATA")
             .filter(|data| data.len() == 24)
             .and_then(transform_of)
         else {

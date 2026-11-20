@@ -2703,6 +2703,71 @@ fn ambiguous_room_headers_keep_both_readers_conservative() {
 }
 
 #[test]
+fn room_transform_and_link_damage_is_local_to_the_source_cell() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let mut records = Vec::new();
+    for (cell, source, target, repeated) in [
+        (0x900, 0x800, 0x801u32, false),
+        (0x910, 0x810, 0x801, false),
+        (0x920, 0x820, 0x8ff, false),
+        (0x930, 0x830, 0x831, true),
+    ] {
+        records.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
+        let mut fields = sub(b"XRMR", &[1, 0, 0, 0]);
+        fields.extend(sub(b"XLRM", &target.to_le_bytes()));
+        if repeated {
+            fields.extend(sub(b"DATA", &[0; 24]));
+        }
+        records.extend(placement_group(
+            cell,
+            [
+                placement_marker(source, 0x1f, fields),
+                placement_marker(source + 1, 0x1f, vec![]),
+            ]
+            .concat(),
+        ));
+    }
+    plugin(&data, "Skyrim.esm", &[], 1, records);
+    for (name, typed) in [("legacy", false), ("typed", true)] {
+        let db = rusqlite::Connection::open(export_room_review_fixture(
+            &data,
+            &directory.path().join(name),
+            typed,
+        ))
+        .unwrap();
+        let mut cells = db
+            .prepare(
+                "SELECT c.cell_id,c.complete,count(b.ref_id) FROM room_graph_cells c
+             LEFT JOIN room_bounds b ON b.cell_id=c.cell_id GROUP BY c.cell_id ORDER BY c.cell_id",
+            )
+            .unwrap();
+        let rows = cells
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, u32>(0)?,
+                    r.get::<_, bool>(1)?,
+                    r.get::<_, u32>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            [
+                (0x900, true, 2),
+                (0x910, false, 2),
+                (0x920, false, 2),
+                (0x930, false, 1)
+            ],
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn authored_room_link_counts_keep_only_mismatched_cells_incomplete() {
     let cell = |id, first_room: u32, header: Option<[u8; 4]>, link_count| {
         let mut shape = vec![0; 32];
