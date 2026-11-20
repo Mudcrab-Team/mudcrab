@@ -576,6 +576,7 @@ pub(crate) fn decode_text(bytes: &[u8]) -> String {
 
 pub(crate) use decoder::{
     PreparedSchemas, localized_field_bank, prepare_runtime_schema, string_table_with_prepared,
+    validate_placement_targets,
 };
 
 /// Scan in load order using the converter's single slot/master authority.
@@ -658,7 +659,7 @@ fn read_plugins_with_prepared(
     );
     let mut result = ReadResult::default();
     let mut unknown_discarded_scope = false;
-    // Retain payloads only while an admitted winner still needs catalogue replay.
+    // Retain payloads only while a tentative winner still needs catalogue admission.
     let mut deferred_predecessors: HashMap<u32, Vec<DecodedRecord>> = HashMap::new();
     let mut gmst_ids: HashMap<String, u32> = HashMap::new();
     let mut gmst_aliases: HashMap<u32, u32> = HashMap::new();
@@ -950,7 +951,8 @@ fn read_plugins_with_prepared(
                 deferred_predecessors.remove(&record.form_id);
             } else {
                 let id = record.form_id;
-                let tentative = decoder::record_contains_deferred(&record);
+                let tentative = decoder::record_contains_deferred(&record)
+                    || crate::esm::is_placed_record_type(&record.record_type);
                 let previous = result.records.insert(id, record);
                 if tentative {
                     if let Some(previous) = previous {
