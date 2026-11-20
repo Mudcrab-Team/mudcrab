@@ -53,6 +53,8 @@ mod scene_evidence;
 pub mod schedule_timing;
 pub mod settings;
 pub mod settings_ui;
+#[cfg(test)]
+mod shader_validation;
 pub mod shots;
 pub mod skin_material;
 pub mod sky;

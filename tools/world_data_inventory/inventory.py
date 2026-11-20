@@ -13,6 +13,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 SURFACE_NAME = "reviewed-surface.json"
+STORE_DIR = "stores"
+STORE_FIELDS = ("format_version", "store", "reviewed_at_commit", "owner", "reason", "states", "evidence")
+STORE_DISPOSITIONS = ("reviewed_at_commit", "owner", "reason", "states", "evidence")
+COMMIT = re.compile(r"[0-9a-f]{40}")
 # Derived files. Never commit them: they hold fingerprints of source files, so every unrelated source edit
 # changes them and every open pull request then conflicts. CI and this tool regenerate them. The list matches
 # .gitignore. `reviewed-sources.json` is the old committed fingerprint file; it stays here so a stale copy is found.
@@ -296,6 +300,70 @@ def validate_refs(root, evidence):
             raise ValueError(f"broken evidence reference: {ref}")
 
 
+def store_paths(here):
+    """The committed store files, sorted. Each store is its own file so store PRs never share a line."""
+    directory = here / STORE_DIR
+    if not directory.is_dir():
+        raise ValueError(f"missing {STORE_DIR}/ directory; each external store needs its own JSON file")
+    paths = sorted(directory.glob("*.json"))
+    loaded = set(paths)
+    for path in sorted(directory.iterdir()):
+        if path.is_file() and path not in loaded:
+            name = path.relative_to(here).as_posix()
+            raise ValueError(f"unexpected file in store directory: {name}; only lowercase *.json store files are read")
+    return paths
+
+
+def load_stores(here):
+    """Load one disposition per external store. Refuse a partial or mistyped file instead of dropping fields."""
+    stores = {}
+    sources = {}
+    for path in store_paths(here):
+        name = path.relative_to(here).as_posix()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            raise ValueError(f"cannot read store file {name}: {error}") from None
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"invalid JSON in store file {name}: {error}") from None
+        if not isinstance(value, dict):
+            raise ValueError(f"store file is not an object: {name}")
+        problems = []
+        missing = sorted(set(STORE_FIELDS) - set(value))
+        extra = sorted(set(value) - set(STORE_FIELDS))
+        if missing:
+            problems.append("missing " + ", ".join(missing))
+        if extra:
+            problems.append("unknown " + ", ".join(extra))
+        if problems:
+            raise ValueError(f"invalid store file {name}: " + "; ".join(problems))
+        if value["format_version"] != 1:
+            raise ValueError(f"unsupported store file version: {name}")
+        key = value["store"]
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError(f"missing store name: {name}")
+        if key in stores:
+            raise ValueError(f"duplicate store {key}: {sources[key]} and {name}")
+        stores[key] = {field: value[field] for field in STORE_DISPOSITIONS}
+        stores[key]["source"] = name
+        sources[key] = name
+    return dict(sorted(stores.items()))
+
+
+def load_manual(here):
+    """Load dispositions.json and join the per-store files. A legacy stores block fails with the migration."""
+    manual = json.loads((here / "dispositions.json").read_text(encoding="utf-8"))
+    if "stores" in manual:
+        raise ValueError(
+            f"dispositions.json must not contain a stores block; each store has its own file under "
+            f"tools/world_data_inventory/{STORE_DIR}/ with its own reviewed_at_commit. "
+            "Move each entry to that directory and delete the block.")
+    manual["stores"] = load_stores(here)
+    return manual
+
+
 def validate_manual(root, manual):
     if manual.get("format_version", 1) != 1:
         raise ValueError("unsupported disposition version")
@@ -311,10 +379,18 @@ def validate_manual(root, manual):
             raise ValueError(f"semantic claim needs a sink: {key}")
         validate_refs(root, value.get("sink", []))
         validate_refs(root, value.get("tests", []))
-    for value in manual["stores"].values():
+    for key, value in manual["stores"].items():
+        source = value.get("source", "unknown store file")
+        if not isinstance(value.get("reviewed_at_commit"), str) or not COMMIT.fullmatch(value["reviewed_at_commit"]):
+            raise ValueError(f"invalid store reviewed_at_commit: {key} ({source})")
+        if not value.get("owner") or not value.get("reason"):
+            raise ValueError(f"missing store owner/reason: {key} ({source})")
         if set(value["states"]) != set(STATES) or any(value["states"][state] not in STATE_VALUES[state] for state in STATES):
-            raise ValueError("external store needs independent valid states")
-        validate_refs(root, value["evidence"])
+            raise ValueError(f"external store needs independent valid states: {key} ({source})")
+        try:
+            validate_refs(root, value["evidence"])
+        except ValueError as error:
+            raise ValueError(f"store {key} ({source}): {error}") from None
     for value in manual["legacy_shapes"]:
         validate_refs(root, value["evidence"])
     for key, value in manual["tables"].items():
@@ -322,13 +398,25 @@ def validate_manual(root, manual):
             raise ValueError(f"invalid table disposition: {key}")
 
 
+def checked_at(root):
+    """The commit under test, as a label only. Anchors are checked against the checked-out tree."""
+    try:
+        done = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True,
+                              text=True, encoding="utf-8", check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return done.stdout.strip() or "unknown"
+
+
 def build(root, manual, extraction=None, queries=None):
     validate_manual(root, manual)
     queries = scan_queries(root) if queries is None else queries
-    result = {"format_version": 1, "reviewed_at_commit": manual["reviewed_at_commit"],
+    result = {"format_version": 1, "checked_at": checked_at(root),
               "schema_status": "emitted" if extraction else "not_extracted",
               "schemas": {}, "queries": queries, "variants": [], "fields": manual["fields"],
-              "stores": manual["stores"], "limitations": manual["limitations"],
+              "stores": {key: {field: value[field] for field in STORE_DISPOSITIONS}
+                         for key, value in manual["stores"].items()},
+              "limitations": manual["limitations"],
               "legacy_shapes": manual["legacy_shapes"],
               "denominators": {"rusqlite_candidates": len(queries), "emitted_schema_columns": 0 if extraction else None,
                                "manually_traced_fields": len(manual["fields"]),
@@ -429,7 +517,7 @@ def validate_mappings(result):
 
 
 def report(result):
-    lines = ["# World-data inventory", "", f"Schema status: **{result['schema_status']}**. Reviewed source: `{result['reviewed_at_commit']}`.", "",
+    lines = ["# World-data inventory", "", f"Schema status: **{result['schema_status']}**. Checked at: `{result['checked_at']}`.", "",
              "Prepare dependencies are not executed rows, mapped rows, semantic use, population, or retail parity.", "",
              "## Denominators", "", *[f"- {key}: {'unknown' if value is None else value}" for key, value in result["denominators"].items()], "",
              "## Traced examples", "", "| Field | Decoded | Preserved | Projected | Query-dependent | Mapped | Semantic use | Role / reason |",
@@ -445,7 +533,7 @@ def report(result):
         lines.append("- Full reader identities and per-query dependencies: inventory.json.")
     lines += ["", "## External stores", ""]
     for key, value in sorted(result["stores"].items()):
-        lines += [f"- `{key}`: {value['reason']}"]
+        lines += [f"- `{key}`: reviewed at `{value['reviewed_at_commit']}`. {value['reason']}"]
     lines += ["", "## Evidence anchors", ""]
     for key, value in sorted(result["fields"].items()):
         refs = value["evidence"] + value.get("sink", []) + value.get("tests", [])
@@ -479,13 +567,16 @@ def source_guard(root, queries, manual):
     evidence_paths = {ref["path"] for field in manual["fields"].values()
                       for group in ("evidence", "sink", "tests") for ref in field.get(group, [])}
     evidence_paths.update(ref["path"] for store in manual["stores"].values() for ref in store["evidence"])
+    store_dir = root / "tools/world_data_inventory" / STORE_DIR
+    tooling = ["tools/world_data_inventory/inventory.py", "tools/world_data_inventory/dispositions.json",
+               "tools/world_data_inventory/dispositions.schema.json",
+               "tools/world_data_inventory/store.schema.json",
+               "crates/engine/src/world/inventory_tests.rs"]
+    tooling += sorted(path.relative_to(root).as_posix() for path in store_dir.glob("*.json")) if store_dir.is_dir() else []
     return {"projection_sources": source_files(root), "query_candidates": [q["id"] for q in queries],
             "reader_sources": {p: digest((root / p).read_text(encoding="utf-8"))
                                for p in sorted({q["path"] for q in queries} | evidence_paths)},
-            "tooling_sources": {p: digest((root / p).read_text(encoding="utf-8")) for p in (
-                "tools/world_data_inventory/inventory.py", "tools/world_data_inventory/dispositions.json",
-                "tools/world_data_inventory/dispositions.schema.json",
-                "crates/engine/src/world/inventory_tests.rs") if (root / p).is_file()}}
+            "tooling_sources": {p: digest((root / p).read_text(encoding="utf-8")) for p in tooling if (root / p).is_file()}}
 
 
 def reader_surface(queries):
@@ -572,7 +663,7 @@ def run(argv, root=ROOT, here=HERE):
         parser.error("--source-identity cannot be combined with generation/check options")
     if args.review_sources and args.check:
         parser.error("--check cannot update the reviewed surface")
-    manual = json.loads((here / "dispositions.json").read_text(encoding="utf-8"))
+    manual = load_manual(here)
     extraction = json.loads(args.extraction.read_text(encoding="utf-8")) if args.extraction else None
     validate_manual(root, manual)
     queries = scan_queries(root)

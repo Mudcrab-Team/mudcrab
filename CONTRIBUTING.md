@@ -123,6 +123,12 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    tests separately. CI also runs `cargo audit` and a release-mode
    performance check; see `.github/workflows/run_tests.yml` for the exact commands.
 
+   Every WGSL file under `crates/engine/src/shaders` and `vendor/` is composed with `naga_oil`
+   and validated by Naga in the `engine` tests (`crates/engine/src/shader_validation.rs`). It
+   needs no GPU and runs with the normal test suite. Add a variant there when a pipeline uses new
+   shader defs; a shader that cannot be composed outside the app goes in its `KNOWN_EXCEPTIONS`
+   with a reason.
+
    CI also counts `.unwrap()`, `.expect(` and `panic!(` in production code (not in `#[cfg(test)]`
    code, and not in `#[test]` functions). It fails when a crate's count is higher in your pull request
    than at its base commit, so it judges only the sites you add and needs no upkeep. Prefer returning an
@@ -146,6 +152,11 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    `#[allow(clippy::cast_possible_truncation, reason = "the form ID is below 2^24")]`.
    No lint checks the reason, so an allow without `reason =` is a review finding.
    `python3 tools/cast_ratchet/cast_ratchet.py --lint-flags` prints the Clippy flags for a local run.
+
+   The byte-level parsers (ESM subrecords and record framing) also have `cargo-fuzz`
+   targets in `fuzz/`. They run on a schedule, not on pull requests.
+   [`docs/contributing/fuzzing.md`](docs/contributing/fuzzing.md) shows how to run one
+   for a fixed time and what to do with a crash.
 5. **Submit a Pull Request:**
    - Target the `main` branch and fill in the PR template; [`docs/contributing/writing-prs.md`](docs/contributing/writing-prs.md) shows how to write it so it is quick to review.
    - Link the issue (`Closes #N`), apply the [labels](docs/contributing/labels.md) that fit (if a label there doesn't exist on the repository yet, use the closest one that does; without triage access, name them in the PR instead), and reference any relevant planning docs in `docs/specs/`.
