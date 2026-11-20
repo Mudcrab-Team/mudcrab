@@ -137,6 +137,12 @@ impl<'a> SubrecordView<'a> {
             .map(|d| u32::from_le_bytes([d[0], d[1], d[2], d[3]]))
     }
 
+    pub(super) fn unique_form_id(&self, target_tag: &[u8; 4]) -> Option<u32> {
+        let mut fields = self.find_all(target_tag);
+        let bytes = <[u8; 4]>::try_from(fields.next()?).ok()?;
+        fields.next().is_none().then(|| u32::from_le_bytes(bytes))
+    }
+
     /// Read an i32 (4 bytes LE)
     pub fn get_i32(&self, target_tag: &[u8; 4]) -> Option<i32> {
         self.find(target_tag)
