@@ -400,7 +400,10 @@ fn judged_median_accepts_a_mixed_remeasure_with_half_the_samples_slow() {
         judged_median(&first, || vec![slow, fast, fast, fast, fast], millis(9));
     assert!(remeasured);
     assert_eq!(median, Duration::from_micros(6_990));
-    assert!(within_budget, "four of eight samples over budget still pass on the median");
+    assert!(
+        within_budget,
+        "four of eight samples over budget still pass on the median"
+    );
 }
 
 /// Check bounded deterministic generation and report each cell's median budget result.
