@@ -94,7 +94,7 @@ jobs:
           {
             echo "### PR size"
             echo
-            echo "**${LINES}** changed hand-written lines; label: \`${DESIRED_LABEL:-none}\`."
+            echo "**${LINES}** changed hand-written lines; computed label: \`${DESIRED_LABEL:-none}\`."
           } >> "$GITHUB_STEP_SUMMARY"
 
           if ! current="$(gh pr view "$PR_NUMBER" --repo "$REPOSITORY" --json labels --jq '.labels[].name')"; then
