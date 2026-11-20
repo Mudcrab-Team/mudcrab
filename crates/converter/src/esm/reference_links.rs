@@ -5,8 +5,12 @@
 //! Layouts follow xEdit 4.1.5f `Core/wbDefinitionsTES5.pas` and the in-house schema.
 
 use super::{
-    extractors::SubrecordView, load_order::LoadOrder, records::RawRecord, types::ArchivedRecordData,
+    extractors::{SubrecordView, serialize_subrecords},
+    load_order::LoadOrder,
+    records::RawRecord,
+    types::ArchivedRecordData,
 };
+use crate::records::{DecodedRecord, framed_source_prefix, history::stored_order, source_identity};
 use rusqlite::{OptionalExtension, Result, Transaction, params};
 use std::collections::{HashMap, HashSet};
 
@@ -181,6 +185,129 @@ pub(super) fn has_live_target(tx: &Transaction<'_>, id: u32) -> Result<bool> {
     Ok(kind.is_some_and(|kind| accepts_placement_target(kind.as_bytes())))
 }
 
+// Subset exports preserve the original conversion's provenance. A row marks a
+// replacement, with recovered runtime link words when it came from a typed source.
+pub(super) const SUBSET_SOURCES_SQL: &str = "
+    CREATE TABLE IF NOT EXISTS reference_link_subset_sources (
+        form_id INTEGER PRIMARY KEY, data BLOB
+    );
+";
+
+pub(super) fn remember_subset_source(
+    tx: &Transaction<'_>,
+    record: &RawRecord,
+    source: Option<(&DecodedRecord, &LoadOrder)>,
+) -> Result<()> {
+    let data = source.and_then(|(source, order)| {
+        let fields = record.subrecords.iter().filter_map(|(tag, bytes)| {
+            Some((<[u8; 4]>::try_from(tag.as_slice()).ok()?, bytes.as_slice()))
+        });
+        let restored = authored_link_fields(
+            fields,
+            &source.raw_payload,
+            source.load_order as usize,
+            order,
+        );
+        (!restored.is_empty()).then(|| serialize_subrecords(&restored))
+    });
+    tx.prepare_cached(
+        "INSERT OR REPLACE INTO reference_link_subset_sources(form_id,data) VALUES (?1,?2)",
+    )?
+    .execute(params![record.form_id, data])?;
+    Ok(())
+}
+
+pub(super) fn forget_subset_source(tx: &Transaction<'_>, id: u32) -> Result<()> {
+    tx.prepare_cached("DELETE FROM reference_link_subset_sources WHERE form_id=?1")?
+        .execute([id])?;
+    Ok(())
+}
+
+/// Recover authored words for surviving canonical occurrences. The typed decoder
+/// drops malformed widths and nonfinite delays. For other dropped occurrences,
+/// compare the earliest and latest possible order-preserving matches.
+fn authored_link_fields<'a>(
+    canonical: impl Iterator<Item = ([u8; 4], &'a [u8])> + Clone,
+    payload: &[u8],
+    supplier: usize,
+    order: &LoadOrder,
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut restored = Vec::new();
+    let mut native = None;
+    for (tag, widths) in [(*b"XLKR", &[4, 8][..]), (*b"XAPR", &[8][..])] {
+        let canonical: Vec<_> = canonical
+            .clone()
+            .filter_map(|(sig, data)| (sig == tag && widths.contains(&data.len())).then_some(data))
+            .collect();
+        if canonical.is_empty() {
+            continue;
+        }
+        let word_end = |data: &[u8]| if tag == *b"XAPR" { 4 } else { data.len() };
+        let authored: Vec<_> = native
+            .get_or_insert_with(|| framed_source_prefix(payload))
+            .iter()
+            .filter_map(|&(sig, bytes)| {
+                if sig != tag || !widths.contains(&bytes.len()) {
+                    return None;
+                }
+                if tag == *b"XAPR" && !f32::from_bits(u32_at(bytes, 4)?).is_finite() {
+                    return None;
+                }
+                let mut data = bytes.to_vec();
+                for word in data[..word_end(bytes)].chunks_exact_mut(4) {
+                    let raw = u32::from_le_bytes(word.try_into().expect("four-byte link word"));
+                    let mapped = source_identity::header_runtime_id(b"REFR", raw, supplier, order)
+                        .unwrap_or(0);
+                    word.copy_from_slice(&mapped.to_le_bytes());
+                }
+                Some(data)
+            })
+            .collect();
+        let compatible = |projected: &[u8], source: &[u8]| {
+            projected.len() == source.len()
+                && projected[word_end(projected)..] == source[word_end(source)..]
+                && (0..word_end(projected)).step_by(4).all(|offset| {
+                    u32_at(projected, offset) == Some(0)
+                        || u32_at(projected, offset) == u32_at(source, offset)
+                })
+        };
+        let mut occurrences = authored.iter().enumerate();
+        let earliest: Option<Vec<_>> = canonical
+            .iter()
+            .map(|projected| {
+                occurrences
+                    .find(|(_, source)| compatible(projected, source))
+                    .map(|(index, _)| index)
+            })
+            .collect();
+        let mut occurrences = authored.iter().enumerate().rev();
+        let latest: Option<Vec<_>> = canonical
+            .iter()
+            .rev()
+            .map(|projected| {
+                occurrences
+                    .find(|(_, source)| compatible(projected, source))
+                    .map(|(index, _)| index)
+            })
+            .collect();
+        for (position, projected) in canonical.into_iter().enumerate() {
+            let data = match (&earliest, &latest) {
+                (Some(first), Some(last)) if first[position] == last[last.len() - 1 - position] => {
+                    authored[first[position]].clone()
+                }
+                _ => projected.to_vec(),
+            };
+            restored.push((tag.to_vec(), data));
+        }
+    }
+    restored
+}
+
+fn has_table(tx: &Transaction<'_>, name: &str) -> Result<bool> {
+    tx.prepare_cached("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)")?
+        .query_row([name], |row| row.get(0))
+}
+
 /// Refresh only the target columns. In particular, a source outside the edit retains its delay,
 /// other links and details (including any XLOC key resolved by the full export).
 pub(super) fn refresh_incoming(
@@ -205,31 +332,50 @@ pub(super) fn refresh_incoming(
         return Ok(());
     }
 
-    // Older packs may have no placement mirror. For layered sources the original archive
-    // can instead be stale. The history lookup uses the resolved FormID, not source_form_id.
-    let has_layers: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema
-         WHERE type='table' AND name='room_placement_edits')",
-        [],
-        |row| row.get(0),
-    )?;
-    let data = if has_layers {
-        "CASE WHEN EXISTS(SELECT 1 FROM room_placement_edits WHERE form_id=r.id)
-              THEN r.data ELSE coalesce(raw.data,r.data) END"
+    let layered = if has_table(tx, "room_placement_edits")? {
+        "EXISTS(SELECT 1 FROM room_placement_edits WHERE form_id=r.id)"
     } else {
-        "coalesce(raw.data,r.data)"
+        "0"
     };
-    // A NULL projection carries no target ID. Scan only sources with nullable link slots
-    // once per restoring batch. Materialize their IDs before updating the link tables.
+    let order = if has_table(tx, "inhouse_source_records")? && has_table(tx, "record_overrides")? {
+        let (order, _) = stored_order(tx).map_err(|error| {
+            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(
+                error.to_string(),
+            )))
+        })?;
+        let plugin_count: usize =
+            tx.query_row("SELECT count(*) FROM plugins", [], |row| row.get(0))?;
+        (order.names.len() == plugin_count).then_some(order)
+    } else {
+        None
+    };
+    let (native_join, native_data) = if order.is_some() {
+        (
+            format!(
+                "LEFT JOIN inhouse_source_records native ON native.form_id=r.id
+          AND native.load_order=raw.load_order AND native.record_type=raw.record_type
+          AND subset.form_id IS NULL AND NOT ({layered})"
+            ),
+            "native.payload, native.load_order, native.source_form_id, native.record_type",
+        )
+    } else {
+        (String::new(), "NULL, NULL, NULL, NULL")
+    };
+    // Materialize the candidate IDs before updating these same tables.
     let mut sources = tx.prepare(&format!(
         "WITH candidates(id) AS MATERIALIZED (
              SELECT reference_id FROM reference_linked_refs WHERE linked_ref_id IS NULL
              UNION SELECT reference_id FROM reference_linked_refs WHERE keyword_id IS NULL
              UNION SELECT reference_id FROM reference_activate_parents WHERE parent_ref_id IS NULL
          )
-         SELECT r.id, {data} FROM candidates
-         JOIN [references] r ON r.id=candidates.id
-         LEFT JOIN records raw ON raw.form_id=r.id"
+         SELECT r.id,
+                CASE WHEN subset.form_id IS NOT NULL THEN coalesce(subset.data,r.data,raw.data)
+                     WHEN {layered} THEN r.data ELSE coalesce(raw.data,r.data) END,
+                {native_data}
+         FROM candidates JOIN [references] r ON r.id=candidates.id
+         LEFT JOIN records raw ON raw.form_id=r.id
+         LEFT JOIN reference_link_subset_sources subset ON subset.form_id=r.id
+         {native_join}"
     ))?;
     let mut linked = tx.prepare_cached(
         "UPDATE reference_linked_refs SET linked_ref_id=?3
@@ -258,21 +404,49 @@ pub(super) fn refresh_incoming(
                 )
             },
         )?;
+        let canonical = record
+            .subrecords
+            .iter()
+            .map(|sub| (sub.tag, sub.data.as_slice()));
+        let mut restored = None;
+        if let Some(order) = &order
+            && let Some(payload) = row.get::<_, Option<Vec<u8>>>(2)?
+        {
+            let supplier = row.get::<_, usize>(3)?;
+            let source_id = row.get(4)?;
+            let kind: String = row.get(5)?;
+            if let Ok(kind) = <&[u8; 4]>::try_from(kind.as_bytes())
+                && supplier < order.names.len()
+                && source_identity::header_runtime_id(kind, source_id, supplier, order) == Some(id)
+            {
+                restored = Some(authored_link_fields(
+                    canonical.clone(),
+                    &payload,
+                    supplier,
+                    order,
+                ));
+            }
+        }
         let fields = |tag| {
-            record
-                .subrecords
+            let recovered = restored
                 .iter()
-                .filter_map(move |sub| (sub.tag == tag).then_some(sub.data.as_slice()))
+                .flatten()
+                .filter_map(move |(sig, data)| (sig == &tag).then_some(data.as_slice()));
+            let use_canonical = restored.is_none();
+            let effective = canonical
+                .clone()
+                .filter_map(move |(sig, data)| (sig == tag && use_canonical).then_some(data));
+            recovered.chain(effective)
         };
         for (position, (key, target)) in linked_refs(fields(*b"XLKR")).enumerate() {
             for (value, statement) in [(key, &mut keyword), (target, &mut linked)] {
-                if let Some(value) = value.filter(|id| available.contains(id)) {
+                if let Some(value) = value.filter(|id| *id != 0 && available.contains(id)) {
                     statement.execute(params![id, position as i64, value])?;
                 }
             }
         }
         for (position, field) in activate_parents(fields(*b"XAPR")).enumerate() {
-            if let Some(value) = u32_at(field, 0).filter(|id| available.contains(id)) {
+            if let Some(value) = u32_at(field, 0).filter(|id| *id != 0 && available.contains(id)) {
                 parent.execute(params![id, position as i64, value])?;
             }
         }

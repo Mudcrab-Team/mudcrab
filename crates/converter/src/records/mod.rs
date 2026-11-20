@@ -627,8 +627,8 @@ pub(crate) fn decode_text(bytes: &[u8]) -> String {
 }
 
 pub(crate) use decoder::{
-    PreparedSchemas, localized_field_bank, prepare_runtime_schema, string_table_with_prepared,
-    validate_placement_targets,
+    PreparedSchemas, framed_source_prefix, localized_field_bank, prepare_runtime_schema,
+    string_table_with_prepared, validate_placement_targets,
 };
 
 fn validate_live_candidate(
