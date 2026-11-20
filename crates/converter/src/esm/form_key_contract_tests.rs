@@ -571,16 +571,13 @@ fn handwritten_absent_self_link_retains_diagnostic_and_neighbor() {
     let result = super::EsmParser::merge_plugins_with_load_order(&paths, &order).unwrap();
     assert_eq!(oracle_word(&result.records[&0x811], b"XCWT"), 0);
     assert!(result.records.contains_key(&0x812));
+    // The link points at no record in the source data either, so clearing it is a notice.
+    assert!(result.warnings.is_empty(), "{result:?}");
+    assert_eq!(result.notices.len(), 1, "{result:?}");
     assert!(
-        result
-            .warnings
-            .iter()
-            .any(|line| line.contains("optional FormID 02001234 exceeds master list")),
-        "{result:?}"
-    );
-    assert!(
-        result.notices.is_empty(),
-        "cleared fields have no self notice: {result:?}"
+        result.notices[0].contains("past the master list whose self target is absent")
+            && result.notices[0].contains("optional FormID 02001234 exceeds master list"),
+        "cleared fields are reported as cleared, not as resolved to self: {result:?}"
     );
 }
 
@@ -744,11 +741,12 @@ fn handwritten_special_layouts_clear_and_warn_without_self_notices() {
             "{kind:?}/{tag:?}: {result:?}"
         );
         assert!(result.records.contains_key(&0x812));
-        assert_eq!(result.warnings.len(), 1, "{kind:?}/{tag:?}: {result:?}");
-        assert!(result.warnings[0].contains("optional FormID 02001234 exceeds master list"));
+        assert!(result.warnings.is_empty(), "{kind:?}/{tag:?}: {result:?}");
+        assert_eq!(result.notices.len(), 1, "{kind:?}/{tag:?}: {result:?}");
         assert!(
-            result.notices.is_empty(),
-            "cleared fields do not count as self: {result:?}"
+            result.notices[0].contains("past the master list whose self target is absent")
+                && result.notices[0].contains("optional FormID 02001234 exceeds master list"),
+            "cleared fields are reported as cleared, not as resolved to self: {result:?}"
         );
     }
 }

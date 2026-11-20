@@ -381,7 +381,7 @@ impl EsmParser {
                     // Every field layout (including NAME and VMAD) uses this decision.
                     // Headers/group labels retain identity admission without a target lookup.
                     if field && past_master && value >= 0x800 && !source_ids.contains(&value) {
-                        warnings.skipped_optional(
+                        warnings.cleared_past_master(
                             &order.names[priority],
                             format!(
                                 "{} record source {source_id:08X}: optional FormID {raw:08X} exceeds master list",
@@ -715,6 +715,9 @@ struct RemapWarnings {
     /// Keyed by the containing plugin, retaining the first record kind.
     /// Any separate truncation or candidate rejection remains a recovery warning.
     out_of_range: RefCell<OutOfRangeCounts>,
+    /// Optional links past the master list whose self target is absent. They point at nothing
+    /// in the source data too, so clearing them loses nothing and is reported as a notice.
+    cleared_past_master: RefCell<BTreeMap<String, (u64, String)>>,
     /// Invalid optional links, counted per containing plugin with the first diagnostic.
     skipped_optional: RefCell<BTreeMap<String, (u64, String)>>,
     /// Unusable candidates never replace an earlier complete record.
@@ -735,6 +738,13 @@ impl RemapWarnings {
         let entry = counts
             .entry(plugin.to_owned())
             .or_insert((0, form_id, record_type));
+        entry.0 += 1;
+    }
+
+    /// Count one cleared past-master link per plugin, keeping the first example.
+    fn cleared_past_master(&self, plugin: &str, example: String) {
+        let mut counts = self.cleared_past_master.borrow_mut();
+        let entry = counts.entry(plugin.to_owned()).or_insert((0, example));
         entry.0 += 1;
     }
 
@@ -775,6 +785,13 @@ impl RemapWarnings {
             let summary = format!(
                 "notice: {plugin}: {count} FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own (first: {example:08X} in {})",
                 String::from_utf8_lossy(record_type)
+            );
+            eprintln!("{summary}");
+            notice_lines.push(summary);
+        }
+        for (plugin, (count, example)) in self.cleared_past_master.borrow().iter() {
+            let summary = format!(
+                "notice: {plugin}: cleared {count} optional FormID links past the master list whose self target is absent (they point at no record; first: {example})"
             );
             eprintln!("{summary}");
             notice_lines.push(summary);

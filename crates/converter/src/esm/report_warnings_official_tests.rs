@@ -42,6 +42,8 @@ fn reader_summary_kind(message: &str) -> &'static str {
         "truncated_light_ids"
     } else if message.contains("master index past") {
         "out_of_range_master_indices"
+    } else if message.contains("past the master list whose self target is absent") {
+        "cleared_past_master_links"
     } else if message.contains("invalid optional FormID links") {
         "invalid_optional_links"
     } else if message.contains("unusable record candidate(s)") {
@@ -167,8 +169,8 @@ fn official_legacy_reader_report_has_no_warnings_and_is_complete() {
     assert_eq!(
         report.notices,
         [
-            "notice: dawnguard.esm: 1 FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own (first: 0307B5B9 in ACTI)",
             "notice: skyrim.esm: 1 FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own (first: 0123C00E in GMST)",
+            "notice: dawnguard.esm: cleared 1 optional FormID links past the master list whose self target is absent (they point at no record; first: ACTI record source 02014760: optional FormID 0307B5B9 exceeds master list)",
             "notice: skyrim.esm: 5 localized IDs missing from readable string tables (first: 0003C7E3 FNAM missing localized ID 17)",
         ],
         "official control must retain compatibility and readable-bank missing-key notices"
