@@ -1383,12 +1383,11 @@ impl Plugin for RoomCullingPlugin {
 #[derive(Component)]
 pub struct DrawableRoomSphere(ModelSphere);
 
+type ChangedMeshExtras = (With<Mesh3d>, Changed<GltfMeshExtras>);
+
 fn read_drawable_spheres(
     mut commands: Commands,
-    changed: Query<
-        (Entity, &GltfMeshExtras, Has<DrawableRoomSphere>),
-        (With<Mesh3d>, Changed<GltfMeshExtras>),
-    >,
+    changed: Query<(Entity, &GltfMeshExtras), ChangedMeshExtras>,
     mut removed: RemovedComponents<GltfMeshExtras>,
     existing: Query<(), With<DrawableRoomSphere>>,
 ) {
@@ -1397,7 +1396,7 @@ fn read_drawable_spheres(
             commands.entity(entity).try_remove::<DrawableRoomSphere>();
         }
     }
-    for (entity, extras, had_sphere) in &changed {
+    for (entity, extras) in &changed {
         let sphere = serde_json::from_str::<serde_json::Value>(&extras.value)
             .ok()
             .and_then(|mut value| {
@@ -1409,7 +1408,7 @@ fn read_drawable_spheres(
             .filter(|sphere| sphere.valid() && sphere.radius > 0.0);
         if let Some(sphere) = sphere {
             commands.entity(entity).insert(DrawableRoomSphere(sphere));
-        } else if had_sphere {
+        } else if existing.contains(entity) {
             commands.entity(entity).try_remove::<DrawableRoomSphere>();
         }
     }
