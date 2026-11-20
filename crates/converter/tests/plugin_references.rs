@@ -4383,6 +4383,68 @@ fn plugin_placement_import_creates_and_certifies_a_light_interior() {
 }
 
 #[test]
+fn empty_native_interior_keeps_its_certificate_until_rooms_are_added() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    let cell = 0xff00_0010u32;
+    let room = cell + 1;
+    let portal = cell + 2;
+    let run = |name: &str, value: serde_json::Value| {
+        let path = dir.path().join(name);
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        run_placement_import(&assets, "--native", &path)
+    };
+    assert_placement_import(
+        run(
+            "cell.json",
+            serde_json::json!({"cells":[{"id":cell,"editor_id":"EmptyInterior"}]}),
+        ),
+        "Applied 0 room placements in 1 cells (1 created, 1 certified)",
+    );
+    let edits = |extents: [u32; 2]| {
+        serde_json::json!({"edits":[
+            {"op":"put_room","id":room,"cell":cell,"position":[0,0,0],"half_extents":[20,20,20]},
+            {"op":"put_portal","id":portal,"cell":cell,"position":[0,0,0],"half_extents":extents,
+             "endpoints":[room,0]}
+        ]})
+    };
+    for extents in [[0, 8], [8, 0]] {
+        let result = run("rooms.json", edits(extents));
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("portal half-extents"));
+        assert!(placement_certificate(&db, cell));
+        let state: (u32, u32) = db
+            .query_row(
+                "SELECT (SELECT count(*) FROM room_bounds WHERE cell_id=?1),
+                    (SELECT count(*) FROM room_placement_layers)",
+                [cell],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(state, (0, 1), "rejected layer left the empty cell intact");
+    }
+    assert_placement_import(
+        run("rooms.json", edits([4, 8])),
+        "Applied 2 room placements in 1 cells (1 certified)",
+    );
+    assert!(placement_certificate(&db, cell));
+    assert_eq!(
+        db.query_row(
+            "SELECT ref_id,room_a,unbounded_b FROM room_portals WHERE cell_id=?1",
+            [cell],
+            |row| Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, bool>(2)?
+            ))
+        )
+        .unwrap(),
+        (portal, room, true)
+    );
+}
+
+#[test]
 fn native_placement_import_creates_and_certifies_rooms_and_a_portal() {
     let dir = tempfile::tempdir().unwrap();
     let assets = converted_placement_fixture(dir.path());
@@ -5083,6 +5145,36 @@ fn source_backed_door_edits_refresh_only_affected_links() {
     db.execute_batch("DROP TRIGGER protect_neighbor").unwrap();
     assert_eq!(rebuild_door_links(&db).unwrap(), 4);
     assert_eq!(links(&db), after_add, "rebuild after placement imports");
+
+    let mut invalid_target = [0; 32];
+    invalid_target[..4].copy_from_slice(&0x9900_0801u32.to_le_bytes());
+    for (name, xtel, arrival) in [
+        ("WrongWidth.esp", &[0; 28][..], 21.0),
+        ("InvalidMaster.esp", &invalid_target[..], 22.0),
+    ] {
+        let malformed = plugin(
+            root,
+            name,
+            &["Skyrim.esm"],
+            0,
+            [
+                placement_group(cellar, placement(moved, base, 0, 0.0, sub(b"XTEL", xtel))),
+                placement_group(hall, door(neighbor, entry, arrival)),
+            ]
+            .concat(),
+        );
+        let result = run_placement_import(&assets, "--plugin", &malformed);
+        assert!(String::from_utf8_lossy(&result.stderr).contains("malformed XTEL"));
+        assert_placement_import(result, "Applied 1 room placements in 2 cells (0 certified)");
+        after_add[2].4 = arrival;
+        assert_eq!(
+            links(&db),
+            after_add,
+            "malformed teleport retains both original links"
+        );
+    }
+    assert!(!placement_certificate(&db, hall));
+    assert!(!placement_certificate(&db, cellar));
 }
 
 #[test]
