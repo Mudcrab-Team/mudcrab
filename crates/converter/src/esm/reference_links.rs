@@ -301,6 +301,7 @@ pub(super) fn refresh_incoming(
             ("reference_linked_refs", "linked_ref_id"),
             ("reference_linked_refs", "keyword_id"),
             ("reference_activate_parents", "parent_ref_id"),
+            ("reference_details", "attached_ref_id"),
         ] {
             tx.prepare_cached(&format!(
                 "UPDATE {table} SET {column}=NULL WHERE {column} IN (SELECT value FROM json_each(?1))"
@@ -311,6 +312,24 @@ pub(super) fn refresh_incoming(
     if available.is_empty() {
         return Ok(());
     }
+
+    // Placement-layer additions may have only a placement row. A restored keyword
+    // can fill the first XLKR word, while an actor cannot fill XATR.
+    let mut kinds = HashMap::new();
+    let mut kind = tx.prepare_cached(
+        "SELECT coalesce((SELECT record_type FROM records WHERE form_id=?1),'REFR')",
+    )?;
+    for &id in available {
+        if id != 0 {
+            let name: String = kind.query_row([id], |row| row.get(0))?;
+            if let Ok(signature) = <[u8; 4]>::try_from(name.as_bytes()) {
+                kinds.insert(id, signature);
+            }
+        }
+    }
+    let restored_target = |value: Option<u32>, allowed: &[&[u8; 4]]| {
+        value.filter(|id| kinds.get(id).is_some_and(|kind| allowed.contains(&kind)))
+    };
 
     let layered = if has_table(tx, "room_placement_edits")? {
         "EXISTS(SELECT 1 FROM room_placement_edits WHERE form_id=r.id)"
@@ -347,11 +366,13 @@ pub(super) fn refresh_incoming(
              SELECT reference_id FROM reference_linked_refs WHERE linked_ref_id IS NULL
              UNION SELECT reference_id FROM reference_linked_refs WHERE keyword_id IS NULL
              UNION SELECT reference_id FROM reference_activate_parents WHERE parent_ref_id IS NULL
+             UNION SELECT reference_id FROM reference_details WHERE attached_ref_id IS NULL
          )
          SELECT r.id,
                 CASE WHEN subset.form_id IS NOT NULL THEN coalesce(subset.data,r.data,raw.data)
                      WHEN {layered} THEN r.data ELSE coalesce(raw.data,r.data) END,
-                {native_data}
+                {native_data},
+                CASE WHEN subset.data IS NOT NULL THEN coalesce(r.data,raw.data) END
          FROM candidates JOIN [references] r ON r.id=candidates.id
          LEFT JOIN records raw ON raw.form_id=r.id
          LEFT JOIN reference_link_subset_sources subset ON subset.form_id=r.id
@@ -368,6 +389,9 @@ pub(super) fn refresh_incoming(
     let mut parent = tx.prepare_cached(
         "UPDATE reference_activate_parents SET parent_ref_id=?3
          WHERE reference_id=?1 AND position=?2 AND parent_ref_id IS NULL",
+    )?;
+    let mut attached = tx.prepare_cached(
+        "UPDATE reference_details SET attached_ref_id=?2 WHERE reference_id=?1 AND attached_ref_id IS NULL",
     )?;
     let mut sources = sources.query([])?;
     while let Some(row) = sources.next()? {
@@ -419,16 +443,41 @@ pub(super) fn refresh_incoming(
             recovered.chain(effective)
         };
         for (position, (key, target)) in linked_refs(fields(*b"XLKR")).enumerate() {
-            for (value, statement) in [(key, &mut keyword), (target, &mut linked)] {
-                if let Some(value) = value.filter(|id| *id != 0 && available.contains(id)) {
-                    statement.execute(params![id, position as i64, value])?;
-                }
+            if let Some(value) = restored_target(key, LINKED_KEYWORD) {
+                keyword.execute(params![id, position as i64, value])?;
+            }
+            if let Some(value) = restored_target(target, LINKED_REFERENCE) {
+                linked.execute(params![id, position as i64, value])?;
             }
         }
         for (position, field) in activate_parents(fields(*b"XAPR")).enumerate() {
-            if let Some(value) = u32_at(field, 0).filter(|id| *id != 0 && available.contains(id)) {
+            if let Some(value) = restored_target(u32_at(field, 0), LINKED_REFERENCE) {
                 parent.execute(params![id, position as i64, value])?;
             }
+        }
+        // A typed subset stores recovered XLKR/XAPR fields in its auxiliary blob.
+        // Its current placement payload still owns XATR, including in older packs.
+        let placement = row
+            .get::<_, Option<Vec<u8>>>(6)?
+            .map(|blob| rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(&blob))
+            .transpose()
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    6,
+                    rusqlite::types::Type::Blob,
+                    Box::new(error),
+                )
+            })?;
+        let attachment = placement
+            .as_ref()
+            .unwrap_or(&record)
+            .subrecords
+            .iter()
+            .find(|sub| sub.tag == *b"XATR")
+            .and_then(|sub| sized(Some(sub.data.as_slice()), &[4]))
+            .and_then(|field| u32_at(field, 0));
+        if let Some(value) = restored_target(attachment, ATTACHED_REFERENCE) {
+            attached.execute(params![id, value])?;
         }
     }
     Ok(())

@@ -965,9 +965,19 @@ fn export_records(
         )?;
         if order.is_none() {
             if !record.is_deleted() {
-                tx.prepare_cached("DELETE FROM subset_nonplacement_deletions WHERE form_id=?1")?
+                let restored = tx
+                    .prepare_cached("DELETE FROM subset_nonplacement_deletions WHERE form_id=?1")?
                     .execute([form_id])?;
+                if restored != 0
+                    && runtime_views
+                    && matches!(&record.record_type, b"KYWD" | b"PLYR")
+                {
+                    available_link_targets.insert(form_id);
+                }
             } else if !super::is_placed_record_type(&record.record_type) {
+                if runtime_views {
+                    unavailable_link_targets.push(form_id);
+                }
                 tx.prepare_cached(
                     "INSERT OR IGNORE INTO subset_nonplacement_deletions(form_id) VALUES (?1)",
                 )?
@@ -4265,6 +4275,7 @@ mod tests {
         let source_only = [(source_id, source.clone())].into();
         let mut deleted = keyword_record(keyword);
         deleted.flags = 0x20;
+        let delete_only = [(keyword, deleted.clone())].into();
         let delete_and_edit = [(keyword, deleted), (source_id, source.clone())].into();
         let restore_and_edit = [
             (keyword, keyword_record(keyword)),
@@ -4300,7 +4311,7 @@ mod tests {
         export_to_db(&db, &source_only).unwrap();
         assert_links(&db, Some(keyword));
 
-        export_to_db(&db, &delete_and_edit).unwrap();
+        export_to_db(&db, &delete_only).unwrap();
         assert_links(&db, None);
         drop(db);
 
@@ -4314,6 +4325,7 @@ mod tests {
         assert_links(&db, None);
 
         export_to_db(&db, &[(keyword, keyword_record(keyword))].into()).unwrap();
+        assert_links(&db, Some(keyword));
         export_to_db(&db, &source_only).unwrap();
         assert_links(&db, Some(keyword));
 
@@ -4321,6 +4333,58 @@ mod tests {
         export_to_db_with_load_order(&db, &snapshot, &order).unwrap();
         export_to_db(&db, &source_only).unwrap();
         assert_links(&db, Some(keyword));
+    }
+
+    #[test]
+    fn subset_target_only_edits_restore_matching_link_fields() {
+        let db = Connection::open_in_memory().unwrap();
+        create_tables(&db).unwrap();
+        let placed = |id| reference(id, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        let target = 0x880;
+        let mut source = placed(0x881);
+        source.subrecords.extend([
+            (b"XLKR".to_vec(), [word(target), word(target)].concat()),
+            (
+                b"XAPR".to_vec(),
+                [word(target), word(2.5f32.to_bits())].concat(),
+            ),
+            (b"XATR".to_vec(), word(target)),
+            (b"XAPD".to_vec(), vec![3]),
+        ]);
+        let check = |keyword, reference, attached| {
+            let row = db.query_row(
+                "SELECT keyword_id,linked_ref_id,parent_ref_id,delay,attached_ref_id,activate_parent_flags
+                 FROM reference_linked_refs JOIN reference_activate_parents USING(reference_id,position)
+                 JOIN reference_details USING(reference_id) WHERE reference_id=0x881",
+                [],
+                |r| Ok((
+                    r.get::<_, Option<u32>>(0)?,
+                    r.get::<_, Option<u32>>(1)?,
+                    r.get::<_, Option<u32>>(2)?,
+                    r.get::<_, f32>(3)?,
+                    r.get::<_, Option<u32>>(4)?,
+                    r.get::<_, u32>(5)?,
+                )),
+            ).unwrap();
+            assert_eq!(row, (keyword, reference, reference, 2.5, attached, 3));
+        };
+        export_to_db(
+            &db,
+            &[(target, placed(target)), (source.form_id, source)].into(),
+        )
+        .unwrap();
+        let mut deleted = placed(target);
+        deleted.flags = 0x20;
+        let mut actor = placed(target);
+        actor.record_type = *b"ACHR";
+        for replacement in [actor, placed(target)] {
+            export_to_db(&db, &[(target, deleted.clone())].into()).unwrap();
+            check(None, None, None);
+            let attached = (replacement.record_type == *b"REFR").then_some(target);
+            deleted.record_type = replacement.record_type;
+            export_to_db(&db, &[(target, replacement)].into()).unwrap();
+            check(Some(target), Some(target), attached);
+        }
     }
 
     #[test]

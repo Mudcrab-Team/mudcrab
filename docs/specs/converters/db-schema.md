@@ -786,9 +786,11 @@ Rules:
   targets resolve to NULL. Valid-length `XLKR` and `XAPR` rows are kept in source order with
   contiguous positions among accepted-length entries, even when a target resolves to NULL. This
   makes legacy projection match the in-house reader's invalid-link clearing behavior.
-- When a subset export or placement layer removes a placement, its incoming `XAPR` and `XLKR`
+- When a subset export or placement layer removes a placement, its incoming `XATR`, `XAPR` and `XLKR`
   slots become NULL in the same transaction. Adding or restoring a target resolves matching
   slots from the effective source payload, including sources outside the edit batch.
+  Supply the live target record on restoration. A keyword-only deletion or restoration
+  updates the keyword slot without changing the linked reference.
   For an unedited in-house source, the converter uses the original plugin payload and master
   list to recover authored IDs that full conversion cleared. A slot stays NULL if surviving
   occurrences cannot be matched unambiguously. `reference_link_subset_sources` records
@@ -1536,7 +1538,9 @@ Columns and rules:
   `portals_with_missing_side` (`room_portals` rows with a NULL side, so a portal with several
   pairs can add several), `portals_with_extra_pairs` (markers whose `XPOD` holds more than one
   pair), `portals_with_trailing_xpod_bytes` (markers whose `XPOD` length is not a multiple of 8),
-  `non_box_rooms_skipped`, `portals_without_size_skipped`, `invalid_markers_skipped` (rooms and portals with a missing, truncated, or non-finite transform, or a non-finite size), `objects_in_no_room` and
+  `non_box_rooms_skipped`, `portals_without_size_skipped`, `invalid_markers_skipped` (rooms and portals skipped for invalid geometry
+  or ambiguous portal fields, including missing, truncated, duplicate or non-finite transforms,
+  non-finite sizes, negative room half-extents, nonpositive portal X or Z half-extents, and repeated `XPOD` fields), `objects_in_no_room` and
   `objects_in_several_rooms` (both by pivot), `overlap_rows`, `occluders` (valid geometry rows),
   and `invalid_occluders_skipped` (unsupported or malformed occlusion primitives).
   `assignment_version = 1` enables authored master/slave resolution and reference ownership,
