@@ -154,8 +154,14 @@ fn scan_bytes_observed(
                 diagnostics.note("record", || {
                     format!("invalid group boundary/nesting at byte {position}")
                 });
-                discarded_frames
-                    .insert(DiscardedFrameScope::unread_tail(cell, end - position - 24));
+                let child_offset = position + 24;
+                let child_prefix = &bytes[child_offset..end];
+                if let Some(placement) = TruncatedPlacement::from_prefix(child_prefix) {
+                    damage
+                        .truncated_placements
+                        .push((child_offset as u64, placement));
+                }
+                discarded_frames.insert(DiscardedFrameScope::unread_tail(cell, child_prefix.len()));
                 discarded_frames.extend(cell_child.map(DiscardedFrameScope::Cell));
                 position = end;
                 continue;

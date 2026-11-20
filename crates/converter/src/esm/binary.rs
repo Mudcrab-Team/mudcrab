@@ -302,6 +302,9 @@ fn parse_group_inner(
                     ),
                     None => format!("invalid GRUP size {}", group.data_size),
                 });
+                if let Some(placement) = TruncatedPlacement::from_prefix(rest) {
+                    visit(ParsedRecord::TruncatedPlacement(placement));
+                }
                 visit(ParsedRecord::DiscardedFrame(
                     DiscardedFrameScope::unread_tail(current_cell, rest.len()),
                 ));
