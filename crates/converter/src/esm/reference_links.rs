@@ -4,9 +4,11 @@
 //! and in-house readers publish the same rows (db-schema.md, "Reference Links and Details").
 //! Layouts follow xEdit 4.1.5f `Core/wbDefinitionsTES5.pas` and the in-house schema.
 
-use super::{extractors::SubrecordView, load_order::LoadOrder, records::RawRecord};
-use rusqlite::{Result, Transaction, params};
-use std::collections::HashMap;
+use super::{
+    extractors::SubrecordView, load_order::LoadOrder, records::RawRecord, types::ArchivedRecordData,
+};
+use rusqlite::{OptionalExtension, Result, Transaction, params};
+use std::collections::{HashMap, HashSet};
 
 /// Tables this module owns. A complete export drops and recreates them.
 pub(crate) const REFERENCE_LINK_TABLES: [&str; 3] = [
@@ -148,6 +150,136 @@ fn sized<'a>(bytes: Option<&'a [u8]>, sizes: &[usize]) -> Option<&'a [u8]> {
     bytes.filter(|bytes| sizes.contains(&bytes.len()))
 }
 
+fn linked_refs<'a>(
+    fields: impl Iterator<Item = &'a [u8]>,
+) -> impl Iterator<Item = (Option<u32>, Option<u32>)> {
+    fields.filter_map(|field| match field.len() {
+        4 => Some((None, u32_at(field, 0))),
+        8 => Some((u32_at(field, 0), u32_at(field, 4))),
+        _ => None,
+    })
+}
+
+fn activate_parents<'a>(fields: impl Iterator<Item = &'a [u8]>) -> impl Iterator<Item = &'a [u8]> {
+    fields.filter(|field| field.len() == 8)
+}
+
+pub(super) fn accepts_placement_target(kind: &[u8]) -> bool {
+    LINKED_REFERENCE
+        .iter()
+        .any(|target| target.as_slice() == kind)
+}
+
+pub(super) fn has_live_target(tx: &Transaction<'_>, id: u32) -> Result<bool> {
+    let kind: Option<String> = tx
+        .prepare_cached(
+            "SELECT coalesce(raw.record_type,'REFR')
+             FROM [references] r LEFT JOIN records raw ON raw.form_id=r.id WHERE r.id=?1",
+        )?
+        .query_row([id], |row| row.get(0))
+        .optional()?;
+    Ok(kind.is_some_and(|kind| accepts_placement_target(kind.as_bytes())))
+}
+
+/// Refresh only the target columns. In particular, a source outside the edit retains its delay,
+/// other links and details (including any XLOC key resolved by the full export).
+pub(super) fn refresh_incoming(
+    tx: &Transaction<'_>,
+    unavailable: &[u32],
+    available: &HashSet<u32>,
+) -> Result<()> {
+    if !unavailable.is_empty() {
+        let ids = serde_json::json!(unavailable).to_string();
+        for (table, column) in [
+            ("reference_linked_refs", "linked_ref_id"),
+            ("reference_linked_refs", "keyword_id"),
+            ("reference_activate_parents", "parent_ref_id"),
+        ] {
+            tx.prepare_cached(&format!(
+                "UPDATE {table} SET {column}=NULL WHERE {column} IN (SELECT value FROM json_each(?1))"
+            ))?
+            .execute([&ids])?;
+        }
+    }
+    if available.is_empty() {
+        return Ok(());
+    }
+
+    // Older packs may have no placement mirror. For layered sources the original archive
+    // can instead be stale. The history lookup uses the resolved FormID, not source_form_id.
+    let has_layers: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema
+         WHERE type='table' AND name='room_placement_edits')",
+        [],
+        |row| row.get(0),
+    )?;
+    let data = if has_layers {
+        "CASE WHEN EXISTS(SELECT 1 FROM room_placement_edits WHERE form_id=r.id)
+              THEN r.data ELSE coalesce(raw.data,r.data) END"
+    } else {
+        "coalesce(raw.data,r.data)"
+    };
+    // A NULL projection carries no target ID. Scan only sources with nullable link slots
+    // once per restoring batch. Materialize their IDs before updating the link tables.
+    let mut sources = tx.prepare(&format!(
+        "WITH candidates(id) AS MATERIALIZED (
+             SELECT reference_id FROM reference_linked_refs WHERE linked_ref_id IS NULL
+             UNION SELECT reference_id FROM reference_linked_refs WHERE keyword_id IS NULL
+             UNION SELECT reference_id FROM reference_activate_parents WHERE parent_ref_id IS NULL
+         )
+         SELECT r.id, {data} FROM candidates
+         JOIN [references] r ON r.id=candidates.id
+         LEFT JOIN records raw ON raw.form_id=r.id"
+    ))?;
+    let mut linked = tx.prepare_cached(
+        "UPDATE reference_linked_refs SET linked_ref_id=?3
+         WHERE reference_id=?1 AND position=?2 AND linked_ref_id IS NULL",
+    )?;
+    let mut keyword = tx.prepare_cached(
+        "UPDATE reference_linked_refs SET keyword_id=?3
+         WHERE reference_id=?1 AND position=?2 AND keyword_id IS NULL",
+    )?;
+    let mut parent = tx.prepare_cached(
+        "UPDATE reference_activate_parents SET parent_ref_id=?3
+         WHERE reference_id=?1 AND position=?2 AND parent_ref_id IS NULL",
+    )?;
+    let mut sources = sources.query([])?;
+    while let Some(row) = sources.next()? {
+        let id: u32 = row.get(0)?;
+        let Some(blob): Option<Vec<u8>> = row.get(1)? else {
+            continue;
+        };
+        let record = rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(&blob).map_err(
+            |error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Blob,
+                    Box::new(error),
+                )
+            },
+        )?;
+        let fields = |tag| {
+            record
+                .subrecords
+                .iter()
+                .filter_map(move |sub| (sub.tag == tag).then_some(sub.data.as_slice()))
+        };
+        for (position, (key, target)) in linked_refs(fields(*b"XLKR")).enumerate() {
+            for (value, statement) in [(key, &mut keyword), (target, &mut linked)] {
+                if let Some(value) = value.filter(|id| available.contains(id)) {
+                    statement.execute(params![id, position as i64, value])?;
+                }
+            }
+        }
+        for (position, field) in activate_parents(fields(*b"XAPR")).enumerate() {
+            if let Some(value) = u32_at(field, 0).filter(|id| available.contains(id)) {
+                parent.execute(params![id, position as i64, value])?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Writes the link and detail rows of one winning placed reference.
 pub(crate) fn insert(
     tx: &Transaction<'_>,
@@ -163,15 +295,7 @@ pub(crate) fn insert(
 
     // XLKR: one subrecord per link, a keyword and a reference, or (14 official references) the
     // reference alone.
-    for (position, link) in view
-        .find_all(b"XLKR")
-        .filter_map(|bytes| sized(Some(bytes), &[4, 8]))
-        .enumerate()
-    {
-        let (keyword, reference) = match link.len() {
-            8 => (u32_at(link, 0), u32_at(link, 4)),
-            _ => (None, u32_at(link, 0)),
-        };
+    for (position, (keyword, reference)) in linked_refs(view.find_all(b"XLKR")).enumerate() {
         tx.prepare_cached(
             "INSERT INTO reference_linked_refs(reference_id, position, keyword_id, linked_ref_id) VALUES (?1, ?2, ?3, ?4)",
         )?
@@ -184,11 +308,7 @@ pub(crate) fn insert(
     }
 
     // XAPR: one subrecord per activate parent, a reference then an f32 delay.
-    for (position, parent) in view
-        .find_all(b"XAPR")
-        .filter_map(|bytes| sized(Some(bytes), &[8]))
-        .enumerate()
-    {
+    for (position, parent) in activate_parents(view.find_all(b"XAPR")).enumerate() {
         let delay = f32::from_le_bytes(parent[4..8].try_into().expect("eight-byte XAPR"));
         tx.prepare_cached(
             "INSERT INTO reference_activate_parents(reference_id, position, parent_ref_id, delay) VALUES (?1, ?2, ?3, ?4)",

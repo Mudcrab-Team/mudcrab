@@ -875,6 +875,8 @@ fn export_records(
         )
     };
     let mut subset_link_sources = Vec::new();
+    let mut unavailable_link_targets = Vec::new();
+    let mut available_link_targets = HashSet::new();
     let mut edited_references = HashSet::new();
     for (&form_id, record) in ordered {
         let type_str = from_utf8(&record.record_type).unwrap_or("UNKN");
@@ -948,9 +950,14 @@ fn export_records(
                     )?
                     .execute([form_id])?;
                 }
+                unavailable_link_targets.push(form_id);
                 continue;
             }
         }
+        let link_target = subset_placement
+            && form_id != 0
+            && super::reference_links::accepts_placement_target(&record.record_type);
+        let was_link_target = link_target && super::reference_links::has_live_target(&tx, form_id)?;
         let blob = serialize_subrecords(&record.subrecords);
         let insert = records_insert.as_mut().expect("nonempty record loop");
         insert_canonical_record(
@@ -1053,6 +1060,9 @@ fn export_records(
                     &canonical_record.subrecords,
                 )?;
                 if !inserted {
+                    if subset_placement {
+                        unavailable_link_targets.push(form_id);
+                    }
                     omissions.record(
                         OmissionCategory::ReferenceUnusableData,
                         form_id,
@@ -1072,6 +1082,11 @@ fn export_records(
                         .execute([form_id])?;
                     }
                     subset_link_sources.push(canonical_record);
+                    if !link_target {
+                        unavailable_link_targets.push(form_id);
+                    } else if !was_link_target {
+                        available_link_targets.insert(form_id);
+                    }
                 } else {
                     insert_links(record)?;
                 }
@@ -1275,6 +1290,11 @@ fn export_records(
         let projection = runtime_projection(source, unresolved_fields);
         insert_links(projection.as_ref().unwrap_or(source))?;
     }
+    super::reference_links::refresh_incoming(
+        &tx,
+        &unavailable_link_targets,
+        &available_link_targets,
+    )?;
     // Derived snapshots like the actor model catalog and the grass tables: only a full load-order
     // export owns them, so the movement annotator's subset export leaves them alone, and
     // diagnostic archives defer them. The emittance pass holds every reference and the records
@@ -3989,8 +4009,17 @@ mod tests {
             Some(0x14),
             None,
         ];
-        for (edits, restored) in [
+        let mut mismatches = Vec::new();
+        let restore_targets = || {
+            [
+                (deleted_target, placed(deleted_target)),
+                (mapped_deleted_target, placed(mapped_deleted_target)),
+            ]
+            .into()
+        };
+        for (label, edits, restored, control) in [
             (
+                "source and targets edited together",
                 [
                     (edited, source.clone()),
                     deleted(deleted_target),
@@ -4000,18 +4029,27 @@ mod tests {
                 ]
                 .into(),
                 false,
-            ),
-            ([(edited, source.clone())].into(), false),
-            (
-                [
-                    (edited, source.clone()),
-                    (deleted_target, placed(deleted_target)),
-                    (mapped_deleted_target, placed(mapped_deleted_target)),
-                ]
-                .into(),
                 true,
             ),
-            ([(edited, source)].into(), true),
+            (
+                "source-only while targets absent",
+                [(edited, source.clone())].into(),
+                false,
+                true,
+            ),
+            ("target-only restoration", restore_targets(), true, false),
+            (
+                "source-only with targets present",
+                [(edited, source)].into(),
+                true,
+                true,
+            ),
+            (
+                "target-only deletion",
+                [deleted(deleted_target), deleted(mapped_deleted_target)].into(),
+                false,
+                false,
+            ),
         ] {
             export_to_db(&db, &edits).unwrap();
             let mut expected = expected;
@@ -4043,9 +4081,148 @@ mod tests {
                 .unwrap()
                 .collect::<Result<Vec<_>>>()
                 .unwrap();
-            assert_eq!(parents, expected.map(|id| (id, 1.0)));
-            assert_eq!(linked, expected.map(|id| (keyword, id)));
+            let expected_parents = expected.map(|id| (id, 1.0));
+            let expected_linked = expected.map(|id| (keyword, id));
+            if control {
+                assert_eq!(parents, expected_parents, "{label}");
+                assert_eq!(linked, expected_linked, "{label}");
+            } else if parents != expected_parents || linked != expected_linked {
+                mismatches.push(format!(
+                    "{label}: XAPR {parents:?}, XLKR {linked:?}, expected targets {expected:?}"
+                ));
+            }
         }
+        assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+    }
+
+    #[test]
+    fn subset_incoming_links_use_effective_source_positions_and_roll_back() {
+        let db = Connection::open_in_memory().unwrap();
+        create_tables(&db).unwrap();
+        let placed = |id| reference(id, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        let target = 0x810;
+        let source = 0x900;
+        let other = 0x811;
+        let key = 0x812;
+        let order = LoadOrder::from_metadata(
+            vec!["Skyrim.esm".into()],
+            vec![crate::esm::binary::PluginMetadata::default()],
+        )
+        .unwrap();
+        let mut initial = placed(source);
+        initial.subrecords.extend([
+            (b"XLKR".to_vec(), word(other)),
+            (b"XLKR".to_vec(), vec![0; 6]),
+            (b"XLKR".to_vec(), [word(target), word(other)].concat()),
+            (b"XAPR".to_vec(), vec![0; 12]),
+            (
+                b"XAPR".to_vec(),
+                [word(target), 2.0f32.to_le_bytes().to_vec()].concat(),
+            ),
+            (b"XAPD".to_vec(), vec![3]),
+            (
+                b"XLOC".to_vec(),
+                [vec![50, 0, 0, 0], word(key), vec![4, 0, 0, 0]].concat(),
+            ),
+        ]);
+        export_to_db_with_load_order(
+            &db,
+            &[
+                (source, initial.clone()),
+                (other, placed(other)),
+                (key, record(key, b"KEYM", None, None, Vec::new())),
+            ]
+            .into(),
+            &order,
+        )
+        .unwrap();
+        let links = || {
+            db.query_row(
+                "SELECT x0.linked_ref_id,x1.keyword_id,x1.linked_ref_id,p.parent_ref_id,p.delay,d.activate_parent_flags,d.lock_key_id
+                 FROM reference_linked_refs x0
+                 JOIN reference_linked_refs x1 ON x1.reference_id=x0.reference_id AND x1.position=1
+                 JOIN reference_activate_parents p ON p.reference_id=x0.reference_id AND p.position=0
+                 JOIN reference_details d ON d.reference_id=x0.reference_id
+                 WHERE x0.reference_id=?1 AND x0.position=0",
+                [source],
+                |row| Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, Option<u32>>(1)?,
+                    row.get::<_, u32>(2)?,
+                    row.get::<_, Option<u32>>(3)?,
+                    row.get::<_, f64>(4)?,
+                    row.get::<_, u32>(5)?,
+                    row.get::<_, u32>(6)?,
+                )),
+            )
+            .unwrap()
+        };
+        let restore = |record| export_to_db(&db, &[(target, record)].into());
+        let absent = (other, None, other, None, 2.0, 3, key);
+        assert_eq!(links(), absent);
+        // The original archive may be absent from the placement mirror in an older pack.
+        db.execute("UPDATE [references] SET data=NULL WHERE id=?1", [source])
+            .unwrap();
+        let mut wrong_type = placed(target);
+        wrong_type.record_type = *b"ACRE";
+        restore(wrong_type).unwrap();
+        assert_eq!(links(), absent);
+        db.execute_batch(
+            "CREATE TRIGGER reject_incoming BEFORE UPDATE OF keyword_id ON reference_linked_refs
+             BEGIN SELECT RAISE(ABORT, 'reject incoming link'); END;",
+        )
+        .unwrap();
+        assert!(
+            restore(placed(target))
+                .unwrap_err()
+                .to_string()
+                .contains("reject incoming link")
+        );
+        assert_eq!(links(), absent);
+        let kind: String = db
+            .query_row(
+                "SELECT record_type FROM records WHERE form_id=?1",
+                [target],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, "ACRE");
+        db.execute_batch("DROP TRIGGER reject_incoming").unwrap();
+        restore(placed(target)).unwrap();
+        assert_eq!(
+            links(),
+            (other, Some(target), other, Some(target), 2.0, 3, key)
+        );
+
+        // A room placement layer can retain a different original archive for the same FormID.
+        db.execute_batch(
+            "CREATE TABLE room_placement_edits (
+                layer_id INTEGER, form_id INTEGER, source_form_id INTEGER, deleted INTEGER,
+                PRIMARY KEY(form_id,layer_id)
+             );",
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO room_placement_edits VALUES (1,?1,0x01000800,0)",
+            [source],
+        )
+        .unwrap();
+        let (_, authored_link) = initial
+            .subrecords
+            .iter_mut()
+            .find(|(tag, data)| tag == b"XLKR" && data.len() == 8)
+            .unwrap();
+        authored_link[..4].fill(0);
+        db.execute(
+            "UPDATE [references] SET data=?2 WHERE id=?1",
+            params![source, serialize_subrecords(&initial.subrecords)],
+        )
+        .unwrap();
+
+        export_placed_subset_with_sources(&db, &HashMap::new(), &[target], &order).unwrap();
+        assert_eq!(links(), absent);
+        restore(placed(target)).unwrap();
+        assert_eq!(links(), (other, None, other, Some(target), 2.0, 3, key));
     }
 
     #[test]
