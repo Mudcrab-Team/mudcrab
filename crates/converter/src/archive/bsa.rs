@@ -10,6 +10,7 @@ use super::source::ArchiveSource;
 
 const HEADER_SIZE: usize = 36;
 const FILE_RECORD_SIZE: usize = 16;
+const FILENAME_BLOCK_SIZE: usize = 8 * 1024;
 const ARCHIVE_COMPRESSED: u32 = 0x0004;
 const ARCHIVE_EMBED_FILE_NAMES: u32 = 0x0100;
 const KNOWN_ARCHIVE_FLAGS: u32 = 0x03ff;
@@ -137,34 +138,42 @@ pub(super) fn read_entries(source: &ArchiveSource<'_>) -> Result<Vec<BsaEntry>> 
         minimum_metadata_end <= source.len(),
         "BSA metadata exceeds archive size"
     );
-    let metadata = source.read(0, minimum_metadata_end)?;
-    let bytes = metadata.as_ref();
-
-    let mut folder_records = Vec::with_capacity(folder_count);
+    let mut folder_records = Vec::new();
     for index in 0..folder_count {
         let base = folder_record_offset + index * folder_record_size;
-        folder_records.push((u64_at(bytes, base)?, u32_at(bytes, base + 8)? as usize));
+        let record = source.read(base, folder_record_size)?;
+        folder_records.push((u64_at(&record, 0)?, u32_at(&record, 8)? as usize));
     }
 
     let mut cursor = folder_table_end;
-    let mut records = Vec::with_capacity(file_count);
+    let mut records = Vec::new();
     let mut folder_names_length = 0usize;
     for (stored_folder_hash, count) in folder_records {
-        let name_len = slice_at(bytes, cursor, 1, "folder name length")?[0] as usize;
-        cursor = checked_end(cursor, 1, "folder name length")?;
-        let folder_bytes = slice_at(bytes, cursor, name_len, "folder name")?;
+        let name_len = read_metadata(
+            source,
+            &mut cursor,
+            1,
+            minimum_metadata_end,
+            "folder name length",
+        )?[0] as usize;
+        let folder_bytes = read_metadata(
+            source,
+            &mut cursor,
+            name_len,
+            minimum_metadata_end,
+            "folder name",
+        )?;
         ensure!(
             folder_bytes.is_empty() || folder_bytes.last() == Some(&0),
             "BSA folder name is not null-terminated"
         );
-        let folder_name = folder_bytes.strip_suffix(&[0]).unwrap_or(folder_bytes);
+        let folder_name = folder_bytes.strip_suffix(&[0]).unwrap_or(&folder_bytes);
         let folder = decode_name(folder_name);
         ensure!(
             folder_hash(folder_name) == stored_folder_hash,
             "BSA folder hash mismatch for {folder:?}: stored {stored_folder_hash:#018x}, calculated {:#018x}",
             folder_hash(folder_name)
         );
-        cursor = checked_end(cursor, name_len, "folder name")?;
         folder_names_length = folder_names_length
             .checked_add(name_len)
             .ok_or_else(|| eyre!("BSA folder name length overflow"))?;
@@ -176,14 +185,19 @@ pub(super) fn read_entries(source: &ArchiveSource<'_>) -> Result<Vec<BsaEntry>> 
             "BSA folder records exceed declared file count"
         );
         for _ in 0..count {
-            slice_at(bytes, cursor, FILE_RECORD_SIZE, "file record")?;
+            let record = read_metadata(
+                source,
+                &mut cursor,
+                FILE_RECORD_SIZE,
+                minimum_metadata_end,
+                "file record",
+            )?;
             records.push(FileRecord {
                 folder: folder.clone(),
-                size_flags: u32_at(bytes, cursor + 8)?,
-                offset: u32_at(bytes, cursor + 12)?,
-                hash: u64_at(bytes, cursor)?,
+                size_flags: u32_at(&record, 8)?,
+                offset: u32_at(&record, 12)?,
+                hash: u64_at(&record, 0)?,
             });
-            cursor = checked_end(cursor, FILE_RECORD_SIZE, "file record")?;
         }
     }
     ensure!(
@@ -197,48 +211,17 @@ pub(super) fn read_entries(source: &ArchiveSource<'_>) -> Result<Vec<BsaEntry>> 
     );
 
     let filename_table_end = checked_end(cursor, total_file_name_length, "filename table")?;
-    let filename_table = slice_at(bytes, cursor, total_file_name_length, "filename table")?;
-    let mut names = Vec::with_capacity(file_count);
-    let mut raw_names = Vec::with_capacity(file_count);
-    let mut name_cursor = 0usize;
-    for _ in 0..file_count {
-        let tail = filename_table
-            .get(name_cursor..)
-            .ok_or_else(|| eyre!("missing BSA filename table"))?;
-        let end = tail
-            .iter()
-            .position(|byte| *byte == 0)
-            .ok_or_else(|| eyre!("unterminated BSA filename"))?;
-        ensure!(end > 0, "BSA filename is empty");
-        raw_names.push(&tail[..end]);
-        names.push(decode_name(&tail[..end]));
-        name_cursor = checked_end(name_cursor, end + 1, "filename")?;
-    }
-    // Some distributed archives (e.g. MarketplaceTextures.bsa) pad the filename
-    // table with trailing zero bytes beyond the declared file names. The header
-    // length remains the table bound, so only all-zero slack is accepted here.
-    ensure!(
-        name_cursor <= filename_table.len(),
-        "BSA filename table length mismatch: header={}, records={name_cursor}",
-        filename_table.len()
-    );
-    ensure!(
-        filename_table[name_cursor..].iter().all(|byte| *byte == 0),
-        "BSA filename table has {} trailing bytes after {} file names",
-        filename_table.len() - name_cursor,
-        names.len()
-    );
+    let names = read_filenames(source, cursor, filename_table_end, file_count)?;
 
     records
         .into_iter()
-        .zip(names.into_iter().zip(raw_names))
-        .map(|(record, (file_name, raw_name))| {
+        .zip(names)
+        .map(|(record, (file_name, calculated))| {
             let full_name = if record.folder.is_empty() {
                 file_name
             } else {
                 format!("{}/{}", record.folder, file_name)
             };
-            let calculated = file_hash(raw_name);
             ensure!(
                 calculated == record.hash,
                 "BSA file hash mismatch for {full_name:?}: stored {:#018x}, calculated {calculated:#018x}",
@@ -274,6 +257,62 @@ pub(super) fn read_entries(source: &ArchiveSource<'_>) -> Result<Vec<BsaEntry>> 
             })
         })
         .collect()
+}
+
+fn read_metadata<'a>(
+    source: &ArchiveSource<'a>,
+    cursor: &mut usize,
+    len: usize,
+    metadata_end: usize,
+    field: &str,
+) -> Result<Cow<'a, [u8]>> {
+    let end = checked_end(*cursor, len, field)?;
+    ensure!(
+        end <= metadata_end,
+        "truncated BSA {field} at offset {cursor}"
+    );
+    let bytes = source.read(*cursor, len)?;
+    *cursor = end;
+    Ok(bytes)
+}
+
+fn read_filenames(
+    source: &ArchiveSource<'_>,
+    mut cursor: usize,
+    end: usize,
+    file_count: usize,
+) -> Result<Vec<(String, u64)>> {
+    let mut names = Vec::new();
+    let mut partial_name = Vec::new();
+    'blocks: while cursor < end {
+        let block_len = (end - cursor).min(FILENAME_BLOCK_SIZE);
+        let bytes = source.read(cursor, block_len)?;
+        cursor += block_len;
+        let mut block = bytes.as_ref();
+        while !block.is_empty() && names.len() < file_count {
+            let Some(terminator) = block.iter().position(|&byte| byte == 0) else {
+                partial_name.extend_from_slice(block);
+                continue 'blocks;
+            };
+            let raw_name = if partial_name.is_empty() {
+                &block[..terminator]
+            } else {
+                partial_name.extend_from_slice(&block[..terminator]);
+                &partial_name
+            };
+            ensure!(!raw_name.is_empty(), "BSA filename is empty");
+            names.push((decode_name(raw_name), file_hash(raw_name)));
+            partial_name.clear();
+            block = &block[terminator + 1..];
+        }
+        // Distributed archives can pad the filename table with trailing zeros.
+        ensure!(
+            block.iter().all(|&byte| byte == 0),
+            "BSA filename table has trailing bytes after {file_count} file names"
+        );
+    }
+    ensure!(names.len() == file_count, "unterminated BSA filename");
+    Ok(names)
 }
 
 /// The largest decompressed size any BSA entry may declare. Retail textures,
@@ -573,6 +612,41 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("trailing bytes")
+        );
+    }
+
+    #[test]
+    fn file_backed_filename_table_handles_names_and_padding_across_blocks() {
+        let folder = b"scripts";
+        let name = vec![b'a'; FILENAME_BLOCK_SIZE + 1];
+        let mut bytes = raw_archive(folder, &name, folder_hash(folder), file_hash(&name));
+        let names_start = HEADER_SIZE + FILE_RECORD_SIZE + 1 + folder.len() + 1 + FILE_RECORD_SIZE;
+        let padding_start = names_start + name.len() + 1;
+        let padding_len = 2 * FILENAME_BLOCK_SIZE;
+        let payload_start = padding_start + padding_len;
+        bytes.splice(
+            padding_start..padding_start,
+            std::iter::repeat_n(0, padding_len),
+        );
+        bytes[28..32].copy_from_slice(&((payload_start - names_start) as u32).to_le_bytes());
+        bytes[names_start - 4..names_start].copy_from_slice(&(payload_start as u32).to_le_bytes());
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(&bytes).unwrap();
+        let source = ArchiveSource::from_file(file.reopen().unwrap()).unwrap();
+        let mut entries = read_entries(&source).unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry = entries.pop().unwrap();
+        assert_eq!(entry.name, format!("scripts/{}", decode_name(&name)));
+        assert_eq!(entry.decompress(&source).unwrap(), b"PEX");
+
+        use std::io::{Seek, SeekFrom};
+        file.seek(SeekFrom::Start((payload_start - 1) as u64))
+            .unwrap();
+        file.write_all(b"x").unwrap();
+        let source = ArchiveSource::from_file(file.reopen().unwrap()).unwrap();
+        assert!(
+            matches!(read_entries(&source), Err(error) if error.to_string().contains("trailing bytes"))
         );
     }
 
