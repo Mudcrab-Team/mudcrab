@@ -238,8 +238,8 @@ pub fn parse_group(
 
 pub(super) enum ParsedRecord {
     Usable(RawRecord),
-    /// A placed record with a known header and parent cell but no usable payload.
-    DamagedPlacement(RawRecord),
+    /// A known header with no usable payload.
+    DamagedRecord(RawRecord),
     DiscardedFrame(DiscardedFrameScope),
 }
 
@@ -352,12 +352,7 @@ fn parse_group_inner(
                         String::from_utf8_lossy(&header.type_tag),
                         header.form_id
                     ));
-                    if current_cell.is_some()
-                        && !record.is_deleted()
-                        && super::is_placed_record_type(&record.record_type)
-                    {
-                        visit(ParsedRecord::DamagedPlacement(record));
-                    }
+                    visit(ParsedRecord::DamagedRecord(record));
                 }
             }
         }
@@ -402,7 +397,7 @@ pub fn parse_plugin_file(path: &Path) -> Result<Vec<RawRecord>> {
     Ok(records)
 }
 
-/// Keep usable records, placement damage and discarded frames in source order.
+/// Keep usable records, damaged headers, and discarded frames in source order.
 pub(super) fn parse_plugin_file_with_warnings(
     path: &Path,
 ) -> Result<(Vec<ParsedRecord>, Vec<String>)> {
