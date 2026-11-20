@@ -262,6 +262,12 @@ async fn main() -> Result<()> {
                 report.failures.len(),
                 report.directory.display()
             );
+            for warning in &report.warnings {
+                eprintln!("Warning: {warning}");
+            }
+            for notice in &report.notices {
+                eprintln!("Notice: {notice}");
+            }
             if !report.record_data_complete {
                 eprintln!(
                     "Record data remains incomplete or unverified. Run normal conversion to recheck plugin data and rebuild world metadata."

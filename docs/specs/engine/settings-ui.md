@@ -10,6 +10,7 @@ Settings are grouped under headings (for example Point lights, Sun shadows, Wate
 
 ## Graphics
 
+- Grass and grass radius, saved with other preferences and applied on next start. Grass defaults on for packs with a valid cache. The group heading marks both controls as next-start settings; runtime plugin/cache installation is unchanged. Launch flags and explicitly imported INI values remain session-only overrides. See [runtime grass](grass.md#skyrim-ini-settings) for precedence, cache fallback and automatic `grass.toml` discovery.
 - Point lights, enabled-light budget, point-light shadows and shadow-map resolution. Enabling lights also creates them in already loaded cells; disabling them hides those lights. Authored invalid, negative, and initially off lights retain their existing exclusion rules.
 - Sun lighting, illuminance and RGB color; ambient brightness and RGB color. These are exterior settings. An interior in sky mode 1 or 2 uses the cell's own key light and ambient colour instead, so the sun toggle, illuminance, colour and shadows do not change it (ambient brightness still applies). Leaving the interior restores the current settings.
 - Sun shadows, shadow-map resolution, cascade count and distance multiplier. The underlying shadow range follows the full-detail unload grid.
@@ -26,7 +27,7 @@ Room culling can be disabled independently when diagnosing interior visibility. 
 
 The UI exposes the full-detail and unload radii; the four supported LOD distance settings (two terrain: the split multiplier and the outer reach; two object LOD distances that do not affect terrain until object LOD lands); cell commit count/time budgets; cell unload, model spawn, and render-asset upload budgets; and IO-thread count. LOD distance changes refresh queries at the current camera position. The unload radius must cover the full-detail radius.
 
-IO threads, GPU indirect drawing, GPU occlusion culling and the visual profile ([visual-profiles.md](visual-profiles.md)) are fixed at startup. Changing these requires Save and a restart. New world and reflection cameras use the session's initial drawing choices as well. Other settings apply during the session, with diagnostic fallbacks taking effect on subsequent loads and the depth-prepass dependency described above. Numerical UI limits bound interactive edits. A zero budget is unlimited only where the label says so.
+Grass, grass radius, IO threads, GPU indirect drawing, GPU occlusion culling and the visual profile ([visual-profiles.md](visual-profiles.md)) are fixed at startup. Changing these requires Save and a restart. New world and reflection cameras use the session's initial drawing choices as well. Other settings apply during the session, with diagnostic fallbacks taking effect on subsequent loads and the depth-prepass dependency described above. Numerical UI limits bound interactive edits. A zero budget is unlimited only where the label says so.
 
 ## Saved preferences and automation
 
