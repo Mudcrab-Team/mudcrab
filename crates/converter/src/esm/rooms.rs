@@ -622,8 +622,10 @@ fn unique_marker_geometry<'a>(
     view: &SubrecordView<'a>,
     tag: &[u8; 4],
 ) -> Option<&'a [u8]> {
-    if let Some(RoomLinkSources::Typed(decoded)) = sources {
-        return decoded.records.get(&form_id)?.unique_source_subrecord(tag);
+    if let Some(RoomLinkSources::Typed(decoded)) = sources
+        && let Some(record) = decoded.records.get(&form_id)
+    {
+        return record.unique_source_subrecord(tag);
     }
     let mut fields = view.find_all(tag);
     let data = fields.next()?;
