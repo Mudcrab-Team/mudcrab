@@ -7466,3 +7466,107 @@ fn placement_winner_checks_ungrouped_override_against_usable_predecessor() {
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+fn check_discarded_occluder_override(import: bool) {
+    use converter::config::RecordReader;
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    let base = plugin(
+        data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"STAT", 0x17, 0, sub(b"EDID", b"PlaneMarker\0")),
+            record(b"STAT", 0x810, 0, sub(b"EDID", b"TestStatic\0")),
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            placement_group(
+                0x900,
+                [
+                    placement_marker(0x801, 0x17, Vec::new()),
+                    placement(0x803, 0x810, 0, 0.0, Vec::new()),
+                ]
+                .concat(),
+            ),
+            record(b"CELL", 0x901, 0, sub(b"DATA", &[1, 0])),
+            placement_group(0x901, placement_marker(0x802, 0x17, Vec::new())),
+        ]
+        .concat(),
+    );
+    let mut failures = Vec::new();
+    for (name, id, header_len, superseded, expected) in [
+        ("ordinary", 0x803, 20, false, 1),
+        ("ordinary-overrun", 0x803, 24, false, 1),
+        ("superseded", 0x801, 20, true, 1),
+        ("superseded-overrun", 0x801, 24, true, 1),
+        ("unknown", 0x801, 15, false, 0),
+        ("marker", 0x801, 20, false, 0),
+        ("marker-overrun", 0x801, 24, false, 0),
+    ] {
+        let xord = sub(b"XORD", &[0x802u32, 0, 0, 0].map(u32::to_le_bytes).concat());
+        let mut contents = placement_group(
+            0x900,
+            placement_marker(id, 0x17, xord)[..header_len].to_vec(),
+        );
+        if superseded {
+            contents.extend(placement_group(
+                0x900,
+                placement_marker(id, 0x17, Vec::new()),
+            ));
+        }
+        let patch = plugin(data, &format!("{name}.esp"), &["Skyrim.esm"], 0, contents);
+        let assets = data.join(name);
+        fs::create_dir(&assets).unwrap();
+        let db = assets.join("skyrim_world.db");
+        let certificate =
+            "SELECT value FROM room_graph_stats WHERE name='occlusion_links_verified'";
+        let read = |conn: &rusqlite::Connection, sql| {
+            conn.query_row(sql, [], |row| row.get::<_, u32>(0)).unwrap()
+        };
+        let plugins = if import {
+            vec![base.clone()]
+        } else {
+            vec![base.clone(), patch.clone()]
+        };
+        EsmParser::convert_plugins_with_reader(&plugins, &db, RecordReader::Inhouse, data).unwrap();
+        let conn = rusqlite::Connection::open(db).unwrap();
+        if import {
+            assert_eq!(read(&conn, certificate), 1, "{name} before import");
+            let result = run_placement_import(&assets, "--plugin", &patch);
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+        assert_eq!(
+            read(
+                &conn,
+                "SELECT count(*) FROM room_occluders WHERE ref_id=0x802 AND cell_id=0x901"
+            ),
+            1,
+            "{name}"
+        );
+        assert_eq!(
+            stored_placement_certificate(&conn, 0x901),
+            Some(name != "unknown"),
+            "{name}"
+        );
+        let actual = read(&conn, certificate);
+        if actual != expected {
+            failures.push(format!("{name}: certificate {actual}, expected {expected}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn discarded_occluder_override_revokes_full_conversion_link_certificate() {
+    check_discarded_occluder_override(false);
+}
+
+#[test]
+fn discarded_occluder_override_revokes_plugin_import_link_certificate() {
+    check_discarded_occluder_override(true);
+}

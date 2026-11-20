@@ -363,12 +363,12 @@ impl EsmParser {
             for candidate in records {
                 let (mut record, damaged) = match candidate {
                     ParsedRecord::Usable(record) => (record, false),
-                    ParsedRecord::DamagedRecord(record)
+                    ParsedRecord::DamagedRecord { record, .. }
                         if is_placed_record_type(&record.record_type) =>
                     {
                         (record, true)
                     }
-                    ParsedRecord::DamagedRecord(_) => continue,
+                    ParsedRecord::DamagedRecord { .. } => continue,
                     ParsedRecord::TruncatedPlacement(placement) => {
                         if let Some(id) = placement.runtime_id(priority, order) {
                             damaged_placements
