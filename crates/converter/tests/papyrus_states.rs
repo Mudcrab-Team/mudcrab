@@ -462,7 +462,15 @@ async fn rebuild_old_script_abi(abi: u32) {
     // Old saved configuration must not opt the current emitter back into prior-ABI reuse.
     let report = convert(legacy).await;
     assert_eq!(report.converted, scripts);
-    assert_eq!(report.cache_hits, manifest.entries.len() as u64 - scripts);
+    assert_eq!(
+        report.cache_hits,
+        manifest
+            .entries
+            .values()
+            .filter(|entry| entry.output != "grass_cache.rkyv")
+            .count() as u64
+            - scripts
+    );
     for entry in manifest
         .entries
         .values()

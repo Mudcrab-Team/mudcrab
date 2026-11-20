@@ -103,20 +103,40 @@ async fn earlier_producer_meshes_regenerate_and_scripts_reuse_only_with_valid_pr
                 assert_eq!(report.converted, regenerated, "producer {producer}");
                 assert_eq!(
                     report.cache_hits,
-                    original.entries.len() as u64 - regenerated
+                    original
+                        .entries
+                        .values()
+                        .filter(|entry| entry.output != "grass_cache.rkyv")
+                        .count() as u64
+                        - regenerated
                 );
                 assert_eq!(current.entries, original.entries);
             }
             "configuration" => {
                 assert_eq!(report.cache_hits, 0);
-                assert_eq!(report.converted, original.entries.len() as u64);
+                assert_eq!(
+                    report.converted,
+                    original
+                        .entries
+                        .values()
+                        .filter(|entry| entry.output != "grass_cache.rkyv")
+                        .count() as u64
+                );
             }
             "source" | "texture-source" | "output" => {
                 // Only the script source change adds a conversion; mesh and texture
                 // changes land in outputs that regenerate anyway.
                 let converted = regenerated + u64::from(changed == "source");
                 assert_eq!(report.converted, converted, "{changed} {producer}");
-                assert_eq!(report.cache_hits, original.entries.len() as u64 - converted);
+                assert_eq!(
+                    report.cache_hits,
+                    original
+                        .entries
+                        .values()
+                        .filter(|entry| entry.output != "grass_cache.rkyv")
+                        .count() as u64
+                        - converted
+                );
             }
             _ => unreachable!(),
         }

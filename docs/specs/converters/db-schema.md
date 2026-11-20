@@ -621,6 +621,11 @@ key light, ambient and fog from `cell_lighting`, `lighting_templates`, `image_sp
 
 ---
 
+Missing or unsupported-size `LGTM.DATA` already leaves the DATA lighting columns NULL.
+The `lighting_template_unusable_data` omission now reports this loss (section 19);
+`editor_id`, identity and an independently valid `DALC` remain available. Accepted sizes
+come from the documented xEdit layouts, not guessed retail defaults.
+
 ### 5. Placed World References (`references`)
 
 Stores 3D positions, rotations, scales, and cell parentage for placed world objects (`REFR`,
@@ -653,6 +658,17 @@ CREATE TABLE IF NOT EXISTS "references" (
 -- Ordinary SQLite index used for interior cell reference lookup
 CREATE INDEX IF NOT EXISTS idx_references_cell ON "references"(cell_id);
 ```
+
+A placed record needs the leading 24 bytes of `DATA` for position and rotation, as
+[xEdit xedit-4.1.5f's placed-record definition](https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsTES5.pas#L5320-L5323)
+uses `wbDATAPosRot`. Missing or short `DATA` keeps the canonical `records` row but
+omits the placement, spatial row and derived reference links, reporting
+`reference_unusable_data` (section 19). The required transform columns are `NOT NULL`;
+the converter does not invent an origin or partial rotation. A subset update with
+unusable `DATA` also removes any prior placement and spatial row, owned link/detail rows,
+door transitions involving it, and related room rows. Room graph publication excludes those
+unusable placements before projecting markers or memberships; it cannot recreate an origin
+from their canonical bytes. Incoming authored links may still name the retained canonical record.
 
 The reference flag and enable-parent columns preserve winning raw-record
 metadata for initial spawn filtering (#165) and later object LOD (#106).
@@ -1099,11 +1115,16 @@ same NIF-to-GLB converter as other meshes. `flags` below contains the `DATA` gra
 flags rather than record header flags. `load_order` identifies the winning
 override; `formid_map` retains owning-plugin identity independently.
 
-The layout follows [xEdit's TES5 GRAS and LTEX definitions](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.5/Core/wbDefinitionsTES5.pas)
+The layout follows [xEdit's TES5 GRAS and LTEX definitions at xedit-4.1.5f](https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsTES5.pas#L10199-L10230)
 and [CommonLibSSE-NG's TESGrass definition](https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/main/include/RE/T/TESGrass.h).
 `DATA` is 32 bytes; its padding and unprojected fields stay in `records.data`.
-The converter preserves authored values without clamping to vanilla ranges. A field
-whose bytes are missing, or a non-finite float, becomes NULL. Missing, empty or unsafe
+The converter preserves authored values without clamping to vanilla ranges. Missing or
+short `DATA` records `grass_unusable_data` (section 19); each complete scalar at its fixed
+offset is retained, while absent or incomplete scalar spans become NULL. For example,
+three bytes preserve density and both slope values without inventing the remaining fields.
+The in-house adapter recovers this unique, safely framed numeric prefix after typed-field
+rejection; it does not mark the malformed typed field as decoded. The identity and model
+still publish. A non-finite float becomes NULL. Missing, empty or unsafe
 model paths also become NULL; the original subrecords remain available for diagnostics.
 Path normalization does not verify that the referenced asset exists. Even vanilla
 records can name an absent mesh, so a non-NULL `model_path` is not an availability
@@ -1131,6 +1152,7 @@ CREATE TABLE IF NOT EXISTS grass_types (
 CREATE TABLE IF NOT EXISTS landscape_texture_grasses (
     ltex_id INTEGER NOT NULL,           -- resolved LTEX FormID
     gras_id INTEGER NOT NULL,           -- resolved GNAM GRAS FormID
+    ordinal INTEGER NOT NULL DEFAULT 0, -- first GNAM occurrence in the winning list
     PRIMARY KEY (ltex_id, gras_id)
 );
 ```
@@ -1141,9 +1163,17 @@ Either At Most Above and Either At Most Below, respectively. `flags` bits 0,
 1 and 2 mean Vertex Lighting, Uniform Scaling and Fit to Slope. These definitions
 establish the authored contract, not Skyrim's exact placement equations.
 
-Each non-null repeated `LTEX.GNAM` yields an association; duplicate pairs collapse.
-The winning LTEX list replaces the earlier list in full. There is no foreign key on
-the grass target: a deleted or unresolved grass can still be named by a texture,
+Each non-null repeated `LTEX.GNAM` yields an association; duplicate pairs collapse,
+retaining the first occurrence's zero-based `ordinal`. Both record readers use this
+projection. Consumers read each texture's species in `ordinal` order (with `gras_id`
+as a deterministic tie fallback), preserving source order rather than sorting species
+by FormID. Gaps after discarded or duplicate occurrences are allowed.
+The winning LTEX list replaces the earlier list in full, including its order and an
+empty replacement. `create_tables` adds `ordinal` to older association tables with a
+negative sentinel, preserving unrelated rows during subset exports. The grass baker
+recovers those lists, and lists in databases without the column, from winning raw
+LTEX records without mutating the database. A complete export writes explicit ordinals.
+There is no foreign key on the grass target: a deleted or unresolved grass can still be named by a texture,
 and consumers resolve it against `grass_types`. Both projections refresh atomically
 from a complete effective load-order export, removing stale grass and associations
 on deletions or later overrides. Deleted GRAS records therefore do not reappear as
@@ -1170,11 +1200,11 @@ CREATE TABLE IF NOT EXISTS npcs (               -- one row per NPC_
 );
 CREATE INDEX IF NOT EXISTS idx_npcs_editor_id ON npcs(editor_id);
 
-CREATE TABLE IF NOT EXISTS movement_types (     -- MOVT 0003580D (NPC_Default_MT) only, today
+CREATE TABLE IF NOT EXISTS movement_types (     -- one row per MOVT
     id INTEGER PRIMARY KEY,
-    editor_id TEXT NOT NULL,                    -- written as the literal 'NPC_Default_MT'
-    left_walk REAL NOT NULL, left_run REAL NOT NULL,       -- SPED, Creation units per second
-    right_walk REAL NOT NULL, right_run REAL NOT NULL,
+    editor_id TEXT NOT NULL,                    -- EDID
+    left_walk REAL NOT NULL, left_run REAL NOT NULL,       -- SPED, Creation units per second;
+    right_walk REAL NOT NULL, right_run REAL NOT NULL,     -- zero where the type cannot move
     forward_walk REAL NOT NULL, forward_run REAL NOT NULL,
     back_walk REAL NOT NULL, back_run REAL NOT NULL,
     load_order INTEGER NOT NULL
@@ -1185,6 +1215,17 @@ CREATE TABLE IF NOT EXISTS race_movement_links (  -- one row per RACE
     run_movt_id INTEGER,                        -- RNMV
     load_order INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS default_objects (    -- DOBJ DNAM, merged key by key over every override
+    key TEXT PRIMARY KEY,                       -- use code, for example DMWL (walk) or DMRN (run)
+    form_id INTEGER NOT NULL                    -- load-order FormID; a null link has no row
+);
+-- `default_objects` follows the game loader: a later `DOBJ` changes only the keys it lists, a null
+-- link removes the key, and a zero key (Update.esm holds hundreds of padding pairs) is skipped.
+-- Both record readers feed the key-merged `DOBJ` into the runtime projection, so `records.data`
+-- for DOBJ 00000031 holds the merged `DNAM` under the winning plugin's `load_order`. It is a
+-- derived record, not the winner's bytes. With the in-house reader, the winner's exact source
+-- bytes stay in `inhouse_source_records`, and every version's header is in the source history. A package with no `default_objects` table was
+-- converted before the table existed; the engine flags it and uses the earlier rule.
 CREATE TABLE IF NOT EXISTS movement_game_settings ( -- fMoveCharWalkBase and fJumpHeightMin only
     id INTEGER PRIMARY KEY, editor_id TEXT NOT NULL,
     value REAL NOT NULL, load_order INTEGER NOT NULL
@@ -1699,10 +1740,12 @@ actors in their skin when it is absent or invalid.
 
 ### 19. Projection Omissions (`projection_omission_stats`, `projection_omission_samples`)
 
-The light and emittance projections write no row for a record whose data cannot supply one. Each
-skip is counted under a stable category, so the conversion report can account for it instead of
-a terminal message alone (#297). The categories come from `insert_light` and
-`insert_emittance_sources` in `crates/converter/src/esm/exporter.rs`; the code is
+Runtime projections omit unusable rows or fields without inventing authored data. Each
+omission is counted under a stable category, so the conversion report can account for it instead of
+a terminal message alone (#297). Light, grass and placed-record projections in
+`crates/converter/src/esm/exporter.rs`, lighting-template projection in `esm/environment.rs`,
+and emittance resolution contribute categories. Readable GRAS scalar prefixes remain
+available even when the complete DATA field is short. The category code is
 `crates/converter/src/esm/projection_omissions.rs`.
 
 ```sql
@@ -1713,7 +1756,7 @@ CREATE TABLE IF NOT EXISTS projection_omission_stats (   -- one row per category
 );
 CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, at most 8 per category
     category TEXT NOT NULL,
-    form_id INTEGER NOT NULL,      -- the LIGH, or the XEMI target
+    form_id INTEGER NOT NULL,      -- the omitted record, or the XEMI target
     reason TEXT NOT NULL,          -- human-readable detail, e.g. the DATA length
     PRIMARY KEY (category, form_id)
 ) WITHOUT ROWID;
@@ -1723,18 +1766,29 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 |---|---|---|
 | `light_missing_data` | `LIGH` without `DATA`: no `lights` row | data loss |
 | `light_short_data` | `LIGH` whose `DATA` is shorter than the 20 bytes the row needs: no `lights` row | data loss |
+| `grass_unusable_data` | `GRAS` with missing or short `DATA`: unavailable scalar columns NULL, readable scalar prefix/model/identity retained | data loss |
+| `reference_unusable_data` | Placed record with missing or short `DATA`: no placement or spatial row; canonical record retained | data loss |
+| `lighting_template_unusable_data` | `LGTM` with missing or unsupported-size `DATA`: DATA lighting columns NULL, other fields retained | data loss |
 | `emittance_target_absent` | `XEMI` target not in the load order, or deleted: no `emittance` row | fallback |
 | `emittance_light_unusable_data` | `XEMI` target `LIGH` without a usable `DATA`: no `emittance` row | fallback |
 | `emittance_region_no_weather` | `XEMI` target `REGN` whose `RDWT` names no weather: no `emittance` row | fallback |
 | `emittance_weather_no_lighting` | `XEMI` target `REGN` whose weather has no Effect Lighting colours: no `emittance` row | fallback |
 | `emittance_target_wrong_type` | `XEMI` target that is neither a `LIGH` nor a `REGN`: no `emittance` row | fallback |
 
-**Severity.** A light without a `lights` row loses a light the runtime would draw, so a
+**Severity.** A missing light or placement row, or an incomplete grass/template DATA field,
+loses all or part of a supported projection. Readable GRAS scalars remain authored values;
+only unavailable scalar spans become NULL. A
 `data_loss` category adds one line to the conversion's `warnings` and makes the output
 incomplete. A reference whose emittance target does not resolve keeps the model's own emission
 (section 16), the documented fallback, so a `fallback` category adds one line to `notices` and the
 output stays complete. A severity the reader does not know is read as `data_loss`, so a category
 added by a newer converter cannot pass as success.
+
+Placement omission reasons describe the `DATA` available to the runtime projection.
+An in-house typed-field rejection can make it unavailable there even though the original
+short field remains in `inhouse_source_records.payload`. The low-level `insert_reference`
+subset helper has no report sink: it warns on the terminal but does not update these
+omission tables or an integration report. Full load-order exports persist the omission.
 
 A full load-order export clears and rewrites both tables inside its transaction, so a re-export
 replaces the counts instead of adding to them, and a repaired load order leaves the tables empty.

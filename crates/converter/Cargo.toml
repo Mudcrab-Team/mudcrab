@@ -16,6 +16,8 @@ rusqlite.workspace = true
 rkyv.workspace = true
 color-eyre.workspace = true
 memmap2 = "0.9.11"
+gltf = { version = "1.4.1", default-features = false, features = ["utils", "names"] }
+glam = { version = "0.32.1", default-features = false, features = ["std"] }
 flate2   = "1.1.9"
 rayon = "1.12.0"
 crossbeam-channel.workspace = true
@@ -40,7 +42,6 @@ zstd = "0.14"
 # The encoder runs on native Vulkan, Metal or DX12 only (no GL, no WebGPU).
 wgpu = { version = "29.0.4", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
 tempfile = "3.20"
-gltf = { version = "1.4", default-features = false, features = ["names"] }
 
 [target.'cfg(all(target_arch = "aarch64", target_family = "unix"))'.dependencies]
 # sha2's AArch64 hardware backend is gated by its asm feature.

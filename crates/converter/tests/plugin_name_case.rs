@@ -66,7 +66,12 @@ fn fixture_with_spelling(root: &Path, owner_bytes: &[u8]) -> (PathBuf, PathBuf, 
     patch_records.extend(frame(
         b"REFR",
         0x0100_1801,
-        &sub(b"NAME", &0x1800u32.to_le_bytes()),
+        // A usable placement keeps this test focused on owner/master name casing.
+        &[
+            sub(b"NAME", &0x1800u32.to_le_bytes()),
+            sub(b"DATA", &[0; 24]),
+        ]
+        .concat(),
     ));
     let patch = plugin(&data, "Patch.esp", &[owner_bytes], &patch_records);
     let list = root.join("plugins.txt");
