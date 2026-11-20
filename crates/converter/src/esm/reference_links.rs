@@ -74,18 +74,46 @@ pub(crate) struct Context<'a> {
     /// The load order, to remap the `XLOC` key that neither reader remaps; `None` in subset
     /// exports, where the key stays NULL.
     pub(crate) order: Option<&'a LoadOrder>,
+    pub(crate) subset: bool,
 }
 
 impl Context<'_> {
     /// Keep typed winning records and hardcoded nonzero IDs without plugin records. The in-house
     /// reader clears invalid links and the legacy reader keeps them, so this makes both agree.
-    fn resolve(&self, id: Option<u32>, targets: &[&[u8; 4]]) -> Option<u32> {
-        id.filter(|id| {
-            *id != 0
-                && self.master.get(id).map_or(*id < 0x800, |record| {
-                    !record.is_deleted() && targets.contains(&&record.record_type)
-                })
-        })
+    fn resolve(
+        &self,
+        tx: &Transaction<'_>,
+        id: Option<u32>,
+        targets: &[&[u8; 4]],
+    ) -> Result<Option<u32>> {
+        let Some(id) = id.filter(|&id| id != 0) else {
+            return Ok(None);
+        };
+        if let Some(record) = self.master.get(&id) {
+            return Ok(
+                (!record.is_deleted() && targets.contains(&&record.record_type)).then_some(id),
+            );
+        }
+        if self.subset {
+            let (kind, placed): (Option<String>, bool) = tx
+                .prepare_cached(
+                    "SELECT (SELECT record_type FROM records WHERE form_id=?1),
+                            EXISTS(SELECT 1 FROM [references] WHERE id=?1)",
+                )?
+                .query_row([id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            if let Some(kind) = kind {
+                // A deleted placement can still have a canonical row in an edited pack.
+                let valid = <&[u8; 4]>::try_from(kind.as_bytes()).is_ok_and(|kind| {
+                    targets.contains(&kind) && (placed || !super::is_placed_record_type(kind))
+                });
+                return Ok(valid.then_some(id));
+            }
+            if placed {
+                // Placement imports can add REFRs without modifying the canonical archive.
+                return Ok(targets.contains(&b"REFR").then_some(id));
+            }
+        }
+        Ok((id < 0x800).then_some(id))
     }
 }
 
@@ -131,8 +159,8 @@ pub(crate) fn insert(
         .execute(params![
             id,
             position as i64,
-            context.resolve(keyword, LINKED_KEYWORD),
-            context.resolve(reference, LINKED_REFERENCE),
+            context.resolve(tx, keyword, LINKED_KEYWORD)?,
+            context.resolve(tx, reference, LINKED_REFERENCE)?,
         ])?;
     }
 
@@ -149,40 +177,41 @@ pub(crate) fn insert(
         .execute(params![
             id,
             position as i64,
-            context.resolve(u32_at(parent, 0), LINKED_REFERENCE),
+            context.resolve(tx, u32_at(parent, 0), LINKED_REFERENCE)?,
             delay.is_finite().then_some(f64::from(delay)),
         ])?;
     }
 
     let link = |tag: &[u8; 4], targets: &[&[u8; 4]]| {
         context.resolve(
+            tx,
             sized(view.find(tag), &[4]).and_then(|bytes| u32_at(bytes, 0)),
             targets,
         )
     };
-    let owner = link(b"XOWN", &[b"FACT", b"ACHR", b"NPC_"]);
+    let owner = link(b"XOWN", &[b"FACT", b"ACHR", b"NPC_"])?;
     let owner_rank = sized(view.find(b"XRNK"), &[4]).and_then(|bytes| u32_at(bytes, 0));
     let activate_parent_flags = sized(view.find(b"XAPD"), &[1]).map(|bytes| bytes[0]);
     // XLOC: level byte, three unused, key FormID, flags byte (0x04 leveled lock), padding. It is
     // untyped bytes in the in-house schema, so neither reader remaps the key; it is remapped here
     // through the supplying plugin's master list.
     let lock = view.find(b"XLOC").filter(|bytes| !bytes.is_empty());
-    let lock_key = lock.and_then(|bytes| u32_at(bytes, 4)).and_then(|raw| {
+    let remapped_lock_key = lock.and_then(|bytes| u32_at(bytes, 4)).and_then(|raw| {
         let order = context.order?;
-        let local = crate::records::source_identity::header_runtime_id(
+        crate::records::source_identity::header_runtime_id(
             b"KEYM",
             raw,
             record.load_order as usize,
             order,
-        )?;
-        context.resolve(Some(local), &[b"KEYM"])
+        )
     });
+    let lock_key = context.resolve(tx, remapped_lock_key, &[b"KEYM"])?;
     let open_by_default = view.find(b"ONAM").is_some();
     let map_marker = view.find(b"XMRK").is_some();
-    let location = link(b"XLCN", &[b"LCTN"]);
-    let location_ref_type = link(b"XLRL", &[b"LCRT", b"LCTN"]);
-    let encounter_zone = link(b"XEZN", &[b"ECZN"]);
-    let attached = link(b"XATR", ATTACHED_REFERENCE);
+    let location = link(b"XLCN", &[b"LCTN"])?;
+    let location_ref_type = link(b"XLRL", &[b"LCRT", b"LCTN"])?;
+    let encounter_zone = link(b"XEZN", &[b"ECZN"])?;
+    let attached = link(b"XATR", ATTACHED_REFERENCE)?;
     let any = owner.is_some()
         || owner_rank.is_some()
         || activate_parent_flags.is_some()

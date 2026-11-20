@@ -1,5 +1,6 @@
 //! Memory-mapped framing with recoverable record errors and bounded inflation.
 use super::{DiscardedFrameScope, PluginDiagnostics, TruncatedPlacement};
+use crate::esm::types::group_child_cell;
 use color_eyre::{Result, eyre::WrapErr};
 use flate2::{Decompress, FlushDecompress, Status};
 use memmap2::Mmap;
@@ -123,7 +124,10 @@ fn scan_bytes_observed(
             diagnostics.note("record", || {
                 format!("incomplete frame at byte {position}; skipping containing group remainder")
             });
-            if let Some(placement) = TruncatedPlacement::from_prefix(&bytes[position..end]) {
+            let prefix = &bytes[position..end];
+            if let Some(child) = group_child_cell(prefix) {
+                discarded_frames.insert(DiscardedFrameScope::Cell(child));
+            } else if let Some(placement) = TruncatedPlacement::from_prefix(prefix) {
                 damage
                     .truncated_placements
                     .push((position as u64, placement));
@@ -145,7 +149,7 @@ fn scan_bytes_observed(
         if signature == *b"GRUP" {
             let label = u32_at(header, 8);
             let kind = u32_at(header, 12) as i32;
-            let cell_child = matches!(kind, 6 | 8 | 9 | 10).then_some(label);
+            let cell_child = group_child_cell(header);
             if size < 24 || size > end - position || parents.len() >= 4096 {
                 diagnostics.note("record", || {
                     format!("invalid group boundary/nesting at byte {position}")
