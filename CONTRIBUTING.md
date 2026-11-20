@@ -138,6 +138,11 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    `tools/unwrap_ratchet/baseline.json` (it also raises `revision`, so the approval shows in the diff even
    when a number does not change), and explain the reason in the pull request. A baseline that your pull
    request did not change never raises the limit.
+
+   The byte-level parsers (ESM subrecords and record framing) also have `cargo-fuzz`
+   targets in `fuzz/`. They run on a schedule, not on pull requests.
+   [`docs/contributing/fuzzing.md`](docs/contributing/fuzzing.md) shows how to run one
+   for a fixed time and what to do with a crash.
 5. **Submit a Pull Request:**
    - Target the `main` branch and fill in the PR template; [`docs/contributing/writing-prs.md`](docs/contributing/writing-prs.md) shows how to write it so it is quick to review.
    - Link the issue (`Closes #N`), apply the [labels](docs/contributing/labels.md) that fit (if a label there doesn't exist on the repository yet, use the closest one that does; without triage access, name them in the PR instead), and reference any relevant planning docs in `docs/specs/`.
