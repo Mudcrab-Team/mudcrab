@@ -12,7 +12,7 @@ use converter::{
 use rayon::prelude::*;
 use rusqlite::{Connection, OpenFlags};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -205,38 +205,27 @@ fn prepare_model_sources(
     };
     let plugins: Vec<_> = plugins.iter().map(PathBuf::from).collect();
     let archives = active_data_bsa_paths(data, &plugins)?;
-    let mut archive_winners = BTreeMap::new();
-    for archive in &archives {
-        for path in ArchiveExtractor::list_paths(archive)? {
-            if needed(&path) {
-                archive_winners.insert(path, archive);
-            }
-        }
-    }
+    let mut staged = BTreeSet::new();
     let loose = AssetSourceIndex::build(&[data.to_path_buf()], AssetKind::Mesh)?;
     for source in loose.assets() {
         let path = Path::new(&source.key);
         if needed(path) && !is_authoring_resource(&source.relative_source) {
-            archive_winners.remove(path);
+            staged.insert(path.to_owned());
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(sources.path().join(parent))?;
             }
             fs::copy(&source.path, sources.path().join(path))?;
         }
     }
-    let mut entries_by_archive = BTreeMap::<_, BTreeSet<_>>::new();
-    for (path, archive) in archive_winners {
-        entries_by_archive.entry(archive).or_default().insert(path);
-    }
+    // Higher-priority sources claim each path first. Selection and extraction
+    // use one open archive, so replacing its filename cannot mix revisions.
     let mut extracted = 0;
-    for (archive, paths) in entries_by_archive {
-        let files = ArchiveExtractor::extract_paths(archive, sources.path(), &paths)?;
-        ensure!(
-            files.len() == paths.len(),
-            "capture source archive changed while staging {}",
-            archive.display()
-        );
+    for archive in archives.iter().rev() {
+        let files = ArchiveExtractor::extract_matching(archive, sources.path(), |path| {
+            needed(path) && !staged.contains(path)
+        })?;
         extracted += files.len();
+        staged.extend(files.into_iter().map(|file| file.path));
     }
     Ok((sources, extracted))
 }
@@ -579,6 +568,7 @@ mod tests {
         let model = "meshes/actors/selected/body.nif";
         let skeleton = "meshes/rigs/other/skeleton.nif";
         fs::write(data.join("Later Extra.esp"), b"disabled plugin").unwrap();
+        fs::create_dir(data.join("mod-assets")).unwrap();
         for (name, entries) in [
             (
                 "Skyrim - Meshes.bsa",
@@ -589,7 +579,7 @@ mod tests {
                     Entry::new(alternate_path, &alternate),
                 ],
             ),
-            ("Later.bsa", vec![Entry::new(skeleton, &winner)]),
+            ("mod-assets/Later.bsa", vec![Entry::new(skeleton, &winner)]),
             (
                 "Later Extra.bsa",
                 vec![Entry::new(skeleton, b"disabled override")],
