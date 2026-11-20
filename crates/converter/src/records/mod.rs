@@ -1027,17 +1027,19 @@ fn read_plugins_with_prepared(
         };
         let damage = scanner::scan_plugin(path, &mut diagnostics, observe, receive)?;
         let history = history.into_inner();
-        let overruns = history.iter().filter_map(|entry| {
-            (!entry.frame_complete
-                && entry.flags & 0x20 == 0
-                && crate::esm::is_placed_record_type(&entry.record_type))
-            .then(|| {
+        let overruns = history
+            .iter()
+            .filter(|entry| {
+                !entry.frame_complete
+                    && entry.flags & 0x20 == 0
+                    && crate::esm::is_placed_record_type(&entry.record_type)
+            })
+            .map(|entry| {
                 (
                     entry.source_record_offset,
                     entry.form_id.filter(|&id| id != 0),
                 )
-            })
-        });
+            });
         let partial_headers = damage
             .truncated_placements
             .into_iter()

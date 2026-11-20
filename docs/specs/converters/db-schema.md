@@ -1353,8 +1353,9 @@ Columns and rules:
   independent occluder. An unreadable occurrence sets the source cell's `complete` flag to
   false. In-house exports also clear that flag for unresolved FormIDs. A full in-house export
   publishes `occlusion_version = 1` in `room_graph_stats`. It sets `occlusion_links_verified`
-  to zero if a marker payload is truncated or an `XORD` has the wrong length, since either
-  can hide a link to another cell. Otherwise it sets `occlusion_links_verified` to one.
+  to zero when a truncated marker payload or a malformed `XORD` can hide a cross-cell link.
+  Full in-house exports and plugin placement imports also clear the flag when a discarded
+  override of a known occluder remains unresolved or the discarded frame has unknown scope.
   These markers let the loader keep unrelated occluders in a complete cell that contains an
   all-null `XORD`. Subset exports invalidate cells that contain an old or new link target.
   A plugin placement import also clears pack-wide link verification when remapping reports
