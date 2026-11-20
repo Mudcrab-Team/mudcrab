@@ -339,6 +339,7 @@
     "land.vtex",
     "landscape_texture_grasses.gras_id",
     "landscape_texture_grasses.ltex_id",
+    "landscape_texture_grasses.ordinal",
     "landscape_textures.editor_id",
     "landscape_textures.friction",
     "landscape_textures.id",

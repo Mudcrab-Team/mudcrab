@@ -1510,9 +1510,9 @@ async fn adapter10_metadata_rebuild_preserves_original_assets_and_saved_addons_a
     )
     .unwrap();
 
-    let first = temp.path().join("adapter12-first");
+    let first = temp.path().join("current-adapter-first");
     rebuild_config(mod_config(&data, &first, &[]), &source, false).await;
-    let second = temp.path().join("adapter12-second");
+    let second = temp.path().join("current-adapter-second");
     rebuild_config(mod_config(&data, &second, &[]), &first, false).await;
     for output in [&first, &second] {
         let reader = json_artifact(output, "record-reader.json");
@@ -1581,7 +1581,14 @@ async fn metadata_rebuilds_replay_saved_addons_and_preserve_original_asset_produ
     let original = temp.path().join("original-pack");
     publish_config(mod_config(&data, &original, &[&original_addon]), false).await;
     let original_manifest = json_artifact(&original, "conversion-manifest.json");
-    assert!(original_manifest["entries"].as_object().unwrap().is_empty());
+    assert_eq!(
+        original_manifest["entries"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        vec!["derived/grass-cache"]
+    );
     let original_reader = json_artifact(&original, "record-reader.json");
     let runtime_path = "scripts/papyrus_runtime.luau";
     let original_runtime = fs::read(original.join(runtime_path)).unwrap();
