@@ -311,9 +311,13 @@ def store_paths(here):
 def load_stores(here):
     """Load one disposition per external store. Refuse a partial or mistyped file instead of dropping fields."""
     stores = {}
+    sources = {}
     for path in store_paths(here):
         name = path.relative_to(here).as_posix()
-        value = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            raise ValueError(f"invalid JSON in store file {name}: {error}") from None
         if not isinstance(value, dict):
             raise ValueError(f"store file is not an object: {name}")
         problems = []
@@ -331,8 +335,9 @@ def load_stores(here):
         if not isinstance(key, str) or not key.strip():
             raise ValueError(f"missing store name: {name}")
         if key in stores:
-            raise ValueError(f"duplicate store: {key}")
+            raise ValueError(f"duplicate store {key}: {sources[key]} and {name}")
         stores[key] = {field: value[field] for field in STORE_DISPOSITIONS}
+        sources[key] = name
     return dict(sorted(stores.items()))
 
 

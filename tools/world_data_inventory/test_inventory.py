@@ -346,6 +346,21 @@ class StoreFiles(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "broken evidence reference"):
                 run_tool(root, here, "--check")
 
+    def test_check_fails_closed_on_a_duplicate_store(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            self.write_store(here, "one.json", store_document("same"))
+            self.write_store(here, "two.json", store_document("same"))
+            with self.assertRaisesRegex(ValueError, "duplicate store same: stores/one.json and stores/two.json"):
+                run_tool(root, here, "--check")
+
+    def test_check_fails_closed_on_malformed_store_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            (here / "stores" / "broken.json").write_text("{", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid JSON in store file stores/broken.json"):
+                run_tool(root, here, "--check")
+
     def test_check_fails_closed_on_a_malformed_store_commit(self):
         with tempfile.TemporaryDirectory() as directory:
             root, here, _ = make_tree(directory)
