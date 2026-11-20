@@ -386,12 +386,12 @@ jobs:
       - name: Clippy check
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-  test:
+  test_build:
     needs: [orchestrate]
     # A change that only touches the world-data inventory still needs the extraction-backed check.
     if: needs.orchestrate.outputs.check_rust == 'true' || needs.orchestrate.outputs.check_world_data == 'true'
     runs-on: ubuntu-latest
-    # Cold test builds can take 26 minutes; leave time for the full suite.
+    # Cold test builds can take 26 minutes; the partition jobs reuse this build.
     timeout-minutes: 45
     steps:
       - name: Checkout repository
@@ -428,8 +428,33 @@ jobs:
       - name: Install nextest
         uses: taiki-e/install-action@nextest
 
-      - name: Run unit & integration tests
-        run: cargo nextest run --workspace --lib --bins --tests --examples --no-fail-fast --no-tests=warn
+      # Build every test binary once. The `test` jobs below run these binaries and do not
+      # compile, so their wall time is test time instead of build time.
+      - name: Build the nextest archive
+        run: >-
+          cargo nextest archive
+          --workspace --lib --bins --tests --examples
+          --archive-file "$RUNNER_TEMP/nextest-archive.tar.zst"
+
+      - name: Upload the nextest archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-archive
+          path: ${{ runner.temp }}/nextest-archive.tar.zst
+          # A missing archive would make every partition run no tests.
+          if-no-files-found: error
+          # The archive is already zstd-compressed.
+          compression-level: 0
+          retention-days: 1
+
+      # Run the extraction test here, not in a partition, so exactly one job owns the
+      # world-data artifact. The partition jobs exclude it by name.
+      - name: Extract the world-data inventory
+        run: >-
+          cargo nextest run
+          --workspace --lib --bins --tests --examples
+          --no-fail-fast --no-tests=warn
+          -E 'test(world::database::inventory_tests::world_data_inventory_extraction)'
         env:
           NEXTEST_NO_TESTS: warn
           WORLD_DATA_INVENTORY_OUTPUT: ${{ runner.temp }}/world-data-inventory
@@ -446,11 +471,129 @@ jobs:
           # so a renamed or filtered test would otherwise drop the column check without a red result.
           if-no-files-found: error
 
+  jump_replay:
+    needs: [orchestrate]
+    if: needs.orchestrate.outputs.check_rust == 'true' || needs.orchestrate.outputs.check_world_data == 'true'
+    runs-on: ubuntu-latest
+    # Runs beside the test build instead of after it.
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            mesa-vulkan-drivers \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+
+      - name: Set up mold linker
+        uses: rui314/setup-mold@v1
+
+      - name: Setup kache compiler cache
+        uses: kunobi-ninja/kache-action@v1
+        with:
+          # Share the test cache. The replay builds the engine with `-p engine`, which
+          # already ran under this prefix inside the former combined test job.
+          cache-key-prefix: kache-test
+          # Restore only: test_build owns this key and saves the full workspace store.
+          # The key has no job identity, so a save here could win the race with an
+          # engine-only store and make later builds recompile.
+          save-cache: false
+
       - name: Replay production jump physics against held-out native observations
         run: python3 -B scripts/check_skyrim_jump_runtime.py --output "$RUNNER_TEMP/skyrim-jump-replay" --require-heldout-pass
 
+  test:
+    needs: [orchestrate, test_build]
+    # Run only after the build job succeeded. A skipped build means this change needs no Rust tests.
+    if: needs.test_build.result == 'success'
+    runs-on: ubuntu-latest
+    # One test share, not a build.
+    timeout-minutes: 20
+    strategy:
+      # Let every partition finish so a failure shows the whole set.
+      fail-fast: false
+      matrix:
+        # Every leg must run. Do not add a leg-level `if`; tests_pass rejects a
+        # skipped test job when the build job succeeded.
+        partition: [1, 2, 3]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            mesa-vulkan-drivers \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Download the nextest archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: nextest-archive
+          path: ${{ runner.temp }}
+
+      # Some tests read vendored dependency sources from the Cargo registry. The
+      # archive avoids the build, so fetch the locked sources before the test run.
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
+
+      # `slice` splits the filtered tests round-robin across partitions. Nextest
+      # deprecates `count`, which splits whole test binaries and is uneven.
+      #
+      # Extract into the workspace `target/`, not a temporary directory: tests use
+      # `env!("CARGO_BIN_EXE_...")`, which holds the build job's absolute path.
+      - name: Run unit & integration tests (partition ${{ matrix.partition }}/3)
+        run: >-
+          cargo nextest run
+          --archive-file "$RUNNER_TEMP/nextest-archive.tar.zst"
+          --extract-to "$GITHUB_WORKSPACE"
+          --workspace-remap "$GITHUB_WORKSPACE"
+          --partition slice:${{ matrix.partition }}/3
+          --no-fail-fast --no-tests=warn
+          -E 'not test(world::database::inventory_tests::world_data_inventory_extraction)'
+        env:
+          NEXTEST_NO_TESTS: warn
+
+      # The ignored GPU tests run from the same archive, so they do not rebuild the engine.
       - name: Test textures and grass scene pipeline on software Vulkan
-        run: cargo nextest run --locked --workspace --lib --bins --tests --examples --run-ignored only -E 'test(v210_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips) | test(gpu_authored_atlas_software_vulkan_preserves_mips_gutters_padding_and_slots) | test(production_scene_pipeline_shader_uses_real_mesh_bindings)'
+        if: matrix.partition == 1
+        run: >-
+          cargo nextest run
+          --archive-file "$RUNNER_TEMP/nextest-archive.tar.zst"
+          --extract-to "$GITHUB_WORKSPACE"
+          --extract-overwrite
+          --workspace-remap "$GITHUB_WORKSPACE"
+          --run-ignored only
+          -E 'test(v210_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips) | test(gpu_authored_atlas_software_vulkan_preserves_mips_gutters_padding_and_slots) | test(production_scene_pipeline_shader_uses_real_mesh_bindings)'
         env:
           WGPU_BACKEND: vulkan
 
@@ -526,6 +669,8 @@ jobs:
       - schema_validation
       - unwrap_ratchet
       - clippy
+      - test_build
+      - jump_replay
       - test
       - security
       - performance
@@ -554,9 +699,18 @@ jobs:
           check_result "schema_validation" "$RESULT_SCHEMA_VALIDATION"
           check_result "unwrap_ratchet" "$RESULT_UNWRAP_RATCHET"
           check_result "clippy" "$RESULT_CLIPPY"
+          check_result "test_build" "$RESULT_TEST_BUILD"
+          check_result "jump_replay" "$RESULT_JUMP_REPLAY"
           check_result "test" "$RESULT_TEST"
           check_result "security" "$RESULT_SECURITY"
           check_result "performance" "$RESULT_PERFORMANCE"
+
+          # A skipped test job is allowed only when the build job was skipped too.
+          # Every partition must run and pass after a successful build.
+          if [[ "$RESULT_TEST_BUILD" == "success" && "$RESULT_TEST" != "success" ]]; then
+            echo "::error::test_build succeeded but the test partitions did not all pass"
+            EXIT_CODE=1
+          fi
 
           exit $EXIT_CODE
         env:
@@ -569,6 +723,8 @@ jobs:
           RESULT_SCHEMA_VALIDATION: ${{ needs.schema_validation.result }}
           RESULT_UNWRAP_RATCHET: ${{ needs.unwrap_ratchet.result }}
           RESULT_CLIPPY: ${{ needs.clippy.result }}
+          RESULT_TEST_BUILD: ${{ needs.test_build.result }}
+          RESULT_JUMP_REPLAY: ${{ needs.jump_replay.result }}
           RESULT_TEST: ${{ needs.test.result }}
           RESULT_SECURITY: ${{ needs.security.result }}
           RESULT_PERFORMANCE: ${{ needs.performance.result }}
