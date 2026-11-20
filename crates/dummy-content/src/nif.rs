@@ -163,7 +163,7 @@ pub fn static_switch(shape: &StaticShape<'_>, flags: u16, selector: i32) -> Resu
     let mut switch = fade_node(&[1, 5]);
     push_u16(&mut switch, flags);
     switch.extend_from_slice(&selector.to_le_bytes());
-    let first = triangle_shape(shape, &[])?;
+    let first = triangle_shape(shape, &[], NULL_REF)?;
     let mut second = first.clone();
     set_av_transform(
         &mut second,
