@@ -711,6 +711,12 @@ jobs:
             echo "::error::test_build succeeded but the test partitions did not all pass"
             EXIT_CODE=1
           fi
+          # jump_replay runs under the same condition as test_build, so it must not skip
+          # when the build ran. This keeps the held-out jump gate from passing as "skipped".
+          if [[ "$RESULT_TEST_BUILD" == "success" && "$RESULT_JUMP_REPLAY" != "success" ]]; then
+            echo "::error::test_build succeeded but jump_replay did not pass"
+            EXIT_CODE=1
+          fi
 
           exit $EXIT_CODE
         env:
