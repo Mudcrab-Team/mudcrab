@@ -58,8 +58,8 @@ subgrid centers and is not tested again after jitter.
 
 Each entry has an n-by-n grid, with
 `n = min(trunc(256 / Position Range), trunc(256 / minimum spacing))`.
-Negative Position Range rules retain a non-emitting nomination slot with a conversion warning.
-Zero Position Range safely uses the minimum-spacing limit. At
+As in retail, a Position Range of 0 places no candidates, and a negative Position Range uses the
+minimum-spacing limit (12 per axis at the default spacing). At
 minimum spacing 20 and Position Range <=20, a fully supported entry gets
 36,864 attempts per cell. Position Range 40 gives 9,216. Jitter covers each
 grid square, rather than an authored fixed span.
