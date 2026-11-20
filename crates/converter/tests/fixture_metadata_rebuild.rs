@@ -2940,6 +2940,77 @@ async fn output_inside_another_pack_is_refused() {
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
+/// Metadata-only upgrades add controls from current providers and retain every verified asset byte.
+#[tokio::test]
+async fn control_files_metadata_rebuild_upgrades_an_older_pack() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    assert!(!source.join("interface").exists());
+    let manifest_path = source.join("conversion-manifest.json");
+    let source_hash = hash_file(&manifest_path).unwrap();
+    let manifest = ConversionManifest::load(&manifest_path).unwrap();
+    let control = b"Synth Action\t0x17\t0xff\t0x2000\t1\t0\t1\r\nbad line\r\nSynth Other\t0x18\t0xff\t0x1000\t1\t0\t1\r\n";
+    fs::write(
+        data.join("Skyrim - Interface.bsa"),
+        bsa::v105(
+            &[
+                Entry::new("Interface/Controls/PC/ControlMap.txt", control),
+                Entry::new(
+                    "interface/controls/pc/keyboard_english.txt",
+                    b"Synth\t0x17\t23\r\n",
+                ),
+                Entry::new("interface/controls/pc/gamepad.txt", b"SYNTH_A\t0x1000\r\n"),
+            ],
+            bsa::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let loose = data.join("Interface/Controls/PC/Keyboard_English.TXT");
+    fs::create_dir_all(loose.parent().unwrap()).unwrap();
+    fs::write(&loose, b"Modded\t0x33\r\n").unwrap();
+    let report = rebuild(&data, &source, &output).await.unwrap();
+    assert!(
+        output
+            .join("interface/controls/pc/controlmap.txt")
+            .is_file()
+    );
+    assert_eq!(
+        fs::read(output.join("interface/controls/pc/controlmap.txt")).unwrap(),
+        [
+            b"Synth Action\t0x17\t0xff\t0x2000\t1\t0\t1\r\n".as_slice(),
+            b"Synth Other\t0x18\t0xff\t0x1000\t1\t0\t1\r\n".as_slice(),
+        ]
+        .concat()
+    );
+    assert_eq!(
+        fs::read(output.join("interface/controls/pc/keyboard_english.txt")).unwrap(),
+        b"Modded\t0x33\r\n"
+    );
+    assert!(!report.complete);
+    assert_eq!(
+        report
+            .warnings
+            .iter()
+            .filter(|warning| warning.contains("controlmap.txt:2"))
+            .count(),
+        1
+    );
+    assert_eq!(hash_file(&manifest_path).unwrap(), source_hash);
+    for entry in manifest.entries.values() {
+        assert_eq!(
+            fs::read(output.join(&entry.output)).unwrap(),
+            fs::read(source.join(&entry.output)).unwrap(),
+            "{}",
+            entry.output
+        );
+    }
+}
+
 /// Snapshot every package file so rebuild recovery proves its source remained immutable.
 fn script_recovery_package_hashes(root: &Path) -> std::collections::BTreeMap<String, String> {
     walkdir::WalkDir::new(root)

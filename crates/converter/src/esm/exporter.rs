@@ -1127,15 +1127,7 @@ fn export_records(
     // diagnostic archives defer them. The emittance pass holds every reference and the records
     // their XEMI names, and may run on a database older than `emittance_id`.
     if runtime_views && let Some(order) = order {
-        insert_actor_models(&tx, master)?;
-        let (authoring, unreadable) = race_authoring_rows(master);
-        for (id, error) in unreadable {
-            // The race keeps no animation row, as before; the warning names it.
-            eprintln!(
-                "warning: RACE {id:08X} has unreadable animation authoring and no race_animation_sources row: {error}"
-            );
-        }
-        crate::animation::authoring::replace_race_projection(&tx, authoring)?;
+        insert_actor_models_and_race_authoring(&tx, master, &mut omissions)?;
         crate::esm::rooms::export_room_graph_with_sources(
             &tx,
             master,
@@ -1165,12 +1157,16 @@ fn export_records(
     tx.commit()
 }
 
-/// Publishes the actor model catalog for a complete load-order export in the same transaction.
+/// Publishes actor models and their shared RACE authoring projection in the record transaction.
 ///
 /// The resolver needs the whole record map, so it runs once after the record loop and only when
 /// `formid_map` carries complete ownership. Each `NPC_`'s own row and parts are replaced, which
 /// keeps the freshly created tables consistent with `master`.
-fn insert_actor_models(tx: &Transaction<'_>, master: &HashMap<u32, RawRecord>) -> Result<()> {
+fn insert_actor_models_and_race_authoring(
+    tx: &Transaction<'_>,
+    master: &HashMap<u32, RawRecord>,
+    omissions: &mut ProjectionOmissions,
+) -> Result<()> {
     let plugin_ids: HashMap<u32, StableId> = tx
         .prepare(
             "SELECT form_id, plugin_name, internal_id FROM formid_map WHERE record_type='NPC_'",
@@ -1185,7 +1181,8 @@ fn insert_actor_models(tx: &Transaction<'_>, master: &HashMap<u32, RawRecord>) -
             ))
         })?
         .collect::<Result<_>>()?;
-    let catalog = crate::actor_models::resolve_actor_models(master, &plugin_ids);
+    let (catalog, race_authoring) =
+        crate::actor_models::resolve_actor_models_with_race_authoring(master, &plugin_ids);
 
     let mut delete_model = tx.prepare_cached("DELETE FROM actor_models WHERE id=?1")?;
     let mut delete_parts = tx.prepare_cached("DELETE FROM actor_model_parts WHERE npc_id=?1")?;
@@ -1222,7 +1219,17 @@ fn insert_actor_models(tx: &Transaction<'_>, master: &HashMap<u32, RawRecord>) -
         ])?;
     }
     report_actor_model_diagnostics(&catalog.diagnostics);
-    Ok(())
+    for (id, error) in catalog.race_authoring_errors {
+        // One omission per unreadable RACE. Its canonical record and usable neighbors survive.
+        omissions.record(
+            OmissionCategory::RaceUnreadableAuthoring,
+            id,
+            format!(
+                "RACE animation authoring is unreadable; no race_animation_sources row: {error}"
+            ),
+        );
+    }
+    crate::animation::authoring::replace_race_projection(tx, race_authoring)
 }
 
 /// Summarizes the catalog's diagnostics and names every unrecognized biped slot.
@@ -1488,36 +1495,6 @@ fn parse_water_dnam(dnam: &[u8]) -> Option<WaterDnam> {
 const LIGHT_DATA_MIN: usize = 20;
 /// The full `LIGH` `DATA` in Skyrim SE.
 const LIGHT_DATA_FULL: usize = 48;
-
-/// Readable RACE authoring rows, and the FormID and message of each RACE that failed.
-type RaceAuthoringRows = (
-    Vec<(u32, crate::animation::authoring::RaceAuthoring)>,
-    Vec<(u32, String)>,
-);
-
-/// Animation authoring of every live RACE, with the FormID and message of each RACE whose
-/// subrecords cannot be read. Both lists are in FormID order.
-fn race_authoring_rows(master: &HashMap<u32, RawRecord>) -> RaceAuthoringRows {
-    let mut ids: Vec<u32> = master
-        .iter()
-        .filter(|(_, row)| &row.record_type == b"RACE" && !row.is_deleted())
-        .map(|(&id, _)| id)
-        .collect();
-    ids.sort_unstable();
-    let mut rows = Vec::new();
-    let mut unreadable = Vec::new();
-    for id in ids {
-        let fields = master[&id]
-            .subrecords
-            .iter()
-            .map(|(tag, data)| (tag.as_slice(), data.as_slice()));
-        match crate::animation::authoring::read_race_authoring_fields(fields) {
-            Ok(authoring) => rows.push((id, authoring)),
-            Err(error) => unreadable.push((id, format!("{error:#}"))),
-        }
-    }
-    (rows, unreadable)
-}
 
 fn insert_light(
     tx: &Transaction<'_>,
@@ -2905,7 +2882,7 @@ mod tests {
     /// named in the result instead of vanishing. A deleted RACE is not read at all, and the
     /// readable race beside it is unchanged.
     #[test]
-    fn race_authoring_rows_name_each_unreadable_race() {
+    fn race_authoring_scan_names_each_unreadable_race() {
         let readable = record(
             0x30,
             b"RACE",
@@ -2942,18 +2919,20 @@ mod tests {
             .map(|record| (record.form_id, record))
             .collect();
 
-        let (rows, unreadable) = race_authoring_rows(&master);
+        let (catalog, rows) =
+            crate::actor_models::resolve_actor_models_with_race_authoring(&master, &HashMap::new());
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].0, 0x30);
         assert_eq!(
-            rows[0].1.male_skeleton.as_deref(),
+            rows[&0x30].male_skeleton.as_deref(),
             Some("meshes/rig/male.nif")
         );
-        let ids: Vec<u32> = unreadable.iter().map(|(id, _)| *id).collect();
+        let unreadable = catalog.race_authoring_errors;
+        let ids: Vec<u32> = unreadable.keys().copied().collect();
         assert_eq!(ids, vec![0x10, 0x20], "FormID order, deleted RACE skipped");
+        assert!(unreadable[&0x10].contains("utf-8"), "{unreadable:?}");
         assert!(
-            unreadable[1].1.contains("no sex selector"),
+            unreadable[&0x20].contains("no sex selector"),
             "{unreadable:?}"
         );
     }

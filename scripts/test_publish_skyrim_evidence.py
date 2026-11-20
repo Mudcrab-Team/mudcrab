@@ -258,7 +258,7 @@ class PublicationTests(unittest.TestCase):
             external = Path(directory) / 'outside.zip'
             external.write_bytes(zipped({'log': b'public'}))
             archive.symlink_to(external)
-            name = str(archive.relative_to(root))
+            name = archive.relative_to(root).as_posix()
             changes = {name: dict(original_sha256='a' * 64, published_sha256=publication.sha(external.read_bytes()))}
             manifest.write_text(json.dumps(dict(changes=changes)))
             self.assertEqual(publication.artifact_digest(external, root), publication.sha(external.read_bytes()))
@@ -358,7 +358,7 @@ class PublicationTests(unittest.TestCase):
             manifest = root / publication.MANIFEST
             manifest.parent.mkdir(parents=True)
             path = manifest.parent / 'outer.zip'
-            name = str(path.relative_to(root))
+            name = path.relative_to(root).as_posix()
             original = zipped({'inner.zip': zipped({'capture.log': b'/home/operator/data'})})
             changes = {}
             path.write_bytes(publication.transform(name, original, changes))
