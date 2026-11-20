@@ -1430,6 +1430,11 @@ pub(crate) fn recover_script_abi(
     Ok(None)
 }
 
+/// Lowercase hex of an existing digest, in the same form `hash_bytes` and `hash_file` produce.
+pub fn digest_hex(digest: &[u8]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 pub fn hash_bytes(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()

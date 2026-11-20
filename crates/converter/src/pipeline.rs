@@ -5854,7 +5854,7 @@ fn apply_decoded_plugin_hashes(
         if digest.is_empty() {
             hash.clear();
             notices.push(format!(
-                "note: {}: no verified plugin checksum from the reader; a later source change is not detected",
+                "{}: no verified plugin checksum from the reader; a later source change is not detected",
                 plugins
                     .get(index)
                     .and_then(|path| path.file_name())
@@ -5862,7 +5862,7 @@ fn apply_decoded_plugin_hashes(
                     .to_string_lossy(),
             ));
         } else {
-            *hash = crate::cache::hash_bytes(digest);
+            *hash = crate::cache::digest_hex(digest);
         }
     }
 }
