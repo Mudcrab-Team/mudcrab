@@ -416,7 +416,8 @@ fn zero_position_range_places_no_candidates() {
     assert!(generated.batches.is_empty());
 }
 
-/// Retail places a negative range on the spacing-capped grid instead of rejecting the layer.
+/// Retail rule (RF-GRASS-012): a negative range uses the spacing-capped grid instead of rejecting
+/// the layer.
 #[test]
 fn negative_position_range_places_the_spacing_cap_grid() {
     let cache = mapped(vec![rule(7, -20.0)], cell(vec![layer(vec![7], 1.0, true)]));

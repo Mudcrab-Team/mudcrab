@@ -41,7 +41,8 @@ fn modelless_middle_species_keeps_authored_cap_slot() {
     }
 }
 
-/// Retail places a negative position range on the spacing-capped grid; it is not an invalid rule.
+/// Retail rule (RF-GRASS-012): a negative position range uses the spacing-capped grid; it is not
+/// an invalid rule.
 #[test]
 fn negative_position_range_is_retained_not_rejected() {
     let dir = tempfile::tempdir().unwrap();

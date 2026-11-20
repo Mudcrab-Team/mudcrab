@@ -300,8 +300,8 @@ this grass policy change.
 
 The current producer (`shared::grass::GRASS_CACHE_VERSION`, 14) combines MODS-aware obstruction masks with reference-order
 placement, retained non-emitting species slots and item-local LAND recovery. Producer 14 adopts
-retail's Position Range rules (0 places no candidates; negative uses the minimum-spacing limit), so
-it rejects producer-13 caches. It also rejects prior G7 producer-11 artifacts and the lower layers'
+retail rule (RF-GRASS-012): a zero Position Range places no candidates and a negative one uses the
+minimum-spacing limit, so it rejects producer-13 caches. It also rejects prior G7 producer-11 artifacts and the lower layers'
 producer-12 layout.
 G2 through G6 use `GRASS_CACHE_VERSION` 12 to restore model-less selection slots. Mesh, texture and terrain cache
 identities remain independently versioned.

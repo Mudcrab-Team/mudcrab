@@ -2,7 +2,8 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// Version fourteen retains a negative position range, which retail places on the spacing-capped grid.
+/// Version fourteen retains a negative position range; retail rule (RF-GRASS-012) places it on the
+/// spacing-capped grid.
 pub const GRASS_CACHE_VERSION: u32 = 14;
 pub const GRASS_BLEND_SIDE: usize = 17;
 /// Mask samples per quadrant side (32 Creation units each). An engineering approximation, not a retail value.

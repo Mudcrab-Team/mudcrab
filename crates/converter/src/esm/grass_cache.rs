@@ -1325,9 +1325,9 @@ fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize, usize, Option
         }
         if !valid || without_model {
             rule.model_path.clear();
-            // Invalid scalars cannot be sampled safely. A negative range stays because
-            // retail places it on the spacing-capped grid; water modes above five are
-            // unconstrained in spud.
+            // Invalid scalars cannot be sampled safely. Retail rule (RF-GRASS-012)
+            // places a negative range on the spacing-capped grid; water modes above
+            // five are unconstrained in spud.
             rule.water_comparison = rule.water_comparison.min(7);
             for value in [
                 &mut rule.position_range,

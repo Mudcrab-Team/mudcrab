@@ -341,7 +341,8 @@ fn grass_ini_invalid_scalars_follow_the_shared_reader_fallback_policy() {
 }
 
 #[test]
-/// Retail rewrites a texture threshold above one to 0.9 instead of ignoring it.
+/// Retail rule (RF-GRASS-016): a texture threshold above one becomes 0.9 instead of being
+/// ignored.
 fn texture_threshold_above_one_is_treated_as_nine_tenths() {
     let dir = tempfile::tempdir().unwrap();
     let path = ini(&dir, "threshold.ini", "[Grass]\nfTexturePctThreshold=1.5\n");

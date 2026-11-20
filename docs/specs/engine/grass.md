@@ -52,7 +52,7 @@ sorted by species FormID.
 A base vertex contributes full density wherever its residual is positive.
 A painted layer participates if any of the nine byte-opacity samples exceeds
 25/255; each positive sample then contributes full density. The imported
-texture threshold can further restrict painted-layer admission. Continuous
+texture threshold (RF-GRASS-016) can further restrict painted-layer admission. Continuous
 opacity does not multiply density. Support is interpolated at unjittered
 subgrid centers and is not tested again after jitter.
 
@@ -63,8 +63,9 @@ Each entry has an n-by-n grid, where n depends on the sign of Position Range:
     n = min(trunc(256 / Position Range),
             trunc(256 / minimum spacing))          when Position Range > 0
 
-A zero Position Range places no candidates. A negative Position Range uses the
-minimum-spacing (spacing-capped) grid, 12 per axis at the default spacing. At
+Retail rule (RF-GRASS-012): a zero Position Range places no candidates, and a
+negative Position Range uses the minimum-spacing (spacing-capped) grid, 12 per
+axis at the default spacing. At
 minimum spacing 20 and a positive Position Range <=20, a fully supported entry
 gets 36,864 attempts per cell. Position Range 40 gives 9,216. Jitter covers each
 grid square, rather than an authored fixed span.
@@ -333,7 +334,7 @@ defaults; the exe defaults are used.
 | --- | --- | --- | --- | --- |
 | `[Grass]` | `iMinGrassSize` | `20` | `SkyrimSE.exe` default | Candidate spacing/density |
 | `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | `SkyrimSE.exe` default | Post-add limit (2 admits 3, 0 admits 1); INI spelling retained |
-| `[Grass]` | `fTexturePctThreshold` | `0.0` | `SkyrimSE.exe` default | Minimum blended texture weight; a value above `1` is rewritten to `0.9` |
+| `[Grass]` | `fTexturePctThreshold` | `0.0` | `SkyrimSE.exe` default | Minimum blended texture weight; retail rule (RF-GRASS-016) rewrites a value above `1` to `0.9` |
 | `[Grass]` | `iGrassCellRadius` | `2` | `SkyrimSE.exe` default | Generated cell radius |
 | `[Grass]` | `fGrassStartFadeDistance` | `7000.0` | `SkyrimSE.exe` default; shipped `SkyrimPrefs.ini` | Start of distance thinning |
 | `[Grass]` | `fGrassFadeRange` | `1000.0` | `SkyrimSE.exe` default | Fade end is start plus range |

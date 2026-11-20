@@ -234,7 +234,7 @@ fn parse_grass_value(key: &str, default: &Value, raw: &str) -> Result<Value, &'s
         return Err("expected a finite, nonnegative f32-range number");
     }
     let value = if key == "fTexturePctThreshold" && value > 1.0 {
-        // Retail rewrites a threshold above one to 0.9.
+        // Retail rule (RF-GRASS-016): a threshold above one is rewritten to 0.9.
         0.9
     } else {
         value
