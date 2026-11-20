@@ -1,5 +1,5 @@
 //! Memory-mapped framing with recoverable record errors and bounded inflation.
-use super::PluginDiagnostics;
+use super::{DiscardedFrameScope, PluginDiagnostics};
 use color_eyre::{Result, eyre::WrapErr};
 use flate2::{Decompress, FlushDecompress, Status};
 use memmap2::Mmap;
@@ -53,7 +53,7 @@ pub(crate) fn scan_plugin(
     diagnostics: &mut PluginDiagnostics,
     mut observe: impl FnMut(ObservedHeader),
     mut receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
-) -> Result<HashSet<u32>> {
+) -> Result<HashSet<DiscardedFrameScope>> {
     diagnostics.set_record(0, None, None, None, "framing");
     let file = File::open(path).wrap_err_with(|| format!("open {}", path.display()))?;
     if file.metadata()?.len() < 24 {
@@ -92,14 +92,14 @@ fn scan_bytes_observed(
     diagnostics: &mut PluginDiagnostics,
     receive: &mut impl FnMut(ScannedRecord, &mut PluginDiagnostics),
     observe: &mut impl FnMut(ObservedHeader),
-) -> HashSet<u32> {
+) -> HashSet<DiscardedFrameScope> {
     let mut position = 0;
     let mut end = bytes.len();
     let mut cell = None;
     let mut world = None;
     let mut topic = None;
     let mut parents = Vec::new();
-    let mut damaged_cell_groups = HashSet::new();
+    let mut discarded_frames = HashSet::new();
     loop {
         if position == end {
             let Some((parent_end, parent_cell, parent_world, parent_topic)) = parents.pop() else {
@@ -116,7 +116,7 @@ fn scan_bytes_observed(
             diagnostics.note("record", || {
                 format!("incomplete frame at byte {position}; skipping containing group remainder")
             });
-            damaged_cell_groups.extend(cell);
+            discarded_frames.insert(cell.into());
             position = end;
             continue;
         }
@@ -138,7 +138,8 @@ fn scan_bytes_observed(
                 diagnostics.note("record", || {
                     format!("invalid group boundary/nesting at byte {position}")
                 });
-                damaged_cell_groups.extend([cell, cell_child].into_iter().flatten());
+                discarded_frames.insert(cell.into());
+                discarded_frames.extend(cell_child.map(DiscardedFrameScope::Cell));
                 position = end;
                 continue;
             }
@@ -178,6 +179,7 @@ fn scan_bytes_observed(
             failure: None,
         };
         if size > end - position - 24 {
+            discarded_frames.insert(cell.into());
             observed.failure =
                 Some("truncated record payload; containing group remainder skipped".into());
             observe(observed);
@@ -246,7 +248,7 @@ fn scan_bytes_observed(
             diagnostics,
         );
     }
-    damaged_cell_groups
+    discarded_frames
 }
 
 /// Require exactly one complete zlib stream, with a 64 MiB per-record ceiling.
