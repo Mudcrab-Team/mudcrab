@@ -512,6 +512,28 @@ pub struct RecordSource {
     pub deleted: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TruncatedPlacement {
+    record_type: [u8; 4],
+    source_id: u32,
+}
+
+impl TruncatedPlacement {
+    pub(crate) fn from_prefix(bytes: &[u8]) -> Option<Self> {
+        let record_type = *bytes.first_chunk()?;
+        let source_id = u32::from_le_bytes(*bytes.get(12..)?.first_chunk()?);
+        crate::esm::is_placed_record_type(&record_type).then_some(Self {
+            record_type,
+            source_id,
+        })
+    }
+
+    pub(crate) fn runtime_id(self, plugin: usize, order: &LoadOrder) -> Option<u32> {
+        source_identity::header_runtime_id(&self.record_type, self.source_id, plugin, order)
+            .filter(|&id| id != 0)
+    }
+}
+
 /// The cells whose room graph may depend on unread records in a discarded frame.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum DiscardedFrameScope {
@@ -659,6 +681,7 @@ fn read_plugins_with_prepared(
     );
     let mut result = ReadResult::default();
     let mut unknown_discarded_scope = false;
+    let mut truncated_placements = HashMap::new();
     // Retain payloads only while a tentative winner still needs catalogue admission.
     let mut deferred_predecessors: HashMap<u32, Vec<DecodedRecord>> = HashMap::new();
     let mut gmst_ids: HashMap<String, u32> = HashMap::new();
@@ -749,7 +772,22 @@ fn read_plugins_with_prepared(
                             .and_then(|prior| prior.cell_form_id)
                     },
                 )
-                .and_then(|()| validate(&record))
+                .and_then(|()| {
+                    if crate::esm::is_placed_record_type(&record.record_type)
+                        && result.records.contains_key(&record.form_id)
+                        && (record.rejected_fields.contains(b"DATA")
+                            || !crate::esm::valid_placement_transform(
+                                record
+                                    .fields
+                                    .iter()
+                                    .filter(|field| field.signature == *b"DATA")
+                                    .map(|field| field.canonical_bytes.as_slice()),
+                            ))
+                    {
+                        return Err("invalid placement override transform".into());
+                    }
+                    validate(&record)
+                })
             {
                 if let Some(entry) = history.borrow_mut().last_mut() {
                     entry.reason = Some(format!("unusable runtime candidate: {error}"));
@@ -963,8 +1001,15 @@ fn read_plugins_with_prepared(
                 }
             }
         };
-        let discarded_frames = scanner::scan_plugin(path, &mut diagnostics, observe, receive)?;
-        for scope in discarded_frames {
+        let damage = scanner::scan_plugin(path, &mut diagnostics, observe, receive)?;
+        for (offset, placement) in damage.truncated_placements {
+            if let Some(id) = placement.runtime_id(index, order) {
+                truncated_placements.insert(id, (index as u32, offset));
+            } else {
+                unknown_discarded_scope = true;
+            }
+        }
+        for scope in damage.frames {
             match scope.resolve(index, order) {
                 DiscardedFrameScope::Cell(cell) => {
                     result.damaged_cell_groups.insert(cell);
@@ -987,6 +1032,16 @@ fn read_plugins_with_prepared(
         &mut validate,
     );
     deferred_stage.finish(result.records.len());
+    // Deferred validation may restore a predecessor. A later usable move or deletion
+    // supersedes the incomplete header's evidence about that predecessor.
+    for (id, truncated_at) in truncated_placements {
+        if let Some(winner) = result.records.get(&id)
+            && crate::esm::is_placed_record_type(&winner.record_type)
+            && (winner.load_order, winner.source_record_offset) < truncated_at
+        {
+            result.damaged_cell_groups.extend(winner.cell_form_id);
+        }
+    }
     if unknown_discarded_scope {
         result.damaged_cell_groups.extend(
             result
