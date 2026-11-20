@@ -4231,6 +4231,50 @@ mod tests {
     }
 
     #[test]
+    fn actor_tombstone_clears_scripts_and_links_from_surviving_sources() {
+        let db = Connection::open_in_memory().unwrap();
+        create_tables(&db).unwrap();
+        let mut actor = reference(0x880, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        actor.record_type = *b"ACHR";
+        let mut source = reference(0x881, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        source.subrecords.extend([
+            (b"XLKR".to_vec(), [word(0x880), word(0x880)].concat()),
+            (
+                b"XAPR".to_vec(),
+                [word(0x880), 2.5f32.to_le_bytes().to_vec()].concat(),
+            ),
+        ]);
+        export_to_db(
+            &db,
+            &[(actor.form_id, actor), (source.form_id, source)].into(),
+        )
+        .unwrap();
+        let links = || {
+            db.query_row(
+            "SELECT l.keyword_id, l.linked_ref_id, a.parent_ref_id, a.delay FROM reference_linked_refs l
+             JOIN reference_activate_parents a USING(reference_id,position) WHERE l.reference_id=0x881 AND l.position=0",
+            [], |r| Ok((r.get::<_,Option<u32>>(0)?,r.get::<_,Option<u32>>(1)?,r.get::<_,Option<u32>>(2)?,r.get::<_,f32>(3)?))
+        ).unwrap()
+        };
+        assert_eq!(links(), (Some(0x880), Some(0x880), Some(0x880), 2.5));
+        db.execute("INSERT INTO scripts(form_id,script_name,vmad,properties_json) VALUES(0x880,'ActorScript',X'00','[]')", []).unwrap();
+        let mut tombstone = record(0x880, b"ACHR", None, None, Vec::new());
+        tombstone.flags = 0x20;
+        export_to_db(&db, &[(0x880, tombstone)].into()).unwrap();
+        assert_eq!(links(), (None, None, None, 2.5));
+        for (table, id) in [("scripts", "form_id"), ("[references]", "id")] {
+            let count: u32 = db
+                .query_row(
+                    &format!("SELECT count(*) FROM {table} WHERE {id}=0x880"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "{table}");
+        }
+    }
+
+    #[test]
     fn subset_reference_script_projections_replace_atomically() {
         use dummy_content::inhouse_vmad as fixture;
         let vmad = |name, limit: i32| {
@@ -4250,6 +4294,9 @@ mod tests {
         let replacement_vmad = vmad("ReplacementScript", 71);
         let scripted = |id, data: &[u8]| {
             let mut row = reference(id, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+            if id == 0x802 {
+                row.record_type = *b"ACHR";
+            }
             row.subrecords.push((b"VMAD".to_vec(), data.to_vec()));
             (id, row)
         };
@@ -4344,6 +4391,11 @@ mod tests {
             deleted.flags = 0x20;
             export_to_db(&db, &[(0x801, deleted)].into()).unwrap();
             assert_scripts(&[(0x802, "DoorScript")]);
+
+            let (id, mut actor) = scripted(0x802, &original_vmad);
+            actor.flags = 0x20;
+            export_to_db(&db, &[(id, actor)].into()).unwrap();
+            assert_scripts(&[]);
         }
     }
 

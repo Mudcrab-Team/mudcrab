@@ -471,7 +471,12 @@ fn plugin_edits(
             } else {
                 validate_room_field_tags(&record.subrecords)?;
                 let mut primitives = view.find_all(b"XPRM");
-                if base.is_none_or(|id| id == 0) {
+                if base
+                    .and_then(|id| {
+                        source_identity::header_runtime_id(b"REFR", id, priority, &order)
+                    })
+                    .is_none_or(|id| id == 0)
+                {
                     Some("with malformed NAME")
                 } else if !occluder
                     && primitives
