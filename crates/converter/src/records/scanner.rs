@@ -297,6 +297,25 @@ fn scan_bytes_observed(
     }
 }
 
+/// Fuzz entry point for a compressed record payload.
+///
+/// The fuzz targets call this through `converter::records`; ordinary builds do not
+/// compile it. Any input may return `Err`, but it must not panic or abort.
+#[cfg(fuzzing)]
+pub fn fuzz_inflate(payload: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    inflate(payload)
+}
+
+/// Fuzz entry point for record framing and recovery over in-memory plugin bytes.
+///
+/// The diagnostics sink keeps counters and bounded summaries but no disk journal, so
+/// each input is independent. Record contents are still fully framed and inflated.
+#[cfg(fuzzing)]
+pub fn fuzz_scan(bytes: &[u8]) {
+    let mut diagnostics = PluginDiagnostics::fuzz_summary_only();
+    scan_bytes_observed(bytes, &mut diagnostics, &mut |_, _| {}, &mut |_| {});
+}
+
 /// Require exactly one complete zlib stream, with a 64 MiB per-record ceiling.
 pub(crate) fn inflate(payload: &[u8]) -> std::result::Result<Vec<u8>, String> {
     if payload.len() < 4 {
@@ -329,6 +348,8 @@ pub(crate) fn inflate(payload: &[u8]) -> std::result::Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_strategies::{arbitrary_bytes, config};
+    use proptest::prelude::*;
     use std::io::Write;
 
     /// Frame a synthetic record independently of the production scanner.
@@ -418,6 +439,40 @@ mod tests {
         });
         assert_eq!(ids, [0, 2]);
         assert_eq!(diagnostics.skipped_records, 1);
+    }
+
+    proptest! {
+        // Each case opens the diagnostic journal once, so keep the sweep short.
+        #![proptest_config(config(64))]
+
+        /// One damaged compressed record is skipped with a reported error, and the
+        /// valid records before and after it are still delivered. This is the
+        /// recovery class of the #744 import abort.
+        #[test]
+        fn damaged_compressed_record_keeps_neighbors(content in arbitrary_bytes(256)) {
+            let mut encoder =
+                flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(&content).expect("encode synthetic content");
+            let stream = encoder.finish().expect("finish synthetic stream");
+            // Declare one byte more than the stream holds: a valid stream with a
+            // wrong size is always a damaged record.
+            let mut damaged = (content.len() as u32 + 1).to_le_bytes().to_vec();
+            damaged.extend(stream);
+
+            let mut bytes = frame(b"TES4", 0, 0, &[]);
+            bytes.extend(frame(b"STAT", 1, 0, b"EDID\x02\x00a\0"));
+            bytes.extend(frame(b"STAT", 2, 0x0004_0000, &damaged));
+            bytes.extend(frame(b"STAT", 3, 0, b"EDID\x02\x00b\0"));
+
+            let mut diagnostics = PluginDiagnostics::default();
+            let mut ids = Vec::new();
+            scan_bytes(&bytes, &mut diagnostics, &mut |record, _| {
+                ids.push(record.source_form_id);
+            });
+
+            prop_assert_eq!(ids, [0, 1, 3]);
+            prop_assert_eq!(diagnostics.skipped_records, 1);
+        }
     }
 
     /// Deflate validation checks its trailer as well as declared output length.

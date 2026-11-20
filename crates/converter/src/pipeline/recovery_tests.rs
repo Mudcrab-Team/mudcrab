@@ -84,11 +84,21 @@ async fn unusable_manifest_rebuilds_and_preserves_the_original_pack() {
         fs::read(backups[0].join("retained-original")).unwrap(),
         b"original bytes"
     );
+    // The run reports the backup under its canonical output path. On Windows that differs from
+    // the temporary directory's path (a short `RUNNER~1` name against a long one, and a `\\?\`
+    // prefix), so match the backup's own folder name, which carries the unique stamp.
+    let backup_name = backups[0]
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     assert!(
         report
             .notices
             .iter()
-            .any(|notice| notice.contains(&backups[0].display().to_string()))
+            .any(|notice| notice.contains(&backup_name)),
+        "no notice names {backup_name}: {:?}",
+        report.notices
     );
     assert!(run(config(&data, &output)).await.unwrap().complete);
     assert!(

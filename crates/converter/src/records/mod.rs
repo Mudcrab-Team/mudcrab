@@ -18,6 +18,9 @@ pub mod vmad;
 #[cfg(test)]
 pub(crate) mod review_recovery_tests;
 
+#[cfg(fuzzing)]
+pub use scanner::{fuzz_inflate, fuzz_scan};
+
 use crate::esm::{load_order::LoadOrder, records::RawRecord};
 use color_eyre::Result;
 use scanner::scan_admitted_plugin as scan_plugin;
@@ -312,6 +315,16 @@ fn no_input_changes(count: &u64) -> bool {
 }
 
 impl PluginDiagnostics {
+    /// Summary-only diagnostics for the fuzz targets: counters and bounded examples,
+    /// no per-input disk journal. Ordinary builds do not compile this.
+    #[cfg(fuzzing)]
+    pub(crate) fn fuzz_summary_only() -> Self {
+        Self {
+            event_log: diagnostics::EventLog::summary_only(),
+            ..Self::default()
+        }
+    }
+
     /// Summarize data loss and changed snapshot sources as bounded warnings.
     pub(crate) fn warning_summary_lines(&self, plugin: &str) -> Vec<String> {
         let mut lines = Vec::new();
