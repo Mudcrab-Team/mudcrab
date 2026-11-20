@@ -605,6 +605,13 @@ fn resolve_legacy_placements(
         let rejected = invalid_placement_candidates(
             candidates.keys().copied(),
             |id| {
+                candidates[&id]
+                    .predecessor
+                    .as_ref()
+                    .and_then(|prior| prior.previous.as_ref())
+                    .is_some_and(|record| !is_placed_record_type(&record.record_type))
+            },
+            |id| {
                 candidates.contains_key(&id).then(|| {
                     let record = &winners[&id];
                     PlacementDependencies {
@@ -695,6 +702,7 @@ fn legacy_grouped_predecessors(
 /// restores predecessors and starts another round before checking their dependents.
 pub(crate) fn invalid_placement_candidates(
     placements: impl IntoIterator<Item = u32>,
+    restores_nonplacement: impl Fn(u32) -> bool,
     links: impl Fn(u32) -> Option<PlacementDependencies>,
     validate: impl Fn(
         u32,
@@ -727,7 +735,9 @@ pub(crate) fn invalid_placement_candidates(
                     .any(|(_, targets)| targets.all().any(|target| unresolved.contains(&target)))
                 {
                     unresolved.extend(component.iter().map(|&(member, _)| member));
-                } else if let Some(failure) = placement_component_failure(component, &validate) {
+                } else if let Some(failure) =
+                    placement_component_failure(component, &restores_nonplacement, &validate)
+                {
                     unresolved.extend(component.iter().map(|&(member, _)| member));
                     rejected.push(failure);
                 }
@@ -775,6 +785,7 @@ impl PlacementDependencies {
 
 fn placement_component_failure(
     component: &[(u32, PlacementDependencies)],
+    restores_nonplacement: &impl Fn(u32) -> bool,
     validate: &impl Fn(
         u32,
         &PlacementDependencies,
@@ -794,12 +805,17 @@ fn placement_component_failure(
             }
         }
     }
-    // Try one rejection at a time when all failures are on links within the cycle.
-    component.iter().rev().find_map(|(id, targets)| {
-        validate(*id, targets, None)
-            .err()
-            .map(|reason| (*id, reason))
-    })
+    // When only internal links fail, restore a shadowed catalogue entry first. A dependent
+    // placement may become usable as soon as its base or CELL reappears.
+    component
+        .iter()
+        .rev()
+        .filter_map(|(id, targets)| {
+            validate(*id, targets, None)
+                .err()
+                .map(|reason| (*id, reason))
+        })
+        .min_by_key(|(id, _)| !restores_nonplacement(*id))
 }
 
 /// The `(use code, FormID)` pairs of a `DOBJ`'s `DNAM` subrecords, in stored order.

@@ -1515,8 +1515,9 @@ unused FormIDs owned by the same plugin.
 Supported `REFR` fields are `EDID`, `NAME`, `DATA`, `XSCL`, `XESP`, `XMBR`, and the marker fields
 `XPRM`, `XRMR`, `XLRM`, `XPOD`, `LNAM`, and `INAM`. A room marker can carry one 12-byte `XMBO`.
 On import its three extents must match the first 12 bytes of `XPRM`. A door can also carry a 32-byte
-`XTEL` field. If its width is wrong, its arrival frame is nonfinite, or its nonzero source
-destination cannot be resolved, the importer skips the placement and preserves its previous door link.
+`XTEL` field. The importer skips the placement and preserves its previous door link if `XTEL`
+occurs more than once, has the wrong width, contains a nonfinite arrival frame, or names a
+nonzero source destination that cannot be resolved.
 Static primitives, actor references, scripts, new base records, exterior changes, and other
 `CELL` fields require a normal conversion.
 

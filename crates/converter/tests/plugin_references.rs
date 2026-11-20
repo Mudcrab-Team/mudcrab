@@ -3271,6 +3271,7 @@ fn placement_cycle_recovers_static_before_checking_its_dependent() {
         1,
         [
             record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            record(b"CELL", 0x901, 0, sub(b"DATA", &[1, 0])),
             record(b"STAT", 0x830, 0, sub(b"EDID", b"OriginalStatic\0")),
         ]
         .concat(),
@@ -3282,6 +3283,7 @@ fn placement_cycle_recovers_static_before_checking_its_dependent() {
         0,
         [
             placement_group(0x901, placement(0x830, 0x850, 0, 0.0, Vec::new())),
+            placement_group(0x901, placement(0x851, 0x830, 0, 2.0, Vec::new())),
             placement_group(0x900, placement(0x850, 0x830, 0, 1.0, Vec::new())),
         ]
         .concat(),
@@ -3310,6 +3312,7 @@ fn placement_cycle_recovers_static_before_checking_its_dependent() {
                 "{reader:?}: missing dependent on restored STAT: {winner:?}"
             ));
         }
+        assert_eq!(placement_winner_cell(&db, 0x851), Some(0x901), "{reader:?}");
         assert_eq!(placement_winner_cell(&db, 0x830), None, "{reader:?}");
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -4357,6 +4360,19 @@ fn plugin_placement_import_keeps_neighbors_of_damaged_records_and_frames() {
     bad_group[4..8].copy_from_slice(&0xffffu32.to_le_bytes());
     let cases = [
         (
+            "bad-base-master-index",
+            placement_group(
+                a,
+                [
+                    placement(0x842, 0x9900_0830, 0, 5.0, Vec::new()),
+                    good_neighbor(),
+                ]
+                .concat(),
+            ),
+            [false, false, true],
+            3,
+        ),
+        (
             "bounded-record",
             placement_group(a, [bad_move.clone(), good_neighbor()].concat()),
             [false, false, true],
@@ -4535,7 +4551,16 @@ fn plugin_placement_import_keeps_neighbors_of_damaged_records_and_frames() {
             contents,
         );
         let result = run_placement_import(&assets, "--plugin", &source);
-        assert!(String::from_utf8_lossy(&result.stderr).contains("skipped 1 malformed"));
+        let warning = if name == "bad-base-master-index" {
+            "malformed NAME"
+        } else {
+            "skipped 1 malformed"
+        };
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains(warning),
+            "{name}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
         let certified = usize::from(certificates[2]);
         let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
         assert_eq!(
@@ -6060,6 +6085,12 @@ fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
             [false, false, true],
         ),
         (
+            "duplicate-live-bases",
+            Some(0x901),
+            placement(0x850, 0x20, 0, 0.0, sub(b"NAME", &0x830u32.to_le_bytes())),
+            [false, false, true],
+        ),
+        (
             "null-first-name",
             Some(0x901),
             placement(0x850, 0, 0, 0.0, sub(b"NAME", &0x830u32.to_le_bytes())),
@@ -6110,6 +6141,12 @@ fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
             0,
             [rejected, stat_control].concat(),
         );
+        if name == "duplicate-live-bases" {
+            let plugins = [base.clone(), broken.clone()];
+            let order = LoadOrder::read(&plugins).unwrap();
+            let decoded = converter::records::read_plugins(&plugins, &order).unwrap();
+            assert_eq!(decoded.records[&0x850].cell_form_id, Some(0x900));
+        }
         let mut cases = vec![
             (vec![&broken], Some(0x900), unresolved),
             (vec![&broken, &restored], Some(0x901), [true; 3]),
