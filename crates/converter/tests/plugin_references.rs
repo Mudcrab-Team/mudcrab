@@ -7629,3 +7629,181 @@ fn discarded_occluder_override_revokes_full_conversion_link_certificate() {
 fn discarded_occluder_override_revokes_plugin_import_link_certificate() {
     check_discarded_occluder_override(true);
 }
+
+#[test]
+fn placement_layers_refresh_incoming_links_for_changed_targets() {
+    use converter::esm::{
+        exporter::export_to_db,
+        placement_edits::{PlacementSource, apply},
+        records::RawRecord,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let assets = converted_placement_fixture(root);
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    let source = 0x880u32;
+    let existing = 0x802u32;
+    let unrelated = 0x823u32;
+    // Remove.esp reserves the first regular plugin slot before Add.esp.
+    let plugin_target = 0x0200_0910u32;
+    let native_target = 0xff00_0001u32;
+    let targets = [existing, plugin_target, native_target, unrelated];
+    let mut subrecords = vec![
+        (b"NAME".to_vec(), PLACEMENT_STAT.to_le_bytes().to_vec()),
+        (b"DATA".to_vec(), vec![0; 24]),
+        (b"XAPD".to_vec(), vec![3]),
+    ];
+    for (index, target) in targets.into_iter().enumerate() {
+        let word = target.to_le_bytes();
+        subrecords.push((b"XLKR".to_vec(), [unrelated.to_le_bytes(), word].concat()));
+        subrecords.push((
+            b"XAPR".to_vec(),
+            [word, (index as f32 + 0.5).to_le_bytes()].concat(),
+        ));
+    }
+    subrecords.push((
+        b"XLKR".to_vec(),
+        [existing.to_le_bytes(), unrelated.to_le_bytes()].concat(),
+    ));
+    subrecords.push((b"XLKR".to_vec(), native_target.to_le_bytes().to_vec()));
+    subrecords.push((b"XLKR".to_vec(), vec![0; 4]));
+    export_to_db(
+        &db,
+        &[(
+            source,
+            RawRecord {
+                form_id: source,
+                record_type: *b"REFR",
+                flags: 0,
+                subrecords,
+                cell_form_id: Some(PLACEMENT_CELL_B),
+                worldspace_form_id: None,
+                load_order: 0,
+            },
+        )]
+        .into(),
+    )
+    .unwrap();
+
+    let source_data = || {
+        db.query_row(
+            "SELECT records.data, r.data, d.activate_parent_flags
+             FROM records JOIN [references] r ON r.id=records.form_id
+             JOIN reference_details d ON d.reference_id=r.id WHERE r.id=?1",
+            [source],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, u8>(2)?,
+                ))
+            },
+        )
+        .unwrap()
+    };
+    let original_source = source_data();
+    let assert_links = |expected: [Option<u32>; 4]| {
+        let linked = db
+            .prepare("SELECT keyword_id,linked_ref_id FROM reference_linked_refs WHERE reference_id=?1 ORDER BY position")
+            .unwrap()
+            .query_map([source], |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, Option<u32>>(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let parents = db
+            .prepare("SELECT parent_ref_id,delay FROM reference_activate_parents WHERE reference_id=?1 ORDER BY position")
+            .unwrap()
+            .query_map([source], |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, f32>(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let mut expected_linked = expected.map(|target| (Some(unrelated), target)).to_vec();
+        expected_linked.push((expected[0], Some(unrelated)));
+        expected_linked.push((None, expected[2]));
+        expected_linked.push((None, None));
+        assert_eq!(linked, expected_linked, "XLKR");
+        assert_eq!(
+            parents,
+            expected
+                .into_iter()
+                .enumerate()
+                .map(|(index, target)| (target, index as f32 + 0.5))
+                .collect::<Vec<_>>(),
+            "XAPR",
+        );
+        assert_eq!(source_data(), original_source);
+    };
+    let native_put = |name, id| {
+        let path = root.join(name);
+        fs::write(&path, serde_json::json!({"edits":[{
+            "op":"put","id":id,"cell":PLACEMENT_CELL_A,"base":PLACEMENT_STAT,"position":[16,0,0],
+        }]}).to_string()).unwrap();
+        path
+    };
+    assert_links([Some(existing), None, None, Some(unrelated)]);
+
+    let remove = plugin(
+        root,
+        "Remove.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(
+            PLACEMENT_CELL_A,
+            record(b"REFR", existing, 0x20, Vec::new()),
+        ),
+    );
+    apply(&assets, PlacementSource::SkyrimPlugin(&remove)).unwrap();
+    assert_links([None, None, None, Some(unrelated)]);
+
+    let add = plugin(
+        root,
+        "Add.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(
+            PLACEMENT_CELL_A,
+            placement(0x0100_0910, PLACEMENT_STAT, 0, 24.0, Vec::new()),
+        ),
+    );
+    apply(&assets, PlacementSource::SkyrimPlugin(&add)).unwrap();
+    assert_links([None, Some(plugin_target), None, Some(unrelated)]);
+
+    let add_native = native_put("add-native.json", native_target);
+    apply(&assets, PlacementSource::NativeJson(&add_native)).unwrap();
+    let absent = [
+        None,
+        Some(plugin_target),
+        Some(native_target),
+        Some(unrelated),
+    ];
+    assert_links(absent);
+
+    let restore = native_put("restore.json", existing);
+    db.execute_batch(
+        "CREATE TRIGGER reject_incoming BEFORE UPDATE OF parent_ref_id ON reference_activate_parents
+         WHEN NEW.parent_ref_id=0x802 BEGIN SELECT RAISE(ABORT, 'reject incoming link'); END;",
+    )
+    .unwrap();
+    let error = apply(&assets, PlacementSource::NativeJson(&restore)).unwrap_err();
+    assert!(
+        error.to_string().contains("reject incoming link"),
+        "{error}"
+    );
+    assert_links(absent);
+    assert_eq!(
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM [references] WHERE id=?1),
+                    EXISTS(SELECT 1 FROM room_placement_layers WHERE name='restore.json')",
+            [existing],
+            |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
+        )
+        .unwrap(),
+        (false, false),
+    );
+    db.execute_batch("DROP TRIGGER reject_incoming").unwrap();
+    apply(&assets, PlacementSource::NativeJson(&restore)).unwrap();
+    let mut restored = absent;
+    restored[0] = Some(existing);
+    assert_links(restored);
+}
