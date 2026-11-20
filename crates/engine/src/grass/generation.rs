@@ -107,7 +107,7 @@ pub fn water_allowed(height: f32, water: Option<f32>, distance: u16, mode: u32) 
     }
 }
 
-/// The authored range bounds grid spacing; zero range uses the configured minimum safely.
+/// Retail places no candidates when the authored range is zero.
 fn grid_side(position_range: f32, minimum: f32) -> usize {
     if position_range < 0.0 {
         return 0;
@@ -115,7 +115,8 @@ fn grid_side(position_range: f32, minimum: f32) -> usize {
     let authored = if position_range > 0.0 {
         (256.0 / position_range) as usize
     } else {
-        usize::MAX
+        // Retail truncates 256/0 out of range to zero, so a zero range places nothing.
+        0
     };
     authored.min((256.0 / minimum) as usize)
 }
