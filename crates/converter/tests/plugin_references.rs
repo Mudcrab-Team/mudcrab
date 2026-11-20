@@ -4915,6 +4915,14 @@ fn plugin_placement_import_uses_good_declaration_of_damaged_new_cell() {
     let assets = converted_placement_fixture(dir.path());
     let cell = 0x0100_0900;
     let child = 0x0100_0800;
+    let missing_cell = cell + 1;
+    let truncated = |id| {
+        group(
+            0,
+            u32::from_le_bytes(*b"CELL"),
+            record(b"CELL", id, 0, vec![])[..16].to_vec(),
+        )
+    };
     let source = plugin(
         dir.path(),
         "Recovered.esp",
@@ -4922,6 +4930,12 @@ fn plugin_placement_import_uses_good_declaration_of_damaged_new_cell() {
         0,
         [
             record(b"CELL", cell, 0, vec![0]),
+            truncated(missing_cell),
+            placement_group(
+                missing_cell,
+                placement(child + 1, PLACEMENT_STAT, 0, 7.0, Vec::new()),
+            ),
+            truncated(cell),
             record(
                 b"CELL",
                 cell,
@@ -4940,6 +4954,8 @@ fn plugin_placement_import_uses_good_declaration_of_damaged_new_cell() {
     );
     let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
     assert_eq!(placement_winner_cell(&db, child), Some(cell));
+    assert_eq!(placement_winner_cell(&db, child + 1), None);
+    assert!(String::from_utf8_lossy(&result.stderr).contains("its new CELL is damaged"));
 }
 
 #[test]
