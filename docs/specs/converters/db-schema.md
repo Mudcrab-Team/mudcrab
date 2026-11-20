@@ -1682,11 +1682,10 @@ actors in their skin when it is absent or invalid.
 ### 19. Projection Omissions (`projection_omission_stats`, `projection_omission_samples`)
 
 Runtime projections omit unusable rows or fields without inventing authored data. Each
-omission is counted under a stable category, so the conversion report can account for it instead of
-a terminal message alone (#297). Light, grass and placed-record projections in
+omission is counted under a stable category so the conversion report can include it (#297).
+Light, grass, placed-record and RACE animation projections in
 `crates/converter/src/esm/exporter.rs`, lighting-template projection in `esm/environment.rs`,
-and emittance resolution contribute categories. Readable GRAS scalar prefixes remain
-available even when the complete DATA field is short. The category code is
+and emittance resolution contribute categories. The category code is
 `crates/converter/src/esm/projection_omissions.rs`.
 
 ```sql
@@ -1710,15 +1709,17 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 | `grass_unusable_data` | `GRAS` with missing or short `DATA`: unavailable scalar columns NULL, readable scalar prefix/model/identity retained | data loss |
 | `reference_unusable_data` | Placed record with missing or short `DATA`: no placement or spatial row; canonical record retained | data loss |
 | `lighting_template_unusable_data` | `LGTM` with missing or unsupported-size `DATA`: DATA lighting columns NULL, other fields retained | data loss |
+| `race_unreadable_authoring` | `RACE` with unreadable animation model slots: no `race_animation_sources` row | data loss |
 | `emittance_target_absent` | `XEMI` target not in the load order, or deleted: no `emittance` row | fallback |
 | `emittance_light_unusable_data` | `XEMI` target `LIGH` without a usable `DATA`: no `emittance` row | fallback |
 | `emittance_region_no_weather` | `XEMI` target `REGN` whose `RDWT` names no weather: no `emittance` row | fallback |
 | `emittance_weather_no_lighting` | `XEMI` target `REGN` whose weather has no Effect Lighting colours: no `emittance` row | fallback |
 | `emittance_target_wrong_type` | `XEMI` target that is neither a `LIGH` nor a `REGN`: no `emittance` row | fallback |
 
-**Severity.** A missing light or placement row, or an incomplete grass/template DATA field,
-loses all or part of a supported projection. Readable GRAS scalars remain authored values;
-only unavailable scalar spans become NULL. A
+**Severity.** A missing light or placement row, incomplete grass or template DATA, or
+unreadable RACE animation authoring loses all or part of a supported projection. Readable
+GRAS scalars remain authored values. Only unavailable scalar spans become NULL. Each
+unreadable RACE is counted once, regardless of how many NPCs use it. A
 `data_loss` category adds one line to the conversion's `warnings` and makes the output
 incomplete. A reference whose emittance target does not resolve keeps the model's own emission
 (section 16), the documented fallback, so a `fallback` category adds one line to `notices` and the

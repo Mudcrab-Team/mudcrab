@@ -32,6 +32,8 @@ mod walk_support_tests;
 
 use vertical::VerticalMotion;
 pub use vertical::{JumpHeight, ResolvedWalk};
+#[cfg(test)]
+mod jump_replay_tests;
 
 use crate::{
     console::{AppConsoleExt, ConsoleCommand, ConsoleState, console_closed},

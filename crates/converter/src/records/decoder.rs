@@ -934,7 +934,12 @@ fn decode_with_identity_inner(
                         fields.push(DecodedField {
                             signature,
                             localized_bank: selected_localized_bank(
-                                &common, bytes, schema, &selection, &value,
+                                &common,
+                                bytes,
+                                schema,
+                                &selection,
+                                &value,
+                                diagnostics,
                             ),
                             name: common.name,
                             value,
@@ -1026,8 +1031,14 @@ fn decode_with_identity_inner(
                         schema,
                         diagnostics,
                     )?;
-                    let localized_bank =
-                        selected_localized_bank(field_schema, bytes, schema, &selection, &value);
+                    let localized_bank = selected_localized_bank(
+                        field_schema,
+                        bytes,
+                        schema,
+                        &selection,
+                        &value,
+                        diagnostics,
+                    );
                     if signature == *b"EDID"
                         && let Value::String(name) = &value
                     {
@@ -1176,8 +1187,14 @@ fn decode_with_identity_inner(
                     schema,
                     diagnostics,
                 )?;
-                let localized_bank =
-                    selected_localized_bank(field_schema, bytes, schema, &selection, &value);
+                let localized_bank = selected_localized_bank(
+                    field_schema,
+                    bytes,
+                    schema,
+                    &selection,
+                    &value,
+                    diagnostics,
+                );
                 if signature == *b"EDID"
                     && let Value::String(name) = &value
                 {
@@ -1381,31 +1398,70 @@ fn array_stride(field: &FieldSchema, schema: &Schema) -> Result<usize, String> {
     Ok(stride)
 }
 
-/// Retain the most-specific selected bank without changing the serialized value contract.
+/// Keep the existing default-bank fallback while reporting a failed schema walk.
 fn selected_localized_bank(
     field: &FieldSchema,
     bytes: &[u8],
     schema: &Schema,
     selection: &super::deciders::Context<'_>,
     decoded: &Value,
+    diagnostics: &mut PluginDiagnostics,
 ) -> Option<String> {
+    match try_selected_localized_bank(field, bytes, schema, selection, decoded) {
+        Ok(bank) => bank,
+        Err(error) => {
+            let previous = diagnostics.push_field(&field.name);
+            let action = diagnostics.event_context.action.replace("defaulted");
+            let form_id = diagnostics.event_context.form_id.unwrap_or(0);
+            // For compatibility, the localization bucket counts this fallback in skipped_fields.
+            // The value is retained with the default bank, as the "defaulted" action records.
+            diagnostics.note("localization", || {
+                format!(
+                    "{} {:08X} {}: localized bank selection failed ({error}); using signature default bank",
+                    String::from_utf8_lossy(&selection.record_type),
+                    form_id,
+                    field.name
+                )
+            });
+            diagnostics.event_context.action = action;
+            diagnostics.pop_field(previous);
+            None
+        }
+    }
+}
+
+/// Retain the most-specific selected bank and preserve resolve/decide failures.
+fn try_selected_localized_bank(
+    field: &FieldSchema,
+    bytes: &[u8],
+    schema: &Schema,
+    selection: &super::deciders::Context<'_>,
+    decoded: &Value,
+) -> Result<Option<String>, String> {
     if !matches!(decoded, Value::LocalizedString(_)) {
-        return None;
+        return Ok(None);
     }
     let mut field = field.clone();
     let mut bank = None;
-    for _ in 0..32 {
-        field = schema.resolve(&field).ok()?;
+    for depth in 0..32 {
+        field = schema
+            .resolve(&field)
+            .map_err(|error| format!("resolve step {depth}: {error}"))?;
         if field.string_table.is_some() {
             bank.clone_from(&field.string_table);
         }
         if field.kind == "union" {
-            field = decide(&field, bytes, schema, selection).ok()??.into_owned();
+            let Some(selected) = decide(&field, bytes, schema, selection)
+                .map_err(|error| format!("decide step {depth}: {error}"))?
+            else {
+                return Ok(None);
+            };
+            field = selected.into_owned();
         } else {
-            return (field.kind == "lstring").then(|| bank.unwrap_or_else(|| "strings".into()));
+            return Ok((field.kind == "lstring").then(|| bank.unwrap_or_else(|| "strings".into())));
         }
     }
-    None
+    Err("localized bank selection exceeds 32 steps".into())
 }
 
 /// Choose a schema alternative using a small named Rust policy, never external tool code.
@@ -2329,6 +2385,7 @@ impl GrammarReplay<'_, '_> {
                         self.schema,
                         field.selection,
                         &decoded.value,
+                        local,
                     );
                 } else {
                     field.occurrence.counts.write(local);
@@ -2372,6 +2429,7 @@ impl GrammarReplay<'_, '_> {
                     self.schema,
                     field.selection,
                     &value,
+                    local,
                 ),
                 value,
                 canonical_bytes,
@@ -2834,8 +2892,14 @@ fn replay_deferred(
             rejections.push((deferred.source_position, signature));
             previous.push((original_counts, DiagnosticCounts::read(&local)));
         } else {
-            field.localized_bank =
-                selected_localized_bank(&deferred.field, bytes, schema, &selection, &field.value);
+            field.localized_bank = selected_localized_bank(
+                &deferred.field,
+                bytes,
+                schema,
+                &selection,
+                &field.value,
+                &mut local,
+            );
             previous.push((original_counts, DiagnosticCounts::read(&local)));
         }
         replay.event_log.merge_from(&local.event_log);
@@ -5522,3 +5586,7 @@ mod tests {
         assert!(!record_contains_deferred(record));
     }
 }
+
+#[cfg(test)]
+#[path = "localized_bank_diagnostic_tests.rs"]
+mod localized_bank_diagnostic_tests;

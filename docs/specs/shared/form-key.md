@@ -93,7 +93,8 @@ equal selects self. It never uses global slots for this interpretation.
 | `IncompatibleHeaderVersion` | Includes owner, supplier, local and both optional HEDR versions for a rejected extended light reference |
 
 There is exactly one out-of-range-index policy: `SelfProjected`, matching the
-existing permissive runtime header remapper. It is **not proof of original
+existing permissive runtime header remapper (retail behaviour unverified).
+It is **not proof of original
 ownership**. Current strict optional links and provenance paths use other
 policies; they remain untouched. There is no special FFFFFFFF “None” sentinel
 in this contract: without a future field-specific policy it follows that same

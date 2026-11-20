@@ -774,7 +774,7 @@
     "actor_model_parts": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "The actor catalog uses the shared RACE authoring scan when selecting creature body parts. Unreadable authoring retains the existing body selection fallback. Field-level semantics remain deferred."
     },
     "actor_models": {
       "classification": "deferred",
@@ -859,7 +859,7 @@
     "inhouse_localized_fields": {
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+      "reason": "Preserves string ID, selected bank, source load order and resolution status for localized occurrences. A schema or selector error during bank selection keeps the existing signature-default fallback and records a decoder diagnostic."
     },
     "inhouse_plugin_masters": {
       "classification": "provenance",
@@ -959,17 +959,17 @@
     "projection_omission_samples": {
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Bounded diagnostic examples include unusable GRAS DATA, placed-reference transforms and LGTM DATA."
+      "reason": "Bounded FormID and reason samples include unusable GRAS DATA, placed-reference transforms and LGTM DATA, and unreadable RACE animation authoring."
     },
     "projection_omission_stats": {
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Diagnostic counts include unusable GRAS DATA, placed-reference transforms and LGTM DATA. Full conversion reports these categories as data-loss warnings."
+      "reason": "Persists counts and severity for runtime projection omissions. Unusable GRAS DATA, placed-reference transforms and LGTM DATA, and each live RACE with unreadable animation authoring contribute data-loss omissions to the conversion report."
     },
     "race_animation_sources": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "Projects readable live RACE animation authoring by FormID and sex from the scan shared with actor body selection. Unreadable authoring omits those rows and retains the canonical RACE record. Field-level semantics remain deferred."
     },
     "race_movement_links": {
       "classification": "deferred",

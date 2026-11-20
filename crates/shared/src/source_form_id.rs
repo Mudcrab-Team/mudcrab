@@ -54,6 +54,7 @@ impl Resolution {
 }
 /// Validate extended-range support without assuming an absent header is new enough.
 fn extended(version: Option<f32>) -> bool {
+    // For 1.71 and 0x800, see docs/specs/shared/form-key.md#source-resolution.
     version.is_some_and(|v| v.is_finite() && v >= 1.71)
 }
 
