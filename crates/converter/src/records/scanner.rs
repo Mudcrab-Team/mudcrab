@@ -156,7 +156,9 @@ fn scan_bytes_observed(
                 });
                 let child_offset = position + 24;
                 let child_prefix = &bytes[child_offset..end];
-                if let Some(placement) = TruncatedPlacement::from_prefix(child_prefix) {
+                if let Some(child) = group_child_cell(child_prefix) {
+                    discarded_frames.insert(DiscardedFrameScope::Cell(child));
+                } else if let Some(placement) = TruncatedPlacement::from_prefix(child_prefix) {
                     damage
                         .truncated_placements
                         .push((child_offset as u64, placement));
