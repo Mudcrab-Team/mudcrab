@@ -15,7 +15,7 @@ use super::{
         RawRecord,
         achr::{SubrecordXESP, flags::INITIALLY_DISABLED},
     },
-    remap_record_form_ids,
+    reference_links, remap_record_form_ids,
     rooms::{
         NativeOccluderShape, OCCLUSION_MARKER_BASE, PORTAL_MARKER_BASE, ROOM_MARKER_BASE,
         RoomLinkLayout, SHAPE_BOX, SHAPE_PORTAL, refresh_placement_cells, update_subset_occluders,
@@ -204,6 +204,8 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     }
     let mut cells = fresh_cells.clone();
     let mut changed = HashSet::new();
+    let mut unavailable_link_targets = Vec::new();
+    let mut available_link_targets = HashSet::new();
     let mut layouts = HashMap::new();
     let mut records = HashMap::new();
     for mut edit in import.edits {
@@ -249,6 +251,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         }
         ensure!(changed.insert(id), "duplicate placement edit for {id:08X}");
         let must_be_new = in_fresh_cell || (is_plugin && edit.owns_new_id);
+        let was_link_target = reference_links::has_live_target(&tx, id)?;
         apply_edit(
             &tx,
             &mut edit,
@@ -258,6 +261,13 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
             is_plugin,
         )
         .wrap_err_with(|| format!("placement {id:08X}"))?;
+        match (was_link_target, reference_links::has_live_target(&tx, id)?) {
+            (true, false) => unavailable_link_targets.push(id),
+            (false, true) => {
+                available_link_targets.insert(id);
+            }
+            _ => {}
+        }
         tx.execute(
             "INSERT INTO room_placement_edits VALUES (?1,?2,?3,?4)",
             params![layer, id, edit.source_id, edit.record.is_deleted()],
@@ -308,6 +318,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     certified_cells.retain(|cell| !incomplete.contains(cell));
     cells.extend(incomplete);
     super::doors::refresh_placement_links(&tx, &changed)?;
+    reference_links::refresh_incoming(&tx, &unavailable_link_targets, &available_link_targets)?;
     tx.commit()?;
     let mut affected_cells = cells.into_iter().collect::<Vec<_>>();
     affected_cells.sort_unstable();
