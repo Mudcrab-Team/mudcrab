@@ -9,7 +9,7 @@ use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap, HashSet, btree_map::Entry},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::File,
     io::Read,
     path::{Path, PathBuf},
@@ -580,40 +580,31 @@ fn resolve_legacy_placements(
     warnings: &RemapWarnings,
 ) {
     loop {
-        let mut unresolved = HashSet::new();
-        let mut recovered = false;
-        let selected = placement_dependency_order(candidates.keys().copied(), |id| {
-            candidates
-                .contains_key(&id)
-                .then(|| legacy_placement_links(&winners[&id]))
-        });
-        for id in selected {
-            let Entry::Occupied(entry) = candidates.entry(id) else {
+        let rejected = invalid_placement_candidates(
+            candidates.keys().copied(),
+            |id| {
+                candidates
+                    .contains_key(&id)
+                    .then(|| legacy_placement_links(&winners[&id]))
+            },
+            |id, [cell, base]| {
+                crate::records::validate_placement_targets(
+                    None,
+                    &winners[&id].record_type,
+                    cell,
+                    base,
+                    |target| winners.get(&target).map(|record| record.record_type),
+                )
+            },
+        );
+        if rejected.is_empty() {
+            break;
+        }
+        for (id, reason) in rejected {
+            let Some(candidate) = candidates.remove(&id) else {
                 continue;
             };
             let record = &winners[&id];
-            let links = legacy_placement_links(record);
-            if links
-                .into_iter()
-                .flatten()
-                .any(|target| unresolved.contains(&target))
-            {
-                unresolved.insert(id);
-                continue;
-            }
-            let [cell, base] = links;
-            let Err(reason) = crate::records::validate_placement_targets(
-                None,
-                &record.record_type,
-                cell,
-                base,
-                |target| winners.get(&target).map(|record| record.record_type),
-            ) else {
-                continue;
-            };
-            recovered = true;
-            unresolved.insert(id);
-            let candidate = entry.remove();
             let priority = record.load_order as usize;
             warnings.skipped_record(&order.names[priority], record, candidate.source_id, reason);
             damage.reject(
@@ -644,9 +635,6 @@ fn resolve_legacy_placements(
                 }
             }
         }
-        if !recovered {
-            break;
-        }
     }
 }
 
@@ -657,30 +645,95 @@ fn legacy_placement_links(record: &RawRecord) -> [Option<u32>; 2] {
     ]
 }
 
-/// Visit tentative placement targets first so that a rejected override can
-/// reveal its predecessor's type before dependent placements are checked.
-pub(crate) fn placement_dependency_order(
+/// Select failures against the current catalogue in dependency order. A caller
+/// restores predecessors and starts another round before checking their dependents.
+pub(crate) fn invalid_placement_candidates(
     placements: impl IntoIterator<Item = u32>,
-    links: impl Fn(u32) -> Option<[Option<u32>; 2]>,
-) -> Vec<u32> {
-    let mut visited = HashSet::new();
-    let mut stack = Vec::new();
-    let mut ordered = Vec::new();
+    links: impl Fn(u32) -> Option<PlacementLinks>,
+    validate: impl Fn(u32, PlacementLinks) -> std::result::Result<(), String>,
+) -> Vec<(u32, String)> {
+    // Gabow's path-based strongly connected components algorithm. Discovery indices
+    // are retained while a placement is active. Edges to active nodes merge roots.
+    let mut visited = HashMap::new();
+    let mut traversal = Vec::new();
+    let mut active: Vec<(u32, PlacementLinks)> = Vec::new();
+    let mut roots: Vec<(u32, usize, usize)> = Vec::new();
+    let mut unresolved = HashSet::new();
+    let mut rejected = Vec::new();
     for id in placements {
-        stack.push((id, false));
-        while let Some((id, explored)) = stack.pop() {
+        traversal.push((id, false));
+        while let Some((id, explored)) = traversal.pop() {
             if explored {
-                ordered.push(id);
-            } else if !visited.contains(&id)
-                && let Some(targets) = links(id)
-            {
-                visited.insert(id);
-                stack.push((id, true));
-                stack.extend(targets.into_iter().flatten().map(|target| (target, false)));
+                let Some(&(root, _, start)) = roots.last() else {
+                    continue;
+                };
+                if root != id {
+                    continue;
+                }
+                roots.pop();
+                let component = &active[start..];
+                if component.iter().any(|(_, targets)| {
+                    targets
+                        .iter()
+                        .flatten()
+                        .any(|target| unresolved.contains(target))
+                }) {
+                    unresolved.extend(component.iter().map(|&(member, _)| member));
+                } else if let Some(failure) = placement_component_failure(component, &validate) {
+                    unresolved.extend(component.iter().map(|&(member, _)| member));
+                    rejected.push(failure);
+                }
+                for &(member, _) in component {
+                    visited.insert(member, None);
+                }
+                active.truncate(start);
+            } else if let Some(&index) = visited.get(&id) {
+                if let Some(index) = index {
+                    while roots
+                        .last()
+                        .is_some_and(|&(_, root_index, _)| root_index > index)
+                    {
+                        roots.pop();
+                    }
+                }
+            } else if let Some(targets) = links(id) {
+                let index = visited.len();
+                visited.insert(id, Some(index));
+                roots.push((id, index, active.len()));
+                active.push((id, targets));
+                traversal.push((id, true));
+                traversal.extend(targets.into_iter().flatten().map(|target| (target, false)));
             }
         }
     }
-    ordered
+    rejected
+}
+
+type PlacementLinks = [Option<u32>; 2];
+
+fn placement_component_failure(
+    component: &[(u32, PlacementLinks)],
+    validate: &impl Fn(u32, PlacementLinks) -> std::result::Result<(), String>,
+) -> Option<(u32, String)> {
+    if component.len() > 1
+        || component
+            .first()
+            .is_some_and(|(id, targets)| targets.contains(&Some(*id)))
+    {
+        let members: HashSet<_> = component.iter().map(|&(id, _)| id).collect();
+        // A failure outside the cycle can restore a usable target for another member.
+        for &(id, targets) in component.iter().rev() {
+            let targets = targets.map(|link| link.filter(|target| !members.contains(target)));
+            if let Err(reason) = validate(id, targets) {
+                return Some((id, reason));
+            }
+        }
+    }
+    // Try one rejection at a time when all failures are on links within the cycle.
+    component
+        .iter()
+        .rev()
+        .find_map(|&(id, targets)| validate(id, targets).err().map(|reason| (id, reason)))
 }
 
 /// The `(use code, FormID)` pairs of a `DOBJ`'s `DNAM` subrecords, in stored order.
