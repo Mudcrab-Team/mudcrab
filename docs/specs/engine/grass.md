@@ -144,8 +144,8 @@ on the instance normal (the terrain normal with Fit to Slope, else straight up),
 `C = vertexColor * instance brightness`. The pixel output is
 `(NdotL * C * DirLightColor * albedo * lerp(0.3, 1, shadowMask) + C * AmbientColor * albedo) * outputScale`.
 The ambient term is not shadowed. 0.3 is `fShadowClampValue`. The output scale is the renderer-wide
-`1/FramebufferRange` (0.8333333, or 1.0 when the retail fog
-distances are both 0), kept in `output_scale.rs`. The engine does not read the
+`1/FramebufferRange` (RF-SHADER-001; 0.8333333, or 1.0 when the retail fog
+distances are both 0, RF-SHADER-004), kept in `output_scale.rs`. The engine does not read the
 retail fog distances: a `DistanceFog` component on the camera (exterior, Fog setting on) stands
 in for them. This proxy is unverified. Turning the Fog setting off makes grass about 20 percent
 brighter (1.0 against 0.8333) while terrain does not change. Only grass applies the scale;

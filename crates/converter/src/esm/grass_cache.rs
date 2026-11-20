@@ -1308,7 +1308,7 @@ fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize, usize, Option
             wave_period: field!(10, 0.0f32),
             flags: field!(11, 0u8),
         };
-        // Retail differs: retail has water modes 0..5 only; modes 6 and above are
+        // Retail differs (unverified): retail has water modes 0..5 only; modes 6 and above are
         // unconstrained here (tracked separately).
         let valid = complete
             && id != 0

@@ -43,7 +43,8 @@ fn entries(
     config: &EngineConfig,
 ) -> Vec<Entry> {
     let mut result = Vec::with_capacity(16);
-    // Retail value: nine-sample support at ±1, ±16, ±17 and ±18 around the centre.
+    // Spud port: nine-sample support at ±1, ±16, ±17 and ±18 around the centre; not yet verified
+    // against retail in the registry.
     let center = y * 17 + x;
     let nine = [
         center - 18,
@@ -59,11 +60,12 @@ fn entries(
     for layer in quadrant.layers.iter() {
         let support = nine.map(|i| f32::from(layer.weights[i]));
         if !layer.is_base
-            // Retail value at the default threshold 0: a layer needs one of the nine coverage
-            // bytes above 25/255. Retail also drops a layer when the mean of the nine is below
-            // fTexturePctThreshold, while MudCrab applies the threshold per sample; the two only
-            // differ with an edited INI. Retail differs: a threshold above 1 becomes 0.9 in
-            // retail; MudCrab keeps the raw value (tracked separately).
+            // Spud port at the default threshold 0: a layer needs one of the nine coverage bytes
+            // above 25/255 (not yet verified against retail in the registry). Retail also drops a
+            // layer when the mean of the nine is below fTexturePctThreshold, while MudCrab applies
+            // the threshold per sample; the two only differ with an edited INI.
+            // Retail differs (unverified, tracked in #823): retail treats a threshold above 1 as
+            // 0.9, while MudCrab rejects it at launch validation (config.rs accepts 0..1 only).
             && !support
                 .iter()
                 .any(|weight| *weight > 25.0 / 255.0 && *weight >= config.grass_texture_threshold)
@@ -76,7 +78,8 @@ fn entries(
             .take(config.effective_grass_species_cap())
         {
             if result.len() == 16 {
-                // Retail value: at most 16 entries per spot.
+                // Spud port: at most 16 entries per spot; not yet verified against retail in the
+                // registry.
                 return result;
             }
             result.push(Entry {
@@ -100,8 +103,8 @@ fn support(weights: &[f32; 9], x: f32, y: f32) -> f32 {
         + ((1.0 - fx) * weights[i + 3] + weights[i + 4] * fx) * fy
 }
 
-/// Retail differs: retail has water modes 0..5 only; modes 6 and above are unconstrained here
-/// (tracked separately).
+/// Retail differs (unverified): retail has water modes 0..5 only; modes 6 and above are
+/// unconstrained here (tracked separately).
 pub fn water_allowed(height: f32, water: Option<f32>, distance: u16, mode: u32) -> bool {
     let w = water.unwrap_or(-f32::MAX);
     let u = f32::from(distance);
@@ -116,10 +119,12 @@ pub fn water_allowed(height: f32, water: Option<f32>, distance: u16, mode: u32) 
     }
 }
 
-/// Retail value: the 256-unit tile caps candidates per axis at
-/// `min(256 / posRange, 256 / spacing)` for posRange > 0.
-/// Retail differs: posRange = 0 places nothing in retail while MudCrab uses the spacing cap;
-/// posRange < 0 uses the spacing cap in retail while MudCrab rejects the layer (tracked separately).
+/// Spud port: the 256-unit tile caps candidates per axis at
+/// `min(256 / posRange, 256 / spacing)` for posRange > 0; not yet verified against retail in the
+/// registry.
+/// Retail differs (unverified): posRange = 0 places nothing in retail while MudCrab uses the
+/// spacing cap; posRange < 0 uses the spacing cap in retail while MudCrab rejects the layer
+/// (tracked in #823).
 fn grid_side(position_range: f32, minimum: f32) -> usize {
     if position_range < 0.0 {
         return 0;
@@ -181,8 +186,10 @@ fn fade_rank(mut value: u32) -> u32 {
     (value ^ (value >> 16)) & (FADE_SLOTS - 1)
 }
 
-/// Retail value: colour factor `(r * 2^-33 - 0.25) * range + (1 - range)`, with values at or
-/// above 1 becoming 0.99.
+/// Spud port: colour factor `(r * 2^-33 - 0.25) * range + (1 - range)`, with values at or above
+/// 1 clamped to 0.99; not yet verified against retail in the registry. The spud audit records the
+/// 0.99 clamp as a deviation from a hard 1.0 clamp, so it is marked unverified
+/// (`docs/research/spud/wave2/grass-far-water.md`, grass-brightness).
 fn brightness(luma: f32, range: f32, word: u32) -> (u8, f32) {
     let factor = (word as f32 * 1.164_153_2e-10 - 0.25) * range + (1.0 - range);
     let value = luma * factor;
@@ -402,9 +409,11 @@ fn generate_field<const OBSERVE: bool>(
                             let identity = ordinal;
                             ordinal = ordinal.wrapping_add(1);
                             let if_ = i as f32 + 0.5;
-                            // Retail value: density byte times 0.01.
+                            // Spud port: density byte times 0.01; not yet verified against retail
+                            // in the registry.
                             let density = f32::from(rule.density) * 0.01;
-                            // Retail value: acceptance is 32768 and the draw keeps 15 bits.
+                            // Spud port: acceptance is 32768 and the draw keeps 15 bits; not yet
+                            // verified against retail in the registry.
                             let chance = (support(
                                 &entry.weights.map(|weight| weight * density),
                                 two * jf,
@@ -415,7 +424,8 @@ fn generate_field<const OBSERVE: bool>(
                             if chance == 0 || (rng.next() & 0x7fff) as i32 >= chance {
                                 continue;
                             }
-                            // Retail value: jitter is rand(-1, 1) times half the spacing.
+                            // Spud port: jitter is rand(-1, 1) times half the spacing; not yet
+                            // verified against retail in the registry.
                             let u1 = rng.next();
                             let u2 = rng.next();
                             let (world_x, px) = root_coordinates(
@@ -479,7 +489,8 @@ fn generate_field<const OBSERVE: bool>(
                                 .unwrap_or_else(|| {
                                     if cell.vertex_colors.len() == 3267 {
                                         let i = sample.nearest * 3;
-                                        // Retail value: CPU tint luma weights 0.31, 0.37, 0.32.
+                                        // Spud port: CPU tint luma weights 0.31, 0.37, 0.32; not
+                                        // yet verified against retail in the registry.
                                         (f32::from(cell.vertex_colors[i]) * 0.003_921_569 * 0.31
                                             + f32::from(cell.vertex_colors[i + 1])
                                                 * 0.003_921_569

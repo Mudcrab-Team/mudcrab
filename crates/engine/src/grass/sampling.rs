@@ -7,7 +7,8 @@ pub(super) struct Sample {
     pub nearest: usize,
 }
 
-/// Standard IEEE binary16 limits (65520 and 2^-24), which retail also stores; ties to even.
+/// Spud port: binary16 coordinate precision (limits 65520 and 2^-24, ties to even). The spud port
+/// stores heights this way; not yet verified against retail in the registry.
 pub(super) fn half_round(value: f32) -> f32 {
     let magnitude = value.abs();
     if !value.is_finite() || magnitude >= 65_520.0 {
@@ -134,7 +135,8 @@ pub(super) fn slope_allowed(normal_z: f32, min: u8, max: u8) -> bool {
     cosine(max) <= normal_z && normal_z <= cosine(min)
 }
 
-/// Retail value: 1.4222221 (512/360) and a 512-entry cosine table.
+/// Spud port: 1.4222221 (512/360) and a 512-entry cosine table; not yet verified against retail
+/// in the registry.
 pub(super) fn slope_bounds(min: u8, max: u8) -> [f32; 2] {
     let cosine = |angle: u8| {
         let index = ((f32::from(angle) * 1.422_222_1) as usize) & 511;

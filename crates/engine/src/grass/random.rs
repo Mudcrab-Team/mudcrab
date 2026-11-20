@@ -1,8 +1,9 @@
 //! Cell-local random stream following spud (MIT, chasmlol/spud), revision e5f2de4.
 //! This is deliberately not standard MT19937. See SPUD-MIT.txt for its notice.
 //!
-//! Retail value: the reference uses a non-standard Mersenne-Twister variant; the multipliers,
-//! twist constant, masks and scales below reproduce it.
+//! Spud port: the reference uses a non-standard Mersenne-Twister variant; the multipliers,
+//! twist constant, masks and scales below reproduce it; not yet verified against retail in the
+//! registry.
 
 pub(super) struct CellRandom {
     words: [u32; 625],
@@ -10,7 +11,8 @@ pub(super) struct CellRandom {
 }
 
 impl CellRandom {
-    /// Retail value: init multiplier 1812433253, with the first draw taken from word 623.
+    /// Spud port: init multiplier 1812433253, with the first draw taken from word 623; not yet
+    /// verified against retail in the registry.
     pub(super) fn new(seed: u32) -> Self {
         let mut words = [0u32; 625];
         words[0] = seed;
@@ -22,8 +24,8 @@ impl CellRandom {
         Self { words, index: 623 }
     }
 
-    /// Retail value: the reference's ascending in-place twist uses `% 624`, constant
-    /// 0x9908B0DF, and these tempering masks.
+    /// Spud port: the reference's ascending in-place twist uses `% 624`, constant
+    /// 0x9908B0DF, and these tempering masks; not yet verified against retail in the registry.
     pub(super) fn next(&mut self) -> u32 {
         if self.index == 0 {
             // Reproduce the reference generator's exact twist, pinned by the literal test vectors below.
@@ -44,7 +46,8 @@ impl CellRandom {
     }
 }
 
-/// Retail value: 2^-31 scale (4.656613e-10); rounding can reach both -1 and 1.
+/// Spud port: 2^-31 scale (4.656613e-10); rounding can reach both -1 and 1; not yet verified
+/// against retail in the registry.
 pub(super) fn signed(word: u32) -> f32 {
     word as f32 * 4.656_613e-10 - 1.0
 }

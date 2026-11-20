@@ -26,7 +26,8 @@ pub struct GrassSettings {
     #[serde(rename = "iMaxGrassTypesPerTexure")]
     pub max_grass_types_per_texture: i32,
     /// `fTexturePctThreshold`: Retail value: default 0.0, the minimum blended texture weight.
-    /// Retail differs: a value above 1 becomes 0.9 in retail; MudCrab keeps the raw value (tracked separately).
+    /// Retail differs (unverified): a value above 1 becomes 0.9 in retail; MudCrab rejects it at
+    /// launch validation (`crates/engine/src/config.rs:981` accepts 0..1 only; tracked in #823).
     #[serde(rename = "fTexturePctThreshold")]
     pub texture_pct_threshold: f64,
     /// `iGrassCellRadius`: Retail value: 2 cells around the player.
@@ -54,8 +55,10 @@ pub struct GrassSettings {
     /// `fGrassWindMagnitudeMax`: Retail value: 125.0; reported only.
     #[serde(rename = "fGrassWindMagnitudeMax")]
     pub wind_magnitude_max: f64,
-    /// `bDrawShaderGrass`: Retail value: true. Grass is on only when this is set and the start fade
-    /// is at least the minimum start fade plus 0.5. Launch-state resolution honors explicit CLI switches.
+    /// `bDrawShaderGrass`: Retail value: true. Retail differs (unverified): retail also requires
+    /// the start fade to be at least the minimum start fade plus 0.5. MudCrab gates grass on this
+    /// switch alone (`config/grass_ini.rs`), and reports the minimum start fade only. Launch-state
+    /// resolution honors explicit CLI switches.
     #[serde(rename = "bDrawShaderGrass")]
     pub draw_shader_grass: bool,
     /// `bEnableGrassFade`: Retail value: true.
