@@ -386,6 +386,13 @@ impl Portal {
         }
     }
 
+    fn has_usable_aperture(&self) -> bool {
+        let [a, b, c, d] = self.corners.map(Vec3::as_dvec3);
+        // The diagonals give twice the area. Widen the calculation to check the final f32 area.
+        let area = (0.5 * (c - a).cross(d - b).length()) as f32;
+        area.is_finite() && area > 0.0
+    }
+
     fn center(&self) -> Vec3 {
         self.corners.iter().copied().sum::<Vec3>() / 4.0
     }
@@ -878,7 +885,7 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
         })?;
         for portal in rows {
             let (portal, valid) = portal?;
-            graph.incomplete |= !valid || portal.corners.iter().any(|point| !point.is_finite());
+            graph.incomplete |= !valid || !portal.has_usable_aperture();
             graph.portals.push(portal);
         }
     }
@@ -1214,7 +1221,7 @@ fn drop_stale_graphs(
 pub fn cull_room_views(
     mut state: ResMut<RoomCullingState>,
     settings: Option<Res<crate::settings::RenderingSettings>>,
-    roots: Query<&GlobalTransform, With<StreamedCellRoot>>,
+    roots: Query<(&CellRef, &GlobalTransform), With<StreamedCellRoot>>,
     mut views: Query<
         (
             &GlobalTransform,
@@ -1271,28 +1278,37 @@ pub fn cull_room_views(
         )
     };
     // A named attachment is initial-only. Observe movement even if all meshes are off screen.
-    for (cell, loaded) in &state.graphs {
-        let Some(authored) = &loaded.graph.authored else {
-            continue;
-        };
-        let Ok(root) = roots.get(loaded.root) else {
-            continue;
-        };
-        let local_from_world = root.affine().inverse();
+    if state
+        .graphs
+        .values()
+        .any(|loaded| loaded.graph.authored.is_some())
+    {
         for (reference, id) in &changed_references {
-            if authored.has_named_target(id.0)
-                && parents
-                    .iter_ancestors(reference)
-                    .any(|parent| parent == loaded.root)
-                && let Some(transform) = placement(reference, loaded.root, local_from_world)
-            {
-                assignments.owners_at(
-                    (*cell, loaded.root, reference),
-                    authored,
-                    &loaded.graph,
-                    id.0,
-                    transform,
-                );
+            for parent in parents.iter_ancestors(reference) {
+                let Ok((CellRef(cell), root)) = roots.get(parent) else {
+                    continue;
+                };
+                let Some(loaded) = state
+                    .graphs
+                    .get(cell)
+                    .filter(|loaded| loaded.root == parent)
+                else {
+                    continue;
+                };
+                let Some(authored) = &loaded.graph.authored else {
+                    continue;
+                };
+                if authored.has_named_target(id.0)
+                    && let Some(transform) = placement(reference, parent, root.affine().inverse())
+                {
+                    assignments.owners_at(
+                        (*cell, parent, reference),
+                        authored,
+                        &loaded.graph,
+                        id.0,
+                        transform,
+                    );
+                }
             }
         }
     }
@@ -1318,7 +1334,7 @@ pub fn cull_room_views(
         let mut shadow_budget = MAX_VIEW_OCCLUDERS;
         for cell in &cells {
             let loaded = &state.graphs[cell];
-            let Ok(root) = roots.get(loaded.root) else {
+            let Ok((_, root)) = roots.get(loaded.root) else {
                 continue;
             };
             let world_from_local = root.to_matrix();
@@ -2476,6 +2492,31 @@ mod tests {
                 "a certified old pack with extent {half:?} must draw the mesh"
             );
         }
+        let falls_back = [
+            (1.0, 2.0),
+            (1.0e10, 1.0e10),
+            (1.0e-10, 2.0),
+            (1.0e20, 1.0e20),
+        ]
+        .map(|half| {
+            connection
+                .execute(
+                    "UPDATE room_portals SET pos_x=1,pos_z=12,half_x=?1,half_z=?2",
+                    half,
+                )
+                .unwrap();
+            let graph = load_room_graph(&connection, 7).unwrap();
+            let portal = &graph.portals[0];
+            assert!(portal.corners.iter().all(|point| point.is_finite()));
+            graph
+                .visibility_volumes(Vec3::ZERO, clip_from_local())
+                .is_none()
+        });
+        assert_eq!(
+            falls_back,
+            [false, false, true, true],
+            "only the collapsed and overflowing apertures must draw the whole cell"
+        );
     }
 
     #[test]
