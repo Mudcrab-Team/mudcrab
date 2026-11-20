@@ -6,7 +6,7 @@ use crate::esm::{
 };
 use color_eyre::{
     Result,
-    eyre::{WrapErr, eyre},
+    eyre::{WrapErr, ensure, eyre},
 };
 use flate2::{Decompress, FlushDecompress, Status};
 use nom::{
@@ -14,7 +14,12 @@ use nom::{
     bytes::complete::take,
     number::complete::{le_f32, le_i32, le_u16, le_u32},
 };
-use std::{borrow::Cow, path::Path};
+use std::{
+    borrow::Cow,
+    fs::File,
+    io::{Read, Seek, SeekFrom},
+    path::Path,
+};
 
 const FLAG_COMPRESSED: u32 = 0x00040000;
 
@@ -112,6 +117,62 @@ pub(crate) fn admitted_plugin_proof(
     let checksum = super::plugin_checksum(&mut data)?;
     reader.verify_source()?;
     Ok((size, checksum))
+}
+
+/// The largest TES4 payload an admission read accepts; real plugin headers are far smaller.
+const MAX_TES4_HEADER_PAYLOAD: usize = 64 * 1024;
+
+/// Optional proofs read one file handle instead of mapping the plugin. Streaming keeps a
+/// concurrent truncation or short read a declined proof, where a large direct mapping would
+/// fault the process. The bounded header still checks the admitted metadata, and the digest
+/// and the final stamp use that same handle.
+pub(crate) fn admitted_plugin_stream_proof(
+    path: &Path,
+    admitted: &PluginMetadata,
+) -> Result<(u64, [u8; 32])> {
+    let mut file = File::open(path)?;
+    let stamp = crate::source_input::SourceStamp::capture(&file)?;
+    let size = file.metadata()?.len();
+    #[cfg(test)]
+    stream_proof_after_open_for_test();
+    let mut header = [0u8; 24];
+    file.read_exact(&mut header)
+        .map_err(|error| eyre!("unreadable TES4 record header: {error}"))?;
+    let (_, parsed) = parse_record_header(&header)
+        .map_err(|error| eyre!("failed to parse TES4 header: {error}"))?;
+    ensure!(
+        &parsed.type_tag == b"TES4",
+        "invalid or truncated TES4 record"
+    );
+    let payload_length = parsed.data_size as usize;
+    ensure!(
+        payload_length <= MAX_TES4_HEADER_PAYLOAD,
+        "TES4 header payload of {payload_length} bytes exceeds the {MAX_TES4_HEADER_PAYLOAD}-byte admission limit"
+    );
+    let mut header_bytes = Vec::with_capacity(24 + payload_length);
+    header_bytes.extend_from_slice(&header);
+    header_bytes.resize(24 + payload_length, 0);
+    file.read_exact(&mut header_bytes[24..])
+        .map_err(|error| eyre!("truncated TES4 record header: {error}"))?;
+    verify_admitted_metadata(&header_bytes, admitted)?;
+    file.seek(SeekFrom::Start(0))?;
+    let checksum = super::plugin_checksum(&mut file)?;
+    stamp.verify(&file, path)?;
+    Ok((size, checksum))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A deterministic source change after an optional proof opened its file handle.
+    static AFTER_STREAM_PROOF_OPEN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn stream_proof_after_open_for_test() {
+    let hook = AFTER_STREAM_PROOF_OPEN.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
 }
 
 /// Cap decompressed output so a corrupt size cannot reserve gigabytes up front.
@@ -580,6 +641,45 @@ mod tests {
         }
         let mut records = Vec::new();
         parse_group(&rest[header.data_size as usize..], None, None, &mut records)
+    }
+
+    /// The streamed optional proof returns the mapped proof's size and digest.
+    #[test]
+    fn stream_proof_matches_the_mapped_proof() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Proof.esp");
+        std::fs::write(&path, plugin_bytes()).unwrap();
+        let admitted = parse_plugin_metadata(&path).unwrap();
+        assert_eq!(
+            admitted_plugin_stream_proof(&path, &admitted).unwrap(),
+            admitted_plugin_proof(&path, &admitted).unwrap()
+        );
+    }
+
+    /// Truncating an opened source declines the proof instead of faulting a mapping.
+    #[test]
+    fn stream_proof_reads_the_source_as_a_stream() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Mutable.esp");
+        std::fs::write(&path, plugin_bytes()).unwrap();
+        let admitted = parse_plugin_metadata(&path).unwrap();
+        let truncate = path.clone();
+        AFTER_STREAM_PROOF_OPEN.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                std::fs::File::options()
+                    .write(true)
+                    .open(&truncate)
+                    .unwrap()
+                    .set_len(0)
+                    .unwrap();
+            }));
+        });
+        let error = admitted_plugin_stream_proof(&path, &admitted).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("TES4"),
+            "a truncated source is declined by the bounded header read: {error:#}"
+        );
     }
 
     #[test]

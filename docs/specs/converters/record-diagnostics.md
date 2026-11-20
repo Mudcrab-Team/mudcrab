@@ -35,9 +35,13 @@ Runtime target-validation link values are global; decode-stage optional link
 values retain their original file-relative representation.
 
 Actions report the existing recovery decision: `skipped`, `cleared`,
-`kept_earlier_version`, `projected`, or an explicit adapter action such as
-`unresolved`. Observations do not change admission, override order, reference
-resolution or terrain policy. Deferred decoding merges newly discovered events
+`kept_earlier_version`, `kept_snapshot`, `kept_decoded_records`, `projected`, or
+an explicit adapter action such as `unresolved`. The `input` category records
+source-stability findings: `kept_snapshot` when a small input's verified snapshot
+survived a later source change, and `kept_decoded_records` when a large direct
+view changed after decoding and the retained records may mix source versions.
+Observations do not change admission, override order, reference resolution or
+terrain policy. Deferred decoding merges newly discovered events
 without duplicating the same physical occurrence's first-pass diagnostics.
 
 The event journal uses temporary disk storage, with a fixed small SQLite cache.
