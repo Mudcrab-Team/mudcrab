@@ -78,6 +78,19 @@ struct LegacyPluginMerge {
     room_link_layouts: HashMap<u32, rooms::RoomLinkLayout>,
 }
 
+struct LegacyPlacementCandidate {
+    source_id: u32,
+    source_cell: Option<u32>,
+    predecessor: Option<Box<LegacyPlacementPredecessor>>,
+}
+
+struct LegacyPlacementPredecessor {
+    previous: Option<RawRecord>,
+    previous_layout: Option<rooms::RoomLinkLayout>,
+    previous_damage: Option<HashSet<u32>>,
+    previous_candidate: Option<LegacyPlacementCandidate>,
+}
+
 /// A rejected override may name a different cell from its retained predecessor.
 /// A later usable record or deletion supersedes damage with a proven identity.
 #[derive(Default)]
@@ -315,6 +328,7 @@ impl EsmParser {
         let mut damaged_cells = HashSet::new();
         let mut unknown_discarded_scope = false;
         let mut room_link_layouts = HashMap::new();
+        let mut placement_candidates = BTreeMap::new();
         let mut summaries = Vec::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
         // the first definition's key/owner while taking the last setting value.
@@ -463,23 +477,59 @@ impl EsmParser {
                     continue;
                 }
                 sources.insert(remapped_source_id, (source_id, out_of_range));
-                damaged_placements.accepted(record.form_id);
-                room_link_layouts.remove(&record.form_id);
+                let id = record.form_id;
+                let previous_layout = room_link_layouts.remove(&id);
                 if let Some(layout) = room_link_layout {
-                    room_link_layouts.insert(record.form_id, layout);
+                    room_link_layouts.insert(id, layout);
                 }
                 if record.is_deleted() {
-                    merged.remove(&record.form_id);
+                    merged.remove(&id);
+                    placement_candidates.remove(&id);
+                    damaged_placements.accepted(id);
                 } else {
                     if record.record_type == *b"DOBJ"
-                        && let Some(previous) = merged.get(&record.form_id)
+                        && let Some(previous) = merged.get(&id)
                     {
                         merge_default_objects(previous, &mut record);
                     }
-                    merged.insert(record.form_id, record);
+                    let placed = is_placed_record_type(&record.record_type);
+                    let previous = merged.insert(id, record);
+                    if placed {
+                        let previous_candidate = placement_candidates.remove(&id);
+                        let previous_damage =
+                            damaged_placements.cells_by_reference.remove(&Some(id));
+                        let predecessor =
+                            (previous.is_some() || previous_damage.is_some()).then(|| {
+                                Box::new(LegacyPlacementPredecessor {
+                                    previous,
+                                    previous_layout,
+                                    previous_damage,
+                                    previous_candidate,
+                                })
+                            });
+                        placement_candidates.insert(
+                            id,
+                            LegacyPlacementCandidate {
+                                source_id,
+                                source_cell,
+                                predecessor,
+                            },
+                        );
+                    } else {
+                        placement_candidates.remove(&id);
+                        damaged_placements.accepted(id);
+                    }
                 }
             }
         }
+        resolve_legacy_placements(
+            &mut merged,
+            &mut placement_candidates,
+            &mut room_link_layouts,
+            &mut damaged_placements,
+            order,
+            &warnings,
+        );
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
         if unknown_discarded_scope {
@@ -502,6 +552,116 @@ impl EsmParser {
             room_link_layouts,
         })
     }
+}
+
+/// Restore the record, link layout and damage together when late admission fails.
+fn resolve_legacy_placements(
+    winners: &mut HashMap<u32, RawRecord>,
+    candidates: &mut BTreeMap<u32, LegacyPlacementCandidate>,
+    layouts: &mut HashMap<u32, rooms::RoomLinkLayout>,
+    damage: &mut PlacementDamage,
+    order: &load_order::LoadOrder,
+    warnings: &RemapWarnings,
+) {
+    loop {
+        let mut unresolved = HashSet::new();
+        let mut recovered = false;
+        let selected = placement_dependency_order(candidates.keys().copied(), |id| {
+            candidates
+                .contains_key(&id)
+                .then(|| legacy_placement_links(&winners[&id]))
+        });
+        for id in selected {
+            let record = &winners[&id];
+            let links = legacy_placement_links(record);
+            if links
+                .into_iter()
+                .flatten()
+                .any(|target| unresolved.contains(&target))
+            {
+                unresolved.insert(id);
+                continue;
+            }
+            let [cell, base] = links;
+            let Err(reason) = crate::records::validate_placement_targets(
+                None,
+                &record.record_type,
+                cell,
+                base,
+                |target| winners.get(&target).map(|record| record.record_type),
+            ) else {
+                continue;
+            };
+            recovered = true;
+            unresolved.insert(id);
+            let candidate = candidates.remove(&id).expect("checked placement candidate");
+            let priority = record.load_order as usize;
+            warnings.skipped_record(&order.names[priority], record, candidate.source_id, reason);
+            damage.reject(
+                &record.record_type,
+                candidate.source_id,
+                candidate.source_cell,
+                priority,
+                order,
+            );
+            winners.remove(&id);
+            layouts.remove(&id);
+            if let Some(predecessor) = candidate.predecessor {
+                if let Some(prior_damage) = predecessor.previous_damage {
+                    damage
+                        .cells_by_reference
+                        .entry(Some(id))
+                        .or_default()
+                        .extend(prior_damage);
+                }
+                if let Some(layout) = predecessor.previous_layout {
+                    layouts.insert(id, layout);
+                }
+                if let Some(prior_candidate) = predecessor.previous_candidate {
+                    candidates.insert(id, prior_candidate);
+                }
+                if let Some(previous) = predecessor.previous {
+                    winners.insert(id, previous);
+                }
+            }
+        }
+        if !recovered {
+            break;
+        }
+    }
+}
+
+fn legacy_placement_links(record: &RawRecord) -> [Option<u32>; 2] {
+    [
+        record.cell_form_id,
+        extractors::SubrecordView::new(&record.subrecords).get_form_id(b"NAME"),
+    ]
+}
+
+/// Visit tentative placement targets first so that a rejected override can
+/// reveal its predecessor's type before dependent placements are checked.
+pub(crate) fn placement_dependency_order(
+    placements: impl IntoIterator<Item = u32>,
+    links: impl Fn(u32) -> Option<[Option<u32>; 2]>,
+) -> Vec<u32> {
+    let mut visited = HashSet::new();
+    let mut stack = Vec::new();
+    let mut ordered = Vec::new();
+    for id in placements {
+        stack.push((id, false));
+        while let Some((id, explored)) = stack.pop() {
+            if explored {
+                ordered.push(id);
+            } else if !visited.contains(&id)
+                && let Some(targets) = links(id)
+            {
+                visited.insert(id);
+                stack.push((id, true));
+                stack.extend(targets.into_iter().flatten().map(|target| (target, false)));
+            }
+        }
+    }
+    ordered
 }
 
 /// The `(use code, FormID)` pairs of a `DOBJ`'s `DNAM` subrecords, in stored order.

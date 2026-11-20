@@ -129,7 +129,12 @@ fn every_single_form_id_field_remaps_relocated_full_and_light_plugins() {
                 ));
             }
         }
-        let mut records = Vec::new();
+        let mut records = [
+            record(b"STAT", 0x0100_0801, 0, Vec::new()),
+            record(b"NPC_", 0x0100_0802, 0, Vec::new()),
+            record(b"PROJ", 0x0100_0803, 0, Vec::new()),
+        ]
+        .concat();
         let mut all_cases = cases.to_vec();
         let record_types_with_common_links = [
             b"CELL", b"REFR", b"ACHR", b"ACRE", b"PGRE", b"PMIS", b"PHZD", b"PARW", b"PBAR",
@@ -143,9 +148,15 @@ fn every_single_form_id_field_remaps_relocated_full_and_light_plugins() {
                 all_cases.push((record_type, b"NAME", 4));
             }
         }
+        let target = |kind: &[u8; 4], tag: &[u8; 4]| match (kind, tag) {
+            (_, tag) if tag != b"NAME" => 0x801,
+            (b"ACHR", b"NAME") => 0x802u32,
+            (b"REFR" | b"ACRE", b"NAME") => 0x801,
+            _ => 0x803,
+        };
         for (i, (kind, tag, len)) in all_cases.iter().enumerate() {
             let mut data = vec![0xAB; *len];
-            data[..4].copy_from_slice(&0x0100_0801u32.to_le_bytes());
+            data[..4].copy_from_slice(&(0x0100_0000 | target(kind, tag)).to_le_bytes());
             let field = sub(tag, &data);
             let body = if *kind != b"CELL"
                 && *tag != b"NAME"
@@ -168,7 +179,7 @@ fn every_single_form_id_field_remaps_relocated_full_and_light_plugins() {
         for (i, (kind, tag, len)) in all_cases.iter().enumerate() {
             let fields = &merged[&(expected_prefix | (0x900 + i as u32))].subrecords;
             let mut expected = vec![0xAB; *len];
-            expected[..4].copy_from_slice(&(expected_prefix | 0x801).to_le_bytes());
+            expected[..4].copy_from_slice(&(expected_prefix | target(kind, tag)).to_le_bytes());
             assert_eq!(
                 SubrecordView::new(fields).find(tag),
                 Some(expected.as_slice()),
@@ -783,6 +794,17 @@ fn malformed_form_id_field_lengths_are_dropped_without_blocking_valid_links() {
                     .concat(),
                 ),
                 record(
+                    if record_type == b"CELL" {
+                        b"LTMP"
+                    } else {
+                        b"STAT"
+                    },
+                    0x0100_0901,
+                    0,
+                    Vec::new(),
+                ),
+                record(b"STAT", 0x0100_0902, 0, Vec::new()),
+                record(
                     b"REFR",
                     0x0100_0801,
                     0,
@@ -968,13 +990,11 @@ fn every_covered_reference_and_cell_field_is_remapped_at_its_offsets() {
         } else {
             field
         };
-        let patch = plugin(
-            dir.path(),
-            "Patch.esm",
-            &["Base.esm"],
-            1,
-            record(record_type, 0x0100_0800, 0, body),
-        );
+        let mut payload_records = record(record_type, 0x0100_0800, 0, body);
+        if tag == b"NAME" {
+            payload_records.extend(record(b"PROJ", 0x0100_0900, 0, Vec::new()));
+        }
+        let patch = plugin(dir.path(), "Patch.esm", &["Base.esm"], 1, payload_records);
         let merged = EsmParser::merge_plugins(&[base, filler, patch]).unwrap();
         let data = &merged[&0x0200_0800]
             .subrecords
@@ -1157,7 +1177,13 @@ fn optional_links_to_wide_light_master_ids_preserve_valid_array_elements() {
     let paths = vec![
         plugin(dir.path(), "Base.esm", &[], 1, Vec::new()),
         plugin(dir.path(), "First.esl", &[], 0x201, Vec::new()),
-        plugin(dir.path(), "Second.esl", &[], 0x201, Vec::new()),
+        plugin(
+            dir.path(),
+            "Second.esl",
+            &[],
+            0x201,
+            record(b"STAT", 0x42, 0, Vec::new()),
+        ),
         plugin(dir.path(), "Filler.esm", &[], 1, Vec::new()),
         plugin(
             dir.path(),
@@ -1209,7 +1235,7 @@ fn null_links_and_unrelated_subrecords_are_preserved() {
         &[],
         0,
         [
-            placement(0x800, 0x42, 0, 0.0, sub(b"XESP", &payload)),
+            placement(0x800, 0x801, 0, 0.0, sub(b"XESP", &payload)),
             record(b"STAT", 0x801, 0, sub(b"XTEL", &[1, 2, 3])),
         ]
         .concat(),
@@ -1922,7 +1948,7 @@ fn broken_portal_links_do_not_become_authored_outside_endpoints() {
             "Patch.esm",
             &["Other.esm", "Base.esm"],
             1,
-            placement(0x0200_0900, 0x20, 0, 0.0, sub(b"XPOD", &payload)),
+            placement(0x0200_0900, 0x0100_0020, 0, 0.0, sub(b"XPOD", &payload)),
         );
         let merged = EsmParser::merge_plugins(&[base, other, patch]).unwrap();
         let xpods: Vec<_> = merged[&0x0200_0900]
@@ -3538,6 +3564,7 @@ fn incomplete_placed_payloads_keep_their_cells_open() {
                 &[],
                 1,
                 [
+                    record(b"STAT", 0x999, 0, Vec::new()),
                     record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
                     group(
                         6,
@@ -5372,12 +5399,19 @@ fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
             sub(b"XPOD", &[room.to_le_bytes(), [0; 4]].concat()),
         )
     };
-    let mut contents = record(b"STAT", 0x830, 0, sub(b"EDID", b"FixtureStatic\0"));
+    let mut contents = [
+        record(b"STAT", 0x830, 0, sub(b"EDID", b"FixtureStatic\0")),
+        record(b"KYWD", 0x831, 0, sub(b"EDID", b"FixtureKeyword\0")),
+    ]
+    .concat();
     for (cell, room) in [(0x900, 0x800), (0x901, 0x810), (0x902, 0x820)] {
         contents.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
         let mut placements = placement_marker(room, 0x1f, Vec::new());
         if cell == 0x900 {
             placements.extend(portal(room));
+        }
+        if cell == 0x902 {
+            placements.extend(placement(0x851, 0x830, 0, 1.0, Vec::new()));
         }
         contents.extend(placement_group(cell, placements));
     }
@@ -5395,6 +5429,13 @@ fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
         &["Skyrim.esm"],
         0,
         placement_group(0x901, portal(0x810)),
+    );
+    let later_wrong_base = plugin(
+        &data,
+        "StillBroken.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(0x902, placement(0x850, 0x832, 0, 0.0, Vec::new())),
     );
     let cases = [
         (
@@ -5439,27 +5480,58 @@ fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
             record(b"REFR", 0x850, 0, sub(b"DATA", &[0; 24])),
             [false, false, true],
         ),
+        (
+            "wrong-base-type",
+            Some(0x901),
+            placement(0x850, 0x831, 0, 0.0, Vec::new()),
+            [false, false, true],
+        ),
+        (
+            "missing-base-target",
+            Some(0x901),
+            placement(0x850, 0x832, 0, 0.0, Vec::new()),
+            [false, false, true],
+        ),
+        (
+            "wrong-parent-type",
+            Some(0x830),
+            placement(0x850, 0x830, 0, 0.0, Vec::new()),
+            [false, true, true],
+        ),
+        (
+            "missing-parent-target",
+            Some(0x903),
+            placement(0x850, 0x830, 0, 0.0, Vec::new()),
+            [false, true, true],
+        ),
     ];
     let mut failures = Vec::new();
     for (name, destination, candidate, unresolved) in cases {
+        let rejected = match destination {
+            Some(cell) => placement_group(cell, candidate),
+            None => candidate,
+        };
+        let stat_control = placement_group(0x902, placement(0x851, 0x830, 0, 2.0, Vec::new()));
         let broken = plugin(
             &data,
             "Broken.esp",
             &["Skyrim.esm"],
             0,
-            match destination {
-                Some(cell) => placement_group(cell, candidate),
-                None => candidate,
-            },
+            [rejected, stat_control].concat(),
         );
-        for (followup, expected_cell, expected_certificates) in [
-            (None, Some(0x900), unresolved),
-            (Some(&restored), Some(0x901), [true; 3]),
-            (Some(&deleted), None, [true; 3]),
-        ] {
-            let plugins = [base.clone(), broken.clone()]
-                .into_iter()
-                .chain(followup.cloned())
+        let mut cases = vec![
+            (vec![&broken], Some(0x900), unresolved),
+            (vec![&broken, &restored], Some(0x901), [true; 3]),
+            (vec![&broken, &deleted], None, [true; 3]),
+        ];
+        if name == "wrong-base-type" {
+            cases.push((vec![&broken, &later_wrong_base], Some(0x900), [false; 3]));
+            cases.push((vec![&deleted, &broken], None, [true, false, true]));
+        }
+        for (overrides, expected_cell, expected_certificates) in cases {
+            let plugins = std::iter::once(&base)
+                .chain(overrides)
+                .cloned()
                 .collect::<Vec<_>>();
             for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
                 let output = dir.path().join("world.db");
@@ -5468,6 +5540,11 @@ fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
                 let certificates =
                     [0x900, 0x901, 0x902].map(|cell| placement_certificate(&db, cell));
                 let winner = placement_winner_cell(&db, 0x850);
+                let stat_x: f32 = db
+                    .query_row("SELECT pos_x FROM [references] WHERE id=0x851", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
                 let projected: Option<u32> = db
                     .query_row(
                         "SELECT max(cell_id) FROM room_portals WHERE ref_id=0x850",
@@ -5478,9 +5555,10 @@ fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
                 if certificates != expected_certificates
                     || winner != expected_cell
                     || projected != expected_cell
+                    || stat_x != 2.0
                 {
                     failures.push(format!(
-                        "{reader:?} {name} followup={followup:?}: certificates={certificates:?}, winner={winner:?}, portal={projected:?}; expected {expected_certificates:?}, {expected_cell:?}"
+                        "{reader:?} {name} plugins={plugins:?}: certificates={certificates:?}, winner={winner:?}, portal={projected:?}, STAT control x={stat_x}; expected {expected_certificates:?}, {expected_cell:?}, STAT control x=2"
                     ));
                 }
             }
@@ -6087,4 +6165,116 @@ fn malformed_placed_base_keeps_its_known_cell_open() {
             .unwrap();
         assert!(!admitted, "{name} admitted a damaged placement");
     }
+}
+
+#[test]
+fn placement_winner_uses_forward_and_effective_catalogue_targets() {
+    use converter::config::RecordReader;
+    use rusqlite::OptionalExtension;
+
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let base = plugin(
+        data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            record(b"STAT", 0x830, 0, sub(b"EDID", b"OriginalStatic\0")),
+            placement_group(0x900, placement(0x850, 0x830, 0, 1.0, Vec::new())),
+        ]
+        .concat(),
+    );
+    let patch = plugin(
+        data,
+        "Patch.esp",
+        &["Skyrim.esm"],
+        0,
+        [
+            placement_group(
+                0x0100_0901,
+                placement(0x850, 0x0100_0831, 0, 2.0, Vec::new()),
+            ),
+            record(b"STAT", 0x0100_0831, 0, sub(b"EDID", b"ForwardStatic\0")),
+            record(b"CELL", 0x0100_0901, 0, sub(b"DATA", &[1, 0])),
+        ]
+        .concat(),
+    );
+    let original = (0x900, 0x830);
+    let moved = (0x0100_0901, 0x0100_0831);
+    let cases = [
+        ("forward declarations", None, moved, None),
+        (
+            "effective base changed type",
+            Some(record(b"KYWD", moved.1, 0, sub(b"EDID", b"NotAStatic\0"))),
+            original,
+            Some("required NAME"),
+        ),
+        (
+            "effective parent deleted",
+            Some(record(b"CELL", moved.0, 0x20, Vec::new())),
+            original,
+            Some("placement parent"),
+        ),
+        (
+            "invalid placement temporarily shadows the base",
+            Some(placement_group(
+                0x900,
+                placement(moved.1, 0x832, 0, 0.0, Vec::new()),
+            )),
+            moved,
+            None,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, extra, expected, rejection) in cases {
+        let plugins =
+            [base.clone(), patch.clone()]
+                .into_iter()
+                .chain(extra.map(|payload| {
+                    plugin(data, "Later.esp", &["Skyrim.esm", "Patch.esp"], 0, payload)
+                }))
+                .collect::<Vec<_>>();
+        for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+            let output = data.join("winner.db");
+            EsmParser::convert_plugins_with_reader(&plugins, &output, reader, data).unwrap();
+            let db = rusqlite::Connection::open(output).unwrap();
+            let winner = db
+                .query_row(
+                    "SELECT cell_id, base_form_id FROM [references] WHERE id=0x850",
+                    [],
+                    |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)),
+                )
+                .optional()
+                .unwrap();
+            if winner != Some(expected) {
+                failures.push(format!(
+                    "{reader:?} {name}: {winner:08X?}, expected {expected:08X?}"
+                ));
+            }
+            if matches!(reader, RecordReader::Inhouse) {
+                let (status, reason): (String, Option<String>) = db
+                    .query_row(
+                        "SELECT status, reason FROM record_overrides
+                         WHERE form_id=0x850 ORDER BY chain_position DESC LIMIT 1",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .unwrap();
+                let expected_status = if rejection.is_some() {
+                    "skipped"
+                } else {
+                    "accepted"
+                };
+                if status != expected_status
+                    || rejection
+                        .is_some_and(|part| !reason.is_some_and(|reason| reason.contains(part)))
+                {
+                    failures.push(format!("{reader:?} {name}: expected {expected_status} ({rejection:?}), got {status}"));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
