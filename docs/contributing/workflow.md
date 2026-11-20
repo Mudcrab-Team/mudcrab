@@ -28,6 +28,13 @@ If someone is assigned to an issue, has claimed it in a comment, or has an open 
 - Branch from the latest `main`, one topic per branch.
 - Run what CI runs before you push (see "Run What CI Runs" in [CONTRIBUTING.md](../../CONTRIBUTING.md)).
 - Keep a PR to one change a reviewer can hold in their head. Split a large feature into PRs that each work on their own.
+- **Inventory stores:** each external store has its own file under
+  `tools/world_data_inventory/stores/` with its own `reviewed_at_commit`. Add or edit only
+  the file for your store; do not add a shared `stores` block to `dispositions.json`. Two
+  PRs that add different stores then merge without a conflict. The per-store commit records
+  the last human review of that store and is provenance only; the gate does not check
+  reachability. See
+  [data-inventory/README.md](../data-inventory/README.md#migrating-a-branch-that-adds-a-store).
 
 ## 4. Open the pull request
 
@@ -54,12 +61,17 @@ The `main_protection` ruleset requires at least one approving review, approval f
 - **Approval of the latest push by someone other than the pusher is not required.** A code owner who pushed to a PR can approve it.
 - **The rules have one bypass actor.** Organization administrators (`OrganizationAdmin`, always) can bypass the ruleset. The requirements above apply to everyone else.
 
-`main` accepts squash or rebase merges in the ruleset, and the repository setting allows only squash. There is no merge queue and auto-merge is off.
+`main` accepts merge, squash or rebase merges in the ruleset. The repository setting allows squash and merge commits. Linear history is not required, so that a stack can land with merge commits. There is no merge queue and auto-merge is off.
 
 The PR author may merge after another human collaborator approves and all checks pass. Keep [CODEOWNERS](../../.github/CODEOWNERS) in sync with access changes, using the checklists in [GOVERNANCE.md](../../GOVERNANCE.md#joining-the-project). Its catch-all rule also covers changes to CODEOWNERS itself. Administrators can still edit repository settings, so changing or disabling these requirements is a separate policy change.
 
-- Use **Squash and merge**. Keep the PR title as the commit title.
-- Description: the PR's one-sentence summary, an empty line, then one trailer line per co-author or assistant of the PR's commits (`Co-authored-by:` or `Assisted-by:`, see [AI_POLICY.md](../AI_POLICY.md)). Drop the "Merge branch main" lines and the list of commit titles.
+- Use **Squash and merge** for every PR that is not a stack layer. Keep the PR title as the commit title.
+- Use **Create a merge commit** only to land a stack (a set with a `stack:` label, see [labels.md](labels.md)), bottom-up. Each layer's head commit is an ancestor of the next layer, so a merge commit lands the next layer without a conflict. A squash hides those commits, and the next layer conflicts with its own base.
+  1. Merge the bottom PR with **Create a merge commit**. The merge commit takes the PR title and body, so the title must pass the title check.
+  2. Make sure that the next PR now targets `main`. GitHub retargets it when the merged branch is deleted. If it does not, change the base to `main`.
+  3. Merge the next PR the same way, after its checks pass on the new base. Continue to the top of the stack.
+- Do not use rebase merge for a stack. It rewrites the commits, so the next layer conflicts again.
+- Squash description: the PR's one-sentence summary, an empty line, then one trailer line per co-author or assistant of the PR's commits (`Co-authored-by:` or `Assisted-by:`, see [AI_POLICY.md](../AI_POLICY.md)). Drop the "Merge branch main" lines and the list of commit titles.
 - After a merge, the other open PRs are behind `main` but can still merge without being updated. Update a branch only when it conflicts or needs something that just landed.
 
 ## AI agents

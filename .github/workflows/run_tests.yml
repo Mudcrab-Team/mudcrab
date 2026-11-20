@@ -106,7 +106,10 @@ jobs:
           components: rustfmt
 
       - name: Format check
-        run: cargo fmt --all -- --check
+        run: |
+          cargo fmt --all -- --check
+          # The fuzz targets are a separate workspace, so --all does not reach them.
+          cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
 
   scripts:
     needs: [orchestrate]
