@@ -399,7 +399,12 @@ fn plugin_edits(
                 Some("because its new CELL is damaged")
             } else {
                 validate_room_field_tags(&record.subrecords)?;
-                if base.is_none_or(|id| id == 0) {
+                if base
+                    .and_then(|id| {
+                        source_identity::header_runtime_id(b"REFR", id, priority, &order)
+                    })
+                    .is_none_or(|id| id == 0)
+                {
                     Some("with malformed NAME")
                 } else if let Some(reason) = malformed_placement_geometry(&view) {
                     Some(reason)

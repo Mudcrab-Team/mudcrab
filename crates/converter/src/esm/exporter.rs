@@ -780,6 +780,7 @@ fn export_records(
         )
     };
     let mut subset_link_sources = Vec::new();
+    let mut unavailable_link_targets = Vec::new();
     let mut edited_references = HashSet::new();
     for (&form_id, record) in ordered {
         let type_str = from_utf8(&record.record_type).unwrap_or("UNKN");
@@ -818,11 +819,26 @@ fn export_records(
         if record.record_type == *b"STAT" {
             super::object_materials::insert(&tx, master, record, &view)?;
         }
-        if order.is_none()
-            && super::is_placed_record_type(&record.record_type)
-            && !record.is_deleted()
-        {
+        if order.is_none() && super::is_placed_record_type(&record.record_type) {
+            // A subset cannot rebuild the cell graph. Invalidate the old and new cells.
+            tx.prepare_cached(
+                "INSERT INTO room_graph_cells(cell_id,complete)
+                 SELECT cell_id,0 FROM [references] WHERE id=?1 AND cell_id<>0
+                 UNION SELECT ?2,0 WHERE ?2 IS NOT NULL AND ?2<>0
+                 ON CONFLICT(cell_id) DO UPDATE SET complete=0",
+            )?
+            .execute(params![form_id, record.cell_form_id])?;
+            tx.prepare_cached("DELETE FROM reference_rooms WHERE reference_id=?1")?
+                .execute([form_id])?;
+            if type_str == "REFR" {
+                edited_references.insert(form_id);
+            }
             delete_reference_scripts(&tx, form_id, scalar_script_storage)?;
+            if record.is_deleted() {
+                clear_reference_placement(&tx, form_id)?;
+                unavailable_link_targets.push(form_id);
+                continue;
+            }
         }
         let vmad_bytes = view.find(b"VMAD");
         if let Some(vmad_bytes) = vmad_bytes {
@@ -883,26 +899,6 @@ fn export_records(
             }
             _ if super::is_placed_record_type(&record.record_type) => {
                 let cell_id = record.cell_form_id.unwrap_or(0);
-                if order.is_none() {
-                    // A subset cannot rebuild the cell graph. Empty membership alone would mean
-                    // unbounded space in a versioned graph, so invalidate both affected cells.
-                    tx.prepare_cached(
-                        "INSERT INTO room_graph_cells(cell_id,complete) SELECT cell_id,0 FROM [references] WHERE id=?1 AND cell_id IS NOT NULL ON CONFLICT(cell_id) DO UPDATE SET complete=0",
-                    )?.execute([form_id])?;
-                    tx.prepare_cached(
-                        "INSERT INTO room_graph_cells(cell_id,complete) VALUES (?1,0) ON CONFLICT(cell_id) DO UPDATE SET complete=0",
-                    )?.execute([cell_id])?;
-                    tx.prepare_cached("DELETE FROM reference_rooms WHERE reference_id=?1")?
-                        .execute([form_id])?;
-                    if type_str == "REFR" {
-                        edited_references.insert(form_id);
-                        if record.is_deleted() {
-                            delete_reference_scripts(&tx, form_id, scalar_script_storage)?;
-                            clear_reference_placement(&tx, form_id)?;
-                            continue;
-                        }
-                    }
-                }
                 let inserted = insert_reference_with_canonical_data(
                     &tx,
                     form_id,
@@ -913,6 +909,9 @@ fn export_records(
                     &canonical_record.subrecords,
                 )?;
                 if !inserted {
+                    if order.is_none() {
+                        unavailable_link_targets.push(form_id);
+                    }
                     omissions.record(
                         OmissionCategory::ReferenceUnusableData,
                         form_id,
@@ -1117,6 +1116,7 @@ fn export_records(
         }
     }
     drop(records_insert);
+    super::reference_links::clear_incoming(&tx, &unavailable_link_targets)?;
     // A later edit can remove a placement while retaining its canonical record.
     for source in subset_link_sources {
         let projection = runtime_projection(source, unresolved_fields);
@@ -3652,6 +3652,50 @@ mod tests {
     }
 
     #[test]
+    fn actor_tombstone_clears_scripts_and_links_from_surviving_sources() {
+        let db = Connection::open_in_memory().unwrap();
+        create_tables(&db).unwrap();
+        let mut actor = reference(0x880, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        actor.record_type = *b"ACHR";
+        let mut source = reference(0x881, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        source.subrecords.extend([
+            (b"XLKR".to_vec(), [word(0x880), word(0x880)].concat()),
+            (
+                b"XAPR".to_vec(),
+                [word(0x880), 2.5f32.to_le_bytes().to_vec()].concat(),
+            ),
+        ]);
+        export_to_db(
+            &db,
+            &[(actor.form_id, actor), (source.form_id, source)].into(),
+        )
+        .unwrap();
+        let links = || {
+            db.query_row(
+            "SELECT l.keyword_id, l.linked_ref_id, a.parent_ref_id, a.delay FROM reference_linked_refs l
+             JOIN reference_activate_parents a USING(reference_id,position) WHERE l.reference_id=0x881 AND l.position=0",
+            [], |r| Ok((r.get::<_,Option<u32>>(0)?,r.get::<_,Option<u32>>(1)?,r.get::<_,Option<u32>>(2)?,r.get::<_,f32>(3)?))
+        ).unwrap()
+        };
+        assert_eq!(links(), (Some(0x880), Some(0x880), Some(0x880), 2.5));
+        db.execute("INSERT INTO scripts(form_id,script_name,vmad,properties_json) VALUES(0x880,'ActorScript',X'00','[]')", []).unwrap();
+        let mut tombstone = record(0x880, b"ACHR", None, None, Vec::new());
+        tombstone.flags = 0x20;
+        export_to_db(&db, &[(0x880, tombstone)].into()).unwrap();
+        assert_eq!(links(), (None, None, None, 2.5));
+        for (table, id) in [("scripts", "form_id"), ("[references]", "id")] {
+            let count: u32 = db
+                .query_row(
+                    &format!("SELECT count(*) FROM {table} WHERE {id}=0x880"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "{table}");
+        }
+    }
+
+    #[test]
     fn subset_reference_script_projections_replace_atomically() {
         use dummy_content::inhouse_vmad as fixture;
         let vmad = |name, limit: i32| {
@@ -3671,6 +3715,9 @@ mod tests {
         let replacement_vmad = vmad("ReplacementScript", 71);
         let scripted = |id, data: &[u8]| {
             let mut row = reference(id, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+            if id == 0x802 {
+                row.record_type = *b"ACHR";
+            }
             row.subrecords.push((b"VMAD".to_vec(), data.to_vec()));
             (id, row)
         };
@@ -3765,6 +3812,11 @@ mod tests {
             deleted.flags = 0x20;
             export_to_db(&db, &[(0x801, deleted)].into()).unwrap();
             assert_scripts(&[(0x802, "DoorScript")]);
+
+            let (id, mut actor) = scripted(0x802, &original_vmad);
+            actor.flags = 0x20;
+            export_to_db(&db, &[(id, actor)].into()).unwrap();
+            assert_scripts(&[]);
         }
     }
 
