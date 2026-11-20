@@ -748,6 +748,7 @@ impl ArchiveExtractor {
     }
 
     /// Extracts matching canonical paths from the same open archive used for selection.
+    /// Keep the mapped file contents unchanged during extraction, including inside predicates.
     pub fn extract_matching(
         archive_path: &Path,
         output_root: &Path,
@@ -758,6 +759,7 @@ impl ArchiveExtractor {
 
     /// Filters original entry names before canonicalization and collision checks, then selects
     /// canonical paths and extracts their payloads from the same open archive.
+    /// Keep the mapped file contents unchanged during extraction, including inside predicates.
     pub fn extract_matching_with_name_filter(
         archive_path: &Path,
         output_root: &Path,
@@ -925,10 +927,6 @@ fn extract_selected_with_sync_reporting(
                     Ok((name, data, relative))
                 })
                 .collect::<Result<Vec<_>>>()?;
-            let entries: Vec<_> = entries
-                .into_iter()
-                .filter(|(_, _, relative)| include(relative))
-                .collect();
             let reporter = progress.map(|callback| {
                 ProgressReporter::new(
                     callback,
@@ -2249,6 +2247,28 @@ mod tests {
             ArchiveExtractor::list_paths(&ba2).unwrap(),
             vec![PathBuf::from("meshes/a.hkx"), PathBuf::from("meshes/b.hkx")]
         );
+    }
+
+    #[test]
+    fn archive_selection_visits_each_canonical_path_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let directory = tempfile::tempdir().unwrap();
+        for extension in ["bsa", "ba2"] {
+            let key = "meshes/test.nif";
+            let archive = directory.path().join(format!("meshes.{extension}"));
+            let output = directory.path().join(extension);
+            write_archive(&archive, &[dummy_content::Entry::new(key, b"selected")]);
+            let calls = AtomicUsize::new(0);
+            let files = ArchiveExtractor::extract_matching(&archive, &output, |path| {
+                assert_eq!(path, Path::new(key));
+                calls.fetch_add(1, Ordering::Relaxed) == 0
+            })
+            .unwrap();
+            assert_eq!(calls.load(Ordering::Relaxed), 1, "{extension}");
+            assert_eq!(files.len(), 1);
+            assert_eq!(fs::read(output.join(key)).unwrap(), b"selected");
+        }
     }
 
     #[test]
