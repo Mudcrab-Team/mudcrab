@@ -617,7 +617,9 @@ impl RoomGraph {
         if let Some(owner_bounds) = reference_bounds.or(bounds) {
             for portal in &self.portals {
                 let attached = portal.rooms.iter().any(|side| match side {
-                    PortalSide::Room(room) => membership.contained.contains(room),
+                    PortalSide::Room(room) => {
+                        membership.contained.contains(room) || membership.overlapping.contains(room)
+                    }
                     PortalSide::Unbounded => {
                         self.supports_unbounded && membership.contained.is_empty()
                     }
@@ -2787,6 +2789,42 @@ mod tests {
             mesh_list(&scene.app, scene.camera).contains(&scene.far),
             "a portal-shared reference keeps meshes visible from the near endpoint, before the aperture"
         );
+    }
+
+    #[test]
+    fn overlap_only_reference_shares_a_bounded_portal_only_when_it_touches_the_aperture() {
+        let mut scene = scene();
+        {
+            let mut state = scene.app.world_mut().resource_mut::<RoomCullingState>();
+            let graph = &mut state.graphs.get_mut(&7).unwrap().graph;
+            graph.supports_unbounded = true;
+            graph.rooms[0].half.z = 5.0;
+            graph.rooms[1].center.z = -20.0;
+            graph.rooms[1].half.z = 5.0;
+            graph.portals[0] = doorway(10, Vec3::new(0.0, 0.0, -10.0), 3.0, [0, 1]);
+            for membership in graph.membership.values_mut() {
+                membership.contained.clear();
+                membership.overlapping = vec![1];
+            }
+        }
+        // Both pivots lie in the gap between the rooms. Both aggregates extend into room 1,
+        // but only the wider one reaches the opening. Their children sit beside the aperture.
+        for (mesh, half_width) in [(scene.near, 2.0), (scene.far, 0.5)] {
+            let reference = scene.app.world().get::<ChildOf>(mesh).unwrap().parent();
+            let half = Vec3::new(half_width, 1.0, 5.0);
+            scene.app.world_mut().entity_mut(reference).insert((
+                ExpectedModelBounds::new(-half, half).unwrap(),
+                GlobalTransform::from_translation(Vec3::new(4.0, 0.0, -12.0)),
+            ));
+            scene.app.world_mut().entity_mut(mesh).insert((
+                Aabb::from_min_max(-Vec3::splat(0.25), Vec3::splat(0.25)),
+                GlobalTransform::from_translation(Vec3::new(4.0, 0.0, -8.0)),
+            ));
+        }
+        run_cull(&mut scene.app);
+        let drawn = mesh_list(&scene.app, scene.camera);
+        assert!(drawn.contains(&scene.near));
+        assert!(!drawn.contains(&scene.far));
     }
 
     #[test]
