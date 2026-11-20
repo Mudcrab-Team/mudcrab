@@ -7349,10 +7349,12 @@ fn placement_winner_rejects_deleted_low_base_and_accepts_never_defined_marker() 
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+type CellAndBase = (Option<u32>, u32);
+
 fn check_placement_winners(
     plugins: &[PathBuf],
     label: &str,
-    expected: &[(u32, Option<(Option<u32>, u32)>)],
+    expected: &[(u32, Option<CellAndBase>)],
     failures: &mut Vec<String>,
 ) {
     use converter::config::RecordReader;
