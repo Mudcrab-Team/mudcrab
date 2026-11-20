@@ -1606,11 +1606,11 @@ X, Y, and Z half-extents in Creation units. Optional `links` name joined rooms i
   "edits": [
     {
       "op": "put_room", "id": 4278190082, "cell": 4278190081,
-      "position": [-100, 0, 0], "half_extents": [100, 100, 100]
+      "position": [0, -100, 0], "half_extents": [100, 100, 100]
     },
     {
       "op": "put_room", "id": 4278190083, "cell": 4278190081,
-      "position": [100, 0, 0], "half_extents": [100, 100, 100]
+      "position": [0, 100, 0], "half_extents": [100, 100, 100]
     },
     {
       "op": "put_portal", "id": 4278190084, "cell": 4278190081,

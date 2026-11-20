@@ -151,6 +151,10 @@ fn skin_motion_targets(blocks: &[NifBlock]) -> HashSet<u32> {
         // Skyrim may store influences in the geometry or skin partition, so treat every
         // joint listed by the instance as potentially weighted.
         for &bone in bones.iter().filter(|&&bone| bone != u32::MAX) {
+            if bone == crate::mesh::NIF_ROOT_BLOCK {
+                targets.insert(bone);
+                continue;
+            }
             let mut target = bone;
             while target != crate::mesh::NIF_ROOT_BLOCK && targets.insert(target) {
                 let Some(parent) = parents.get(target as usize).copied().flatten() else {

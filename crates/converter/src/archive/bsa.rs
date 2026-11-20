@@ -3,9 +3,10 @@ use color_eyre::{
     eyre::{WrapErr, bail, ensure, eyre},
 };
 use flate2::read::ZlibDecoder;
-use std::io::Read;
+use std::{borrow::Cow, io::Read};
 
 use super::bsa_name::{decode_name, file_hash, folder_hash};
+use super::source::ArchiveSource;
 
 const HEADER_SIZE: usize = 36;
 const FILE_RECORD_SIZE: usize = 16;
@@ -33,18 +34,64 @@ pub struct BsaRawEntry<'a> {
 
 impl<'a> BsaRawEntry<'a> {
     pub fn decompress(&self) -> Result<Vec<u8>> {
-        if self.is_compressed {
-            decompress(self.payload, self.version)
-                .wrap_err_with(|| format!("failed to decompress BSA entry {:?}", self.name))
-        } else {
-            Ok(self.payload.to_vec())
-        }
+        decode_payload(
+            Cow::Borrowed(self.payload),
+            self.version,
+            self.is_compressed,
+            &self.name,
+        )
     }
 }
 
-// Reads BSA metadata table only
-// Payloads remain lightweight slices into the mmap
 pub(crate) fn iter_raw_entries<'a>(bytes: &'a [u8]) -> Result<Vec<BsaRawEntry<'a>>> {
+    read_entries(&ArchiveSource::Slice(bytes))?
+        .into_iter()
+        .map(|entry| {
+            Ok(BsaRawEntry {
+                name: entry.name,
+                payload: slice_at(bytes, entry.offset, entry.stored_size, "file payload")?,
+                version: entry.version,
+                is_compressed: entry.is_compressed,
+            })
+        })
+        .collect()
+}
+
+pub(super) struct BsaEntry {
+    pub name: String,
+    offset: usize,
+    stored_size: usize,
+    version: u32,
+    is_compressed: bool,
+}
+
+impl BsaEntry {
+    pub(super) fn decompress(self, source: &ArchiveSource<'_>) -> Result<Vec<u8>> {
+        let payload = source
+            .read_payload(self.offset, self.stored_size)
+            .wrap_err_with(|| format!("invalid BSA file payload: {}", self.name))?;
+        decode_payload(payload, self.version, self.is_compressed, &self.name)
+    }
+}
+
+fn decode_payload(
+    payload: Cow<'_, [u8]>,
+    version: u32,
+    is_compressed: bool,
+    name: &str,
+) -> Result<Vec<u8>> {
+    if is_compressed {
+        decompress(&payload, version)
+            .wrap_err_with(|| format!("failed to decompress BSA entry {name:?}"))
+    } else {
+        Ok(payload.into_owned())
+    }
+}
+
+pub(super) fn read_entries(source: &ArchiveSource<'_>) -> Result<Vec<BsaEntry>> {
+    ensure!(source.len() >= HEADER_SIZE, "truncated BSA header");
+    let header = source.read(0, HEADER_SIZE)?;
+    let bytes = header.as_ref();
     ensure!(bytes.len() >= HEADER_SIZE, "truncated BSA header");
     ensure!(&bytes[..4] == b"BSA\0", "invalid BSA magic");
     let version = u32_at(bytes, 4)?;
@@ -87,9 +134,11 @@ pub(crate) fn iter_raw_entries<'a>(bytes: &'a [u8]) -> Result<Vec<BsaRawEntry<'a
         .and_then(|end| checked_end(end, file_records_size, "file records"))
         .and_then(|end| checked_end(end, total_file_name_length, "filename table"))?;
     ensure!(
-        minimum_metadata_end <= bytes.len(),
+        minimum_metadata_end <= source.len(),
         "BSA metadata exceeds archive size"
     );
+    let metadata = source.read(0, minimum_metadata_end)?;
+    let bytes = metadata.as_ref();
 
     let mut folder_records = Vec::with_capacity(folder_count);
     for index in 0..folder_count {
@@ -195,31 +244,31 @@ pub(crate) fn iter_raw_entries<'a>(bytes: &'a [u8]) -> Result<Vec<BsaRawEntry<'a
                 "BSA file hash mismatch for {full_name:?}: stored {:#018x}, calculated {calculated:#018x}",
                 record.hash
             );
-            let stored_size = (record.size_flags & FILE_SIZE_MASK) as usize;
-            let start = record.offset as usize;
+            let mut stored_size = (record.size_flags & FILE_SIZE_MASK) as usize;
+            let mut start = record.offset as usize;
             ensure!(
                 start >= filename_table_end,
                 "BSA file payload overlaps metadata: {full_name}"
             );
-            let mut payload = slice_at(bytes, start, stored_size, "file payload")
-                .wrap_err_with(|| format!("invalid BSA file payload: {full_name}"))?;
+            ensure!(
+                checked_end(start, stored_size, "file payload")? <= source.len(),
+                "invalid BSA file payload: {full_name}"
+            );
             if archive_flags & ARCHIVE_EMBED_FILE_NAMES != 0 {
-                let embedded_len = *payload
-                    .first()
-                    .ok_or_else(|| eyre!("missing embedded BSA filename"))?
-                    as usize;
-                let payload_start = checked_end(1, embedded_len, "embedded filename")?;
-                payload = payload
-                    .get(payload_start..)
+                ensure!(stored_size != 0, "missing embedded BSA filename");
+                let prefix_size = 1 + source.read_payload(start, 1)?[0] as usize;
+                stored_size = stored_size.checked_sub(prefix_size)
                     .ok_or_else(|| eyre!("truncated embedded BSA filename"))?;
+                start += prefix_size;
             }
 
             let is_compressed = (archive_flags & ARCHIVE_COMPRESSED != 0)
                 ^ (record.size_flags & FILE_COMPRESSION_TOGGLE != 0);
 
-            Ok(BsaRawEntry {
+            Ok(BsaEntry {
                 name: full_name,
-                payload,
+                offset: start,
+                stored_size,
                 version,
                 is_compressed,
             })
