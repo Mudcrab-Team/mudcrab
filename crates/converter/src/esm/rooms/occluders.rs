@@ -208,7 +208,7 @@ fn project(
             || source.is_some_and(|(record, _)| record.rejected_fields.contains(tag))
     };
     let complete = match provenance {
-        MarkerSource::Canonical => true,
+        MarkerSource::Canonical | MarkerSource::Authored => true,
         MarkerSource::DamagedPlugin => false,
         MarkerSource::Typed(record, _) => record.payload_complete,
     };
