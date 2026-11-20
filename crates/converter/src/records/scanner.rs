@@ -48,16 +48,29 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("checked frame"))
 }
 
+/// What a scanned input still proves after the source-stability check.
+pub(crate) enum ScanOutcome {
+    /// The decode view verified; the digest covers exactly those bytes.
+    Verified([u8; 32]),
+    /// The source changed after it was copied; records and digest cover that stable copy.
+    RetainedSnapshot([u8; 32]),
+    /// A direct mapping changed while decoding; retained records may mix generations.
+    MixedRecords,
+    /// No records usable for later proof stages.
+    Skipped,
+}
+
 /// Read source inputs only; ownership and slot assignment remain with LoadOrder.
-/// `None` means later proof stages must not reopen this unavailable or changed source;
-/// already decoded records can still be retained. A digest covers the verified decode view.
-/// Local record errors alone still return the digest.
+/// A non-`Verified` outcome means later proof stages must not reopen this changed source;
+/// already decoded records can still be retained. A digest covers the bytes that were decoded.
+/// `RetainedSnapshot` and `MixedRecords` mean records were delivered; with none, the input is
+/// simply `Skipped`. Local record errors alone still return the digest.
 pub(crate) fn scan_admitted_plugin(
     (path, admitted): (&Path, &PluginMetadata),
     diagnostics: &mut PluginDiagnostics,
     observe: impl FnMut(ObservedHeader),
     receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
-) -> Result<Option<[u8; 32]>> {
+) -> Result<ScanOutcome> {
     scan_plugin_impl(path, Some(admitted), diagnostics, observe, receive)
 }
 
@@ -68,7 +81,7 @@ pub(crate) fn scan_plugin(
     diagnostics: &mut PluginDiagnostics,
     observe: impl FnMut(ObservedHeader),
     receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
-) -> Result<Option<[u8; 32]>> {
+) -> Result<ScanOutcome> {
     scan_plugin_impl(path, None, diagnostics, observe, receive)
 }
 
@@ -79,7 +92,7 @@ fn scan_plugin_impl(
     diagnostics: &mut PluginDiagnostics,
     mut observe: impl FnMut(ObservedHeader),
     mut receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
-) -> Result<Option<[u8; 32]>> {
+) -> Result<ScanOutcome> {
     diagnostics.set_record(0, None, None, None, "framing");
     let input = (|| -> Result<_> {
         let file = File::open(path).wrap_err_with(|| format!("open {}", path.display()))?;
@@ -92,12 +105,12 @@ fn scan_plugin_impl(
             diagnostics.note("record", || {
                 format!("unusable input {}: {error:#}", path.display())
             });
-            return Ok(None);
+            return Ok(ScanOutcome::Skipped);
         }
     };
     if map.len() < 24 || &map[..4] != b"TES4" {
         diagnostics.note("record", || "input has no complete TES4 header".into());
-        return Ok(None);
+        return Ok(ScanOutcome::Skipped);
     }
     if let Some(admitted) = admitted
         && let Err(error) = crate::esm::binary::verify_admitted_metadata(&map, admitted)
@@ -107,26 +120,44 @@ fn scan_plugin_impl(
         diagnostics.note("record", || {
             format!("unusable input {}: {error:#}", path.display())
         });
-        return Ok(None);
+        return Ok(ScanOutcome::Skipped);
     }
-    scan_bytes_observed(&map, diagnostics, &mut receive, &mut observe);
+    let mut delivered = false;
+    scan_bytes_observed(
+        &map,
+        diagnostics,
+        |record, diagnostics| {
+            delivered = true;
+            receive(record, diagnostics);
+        },
+        &mut observe,
+    );
     if let Err(error) = map.verify(&file, path) {
         diagnostics.set_record(0, None, None, None, "input_stability");
-        diagnostics.event_context.action = Some(if map.is_snapshot() {
-            "kept_snapshot"
-        } else {
-            "kept_decoded_records"
-        });
-        diagnostics.note("input", || {
-            if map.is_snapshot() {
+        if map.is_snapshot() {
+            // Anonymous bytes never change under the reader: one digest names both the
+            // records that were delivered and the copy they came from.
+            diagnostics.event_context.action = Some("kept_snapshot");
+            diagnostics.note("input", || {
                 format!("{error:#}; retained the stable captured snapshot")
+            });
+            return Ok(if delivered {
+                ScanOutcome::RetainedSnapshot(Sha256::digest(&map[..]).into())
             } else {
-                format!("{error:#}; retained decoded records may mix versions of the large input and be inconsistent")
-            }
+                ScanOutcome::Skipped
+            });
+        }
+        diagnostics.event_context.action = Some("kept_decoded_records");
+        diagnostics.note("input", || {
+            format!("{error:#}; retained decoded records may mix versions of the large input and be inconsistent")
         });
-        return Ok(None);
+        return Ok(if delivered {
+            ScanOutcome::MixedRecords
+        } else {
+            ScanOutcome::Skipped
+        });
     }
-    Ok(Some(Sha256::digest(&map[..]).into()))
+    Ok(ScanOutcome::Verified(Sha256::digest(&map[..]).into()))
 }
 
 /// Traverse groups iteratively, retaining siblings when an inner boundary is corrupt.
@@ -383,7 +414,7 @@ mod tests {
                 |_, _| received += 1,
             )
             .unwrap();
-            assert!(digest.is_none());
+            assert!(matches!(digest, ScanOutcome::Skipped));
             assert_eq!((observed, received), (0, 0));
             assert_eq!(diagnostics.skipped_records, 1);
             assert_eq!(diagnostics.event_context.action, Some("skipped"));
@@ -419,7 +450,7 @@ mod tests {
             |record, _| received.push(record.source_form_id),
         )
         .unwrap();
-        assert!(digest.is_some());
+        assert!(matches!(digest, ScanOutcome::Verified(_)));
         assert_eq!(observed, [0, 0x101, 0x102]);
         assert_eq!(received, [0, 0x102]);
         assert_eq!(diagnostics.skipped_records, 1);
@@ -509,7 +540,7 @@ mod tests {
         let mut diagnostics = PluginDiagnostics::default();
         let mut ids = Vec::new();
         let mut truncated = None;
-        scan_plugin(
+        let outcome = scan_plugin(
             &path,
             &mut diagnostics,
             |_| {
@@ -521,6 +552,11 @@ mod tests {
         )
         .unwrap();
         assert!(truncated.unwrap().is_ok(), "source is still mapped");
+        // The snapshot bytes are the delivered records, so their digest is the decode proof.
+        let ScanOutcome::RetainedSnapshot(digest) = outcome else {
+            panic!("a stable captured snapshot must keep its decode digest");
+        };
+        assert_eq!(digest, <[u8; 32]>::from(Sha256::digest(&bytes)));
         assert_eq!(ids, [0, 0x101, 0x103]);
         assert_eq!(diagnostics.skipped_records, 1);
         assert_eq!(diagnostics.skipped_fields, 0);
@@ -556,7 +592,7 @@ mod tests {
         let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
         let mut diagnostics = PluginDiagnostics::default();
         let mut records = Vec::new();
-        scan_plugin(
+        let outcome = scan_plugin(
             &path,
             &mut diagnostics,
             |_| {},
@@ -580,6 +616,8 @@ mod tests {
             },
         )
         .unwrap();
+        // A changed direct mapping has no single decoded view to prove.
+        assert!(matches!(outcome, ScanOutcome::MixedRecords));
         assert_eq!(
             records,
             [
@@ -620,7 +658,7 @@ mod tests {
         let mut diagnostics = PluginDiagnostics::default();
         let mut ids = Vec::new();
         let mut replaced = false;
-        scan_plugin(
+        let outcome = scan_plugin(
             &path,
             &mut diagnostics,
             |_| {
@@ -633,6 +671,7 @@ mod tests {
         )
         .unwrap();
         assert!(replaced);
+        assert!(matches!(outcome, ScanOutcome::RetainedSnapshot(_)));
         assert_eq!(ids, [0, 0x201, 0x202]);
         assert_eq!(diagnostics.skipped_records, 0);
         assert_eq!(diagnostics.skipped_fields, 0);

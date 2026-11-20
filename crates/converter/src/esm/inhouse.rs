@@ -1409,6 +1409,7 @@ fn convert_plugins_with_text_sources_report_impl(
         .collect::<Vec<_>>();
     let release_stage = records::profile::ProfileStage::start("decoded_release");
     let skipped_inputs = std::mem::take(&mut decoded.skipped_inputs);
+    let unverified_inputs = std::mem::take(&mut decoded.unverified_inputs);
     let plugin_checksums = std::mem::take(&mut decoded.plugin_checksums);
     drop(decoded);
     release_stage.finish(master.len());
@@ -1422,6 +1423,7 @@ fn convert_plugins_with_text_sources_report_impl(
     Ok(RecordConversion {
         load_order: order,
         skipped_inputs,
+        unverified_inputs,
         phases,
         records: master,
         warnings: report_warnings,
