@@ -81,7 +81,7 @@ expression: manifest
   },
   "asset_configuration_hashes": {
     "dds": "1495cf3ec0f02a297c0bf31210e650b2c41df7f8b5e2bdda71f0a65f84b9db65",
-    "nif": "7af00890d93232fbe47849217de48e0770133a9ebc2b09ac83e432877db7336e",
+    "nif": "8b164b948d353681adf10e3a79312039e838f8954786b782edf387f76710a50f",
     "pex": "cf13370688eb7906eb315807a3ff9fff826e24c65351c5a229f96d2d2ea85a7f"
   },
   "complete": true,
@@ -96,7 +96,7 @@ expression: manifest
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",
       "output_hash": "[output_hash]",
-      "output_size": 2452,
+      "output_size": 2540,
       "source_hash": "[source_hash]"
     },
     "scripts/generated.pex": {

@@ -131,11 +131,16 @@ three times the captured RGB values for legibility. Pixel comparisons use the or
 In Skyrim SE 1.7.104, shrinking `000C4A65` to 10% at the original pose removed the wood grain in
 two trials. Restoring its scale brought the grain back both times. Shrinking `000C4A50` left the
 grain visible. The camera, projection and viewport matched across captures, and the live node
-sphere confirmed each scale change. Luminance standard deviation in the 40 × 40 patch went from
+sphere confirmed each scale change. In Katariah01 (`000BBB2F`), the free camera was at
+(−768, 1536, 748) in Creation coordinates, with 180° yaw, 60° downward pitch, and 75°
+horizontal FOV. The near plane was 15 Creation units and the viewport filled the 1400 × 1050
+frame. The receipt records the live camera readback and plugin slots from the scale-control runs.
+Luminance standard deviation in the 40 × 40 patch went from
 13.83 to 0.20 in both target trials, then returned to 13.68 and 13.80. The negative control
 measured 13.63. [Capture hashes and measurements](evidence/room-review-20261117/katariah-retail-wall-control.json)
 
-Both engines reached the wall's room, `0006EE1E`, from camera room `0006EE50`. At portal
+Both engines reached the wall's room, `0006EE1E`, from camera room `0006EE50`. The other wall,
+`000C4A50`, belonged to unreached room `0006EE4F`. At portal
 `0006EF37` the Skyrim drawable's sphere extends 67.97 Creation units into the accepted half-space.
 Mudcrab tests the transformed mesh box, which falls 41.91 units short of the same plane.
 Bypassing that final filter for `000C4A65` in the normal Mudcrab pack restored the wood, with
@@ -143,3 +148,23 @@ Bypassing that final filter for `000C4A65` in the normal Mudcrab pack restored t
 in drawable bounds for this static, single-shape mesh. Both runs already reach its room.
 
 ![Katariah retail wall scale and restore controls alongside Mudcrab crops](evidence/room-review-20261117/katariah-retail-wall-control.png)
+
+MudCrab's authored portal planes now test a static drawable's own NIF sphere when conversion
+can verify that it encloses every exported vertex. The placement sphere still determines
+room ownership. Earlier GLBs and drawables without a verified sphere use their mesh boxes.
+
+The drawable sphere replay rebuilt only `ShipKatariahWoodWall01.nif`. At the named-floor pose,
+the original GLB yielded 39 of 255 meshes and the rebuilt GLB yielded 42. Moving `000C4A50`
+50,000 units on X removed it from the camera list and left the 42 drawn meshes and the PNG
+identical. Moving `000C4A65` instead lowered the drawn count to 41 and restored the original
+PNG. The NONE-floor PNG matched in all four runs. [Replay hashes and counts](evidence/room-review-20261117/katariah-retail-wall-control.json)
+
+To reproduce in MudCrab, rebuild Katariah's models in a private converted pack and use the
+two poses from the [MudCrab shot receipt](evidence/room-review-20261117/katariah-wedge-control.json).
+Keep both wall placements at their original transforms and use `--lights --color-grade off`.
+
+```sh
+cargo run -p converter --example room_assignment_validation -- "$SKYRIM_DATA" "$ASSETS" 768815
+cargo run -p engine -- --assets "$ASSETS" --shots "$SHOTS_JSON" --shots-out "$SHOTS_OUT" \
+  --lights --color-grade off
+```

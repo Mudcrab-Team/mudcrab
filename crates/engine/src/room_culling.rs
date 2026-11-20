@@ -164,12 +164,14 @@ use bevy::{
             NoFrustumCulling, VisibilitySystems, VisibleEntities, check_visibility_cpu_culling,
         },
     },
+    gltf::GltfMeshExtras,
     math::Affine3A,
     prelude::*,
     tasks::{AsyncComputeTaskPool, Task, futures_lite::future},
 };
 use bevy_rapier3d::prelude::RigidBody;
 use rusqlite::{Connection, OpenFlags};
+use shared::room_assignment::{DRAWABLE_SPHERE_EXTRA, ModelSphere};
 use std::{
     any::TypeId,
     collections::{HashMap, HashSet, VecDeque, hash_map::Entry},
@@ -1368,11 +1370,48 @@ impl Plugin for RoomCullingPlugin {
         )
         .add_systems(
             PostUpdate,
-            cull_room_views
+            (read_drawable_spheres, cull_room_views)
+                .chain()
                 .in_set(VisibilitySystems::CheckVisibility)
                 // The list is only complete once Bevy's own check has filled it.
                 .after(check_visibility_cpu_culling),
         );
+    }
+}
+
+/// A converter-verified bound in a static drawable's vertex coordinates.
+#[derive(Component)]
+pub struct DrawableRoomSphere(ModelSphere);
+
+fn read_drawable_spheres(
+    mut commands: Commands,
+    changed: Query<
+        (Entity, &GltfMeshExtras, Has<DrawableRoomSphere>),
+        (With<Mesh3d>, Changed<GltfMeshExtras>),
+    >,
+    mut removed: RemovedComponents<GltfMeshExtras>,
+    existing: Query<(), With<DrawableRoomSphere>>,
+) {
+    for entity in removed.read() {
+        if existing.contains(entity) {
+            commands.entity(entity).try_remove::<DrawableRoomSphere>();
+        }
+    }
+    for (entity, extras, had_sphere) in &changed {
+        let sphere = serde_json::from_str::<serde_json::Value>(&extras.value)
+            .ok()
+            .and_then(|mut value| {
+                serde_json::from_value::<ModelSphere>(
+                    value.as_object_mut()?.remove(DRAWABLE_SPHERE_EXTRA)?,
+                )
+                .ok()
+            })
+            .filter(|sphere| sphere.valid() && sphere.radius > 0.0);
+        if let Some(sphere) = sphere {
+            commands.entity(entity).insert(DrawableRoomSphere(sphere));
+        } else if had_sphere {
+            commands.entity(entity).try_remove::<DrawableRoomSphere>();
+        }
     }
 }
 
@@ -1501,7 +1540,15 @@ pub fn cull_room_views(
         ),
         Or<(With<StreamingCamera>, With<RoomCullingView>)>,
     >,
-    mesh_bounds: Query<(&Aabb, &GlobalTransform), Without<NoFrustumCulling>>,
+    mesh_bounds: Query<
+        (
+            &Aabb,
+            &GlobalTransform,
+            Option<&DrawableRoomSphere>,
+            Has<bevy::mesh::skinning::SkinnedMesh>,
+        ),
+        Without<NoFrustumCulling>,
+    >,
     reference_bounds: Query<(&ExpectedModelBounds, &GlobalTransform)>,
     placements: Query<(&GlobalTransform, Option<&Transform>)>,
     mut named_targets: ParamSet<(
@@ -1656,9 +1703,21 @@ pub fn cull_room_views(
                 if ancestor != reference {
                     return true;
                 }
-                let bounds = mesh_bounds.get(entity).ok().and_then(|(aabb, transform)| {
-                    MeshBounds::transformed(aabb, local_from_world * transform.affine())
-                });
+                let bounds =
+                    mesh_bounds
+                        .get(entity)
+                        .ok()
+                        .and_then(|(aabb, transform, sphere, skinned)| {
+                            let local_from_mesh = local_from_world * transform.affine();
+                            let mut bounds = MeshBounds::transformed(aabb, local_from_mesh)?;
+                            if let Some(sphere) = sphere
+                                && loaded.graph.authored.is_some()
+                                && !skinned
+                            {
+                                bounds.set_portal_sphere(sphere.0, local_from_mesh);
+                            }
+                            Some(bounds)
+                        });
                 if let Some(authored) = &loaded.graph.authored {
                     if !authored.has_rule(form_id) {
                         return true;
@@ -3322,6 +3381,40 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_in_band_portals_keep_the_camera_volume() {
+        let db = authored_database();
+        insert_room(&db, 1, 7, [0.0; 3]);
+        insert_room(&db, 2, 7, [0.0, 30.0, 0.0]);
+        insert_room(&db, 3, 7, [0.0, 60.0, 0.0]);
+        let mut graph = load_room_graph(&db, 7).unwrap();
+        graph.portals = vec![
+            doorway(10, Vec3::new(3.0, 0.0, -3.0), 0.5, [0, 1]),
+            doorway(11, Vec3::new(-3.0, 0.0, -6.0), 0.5, [1, 2]),
+        ];
+        assert!(
+            graph
+                .portals
+                .iter()
+                .all(|p| p.distance_to(Vec3::ZERO) < PORTAL_OPEN_DISTANCE)
+        );
+        let visible = graph
+            .visibility_volumes(Vec3::ZERO, Vec3::ZERO, clip_from_local())
+            .unwrap();
+        for (x, drawn) in [(0.0, true), (30.0, false)] {
+            let bounds = MeshBounds::transformed(
+                &Aabb::from_min_max(-Vec3::splat(0.2), Vec3::splat(0.2)),
+                Affine3A::from_translation(Vec3::new(x, 0.0, -40.0)),
+            )
+            .unwrap();
+            assert_eq!(
+                visible.rooms[2].intersects(Some(&bounds)),
+                drawn,
+                "mesh at x={x}"
+            );
+        }
+    }
+
+    #[test]
     fn occluder_exclusions_follow_their_portal_path_into_later_rooms() {
         let mut graph = chain(doorway(11, Vec3::new(0.0, 0.0, -30.0), 3.0, [1, 2]));
         graph.add_occluder(
@@ -4040,6 +4133,106 @@ mod tests {
         app.world_mut()
             .run_system_once(cull_room_views)
             .expect("cull_room_views runs");
+    }
+
+    #[test]
+    fn katariah_drawable_sphere_keeps_only_the_retail_wall_control() {
+        let db = authored_database();
+        db.execute_batch(
+            "INSERT INTO room_bounds VALUES
+                 (0x6EE1E,7,-660,1152,768,0,0,3.14159274,528,256,168,NULL,NULL,0),
+                 (0x6EE4F,7,-980.000122,1912,768,0,0,3.14159274,207.999847,504,168,NULL,NULL,0),
+                 (0x6EE50,7,20,1912,768,0,0,3.14159274,792,504,168,NULL,NULL,0);
+             INSERT INTO room_portals VALUES
+                 (0x6EF37,7,-508,1408,684,0,0,3.14159274,56,84,0x6EE1E,0x6EE50,0,0),
+                 (0x6EF38,7,-772.000305,1792.785522,680.664917,0,0,4.71238947,
+                   51.797180,80.664856,0x6EE50,0x6EE4F,0,0);
+             INSERT INTO \"references\"(id,cell_id,base_form_id,pos_x,pos_y,pos_z,rot_z) VALUES
+                 (0xC4A65,7,0x98594,-772,1405,608,1.57079637),
+                 (0xC4A50,7,0x98594,-909.900024,1412.900024,608,1.57079637);
+             INSERT INTO room_reference_rules VALUES
+                 (0xC4A65,7,'auto',NULL),(0xC4A50,7,'auto',NULL);
+             INSERT INTO room_model_bounds VALUES(0x98594,0,128,0,181.057663);",
+        )
+        .unwrap();
+        let eye = Vec3::new(-768.0, 748.0, -1536.0);
+        let camera = GlobalTransform::from(
+            Transform::from_translation(eye)
+                .with_rotation(crate::shots::shot_camera_rotation(180.0, 60.0)),
+        );
+        let scene = scene_with(GlobalTransform::IDENTITY, camera);
+        let mut app = scene.app;
+        let world = app.world_mut();
+        let loaded = world.resource::<RoomCullingState>().graphs[&7].root;
+        world.resource_mut::<RoomCullingState>().insert_graph(
+            7,
+            loaded,
+            load_room_graph(&db, 7).unwrap(),
+        );
+        let mut camera = world.entity_mut(scene.camera);
+        let aspect_ratio = 4.0 / 3.0;
+        camera.insert((
+            RoomCullingNear::SKYRIM,
+            Projection::Perspective(PerspectiveProjection {
+                fov: crate::shots::vertical_fov_degrees(75.0, aspect_ratio).to_radians(),
+                aspect_ratio,
+                near: 15.0,
+                ..default()
+            }),
+        ));
+        let drawables = [scene.near, scene.far];
+        for (mesh, id, pos) in [
+            (scene.near, 0xC4A65, Vec3::new(-772.0, 608.0, -1405.0)),
+            (scene.far, 0xC4A50, Vec3::new(-909.9, 608.0, -1412.9)),
+        ] {
+            let reference = world.get::<ChildOf>(mesh).unwrap().parent();
+            let placed = Transform::from_translation(pos).with_rotation(Quat::from_array(
+                shared::coordinates::creation_euler_to_runtime_quaternion([
+                    0.0,
+                    0.0,
+                    std::f32::consts::FRAC_PI_2,
+                ]),
+            ));
+            world
+                .entity_mut(reference)
+                .insert((FormId(id), placed, GlobalTransform::from(placed)));
+            world.entity_mut(mesh).insert((
+                Mesh3d::default(),
+                Aabb::from_min_max(
+                    Vec3::new(-3.7247002, -128.0, 0.0),
+                    Vec3::new(3.7247002, 128.0, 256.0),
+                ),
+                GlobalTransform::from(placed).mul_transform(Transform::from_rotation(
+                    Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+                )),
+            ));
+        }
+        for with_sphere in [false, true] {
+            let world = app.world_mut();
+            for entity in drawables {
+                if with_sphere {
+                    world.entity_mut(entity).insert(bevy::gltf::GltfMeshExtras {
+                        value:
+                            r#"{"mudcrabDrawableSphere":{"center":[0,0,128],"radius":181.057663}}"#
+                                .into(),
+                    });
+                }
+            }
+            *world
+                .get_mut::<VisibleEntities>(scene.camera)
+                .unwrap()
+                .get_mut(TypeId::of::<Mesh3d>()) = drawables.to_vec();
+            world.run_schedule(PostUpdate);
+            assert_eq!(
+                mesh_list(&app, scene.camera),
+                if with_sphere {
+                    vec![scene.near]
+                } else {
+                    Vec::new()
+                },
+                "drawable sphere supplied: {with_sphere}",
+            );
+        }
     }
 
     #[test]

@@ -383,7 +383,7 @@ impl MeshConverter {
             retain_bodies_with_nodes(&mut collision, &[], false);
             return write_glb_atomic(
                 output,
-                &embed_scene_metadata(empty_scene_glb(&name), &collision, None, None)?,
+                &embed_scene_metadata(empty_scene_glb(&name), &collision, None, None, None)?,
             );
         }
         let output = glb_output_path;
@@ -445,13 +445,12 @@ impl MeshConverter {
         // shape, and an unparsed block other than Havok collision data makes the geometry count
         // unreliable. Those meshes keep their untagged form, so the engine leaves their materials
         // alone.
-        let glb = if declares_skin
-            || used_static_fallback
-            || has_unparsed_non_havok_block(&diagnostics)
-        {
-            glb
-        } else {
+        let source_shapes_known =
+            !declares_skin && !used_static_fallback && !has_unparsed_non_havok_block(&diagnostics);
+        let glb = if source_shapes_known {
             tag_geometry_indices(glb, &exported_material_contract, &shape_blocks, &nif)?
+        } else {
+            glb
         };
         ensure!(
             glb.len() >= 12 && &glb[..4] == b"glTF",
@@ -477,7 +476,18 @@ impl MeshConverter {
             .iter()
             .any(|block| matches!(block, NifBlock::NiSwitchNode(_)))
             .then_some((&nif, shape_blocks.as_slice()));
-        let glb = embed_scene_metadata(glb, &collision, room_sphere, switch_geometry)?;
+        let drawable_sources = source_shapes_known.then_some((
+            &nif,
+            model.static_meshes.as_slice(),
+            shape_blocks.as_slice(),
+        ));
+        let glb = embed_scene_metadata(
+            glb,
+            &collision,
+            room_sphere,
+            switch_geometry,
+            drawable_sources,
+        )?;
         if !model.skeletal_meshes.is_empty() {
             validate_declared_skin_glb(&glb, nif_path)?;
         }
@@ -497,7 +507,7 @@ impl MeshConverter {
         retain_bodies_for_written_glb(&mut collision, &glb, None)?;
         write_glb_atomic(
             glb_path,
-            &embed_scene_metadata(glb, &collision, None, None)?,
+            &embed_scene_metadata(glb, &collision, None, None, None)?,
         )?;
         Ok(collision)
     }
@@ -1115,6 +1125,11 @@ fn embed_scene_metadata(
     collision: &CollisionAsset,
     sphere: Option<shared::room_assignment::ModelSphere>,
     switch_geometry: Option<(&NifFile, &[u32])>,
+    drawable_sources: Option<(
+        &NifFile,
+        &[project_wormhole_nif::model::all::StaticMesh],
+        &[u32],
+    )>,
 ) -> Result<Vec<u8>> {
     let mut document = glb_json_from_bytes(&glb)?;
     let scene = document
@@ -1125,6 +1140,9 @@ fn embed_scene_metadata(
     scene["extras"]["mudcrabCollision"] = serde_json::to_value(collision)?;
     if let Some((nif, blocks)) = switch_geometry {
         room_bounds::select_switch_geometry(nif, blocks, &mut document)?;
+    }
+    if let Some((nif, meshes, blocks)) = drawable_sources {
+        room_bounds::tag_drawable_spheres(nif, meshes, blocks, &mut document)?;
     }
     if let Some(sphere) = sphere
         && (document["extras"][INACTIVE_SWITCH] == true
@@ -5729,6 +5747,15 @@ mod tests {
             .unwrap();
         assert_eq!(sphere["radius"], 2.0);
         assert!(undersized_json["extras"]["mudcrabRoomSphere"].is_null());
+        let drawable = enclosing_json["meshes"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("extras")
+            .unwrap();
+        let key = shared::room_assignment::DRAWABLE_SPHERE_EXTRA;
+        assert_eq!(drawable[key]["center"], serde_json::json!([0.0, 0.0, 0.0]));
+        assert_eq!(drawable[key]["radius"], 2.0);
+        assert!(undersized_json["meshes"][0]["extras"][key].is_null());
         for key in ["nodes", "meshes", "accessors", "scenes"] {
             assert_eq!(enclosing_json[key], undersized_json[key]);
         }

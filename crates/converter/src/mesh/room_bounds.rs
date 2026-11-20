@@ -1,10 +1,47 @@
 //! Retain the source spheres used by native room assignment and the initial switch geometry they bound.
 
 use color_eyre::{Result, eyre::eyre};
-use project_wormhole_nif::{nif_block::NifBlock, nif_file::NifFile};
+use project_wormhole_nif::{model::all::StaticMesh, nif_block::NifBlock, nif_file::NifFile};
 use project_wormhole_shared::glam::{Affine3A, DVec3, Mat3, Mat4, Quat, Vec3, Vec4};
-use shared::room_assignment::ModelSphere;
+use shared::room_assignment::{DRAWABLE_SPHERE_EXTRA, ModelSphere};
 use std::collections::HashSet;
+
+/// Publish the shape-local bound only when it encloses every emitted vertex.
+pub(super) fn tag_drawable_spheres(
+    nif: &NifFile,
+    meshes: &[StaticMesh],
+    blocks: &[u32],
+    document: &mut serde_json::Value,
+) -> Result<()> {
+    let Some(output) = document
+        .get_mut("meshes")
+        .and_then(serde_json::Value::as_array_mut)
+        .filter(|output| output.len() == blocks.len() && output.len() == meshes.len())
+    else {
+        return Ok(());
+    };
+    for ((output, mesh), block) in output.iter_mut().zip(meshes).zip(blocks) {
+        let Some(NifBlock::BSTriShape(shape)) = nif.blocks.get(*block as usize) else {
+            continue;
+        };
+        let sphere = ModelSphere {
+            center: shape.bounding_sphere.center,
+            radius: shape.bounding_sphere.radius,
+        };
+        if !sphere.valid() || sphere.radius <= 0.0 || mesh.positions.is_empty() {
+            continue;
+        }
+        let center = Vec3::from_array(sphere.center).as_dvec3();
+        if mesh
+            .positions
+            .iter()
+            .all(|pos| ((pos.as_dvec3() - center).length() as f32) <= sphere.radius)
+        {
+            output["extras"][DRAWABLE_SPHERE_EXTRA] = serde_json::to_value(sphere)?;
+        }
+    }
+    Ok(())
+}
 
 /// Unsupported node types stay unknown instead of becoming an AABB approximation.
 pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {

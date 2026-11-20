@@ -1,4 +1,31 @@
 {
+  "retail_capture": {
+    "executable_version": "1.7.104.0",
+    "executable_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "cell_id": "000BBB2F",
+    "position_creation": [-768.0, 1536.0, 748.0],
+    "rotation_matrix": [
+      -4.371138473402425e-08, -7.571034643660823e-08, -1.0,
+      -0.5, -0.8660253882408142, 8.742277657347586e-08,
+      -0.8660253882408142, 0.5, 0.0
+    ],
+    "yaw_degrees": 180.00000500895572,
+    "pitch_degrees_down": 59.99999955470786,
+    "horizontal_fov_degrees": 74.99999733483311,
+    "vertical_fov_degrees": 59.84044418874903,
+    "near_plane_creation_units": 15.0,
+    "viewport_left_right_top_bottom": [0.0, 1.0, 1.0, 0.0],
+    "dimensions_pixels": [1400, 1050],
+    "load_order": [
+      "Skyrim.esm",
+      "Update.esm",
+      "Dawnguard.esm",
+      "HearthFires.esm",
+      "Dragonborn.esm",
+      "PortalFixtures.esp"
+    ],
+    "patch_xyxy_half_open": [1320, 50, 1360, 90]
+  },
   "retail": {
     "base1": {
       "changed": 0,
@@ -65,6 +92,41 @@
   ],
   "min_sphere_margin": 67.96628201007843,
   "mesh_box_margin": -41.90541830078183,
+  "mudcrab_drawable_sphere_replay": {
+    "rebuilt_model": "meshes/dungeons/ship/katariah/shipkatariahwoodwall01.glb",
+    "source_nif_sha256": "1b10a14a5c713fe8ac34ea315d2967ceea1e467fbba1cbbb99112311f7a8e0d8",
+    "original_glb_sha256": "85058ec03f214a0422dc0ec718ea3de9b2c1de330708e68830bba7204e88ee75",
+    "rebuilt_glb_sha256": "8c7afc187cdbf698caa480d66a9faa154ea62dad61d4d7941bd4c2c5cc8309bc",
+    "lighting_args": ["--lights", "--color-grade", "off"],
+    "placement_control_delta_creation": [50000, 0, 0],
+    "Katariah-NONE-floor_all_runs": {
+      "drawn": 58,
+      "listed": 153,
+      "sha256": "5d6fdd91990eddaf8e45453ef74015f36bd1847483b3d305fa433b2a5bb5a7c4"
+    },
+    "Katariah-named-floor": {
+      "original_glb": {
+        "drawn": 39,
+        "listed": 255,
+        "sha256": "6574a52a64fe5de1a25bf4870edbc6ebe6fae42ef679cbaad41958c54c47bbe1"
+      },
+      "rebuilt_glb": {
+        "drawn": 42,
+        "listed": 255,
+        "sha256": "3977ddd69719ba9f647f21e210071745dcec6ae9b73c516f3a737d0b24a643b3"
+      },
+      "rebuilt_glb_with_000C4A50_displaced": {
+        "drawn": 42,
+        "listed": 254,
+        "sha256": "3977ddd69719ba9f647f21e210071745dcec6ae9b73c516f3a737d0b24a643b3"
+      },
+      "rebuilt_glb_with_000C4A65_displaced": {
+        "drawn": 41,
+        "listed": 254,
+        "sha256": "6574a52a64fe5de1a25bf4870edbc6ebe6fae42ef679cbaad41958c54c47bbe1"
+      }
+    }
+  },
   "mudcrab": {
     "baseline": [
       {

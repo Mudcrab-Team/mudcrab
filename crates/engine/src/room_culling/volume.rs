@@ -2,9 +2,10 @@
 
 use bevy::{
     camera::primitives::Aabb,
-    math::{Affine3A, DVec3, DVec4},
+    math::{Affine3A, DVec3, DVec4, Vec3A},
     prelude::*,
 };
+use shared::room_assignment::ModelSphere;
 use std::{collections::BTreeMap, sync::Arc};
 
 use super::{PORTAL_OPEN_DISTANCE, Portal, PortalView, occlusion::OcclusionVolume};
@@ -20,9 +21,18 @@ const CAMERA_PLANE_COUNT: usize = 5;
 pub(super) struct MeshBounds {
     center: Vec3,
     half_axes: [Vec3; 3],
+    portal_sphere: Option<Affine3A>,
 }
 
 impl MeshBounds {
+    /// Transform the drawable sphere as an ellipsoid in cell space.
+    pub(super) fn set_portal_sphere(&mut self, sphere: ModelSphere, local_from_mesh: Affine3A) {
+        let mut bound = local_from_mesh;
+        bound.translation = local_from_mesh.transform_point3a(sphere.center.into());
+        bound.matrix3 *= sphere.radius;
+        self.portal_sphere = bound.is_finite().then_some(bound);
+    }
+
     /// Enclose all affine-transformed AABB corners, including shear. Exclusions need full
     /// containment, so a conservative sphere can only retain extra geometry.
     fn sphere_radius(&self) -> Option<f32> {
@@ -75,7 +85,11 @@ impl MeshBounds {
         (bounds.half_extents.cmpge(Vec3::ZERO.into()).all()
             && center.is_finite()
             && half_axes.iter().all(|axis| axis.is_finite()))
-        .then_some(Self { center, half_axes })
+        .then_some(Self {
+            center,
+            half_axes,
+            portal_sphere: None,
+        })
     }
 }
 
@@ -171,10 +185,16 @@ impl VisibilityVolume {
     }
 
     pub(super) fn intersects(&self, bounds: &MeshBounds) -> bool {
-        let included = self.planes.iter().all(|plane| {
+        let included = self.planes.iter().enumerate().all(|(index, plane)| {
             let normal = plane.truncate();
-            let distance = normal.dot(bounds.center) + plane.w;
-            let radius = bounds.radius(normal);
+            let (center, radius) = match bounds.portal_sphere {
+                Some(sphere) if index >= CAMERA_PLANE_COUNT => {
+                    let radius = (sphere.matrix3.transpose() * Vec3A::from(normal)).length();
+                    (Vec3::from(sphere.translation), radius)
+                }
+                _ => (bounds.center, bounds.radius(normal)),
+            };
+            let distance = normal.dot(center) + plane.w;
             !distance.is_finite() || !radius.is_finite() || distance + radius >= -PLANE_EPSILON
         });
         included
