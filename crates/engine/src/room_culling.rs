@@ -434,7 +434,6 @@ impl Portal {
     }
 
     // WithinFrustumDistFirst also admits the projection of the eye onto the portal plane.
-    // The retail extent test dots the displacement with rows 1 and 2 of the Creation rotation.
     fn admits_projected_eye(&self, view: &PortalView) -> bool {
         let eye = view.eye;
         let view_normal = view.near_plane.truncate();
@@ -452,9 +451,11 @@ impl Portal {
         {
             return false;
         }
-        let rotation = Mat3::from_cols(width.normalize(), height.normalize(), -normal);
         let projected = offset + toward_plane;
-        // Creation +Y and +Z correspond to runtime -Z and +Y, respectively.
+        let rotation = Mat3::from_cols(width.normalize(), height.normalize(), -normal);
+        // WithinFrustumDistFirst (RVA 0xfe94e0) reads Creation rotation rows Y and Z
+        // at +0x28 and +0x34. In runtime coordinates those rows select -Z and +Y.
+        // A sideways eye can therefore pass the width check at a cardinal doorway.
         rotation.row(2).dot(projected).abs() <= width.length() * 0.5
             && rotation.row(1).dot(projected).abs() <= height.length() * 0.5
     }
@@ -4284,6 +4285,44 @@ mod tests {
         app.world_mut()
             .run_system_once(cull_room_views)
             .expect("cull_room_views runs");
+    }
+
+    #[test]
+    fn projected_eye_uses_retail_rotation_rows_for_its_extents() {
+        use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
+
+        // Keep the eye in the portal plane to isolate the two native row comparisons.
+        for (pitch, yaw, sideways, up, admitted) in [
+            (0.0, 0.0, 260.0, 64.0, true),
+            (0.0, FRAC_PI_2, 260.0, 64.0, true),
+            (0.0, FRAC_PI_4, 55.0, 64.0, true),
+            (0.0, FRAC_PI_4, 57.0, 64.0, false),
+            (0.0, 0.0, 0.0, 85.0, false),
+            // At 45° pitch the displacement along the height contributes to the width check.
+            (FRAC_PI_4, 0.0, 0.0, 55.0, true),
+            (FRAC_PI_4, 0.0, 0.0, 57.0, false),
+        ] {
+            let portal = Portal::from_creation(
+                1,
+                [0.0; 3],
+                [pitch, 0.0, yaw],
+                [56.0, 84.0],
+                [PortalSide::Room(0), PortalSide::Room(1)],
+            );
+            let width = (portal.corners[1] - portal.corners[0]).normalize();
+            let height = (portal.corners[3] - portal.corners[0]).normalize();
+            let eye = width * sideways + height * up;
+            let view = PortalView {
+                eye,
+                clip: Mat4::IDENTITY,
+                near_plane: Vec4::new(0.0, 1.0, 0.0, -eye.y),
+            };
+            assert_eq!(
+                portal.admits_projected_eye(&view),
+                admitted,
+                "pitch {pitch}, yaw {yaw}, sideways {sideways}, up {up}",
+            );
+        }
     }
 
     #[test]

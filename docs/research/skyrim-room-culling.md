@@ -158,8 +158,9 @@ rules, source NIF spheres, and per-cell completeness. `XRMR[2]` selects explicit
 resolve direct masters before recursive links, in native list order, with reciprocal master links
 and cycle handling. A room is the union of its primary and joined boxes, not their enclosing AABB.
 Portals naming slaves redirect to masters. Distinct explicit masters stay distinct. Incomplete cells
-and unresolved/ambiguous master construction keep full rendering. Authored graphs remove implicit
-overlap edges and the portal-less-room heuristic.
+and unresolved/ambiguous master construction keep full rendering. The unique authored walk omits implicit
+overlap edges and the portal-less-room heuristic. Duplicate portal rows select the legacy walk,
+which keeps the portal-less-room fallback.
 
 Supported model bounds retain native source spheres and ordered child merges. They are not rebuilt
 from render AABBs. A reference's current cell-local transform places that sphere; its center selects

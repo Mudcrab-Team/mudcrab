@@ -84,6 +84,89 @@
       "image_sha256": "389c360175add7a5b4370078e59cf8593c9e308bdf9ff6822716d14c4c7a9026"
     }
   },
+  "main_view_readback": {
+    "launches": [
+      {
+        "source": "owners1.json",
+        "sha256": "d2b0ee33304fc3519f1a10d56df667affca2cca68fb0a61e2e790f085d4eb4b5",
+        "root": "0006EE50",
+        "mapped_rooms": [
+          "0006EE1E",
+          "0006EDCA",
+          "0006EE50"
+        ],
+        "wall_room": {
+          "000C4A65": "0006EE1E",
+          "000C4A50": "0006EE4F"
+        }
+      },
+      {
+        "source": "owners-active.json",
+        "sha256": "9f70e7d685be6d60190237c3cc34db0b3b9e90643440964c865da37ccd1f6f9e",
+        "root": "0006EE50",
+        "mapped_rooms": [
+          "0006EE50",
+          "0006EDCA",
+          "0006EE1E"
+        ],
+        "wall_room": {
+          "000C4A65": "0006EE1E",
+          "000C4A50": "0006EE4F"
+        }
+      }
+    ],
+    "wall_room_plane_reads": {
+      "source": "native-planes.json",
+      "sha256": "1a12f02926e6c93e93b85a1e5477820933f923a5dbc86d699bcb8249b4b8f307",
+      "agreeing_samples": 3,
+      "room": "0006EE1E",
+      "view_position": [
+        -768.0,
+        1536.0,
+        748.0
+      ],
+      "mask": 63,
+      "equations": [
+        [
+          0.0,
+          -1.0,
+          0.0,
+          -1408.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.5314911007881165,
+          0.8470638990402222,
+          0.0,
+          892.905029296875
+        ],
+        [
+          -0.3754327595233917,
+          -0.9268496036529541,
+          0.0,
+          -1135.3087158203125
+        ],
+        [
+          -0.0,
+          -0.15437687933444977,
+          -0.9880120158195496,
+          -976.1558837890625
+        ],
+        [
+          0.0,
+          -0.7563632130622864,
+          0.6541519165039062,
+          -672.4682006835938
+        ]
+      ],
+      "convention": "Creation coordinates, signed distance = dot(normal, position) - fourth component"
+    }
+  },
   "live_shape": [
     -772.0,
     1405.0,

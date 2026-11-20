@@ -51,6 +51,13 @@ export wrapper. This is an engineering policy: deeper modded assets are recorded
 models while the normal pipeline continues publishing usable neighbors. Block order and the
 collision block-to-glTF-node mapping are preserved throughout the accepted scene.
 
+**Drawable bounds.** A static `BSTriShape` can supply `meshes[i].extras.mudcrabDrawableSphere`.
+Its `center` is an array of three numbers in the same local coordinates as the exported vertex
+positions. Its `radius` is a positive number in the same units. The converter writes the
+source sphere when it is finite and encloses every position of the corresponding nonempty mesh.
+The engine transforms this bound for authored portal culling and uses the mesh box when the
+extra is absent. The model-level `mudcrabRoomSphere` separately determines room ownership.
+
 **Root transform.** A placed reference replaces its model root's local transform with its own, so
 the root block's authored translation, rotation and scale never apply in game. The static scene
 writes the root node (block 0) with an identity transform, and collision shapes start from an

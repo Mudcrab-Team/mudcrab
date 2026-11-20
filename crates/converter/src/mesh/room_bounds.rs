@@ -1,4 +1,5 @@
-//! Retain the source spheres used by native room assignment and the initial switch geometry they bound.
+//! Retain source spheres and initial switch geometry for room assignment. Verify each static
+//! drawable’s shape-local sphere against its exported vertices for portal culling.
 
 use color_eyre::{Result, eyre::eyre};
 use project_wormhole_nif::{model::all::StaticMesh, nif_block::NifBlock, nif_file::NifFile};

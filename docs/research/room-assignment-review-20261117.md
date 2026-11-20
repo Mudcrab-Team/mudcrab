@@ -139,13 +139,27 @@ Luminance standard deviation in the 40 × 40 patch went from
 13.83 to 0.20 in both target trials, then returned to 13.68 and 13.80. The negative control
 measured 13.63. [Capture hashes and measurements](evidence/room-review-20261117/katariah-retail-wall-control.json)
 
-Both engines reached the wall's room, `0006EE1E`, from camera room `0006EE50`. The other wall,
-`000C4A50`, belonged to unreached room `0006EE4F`. At portal
-`0006EF37` the Skyrim drawable's sphere extends 67.97 Creation units into the accepted half-space.
-Mudcrab tests the transformed mesh box, which falls 41.91 units short of the same plane.
+The scale controls identify the visible wall as `000C4A65`. In separate main-view readbacks
+from two Skyrim launches at this pose, the root was `0006EE50` and the map contained the wall’s
+room, `0006EE1E`. The control wall `000C4A50` belonged to `0006EE4F`, absent from both maps.
+Three samples of the wall room’s inclusion volume contained the plane at Creation y = 1408 and
+four side planes through the eye and the edges of portal `0006EF37`. These identify the doorway
+in the resulting volume. The readbacks did not trace individual branch decisions.
+[Main-view room IDs and plane coefficients](evidence/room-review-20261117/katariah-retail-wall-control.json)
+
+The eye projects 260 units sideways from the portal center, beyond its half-width of 56.
+Skyrim SE 1.7.104 builds the corners from rotation columns X and Z (RVA `0xfe8770`).
+Its projected-eye extent check (RVA `0xfe94e0`) instead dots the projected displacement
+with rotation rows Y and Z (three floats each at portal offsets `+0x28` and `+0x34`). At this
+doorway’s 180° yaw those absolute components are approximately 0 and 64, within the half-extents
+of 56 and 84. Substituting the geometric width and height axes in the Mudcrab replay removed
+`000C4A65` from the camera draw list even with its verified sphere.
+
+At the limiting side plane the Skyrim drawable’s sphere extends 67.97 Creation units into the
+accepted half-space. The transformed mesh box falls 41.91 units short of the same plane.
 Bypassing that final filter for `000C4A65` in the normal Mudcrab pack restored the wood, with
-40 of 255 meshes drawn. The NONE-floor image stayed byte-identical. This identifies a difference
-in drawable bounds for this static, single-shape mesh. Both runs already reach its room.
+40 of 255 meshes drawn. The NONE-floor image stayed byte-identical. This isolates the effect of the drawable
+bound for this static, single-shape mesh.
 
 ![Katariah retail wall scale and restore controls alongside Mudcrab crops](evidence/room-review-20261117/katariah-retail-wall-control.png)
 
