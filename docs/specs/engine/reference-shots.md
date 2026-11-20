@@ -125,8 +125,8 @@ of 250 ms. A frame slower than 4 FPS therefore advances the clock slower than re
 pause of virtual time (the console, the settings menu) stops it. Retail behaviour is not
 established.
 
-The directional light follows the retail sun update.
-Every value comes from the pack. With `T = fSunAlphaTransTime`,
+The directional light follows the retail sun update (SkyrimSE.exe 1.7.104.0 `0x14041bd90`;
+registry RF-SUN-001 to RF-SUN-004). Every value comes from the pack. With `T = fSunAlphaTransTime`,
 the active worldspace's climate TNAM gives sunrise and sunset midpoints (including PNAM-requested
 parent climate inheritance; TNAM bytes are ten-minute units). The day window is
 `A = riseMid - T/2` to `B = setMid + T/2`.
@@ -137,8 +137,8 @@ parent climate inheritance; TNAM bytes are ten-minute units). The day window is
   -(fSunDirXExtreme / fSunXExtreme) * fSunYExtreme, fSunZExtreme)` in Creation space. The engine
   uses the opposite (toward-sun) vector and maps axes to `(x,z,-y)`.
 - `sun_alpha` is 0 outside `[A, B]`, ramps 0 to 1 over `riseMid +- T/2`, is 1 between the ramps and
-  ramps 1 to 0 over `setMid +- T/2`. Nothing consumes it yet: the visible sun disc and
-  its glare (alpha times the weather's sun-glare byte over 255) are not part of this change.
+  ramps 1 to 0 over `setMid +- T/2` (RF-SUN-004). Nothing consumes it yet: the visible sun disc and
+  its glare (alpha times the weather byte at `+0x668` over 255) are not part of this change.
 
 For the Skyrim.esm values (`fSunXExtreme` 400, `fSunYExtreme` 40, `fSunZExtreme` -150,
 `fSunDirXExtreme` 200, `fSunAlphaTransTime` 0.5) and the `DefaultClimate` TNAM 33/60/96/123,
@@ -146,11 +146,13 @@ For the Skyrim.esm values (`fSunXExtreme` 400, `fSunYExtreme` 40, `fSunZExtreme`
 13:00, with a slight north tilt. The light keeps this geometry at night, so it never drops below
 36.7 degrees. The night look comes from the weather's night colours, not from this vector.
 
-The five GMSTs are the sun path itself. The winning canonical GMST records supply
+The five GMSTs are the sun path itself (RF-SUN-003). The winning canonical GMST records supply
 them. Optional `[Sky]` keys of the same names in `--ini` files override them individually (an
-engine extension; retail reads only the GMSTs). A pack that lacks a GMST uses the retail
+engine extension; retail reads only the GMSTs). A pack that lacks a GMST uses the retail exe
 default of that setting, so the same formula runs: `fSunXExtreme` 400, `fSunYExtreme` 25,
-`fSunZExtreme` -100, `fSunDirXExtreme` 400, `fSunAlphaTransTime` 2.0. A world without a usable climate timing has
+`fSunZExtreme` -100, `fSunDirXExtreme` 400, `fSunAlphaTransTime` 2.0 (`rea-20261114/q4-sun.md`;
+confirmed against the exe settings dump: record addresses 0x14209e940, 0x14209e958, 0x14209e970,
+0x14209e988, 0x14209e9a0, with the value at record + 8). A world without a usable climate timing has
 no sunrise or sunset, so no sun path applies and its sun has no authored direction (identity
 rotation), both at startup and when travel enters such a world, so lighting does not depend on
 travel history. Retail worlds always carry climate timing, so this is not retail behaviour and

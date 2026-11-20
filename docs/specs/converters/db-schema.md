@@ -1754,12 +1754,12 @@ CREATE TABLE base_texture_swaps (
 
 IDs use the reader's resolved load-order numbering. Every MODS entry gets a row, in authored
 order (`position`); no entry is dropped or gated. `shape_index` is the signed 3D Index: retail
-keys entries by it, skips -1 and lets a later entry with the same index win, and the
-index counts geometry leaves in a pre-order depth-first walk of the model.
+keys entries by it, skips -1 and lets a later entry with the same index win (RF-TEX-001), and the
+index counts geometry leaves in a pre-order depth-first walk of the model (RF-TEX-002).
 `shape_name` is the 3D Name (with its `:N` suffix) as record data; the retail apply path does not
 read it. `disposition` is `texture_set` (a live TXST; the runtime reads its slots from
 `texture_sets`), `null_texture_set` (the target is FormID 0x28, the engine's NullTextureSet, which
-hides the shape) or `missing_texture_set` (deleted, wrong type or absent). Owner updates clear the base's
+hides the shape; RF-TEX-005) or `missing_texture_set` (deleted, wrong type or absent). Owner updates clear the base's
 rows before inserting replacements; complete exports replace the table transactionally and
 archive-only exports leave it empty. Subset exporters must supply referenced TXST records
 alongside the bases whose appearance they update. All eight existing `texture_sets`

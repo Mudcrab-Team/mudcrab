@@ -76,7 +76,7 @@ command-line options override every file wherever they appear
 The same reader honours the `[Grass]` keys listed with their defaults and effects
 in [Runtime grass](grass.md#skyrim-ini-settings).
 
-Terrain follows retail's block rule. A
+Terrain follows retail's block rule (RF-LOD-001, RF-LOD-003, RF-LOD-011). A
 block of `level` cells is replaced by its four children while the planar
 distance from the camera to the block's box is under `fSplitDistanceMult` x
 `level` x 2,048 x sqrt(2) units: 34,756 / 69,512 / 139,023 units at levels 8 /
@@ -108,7 +108,7 @@ additive table `lod_object_chunks`, with its own R-tree and the same row contrac
 chunks. A pack without the table has no object LOD and the engine does nothing for it. The
 object path (`streaming/lod_objects.rs`) works as follows.
 
-- **Rule.** A block is dropped when its box distance is at or beyond
+- **Rule (RF-LOD-004, RF-LOD-005).** A block is dropped when its box distance is at or beyond
   `fBlockMaximumDistance`, checked at every visited block and never scaled. Otherwise a level-16
   block splits under `fBlockLevel1Distance` x sqrt(NAMA) and a level-8 block under
   `fBlockLevel0Distance` x sqrt(NAMA). NAMA is 1.0 for every worldspace until the pack carries
@@ -135,7 +135,7 @@ object path (`streaming/lod_objects.rs`) works as follows.
 
 Defaults are Skyrim Special Edition's own `SkyrimPrefs.ini` values: 35000,
 70000 and 250000 with a multiplier of 1.5
-(the STEP wiki's `SkyrimPrefs.ini` TerrainManager page). The initial terrain slice was measured and
+([STEP](https://stepmodifications.org/wiki/SkyrimSE:SkyrimPrefs_INI/TerrainManager)). The initial terrain slice was measured and
 accepted at a 4/8/16-cell reach under the earlier rule (block distances times
 `fSplitDistanceMult`, compared by Chebyshev cell distance). The
 [`cb617fc0` candidate](../../research/lod-rc-20261002.md) was approved visually
@@ -146,7 +146,7 @@ The camera far plane follows the largest configured reach.
 
 Not yet honoured: level-32 terrain (no compiled tier), `fTreeLoadDistance`
 (Phase 3), `uLargeRefLODGridSize` (large references are omitted; so is retail's
-flag 0x8000, which forces level 4 in blocks touching that square: no
+flag 0x8000, RF-LOD-006, which forces level 4 in blocks touching that square: no
 difference at the default High preset, but at Low, `fSplitDistanceMult` 0.5,
 retail would force level 4 out to about 18,000 units and Mudcrab does not), and the
 Skyrim quality presets themselves. The engine does not search for the user's
