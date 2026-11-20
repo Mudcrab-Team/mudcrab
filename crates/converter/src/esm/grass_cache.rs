@@ -1764,8 +1764,8 @@ fn exclusion_mask(
 }
 
 /// Old precacher upward-ray policy, expressed in Creation XY/Z coordinates.
-/// No retail trace or REA registry entry (RF-GRASS) sources the -8 and +8192 window. The values
-/// come from the earlier precacher's policy and stay unverified against the retail engine.
+/// The -8 and +8192 window comes from the earlier precacher's policy and stays unverified
+/// against the retail engine.
 fn triangle_covers(t: Triangle, p: DVec3) -> bool {
     let a = t[1] - t[0];
     let b = t[2] - t[0];

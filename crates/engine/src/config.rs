@@ -21,7 +21,7 @@ const IO_THREADS_EXPECTED: &str = "a thread count from 0 to 64";
 
 /// Skyrim's `[TerrainManager]` LOD distances, in Creation units.
 ///
-/// Retail uses two rules (RF-LOD-003, RF-LOD-004). Terrain (`.btr`) hands a block over to its four
+/// Retail uses two rules. Terrain (`.btr`) hands a block over to its four
 /// children when the block's box distance is under `fSplitDistanceMult` x level x 2,048 x sqrt(2)
 /// ([`Self::terrain_split_distance`]). Objects (`.bto`) use `fBlockLevel0Distance` and
 /// `fBlockLevel1Distance`, scaled by the worldspace NAMA value, and drop beyond
@@ -42,16 +42,16 @@ pub struct TerrainLodDistances {
     /// `fBlockLevel1Distance`: object LOD, level 16 hands over to level 8. Unused until object LOD
     /// lands (terrain does not read it).
     pub block_level1_distance: f32,
-    /// `fBlockMaximumDistance`: object LOD drops beyond it (RF-LOD-004). Terrain has no such cut
+    /// `fBlockMaximumDistance`: object LOD drops beyond it. Terrain has no such cut
     /// in retail. Mudcrab keeps it, times `fSplitDistanceMult`, as the outer reach of tier 16
     /// until a level-32 terrain tier exists (engineering guard, see [`Self::terrain_tier`]).
     pub block_maximum_distance: f32,
-    /// `fSplitDistanceMult`: the terrain split multiplier (RF-LOD-003).
+    /// `fSplitDistanceMult`: the terrain split multiplier.
     pub split_distance_mult: f32,
 }
 
 impl Default for TerrainLodDistances {
-    /// Skyrim Special Edition's `SkyrimPrefs.ini` defaults (High preset, RF-LOD-002).
+    /// Skyrim Special Edition's `SkyrimPrefs.ini` defaults (High preset).
     fn default() -> Self {
         Self {
             block_level0_distance: 35_000.0,
@@ -67,7 +67,7 @@ impl Default for TerrainLodDistances {
 const TERRAIN_LEVELS: [(i32, LodTier); 2] = [(16, LodTier::Tier16), (8, LodTier::Tier8)];
 
 impl TerrainLodDistances {
-    /// RF-LOD-003: a terrain block of `level` cells is replaced by its four children while the
+    /// A terrain block of `level` cells is replaced by its four children while the
     /// distance to its box is under `fSplitDistanceMult` x level x 2,048 x sqrt(2) units. That
     /// is the multiplier times the block's own half-diagonal: a block of `level` cells has a side
     /// of `level` x 4,096 units, so its half-diagonal is `level` x 2,048 x sqrt(2).
@@ -78,9 +78,9 @@ impl TerrainLodDistances {
             * std::f64::consts::SQRT_2) as f32
     }
 
-    /// RF-LOD-001: the planar distance (Z ignored) from the centre of the camera's cell to the
+    /// The planar distance (Z ignored) from the centre of the camera's cell to the
     /// box of the aligned `level`-cell block that holds `cell`; zero inside the box. Blocks start
-    /// at the worldspace LOD origin (RF-LOD-001, block coordinate formula).
+    /// at the worldspace LOD origin.
     ///
     /// Engineering guard: retail measures from the camera position. Mudcrab refreshes the LOD
     /// selection when the camera crosses a cell, so it uses the cell centre. The camera can be up
@@ -106,13 +106,13 @@ impl TerrainLodDistances {
 
     /// The tier retail's terrain rule draws for `cell`, or `None` beyond the outer reach.
     ///
-    /// Retail walks the block tree from level 32 down (RF-LOD-003, RF-LOD-011): a block draws its
+    /// Retail walks the block tree from level 32 down: a block draws its
     /// own mesh unless its box distance is under its split distance, then its four children are
     /// tested. A block of level 16 that is not split draws tier 16. A block of level 8 that is
     /// not split draws tier 8. Otherwise tier 4 draws. The edges are block-aligned steps, not
     /// circles, so where a tier ends depends on where the camera cell sits in its block.
     ///
-    /// Not implemented: retail flag 0x8000 (RF-LOD-006), which forces level 4 in every block that
+    /// Not implemented: retail flag 0x8000, which forces level 4 in every block that
     /// touches the `uLargeRefLODGridSize` square. At the default High preset it changes nothing,
     /// because such a block is always under the smallest split distance (34,756). At Low
     /// (`fSplitDistanceMult` 0.5, split distance 11,585) retail would force level 4 out to about
@@ -121,7 +121,7 @@ impl TerrainLodDistances {
     /// Engineering guard: Mudcrab compiles no level-32 tier, so the level-32 step is skipped and
     /// tier 16 draws wherever retail would draw level 16 or 32. The outer reach is
     /// `fBlockMaximumDistance` x `fSplitDistanceMult` from the cell's own box (the previous
-    /// reach of tier 16), because retail's far plane (353,840, RF-FOG-003) is not applied yet.
+    /// reach of tier 16), because retail's far plane (353,840) is not applied yet.
     pub fn terrain_tier(&self, camera: IVec2, cell: IVec2, origin: IVec2) -> Option<LodTier> {
         let outer = f64::from(self.block_maximum_distance) * f64::from(self.split_distance_mult);
         if f64::from(Self::terrain_block_distance(camera, cell, origin, 1)) >= outer {
@@ -137,8 +137,7 @@ impl TerrainLodDistances {
         Some(LodTier::Tier4)
     }
 
-    /// The object LOD (`.bto`) tier retail draws for `cell`, or `None` when the block is dropped
-    /// (RF-LOD-004, RF-LOD-005 in `registry.md`; the verified REA report).
+    /// The object LOD (`.bto`) tier retail draws for `cell`, or `None` when the block is dropped.
     ///
     /// Retail walks the block tree from level 32, and at every node it visits it first applies the
     /// outer gate: a node whose box distance is at or beyond `fBlockMaximumDistance` releases its
@@ -154,7 +153,7 @@ impl TerrainLodDistances {
     ///
     /// Terrain uses a different rule ([`Self::terrain_tier`]); the two share only the block box.
     /// The same engineering guard applies: the camera position is the centre of its cell. Retail
-    /// flag 0x8000 (blocks touching the large-reference square always split, RF-LOD-006) is not
+    /// flag 0x8000 (blocks touching the large-reference square always split) is not
     /// implemented.
     pub fn object_tier(
         &self,
@@ -5291,9 +5290,9 @@ mod tests {
         value.parse::<f64>().is_ok_and(f64::is_finite)
     }
 
-    /// RF-LOD-003 and the verified REA report: the split distances of the three retail presets
-    /// that differ in `fSplitDistanceMult` (Low 0.5, Medium 1.1, High 1.5). The report rounds
-    /// each value to whole units (its 69,512 is 69,511.4 and its 101,949 is 101,950.1 exactly), so the check allows two units.
+    /// The split distances of the three retail presets
+    /// that differ in `fSplitDistanceMult` (Low 0.5, Medium 1.1, High 1.5). They are shown
+    /// rounded to whole units (69,512 is 69,511.4 and 101,949 is 101,950.1 exactly), so the check allows two units.
     #[test]
     fn terrain_split_distance_follows_the_retail_half_diagonal_rule() {
         let with_mult = |mult: f32| TerrainLodDistances {
@@ -5380,7 +5379,7 @@ mod tests {
         assert_eq!(tier(93), None);
     }
 
-    /// RF-LOD-004 for Tamriel (NAMA 1.0) with the High defaults: objects split at 35,000 and
+    /// For Tamriel (NAMA 1.0) with the High defaults: objects split at 35,000 and
     /// 70,000 units and are dropped at 250,000. Camera cell 0, origin 0, cells to the east.
     #[test]
     fn object_tier_follows_the_retail_object_distances() {
@@ -5407,7 +5406,7 @@ mod tests {
         assert_eq!(tier(70, 0.25), None);
     }
 
-    /// RF-LOD-004: the outer gate applies to every visited block, not only the level-16 one, and
+    /// The outer gate applies to every visited block, not only the level-16 one, and
     /// `nama` never scales it.
     #[test]
     fn object_tier_applies_the_outer_cut_to_each_visited_block() {

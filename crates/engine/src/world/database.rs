@@ -295,7 +295,7 @@ const WATER_DNAM_FOG_AMOUNT: usize = 132;
 struct WaterRecord {
     dnam: Vec<u8>,
     /// `FNAM` (one byte, `TESWaterForm` +0xB9): bit 0 dangerous, bit 3 flow map, bit 4 blend
-    /// normals (RF-WATER-013).
+    /// normals.
     flags: Option<u8>,
     noise_paths: [Option<String>; 3],
 }
@@ -372,14 +372,13 @@ pub struct WaterNoise {
     pub wind_direction: [f32; 3],
     /// `DNAM` `noiseWindSpeedA`: noise-tile repeats per second.
     pub wind_speed: [f32; 3],
-    /// `DNAM` `noiseFalloff` (+0x60), world units: the distance the reflection weight blends over
-    /// (RF-SHADER-008).
+    /// `DNAM` `noiseFalloff` (+0x60), world units: the distance the reflection weight blends over.
     pub noise_falloff: f32,
-    /// The sun terms of the retail water shader (RF-WATER-010): sun specular power (+0x10), sun
+    /// The sun terms of the retail water shader: sun specular power (+0x10), sun
     /// specular magnitude (+0xCC), sparkle power (+0xE0), sparkle magnitude (+0xC8).
     pub sun: [f32; 4],
     /// `DNAM` refraction magnitude (+0x98), world units: how far the wave normal moves the point
-    /// the bed is seen through (RF-WATER-049; 40 for the river records, 8 for the creek).
+    /// the bed is seen through (40 for the river records, 8 for the creek).
     pub refraction_magnitude: f32,
 }
 
@@ -463,23 +462,23 @@ pub struct WaterColors {
     /// normal reaches the reflection. Read from the record bytes in `waters.data`.
     pub reflection_magnitude: Option<f32>,
     /// The record's `FNAM` byte, read from the record bytes: `waters.flags` holds the record header
-    /// flags, not this (RF-WATER-013). Bit 3 selects retail's flow-map program, bit 4 blends the
+    /// flags, not this. Bit 3 selects retail's flow-map program, bit 4 blends the
     /// normals. `None` when the record bytes cannot be read.
     pub fnam: Option<u8>,
     /// `DNAM` underwater fog near (+0x90) and far (+0x94): the distances the underwater fog blends
-    /// over (RF-WATER-031). `DNAM` +0x8C, the fog amount, is passed to the effect but no program
+    /// over. `DNAM` +0x8C, the fog amount, is passed to the effect but no program
     /// reads it, so it is not read here.
     pub underwater_fog: Option<[f32; 2]>,
 }
 
 impl WaterColors {
-    /// FNAM bit 3: retail draws this water with its flow-map program (RF-WATER-013, RF-WATER-019)
-    /// in a cell that has a flow map (RF-WATER-036).
+    /// FNAM bit 3: retail draws this water with its flow-map program
+    /// in a cell that has a flow map.
     pub fn uses_flow_map(&self) -> bool {
         self.fnam.is_some_and(|flags| flags & 0x08 != 0)
     }
 
-    /// FNAM bit 4: blend normals (RF-WATER-013, RF-WATER-023).
+    /// FNAM bit 4: blend normals.
     pub fn blends_normals(&self) -> bool {
         self.fnam.is_some_and(|flags| flags & 0x10 != 0)
     }
@@ -499,13 +498,13 @@ pub struct AssetCatalog {
     water_flow: std::collections::HashMap<u32, String>,
     water_colors: std::collections::HashMap<u32, WaterColors>,
     water_noise: std::collections::HashMap<u32, WaterNoise>,
-    /// The cells whose pack holds a per-cell flow map (RF-WATER-036), read from the pack's
+    /// The cells whose pack holds a per-cell flow map, read from the pack's
     /// `textures/water/<plugin>/` folder when the catalog opens.
     water_flow_maps: std::collections::HashSet<(i32, i32)>,
 }
 
 /// The plugin folder the retail game reads a cell's flow map from: it formats the cell's own
-/// plugin file name (RF-WATER-036). Every one of the 641 flow maps is under `skyrim.esm`, and no
+/// plugin file name. Every one of the 641 flow maps is under `skyrim.esm`, and no
 /// other archive has one, so the engine reads that folder.
 pub const WATER_FLOW_MAP_PLUGIN: &str = "skyrim.esm";
 
@@ -702,7 +701,7 @@ impl AssetCatalog {
         })
     }
 
-    /// The converted per-cell flow map of cell (`x`, `y`) (RF-WATER-036), when the pack has one.
+    /// The converted per-cell flow map of cell (`x`, `y`), when the pack has one.
     pub fn water_flow_map(&self, x: i32, y: i32) -> Option<String> {
         self.water_flow_maps
             .contains(&(x, y))
@@ -3265,7 +3264,7 @@ mod tests {
 
     #[test]
     fn flow_maps_are_found_by_their_file_names() {
-        // RF-WATER-036: flow.<cellX>.<cellY>.ktx2, negative coordinates included.
+        // flow.<cellX>.<cellY>.ktx2, negative coordinates included.
         assert_eq!(flow_map_cell("flow.-1.-14.ktx2"), Some((-1, -14)));
         assert_eq!(flow_map_cell("Flow.27.1.KTX2"), Some((27, 1)));
         assert_eq!(flow_map_cell("flow.27.ktx2"), None);
@@ -3293,9 +3292,9 @@ mod tests {
         wind_direction: [270.0, 210.0, 225.0],
         wind_speed: [0.019, 0.013, 0.096],
         noise_falloff: 4007.0,
-        // DefaultWater: sun specular 1021 x 4.65, sparkle 3521 x 2.89 (RF-WATER-010).
+        // DefaultWater: sun specular 1021 x 4.65, sparkle 3521 x 2.89.
         sun: [1021.0, 4.65, 3521.0, 2.89],
-        // DefaultWater (Update.esm): DNAM +0x98 = 40 (RF-WATER-056).
+        // DefaultWater (Update.esm): DNAM +0x98 = 40.
         refraction_magnitude: 40.0,
         fnam: 0,
         textures: [
@@ -3351,7 +3350,7 @@ mod tests {
 
     #[test]
     fn the_fnam_flags_come_from_the_record_bytes() {
-        // RF-WATER-013: RiverWaterFlow and DefaultWaterFlow 0x08, the Blend records 0x18,
+        // RiverWaterFlow and DefaultWaterFlow 0x08, the Blend records 0x18,
         // DLC2ApocryphaWater 0x01, every other WATR 0.
         let colors = |fnam: u8| {
             let mut fixture = DEFAULT_WATER_NOISE;

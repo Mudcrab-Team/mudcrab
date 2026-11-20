@@ -1811,7 +1811,7 @@ fn spawn_cell(
                     })
                     .unwrap_or_default();
                 // The cell's flow map, for a water whose FNAM asks for retail's flow-map program
-                // when the pack has the cell's map (RF-WATER-036) and the water has its flow
+                // when the pack has the cell's map and the water has its flow
                 // normal texture (NAM5).
                 let flow = match payload.key {
                     CellKey::Exterior { grid_x, grid_y, .. }
@@ -5592,7 +5592,7 @@ fn water_material(
             perceptual_roughness: 0.06,
             reflectance: 0.9,
             // The water is drawn in Bevy's transmissive phase, which hands it a copy of the scene
-            // colour to refract (RF-WATER-049): `reads_view_transmission_texture` is true for a
+            // colour to refract: `reads_view_transmission_texture` is true for a
             // StandardMaterial with `specular_transmission > 0`, and the phase is chosen for the
             // non-blended alpha modes. Neither value reaches the shader, which writes the whole
             // colour itself and reads only the scene copy.
@@ -5735,7 +5735,7 @@ mod tests {
 
     #[test]
     fn a_waters_colours_carry_the_weathers_multiplier_the_sun_colour_and_the_interior_flag() {
-        // RF-SHADER-007: Shallow, Deep and Reflection colours times the Water Multiplier, applied
+        // Shallow, Deep and Reflection colours times the Water Multiplier, applied
         // to all three (the deep one as the base colour).
         let colors = WaterColors {
             shallow: [200, 100, 50],
@@ -5751,8 +5751,8 @@ mod tests {
         };
         let multiplier = crate::sky::SkyPalette::SKYRIM_CLEAR_DAY_WATER_MULTIPLIER;
         let material = water_material(Some(colors), Handle::default(), None, None, None, false);
-        // The water is drawn in Bevy's transmissive phase so it can refract the scene copy
-        // (RF-WATER-049): an opaque alpha mode and a material that reads the transmission texture.
+        // The water is drawn in Bevy's transmissive phase so it can refract the scene copy:
+        // an opaque alpha mode and a material that reads the transmission texture.
         assert_eq!(material.base.alpha_mode, AlphaMode::Opaque);
         assert!(bevy::pbr::Material::reads_view_transmission_texture(
             &material

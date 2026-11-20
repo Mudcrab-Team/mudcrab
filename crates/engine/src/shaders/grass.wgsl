@@ -22,7 +22,7 @@ struct Grass {
     model_normal: mat4x4<f32>,
     color: vec4<f32>,
     height_wind: vec4<f32>,
-    // x fade start, y fade end, z output scale cb2[16].w (RF-SHADER-004, RF-SHADER-001), w fade disabled.
+    // x fade start, y fade end, z output scale, w fade disabled.
     fade: vec4<f32>,
     absolute_grid: vec4<f32>,
     sun_direction: vec4<f32>,
@@ -85,7 +85,7 @@ fn tuning_diffuse(normal:vec3<f32>, sun:vec3<f32>, light:vec4<f32>, surface:vec4
     return mix(1.0,wrapped,light.w) + surface.w * max(-cosine,0.0);
 }
 fn tuning_illumination(ambient:vec3<f32>, direct:vec3<f32>, shadow:f32, exposure:f32, light:vec4<f32>, surface:vec4<f32>, specular:vec4<f32>) -> vec3<f32> {
-    // RF-GRASS-005: surface.z is the shadow floor (fShadowClampValue, 0.3 by default).
+    // surface.z is the shadow floor (fShadowClampValue, 0.3 by default).
     let visibility = surface.z + (1.0-surface.z) * mix(1.0,shadow,surface.y);
     return (ambient*light.y + direct*light.z*visibility) * exposure / 3.14159265;
 }
@@ -135,8 +135,8 @@ fn vertex(input: Vertex) -> Varyings {
 #ifdef NORMAL
     n = normalize((grass.model_normal * vec4(input.normal,0.0)).xyz);
 #endif
-    // Retail grass lights each vertex with the instance's up axis, not the mesh normal
-    // (RF-SHADER-003): the terrain normal with Fit to Slope, else straight up.
+    // Retail grass lights each vertex with the instance's up axis, not the mesh normal:
+    // the terrain normal with Fit to Slope, else straight up.
     var instance_normal = vec3(0.0,1.0,0.0);
     var t = vec3(1.0,0.0,0.0);
     var handedness = 0.0;
@@ -222,8 +222,8 @@ fn coverage(alpha:f32,sample_index:u32) -> u32 {
 #endif
 }
 struct Fragment { @location(0) color:vec4<f32>, @builtin(sample_mask) mask:u32 }
-// Direct light per vertex: DirLightColor * NdotL, evaluated on the instance normal
-// (RF-SHADER-003). With the retail tuning defaults the direct response is saturate(N.L).
+// Direct light per vertex: DirLightColor * NdotL, evaluated on the instance normal.
+// With the retail tuning defaults the direct response is saturate(N.L).
 fn lighting(normal:vec3<f32>) -> vec3<f32> {
     return grass.sun_color.rgb * tuning_diffuse(normal,grass.sun_direction.xyz,grass.tuning_light,grass.tuning_surface);
 }
@@ -292,12 +292,12 @@ fn fragment(vertex_input:Varyings,@builtin(sample_index) sample_index:u32) -> Fr
     let base = textureSample(albedo,albedo_sampler,input.uv) * input.color;
     var out:Fragment;
     out.mask = coverage(base.a,sample_index);
-    // Retail grass pixel output (RF-SHADER-003; shadow floor RF-GRASS-005):
-    //   (NdotL * C * DirLightColor * albedo * lerp(0.3, 1, shadowMask) + C * AmbientColor * albedo) * cb2[16].w
+    // Retail grass pixel output:
+    //   (NdotL * C * DirLightColor * albedo * lerp(0.3, 1, shadowMask) + C * AmbientColor * albedo) * outputScale
     // `base` is albedo * C (vertex colour times the per-instance brightness); input.light is
     // NdotL * DirLightColor from the vertex shader; the shadow floor 0.3 is grass.tuning_surface.z
-    // (fShadowClampValue); the ambient term is not shadowed; grass.fade.z is cb2[16].w, the
-    // output scale 1/FramebufferRange (RF-SHADER-001, RF-SHADER-004). Only grass applies it
+    // (fShadowClampValue); the ambient term is not shadowed; grass.fade.z is the
+    // output scale 1/FramebufferRange. Only grass applies it
     // today; terrain, sky and water do not (open question: does retail apply it there too?).
     // Exposure and 1/pi: 1/pi is exact for the sun (it equals Bevy's Lambert for the sun
     // illuminance). Bevy's own ambient has no 1/pi, so this ambient is about pi times darker

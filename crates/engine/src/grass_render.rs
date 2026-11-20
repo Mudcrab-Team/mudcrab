@@ -725,7 +725,7 @@ fn update_grass_uniforms(
         primitive.uniform.fade = Vec4::new(
             fade.start,
             fade.end,
-            // cb2[16].w: the output scale (RF-SHADER-001, RF-SHADER-004; output_scale.rs). The
+            // The output scale (output_scale.rs). The
             // DistanceFog component stands in for "retail fog distances are non-zero" (unverified).
             crate::output_scale::framebuffer_output_scale(!fogs.is_empty()),
             if fade.enabled { 0.0 } else { 1.0 },

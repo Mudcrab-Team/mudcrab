@@ -1,10 +1,10 @@
 //! Typed grass defaults and provenance. The engine's shared Skyrim INI reader
 //! supplies imported values; this module does not read files.
 //!
-//! Every default retains Taylor's verified retail data. The field comments record
+//! Every default is retail data. The field comments record
 //! the default stored in each INI setting. The shipped INI files (`Skyrim_Default.ini`, `SkyrimPrefs.ini`)
 //! omit most of these keys. A local `Skyrim.ini` with other values (`iMinGrassSize=40`,
-//! `fGrassFadeRange=1766`, `bEnableGrassFade=0`) differs from the exe defaults; the exe
+//! `fGrassFadeRange=1766`, `bEnableGrassFade=0`) differs from the retail defaults; the retail
 //! defaults are used.
 
 use serde::Serialize;
@@ -42,10 +42,10 @@ pub struct GrassSettings {
     /// `fGrassMaxStartFadeDistance`: retail default 7000.0, also shipped in `Skyrim_Default.ini`; reported only.
     #[serde(rename = "fGrassMaxStartFadeDistance")]
     pub max_start_fade_distance: f64,
-    /// `fGrassWindMagnitudeMin`: retail default 5.0 (RF-GRASS-001); reported only.
+    /// `fGrassWindMagnitudeMin`: retail default 5.0; reported only.
     #[serde(rename = "fGrassWindMagnitudeMin")]
     pub wind_magnitude_min: f64,
-    /// `fGrassWindMagnitudeMax`: retail default 125.0 (RF-GRASS-001); reported only.
+    /// `fGrassWindMagnitudeMax`: retail default 125.0; reported only.
     #[serde(rename = "fGrassWindMagnitudeMax")]
     pub wind_magnitude_max: f64,
     /// `bDrawShaderGrass`: retail default true; launch-state resolution honors explicit CLI switches.
@@ -228,7 +228,7 @@ impl GrassSettings {
             diagnostics: Vec::new(),
             has_unhandled_settings: false,
             notes: vec![
-                "Built-in values are the retail defaults compiled into SkyrimSE.exe 1.7.104 (fGrassMinStartFadeDistance: shipped INI).",
+                "Built-in values are the retail defaults (fGrassMinStartFadeDistance: shipped INI).",
                 "The shared --ini reader applies files in order; explicit numeric CLI options apply afterwards.",
                 "Settings only: no grass placements, cache files or rendering have been generated.",
                 "Legacy Skyrim GID creation/loading switches are reported but do not control MudCrab caching.",
@@ -314,9 +314,9 @@ fn settings_hash(settings: &BTreeMap<String, Value>) -> String {
 mod tests {
     use super::*;
 
-    /// The defaults equal the values read from the `Setting` objects in `SkyrimSE.exe` 1.7.104,
+    /// The defaults equal the retail compiled values,
     /// not the values of a local `Skyrim.ini` (40, 1766 and 0 for the first three), which differs
-    /// from the exe defaults.
+    /// from the retail defaults.
     #[test]
     fn defaults_equal_the_retail_compiled_values() {
         let d = GrassSettings::default();
