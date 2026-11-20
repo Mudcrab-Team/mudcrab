@@ -42,6 +42,8 @@ pub use plugins_txt::{
 #[cfg(test)]
 mod base_model_parity_tests;
 #[cfg(test)]
+mod default_objects_parity_tests;
+#[cfg(test)]
 mod display_name_parity_tests;
 #[cfg(test)]
 mod emittance_parity_tests;
@@ -443,6 +445,11 @@ impl EsmParser {
                 if record.is_deleted() {
                     merged.remove(&record.form_id);
                 } else {
+                    if record.record_type == *b"DOBJ"
+                        && let Some(previous) = merged.get(&record.form_id)
+                    {
+                        merge_default_objects(previous, &mut record);
+                    }
                     merged.insert(record.form_id, record);
                 }
             }
@@ -460,6 +467,59 @@ impl EsmParser {
             damaged_cells,
             room_link_layouts,
         })
+    }
+}
+
+/// The `(use code, FormID)` pairs of a `DOBJ`'s `DNAM` subrecords, in stored order.
+/// A trailing partial pair and a pair with a zero key are ignored.
+pub(crate) fn default_object_pairs(subrecords: &[(Vec<u8>, Vec<u8>)]) -> Vec<([u8; 4], u32)> {
+    subrecords
+        .iter()
+        .filter(|(tag, _)| tag.as_slice() == b"DNAM")
+        .flat_map(|(_, data)| data.as_chunks::<8>().0)
+        .map(|pair| {
+            (
+                [pair[0], pair[1], pair[2], pair[3]],
+                u32::from_le_bytes([pair[4], pair[5], pair[6], pair[7]]),
+            )
+        })
+        // The game's loader skips a zero key. Retail Update.esm holds hundreds of all-zero
+        // padding pairs, and none of them names a default object.
+        .filter(|(key, _)| *key != [0; 4])
+        .collect()
+}
+
+/// Merge a `DOBJ` override into the earlier winner key by key.
+///
+/// The game's default-object loader sets only the slots that a record lists and
+/// never clears the table, so an override changes just its own keys. Update.esm
+/// and the DLC override `DOBJ` `00000031` with partial lists; replacing the whole
+/// record would drop, for example, the walk and run defaults that Skyrim.esm sets.
+/// The merged pairs replace the `DNAM` of `record` in place, so the positions of its other
+/// subrecords do not move: the in-house reader indexes them before it merges. A record
+/// without a `DNAM` gets one at the end. Both record readers use this rule, so they publish
+/// the same `default_objects` rows.
+pub(crate) fn merge_default_objects(previous: &RawRecord, record: &mut RawRecord) {
+    let mut merged = default_object_pairs(&previous.subrecords);
+    for (key, target) in default_object_pairs(&record.subrecords) {
+        match merged.iter_mut().find(|(earlier, _)| *earlier == key) {
+            Some(slot) => slot.1 = target,
+            None => merged.push((key, target)),
+        }
+    }
+    let bytes: Vec<u8> = merged
+        .iter()
+        .flat_map(|(key, target)| [key.as_slice(), &target.to_le_bytes()].concat())
+        .collect();
+    let mut bytes = Some(bytes);
+    for (tag, data) in &mut record.subrecords {
+        if tag.as_slice() == b"DNAM" {
+            // Any extra `DNAM` is blanked, not removed, so later indices stay valid.
+            *data = bytes.take().unwrap_or_default();
+        }
+    }
+    if let Some(bytes) = bytes {
+        record.subrecords.push((b"DNAM".to_vec(), bytes));
     }
 }
 
@@ -746,6 +806,11 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         b"WLST" if record_type == b"CLMT" => Array {
             stride: 12,
             form_ids: &[0, 8],
+        },
+        // Default objects: (four-character use code, FormID) pairs.
+        b"DNAM" if record_type == b"DOBJ" => Array {
+            stride: 8,
+            form_ids: &[4],
         },
         // A weather's precipitation, visual effect, sky static and sun glare lens.
         b"MNAM" | b"NNAM" | b"TNAM" | b"GNAM" if record_type == b"WTHR" => Fixed(SINGLE),
@@ -1504,6 +1569,110 @@ mod tests {
         assert_eq!(
             u32::from_le_bytes(race.subrecords[0].1[..4].try_into().unwrap()),
             0x0300_1234
+        );
+    }
+
+    fn default_objects(pairs: &[(&[u8; 4], u32)]) -> RawRecord {
+        RawRecord {
+            form_id: 0x0000_0031,
+            record_type: *b"DOBJ",
+            flags: 0,
+            subrecords: vec![(
+                b"DNAM".to_vec(),
+                pairs
+                    .iter()
+                    .flat_map(|(key, id)| [key.as_slice(), &id.to_le_bytes()].concat())
+                    .collect(),
+            )],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        }
+    }
+
+    #[test]
+    fn remaps_default_object_form_ids_but_not_keys() {
+        let normal_indices = HashMap::from([
+            ("skyrim.esm".to_string(), 0),
+            ("update.esm".to_string(), 3),
+            ("dawnguard.esm".to_string(), 5),
+        ]);
+        // Master 1 is update.esm (load order 3); index 2 is the plugin itself (5).
+        let mut record = default_objects(&[
+            (b"DMWL", 0x0003_580D),
+            (b"DMRN", 0x0100_0800),
+            (b"DMSW", 0x0200_0900),
+        ]);
+        remap_record_form_ids(
+            &mut record,
+            "dawnguard.esm",
+            &["skyrim.esm".to_string(), "update.esm".to_string()],
+            &normal_indices,
+            &HashMap::new(),
+            &RemapWarnings::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            record.subrecords,
+            default_objects(&[
+                (b"DMWL", 0x0003_580D),
+                (b"DMRN", 0x0300_0800),
+                (b"DMSW", 0x0500_0900),
+            ])
+            .subrecords
+        );
+    }
+
+    #[test]
+    fn default_object_overrides_merge_by_key() {
+        let base = default_objects(&[(b"DMWL", 0x0003_580D), (b"DMRN", 0x0003_580D)]);
+        let mut patch = default_objects(&[(b"DMRN", 0x0200_0001), (b"DMSW", 0x0003_6D42)]);
+        merge_default_objects(&base, &mut patch);
+        assert_eq!(
+            patch.subrecords,
+            default_objects(&[
+                (b"DMWL", 0x0003_580D),
+                (b"DMRN", 0x0200_0001),
+                (b"DMSW", 0x0003_6D42),
+            ])
+            .subrecords
+        );
+        // A record without a usable DNAM keeps the earlier defaults.
+        let mut empty = default_objects(&[]);
+        empty.subrecords.clear();
+        merge_default_objects(&base, &mut empty);
+        assert_eq!(empty.subrecords, base.subrecords);
+    }
+
+    #[test]
+    fn zero_keys_are_not_default_objects() {
+        let record = default_objects(&[(b"\0\0\0\0", 0), (b"\0\0\0\0", 5), (b"DMWL", 7)]);
+        assert_eq!(default_object_pairs(&record.subrecords), [(*b"DMWL", 7)]);
+    }
+
+    #[test]
+    fn merging_default_objects_keeps_every_subrecord_position() {
+        let base = default_objects(&[(b"DMWL", 0x0003_580D)]);
+        let mut patch = default_objects(&[(b"DMRN", 0x0200_0001)]);
+        patch.subrecords.push((b"ZZZZ".to_vec(), vec![1, 2, 3]));
+        patch
+            .subrecords
+            .insert(0, (b"EDID".to_vec(), b"Defaults\0".to_vec()));
+        let before: Vec<Vec<u8>> = patch
+            .subrecords
+            .iter()
+            .map(|(tag, _)| tag.clone())
+            .collect();
+        merge_default_objects(&base, &mut patch);
+        let after: Vec<Vec<u8>> = patch
+            .subrecords
+            .iter()
+            .map(|(tag, _)| tag.clone())
+            .collect();
+        assert_eq!(before, after, "no subrecord moved");
+        assert_eq!(
+            default_object_pairs(&patch.subrecords),
+            [(*b"DMWL", 0x0003_580D), (*b"DMRN", 0x0200_0001),]
         );
     }
 

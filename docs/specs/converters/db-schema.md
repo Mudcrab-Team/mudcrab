@@ -1127,11 +1127,11 @@ CREATE TABLE IF NOT EXISTS npcs (               -- one row per NPC_
 );
 CREATE INDEX IF NOT EXISTS idx_npcs_editor_id ON npcs(editor_id);
 
-CREATE TABLE IF NOT EXISTS movement_types (     -- MOVT 0003580D (NPC_Default_MT) only, today
+CREATE TABLE IF NOT EXISTS movement_types (     -- one row per MOVT
     id INTEGER PRIMARY KEY,
-    editor_id TEXT NOT NULL,                    -- written as the literal 'NPC_Default_MT'
-    left_walk REAL NOT NULL, left_run REAL NOT NULL,       -- SPED, Creation units per second
-    right_walk REAL NOT NULL, right_run REAL NOT NULL,
+    editor_id TEXT NOT NULL,                    -- EDID
+    left_walk REAL NOT NULL, left_run REAL NOT NULL,       -- SPED, Creation units per second;
+    right_walk REAL NOT NULL, right_run REAL NOT NULL,     -- zero where the type cannot move
     forward_walk REAL NOT NULL, forward_run REAL NOT NULL,
     back_walk REAL NOT NULL, back_run REAL NOT NULL,
     load_order INTEGER NOT NULL
@@ -1142,6 +1142,17 @@ CREATE TABLE IF NOT EXISTS race_movement_links (  -- one row per RACE
     run_movt_id INTEGER,                        -- RNMV
     load_order INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS default_objects (    -- DOBJ DNAM, merged key by key over every override
+    key TEXT PRIMARY KEY,                       -- use code, for example DMWL (walk) or DMRN (run)
+    form_id INTEGER NOT NULL                    -- load-order FormID; a null link has no row
+);
+-- `default_objects` follows the game loader: a later `DOBJ` changes only the keys it lists, a null
+-- link removes the key, and a zero key (Update.esm holds hundreds of padding pairs) is skipped.
+-- Both record readers feed the key-merged `DOBJ` into the runtime projection, so `records.data`
+-- for DOBJ 00000031 holds the merged `DNAM` under the winning plugin's `load_order`. It is a
+-- derived record, not the winner's bytes. With the in-house reader, the winner's exact source
+-- bytes stay in `inhouse_source_records`, and every version's header is in the source history. A package with no `default_objects` table was
+-- converted before the table existed; the engine flags it and uses the earlier rule.
 CREATE TABLE IF NOT EXISTS movement_game_settings ( -- fMoveCharWalkBase and fJumpHeightMin only
     id INTEGER PRIMARY KEY, editor_id TEXT NOT NULL,
     value REAL NOT NULL, load_order INTEGER NOT NULL
