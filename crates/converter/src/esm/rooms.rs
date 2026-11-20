@@ -31,6 +31,29 @@ pub const OCCLUSION_MARKER_BASE: u32 = 0x17;
 pub(super) const SHAPE_BOX: u32 = 1;
 pub(super) const SHAPE_PORTAL: u32 = 3;
 
+/// A duplicate NAME can still identify an occlusion marker in the supplying plugin.
+pub(crate) fn names_occlusion_marker<'a>(
+    names: impl Iterator<Item = &'a [u8]>,
+    plugin: usize,
+    order: &LoadOrder,
+) -> bool {
+    names
+        .filter_map(|bytes| <[u8; 4]>::try_from(bytes).ok())
+        .any(|word| {
+            crate::records::source_identity::header_runtime_id(
+                b"REFR",
+                u32::from_le_bytes(word),
+                plugin,
+                order,
+            ) == Some(OCCLUSION_MARKER_BASE)
+        })
+}
+
+/// A malformed XORD can hide a target. An authored four-slot all-null XORD cannot.
+pub(crate) fn xord_may_link(data: &[u8]) -> bool {
+    data != [0; 16]
+}
+
 /// Tables created by `create_tables` so an older reused database gains them.
 pub const ROOM_TABLES_SQL: &str = r#"
          CREATE TABLE IF NOT EXISTS room_bounds (

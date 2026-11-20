@@ -520,7 +520,13 @@ pub(crate) struct TruncatedPlacement {
 
 impl TruncatedPlacement {
     pub(crate) fn from_prefix(bytes: &[u8]) -> Option<Self> {
-        let record_type = *bytes.first_chunk()?;
+        let Some(&record_type) = bytes.first_chunk() else {
+            // A short signature can still hide a reference to a placement in another cell.
+            return (!bytes.is_empty() && b"REFR".starts_with(bytes)).then_some(Self {
+                record_type: *b"REFR",
+                source_id: None,
+            });
+        };
         crate::esm::is_placed_record_type(&record_type).then(|| Self {
             record_type,
             source_id: bytes
@@ -621,8 +627,8 @@ pub(crate) fn decode_text(bytes: &[u8]) -> String {
 }
 
 pub(crate) use decoder::{
-    PreparedSchemas, localized_field_bank, prepare_runtime_schema, string_table_with_prepared,
-    validate_placement_targets,
+    PreparedSchemas, framed_source_prefix, localized_field_bank, prepare_runtime_schema,
+    string_table_with_prepared, validate_placement_targets,
 };
 
 fn validate_live_candidate(
@@ -645,6 +651,30 @@ fn validate_live_candidate(
         return Err("invalid placement override transform".into());
     }
     validate(record)
+}
+
+// A rejected, fully framed REFR can still have authored links from an ambiguous PlaneMarker.
+fn ambiguous_occluder_links(record: &DecodedRecord, plugin: usize, order: &LoadOrder) -> bool {
+    if !record
+        .fields
+        .iter()
+        .any(|field| field.signature == *b"XORD")
+        && !record.rejected_fields.contains(b"XORD")
+    {
+        return false;
+    }
+    let fields = record.framed_source_prefix();
+    if !fields
+        .iter()
+        .any(|(tag, bytes)| tag == b"XORD" && crate::esm::rooms::xord_may_link(bytes))
+    {
+        return false;
+    }
+    let names = fields
+        .iter()
+        .filter_map(|(tag, bytes)| (tag == b"NAME").then_some(*bytes));
+    names.clone().nth(1).is_some()
+        && crate::esm::rooms::names_occlusion_marker(names, plugin, order)
 }
 
 fn incomplete_override(record: &DecodedRecord, previous: Option<&DecodedRecord>) -> bool {
@@ -781,6 +811,13 @@ fn read_plugins_with_prepared(
                 Ok(record) => record,
                 Err(error) => {
                     if let Some(entry) = history.borrow_mut().last_mut() {
+                        if entry.record_type == *b"REFR" && entry.flags & 0x20 == 0 {
+                            let id = entry
+                                .form_id
+                                .or(diagnostics.event_context.form_id)
+                                .filter(|&id| id != 0);
+                            unreadable_refs.insert(id, (index as u32, offset));
+                        }
                         entry.reason = Some(error.clone());
                     }
                     if diagnostics
@@ -795,8 +832,8 @@ fn read_plugins_with_prepared(
                 }
             };
             if record.record_type == *b"REFR"
-                && !record.payload_complete
                 && record.flags & 0x20 == 0
+                && (!record.payload_complete || ambiguous_occluder_links(&record, index, order))
             {
                 unreadable_refs.insert(Some(record.form_id), (index as u32, offset));
             }

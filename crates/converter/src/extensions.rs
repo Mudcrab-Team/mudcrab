@@ -92,6 +92,7 @@ const MAIN_CORE_TABLES: &[&str] = &[
     "records",
     "reference_activate_parents",
     "reference_details",
+    "reference_link_subset_sources",
     "reference_linked_refs",
     "reference_rooms",
     "references",

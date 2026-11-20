@@ -718,6 +718,11 @@ Rules:
 - When a subset export or placement layer removes a placement, its incoming `XAPR` and `XLKR`
   slots become NULL in the same transaction. Adding or restoring a target resolves matching
   slots from the effective source payload, including sources outside the edit batch.
+  For an unedited in-house source, the converter uses the original plugin payload and master
+  list to recover authored IDs that full conversion cleared. A slot stays NULL if surviving
+  occurrences cannot be matched unambiguously. `reference_link_subset_sources` records
+  which source a subset replaced and retains recoverable link fields for typed subsets.
+  A later placement-layer edit removes that entry and supplies the effective source.
 - A field whose length the in-house schema rejects is skipped for both readers: `XLKR` must be 4
   or 8 bytes, `XAPR` 8, `XAPD` 1, `XOWN`/`XRNK`/`XLCN`/`XLRL`/`XEZN`/`XATR` 4, `FNAM` 1 and `TNAM`
   2.
@@ -1362,7 +1367,9 @@ Columns and rules:
   publishes `occlusion_version = 1` in `room_graph_stats`. It sets `occlusion_links_verified`
   to zero when a truncated marker payload or a malformed `XORD` can hide a cross-cell link.
   Full in-house exports and plugin placement imports also clear the flag when a discarded
-  frame has unknown scope or a `REFR` header or payload is unreadable. An unreadable
+  frame has unknown scope, a `REFR` fails before its links can be read, or a rejected
+  placement has a possible `XORD` target and duplicate `NAME` fields that can name a PlaneMarker.
+  An unreadable
   `REFR` can introduce a PlaneMarker even if its predecessor used an ordinary base or
   the placement is new. A later usable replacement or deletion of the same FormID
   supersedes that evidence within the conversion or import.
@@ -1480,7 +1487,8 @@ could refer to a placement from another cell. All surviving interiors then use t
 fallback. A partial placement header that reaches the FormID marks the enclosing cell and the
 surviving predecessor’s cell incomplete. An unresolvable FormID leaves all interiors incomplete.
 A recognized placement tag with a missing or partial FormID also leaves all interiors incomplete,
-because its predecessor could be in any cell. When the available group kind bytes are consistent
+because its predecessor could be in any cell. The same rule covers a discarded tag that ends
+after the first one, two, or three bytes of `REFR`. When the available group kind bytes are consistent
 with a cell-child group, the enclosing cell and the cell named by the label are incomplete.
 A discarded `GRUP` prefix with an incomplete label leaves all interiors incomplete. A kind
 that excludes cell-child groups affects only the enclosing cell when it is known.

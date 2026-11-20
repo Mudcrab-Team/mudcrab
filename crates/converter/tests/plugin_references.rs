@@ -4289,6 +4289,18 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
             [false, false, true],
         ),
         (
+            "possible-placement-tag",
+            placement_group(a, b"REF".to_vec()),
+            [false, false, false],
+            [false, false, true],
+        ),
+        (
+            "non-placement-tag-prefix",
+            placement_group(a, b"REG".to_vec()),
+            [false, true, true],
+            [false, false, true],
+        ),
+        (
             "placement-tag-alone",
             placement_group(a, b"REFR".to_vec()),
             [false, false, false],
@@ -7675,7 +7687,42 @@ fn check_discarded_occluder_override(import: bool) {
     let compressed = |tag, id| record(tag, id, 0x40000, vec![4, 0, 0, 0, 0xff]);
     let restored = placement_marker(0x801, 0x17, Vec::new());
     let deleted = record(b"REFR", 0x801, 0x20, Vec::new());
-    for (name, damaged, later, expected) in [
+    let xord = || sub(b"XORD", &[0x802u32, 0, 0, 0].map(u32::to_le_bytes).concat());
+    let ambiguous = |first, second: u32| {
+        placement_marker(
+            0x801,
+            first,
+            [sub(b"NAME", &second.to_le_bytes()), xord()].concat(),
+        )
+    };
+    let cases = [
+        ("short-r", b"R".to_vec(), None, 0),
+        ("short-re", b"RE".to_vec(), None, 0),
+        ("short-ref", b"REF".to_vec(), None, 0),
+        ("short-reg", b"REG".to_vec(), None, 1),
+        ("ambiguous-marker-first", ambiguous(0x17, 0x999), None, 0),
+        ("ambiguous-marker-last", ambiguous(0x999, 0x17), None, 0),
+        ("ambiguous-ordinary", ambiguous(0x810, 0x999), None, 1),
+        (
+            "ambiguous-null-links",
+            placement_marker(
+                0x801,
+                0x17,
+                [
+                    sub(b"NAME", &0x999u32.to_le_bytes()),
+                    sub(b"XORD", &[0; 16]),
+                ]
+                .concat(),
+            ),
+            None,
+            1,
+        ),
+        (
+            "ambiguous-restored",
+            ambiguous(0x17, 0x999),
+            Some(&restored),
+            1,
+        ),
         ("ordinary", partial(0x803, 20), None, 0),
         ("ordinary-overrun", partial(0x803, 24), None, 0),
         ("new", partial(0x0100_0801, 20), None, 0),
@@ -7705,12 +7752,49 @@ fn check_discarded_occluder_override(import: bool) {
             Some(&deleted),
             1,
         ),
-    ] {
+    ]
+    .into_iter()
+    .map(|(name, damaged, later, expected)| {
         let cell = if name == "bounded-zlib" { 0x902 } else { 0x900 };
         let mut contents = placement_group(cell, damaged);
         if let Some(later) = later {
             contents.extend(placement_group(0x900, later.clone()));
         }
+        (name, contents, expected)
+    });
+    let wrong_parent = || placement_group(0, placement_marker(0x801, 0x17, xord()));
+    let typed_only = [
+        ("invalid-parent", wrong_parent(), 0),
+        (
+            "invalid-parent-unrelated-replacement",
+            [
+                wrong_parent(),
+                placement_group(0x900, placement(0x803, 0x810, 0, 0.0, Vec::new())),
+            ]
+            .concat(),
+            0,
+        ),
+        (
+            "unknown-record-id",
+            [
+                placement_group(0x900, placement_marker(0, 0x17, xord())),
+                placement_group(0x900, restored.clone()),
+            ]
+            .concat(),
+            0,
+        ),
+        (
+            "invalid-parent-restored",
+            [wrong_parent(), placement_group(0x900, restored.clone())].concat(),
+            1,
+        ),
+        (
+            "invalid-parent-deleted",
+            [wrong_parent(), placement_group(0x900, deleted.clone())].concat(),
+            1,
+        ),
+    ];
+    for (name, contents, expected) in cases.chain(typed_only.into_iter().filter(|_| !import)) {
         let patch = plugin(data, &format!("{name}.esp"), &["Skyrim.esm"], 0, contents);
         let assets = data.join(name);
         fs::create_dir(&assets).unwrap();
@@ -7744,11 +7828,12 @@ fn check_discarded_occluder_override(import: bool) {
             1,
             "{name}"
         );
-        assert_eq!(
-            stored_placement_certificate(&conn, 0x901),
-            Some(name != "unknown"),
-            "{name}"
-        );
+        let other_complete = !matches!(name, "unknown" | "short-r" | "short-re" | "short-ref");
+        if stored_placement_certificate(&conn, 0x901) != Some(other_complete) {
+            failures.push(format!(
+                "{name}: cell 0x901 expected complete={other_complete}"
+            ));
+        }
         if name == "bounded-zlib" {
             assert_eq!(stored_placement_certificate(&conn, 0x900), Some(false));
             assert_eq!(stored_placement_certificate(&conn, 0x902), Some(false));
@@ -7964,4 +8049,160 @@ fn placement_layers_refresh_incoming_links_for_changed_targets() {
     let mut restored = absent;
     restored[0] = Some(existing);
     assert_links(restored);
+}
+
+#[test]
+fn typed_incoming_links_restore_after_target_only_edits() {
+    use converter::esm::{
+        exporter::{export_placed_subset_with_sources, export_to_db},
+        placement_edits::{PlacementSource, apply},
+        records::RawRecord,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let cell = PLACEMENT_CELL_A;
+    let source = 0x880u32;
+    let authored_target = 0x0100_0910u32;
+    let target = 0x0200_0910u32;
+    let parent =
+        |id: u32, delay: f32| sub(b"XAPR", &[id.to_le_bytes(), delay.to_le_bytes()].concat());
+    let linked_source = || {
+        placement_group(
+            cell,
+            placement(
+                source,
+                PLACEMENT_STAT,
+                0,
+                0.0,
+                [
+                    sub(b"XLKR", &[0; 6]),
+                    sub(b"XLKR", &authored_target.to_le_bytes()),
+                    sub(
+                        b"XLKR",
+                        &[authored_target.to_le_bytes(), 0u32.to_le_bytes()].concat(),
+                    ),
+                    sub(b"XAPD", &[3]),
+                    parent(authored_target, f32::NAN),
+                    parent(0, 0.5),
+                    parent(authored_target, 1.5),
+                    parent(0x0200_0910, 2.5), // Invalid supplier-relative index, despite matching the runtime target.
+                ]
+                .concat(),
+            ),
+        )
+    };
+    let paths = [
+        plugin(
+            root,
+            "Skyrim.esm",
+            &[],
+            1,
+            [
+                record(b"STAT", PLACEMENT_STAT, 0, Vec::new()),
+                record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])),
+                placement_group(cell, placement(source, PLACEMENT_STAT, 0, 0.0, Vec::new())),
+            ]
+            .concat(),
+        ),
+        plugin(root, "Padding.esp", &["Skyrim.esm"], 0, Vec::new()),
+        plugin(root, "Links.esp", &["Skyrim.esm"], 0, linked_source()),
+    ];
+    let assets = root.join("assets");
+    fs::create_dir(&assets).unwrap();
+    let database = assets.join("skyrim_world.db");
+    EsmParser::convert_plugins_with_reader(
+        &paths,
+        &database,
+        converter::config::RecordReader::Inhouse,
+        root,
+    )
+    .unwrap();
+    let order = LoadOrder::read(&paths).unwrap();
+    let mut decoded = converter::records::read_plugins(&paths, &order).unwrap();
+    let decoded_source = decoded.records.remove(&source).unwrap();
+    let subset = plugin(
+        root,
+        "Subset.esp",
+        &["Skyrim.esm", "Links.esp"],
+        0,
+        linked_source(),
+    );
+    let mut subset_paths = paths.to_vec();
+    subset_paths.push(subset);
+    let subset_order = LoadOrder::read(&subset_paths).unwrap();
+    let mut decoded = converter::records::read_plugins(&subset_paths, &subset_order).unwrap();
+    let subset_source = decoded.records.remove(&source).unwrap();
+    assert_ne!(subset_source.load_order, decoded_source.load_order);
+    for path in subset_paths {
+        fs::remove_file(path).unwrap();
+    }
+    let mut db = rusqlite::Connection::open(&database).unwrap();
+    converter::esm::rooms::add_overlap_rows(&mut db).unwrap();
+    let assert_links = |expected| {
+        let linked = db.prepare("SELECT keyword_id,linked_ref_id FROM reference_linked_refs WHERE reference_id=?1 ORDER BY position").unwrap()
+            .query_map([source], |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, Option<u32>>(1)?))).unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        let parents = db.prepare("SELECT parent_ref_id,delay FROM reference_activate_parents WHERE reference_id=?1 ORDER BY position").unwrap()
+            .query_map([source], |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, f32>(1)?))).unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        assert_eq!(parents, [(None, 0.5), (expected, 1.5), (None, 2.5)]);
+        assert_eq!(linked, [(None, expected), (expected, None)]);
+    };
+    assert_links(None);
+
+    let target_record = RawRecord {
+        form_id: target,
+        record_type: *b"REFR",
+        flags: 0,
+        subrecords: vec![
+            (b"NAME".to_vec(), PLACEMENT_STAT.to_le_bytes().to_vec()),
+            (b"DATA".to_vec(), vec![0; 24]),
+        ],
+        cell_form_id: Some(cell),
+        worldspace_form_id: None,
+        load_order: 2,
+    };
+    export_to_db(&db, &[(target, target_record.clone())].into()).unwrap();
+    assert_links(Some(target));
+
+    for (name, bytes, expected) in [
+        (
+            "Delete.esp",
+            record(b"REFR", authored_target, 0x20, Vec::new()),
+            None,
+        ),
+        (
+            "Restore.esp",
+            placement(authored_target, PLACEMENT_STAT, 0, 0.0, Vec::new()),
+            Some(target),
+        ),
+    ] {
+        let patch = plugin(
+            root,
+            name,
+            &["Skyrim.esm", "Links.esp"],
+            0,
+            placement_group(cell, bytes),
+        );
+        apply(&assets, PlacementSource::SkyrimPlugin(&patch)).unwrap();
+        assert_links(expected);
+    }
+
+    // A raw subset can replace the source with the same canonical bytes and winning
+    // priority. Its zeroes are effective authoring, even with the old source retained.
+    let delete =
+        || export_placed_subset_with_sources(&db, &Default::default(), &[target], &order).unwrap();
+    let add = || export_to_db(&db, &[(target, target_record.clone())].into()).unwrap();
+    delete();
+    export_to_db(&db, &[(source, decoded_source.to_raw_record())].into()).unwrap();
+    add();
+    assert_links(None);
+
+    // A typed subset supplies its own authored link words, independent of the base archive.
+    delete();
+    export_placed_subset_with_sources(&db, &[(source, subset_source)].into(), &[], &subset_order)
+        .unwrap();
+    add();
+    assert_links(Some(target));
 }

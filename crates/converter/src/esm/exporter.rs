@@ -672,6 +672,7 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
         DROP TABLE IF EXISTS records;
         DROP TABLE IF EXISTS formid_map;
         DROP TABLE IF EXISTS subset_placement_deletions;
+        DROP TABLE IF EXISTS reference_link_subset_sources;
         DROP TABLE IF EXISTS lod_chunks_spatial;
         DROP TABLE IF EXISTS lod_chunks;
         DROP TABLE IF EXISTS lod_build;
@@ -785,6 +786,7 @@ fn export_records(
         tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS subset_placement_deletions (form_id INTEGER PRIMARY KEY)",
         )?;
+        tx.execute_batch(super::reference_links::SUBSET_SOURCES_SQL)?;
     }
     if scalar_scripts {
         // In-house exports own the complete script snapshot; legacy partial APIs retain theirs.
@@ -935,6 +937,7 @@ fn export_records(
             if record.is_deleted() {
                 delete_reference_scripts(&tx, form_id, scalar_script_storage)?;
                 clear_reference_placement(&tx, form_id)?;
+                super::reference_links::forget_subset_source(&tx, form_id)?;
                 tx.prepare_cached("DELETE FROM records WHERE form_id=?1")?
                     .execute([form_id])?;
                 if (1..0x800).contains(&form_id) {
@@ -1056,6 +1059,7 @@ fn export_records(
                 if !inserted {
                     if subset_placement {
                         unavailable_link_targets.push(form_id);
+                        super::reference_links::forget_subset_source(&tx, form_id)?;
                     }
                     omissions.record(
                         OmissionCategory::ReferenceUnusableData,
@@ -1282,7 +1286,11 @@ fn export_records(
     // A later edit can remove a placement while retaining its canonical record.
     for source in subset_link_sources {
         let projection = runtime_projection(source, unresolved_fields);
-        insert_links(projection.as_ref().unwrap_or(source))?;
+        let projected = projection.as_ref().unwrap_or(source);
+        insert_links(projected)?;
+        let typed = subset_sources
+            .and_then(|(records, order)| Some((records.get(&source.form_id)?, order)));
+        super::reference_links::remember_subset_source(&tx, projected, typed)?;
     }
     super::reference_links::refresh_incoming(
         &tx,

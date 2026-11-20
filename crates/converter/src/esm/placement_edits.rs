@@ -106,6 +106,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     let bytes = fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
     let checksum = hash_bytes(&bytes);
     tx.execute_batch(LAYER_TABLES)?;
+    tx.execute_batch(reference_links::SUBSET_SOURCES_SQL)?;
 
     let name = if is_plugin {
         let name = normalize_plugin_name(name);
@@ -260,6 +261,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
             is_plugin,
         )
         .wrap_err_with(|| format!("placement {id:08X}"))?;
+        reference_links::forget_subset_source(&tx, id)?;
         match (was_link_target, reference_links::has_live_target(&tx, id)?) {
             (true, false) => unavailable_link_targets.push(id),
             (false, true) => {
@@ -463,15 +465,14 @@ fn plugin_edits(
         );
         let view = SubrecordView::new(&record.subrecords);
         let base = view.unique_form_id(b"NAME");
+        let occluder =
+            super::rooms::names_occlusion_marker(view.find_all(b"NAME"), priority, &order);
         if !record.is_deleted() {
             validate_room_field_tags(&record.subrecords)?;
-            if base.is_none_or(|id| id == 0) {
-                eprintln!("warning: {name}: skipped placement {source_id:08X} with malformed NAME");
-                record_damage(&mut damage_after, &mut import, &record, priority, &order);
-                continue;
-            }
             // Retain the previous link when the new arrival or destination is unusable.
-            if view.find_all(b"XTEL").enumerate().any(|(index, data)| {
+            let rejected_field = if base.is_none_or(|id| id == 0) {
+                Some("NAME")
+            } else if view.find_all(b"XTEL").enumerate().any(|(index, data)| {
                 let Some((target, arrival_and_flags)) = data.split_first_chunk::<4>() else {
                     return true;
                 };
@@ -483,7 +484,19 @@ fn plugin_edits(
                         && source_identity::header_runtime_id(b"REFR", target, priority, &order)
                             .is_none_or(|id| id == 0))
             }) {
-                eprintln!("warning: {name}: skipped placement {source_id:08X} with malformed XTEL");
+                Some("XTEL")
+            } else {
+                None
+            };
+            if let Some(field) = rejected_field {
+                eprintln!(
+                    "warning: {name}: skipped placement {source_id:08X} with malformed {field}"
+                );
+                if occluder && view.find_all(b"XORD").any(super::rooms::xord_may_link) {
+                    import
+                        .unreadable_refs
+                        .insert(Some(remapped), import.edits.len());
+                }
                 record_damage(&mut damage_after, &mut import, &record, priority, &order);
                 continue;
             }
@@ -491,17 +504,6 @@ fn plugin_edits(
         let room_links = base
             .filter(|id| id & 0x00ff_ffff == ROOM_MARKER_BASE)
             .map(|_| RoomLinkLayout::from_raw(&record));
-        let occluder = SubrecordView::new(&record.subrecords)
-            .find_all(b"NAME")
-            .filter_map(|data| <[u8; 4]>::try_from(data).ok())
-            .any(|word| {
-                source_identity::header_runtime_id(
-                    b"REFR",
-                    u32::from_le_bytes(word),
-                    priority,
-                    &order,
-                ) == Some(OCCLUSION_MARKER_BASE)
-            });
         let marker_warnings = RemapWarnings::default();
         record.load_order = priority as u32;
         remap_record_form_ids(
