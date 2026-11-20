@@ -632,21 +632,6 @@ fn duplicate_reason(id: u32, previous: u32, source: u32) -> String {
     format!("duplicate/colliding record {id:08X}: source {previous:08X}, {source:08X}")
 }
 
-fn merge_typed_default_objects(result: &mut ReadResult, record: &DecodedRecord) {
-    if record.record_type != *b"DOBJ" {
-        return;
-    }
-    if record.flags & 0x20 != 0 {
-        result.default_objects.remove(&record.form_id);
-    } else {
-        let mut raw = record.to_raw_record();
-        if let Some(previous) = result.default_objects.get(&record.form_id) {
-            crate::esm::merge_default_objects(previous, &mut raw);
-        }
-        result.default_objects.insert(record.form_id, raw);
-    }
-}
-
 /// Scan in load order using the converter's single slot/master authority.
 pub fn read_plugins(plugin_paths: &[PathBuf], order: &LoadOrder) -> Result<ReadResult> {
     read_plugins_with_validation(plugin_paths, order, |_| Ok(()))
@@ -812,11 +797,7 @@ fn read_plugins_with_prepared(
                 && !gmst_aliases.contains_key(&record.form_id)
                 && let Some(&(_, Some(placement_offset))) = seen.get(&record.form_id)
             {
-                recovery
-                    .duplicates
-                    .entry((index as u32, placement_offset))
-                    .or_default()
-                    .push_back(record);
+                recovery.queue_duplicate((index as u32, placement_offset), record, &result.records);
                 return;
             }
             if record.flags & 0x20 == 0
@@ -1002,7 +983,7 @@ fn read_plugins_with_prepared(
             } else if source.deleted {
                 result.overrides.insert(record.form_id, vec![source]);
             }
-            merge_typed_default_objects(&mut result, &record);
+            recovery.record_default_object(&record);
             if deleted {
                 result.records.remove(&record.form_id);
                 recovery.predecessors.remove(&record.form_id);
