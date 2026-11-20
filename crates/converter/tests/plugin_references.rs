@@ -1935,8 +1935,123 @@ fn a_two_pair_xpod_is_remapped_in_every_pair() {
 }
 
 #[test]
+fn invalid_room_names_keep_the_predecessors_and_uncertify_both_cells() {
+    use converter::config::RecordReader;
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    let room_name = sub(b"NAME", &0x1fu32.to_le_bytes());
+    let static_name = sub(b"NAME", &0x830u32.to_le_bytes());
+    let short_name = sub(b"NAME", &[0x1f, 0, 0]);
+    let long_name = sub(b"NAME", &[0x1f, 0, 0, 0, 0]);
+    let cases = [
+        ("missing", Vec::new()),
+        ("short", short_name.clone()),
+        ("long", long_name.clone()),
+        (
+            "room first",
+            [room_name.clone(), static_name.clone()].concat(),
+        ),
+        ("static first", [static_name, room_name.clone()].concat()),
+        (
+            "short first",
+            [short_name.clone(), room_name.clone()].concat(),
+        ),
+        ("short last", [room_name.clone(), short_name].concat()),
+        (
+            "long first",
+            [long_name.clone(), room_name.clone()].concat(),
+        ),
+        ("long last", [room_name.clone(), long_name].concat()),
+    ];
+    let predecessor = 0x900;
+    let neighbor = 0x901;
+    let mut placed = record(b"STAT", 0x830, 0, sub(b"EDID", b"OrdinaryStatic\0"));
+    placed.extend(record(b"CELL", predecessor, 0, sub(b"DATA", &[1, 0])));
+    placed.extend(record(b"CELL", neighbor, 0, sub(b"DATA", &[1, 0])));
+    placed.extend(placement_group(
+        neighbor,
+        placement_marker(0x880, 0x1f, Vec::new()),
+    ));
+    let mut patch_contents = Vec::new();
+    for (index, (_, fields)) in cases.iter().enumerate() {
+        let id = 0x800 + index as u32;
+        let cell = 0x910 + index as u32;
+        let marker = placement_marker(id, 0x1f, Vec::new());
+        placed.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
+        placed.extend(placement_group(
+            cell,
+            placement_marker(0x8a0 + index as u32, 0x1f, Vec::new()),
+        ));
+        placed.extend(placement_group(predecessor, marker.clone()));
+        let malformed = record(
+            b"REFR",
+            id,
+            0,
+            [fields, &marker[24 + room_name.len()..]].concat(),
+        );
+        patch_contents.extend(placement_group(cell, malformed));
+    }
+    let base = plugin(data, "Skyrim.esm", &[], 1, placed);
+    let patch = plugin(data, "Malformed.esp", &["Skyrim.esm"], 0, patch_contents);
+    let check = |db: &rusqlite::Connection, context: &str| {
+        assert!(placement_certificate(db, neighbor), "{context}");
+        assert_eq!(
+            stored_placement_certificate(db, predecessor),
+            Some(false),
+            "{context}"
+        );
+        for (index, (name, _)) in cases.iter().enumerate() {
+            let id = 0x800 + index as u32;
+            let cell = 0x910 + index as u32;
+            assert_eq!(
+                stored_placement_certificate(db, cell),
+                Some(false),
+                "{context}: {name}"
+            );
+            assert_eq!(
+                placement_winner_cell(db, id),
+                Some(predecessor),
+                "{context}: {name}"
+            );
+            let room_cell: u32 = db
+                .query_row(
+                    "SELECT cell_id FROM room_bounds WHERE ref_id=?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(room_cell, predecessor, "{context}: {name}");
+        }
+    };
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let path = data.join(format!("{reader:?}.db"));
+        EsmParser::convert_plugins_with_reader(&[base.clone(), patch.clone()], &path, reader, data)
+            .unwrap();
+        check(
+            &rusqlite::Connection::open(path).unwrap(),
+            &format!("{reader:?}"),
+        );
+    }
+    let assets = data.join("incremental");
+    fs::create_dir(&assets).unwrap();
+    let path = assets.join("skyrim_world.db");
+    EsmParser::convert_plugins_with_reader(&[base], &path, RecordReader::Inhouse, data).unwrap();
+    let result = run_placement_import(&assets, "--plugin", &patch);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    check(
+        &rusqlite::Connection::open(path).unwrap(),
+        "incremental plugin import",
+    );
+}
+
+#[test]
 fn broken_portal_links_do_not_become_authored_outside_endpoints() {
-    for (destination, kept) in [(0u32, true), (0x0900_0802, false), (0x0100_0000, false)] {
+    for destination in [0u32, 0x0900_0802, 0x0100_0000] {
         let dir = tempfile::tempdir().unwrap();
         let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
         let other = plugin(dir.path(), "Other.esm", &[], 1, Vec::new());
@@ -1955,7 +2070,14 @@ fn broken_portal_links_do_not_become_authored_outside_endpoints() {
             .filter(|(tag, _)| tag.as_slice() == b"XPOD")
             .collect();
         assert_eq!(xpods.len(), 1, "the source XPOD keeps one occurrence");
-        assert_eq!(!xpods[0].1.is_empty(), kept);
+        if destination == 0 {
+            assert_eq!(
+                xpods[0].1,
+                [0x0000_0801u32.to_le_bytes(), 0u32.to_le_bytes()].concat()
+            );
+        } else {
+            assert!(xpods[0].1.is_empty());
+        }
     }
 }
 
@@ -3818,6 +3940,140 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn only_bounded_deletions_supersede_the_predecessor() {
+    use converter::config::RecordReader;
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    let base = plugin(
+        data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            record(b"CELL", 0x901, 0, sub(b"DATA", &[1, 0])),
+            placement_group(0x900, placement_marker(0x800, 0x1f, Vec::new())),
+            placement_group(0x901, placement_marker(0x801, 0x1f, Vec::new())),
+        ]
+        .concat(),
+    );
+    let bounded = record(b"REFR", 0x800, 0x40020, vec![0; 3]);
+    let mut unbounded = bounded.clone();
+    unbounded[4..8].copy_from_slice(&4u32.to_le_bytes());
+    for (name, deletion, frame_complete) in
+        [("bounded", bounded, true), ("unbounded", unbounded, false)]
+    {
+        let patch = plugin(
+            data,
+            &format!("{name}.esp"),
+            &["Skyrim.esm"],
+            0,
+            placement_group(0x901, deletion),
+        );
+        for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+            let db = data.join(format!("{name}-{reader:?}.db"));
+            EsmParser::convert_plugins_with_reader(
+                &[base.clone(), patch.clone()],
+                &db,
+                reader,
+                data,
+            )
+            .unwrap();
+            let conn = rusqlite::Connection::open(db).unwrap();
+            assert_eq!(
+                placement_winner_cell(&conn, 0x800),
+                (!frame_complete).then_some(0x900),
+                "{reader:?} {name}"
+            );
+            assert_eq!(
+                stored_placement_certificate(&conn, 0x901),
+                Some(frame_complete),
+                "{reader:?} {name}"
+            );
+            if !frame_complete {
+                assert_eq!(
+                    stored_placement_certificate(&conn, 0x900),
+                    Some(false),
+                    "{reader:?} {name}"
+                );
+            }
+            if matches!(reader, RecordReader::Inhouse) {
+                let history: (String, bool, bool) = conn
+                    .query_row(
+                        "SELECT status,deleted,frame_complete FROM record_overrides
+                         WHERE form_id=0x800 AND plugin_id=1",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .unwrap();
+                let status = if frame_complete {
+                    "accepted"
+                } else {
+                    "skipped"
+                };
+                assert_eq!(history, (status.into(), true, frame_complete));
+            }
+        }
+    }
+}
+
+#[test]
+fn a_damaged_legacy_light_move_tracks_its_remapped_predecessor() {
+    use converter::config::RecordReader;
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    let mut cells = Vec::new();
+    for (cell, room) in [(0x900, 0x810), (0x901, 0x811), (0x902, 0x812)] {
+        cells.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
+        cells.extend(placement_group(
+            cell,
+            placement_marker(room, 0x1f, Vec::new()),
+        ));
+    }
+    let base = plugin(data, "Skyrim.esm", &[], 1, cells);
+    let light = plugin(
+        data,
+        "Light.esl",
+        &["Skyrim.esm"],
+        0x200,
+        placement_group(0x900, placement_marker(0x0100_1800, 0x1f, Vec::new())),
+    );
+    let damaged = plugin(
+        data,
+        "Damaged.esp",
+        &["Skyrim.esm", "Light.esl"],
+        0,
+        placement_group(0x901, record(b"REFR", 0x0100_1800, 0x40000, vec![0; 3])),
+    );
+    let restored = plugin(
+        data,
+        "Restored.esp",
+        &["Skyrim.esm", "Light.esl"],
+        0,
+        placement_group(0x901, placement_marker(0x0100_1800, 0x1f, Vec::new())),
+    );
+    for (suffix, target, certificates) in [
+        (Vec::new(), 0x900, [false, false, true]),
+        (vec![restored], 0x901, [true, true, true]),
+    ] {
+        let paths = [base.clone(), light.clone(), damaged.clone()]
+            .into_iter()
+            .chain(suffix)
+            .collect::<Vec<_>>();
+        let db = data.join("legacy.db");
+        EsmParser::convert_plugins_with_reader(&paths, &db, RecordReader::Legacy, data).unwrap();
+        let conn = rusqlite::Connection::open(db).unwrap();
+        assert_eq!(placement_winner_cell(&conn, 0xfe00_0800), Some(target));
+        assert_eq!(
+            [0x900, 0x901, 0x902].map(|id| placement_certificate(&conn, id)),
+            certificates
+        );
+    }
 }
 
 const PLACEMENT_CELL_A: u32 = 0x900;

@@ -801,9 +801,16 @@ fn project_room_graph(
 
     let base_of = |record: &RawRecord| {
         SubrecordView::new(&record.subrecords)
-            .get_form_id(b"NAME")
+            .unique_form_id(b"NAME")
             .unwrap_or(0)
     };
+    ordered.retain(|(_, record)| {
+        let valid = base_of(record) != 0;
+        if !valid {
+            incomplete.extend(record.cell_form_id);
+        }
+        valid
+    });
 
     // Rooms first: portals and links refer to them.
     let mut rooms_by_cell: BTreeMap<u32, Vec<Room>> = BTreeMap::new();
