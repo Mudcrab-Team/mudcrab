@@ -663,7 +663,7 @@ fn verify_decoded_plugin_sources(
             continue;
         }
         ensure!(
-            hash_bytes(digest) == *expected,
+            digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>() == *expected,
             "plugin {}: decoded bytes differ from the authenticated source package; refusing to rebuild metadata from a mixed input generation",
             conversion.load_order.names[index]
         );
