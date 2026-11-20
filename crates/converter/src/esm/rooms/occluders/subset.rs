@@ -309,6 +309,7 @@ fn project_subset<'a>(
         return Ok(only_occluders);
     }
     super::super::migrate_occluder_links(tx)?;
+    let has_placement_edits = super::super::table_exists(tx, "room_placement_edits")?;
     let mut affected = HashSet::new();
     let mut markers = Vec::new();
     let mut collect_targets = tx.prepare_cached(
@@ -406,6 +407,17 @@ fn project_subset<'a>(
                 |target| {
                     if let Some(record) = master.get(&target) {
                         return Ok(record.record_type == *b"REFR" && !record.is_deleted());
+                    }
+                    if has_placement_edits
+                        && let Some(live) = tx
+                            .prepare_cached(
+                                "SELECT EXISTS(SELECT 1 FROM [references] WHERE id=?1)
+                         FROM room_placement_edits WHERE form_id=?1 LIMIT 1",
+                            )?
+                            .query_row([target], |row| row.get(0))
+                            .optional()?
+                    {
+                        return Ok(live);
                     }
                     tx.prepare_cached(
                     "SELECT coalesce((SELECT record_type='REFR' FROM records WHERE form_id=?1), ?1 < 2048 OR EXISTS(SELECT 1 FROM room_occluders WHERE ref_id=?1))",

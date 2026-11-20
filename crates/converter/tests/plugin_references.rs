@@ -4453,6 +4453,59 @@ fn room_placement_command_updates_skyrim_and_native_occluders() {
     assert_eq!(count(), 0);
 }
 
+#[test]
+fn occluder_link_to_a_deleted_archived_placement_is_an_omission() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    let remove = dir.path().join("remove.json");
+    fs::write(&remove, r#"{"edits":[{"op":"delete","id":2050}]}"#).unwrap();
+    assert!(
+        run_placement_import(&assets, "--native", &remove)
+            .status
+            .success()
+    );
+    let plane = plugin(
+        dir.path(),
+        "LinkToDeleted.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(
+            PLACEMENT_CELL_A,
+            placement_marker(
+                0x0100_0910,
+                23,
+                sub(b"XORD", &[0x802u32, 0, 0, 0].map(u32::to_le_bytes).concat()),
+            ),
+        ),
+    );
+    let result = run_placement_import(&assets, "--plugin", &plane);
+    let error = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        result.status.success() && error.contains("unresolved FormID"),
+        "{error}"
+    );
+    assert!(!placement_certificate(&db, PLACEMENT_CELL_A));
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM room_occluder_links WHERE ref_id=0x01000910",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT record_type FROM records WHERE form_id=0x802",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "REFR"
+    );
+}
+
 fn authored_cell(id: u32, extra: Vec<u8>) -> Vec<u8> {
     record(
         b"CELL",
