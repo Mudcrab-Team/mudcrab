@@ -27,7 +27,7 @@ use std::{
 };
 use walkdir::WalkDir;
 
-mod room_bounds;
+pub(crate) mod room_bounds;
 
 pub struct MeshConverter;
 
@@ -5874,6 +5874,33 @@ mod tests {
         assert_eq!(sphere["center"], serde_json::json!([1000.0, 0.0, 0.0]));
         assert_eq!(sphere["radius"], 1.0);
         assert_eq!(glb_bounds_from_bytes(&bytes).unwrap().max[0], 1001.0);
+    }
+
+    #[test]
+    fn room_sphere_rejects_a_vertex_just_outside_the_surface() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("boundary.nif");
+        let output = input.with_extension("glb");
+        for (offset, enclosed) in [(0.0, true), (1.0 / 4096.0, false)] {
+            let mut bytes = static_nif_with_positions(&[
+                [1.0, offset, 0.0],
+                [-1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, -1.0, 0.0],
+            ]);
+            let (data, header) = parse_skyrim_header(&bytes, &input).unwrap();
+            let shape = bytes.len() - data.len() + header.block_size_index[0] as usize;
+            bytes[shape + 72..shape + 84].fill(0);
+            bytes[shape + 84..shape + 88].copy_from_slice(&1.0f32.to_le_bytes());
+            fs::write(&input, &bytes).unwrap();
+            MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+            let glb = fs::read(&output).unwrap();
+            let document = glb_json_from_bytes(&glb).unwrap();
+            assert_eq!(
+                document["extras"]["mudcrabRoomSphere"].is_object(),
+                enclosed
+            );
+        }
     }
 
     fn static_nif() -> Vec<u8> {

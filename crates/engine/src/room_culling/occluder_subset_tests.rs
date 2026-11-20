@@ -97,6 +97,54 @@ fn hides_mesh(conn: &Connection, cell: u32) -> bool {
 }
 
 #[test]
+fn full_export_keeps_a_cross_cell_occluder_target_from_acting_independently() {
+    let dir = tempfile::tempdir().unwrap();
+    let (original, base, header) = converted_pack(dir.path());
+    assert!(hides_mesh(&original, OTHER));
+    let patch = dir.path().join("Patch.esp");
+    let link = [0, 0, OTHER_MARKER, 0].map(u32::to_le_bytes).concat();
+    for (name, bytes, verified, expected_target, target_hides_mesh) in [
+        ("empty", &[0; 16][..], true, None, true),
+        ("short", &link[..12], false, None, false),
+        ("linked", &link, true, Some(OTHER_MARKER), false),
+    ] {
+        fs::write(
+            &patch,
+            plugin(
+                &header,
+                &["Skyrim.esm"],
+                0,
+                &cell_contents(FIRST, marker(MOD_MARKER, 0.0, &[bytes])),
+            ),
+        )
+        .unwrap();
+        let db = dir.path().join(format!("{name}.db"));
+        EsmParser::convert_plugins_with_reader(
+            &[base.clone(), patch.clone()],
+            &db,
+            RecordReader::Inhouse,
+            dir.path(),
+        )
+        .unwrap();
+        let conn = Connection::open(db).unwrap();
+        let (link_verified, target): (bool, Option<u32>) = conn
+            .query_row(
+                "SELECT value,(SELECT linked_ref FROM room_occluder_links WHERE ref_id=?1)
+                 FROM room_graph_stats WHERE name='occlusion_links_verified'",
+                [MOD_MARKER],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (link_verified, target),
+            (verified, expected_target),
+            "{name}"
+        );
+        assert_eq!(hides_mesh(&conn, OTHER), target_hides_mesh, "{name}");
+    }
+}
+
+#[test]
 fn skyrim_occluder_subset_adds_moves_and_deletes_an_active_plane() {
     let dir = tempfile::tempdir().unwrap();
     let (conn, base, header) = converted_pack(dir.path());

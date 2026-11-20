@@ -6,7 +6,9 @@ use bevy::{
     prelude::*,
 };
 
-const EPSILON: f32 = 1.0e-3;
+const SHADOW_DISTANCE_MARGIN: f32 = 1.0e-3;
+const MIN_ABS_FACING_DOT: f32 = 1.0e-3;
+const MIN_EDGE_CROSS_LENGTH: f32 = 1.0e-3;
 const NEAR_SHAPE_DISTANCE: f32 = 5.0;
 
 #[derive(Debug, Clone)]
@@ -50,7 +52,8 @@ impl OcclusionVolume {
                 let rounding = 8.0
                     * f64::from(f32::EPSILON)
                     * (plane.truncate().abs().dot(center.abs()) + plane.w.abs() + radius);
-                distance.is_finite() && distance - radius > f64::from(EPSILON) + rounding
+                distance.is_finite()
+                    && distance - radius > f64::from(SHADOW_DISTANCE_MARGIN) + rounding
             })
     }
 }
@@ -91,7 +94,8 @@ impl View {
 
     fn beyond_near(&self, corners: &[DVec3]) -> bool {
         corners.iter().all(|corner| {
-            corner.is_finite() && self.near.dot(corner.extend(1.0)) > f64::from(EPSILON)
+            corner.is_finite()
+                && self.near.dot(corner.extend(1.0)) > f64::from(SHADOW_DISTANCE_MARGIN)
         })
     }
 
@@ -101,13 +105,12 @@ impl View {
         // Crossing two nearly parallel corner rays can lose the short edge to cancellation.
         let normal = edge.cross(ray);
         let length = normal.length();
-        let epsilon = f64::from(EPSILON);
-        if !length.is_finite() || length <= epsilon {
+        if !length.is_finite() || length <= f64::from(MIN_EDGE_CROSS_LENGTH) {
             return None;
         }
         let normal = normal / length;
         let distance = normal.dot(inside - a);
-        if !distance.is_finite() || distance.abs() <= epsilon {
+        if !distance.is_finite() || distance.abs() <= f64::from(SHADOW_DISTANCE_MARGIN) {
             return None;
         }
         through_point(normal * distance.signum(), a)
@@ -200,7 +203,7 @@ impl Occluder {
         }
         let hidden_normal = if let Some(forward) = view.parallel {
             let facing = normal.dot(forward);
-            if facing.abs() <= f64::from(EPSILON) {
+            if facing.abs() <= f64::from(MIN_ABS_FACING_DOT) {
                 return None;
             }
             normal * facing.signum()

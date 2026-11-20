@@ -1132,7 +1132,9 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
                         .copied()
                         .map(PortalSide::Room)
                         .unwrap_or(PortalSide::Unknown),
-                    None if row.get::<_, bool>(index + 2)? => PortalSide::Unbounded,
+                    None if row.get_ref(index + 2)? == rusqlite::types::ValueRef::Integer(1) => {
+                        PortalSide::Unbounded
+                    }
                     None => PortalSide::Unknown,
                 })
             };
@@ -2273,6 +2275,37 @@ mod tests {
     }
 
     #[test]
+    fn malformed_occluder_values_preserve_portals_and_valid_occluders() {
+        let connection = occluder_database();
+        insert_room(&connection, 1, 7, [0.0; 3]);
+        connection
+            .execute_batch(
+                "INSERT INTO room_portals VALUES(10,7,0,0,0,0,0,0,4,6,1,NULL,0,1);
+                 INSERT INTO room_occluders VALUES(501,7,3,0,40,0,0,0,0,'invalid',0,8,1,0,0,0,NULL);",
+            )
+            .unwrap();
+        let graph = load_room_graph(&connection, 7).unwrap();
+        assert_eq!(
+            graph.portals[0].rooms,
+            [PortalSide::Room(0), PortalSide::Unbounded]
+        );
+        assert_eq!(
+            graph
+                .occluders
+                .values()
+                .flatten()
+                .map(|shape| shape.ref_id)
+                .collect::<Vec<_>>(),
+            [500]
+        );
+
+        connection
+            .execute_batch("ALTER TABLE room_occluders RENAME COLUMN half_x TO missing_half_x")
+            .unwrap();
+        assert!(load_room_graph(&connection, 7).is_err());
+    }
+
+    #[test]
     fn occluder_ownership_resolves_joined_bounds_and_skips_ambiguous_masters() {
         let connection = occluder_database();
         insert_room(&connection, 1, 7, [0.0; 3]);
@@ -2991,9 +3024,21 @@ mod tests {
         );
         assert_eq!(graph.membership[&100], Membership::default());
         assert!(!graph.membership.contains_key(&101));
+        assert!(reached_rooms(&graph, Vec3::ZERO, clip_from_local()).is_some());
+        for flag in [
+            rusqlite::types::Value::Integer(2),
+            "invalid".to_owned().into(),
+        ] {
+            connection
+                .execute("UPDATE room_portals SET unbounded_b=?1", [flag])
+                .unwrap();
+            let graph = load_room_graph(&connection, 7).unwrap();
+            assert_eq!(graph.portals[0].rooms[1], PortalSide::Unknown);
+            assert!(reached_rooms(&graph, Vec3::ZERO, clip_from_local()).is_none());
+        }
         // An inconsistent foreign-room ID must not acquire outside meaning from a flag.
         connection
-            .execute("UPDATE room_portals SET room_b=999", [])
+            .execute("UPDATE room_portals SET room_b=999,unbounded_b=1", [])
             .unwrap();
         let graph = load_room_graph(&connection, 7).unwrap();
         assert_eq!(graph.portals[0].rooms[1], PortalSide::Unknown);

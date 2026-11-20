@@ -3,7 +3,7 @@
 use crate::{
     asset_path::{AssetKind, canonical_asset_path, canonical_literal_asset_path},
     esm::projection_omissions::ProjectionOmissions,
-    mesh::drawable_bounds,
+    mesh::{drawable_bounds, room_bounds::encloses_native_scene},
 };
 use color_eyre::{
     Result,
@@ -125,7 +125,7 @@ pub fn refresh_native_model_bounds(
         };
         ensure!(resolved.starts_with(&root), "GLB escapes pack: {key}");
         ensure!(resolved.is_file(), "not a GLB file: {key}");
-        match read_glb_bounds(&resolved) {
+        match read_glb_bounds(&resolved, ModelBoundsSource::NativeReplacement) {
             Ok(projected) => *bounds = projected,
             Err(error) if error.downcast_ref::<std::io::Error>().is_some() => return Err(error),
             Err(error) => {
@@ -306,9 +306,10 @@ pub fn finalize_world_database_with_sources(
             }
             continue;
         };
-        let bounds = model_bounds
-            .entry(key)
-            .or_insert_with(|| read_glb_bounds(path).map_err(|error| format!("{error:#}")));
+        let bounds = model_bounds.entry(key).or_insert_with(|| {
+            read_glb_bounds(path, ModelBoundsSource::Converter)
+                .map_err(|error| format!("{error:#}"))
+        });
         match bounds {
             Ok(None) => {}
             Ok(Some(bounds)) => {
@@ -482,18 +483,27 @@ fn write_model_bounds(tx: &Transaction<'_>, id: u32, bounds: ModelBounds) -> rus
     Ok(())
 }
 
-fn read_glb_bounds(path: &Path) -> Result<Option<ModelBounds>> {
+enum ModelBoundsSource {
+    Converter,
+    NativeReplacement,
+}
+
+fn read_glb_bounds(path: &Path, source: ModelBoundsSource) -> Result<Option<ModelBounds>> {
     let mut file =
         fs::File::open(path).wrap_err_with(|| format!("failed to open {}", path.display()))?;
     let file_length = file.metadata()?.len();
-    let prefix = read_glb_prefix(&mut file, file_length)
+    let mut prefix = read_glb_prefix(&mut file, file_length)
         .wrap_err_with(|| format!("failed to extract bounds from {}", path.display()))?;
     let document: serde_json::Value = serde_json::from_slice(&prefix[20..])?;
     let metadata = &document["extras"]["mudcrabRoomSphere"];
-    let sphere = (metadata["version"].as_u64() == Some(1))
+    let mut sphere = (metadata["version"].as_u64() == Some(1))
         .then(|| serde_json::from_value::<ModelSphere>(metadata.clone()).ok())
         .flatten()
         .filter(|sphere| sphere.valid() && sphere.radius > 0.0);
+    if let (ModelBoundsSource::NativeReplacement, Some(candidate)) = (source, sphere) {
+        file.read_to_end(&mut prefix)?;
+        sphere = encloses_native_scene(&prefix, &document, candidate).then_some(candidate);
+    }
     Ok(drawable_bounds(&document)?.map(|render| ModelBounds {
         render,
         room: sphere,

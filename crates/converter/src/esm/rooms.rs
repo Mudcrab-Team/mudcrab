@@ -800,6 +800,7 @@ pub(super) fn export_room_graph_with_sources(
         _ => None,
     };
     let mut occluders = occluders::export(tx, master, interior_cells, occluder_sources, omissions)?;
+    let links_verified = !occluders.unverified_link_targets;
     occluders
         .incomplete_cells
         .extend(damaged_placement_cells.into_iter().flatten().copied());
@@ -817,6 +818,12 @@ pub(super) fn export_room_graph_with_sources(
         "INSERT INTO room_graph_stats(name,value) VALUES ('visibility_version',2),('assignment_version',1)",
         [],
     )?;
+    if occluder_sources.is_some() {
+        tx.execute(
+            "INSERT INTO room_graph_stats(name,value) VALUES ('occlusion_links_verified',?1)",
+            [links_verified],
+        )?;
+    }
     Ok(report)
 }
 

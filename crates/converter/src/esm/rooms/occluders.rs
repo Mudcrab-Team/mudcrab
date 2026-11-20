@@ -20,6 +20,7 @@ pub(super) struct Exported {
     pub invalid: u64,
     pub cells: HashSet<u32>,
     pub incomplete_cells: HashSet<u32>,
+    pub unverified_link_targets: bool,
 }
 
 fn primitive(data: &[u8]) -> Option<(u32, [f32; 3])> {
@@ -226,6 +227,7 @@ fn project(
         .chain(authored(*b"XORD"));
     for (occurrence, bytes) in xords.enumerate() {
         let Some(targets) = link_targets(bytes) else {
+            result.unverified_link_targets = true;
             link_omission.get_or_insert("PlaneMarker XORD must contain four FormIDs");
             continue;
         };

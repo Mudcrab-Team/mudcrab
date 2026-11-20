@@ -1,7 +1,7 @@
 //! Optional, source-versioned occluder facts. Unsupported ownership and state never hide meshes.
 
 use super::{PortalSide, RoomGraph, assignment::master_side, occlusion::Occluder};
-use rusqlite::{Connection, Result};
+use rusqlite::{Connection, Error, Result};
 use std::collections::HashMap;
 
 fn supported(conn: &Connection) -> Result<bool> {
@@ -122,7 +122,11 @@ pub(super) fn load(
             links,
             target,
             verified_target,
-        ) = row?;
+        ) = match row {
+            Ok(values) => values,
+            Err(Error::InvalidColumnType(..) | Error::IntegralValueOutOfRange(..)) => continue,
+            Err(error) => return Err(error),
+        };
         // Retail kept isolated authored XORD pairs as separate render planes.
         if flags & (0x800 | 0x20 | shared::records::MULTIBOUND_REFERENCE_FLAG) != 0
             || parent

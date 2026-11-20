@@ -35,7 +35,7 @@ pub(super) fn tag_drawable_spheres(
         if mesh
             .positions
             .iter()
-            .all(|pos| ((pos.as_dvec3() - center).length() as f32) <= sphere.radius)
+            .all(|pos| pos.as_dvec3().distance(center) <= f64::from(sphere.radius))
         {
             output["extras"][DRAWABLE_SPHERE_EXTRA] = serde_json::to_value(sphere)?;
         }
@@ -359,6 +359,26 @@ pub(super) fn encloses_scene(
     scene_fits(glb, document, sphere).unwrap_or(false)
 }
 
+pub(crate) fn encloses_native_scene(
+    glb: &[u8],
+    document: &serde_json::Value,
+    sphere: ModelSphere,
+) -> bool {
+    // Streaming instantiates scene 0. Prove enclosure only for embedded, rigid geometry.
+    document["scene"].as_u64() == Some(0)
+        && ["animations", "skins", "extensionsUsed"]
+            .into_iter()
+            .all(|key| {
+                document
+                    .get(key)
+                    .is_none_or(|value| value.as_array().is_some_and(Vec::is_empty))
+            })
+        && document["buffers"].as_array().is_some_and(
+            |buffers| matches!(buffers.as_slice(), [buffer] if buffer.get("uri").is_none()),
+        )
+        && encloses_scene(glb, document, sphere)
+}
+
 fn scene_fits(glb: &[u8], document: &serde_json::Value, sphere: ModelSphere) -> Option<bool> {
     let chunks = gltf::binary::Glb::from_slice(glb).ok()?;
     let gltf = gltf::Document::from_json(serde_json::from_value(document.clone()).ok()?).ok()?;
@@ -395,10 +415,7 @@ fn scene_fits(glb: &[u8], document: &serde_json::Value, sphere: ModelSphere) -> 
         }
     }
     let center = Vec3::from_array(sphere.center).as_dvec3();
-    let contains = |point: DVec3| {
-        // Authored radii are stored as f32, including when a vertex lies on the bound.
-        ((point - center).length() as f32) <= sphere.radius
-    };
+    let contains = |point: DVec3| point.distance(center) <= f64::from(sphere.radius);
     let mut seen_position = false;
     for (mesh, skin, world) in drawables {
         let joint_transforms = if let Some(skin) = skin {

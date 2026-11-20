@@ -534,8 +534,10 @@ fn controllers_on_joint_ancestors_omit_the_room_sphere() {
         SkinController::Direct,
         SkinController::MultiTarget,
         SkinController::NamedTrack,
+        SkinController::LagBone,
     ] {
         for (target, fixed) in [
+            (SkinControllerTarget::Joint, false),
             (SkinControllerTarget::Ancestor, false),
             (SkinControllerTarget::Unrelated, true),
             (SkinControllerTarget::AboveSkinRoot, false),
