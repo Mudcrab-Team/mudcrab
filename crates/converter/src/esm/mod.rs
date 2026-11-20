@@ -402,12 +402,8 @@ impl EsmParser {
                 .and_then(|()| {
                     if !damaged && !record.is_deleted() {
                         if is_placed_record_type(&record_type) {
-                            validate_placement_parent(&record_type, record.cell_form_id, || {
-                                merged
-                                    .get(&record.form_id)
-                                    .and_then(|prior: &RawRecord| prior.cell_form_id)
-                            })
-                            .map_err(color_eyre::eyre::Report::msg)?;
+                            validate_placement_parent(&record_type, record.cell_form_id, || None)
+                                .map_err(color_eyre::eyre::Report::msg)?;
                             let view = extractors::SubrecordView::new(&record.subrecords);
                             if merged.contains_key(&record.form_id) {
                                 color_eyre::eyre::ensure!(
@@ -591,28 +587,26 @@ fn resolve_legacy_placements(
         let selected = placement_dependency_order(candidates.keys().copied(), |id| {
             candidates
                 .contains_key(&id)
-                .then(|| legacy_placement_links(&winners[&id]))
+                .then(|| legacy_placement_dependencies(&winners[&id], &candidates[&id]))
         });
         for id in selected {
             let Entry::Occupied(entry) = candidates.entry(id) else {
                 continue;
             };
             let record = &winners[&id];
-            let links = legacy_placement_links(record);
-            if links
-                .into_iter()
-                .flatten()
+            let candidate = entry.get();
+            if legacy_placement_dependencies(record, candidate)
                 .any(|target| unresolved.contains(&target))
             {
                 unresolved.insert(id);
                 continue;
             }
-            let [cell, base] = links;
             let Err(reason) = crate::records::validate_placement_targets(
                 None,
                 &record.record_type,
-                cell,
-                base,
+                legacy_placement_links(record),
+                legacy_grouped_predecessors(record.cell_form_id, candidate)
+                    .map(|prior| (prior.record_type, legacy_placement_links(prior))),
                 |target| winners.get(&target).map(|record| record.record_type),
                 |target| deleted_ids.contains(&target),
             ) else {
@@ -664,11 +658,44 @@ fn legacy_placement_links(record: &RawRecord) -> [Option<u32>; 2] {
     ]
 }
 
+fn legacy_grouped_predecessors(
+    cell: Option<u32>,
+    candidate: &LegacyPlacementCandidate,
+) -> impl Iterator<Item = &RawRecord> {
+    let first = if cell.is_none() {
+        candidate.predecessor.as_deref()
+    } else {
+        None
+    };
+    std::iter::successors(first, |predecessor| {
+        predecessor
+            .previous_candidate
+            .as_ref()?
+            .predecessor
+            .as_deref()
+    })
+    .filter_map(|predecessor| predecessor.previous.as_ref())
+    .filter(|previous| previous.cell_form_id.is_some())
+}
+
+fn legacy_placement_dependencies<'a>(
+    record: &'a RawRecord,
+    candidate: &'a LegacyPlacementCandidate,
+) -> impl Iterator<Item = u32> + 'a {
+    legacy_placement_links(record)
+        .into_iter()
+        .chain(
+            legacy_grouped_predecessors(record.cell_form_id, candidate)
+                .flat_map(legacy_placement_links),
+        )
+        .flatten()
+}
+
 /// Visit tentative placement targets first so that a rejected override can
 /// reveal its predecessor's type before dependent placements are checked.
-pub(crate) fn placement_dependency_order(
+pub(crate) fn placement_dependency_order<T: IntoIterator<Item = u32>>(
     placements: impl IntoIterator<Item = u32>,
-    links: impl Fn(u32) -> Option<[Option<u32>; 2]>,
+    links: impl Fn(u32) -> Option<T>,
 ) -> Vec<u32> {
     let mut visited = HashSet::new();
     let mut stack = Vec::new();
@@ -683,7 +710,7 @@ pub(crate) fn placement_dependency_order(
             {
                 visited.insert(id);
                 stack.push((id, true));
-                stack.extend(targets.into_iter().flatten().map(|target| (target, false)));
+                stack.extend(targets.into_iter().map(|target| (target, false)));
             }
         }
     }
@@ -912,8 +939,8 @@ pub(crate) fn valid_placement_transform<'a>(mut fields: impl Iterator<Item = &'a
             .all(|word| f32::from_le_bytes(*word).is_finite())
 }
 
-/// An ungrouped first definition has no earlier room to lose. An override of a
-/// cell-owned placement needs a destination before it can displace that winner.
+/// A missing parent disqualifies an override only if a usable predecessor owns a cell.
+/// Callers defer that lookup until the placement targets can be checked.
 pub(crate) fn validate_placement_parent(
     kind: &[u8; 4],
     cell: Option<u32>,

@@ -2897,38 +2897,45 @@ fn target_allowed(id: u32, kind: Option<[u8; 4]>, field: &FieldSchema) -> bool {
     })
 }
 
-/// Check the two required placement links against the same catalogue as optional links.
+/// Check required placement links and resolve parent ownership against the same catalogue.
 pub(crate) fn validate_placement_targets(
     prepared: Option<&PreparedSchemas>,
     kind: &[u8; 4],
-    cell: Option<u32>,
-    base: Option<u32>,
+    links: [Option<u32>; 2],
+    mut grouped_predecessors: impl Iterator<Item = ([u8; 4], [Option<u32>; 2])>,
     winning_kind: impl Fn(u32) -> Option<[u8; 4]>,
     was_deleted: impl Fn(u32) -> bool,
 ) -> Result<(), String> {
-    if let Some(cell) = cell
-        && winning_kind(cell) != Some(*b"CELL")
-    {
-        return Err(format!(
-            "placement parent {cell:08X} is absent or is not CELL"
-        ));
-    }
     let schemas = match prepared {
         Some(prepared) => prepared,
         None => self::prepared(),
     };
-    if let Some(base) = base
-        && let Some(field) = placement_base_field(schemas, kind)
-        && {
-            let kind = winning_kind(base);
-            !target_allowed(base, kind, field) || (kind.is_none() && was_deleted(base))
+    let check_targets = |kind: &[u8; 4], [cell, base]: [Option<u32>; 2]| {
+        if let Some(cell) = cell
+            && winning_kind(cell) != Some(*b"CELL")
+        {
+            return Err(format!(
+                "placement parent {cell:08X} is absent or is not CELL"
+            ));
         }
-    {
-        return Err(format!(
-            "required NAME {base:08X} is absent or has a disallowed target type"
-        ));
-    }
-    Ok(())
+        if let Some(base) = base
+            && let Some(field) = placement_base_field(schemas, kind)
+            && {
+                let kind = winning_kind(base);
+                !target_allowed(base, kind, field) || (kind.is_none() && was_deleted(base))
+            }
+        {
+            return Err(format!(
+                "required NAME {base:08X} is absent or has a disallowed target type"
+            ));
+        }
+        Ok(())
+    };
+    check_targets(kind, links)?;
+    crate::esm::validate_placement_parent(kind, links[0], || {
+        grouped_predecessors
+            .find_map(|(kind, links)| check_targets(&kind, links).ok().and(links[0]))
+    })
 }
 
 fn placement_links(record: &DecodedRecord) -> [Option<u32>; 2] {
@@ -2941,6 +2948,38 @@ fn placement_links(record: &DecodedRecord) -> [Option<u32>; 2] {
             _ => None,
         });
     [record.cell_form_id, base]
+}
+
+fn grouped_predecessors<'a>(
+    record: &DecodedRecord,
+    predecessors: &'a HashMap<u32, Vec<DecodedRecord>>,
+) -> impl Iterator<Item = &'a DecodedRecord> {
+    let chain = if record.cell_form_id.is_none() {
+        predecessors
+            .get(&record.form_id)
+            .map_or(&[][..], Vec::as_slice)
+    } else {
+        &[]
+    };
+    // A non-placement replacement ends the earlier placement's ownership.
+    let start = chain
+        .iter()
+        .rposition(|prior| !crate::esm::is_placed_record_type(&prior.record_type))
+        .unwrap_or(0);
+    chain[start..]
+        .iter()
+        .rev()
+        .filter(|prior| prior.cell_form_id.is_some())
+}
+
+fn placement_dependencies<'a>(
+    record: &'a DecodedRecord,
+    predecessors: &'a HashMap<u32, Vec<DecodedRecord>>,
+) -> impl Iterator<Item = u32> + 'a {
+    placement_links(record)
+        .into_iter()
+        .chain(grouped_predecessors(record, predecessors).flat_map(placement_links))
+        .flatten()
 }
 
 fn recover_predecessor(
@@ -3160,28 +3199,25 @@ pub(crate) fn resolve_deferred(
         let selected = crate::esm::placement_dependency_order(placements.iter().copied(), |id| {
             placements
                 .contains(&id)
-                .then(|| placement_links(&result.records[&id]))
+                .then(|| placement_dependencies(&result.records[&id], predecessors))
         });
         for id in selected {
             let hash_map::Entry::Occupied(entry) = result.records.entry(id) else {
                 continue;
             };
             let record = entry.get();
-            let links = placement_links(record);
-            if links
-                .into_iter()
-                .flatten()
+            if placement_dependencies(record, predecessors)
                 .any(|target| unresolved.contains(&target))
             {
                 unresolved.insert(id);
                 continue;
             }
-            let [cell, base] = links;
             let Err(reason) = validate_placement_targets(
                 Some(prepared),
                 &record.record_type,
-                cell,
-                base,
+                placement_links(record),
+                grouped_predecessors(record, predecessors)
+                    .map(|prior| (prior.record_type, placement_links(prior))),
                 |target| kinds.get(&target).copied(),
                 |target| {
                     result

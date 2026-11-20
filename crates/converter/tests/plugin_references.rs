@@ -5600,3 +5600,74 @@ fn check_placement_winners(
         }
     }
 }
+
+#[test]
+fn placement_winner_checks_ungrouped_override_against_usable_predecessor() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = plugin(
+        dir.path(),
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            record(b"STAT", 0x830, 0, sub(b"EDID", b"OriginalStatic\0")),
+            record(b"STAT", 0x831, 0, sub(b"EDID", b"ReplacementStatic\0")),
+            placement_group(
+                0x900,
+                [
+                    placement(0x850, 0x832, 0, 1.0, Vec::new()),
+                    placement(0x851, 0x830, 0, 1.0, Vec::new()),
+                    placement(0x852, 0x832, 0, 1.0, Vec::new()),
+                    placement(0x853, 0x830, 0, 1.0, Vec::new()),
+                    placement(0x854, 0x830, 0, 1.0, Vec::new()),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    );
+    let patch = plugin(
+        dir.path(),
+        "Patch.esp",
+        &["Skyrim.esm"],
+        0,
+        [
+            placement(0x850, 0x831, 0, 2.0, Vec::new()),
+            placement(0x851, 0x831, 0, 2.0, Vec::new()),
+            placement(0x852, 0x832, 0, 2.0, Vec::new()),
+            placement_group(
+                0x900,
+                [
+                    placement(0x853, 0x831, 0, 2.0, Vec::new()),
+                    placement(0x854, 0x832, 0, 2.0, Vec::new()),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    );
+
+    let later = plugin(
+        dir.path(),
+        "Later.esp",
+        &["Skyrim.esm"],
+        0,
+        placement(0x854, 0x831, 0, 3.0, Vec::new()),
+    );
+
+    let mut failures = Vec::new();
+    check_placement_winners(
+        &[base, patch, later],
+        "ungrouped",
+        &[
+            (0x850, Some((None, 0x831))),
+            (0x851, Some((Some(0x900), 0x830))),
+            (0x852, None),
+            (0x853, Some((Some(0x900), 0x831))),
+            (0x854, Some((Some(0x900), 0x830))),
+        ],
+        &mut failures,
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

@@ -761,12 +761,7 @@ fn read_plugins_with_prepared(
                 && let Err(error) = crate::esm::validate_placement_parent(
                     &record.record_type,
                     record.cell_form_id,
-                    || {
-                        result
-                            .records
-                            .get(&record.form_id)
-                            .and_then(|prior| prior.cell_form_id)
-                    },
+                    || None,
                 )
                 .and_then(|()| {
                     if crate::esm::is_placed_record_type(&record.record_type)
