@@ -132,6 +132,15 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    `tools/unwrap_ratchet/baseline.json` (it also raises `revision`, so the approval shows in the diff even
    when a number does not change), and explain the reason in the pull request. A baseline that your pull
    request did not change never raises the limit.
+
+   CI also ratchets four Clippy lints that find lossy numeric casts and exact float comparisons
+   (`cast_possible_truncation`, `cast_sign_loss`, `cast_possible_wrap`, `float_cmp`) in the
+   `converter` and `shared` crates. The count per crate and lint may not rise above
+   `tools/cast_ratchet/baseline.json`. A fall prints the new number; run
+   `python3 tools/cast_ratchet/cast_ratchet.py --clippy-json <log> --update` to lower the baseline.
+   An exception needs a reason at the cast site, for example
+   `#[allow(clippy::cast_possible_truncation, reason = "the form ID is below 2^24")]`.
+   `python3 tools/cast_ratchet/cast_ratchet.py --lint-flags` prints the Clippy flags for a local run.
 5. **Submit a Pull Request:**
    - Target the `main` branch and fill in the PR template; [`docs/contributing/writing-prs.md`](docs/contributing/writing-prs.md) shows how to write it so it is quick to review.
    - Link the issue (`Closes #N`), apply the [labels](docs/contributing/labels.md) that fit (if a label there doesn't exist on the repository yet, use the closest one that does; without triage access, name them in the PR instead), and reference any relevant planning docs in `docs/specs/`.

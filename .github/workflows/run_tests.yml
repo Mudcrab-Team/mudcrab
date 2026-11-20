@@ -64,7 +64,7 @@ jobs:
           }
 
           check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|(.*/)?Cargo\.toml|.*\.(rs|wgsl)|crates/converter/src/records/.*\.json|\.cargo/.*|\.github/workflows/.*|tools/skyrim-recorder/.*|docs/research/evidence/skyrim-physics-221/.*|scripts/[^/]*skyrim[^/]*\.py)$'
-          check_pattern "check_scripts" '(\.(ps1|py)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^tools/skyrim-recorder/|^docs/research/evidence/skyrim-physics-221/|^tools/world_data_inventory/|^docs/data-inventory/|^crates/(converter|shared)/|^crates/engine/src/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
+          check_pattern "check_scripts" '(\.(ps1|py)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^tools/skyrim-recorder/|^docs/research/evidence/skyrim-physics-221/|^tools/world_data_inventory/|^tools/cast_ratchet/|^docs/data-inventory/|^crates/(converter|shared)/|^crates/engine/src/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
           check_pattern "check_world_data" '^(tools/world_data_inventory/|docs/data-inventory/|crates/(converter|shared)/|crates/engine/src/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_lod_experiment" '^(scripts/lod-experiment/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_native_profiling" '^(scripts/profiling/(analyze_native\.py|correlate_drawables\.py|metal_trace\.m|source-manifest\.json|fixtures/.*\.json)|scripts/tests/test_native_metal_profiling\.py|\.github/workflows/run_tests\.yml)$'
@@ -72,6 +72,7 @@ jobs:
           check_pattern "check_enable_observations" '^(scripts/reference-enable-observations\.py|scripts/tests/test_reference_enable_observations\.py|\.github/workflows/run_tests\.yml)$'
           check_pattern "check_schema_validation" '^(tools/schema_validation/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_unwrap_ratchet" '^(crates/.*\.rs|tools/unwrap_ratchet/.*|\.github/workflows/run_tests\.yml)$'
+          check_pattern "check_cast_ratchet" '^(crates/(converter|shared)/.*|tools/cast_ratchet/.*|(.*/)?Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|\.cargo/.*|\.github/workflows/run_tests\.yml)$'
     outputs:
       check_rust: ${{ steps.filter.outputs.check_rust }}
       check_scripts: ${{ steps.filter.outputs.check_scripts }}
@@ -82,6 +83,7 @@ jobs:
       check_enable_observations: ${{ steps.filter.outputs.check_enable_observations }}
       check_schema_validation: ${{ steps.filter.outputs.check_schema_validation }}
       check_unwrap_ratchet: ${{ steps.filter.outputs.check_unwrap_ratchet }}
+      check_cast_ratchet: ${{ steps.filter.outputs.check_cast_ratchet }}
 
   format:
     needs: [orchestrate]
@@ -190,6 +192,9 @@ jobs:
 
       - name: Test cluster bounds audit lockfile parsing
         run: python3 -B -m unittest discover -s tools -p 'test_diagnose_cluster_bounds.py' -v
+
+      - name: Test the lossy-cast ratchet
+        run: python3 -B -m unittest discover -s tools/cast_ratchet -p 'test_*.py' -v
 
       - name: Test Windows installer checksum handling
         run: pwsh -NoProfile -File scripts/tests/test_install_checksum.ps1
@@ -385,6 +390,19 @@ jobs:
 
       - name: Clippy check
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      # The ratchet lints are allow-by-default, and `-D warnings` denies them, so they
+      # cannot join the command above. This second pass lints only the two ratcheted
+      # crates and fails on a count above `tools/cast_ratchet/baseline.json`.
+      - name: Ratchet lossy casts in converter and shared
+        if: needs.orchestrate.outputs.check_cast_ratchet == 'true'
+        run: |
+          set -euo pipefail
+          read -r -a lint_flags <<< "$(python3 tools/cast_ratchet/cast_ratchet.py --lint-flags)"
+          cargo clippy -p converter -p shared --lib --bins \
+            --message-format=json -- "${lint_flags[@]}" \
+            > "$RUNNER_TEMP/clippy-casts.json"
+          python3 tools/cast_ratchet/cast_ratchet.py --clippy-json "$RUNNER_TEMP/clippy-casts.json"
 
   test:
     needs: [orchestrate]
