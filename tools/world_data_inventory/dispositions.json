@@ -693,7 +693,7 @@
     "Python SQLite version, R-tree support and authorizer behavior may differ from bundled rusqlite. Rust prepares composed variants independently; cross-version failures remain visible.",
     "Schema-driven decoding and reader identities remain authoritative. No second record decoder, live engine instrumentation, conversion campaign or native semantic/parity evidence is provided."
   ],
-  "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
+  "reviewed_at_commit": "99ac022c441810f0a8e0e571e1c950f80a6f9c71",
   "stores": {
     "cell_cache.rkyv": {
       "evidence": [
@@ -731,6 +731,28 @@
         "mapped": "unknown",
         "preserved": "unknown",
         "projected": "unknown",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
+    "interface/controls/pc": {
+      "evidence": [
+        {
+          "anchor": "pub(crate) fn publish(",
+          "path": "crates/converter/src/controls.rs"
+        },
+        {
+          "anchor": "let path = \"interface/controls/pc/provenance.json\";",
+          "path": "crates/converter/src/controls.rs"
+        }
+      ],
+      "owner": "converter and PC control maintainers (#741)",
+      "reason": "Conversion and metadata rebuild can publish optional PC control files beside the world database. The files preserve usable source lines. The JSON sidecar records effective provider, source and output hashes, and skipped line numbers. Runtime consumption remains unknown in this inventory.",
+      "states": {
+        "decoded": "unknown",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
         "query_dependent": "unknown",
         "semantic_use": "unknown"
       }
