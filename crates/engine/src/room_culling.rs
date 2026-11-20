@@ -1113,6 +1113,9 @@ pub fn cull_room_views(
                 let Some((form_id, reference)) = owner else {
                     return true;
                 };
+                if !loaded.graph.membership.contains_key(&form_id) {
+                    return true;
+                }
                 // Re-read every frame: a body can be added after the mesh spawns.
                 let exempted = |entity| {
                     exemptions
