@@ -1416,6 +1416,10 @@ fn validate_candidate_with_string_sources(
     string_sources: StringSources<'_>,
     tables: &mut HashMap<(usize, String), RuntimeTextTable>,
 ) -> std::result::Result<(), String> {
+    if super::is_placed_record_type(&record.record_type) && record.rejected_fields.contains(b"NAME")
+    {
+        return Err("rejected placed base NAME".into());
+    }
     if !matches!(&record.record_type, b"LAND" | b"MOVT" | b"GMST" | b"RACE") {
         return Ok(());
     }
