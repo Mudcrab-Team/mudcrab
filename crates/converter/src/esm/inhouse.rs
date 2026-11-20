@@ -1274,9 +1274,10 @@ fn convert_plugins_with_text_sources_report_impl(
                 if let Some(id) = entry.form_id {
                     damage.accepted(id);
                 }
-            } else if super::is_placed_record_type(&entry.record_type) {
+            } else {
                 damage.reject(
-                    entry.form_id,
+                    &entry.record_type,
+                    entry.source_form_id,
                     entry.source_cell_form_id,
                     entry.plugin_index as usize,
                     &order,
@@ -1416,9 +1417,17 @@ fn validate_candidate_with_string_sources(
     string_sources: StringSources<'_>,
     tables: &mut HashMap<(usize, String), RuntimeTextTable>,
 ) -> std::result::Result<(), String> {
-    if super::is_placed_record_type(&record.record_type) && record.rejected_fields.contains(b"NAME")
-    {
-        return Err("rejected placed base NAME".into());
+    if super::is_placed_record_type(&record.record_type) {
+        if record.rejected_fields.contains(b"NAME") {
+            return Err("rejected placed base NAME".into());
+        }
+        if !record
+            .fields
+            .iter()
+            .any(|field| field.signature == *b"NAME" && matches!(field.value, Value::FormId(_)))
+        {
+            return Err("missing required NAME reference".into());
+        }
     }
     if !matches!(&record.record_type, b"LAND" | b"MOVT" | b"GMST" | b"RACE") {
         return Ok(());

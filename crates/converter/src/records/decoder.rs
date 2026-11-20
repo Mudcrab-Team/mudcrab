@@ -705,6 +705,13 @@ fn decode_with_identity_inner(
         })
         .transpose()?
         .filter(|&id| id != 0);
+    if scanned.flags & 0x20 == 0
+        && crate::esm::is_placed_record_type(&scanned.record_type)
+        && let Some(source_cell) = scanned.cell_form_id
+        && cell.is_none()
+    {
+        return Err(format!("invalid placement parent cell {source_cell:08X}"));
+    }
     let world = scanned
         .worldspace_form_id
         .map(|id| {
