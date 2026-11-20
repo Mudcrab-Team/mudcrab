@@ -1,5 +1,11 @@
 //! Rebuild the movement projection of an existing schema-4 or newer compatible package.
 //! Reads the package's own winning raw records; no source plugin is reparsed.
+//!
+//! `DOBJ` is not projected. A package that the in-house reader wrote before the key-by-key
+//! merge keeps only the last plugin's override, which lacks Skyrim.esm's default movement
+//! keys. Rebuilding `default_objects` from it would publish an incomplete table, so the
+//! table stays as the package has it, and an absent table stays absent. A metadata rebuild
+//! (`--reuse-assets`) publishes it.
 
 use color_eyre::{
     Result,
@@ -46,15 +52,27 @@ fn annotate(path: &Path) -> Result<()> {
         "database schema {version} is unsupported"
     );
     let records = movement_records(&conn)?;
-    create_tables(&conn)?;
-    export_to_db(&conn, &records)?;
+    // A package without `default_objects` predates the table, and the engine reads that as
+    // "not exported yet". This tool cannot project `DOBJ`, so it must not leave an empty table
+    // behind: the engine reads an empty table as a package whose defaults are missing.
+    let had_default_objects: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='default_objects')",
+        [],
+        |row| row.get(0),
+    )?;
+    let exported = create_tables(&conn).and_then(|()| export_to_db(&conn, &records));
+    // Restore the absence on failure too: `create_tables` commits before the export runs.
+    if !had_default_objects {
+        conn.execute("DROP TABLE IF EXISTS default_objects", [])?;
+    }
+    exported?;
     Ok(())
 }
 
 /// Reads every winning `RACE`, `MOVT` and `GMST` record the package retains, keyed by FormID.
 ///
 /// The exporter applies its own filters inside those types: it projects every `RACE` (and so
-/// needs all of them, not the player race alone), the `NPC_Default_MT` `MOVT`, and the movement
+/// needs all of them, not the player race alone), every `MOVT`, and the movement
 /// `GMST` editor IDs. Projecting this whole set therefore rebuilds exactly the rows the pipeline
 /// writes, so running the tool twice, or after a modded pack, cannot lose another race's links.
 fn movement_records(conn: &Connection) -> Result<HashMap<u32, RawRecord>> {
@@ -227,6 +245,55 @@ mod tests {
         };
         assert_eq!(count("movement_types"), 1);
         assert_eq!(count("movement_game_settings"), 2);
+    }
+
+    #[test]
+    fn leaves_default_objects_absent_or_unchanged() {
+        let has_table = |path: &Path| {
+            Connection::open(path)
+                .unwrap()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='default_objects')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+        };
+        // A package from before the table stays without it, so the engine can tell.
+        let (_old, old_path) = package_with_races(&[(0x0001_3746, 0x0003_580D)]);
+        Connection::open(&old_path)
+            .unwrap()
+            .execute("DROP TABLE default_objects", [])
+            .unwrap();
+        annotate(&old_path).unwrap();
+        assert!(!has_table(&old_path), "the tool created default_objects");
+        // An export that fails still leaves the table absent.
+        let (_bad, bad_path) = package_with_races(&[(0x0001_3746, 0x0003_580D)]);
+        let connection = Connection::open(&bad_path).unwrap();
+        connection
+            .execute("DROP TABLE default_objects", [])
+            .unwrap();
+        insert_record(
+            &connection,
+            0x000C_EFCF,
+            "MOVT",
+            &[(*b"EDID", b"Broken\0".to_vec()), (*b"SPED", vec![1, 2, 3])],
+        );
+        drop(connection);
+        assert!(annotate(&bad_path).is_err());
+        assert!(!has_table(&bad_path), "a failed run left default_objects");
+        // A package that has the rows keeps them.
+        let (_new, new_path) = package_with_races(&[(0x0001_3746, 0x0003_580D)]);
+        Connection::open(&new_path)
+            .unwrap()
+            .execute("INSERT INTO default_objects VALUES('DMWL', 219149)", [])
+            .unwrap();
+        annotate(&new_path).unwrap();
+        let rows: u32 = Connection::open(&new_path)
+            .unwrap()
+            .query_row("SELECT count(*) FROM default_objects", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
     }
 
     #[test]

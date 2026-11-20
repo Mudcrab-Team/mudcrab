@@ -49,6 +49,7 @@ const MAIN_CORE_TABLES: &[&str] = &[
     "climate_weathers",
     "climates",
     "conversion_cache",
+    "default_objects",
     "door_links",
     "emittance",
     "exterior_spatial",

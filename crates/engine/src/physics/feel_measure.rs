@@ -174,13 +174,20 @@ fn ticks(app: &App) -> Vec<TickRow> {
 fn packaged_tuning() -> MovementTuning {
     MovementTuning {
         record_speeds: Some(DirectionalMovementSpeeds {
-            directions: [
+            walk_directions: [
+                [80.09, 370.0],
+                [79.75, 370.0],
+                [80.10, 370.0],
+                [71.93, 205.25],
+            ],
+            run_directions: [
                 [80.09, 370.0],
                 [79.75, 370.0],
                 [80.10, 370.0],
                 [71.93, 205.25],
             ],
             source: "feel_measure NPC_Default_MT".into(),
+            warnings: Vec::new(),
         }),
         ..MovementTuning::default()
     }
