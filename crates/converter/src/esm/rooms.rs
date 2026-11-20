@@ -1109,7 +1109,8 @@ fn project_room_graph(
         if pairs > 1 {
             report.portals_with_extra_pairs += 1;
         }
-        if !xpod.len().is_multiple_of(8) {
+        let truncated = !xpod.len().is_multiple_of(8);
+        if truncated {
             report.portals_with_trailing_xpod_bytes += 1;
             incomplete.insert(cell);
         }
@@ -1140,7 +1141,7 @@ fn project_room_graph(
                 _ => [true; 2],
             };
             let outside = [0, 4].map(|offset| {
-                proven[offset / 4] && pair < pairs && u32_at(xpod, pair * 8 + offset) == Some(0)
+                proven[offset / 4] && !truncated && u32_at(xpod, pair * 8 + offset) == Some(0)
             });
             if refresh.is_some()
                 && ((room_a.is_none() && !outside[0]) || (room_b.is_none() && !outside[1]))
