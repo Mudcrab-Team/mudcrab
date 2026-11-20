@@ -2904,6 +2904,7 @@ pub(crate) fn validate_placement_targets(
     cell: Option<u32>,
     base: Option<u32>,
     winning_kind: impl Fn(u32) -> Option<[u8; 4]>,
+    was_deleted: impl Fn(u32) -> bool,
 ) -> Result<(), String> {
     if let Some(cell) = cell
         && winning_kind(cell) != Some(*b"CELL")
@@ -2918,7 +2919,10 @@ pub(crate) fn validate_placement_targets(
     };
     if let Some(base) = base
         && let Some(field) = placement_base_field(schemas, kind)
-        && !target_allowed(base, winning_kind(base), field)
+        && {
+            let kind = winning_kind(base);
+            !target_allowed(base, kind, field) || (kind.is_none() && was_deleted(base))
+        }
     {
         return Err(format!(
             "required NAME {base:08X} is absent or has a disallowed target type"
@@ -3179,6 +3183,12 @@ pub(crate) fn resolve_deferred(
                 cell,
                 base,
                 |target| kinds.get(&target).copied(),
+                |target| {
+                    result
+                        .overrides
+                        .get(&target)
+                        .is_some_and(|chain| chain.iter().any(|source| source.deleted))
+                },
             ) else {
                 continue;
             };

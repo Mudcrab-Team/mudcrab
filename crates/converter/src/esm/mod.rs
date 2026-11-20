@@ -329,6 +329,7 @@ impl EsmParser {
         let mut unknown_discarded_scope = false;
         let mut room_link_layouts = HashMap::new();
         let mut placement_candidates = BTreeMap::new();
+        let mut deleted_ids = HashSet::new();
         let mut summaries = Vec::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
         // the first definition's key/owner while taking the last setting value.
@@ -499,6 +500,9 @@ impl EsmParser {
                     room_link_layouts.insert(id, layout);
                 }
                 if record.is_deleted() {
+                    if id < 0x800 {
+                        deleted_ids.insert(id);
+                    }
                     merged.remove(&id);
                     placement_candidates.remove(&id);
                     damaged_placements.accepted(id);
@@ -543,6 +547,7 @@ impl EsmParser {
             &mut placement_candidates,
             &mut room_link_layouts,
             &mut damaged_placements,
+            &deleted_ids,
             order,
             &warnings,
         );
@@ -576,6 +581,7 @@ fn resolve_legacy_placements(
     candidates: &mut BTreeMap<u32, LegacyPlacementCandidate>,
     layouts: &mut HashMap<u32, rooms::RoomLinkLayout>,
     damage: &mut PlacementDamage,
+    deleted_ids: &HashSet<u32>,
     order: &load_order::LoadOrder,
     warnings: &RemapWarnings,
 ) {
@@ -608,6 +614,7 @@ fn resolve_legacy_placements(
                 cell,
                 base,
                 |target| winners.get(&target).map(|record| record.record_type),
+                |target| deleted_ids.contains(&target),
             ) else {
                 continue;
             };
