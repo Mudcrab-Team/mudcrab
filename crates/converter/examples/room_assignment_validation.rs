@@ -86,9 +86,9 @@ fn run(args: &[String]) -> Result<()> {
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     drop(conn);
-    let (sources, extracted) =
+    let (sources, extracted, staged) =
         prepare_model_sources(data, assets.parent().unwrap(), &models, &plugins)?;
-    let results = convert_capture_models(sources.path(), assets, &models)?;
+    let results = convert_capture_models(sources.path(), assets, &models, &staged)?;
     converter::integration::finalize_world_database(assets)?;
     let conn = Connection::open(assets.join("skyrim_world.db"))?;
     let bounds: u64 = conn.query_row("SELECT count(*) FROM room_model_bounds", [], |r| r.get(0))?;
@@ -151,11 +151,11 @@ fn convert_capture_models(
     sources: &Path,
     assets: &Path,
     models: &BTreeSet<PathBuf>,
+    staged: &BTreeSet<PathBuf>,
 ) -> Result<Vec<serde_json::Value>> {
-    let index = AssetSourceIndex::build(&[sources.to_path_buf()], AssetKind::Mesh)?;
-    let paths = index
-        .assets()
-        .map(|asset| (PathBuf::from(&asset.key), asset.path.clone()))
+    let paths = staged
+        .iter()
+        .map(|key| (key.clone(), sources.join(key)))
         .collect();
     let skeletons = SkeletonIndex::from_sources(&paths);
     let results: Vec<_> = models
@@ -187,12 +187,12 @@ fn prepare_model_sources(
     parent: &Path,
     models: &BTreeSet<PathBuf>,
     plugins: &[String],
-) -> Result<(tempfile::TempDir, usize)> {
+) -> Result<(tempfile::TempDir, usize, BTreeSet<PathBuf>)> {
     let sources = tempfile::Builder::new()
         .prefix("room-assignment-nifs-")
         .tempdir_in(parent)?;
     if models.is_empty() {
-        return Ok((sources, 0));
+        return Ok((sources, 0, BTreeSet::new()));
     }
     let directories: BTreeSet<_> = models.iter().filter_map(|path| path.parent()).collect();
     // Full-cover ranking uses skeletons from all sources and joint names from
@@ -235,7 +235,7 @@ fn prepare_model_sources(
         extracted += files.len();
         staged.extend(files.into_iter().map(|file| file.path));
     }
-    Ok((sources, extracted))
+    Ok((sources, extracted, staged))
 }
 
 #[cfg(test)]
@@ -465,13 +465,13 @@ mod tests {
         fs::write(&output, b"previous capture").unwrap();
         let models = BTreeSet::from([model.clone()]);
         assert!(
-            convert_capture_models(&sources, &assets, &models).is_err(),
+            convert_capture_models(&sources, &assets, &models, &models).is_err(),
             "a missing source must abort before finalization"
         );
         fs::create_dir(sources.join("meshes")).unwrap();
         fs::write(sources.join(model), b"invalid NIF").unwrap();
         assert!(
-            convert_capture_models(&sources, &assets, &models).is_err(),
+            convert_capture_models(&sources, &assets, &models, &models).is_err(),
             "a failed conversion must abort before finalization"
         );
     }
@@ -498,11 +498,13 @@ mod tests {
         let archive = archive(&data);
         let models = BTreeSet::from([PathBuf::from("meshes/test.nif")]);
         let plugins = vec!["Skyrim.esm".to_owned()];
-        let (first, count) = prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
+        let (first, count, _) =
+            prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
         assert_eq!(count, 1);
         assert!(first.path().join("meshes/test.nif").is_file());
         fs::remove_file(archive).unwrap();
-        let (second, count) = prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
+        let (second, count, _) =
+            prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
         assert_eq!(count, 0);
         assert_ne!(first.path(), second.path());
         assert!(!second.path().join("meshes/test.nif").exists());
@@ -516,7 +518,7 @@ mod tests {
         fs::create_dir(data.join("Meshes")).unwrap();
         fs::write(data.join("Meshes/Test.NIF"), b"loose").unwrap();
         let models = BTreeSet::from([PathBuf::from("meshes/test.nif")]);
-        let (sources, count) =
+        let (sources, count, _) =
             prepare_model_sources(&data, root.path(), &models, &["Skyrim.esm".to_owned()]).unwrap();
         assert_eq!(count, 0);
         assert_eq!(
@@ -540,7 +542,7 @@ mod tests {
         let model = PathBuf::from("meshes/test.nif");
         let models = BTreeSet::from([model.clone()]);
         let plugins = ["Skyrim.esm".into()];
-        let (sources, count) =
+        let (sources, count, _) =
             prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
         assert_eq!(count, 0);
         assert_eq!(fs::read(sources.path().join(model)).unwrap(), b"runtime");
@@ -573,7 +575,7 @@ mod tests {
         let model = PathBuf::from("meshes/test.nif");
         let models = BTreeSet::from([model.clone()]);
         let plugins = ["Skyrim.esm".into(), "Later.esp".into()];
-        let (sources, count) =
+        let (sources, count, _) =
             prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
         assert_eq!(count, 2);
         assert_eq!(fs::read(sources.path().join(model)).unwrap(), b"archive");
@@ -608,7 +610,7 @@ mod tests {
             .unwrap();
         };
         write_later("CalienteTools/Meshes/Test.NIF");
-        let (sources, count) =
+        let (sources, count, _) =
             prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
         assert_eq!(count, 1);
         assert_eq!(
@@ -669,7 +671,7 @@ mod tests {
         alternate[first_bone + 16..first_bone + 20].copy_from_slice(&7.0f32.to_le_bytes());
         let sibling_path = "meshes/actors/selected/sibling.nif";
         let alternate_path = "meshes/rigs/another/skeleton.nif";
-        let model = "meshes/actors/selected/body.nif";
+        let model = "meshes/actors/selected/50%fern.nif";
         let skeleton = "meshes/rigs/other/skeleton.nif";
         fs::write(data.join("Later Extra.esp"), b"disabled plugin").unwrap();
         fs::create_dir(data.join("mod-assets")).unwrap();
@@ -677,7 +679,7 @@ mod tests {
             (
                 "Skyrim - Meshes.bsa",
                 vec![
-                    Entry::new(model, &mesh),
+                    Entry::new("meshes/actors/selected/50%25fern.nif", &mesh),
                     Entry::new(skeleton, b"shadowed"),
                     Entry::new(sibling_path, &sibling),
                     Entry::new(alternate_path, &alternate),
@@ -693,11 +695,11 @@ mod tests {
         }
         let models = BTreeSet::from([PathBuf::from(model)]);
         let plugins = ["Skyrim.esm".into(), "Later.esp".into()];
-        let (sources, count) =
+        let (sources, count, mut staged) =
             prepare_model_sources(&data, root.path(), &models, &plugins).unwrap();
         assert_eq!(count, 4);
         assert_eq!(fs::read(sources.path().join(skeleton)).unwrap(), winner);
-        convert_capture_models(sources.path(), &assets, &models).unwrap();
+        convert_capture_models(sources.path(), &assets, &models, &staged).unwrap();
         let output = assets.join(model).with_extension("glb");
         let captured = fs::read(&output).unwrap();
         let bone_translation = |bytes: &[u8]| {
@@ -723,7 +725,8 @@ mod tests {
             .unwrap();
         assert_eq!(bone_translation(&fs::read(&output).unwrap()), [0.0; 3]);
         fs::remove_file(sources.path().join(sibling_path)).unwrap();
-        convert_capture_models(sources.path(), &assets, &models).unwrap();
+        staged.remove(Path::new(sibling_path));
+        convert_capture_models(sources.path(), &assets, &models, &staged).unwrap();
         assert_eq!(
             bone_translation(&fs::read(output).unwrap()),
             [7.0, 0.0, 0.0]

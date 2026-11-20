@@ -112,7 +112,24 @@ impl PlacementDamage {
         if !is_placed_record_type(record_type) {
             return;
         }
-        let id = header_runtime_id(record_type, source_id, plugin, order).filter(|&id| id != 0);
+        self.reject_resolved(
+            header_runtime_id(record_type, source_id, plugin, order),
+            source_cell,
+            plugin,
+            order,
+        );
+    }
+
+    fn reject_resolved(
+        &mut self,
+        id: Option<u32>,
+        source_cell: Option<u32>,
+        plugin: usize,
+        order: &load_order::LoadOrder,
+    ) {
+        use crate::records::source_identity::header_runtime_id;
+
+        let id = id.filter(|&id| id != 0);
         let cell = source_cell
             .and_then(|raw| header_runtime_id(b"CELL", raw, plugin, order))
             .filter(|&cell| cell != 0);
@@ -346,7 +363,7 @@ impl EsmParser {
                 let (mut record, damaged) = match candidate {
                     ParsedRecord::Usable(record) => (record, false),
                     ParsedRecord::DamagedRecord(record)
-                        if !record.is_deleted() && is_placed_record_type(&record.record_type) =>
+                        if is_placed_record_type(&record.record_type) =>
                     {
                         (record, true)
                     }
@@ -382,14 +399,11 @@ impl EsmParser {
                     && record.record_type == *b"REFR"
                     && record.cell_form_id.is_some()
                     && extractors::SubrecordView::new(&record.subrecords)
-                        .get_form_id(b"NAME")
+                        .unique_form_id(b"NAME")
                         .is_some_and(|base| base & 0x00ff_ffff == rooms::ROOM_MARKER_BASE))
                 .then(|| rooms::RoomLinkLayout::from_raw(&record));
                 let source_cell = record.cell_form_id;
                 let record_type = record.record_type;
-                let reject_placement = |damage: &mut PlacementDamage| {
-                    damage.reject(&record_type, source_id, source_cell, priority, order);
-                };
                 let admission = remap_record_form_ids(
                     &mut record,
                     &order.names[priority],
@@ -415,8 +429,8 @@ impl EsmParser {
                                 );
                             }
                             color_eyre::eyre::ensure!(
-                                view.get_form_id(b"NAME").is_some_and(|id| id != 0),
-                                "missing or null required NAME reference"
+                                view.unique_form_id(b"NAME").is_some_and(|id| id != 0),
+                                "placement requires exactly one nonzero NAME reference"
                             );
                         }
                         validate_inhouse_record(&record)?;
@@ -426,6 +440,12 @@ impl EsmParser {
                     }
                     Ok(())
                 });
+                let resolved = (!out_of_range).then_some(record.form_id);
+                let reject_placement = |damage: &mut PlacementDamage| {
+                    if is_placed_record_type(&record_type) {
+                        damage.reject_resolved(resolved, source_cell, priority, order);
+                    }
+                };
                 if let Err(error) = admission {
                     reject_placement(&mut damaged_placements);
                     warnings.skipped_record(
@@ -616,13 +636,9 @@ fn resolve_legacy_placements(
             let candidate = entry.remove();
             let priority = record.load_order as usize;
             warnings.skipped_record(&order.names[priority], record, candidate.source_id, reason);
-            damage.reject(
-                &record.record_type,
-                candidate.source_id,
-                candidate.source_cell,
-                priority,
-                order,
-            );
+            let source_slot = (candidate.source_id >> 24) as usize;
+            let resolved = (source_slot <= order.metadata[priority].masters.len()).then_some(id);
+            damage.reject_resolved(resolved, candidate.source_cell, priority, order);
             winners.remove(&id);
             layouts.remove(&id);
             if let Some(predecessor) = candidate.predecessor {
@@ -653,7 +669,7 @@ fn resolve_legacy_placements(
 fn legacy_placement_links(record: &RawRecord) -> [Option<u32>; 2] {
     [
         record.cell_form_id,
-        extractors::SubrecordView::new(&record.subrecords).get_form_id(b"NAME"),
+        extractors::SubrecordView::new(&record.subrecords).unique_form_id(b"NAME"),
     ]
 }
 
@@ -1123,8 +1139,9 @@ fn remap_record_form_ids(
     };
     let remap = |form_id| remap_with_validation(form_id, strict);
     let remap_link = |form_id| remap_with_validation(form_id, true);
-    let source_id = record.form_id;
-    record.form_id = remap(record.form_id)?;
+    // An error before header remapping leaves no runtime identity for damage tracking.
+    let source_id = std::mem::take(&mut record.form_id);
+    record.form_id = remap(source_id)?;
     if record.is_deleted() {
         // Only the resolved header identity (and a complete GMST EDID) is needed
         // for deletion. Unused parent/body links cannot invalidate a tombstone.

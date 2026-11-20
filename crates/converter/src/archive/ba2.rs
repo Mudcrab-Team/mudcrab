@@ -5,6 +5,8 @@ use color_eyre::{
 use flate2::read::{DeflateDecoder, ZlibDecoder};
 use std::io::Read;
 
+use super::source::ArchiveSource;
+
 const GENERAL_RECORD_SIZE: usize = 36;
 const DX10_RECORD_SIZE: usize = 24;
 const DX10_CHUNK_SIZE: usize = 24;
@@ -78,13 +80,28 @@ enum Record {
 /// before handing a bounded batch to the I/O workers.
 #[derive(Debug)]
 pub(crate) struct Ba2RawEntry<'a> {
-    pub name: String,
+    pub(super) entry: Ba2Entry,
     bytes: &'a [u8],
+}
+
+impl Ba2RawEntry<'_> {
+    pub fn decoded_size(&self) -> usize {
+        self.entry.decoded_size()
+    }
+
+    pub fn decompress(self) -> Result<Vec<u8>> {
+        self.entry.decompress(&ArchiveSource::Slice(self.bytes))
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct Ba2Entry {
+    pub name: String,
     record: Record,
     compression: Compression,
 }
 
-impl Ba2RawEntry<'_> {
+impl Ba2Entry {
     pub fn decoded_size(&self) -> usize {
         match &self.record {
             Record::General(record) => record.unpacked_size as usize,
@@ -99,34 +116,41 @@ impl Ba2RawEntry<'_> {
         }
     }
 
-    pub fn decompress(self) -> Result<Vec<u8>> {
+    pub fn decompress(self, source: &ArchiveSource<'_>) -> Result<Vec<u8>> {
         match self.record {
             Record::General(record) => extract_chunk(
-                self.bytes,
+                source,
                 record.offset,
                 record.packed_size,
                 record.unpacked_size,
                 self.compression,
                 &self.name,
             ),
-            Record::Dx10(record) => extract_dx10(self.bytes, record, self.compression, &self.name),
+            Record::Dx10(record) => extract_dx10(source, record, self.compression, &self.name),
         }
     }
 }
 
 pub(crate) fn iter_raw_entries(bytes: &[u8]) -> Result<Vec<Ba2RawEntry<'_>>> {
-    let header = parse_header(bytes)?;
+    Ok(read_entries_from(&ArchiveSource::Slice(bytes))?
+        .into_iter()
+        .map(|entry| Ba2RawEntry { entry, bytes })
+        .collect())
+}
+
+pub(super) fn read_entries_from(source: &ArchiveSource<'_>) -> Result<Vec<Ba2Entry>> {
+    let prefix = source.read(0, source.len().min(36))?;
+    let header = parse_header(&prefix, source.len())?;
     let records = match header.kind {
-        ArchiveKind::General => parse_general_records(bytes, header)?,
-        ArchiveKind::Dx10 => parse_dx10_records(bytes, header)?,
+        ArchiveKind::General => parse_general_records(source, header)?,
+        ArchiveKind::Dx10 => parse_dx10_records(source, header)?,
     };
-    let names = parse_names(bytes, header.names_offset, header.file_count)?;
+    let names = parse_names(source, header.names_offset, header.file_count)?;
     Ok(records
         .into_iter()
         .zip(names)
-        .map(|(record, name)| Ba2RawEntry {
+        .map(|(record, name)| Ba2Entry {
             name,
-            bytes,
             record,
             compression: header.compression,
         })
@@ -135,47 +159,17 @@ pub(crate) fn iter_raw_entries(bytes: &[u8]) -> Result<Vec<Ba2RawEntry<'_>>> {
 
 #[cfg(test)]
 pub(crate) fn read_entries(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
-    read_entries_matching(bytes, |_| Ok(true))
-}
-
-pub(crate) fn read_entries_matching(
-    bytes: &[u8],
-    include: impl Fn(&str) -> Result<bool>,
-) -> Result<Vec<(String, Vec<u8>)>> {
-    let header = parse_header(bytes)?;
-    let records = match header.kind {
-        ArchiveKind::General => parse_general_records(bytes, header)?,
-        ArchiveKind::Dx10 => parse_dx10_records(bytes, header)?,
-    };
-    let names = parse_names(bytes, header.names_offset, header.file_count)?;
-
-    records
+    let source = ArchiveSource::Slice(bytes);
+    read_entries_from(&source)?
         .into_iter()
-        .zip(names)
-        .filter_map(|(record, name)| match include(&name) {
-            Ok(true) => Some(Ok((record, name))),
-            Ok(false) => None,
-            Err(error) => Some(Err(error)),
-        })
         .map(|entry| {
-            let (record, name) = entry?;
-            let data = match record {
-                Record::General(record) => extract_chunk(
-                    bytes,
-                    record.offset,
-                    record.packed_size,
-                    record.unpacked_size,
-                    header.compression,
-                    &name,
-                )?,
-                Record::Dx10(record) => extract_dx10(bytes, record, header.compression, &name)?,
-            };
-            Ok((name, data))
+            let name = entry.name.clone();
+            Ok((name, entry.decompress(&source)?))
         })
         .collect()
 }
 
-fn parse_header(bytes: &[u8]) -> Result<Header> {
+fn parse_header(bytes: &[u8], archive_len: usize) -> Result<Header> {
     ensure!(bytes.len() >= 24, "truncated BA2 header");
     ensure!(&bytes[..4] == b"BTDX", "invalid BA2 magic");
     let version = u32_at(bytes, 4)?;
@@ -217,7 +211,7 @@ fn parse_header(bytes: &[u8]) -> Result<Header> {
         _ => unreachable!(),
     };
     ensure!(
-        names_offset >= records_offset && names_offset <= bytes.len(),
+        names_offset >= records_offset && names_offset <= archive_len,
         "invalid BA2 name table offset"
     );
     Ok(Header {
@@ -230,7 +224,7 @@ fn parse_header(bytes: &[u8]) -> Result<Header> {
     })
 }
 
-fn parse_general_records(bytes: &[u8], header: Header) -> Result<Vec<Record>> {
+fn parse_general_records(source: &ArchiveSource<'_>, header: Header) -> Result<Vec<Record>> {
     let records_end = header
         .records_offset
         .checked_add(
@@ -241,12 +235,14 @@ fn parse_general_records(bytes: &[u8], header: Header) -> Result<Vec<Record>> {
         )
         .ok_or_else(|| eyre!("BA2 general record table overflow"))?;
     ensure!(
-        records_end <= header.names_offset && records_end <= bytes.len(),
+        records_end <= header.names_offset,
         "truncated BA2 general record table"
     );
+    let records = source.read(header.records_offset, records_end - header.records_offset)?;
+    let bytes = records.as_ref();
     (0..header.file_count)
         .map(|index| {
-            let base = header.records_offset + index * GENERAL_RECORD_SIZE;
+            let base = index * GENERAL_RECORD_SIZE;
             let record = GeneralRecord {
                 offset: u64_at(bytes, base + 16)?,
                 packed_size: u32_at(bytes, base + 24)?,
@@ -262,7 +258,7 @@ fn parse_general_records(bytes: &[u8], header: Header) -> Result<Vec<Record>> {
         .collect()
 }
 
-fn parse_dx10_records(bytes: &[u8], header: Header) -> Result<Vec<Record>> {
+fn parse_dx10_records(source: &ArchiveSource<'_>, header: Header) -> Result<Vec<Record>> {
     let mut cursor = header.records_offset;
     let mut records = Vec::with_capacity(header.file_count);
     for index in 0..header.file_count {
@@ -270,18 +266,20 @@ fn parse_dx10_records(bytes: &[u8], header: Header) -> Result<Vec<Record>> {
             .checked_add(DX10_RECORD_SIZE)
             .ok_or_else(|| eyre!("BA2 DX10 record table overflow"))?;
         ensure!(
-            base_end <= header.names_offset && base_end <= bytes.len(),
+            base_end <= header.names_offset,
             "truncated BA2 DX10 record {index}"
         );
-        let chunk_count = bytes[cursor + 13] as usize;
+        let record = source.read(cursor, DX10_RECORD_SIZE)?;
+        let bytes = record.as_ref();
+        let chunk_count = bytes[13] as usize;
         ensure!(chunk_count > 0, "BA2 DX10 record {index} has no chunks");
         ensure!(
-            u16_at(bytes, cursor + 14)? as usize == DX10_CHUNK_SIZE,
+            u16_at(bytes, 14)? as usize == DX10_CHUNK_SIZE,
             "unsupported BA2 DX10 chunk header size in record {index}"
         );
-        let height = u16_at(bytes, cursor + 16)?;
-        let width = u16_at(bytes, cursor + 18)?;
-        let mip_count = bytes[cursor + 20];
+        let height = u16_at(bytes, 16)?;
+        let width = u16_at(bytes, 18)?;
+        let mip_count = bytes[20];
         ensure!(
             width > 0 && height > 0,
             "invalid BA2 DX10 dimensions in record {index}"
@@ -290,8 +288,8 @@ fn parse_dx10_records(bytes: &[u8], header: Header) -> Result<Vec<Record>> {
             mip_count > 0,
             "invalid BA2 DX10 mip count in record {index}"
         );
-        let format = bytes[cursor + 21];
-        let is_cubemap = u16_at(bytes, cursor + 22)? & 1 != 0;
+        let format = bytes[21];
+        let is_cubemap = u16_at(bytes, 22)? & 1 != 0;
         cursor = base_end;
         let chunks_end = cursor
             .checked_add(
@@ -301,13 +299,15 @@ fn parse_dx10_records(bytes: &[u8], header: Header) -> Result<Vec<Record>> {
             )
             .ok_or_else(|| eyre!("BA2 DX10 chunk table overflow"))?;
         ensure!(
-            chunks_end <= header.names_offset && chunks_end <= bytes.len(),
+            chunks_end <= header.names_offset,
             "truncated BA2 DX10 chunks in record {index}"
         );
 
+        let table = source.read(cursor, chunks_end - cursor)?;
+        let bytes = table.as_ref();
         let mut chunks = Vec::with_capacity(chunk_count);
         for chunk_index in 0..chunk_count {
-            let base = cursor + chunk_index * DX10_CHUNK_SIZE;
+            let base = chunk_index * DX10_CHUNK_SIZE;
             let chunk = Dx10Chunk {
                 offset: u64_at(bytes, base)?,
                 packed_size: u32_at(bytes, base + 8)?,
@@ -339,10 +339,10 @@ fn parse_dx10_records(bytes: &[u8], header: Header) -> Result<Vec<Record>> {
     Ok(records)
 }
 
-fn parse_names(bytes: &[u8], mut cursor: usize, count: usize) -> Result<Vec<String>> {
+fn parse_names(source: &ArchiveSource<'_>, mut cursor: usize, count: usize) -> Result<Vec<String>> {
     let mut names = Vec::with_capacity(count);
     for index in 0..count {
-        let length = u16_at(bytes, cursor)? as usize;
+        let length = u16_at(&source.read(cursor, 2)?, 0)? as usize;
         cursor = cursor
             .checked_add(2)
             .ok_or_else(|| eyre!("BA2 filename offset overflow"))?;
@@ -350,10 +350,10 @@ fn parse_names(bytes: &[u8], mut cursor: usize, count: usize) -> Result<Vec<Stri
         let end = cursor
             .checked_add(length)
             .ok_or_else(|| eyre!("BA2 filename range overflow"))?;
-        let name = bytes
-            .get(cursor..end)
-            .ok_or_else(|| eyre!("truncated BA2 filename at index {index}"))?;
-        let name = std::str::from_utf8(name)
+        let name = source
+            .read(cursor, length)
+            .wrap_err_with(|| format!("truncated BA2 filename at index {index}"))?;
+        let name = std::str::from_utf8(&name)
             .wrap_err_with(|| format!("invalid UTF-8 in BA2 filename at index {index}"))?
             .trim_end_matches('\0')
             .to_string();
@@ -377,7 +377,7 @@ fn validate_sizes(packed_size: u32, unpacked_size: u32, context: &str) -> Result
 }
 
 fn extract_chunk(
-    bytes: &[u8],
+    source: &ArchiveSource<'_>,
     offset: u64,
     packed_size: u32,
     unpacked_size: u32,
@@ -390,16 +390,13 @@ fn extract_chunk(
         packed_size
     } as usize;
     let start = usize::try_from(offset).map_err(|_| eyre!("BA2 offset does not fit usize"))?;
-    let end = start
-        .checked_add(stored_size)
-        .ok_or_else(|| eyre!("BA2 payload range overflow: {name}"))?;
-    let payload = bytes
-        .get(start..end)
-        .ok_or_else(|| eyre!("BA2 payload out of bounds: {name}"))?;
+    let payload = source
+        .read_payload(start, stored_size)
+        .wrap_err_with(|| format!("cannot read BA2 payload: {name}"))?;
     if packed_size == 0 {
-        return Ok(payload.to_vec());
+        return Ok(payload.into_owned());
     }
-    decompress(payload, unpacked_size as usize, compression)
+    decompress(&payload, unpacked_size as usize, compression)
         .wrap_err_with(|| format!("failed to decompress BA2 payload: {name}"))
 }
 
@@ -483,7 +480,7 @@ fn read_bounded(reader: &mut impl Read, expected_size: usize) -> Result<Vec<u8>>
 }
 
 fn extract_dx10(
-    bytes: &[u8],
+    source: &ArchiveSource<'_>,
     record: Dx10Record,
     compression: Compression,
     name: &str,
@@ -500,7 +497,7 @@ fn extract_dx10(
     let mut pixels = Vec::with_capacity(total_size.min(RESERVE_CHUNK));
     for chunk in &record.chunks {
         pixels.extend(extract_chunk(
-            bytes,
+            source,
             chunk.offset,
             chunk.packed_size,
             chunk.unpacked_size,
@@ -726,14 +723,14 @@ mod tests {
     #[test]
     fn parses_versioned_headers_and_compression() {
         assert_eq!(
-            parse_header(&base_archive(1, b"GNRL", 0, 24))
+            parse_header(&base_archive(1, b"GNRL", 0, 24), 24)
                 .unwrap()
                 .records_offset,
             24
         );
         let mut v3 = base_archive(3, b"DX10", 0, 36);
         v3[32..36].copy_from_slice(&3u32.to_le_bytes());
-        let header = parse_header(&v3).unwrap();
+        let header = parse_header(&v3, v3.len()).unwrap();
         assert_eq!(header.records_offset, 36);
         assert_eq!(header.compression, Compression::Lz4);
     }
