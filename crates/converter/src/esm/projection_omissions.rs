@@ -1,8 +1,8 @@
 //! Records the plugin rows and fields that runtime projections leave out (#297).
 //!
 //! Runtime projections omit unusable rows or fields without inventing authored values.
-//! Each skip is counted here under a stable category, with a bounded sample of FormIDs, and
-//! stored in the optional tables of `docs/specs/converters/db-schema.md` §18. The stored counts
+//! Each omission is counted here under a stable category, with a bounded sample of FormIDs, and
+//! stored in the optional tables of `docs/specs/converters/db-schema.md` §19. The stored counts
 //! reach `integration-report.json` and the conversion's warnings or notices, including when a
 //! metadata rebuild or a cached database republishes the snapshot.
 
@@ -37,6 +37,8 @@ pub enum OmissionCategory {
     ReferenceUnusableData,
     /// An LGTM with missing or unsupported DATA keeps its other fields but no DATA lighting.
     LightingTemplateUnusableData,
+    /// A RACE whose animation authoring cannot be read has no animation source rows.
+    RaceUnreadableAuthoring,
     /// An `XEMI` target that is not in the load order, or is deleted.
     EmittanceTargetAbsent,
     /// An `XEMI` target `LIGH` without a `DATA` long enough to hold its colour.
@@ -58,6 +60,7 @@ impl OmissionCategory {
             Self::GrassUnusableData => "grass_unusable_data",
             Self::ReferenceUnusableData => "reference_unusable_data",
             Self::LightingTemplateUnusableData => "lighting_template_unusable_data",
+            Self::RaceUnreadableAuthoring => "race_unreadable_authoring",
             Self::EmittanceTargetAbsent => "emittance_target_absent",
             Self::EmittanceLightUnusableData => "emittance_light_unusable_data",
             Self::EmittanceRegionNoWeather => "emittance_region_no_weather",
@@ -74,7 +77,8 @@ impl OmissionCategory {
             | Self::LightShortData
             | Self::GrassUnusableData
             | Self::ReferenceUnusableData
-            | Self::LightingTemplateUnusableData => Severity::DataLoss,
+            | Self::LightingTemplateUnusableData
+            | Self::RaceUnreadableAuthoring => Severity::DataLoss,
             Self::EmittanceTargetAbsent
             | Self::EmittanceLightUnusableData
             | Self::EmittanceRegionNoWeather
