@@ -2763,6 +2763,26 @@ fn room_transform_and_link_damage_is_local_to_the_source_cell() {
             .concat(),
         ));
     }
+    let mut box_shape = [0; 32];
+    for component in box_shape[..12].chunks_exact_mut(4) {
+        component.copy_from_slice(&100f32.to_le_bytes());
+    }
+    box_shape[28..].copy_from_slice(&1u32.to_le_bytes());
+    let mut oversized = box_shape.to_vec();
+    oversized.push(0);
+    for (cell, marker) in [
+        (
+            0x940,
+            placement_marker(0x840, 0x1f, sub(b"XPRM", &box_shape)),
+        ),
+        (
+            0x950,
+            placement(0x850, 0x1f, 0, 0.0, sub(b"XPRM", &oversized)),
+        ),
+    ] {
+        records.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
+        records.extend(placement_group(cell, marker));
+    }
     plugin(&data, "Skyrim.esm", &[], 1, records);
     for (name, typed) in [("legacy", false), ("typed", true)] {
         let db = rusqlite::Connection::open(export_room_review_fixture(
@@ -2794,7 +2814,9 @@ fn room_transform_and_link_damage_is_local_to_the_source_cell() {
                 (0x900, true, 2),
                 (0x910, false, 2),
                 (0x920, false, 2),
-                (0x930, false, 1)
+                (0x930, false, 1),
+                (0x940, false, 0),
+                (0x950, false, 0)
             ],
             "{name}"
         );
