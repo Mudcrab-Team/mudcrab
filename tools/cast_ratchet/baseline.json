@@ -1,7 +1,7 @@
 {
   "counts": {
     "converter": {
-      "clippy::cast_possible_truncation": 457,
+      "clippy::cast_possible_truncation": 458,
       "clippy::cast_possible_wrap": 53,
       "clippy::cast_sign_loss": 49,
       "clippy::float_cmp": 147
