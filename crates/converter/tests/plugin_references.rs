@@ -2253,12 +2253,12 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
     assert_eq!(conn.query_row("SELECT header_flags,has_enable_parent,target_ref FROM room_occluders WHERE ref_id=2097", [], |row| Ok((row.get::<_,u32>(0)?,row.get::<_,bool>(1)?,row.get::<_,Option<u32>>(2)?))).unwrap(), (0x8000_0800,true,Some(0)));
     assert_eq!(
         conn.query_row(
-            "SELECT scale FROM room_occluders WHERE ref_id=2098",
+            "SELECT count(*) FROM room_occluders WHERE ref_id=0x832",
             [],
-            |row| row.get::<_, f32>(0)
+            |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        0.0
+        0
     );
     assert_eq!(
         conn.query_row(
@@ -2267,8 +2267,14 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        3
+        2
     );
+    let reason: String = conn.query_row(
+        "SELECT reason FROM projection_omission_samples WHERE category='occluder_unusable_geometry' AND form_id=0x832",
+        [],
+        |row| row.get(0),
+    ).unwrap();
+    assert!(reason.contains("XSCL"), "{reason}");
     for (id, outside) in [(0x801, true), (0x802, false), (0x803, false)] {
         let actual: (Option<u32>, bool) = conn
             .query_row(

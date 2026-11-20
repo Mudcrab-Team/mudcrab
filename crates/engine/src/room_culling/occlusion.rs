@@ -6,9 +6,12 @@ use bevy::{
     prelude::*,
 };
 
+// Mudcrab uses these tolerances to leave borderline shadow tests visible.
 const SHADOW_DISTANCE_MARGIN: f32 = 1.0e-3;
 const MIN_ABS_FACING_DOT: f32 = 1.0e-3;
 const MIN_EDGE_CROSS_LENGTH: f32 = 1.0e-3;
+// Mudcrab camera clearance in Creation units. The retail five-unit comparison at
+// RVA 0xff7df0 applies to portal inclusion (docs/research/skyrim-culling-rea-parity.md).
 const NEAR_SHAPE_DISTANCE: f32 = 5.0;
 
 #[derive(Debug, Clone)]
