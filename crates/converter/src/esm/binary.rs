@@ -175,6 +175,43 @@ fn stream_proof_after_open_for_test() {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// A deterministic source change made partway through the digest of a decode view.
+    static DURING_PLUGIN_DIGEST: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Test-only reader that makes its pending source change after the first read, so the
+/// digest spans the edit and only the source stamp checked after the hash can catch it.
+#[cfg(test)]
+struct MidDigestChange<R> {
+    inner: R,
+    change: Option<Box<dyn FnOnce()>>,
+}
+
+#[cfg(test)]
+impl<R: Read> Read for MidDigestChange<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        if let Some(change) = self.change.take() {
+            change();
+        }
+        Ok(read)
+    }
+}
+
+/// Hash the exact checked view; tests may interpose one source edit partway through.
+fn decode_view_checksum(data: &[u8]) -> std::io::Result<[u8; 32]> {
+    #[cfg(test)]
+    if let Some(change) = DURING_PLUGIN_DIGEST.with(|slot| slot.borrow_mut().take()) {
+        return super::plugin_checksum(&mut MidDigestChange {
+            inner: data,
+            change: Some(change),
+        });
+    }
+    super::plugin_checksum(&mut &data[..])
+}
+
 /// Cap decompressed output so a corrupt size cannot reserve gigabytes up front.
 const MAX_RESERVATION: usize = 64 * 1024 * 1024;
 
@@ -541,9 +578,11 @@ fn parse_plugin_file_inner(
     );
     let summaries = warnings.report(&path.file_name().unwrap_or_default().to_string_lossy());
 
+    // Digest the same view the records were decoded from, never a later reopen, and check
+    // the source stamp last so a change made while the digest streams makes the stamp fail
+    // (the order `admitted_plugin_proof` uses).
+    let checksum = decode_view_checksum(data)?;
     reader.verify_source()?;
-    // Digest the same checked view the records were decoded from, never a later reopen.
-    let checksum = super::plugin_checksum(&mut &data[..])?;
     Ok((records, summaries, checksum))
 }
 
@@ -679,6 +718,56 @@ mod tests {
         assert!(
             format!("{error:#}").contains("TES4"),
             "a truncated source is declined by the bounded header read: {error:#}"
+        );
+    }
+
+    /// A plugin above the snapshot limit, so it is mapped directly from the live file.
+    fn large_plugin_bytes() -> Vec<u8> {
+        let chunk = vec![b'x'; 60 * 1024];
+        let mut payload = Vec::new();
+        while payload.len() <= crate::source_input::MEMORY_SNAPSHOT_LIMIT as usize {
+            payload.extend_from_slice(b"EDID");
+            payload.extend_from_slice(&(chunk.len() as u16).to_le_bytes());
+            payload.extend_from_slice(&chunk);
+        }
+        let mut bytes = b"TES4".to_vec();
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 12]);
+        bytes.extend_from_slice(&payload);
+        bytes
+    }
+
+    /// A change made while the decode-view digest streams must fail the source stamp.
+    /// The old order (stamp, then digest) let such a change through unnoticed.
+    #[test]
+    fn a_source_change_during_the_decode_digest_is_rejected() {
+        use std::io::Write;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Large.esp");
+        let bytes = large_plugin_bytes();
+        assert!(
+            (bytes.len() as u64) > crate::source_input::MEMORY_SNAPSHOT_LIMIT,
+            "the direct-map path needs an input above the snapshot limit"
+        );
+        std::fs::write(&path, &bytes).unwrap();
+        parse_plugin_file(&path).expect("the unchanged large plugin must decode");
+
+        let edited = path.clone();
+        DURING_PLUGIN_DIGEST.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                let mut file = File::options().write(true).open(&edited).unwrap();
+                file.seek(SeekFrom::End(-1)).unwrap();
+                file.write_all(&[0xff]).unwrap();
+            }));
+        });
+        let error = parse_plugin_file(&path)
+            .expect_err("a change during the decode digest must be rejected");
+        assert!(
+            format!("{error:#}").contains("input changed during conversion"),
+            "the stamp checked after the digest must report the change: {error:#}"
         );
     }
 
