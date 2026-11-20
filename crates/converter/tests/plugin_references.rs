@@ -3679,13 +3679,14 @@ fn typed_placement_duplicates_claim_the_slot_only_after_admission() {
         .unwrap();
         let db = rusqlite::Connection::open(output).unwrap();
         let winner = placement_winner_cell(&db, 0x850);
-        let projected: Option<u32> = db
-            .query_row(
-                "SELECT max(cell_id) FROM room_portals WHERE ref_id=0x850",
-                [],
-                |row| row.get(0),
-            )
+        let projected = db
+            .prepare("SELECT cell_id, pair_index FROM room_portals WHERE ref_id=0x850 ORDER BY cell_id, pair_index")
+            .unwrap()
+            .query_map([], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
+        let expected_pairs = expected_cell.map(|cell| (cell, 0));
         let history = db
             .prepare(
                 "SELECT status FROM record_overrides WHERE form_id=0x850 AND plugin_id=1
@@ -3696,7 +3697,10 @@ fn typed_placement_duplicates_claim_the_slot_only_after_admission() {
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
-        if winner != expected_cell || projected != expected_cell || history != expected_history {
+        if winner != expected_cell
+            || projected != expected_pairs.as_slice()
+            || history != expected_history
+        {
             failures.push(format!(
                 "{name}: winner={winner:?}, portal={projected:?}, history={history:?}; expected {expected_cell:?}, {expected_history:?}"
             ));
@@ -4051,6 +4055,12 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
                 [bad_group.clone(), group(9, b, Vec::new())[..15].to_vec()].concat(),
             ),
             [false, false, true],
+            [false, false, true],
+        ),
+        (
+            "partial-group-tag",
+            placement_group(a, b"GRU".to_vec()),
+            [false; 3],
             [false, false, true],
         ),
         (
@@ -4642,6 +4652,16 @@ fn plugin_placement_import_keeps_neighbors_of_damaged_records_and_frames() {
             ]
             .concat(),
             [false, false, false],
+            5,
+        ),
+        (
+            "partial-group-tag",
+            [
+                placement_group(a, b"G".to_vec()),
+                placement_group(a, good_neighbor()),
+            ]
+            .concat(),
+            [false; 3],
             5,
         ),
         (
