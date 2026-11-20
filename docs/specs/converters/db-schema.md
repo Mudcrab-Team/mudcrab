@@ -718,6 +718,11 @@ Rules:
 - When a subset export or placement layer removes a placement, its incoming `XAPR` and `XLKR`
   slots become NULL in the same transaction. Adding or restoring a target resolves matching
   slots from the effective source payload, including sources outside the edit batch.
+  For an unedited in-house source, the converter uses the original plugin payload and master
+  list to recover authored IDs that full conversion cleared. A slot stays NULL if surviving
+  occurrences cannot be matched unambiguously. `reference_link_subset_sources` records
+  which source a subset replaced and retains recoverable link fields for typed subsets.
+  A later placement-layer edit removes that entry and supplies the effective source.
 - A field whose length the in-house schema rejects is skipped for both readers: `XLKR` must be 4
   or 8 bytes, `XAPR` 8, `XAPD` 1, `XOWN`/`XRNK`/`XLCN`/`XLRL`/`XEZN`/`XATR` 4, `FNAM` 1 and `TNAM`
   2.

@@ -254,11 +254,11 @@ fn authored_link_fields<'a>(
                     return None;
                 }
                 let mut data = bytes.to_vec();
-                for word in data[..word_end(bytes)].chunks_exact_mut(4) {
-                    let raw = u32::from_le_bytes(word.try_into().expect("four-byte link word"));
+                for word in data[..word_end(bytes)].as_chunks_mut::<4>().0 {
+                    let raw = u32::from_le_bytes(*word);
                     let mapped = source_identity::header_runtime_id(b"REFR", raw, supplier, order)
                         .unwrap_or(0);
-                    word.copy_from_slice(&mapped.to_le_bytes());
+                    *word = mapped.to_le_bytes();
                 }
                 Some(data)
             })
