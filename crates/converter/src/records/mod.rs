@@ -506,6 +506,10 @@ pub struct ReadResult {
     pub overrides: HashMap<u32, Vec<RecordSource>>,
     /// Physical header provenance includes accepted, deleted and rejected versions.
     pub history: Vec<history::HistoryEntry>,
+    /// Each winning `DOBJ` with its `DNAM` pairs merged key by key over every accepted
+    /// earlier version, as the legacy reader does. A winning record alone would lose
+    /// the keys that only an earlier plugin sets. The winners stay unmerged.
+    pub(crate) default_objects: HashMap<u32, crate::esm::records::RawRecord>,
 }
 
 /// Lazily parse the schema already validated by the build script.
@@ -867,6 +871,17 @@ fn read_plugins_with_prepared(
                 chain.push(source);
             } else if source.deleted {
                 result.overrides.insert(record.form_id, vec![source]);
+            }
+            if record.record_type == *b"DOBJ" {
+                if record.flags & 0x20 != 0 {
+                    result.default_objects.remove(&record.form_id);
+                } else {
+                    let mut raw = record.to_raw_record();
+                    if let Some(previous) = result.default_objects.get(&record.form_id) {
+                        crate::esm::merge_default_objects(previous, &mut raw);
+                    }
+                    result.default_objects.insert(record.form_id, raw);
+                }
             }
             if record.flags & 0x20 != 0 {
                 result.records.remove(&record.form_id);

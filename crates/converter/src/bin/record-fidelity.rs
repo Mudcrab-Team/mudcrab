@@ -253,7 +253,7 @@ mod tests {
     use super::*;
 
     fn pack(root: &Path, schema_bytes: &[u8]) -> std::path::PathBuf {
-        // `?` is not a valid Windows file-name character; keep it elsewhere for URI escaping.
+        // Exercise URI delimiters and non-ASCII names without a Windows-invalid question mark.
         let name = if cfg!(windows) {
             "pack # % ü"
         } else {

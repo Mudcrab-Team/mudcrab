@@ -1481,6 +1481,21 @@ fn hash_open_file(mut file: &fs::File) -> std::io::Result<String> {
         .collect())
 }
 
+/// Record the derived grass archive so quick/full checks verify its presence and digest.
+pub(crate) fn record_grass_artifact(manifest: &mut ConversionManifest, root: &Path) -> Result<()> {
+    let path = root.join("grass_cache.rkyv");
+    manifest.entries.insert(
+        "derived/grass-cache".into(),
+        CacheEntry {
+            source_hash: format!("grass-producer:{}", shared::grass::GRASS_CACHE_VERSION),
+            output: "grass_cache.rkyv".into(),
+            output_size: fs::metadata(&path)?.len(),
+            output_hash: hash_file(&path)?,
+        },
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2274,6 +2289,80 @@ mod tests {
         assert_ne!(recorded, configuration_hash(&config).unwrap());
     }
 
+    /// Adapter 13 keeps exact language/settings proofs while adapter 14 invalidates metadata.
+    #[test]
+    fn adapter13_retained_assets_require_exact_language_and_settings() {
+        for language in ["english", "french"] {
+            let mut config = crate::config::PipelineConfig::new("Data", "output");
+            config.record_reader = crate::config::RecordReader::Inhouse;
+            config.language = language.into();
+            let mut original = crate::esm::inhouse::configured_reader_identity(&config).unwrap();
+            original["adapter_version"] = serde_json::json!(13);
+            let recorded = configuration_hash_with_identity(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                Some(&original),
+            )
+            .unwrap();
+            assert!(
+                retained_configuration_matches_for_reader(
+                    &config,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &original,
+                )
+                .unwrap()
+            );
+            assert_ne!(recorded, configuration_hash(&config).unwrap());
+            let mut changed = config.clone();
+            changed.texture_fallback_quality = 191;
+            assert!(
+                !retained_configuration_matches_for_reader(
+                    &changed,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &original,
+                )
+                .unwrap()
+            );
+            changed = config.clone();
+            changed.language = if language == "english" {
+                "french"
+            } else {
+                "english"
+            }
+            .into();
+            assert!(
+                !retained_configuration_matches_for_reader(
+                    &changed,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &original,
+                )
+                .unwrap()
+            );
+            for (field, value) in [
+                ("adapter_version", serde_json::json!(99)),
+                ("schema_sha256", serde_json::json!("different-schema")),
+                ("text_encoding", serde_json::json!("utf-8")),
+                ("string_table_encoding", serde_json::json!("unproven")),
+                ("extra", serde_json::json!(true)),
+            ] {
+                let mut altered = original.clone();
+                altered[field] = value;
+                assert!(
+                    !retained_configuration_matches_for_reader(
+                        &config,
+                        CONVERTER_SCHEMA_VERSION,
+                        &recorded,
+                        &altered,
+                    )
+                    .unwrap()
+                );
+            }
+        }
+    }
+
     #[test]
     fn adapter13_asset_proof_keeps_non_english_identity() {
         let mut config = crate::config::PipelineConfig::new("Data", "output");
@@ -2383,6 +2472,71 @@ mod tests {
                         .unwrap(),
                     asset_configuration_hash_for_schema(&legacy, CONVERTER_SCHEMA_VERSION, kind)
                         .unwrap()
+                );
+            }
+        }
+    }
+
+    /// LAND recovery accepts exact projection-four/five asset proofs in each language.
+    #[test]
+    fn legacy_projection_four_retained_assets_require_exact_settings_and_identity() {
+        for (projection, language) in [(4, "english"), (4, "french"), (5, "english"), (5, "french")]
+        {
+            let mut config = crate::config::PipelineConfig::new("Data", "output");
+            config.record_reader = crate::config::RecordReader::Legacy;
+            config.language = language.to_owned();
+            let mut identity = serde_json::json!({
+                "mode": "legacy", "projection_version": projection, "language": language,
+                "text_encoding": "windows-1252",
+            });
+            if language == "french" {
+                identity["string_table_encoding"] = serde_json::json!("utf-8-or-windows-1252");
+            }
+            let recorded = configuration_hash_with_identity(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                Some(&identity),
+            )
+            .unwrap();
+            assert!(
+                retained_configuration_matches_for_reader(
+                    &config,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &identity,
+                )
+                .unwrap()
+            );
+            assert_ne!(
+                recorded,
+                current_configuration_hash_for_schema(&config, CONVERTER_SCHEMA_VERSION).unwrap()
+            );
+            let mut changed = config.clone();
+            changed.texture_fallback_quality = 191;
+            assert!(
+                !retained_configuration_matches_for_reader(
+                    &changed,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &identity,
+                )
+                .unwrap()
+            );
+            for (field, value) in [
+                ("projection_version", serde_json::json!(99)),
+                ("text_encoding", serde_json::json!("utf-8")),
+                ("extra", serde_json::json!(true)),
+            ] {
+                let mut altered = identity.clone();
+                altered[field] = value;
+                assert!(
+                    !retained_configuration_matches_for_reader(
+                        &config,
+                        CONVERTER_SCHEMA_VERSION,
+                        &recorded,
+                        &altered,
+                    )
+                    .unwrap()
                 );
             }
         }
