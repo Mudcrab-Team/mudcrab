@@ -97,6 +97,7 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "actor_model_parts",
     "movement_types",
     "race_movement_links",
+    "default_objects",
     "race_animation_sources",
     "movement_game_settings",
     "waters",
@@ -1123,6 +1124,12 @@ fn convert_plugins_with_text_sources_report_impl(
         let mut raw = take_canonical_record(record);
         for (index, text) in runtime_text_updates {
             raw.subrecords[index].1 = text;
+        }
+        // The runtime default-object table follows the key-merged record, like the legacy reader.
+        if let Some(merged) = decoded.default_objects.get(&raw.form_id)
+            && raw.record_type == *b"DOBJ"
+        {
+            super::merge_default_objects(merged, &mut raw);
         }
         let omitted = opaque_fields.get(&raw.form_id);
         // Admission already validated these shared text/opaque transformations.
