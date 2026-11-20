@@ -4733,7 +4733,12 @@ pub(crate) fn converted_model_path(path: String) -> Option<String> {
     if !is_safe_relative_asset_path(without_prefix) {
         return None;
     }
-    let relative: std::path::PathBuf = std::path::Path::new(without_prefix).components().collect();
+    let relative = without_prefix
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    let relative = std::path::Path::new(&relative);
     if relative.as_os_str().is_empty()
         || relative.starts_with("sky")
         || relative.starts_with("markers")
