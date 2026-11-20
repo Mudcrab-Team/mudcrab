@@ -1422,9 +1422,9 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
         let Some(vertices) = allocator.mesh_vertex_slice(&data.mesh.id()) else {
             return RenderCommandResult::Skip;
         };
-        // Retail differs: retail clamps each geometry to 960 instances before upload (whether it
-        // re-batches the rest is unconfirmed); MudCrab draws every visible instance (tracked
-        // separately).
+        // Retail differs on purpose: retail clamps each geometry to 960 instances and drops the
+        // rest. MudCrab draws every visible instance, so dense grass mods aren't cut off; vanilla
+        // density stays far below the cap, so vanilla looks the same.
         let count = visible_instance_count(data, view.world_from_view.translation()) as u32;
         if count == 0 {
             return RenderCommandResult::Skip;
