@@ -4,7 +4,7 @@ use crate::esm::{
     records::RawRecord,
     types::{GroupHeader, RecordHeader, WorldReference},
 };
-use crate::records::DiscardedFrameScope;
+use crate::records::{DiscardedFrameScope, TruncatedPlacement};
 use color_eyre::{
     Result,
     eyre::{WrapErr, eyre},
@@ -241,6 +241,7 @@ pub(super) enum ParsedRecord {
     /// A known header with no usable payload.
     DamagedRecord(RawRecord),
     DiscardedFrame(DiscardedFrameScope),
+    TruncatedPlacement(TruncatedPlacement),
 }
 
 fn parse_group_inner(
@@ -270,6 +271,9 @@ fn parse_group_inner(
                 "trailing {} bytes in bounded record frame",
                 curr.len(),
             ));
+            if let Some(placement) = TruncatedPlacement::from_prefix(curr) {
+                visit(ParsedRecord::TruncatedPlacement(placement));
+            }
             visit(ParsedRecord::DiscardedFrame(current_cell.into()));
             curr = &[];
             continue;

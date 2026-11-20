@@ -1,5 +1,5 @@
 //! Memory-mapped framing with recoverable record errors and bounded inflation.
-use super::{DiscardedFrameScope, PluginDiagnostics};
+use super::{DiscardedFrameScope, PluginDiagnostics, TruncatedPlacement};
 use color_eyre::{Result, eyre::WrapErr};
 use flate2::{Decompress, FlushDecompress, Status};
 use memmap2::Mmap;
@@ -47,18 +47,24 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("checked frame"))
 }
 
+#[derive(Default)]
+pub(crate) struct ScanDamage {
+    pub frames: HashSet<DiscardedFrameScope>,
+    pub truncated_placements: Vec<(u64, TruncatedPlacement)>,
+}
+
 /// Read source inputs only; ownership and slot assignment remain with LoadOrder.
 pub(crate) fn scan_plugin(
     path: &Path,
     diagnostics: &mut PluginDiagnostics,
     mut observe: impl FnMut(ObservedHeader),
     mut receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
-) -> Result<HashSet<DiscardedFrameScope>> {
+) -> Result<ScanDamage> {
     diagnostics.set_record(0, None, None, None, "framing");
     let file = File::open(path).wrap_err_with(|| format!("open {}", path.display()))?;
     if file.metadata()?.len() < 24 {
         diagnostics.note("record", || "input shorter than TES4 header".into());
-        return Ok(HashSet::new());
+        return Ok(ScanDamage::default());
     }
     // SAFETY: inputs are read-only for the conversion and the map is never exposed to a writer.
     // An outside truncation or in-place rewrite would fault reads of the map; that risk is
@@ -66,7 +72,7 @@ pub(crate) fn scan_plugin(
     let map = unsafe { Mmap::map(&file)? };
     if map.len() < 24 || &map[..4] != b"TES4" {
         diagnostics.note("record", || "input has no complete TES4 header".into());
-        return Ok(HashSet::new());
+        return Ok(ScanDamage::default());
     }
     Ok(scan_bytes_observed(
         &map,
@@ -92,14 +98,15 @@ fn scan_bytes_observed(
     diagnostics: &mut PluginDiagnostics,
     receive: &mut impl FnMut(ScannedRecord, &mut PluginDiagnostics),
     observe: &mut impl FnMut(ObservedHeader),
-) -> HashSet<DiscardedFrameScope> {
+) -> ScanDamage {
     let mut position = 0;
     let mut end = bytes.len();
     let mut cell = None;
     let mut world = None;
     let mut topic = None;
     let mut parents = Vec::new();
-    let mut discarded_frames = HashSet::new();
+    let mut damage = ScanDamage::default();
+    let discarded_frames = &mut damage.frames;
     loop {
         if position == end {
             let Some((parent_end, parent_cell, parent_world, parent_topic)) = parents.pop() else {
@@ -116,6 +123,11 @@ fn scan_bytes_observed(
             diagnostics.note("record", || {
                 format!("incomplete frame at byte {position}; skipping containing group remainder")
             });
+            if let Some(placement) = TruncatedPlacement::from_prefix(&bytes[position..end]) {
+                damage
+                    .truncated_placements
+                    .push((position as u64, placement));
+            }
             discarded_frames.insert(cell.into());
             position = end;
             continue;
@@ -249,7 +261,7 @@ fn scan_bytes_observed(
             diagnostics,
         );
     }
-    discarded_frames
+    damage
 }
 
 /// Require exactly one complete zlib stream, with a 64 MiB per-record ceiling.
