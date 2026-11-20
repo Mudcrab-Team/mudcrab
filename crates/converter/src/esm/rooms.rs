@@ -857,7 +857,9 @@ fn project_room_graph(
             });
             summary.count += 1;
         }
-        let Some(xprm) = view.find(b"XPRM").filter(|data| data.len() >= 32) else {
+        let Some(xprm) = unique_marker_geometry(&sources, form_id, &view, b"XPRM")
+            .filter(|data| data.len() == 32)
+        else {
             incomplete.insert(cell);
             report.non_box_rooms_skipped += 1;
             continue;
