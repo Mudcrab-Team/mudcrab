@@ -97,6 +97,20 @@
 //!   (`Dynamic`, `KinematicPositionBased` or `KinematicVelocityBased`), except an authored
 //!   reference root, which follows its assignment rule. Moving child meshes still stay drawn.
 //!   `Fixed` bodies, which static collision uses, are culled normally.
+//! - a mesh with `AnimatedBy` on itself or on an ancestor below its reference root. The mesh can
+//!   move independently of the placement used for room assignment. `start_actor_animations` marks
+//!   the composed NPC body hierarchy, and those actors already carry `RoomCullExempt`. Bevy also
+//!   marks nodes in streamed GLBs with embedded animation targets, including native mod models.
+//! - a `SkinnedMesh` with a valid authored room target and no source sphere. Its joints can move
+//!   the mesh beyond the named room with the reference root still at its authored placement.
+//!
+//! Skyrim appears to keep a web's assignment bound fixed while its bones move, so the web can
+//! disappear when its room is culled. MudCrab keeps these uncertain meshes in the camera's draw
+//! list to avoid hiding geometry that can move independently of the placement. That can add draw
+//! work for meshes hidden behind walls. The converted Bleak Falls models `FXcobwebRoundWall01`
+//! and `FXspiderWebKitDoorSpecial` have skins without animation clips. In the captured cell their
+//! automatic assignments keep them drawn because they lack source spheres. The native bound probes
+//! and rendered controls are in `docs/research/skyrim-culling-mismatches.md`.
 //!
 //! Streamed actors and doors receive the exemption when their reference root is spawned.
 //!
@@ -1473,6 +1487,7 @@ mod tests {
         },
         ecs::system::RunSystemOnce,
         math::{Affine3A, primitives::ViewFrustum},
+        mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes},
         transform::TransformPlugin,
     };
 
@@ -1925,6 +1940,85 @@ mod tests {
         assert!(
             mesh_list(&scene.app, scene.camera).contains(&scene.far),
             "a moved root without a source sphere stays visible after returning to its original placement"
+        );
+    }
+
+    #[test]
+    fn a_named_skin_without_a_source_sphere_skips_room_culling() {
+        let connection = authored_database();
+        insert_room(&connection, 1, 7, [0.0; 3]);
+        insert_room(&connection, 2, 7, [0.0, 25.0, 0.0]);
+        connection
+            .execute_batch(
+                "INSERT INTO \"references\"(id,cell_id,base_form_id,pos_y) VALUES(101,7,91,25),(102,7,92,25);
+                 INSERT INTO room_reference_rules VALUES(101,7,'target',2),(102,7,'target',2);
+                 INSERT INTO room_model_bounds VALUES(92,0,0,0,1);",
+            )
+            .unwrap();
+        let mut scene = scene();
+        let world = scene.app.world_mut();
+        let root = {
+            let mut state = world.resource_mut::<RoomCullingState>();
+            let loaded = state.graphs.get_mut(&7).unwrap();
+            loaded.graph = load_room_graph(&connection, 7).unwrap();
+            loaded.root
+        };
+        let inverse_bindposes = world
+            .get_resource_or_init::<Assets<SkinnedMeshInverseBindposes>>()
+            .add(SkinnedMeshInverseBindposes::from(vec![Mat4::IDENTITY]));
+        let placement = Transform::from_xyz(0.0, 0.0, -25.0);
+        let global = GlobalTransform::from(placement);
+        let bounds = Aabb::from_min_max(-Vec3::splat(0.5), Vec3::splat(0.5));
+        let [(unbounded, unbounded_skin), (_, bounded_skin)] = [101, 102].map(|form_id| {
+            let reference = world
+                .spawn((FormId(form_id), ChildOf(root), placement, global))
+                .id();
+            let joint = world
+                .spawn((ChildOf(reference), Transform::IDENTITY, global))
+                .id();
+            let mesh = world
+                .spawn((
+                    Mesh3d::default(),
+                    ChildOf(reference),
+                    bounds,
+                    global,
+                    SkinnedMesh {
+                        inverse_bindposes: inverse_bindposes.clone(),
+                        joints: vec![joint],
+                    },
+                ))
+                .id();
+            (reference, mesh)
+        });
+        let unskinned_mesh = world
+            .spawn((Mesh3d::default(), ChildOf(unbounded), bounds, global))
+            .id();
+        *world
+            .get_mut::<VisibleEntities>(scene.camera)
+            .unwrap()
+            .get_mut(TypeId::of::<Mesh3d>()) = vec![unbounded_skin, unskinned_mesh, bounded_skin];
+
+        run_cull(&mut scene.app);
+        assert_eq!(
+            mesh_list(&scene.app, scene.camera),
+            [unbounded_skin],
+            "the unreached target hides the unskinned sibling and the skin with a source sphere"
+        );
+
+        let world = scene.app.world_mut();
+        world
+            .entity_mut(scene.camera)
+            .insert(GlobalTransform::from_xyz(0.0, 0.0, -22.0));
+        world
+            .get_mut::<VisibleEntities>(scene.camera)
+            .unwrap()
+            .get_mut(TypeId::of::<Mesh3d>())
+            .extend([unskinned_mesh, bounded_skin]);
+        run_cull(&mut scene.app);
+        assert_eq!(
+            mesh_list(&scene.app, scene.camera),
+            [unbounded_skin, unskinned_mesh, bounded_skin],
+            "all three meshes draw when the camera enters their room"
         );
     }
 

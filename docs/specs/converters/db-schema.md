@@ -1486,9 +1486,10 @@ Authored assignment metadata:
   trees have no row. Render AABBs are not substituted for missing native assignment bounds.
   Incremental Skyrim conversion and failed-asset repair project both bounds from the final
   staged GLB winner. Missing or unreadable winners clear the validity flag and prior sphere.
-  For native GLBs installed in a private runtime copy of a pack, close the engine and run
-  `room-model-bounds-refresh <assets-dir> <meshes/path.glb>...` after replacing or removing the
-  files. If the refresh fails, keep the pack offline until it succeeds or you restore the previous GLBs.
+  After a mod update replaces or removes native GLBs in a private runtime copy, the pack maintainer
+  or the mod installation script runs `room-model-bounds-refresh <assets-dir> <meshes/path.glb>...`
+  with the engine closed. The launcher and engine leave this step to the caller. If the refresh
+  fails, keep the pack offline until it succeeds or you restore the previous GLBs.
   List each changed lowercase runtime path. Native GLBs can supply a sphere in the same
   version 1 root extra. The command updates all matching base forms and geometric room overlaps
   in one SQLite transaction. Keep the original conversion pack for manifest verification and
@@ -1497,18 +1498,19 @@ Authored assignment metadata:
   unsupported room shape or invalid/missing marker size makes the cell incomplete. Incomplete
   cells retain full rendering in authored mode.
 
-Initial attachment honors a valid named target directly, including targets whose bounds do not
-contain the object. Later reference-transform changes reclassify supported bounds. Automatic
+Initial attachment honors a valid named target directly, even when the object's center lies outside
+the room bounds. Later reference-transform changes reclassify supported bounds. Automatic
 assignment uses the sphere center, tests the union of each master's bounds, and classifies zero,
 one, or multiple touched physical portals as ordinary-space, portal-shared, or common-node
 ownership. Portal sharing uses the native sphere test, and each child mesh tests the resulting
-volume with its current affine AABB. Ambiguous overlapping masters retain all possible owners;
-native runtime handle/hash order is not reconstructed from FormIDs. Automatic assignment keeps unknown bounds visible. A valid initial named target assigns directly
-without requiring a source sphere. `NONE`, unsupported transforms, actors, and doors remain drawn. Activators (`ACTI`), including static webs,
-stay visible in legacy graphs. A valid named target attaches an activator to its room at the
-authored placement, even without a source sphere. Automatic attachment and reassignment after
-movement keep an activator visible when its bounds are unknown. Named-target neighboring-room priority and specialized/forced native assignment
-paths are not fully reproduced.
+volume with its current affine AABB. Ambiguous overlapping masters retain all possible owners.
+The native runtime's choice depends on handle and hash order. `NONE`, unsupported transforms,
+actors, and doors remain drawn. Activators (`ACTI`), including static webs, stay visible in legacy
+graphs. An initial named target can cull an unskinned mesh without a source sphere. A skinned mesh with
+a valid named target stays drawn if the model lacks a source sphere. A mesh also stays drawn if it
+or one of its ancestors below the reference root carries `AnimatedBy`. Automatic attachment and
+reassignment after movement keep meshes with unknown source bounds visible. Named-target
+neighboring-room priority and specialized/forced native assignment paths are not fully reproduced.
 
 Legacy `reference_rooms` rows remain for compatibility. Multibound-flagged references are omitted
 from both pivot and overlap membership; integration removes stale rows. Legacy runtime exemptions
