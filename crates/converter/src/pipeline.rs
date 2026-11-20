@@ -5937,7 +5937,8 @@ fn recheck_lod_plugin_hashes(
         match hash_file(path) {
             Ok(actual) => {
                 ensure!(actual == *expected,
-                    "plugin inputs changed during conversion; refusing to publish an LOD build from a mixed input generation");
+                    "plugin input {} changed during conversion; refusing to publish an LOD build from a mixed input generation",
+                    path.display());
                 Ok(actual)
             }
             Err(error) => {
@@ -6932,6 +6933,21 @@ mod tests {
         assert!(report.warnings[0].contains("Missing.esp"));
         fs::write(&paths[0], b"changed").unwrap();
         assert!(recheck_lod_plugin_hashes(&paths, &expected, &mut report).is_err());
+    }
+
+    /// A readable input changed after decoding is named in the LOD refusal.
+    #[test]
+    fn lod_refusal_names_the_changed_plugin() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("MutableMod.esp");
+        fs::write(&path, b"original").unwrap();
+        let expected = admitted_plugin_hashes(std::slice::from_ref(&path));
+        fs::write(&path, b"changed").unwrap();
+        let mut report = PipelineReport::default();
+        let error = recheck_lod_plugin_hashes(std::slice::from_ref(&path), &expected, &mut report)
+            .expect_err("a readable changed plugin must refuse the LOD publication");
+        let message = format!("{error:#}");
+        assert!(message.contains("MutableMod.esp"), "{message}");
     }
 
     /// A plugin that recovered after the initial hash still gets a reader-verified proof.
