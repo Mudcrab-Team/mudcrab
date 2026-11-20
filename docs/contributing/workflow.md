@@ -29,6 +29,14 @@ If someone is assigned to an issue, has claimed it in a comment, or has an open 
 - Run what CI runs before you push (see "Run What CI Runs" in [CONTRIBUTING.md](../../CONTRIBUTING.md)).
 - Keep a PR to one change a reviewer can hold in their head. Split a large feature into PRs that each work on their own.
 
+### Splitting a large pull request
+
+One feature per pull request. A mixed pull request hides defects behind its description, and a reviewer cannot hold it in their head.
+
+- **Independent parts** become separate pull requests against `main`.
+- **Dependent parts** become a stack: each layer targets the branch below it and carries the same `stack: <name> <i>/<n>` label (see [labels.md](labels.md)). Land the stack bottom-up with merge commits, as [step 6](#6-merge-maintainers) describes.
+- **Test and generated files do not count** towards the size. The [PR size workflow](../../.github/workflows/pr_size.yml) skips test code, fixtures, snapshots, vendored code and generated data; the full list is in [scripts/pr_size.py](../../scripts/pr_size.py). It labels a pull request `size: L` above 2,000 remaining lines and `size: XL` above 5,000, then comments once with this guidance. The label is advisory and does not block a merge.
+
 ## 4. Open the pull request
 
 - Fill in the PR template, and write the text as [writing-prs.md](writing-prs.md) describes: the result first, the problem with an example, honest evidence.
@@ -54,12 +62,17 @@ The `main_protection` ruleset requires at least one approving review, approval f
 - **Approval of the latest push by someone other than the pusher is not required.** A code owner who pushed to a PR can approve it.
 - **The rules have one bypass actor.** Organization administrators (`OrganizationAdmin`, always) can bypass the ruleset. The requirements above apply to everyone else.
 
-`main` accepts squash or rebase merges in the ruleset, and the repository setting allows only squash. There is no merge queue and auto-merge is off.
+`main` accepts squash and merge commits; the repository setting allows those two and not rebase merges. Linear history is not required, so a stack can land with merge commits. There is no merge queue and auto-merge is off.
 
 The PR author may merge after another human collaborator approves and all checks pass. Keep [CODEOWNERS](../../.github/CODEOWNERS) in sync with access changes, using the checklists in [GOVERNANCE.md](../../GOVERNANCE.md#joining-the-project). Its catch-all rule also covers changes to CODEOWNERS itself. Administrators can still edit repository settings, so changing or disabling these requirements is a separate policy change.
 
-- Use **Squash and merge**. Keep the PR title as the commit title.
-- Description: the PR's one-sentence summary, an empty line, then one trailer line per co-author or assistant of the PR's commits (`Co-authored-by:` or `Assisted-by:`, see [AI_POLICY.md](../AI_POLICY.md)). Drop the "Merge branch main" lines and the list of commit titles.
+- Use **Squash and merge** for every pull request that is not a stack layer. Keep the PR title as the commit title.
+- Use **Create a merge commit** only to land a stack, bottom-up. Each layer's head commit is an ancestor of the next layer, so a merge commit lands the next layer without a conflict. A squash hides those commits, and the next layer conflicts with its own base.
+  1. Merge the bottom pull request with **Create a merge commit**. The merge commit takes the PR title and body, so the title must pass the title check.
+  2. Change the next pull request's base to `main`. GitHub does this when the merged branch is deleted.
+  3. Merge the next pull request the same way, after its checks pass on the new base. Continue to the top of the stack.
+- Do not use rebase merge for a stack. It rewrites the commits, so the next layer conflicts again.
+- Squash description: the PR's one-sentence summary, an empty line, then one trailer line per co-author or assistant of the PR's commits (`Co-authored-by:` or `Assisted-by:`, see [AI_POLICY.md](../AI_POLICY.md)). Drop the "Merge branch main" lines and the list of commit titles.
 - After a merge, the other open PRs are behind `main` but can still merge without being updated. Update a branch only when it conflicts or needs something that just landed.
 
 ## AI agents
