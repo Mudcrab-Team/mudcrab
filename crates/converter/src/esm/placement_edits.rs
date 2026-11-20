@@ -394,12 +394,14 @@ fn plugin_edits(
             // Remapping drops a wrong-width XTEL and clears an unresolvable destination.
             if SubrecordView::new(&record.subrecords)
                 .find_all(b"XTEL")
-                .any(|data| {
+                .enumerate()
+                .any(|(index, data)| {
                     let Some((target, arrival_and_flags)) = data.split_first_chunk::<4>() else {
                         return true;
                     };
                     let target = u32::from_le_bytes(*target);
-                    arrival_and_flags.len() != 28
+                    index != 0
+                        || arrival_and_flags.len() != 28
                         || (target != 0
                             && source_identity::header_runtime_id(
                                 b"REFR", target, priority, &order,

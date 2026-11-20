@@ -1543,9 +1543,12 @@ additive tables do not change the global world schema or add a feature flag.
 
 #### Import interiors and room placements after conversion
 
-Use `converter apply-room-placements` on a private, offline asset directory with the current world
-database schema and versioned room graph. The command takes the pack's exclusive lock. A pack with only `visibility_version = 2`
-keeps geometric membership. A native named target in that pack keeps the Multibound exemption.
+Use `converter apply-room-placements` on a private, offline asset directory. The command takes
+the pack's exclusive lock and requires world database schema 9 and `visibility_version = 2`.
+It accepts either `assignment_version = 1` or an absent assignment marker. With version 1,
+a valid native `target` assigns the reference to its named room. Without the marker, the import
+succeeds and sets the Multibound exemption, so the reference stays drawn even when that room is
+hidden. Reconvert the pack as described above to enable authored assignment.
 
 
 ```sh

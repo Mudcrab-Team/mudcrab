@@ -73,16 +73,26 @@ fn installed_native_winners_refresh_all_matching_bases_and_room_ownership_inputs
     let assert_winner = |x: Option<f64>, sphere: Option<f64>, overlap: Option<u32>| {
         for reference in [200u32, 201] {
             // The same rule/placement/base join the engine uses for automatic ownership.
-            let projection = connection.query_row(
-                r#"SELECT CASE WHEN s.bounds_valid=1 THEN s.bounds_min_x END, b.center_x,
-                          (SELECT room_ref FROM reference_rooms WHERE reference_id=r.id AND contained=0)
+            let projection = connection
+                .query_row(
+                    r#"SELECT CASE WHEN s.bounds_valid=1 THEN s.bounds_min_x END, b.center_x
                    FROM room_reference_rules p JOIN "references" r ON r.id=p.reference_id
                    JOIN statics s ON s.id=r.base_form_id
                    LEFT JOIN room_model_bounds b ON b.base_form_id=r.base_form_id
                    WHERE p.reference_id=?1 AND p.assignment='auto'"#,
-                [reference], |row| Ok((row.get::<_, Option<f64>>(0)?, row.get::<_, Option<f64>>(1)?, row.get::<_, Option<u32>>(2)?)),
-            ).unwrap();
-            assert_eq!(projection, (x, sphere, overlap));
+                    [reference],
+                    |row| Ok((row.get::<_, Option<f64>>(0)?, row.get::<_, Option<f64>>(1)?)),
+                )
+                .unwrap();
+            assert_eq!(projection, (x, sphere));
+            let overlaps = connection
+                .prepare_cached("SELECT room_ref FROM reference_rooms WHERE reference_id=?1 AND contained=0 ORDER BY room_ref")
+                .unwrap()
+                .query_map([reference], |row| row.get::<_, u32>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert_eq!(overlaps, overlap.as_slice());
         }
     };
     let sphere = |x| json!({"version":1,"center":[x,1.0,0.0],"radius":2.0});
