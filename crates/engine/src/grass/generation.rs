@@ -59,8 +59,10 @@ fn entries(
     for layer in quadrant.layers.iter() {
         let support = nine.map(|i| f32::from(layer.weights[i]));
         if !layer.is_base
-            // Retail value: a layer needs one of the nine coverage bytes above 25/255 and at
-            // least fTexturePctThreshold. Retail differs: a threshold above 1 becomes 0.9 in
+            // Retail value at the default threshold 0: a layer needs one of the nine coverage
+            // bytes above 25/255. Retail also drops a layer when the mean of the nine is below
+            // fTexturePctThreshold, while MudCrab applies the threshold per sample; the two only
+            // differ with an edited INI. Retail differs: a threshold above 1 becomes 0.9 in
             // retail; MudCrab keeps the raw value (tracked separately).
             && !support
                 .iter()
@@ -98,7 +100,7 @@ fn support(weights: &[f32; 9], x: f32, y: f32) -> f32 {
         + ((1.0 - fx) * weights[i + 3] + weights[i + 4] * fx) * fy
 }
 
-/// Retail differs: retail has water modes 0..5 only; modes 6 and 7 are unconstrained here
+/// Retail differs: retail has water modes 0..5 only; modes 6 and above are unconstrained here
 /// (tracked separately).
 pub fn water_allowed(height: f32, water: Option<f32>, distance: u16, mode: u32) -> bool {
     let w = water.unwrap_or(-f32::MAX);
@@ -135,8 +137,8 @@ fn quantize(value: f32, span: f32) -> u16 {
     (value / span * 65535.0).round().clamp(0.0, 65535.0) as u16
 }
 
-/// Retail differs: retail keeps binary16 height values; this staging byte encoding is MudCrab
-/// (tracked separately).
+/// Heights are stored as binary16; this stages the binary16 bits as two bytes until the cell is
+/// finalized.
 fn stage_height(height: f32) -> u16 {
     debug_assert!(height.is_finite());
     let bits = height.to_bits();
@@ -179,8 +181,8 @@ fn fade_rank(mut value: u32) -> u32 {
     (value ^ (value >> 16)) & (FADE_SLOTS - 1)
 }
 
-/// Retail value: colour random `r * 2^-33 - 0.25` times the range, with values at or above 1
-/// becoming 0.99.
+/// Retail value: colour factor `(r * 2^-33 - 0.25) * range + (1 - range)`, with values at or
+/// above 1 becoming 0.99.
 fn brightness(luma: f32, range: f32, word: u32) -> (u8, f32) {
     let factor = (word as f32 * 1.164_153_2e-10 - 0.25) * range + (1.0 - range);
     let value = luma * factor;

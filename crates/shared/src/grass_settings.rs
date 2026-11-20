@@ -32,11 +32,13 @@ pub struct GrassSettings {
     /// `iGrassCellRadius`: Retail value: 2 cells around the player.
     #[serde(rename = "iGrassCellRadius")]
     pub cell_radius: i32,
-    /// `fGrassStartFadeDistance`: Retail value: default 7000 at the High and Ultra presets
-    /// (Low 1000, Medium 2300; shipped `SkyrimPrefs.ini` 7000). Start of distance thinning.
+    /// `fGrassStartFadeDistance`: Retail value: compiled default 7000 (presets: Low 1000,
+    /// Medium 2300, High and Ultra 7000; shipped `SkyrimPrefs.ini` 7000). Start of distance
+    /// thinning.
     #[serde(rename = "fGrassStartFadeDistance")]
     pub start_fade_distance: f64,
-    /// `fGrassFadeRange`: Retail value: 1000 Creation units; the fade end is start plus range.
+    /// `fGrassFadeRange`: Retail value: 1000 Creation units. Retail's fade end is start plus range,
+    /// clamped to uGridsToLoad x 4096, and the fade start used is min(fade end, start).
     #[serde(rename = "fGrassFadeRange")]
     pub fade_range: f64,
     /// `fGrassMinStartFadeDistance`: Retail value: shipped as 0.0 in `Skyrim_Default.ini` and `SkyrimPrefs.ini`

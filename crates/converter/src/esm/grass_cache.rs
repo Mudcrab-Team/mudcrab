@@ -1307,8 +1307,8 @@ fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize, usize, Option
             wave_period: field!(10, 0.0f32),
             flags: field!(11, 0u8),
         };
-        // Retail differs: retail has water modes 0..5 only; modes 6 and 7 are unconstrained
-        // here (tracked separately).
+        // Retail differs: retail has water modes 0..5 only; modes 6 and above are
+        // unconstrained here (tracked separately).
         let valid = complete
             && id != 0
             && rule.position_range >= 0.0
@@ -3236,7 +3236,8 @@ mod tests {
             min: [-12.0, -3.0, -7.0],
             max: [31.0, 19.0, 11.0],
         };
-        // Unit-test fixture: this asymmetric rotation triple is not a retail placement value.
+        // Unit-test fixture: this asymmetric rotation triple and the 1.7 scale are not retail
+        // placement values.
         let angles: [f32; 3] = [0.31, -0.57, 0.83];
         let position = [140.0, -53.0, 28.0];
         let mut min = [f32::INFINITY; 3];

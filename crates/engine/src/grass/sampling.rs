@@ -7,7 +7,7 @@ pub(super) struct Sample {
     pub nearest: usize,
 }
 
-/// Retail value: IEEE binary16 limits (65520 and 2^-24), with ties to even.
+/// Standard IEEE binary16 limits (65520 and 2^-24), which retail also stores; ties to even.
 pub(super) fn half_round(value: f32) -> f32 {
     let magnitude = value.abs();
     if !value.is_finite() || magnitude >= 65_520.0 {
@@ -124,7 +124,7 @@ pub(super) fn committed_height(x: f32, y: f32, heights: &[f32]) -> f32 {
     }
 }
 
-/// Retail value: 1.4222221 (512/360) and a 512-entry cosine table.
+/// Test mirror of [`slope_bounds`].
 #[cfg(test)]
 pub(super) fn slope_allowed(normal_z: f32, min: u8, max: u8) -> bool {
     let cosine = |angle: u8| {
