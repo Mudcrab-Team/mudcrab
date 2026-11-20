@@ -4379,18 +4379,11 @@ pub(crate) fn non_mo2_archive_is_active(archive: &Path, owners: &BTreeMap<String
         .is_none_or(|(_, active)| *active)
 }
 
-/// Lists the active BSA files in a direct Data directory in conversion order.
+/// Lists active BSAs from the same recursive Data discovery used by non-MO2 conversion.
 pub fn active_data_bsa_paths(data: &Path, plugins: &[PathBuf]) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    for entry in fs::read_dir(data)? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() {
-            files.push(entry.path());
-        }
-    }
+    let mut files = discover(data)?;
     let owners = installed_archive_owners(data, &files, plugins);
     files.retain(|path| extension(path, &["bsa"]) && non_mo2_archive_is_active(path, &owners));
-    files.sort();
     sort_archives_by_load_order(&mut files, plugins);
     Ok(files)
 }
