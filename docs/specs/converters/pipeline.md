@@ -80,7 +80,9 @@ subrecords whose schema occurrences unambiguously agree on localized type and ba
 A null ID does not require its declared bank. Explicitly resolved
 empty text remains distinguishable from unresolved text. A selected union or definition leaf's explicit
 bank overrides its parent's bank; an unspecified leaf inherits the parent bank,
-then defaults to STRINGS.
+then defaults to STRINGS. A schema resolve/selector failure in this bank walk
+keeps the existing signature-default fallback and emits a field warning naming
+the record, field and failed step. The bank walk stays bounded to 32 steps.
 Ordinary plugin text and English string banks use Windows-1252, including bytes
 that happen to form valid UTF-8. Banks in another language are read as UTF-8, as
 Skyrim SE's non-English banks are (Cyrillic, Polish), falling back to Windows-1252

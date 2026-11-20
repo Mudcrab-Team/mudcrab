@@ -1,6 +1,6 @@
 # Native Skyrim gravity, launch, apex and timestep evidence
 
-This study investigates [issue #221](https://github.com/Mudcrab-Team/mudcrab/issues/221) with the native instrumentation developed for [#520](https://github.com/Mudcrab-Team/mudcrab/issues/520). It established the meaning of physics values before changing Mudcrab. Production physics and conversion constants were unchanged during this study. The baseline comparisons and frozen study below remain historical evidence.
+This study investigates [issue #221](https://github.com/Mudcrab-Team/mudcrab/issues/221) with the native instrumentation developed for [#520](https://github.com/Mudcrab-Team/mudcrab/issues/520). It established the meaning of physics values before changing Mudcrab. Production physics and conversion constants were unchanged during this study. The subsequent [implementation report](skyrim-physics-221-implementation.md) records the live input controls, production correction and before/after validation. The baseline comparisons and frozen study below remain historical evidence.
 
 The experiment uses original Skyrim SE 1.7.104.0 under Proton on 2026-11-06. The executable SHA-256 is `846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f`. Mudcrab's comparison revision is `1dcca42fc398baaf626e588694f9e08084117f11`. All addresses below are RVAs relative to preferred image base `0x140000000`.
 
