@@ -332,9 +332,7 @@ impl EsmParser {
                 let (mut record, damaged) = match candidate {
                     ParsedRecord::Usable(record) => (record, false),
                     ParsedRecord::DamagedRecord(record)
-                        if record.cell_form_id.is_some()
-                            && !record.is_deleted()
-                            && is_placed_record_type(&record.record_type) =>
+                        if !record.is_deleted() && is_placed_record_type(&record.record_type) =>
                     {
                         (record, true)
                     }
@@ -378,15 +376,17 @@ impl EsmParser {
                 .and_then(|()| {
                     if !damaged && !record.is_deleted() {
                         if is_placed_record_type(&record_type) {
-                            color_eyre::eyre::ensure!(
-                                record.cell_form_id != Some(0),
-                                "invalid placement parent cell"
-                            );
+                            validate_placement_parent(&record_type, record.cell_form_id, || {
+                                merged
+                                    .get(&record.form_id)
+                                    .and_then(|prior: &RawRecord| prior.cell_form_id)
+                            })
+                            .map_err(color_eyre::eyre::Report::msg)?;
                             color_eyre::eyre::ensure!(
                                 extractors::SubrecordView::new(&record.subrecords)
-                                    .find(b"NAME")
-                                    .is_some(),
-                                "missing required NAME reference"
+                                    .get_form_id(b"NAME")
+                                    .is_some_and(|id| id != 0),
+                                "missing or null required NAME reference"
                             );
                         }
                         validate_inhouse_record(&record)?;
@@ -708,6 +708,25 @@ impl GameSettingIdentities {
 /// Required placed base links cannot use the optional field's null/drop policy.
 fn is_required_form_id_subrecord(record_type: &[u8; 4], tag: &[u8]) -> bool {
     tag == b"NAME" && is_placed_record_type(record_type)
+}
+
+/// An ungrouped first definition has no earlier room to lose. An override of a
+/// cell-owned placement needs a destination before it can displace that winner.
+pub(crate) fn validate_placement_parent(
+    kind: &[u8; 4],
+    cell: Option<u32>,
+    previous_cell: impl FnOnce() -> Option<u32>,
+) -> std::result::Result<(), String> {
+    if is_placed_record_type(kind) {
+        match cell {
+            Some(0) => return Err("invalid placement parent cell".into()),
+            None if previous_cell().is_some() => {
+                return Err("missing parent cell on placement override".into());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Native records with a placed base and transform. Keep publication, required-link
