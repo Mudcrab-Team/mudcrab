@@ -4820,6 +4820,8 @@ fn damaged_plugin_occluders_leave_valid_neighbors_and_verified_link_slots_intact
                 [
                     placement_marker(cell + 1, 0x1f, Vec::new()),
                     placement_marker(cell + 4, 23, Vec::new()),
+                    placement_marker(cell + 5, 23, sub(b"XPRM", &[0; 32])),
+                    placement(cell + 6, 23, 0, 0.0, sub(b"XPRM", &[0; 33])),
                     placement(cell + 2, 23, 0, 0.0, sub(b"XPRM", &[0; 31])),
                 ]
                 .concat(),
@@ -4844,6 +4846,8 @@ fn damaged_plugin_occluders_leave_valid_neighbors_and_verified_link_slots_intact
     };
     assert_eq!(shape_count(cell + 2), 0);
     assert_eq!(shape_count(cell + 3), 1);
+    assert_eq!(shape_count(cell + 5), 0);
+    assert_eq!(shape_count(cell + 6), 0);
     assert!(!placement_certificate(&db, cell));
     assert!(placement_certificate(&db, PLACEMENT_CELL_B));
 

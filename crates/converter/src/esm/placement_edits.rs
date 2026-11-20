@@ -195,9 +195,12 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
             .is_some_and(|cell| fresh_cells.contains(&cell));
         if !edit.record.is_deleted() {
             let view = SubrecordView::new(&edit.record.subrecords);
+            let plugin_occluder =
+                is_plugin && view.get_form_id(b"NAME") == Some(OCCLUSION_MARKER_BASE);
             ensure!(
-                view.find_all(b"XPRM").count() <= 1
-                    && view.find(b"XPRM").is_none_or(|data| data.len() <= 32)
+                (plugin_occluder
+                    || (view.find_all(b"XPRM").count() <= 1
+                        && view.find(b"XPRM").is_none_or(|data| data.len() <= 32)))
                     && view.find_all(b"XSCL").count() <= 1,
                 "placement {id:08X} has unsupported primitive or scale data"
             );
@@ -769,7 +772,7 @@ fn validate_room_fields(
         ensure!(tx.query_row(
             "SELECT count(*)=2 FROM room_graph_stats WHERE name IN ('occlusion_version','occlusion_links_verified') AND value=1",
             [], |row| row.get::<_, bool>(0))?, "occluder edits require a source-verified pack");
-        for tag in [b"XPRM", b"XORD", b"XMBR", b"XSCL", b"XESP"] {
+        for tag in [b"XMBR", b"XSCL", b"XESP"] {
             ensure!(
                 view.find_all(tag).nth(1).is_none(),
                 "ambiguous occluder field {}",
