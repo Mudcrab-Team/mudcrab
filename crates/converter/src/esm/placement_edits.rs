@@ -146,7 +146,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     // to determine which ownership and occlusion evidence the runtime can trust.
     tx.execute_batch(super::rooms::ROOM_TABLES_SQL)?;
     super::rooms::migrate_room_metadata(&tx)?;
-    let (import, metadata) = if is_plugin {
+    let (mut import, metadata) = if is_plugin {
         let metadata = plugin_metadata_from_bytes(&bytes)?;
         (plugin_edits(&tx, &name, &bytes, &metadata)?, Some(metadata))
     } else {
@@ -206,7 +206,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     let mut changed = HashSet::new();
     let mut layouts = HashMap::new();
     let mut records = HashMap::new();
-    for mut edit in import.edits {
+    for (index, mut edit) in import.edits.into_iter().enumerate() {
         let id = edit.record.form_id;
         let in_fresh_cell = edit
             .record
@@ -265,6 +265,13 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         if let Some(layout) = edit.room_links {
             layouts.insert(id, layout);
         }
+        if import
+            .unreadable_refs
+            .get(&Some(id))
+            .is_some_and(|&next_edit| index >= next_edit)
+        {
+            import.unreadable_refs.remove(&Some(id));
+        }
         records.insert(id, edit.record);
     }
     let mut omissions = ProjectionOmissions::default();
@@ -297,9 +304,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         std::slice::from_ref(&name),
     )?;
     let incomplete = mark_incomplete(&tx, &import.damage)?;
-    if import.unknown_discarded_scope
-        || discarded_occluder_override(&tx, &import.discarded_placement_overrides)?
-    {
+    if import.unknown_discarded_scope || !import.unreadable_refs.is_empty() {
         tx.execute(
             "UPDATE room_graph_stats SET value=0 WHERE name='occlusion_links_verified'",
             [],
@@ -326,7 +331,8 @@ struct Import {
     cells: Vec<CellCreation>,
     edits: Vec<Edit>,
     damaged_occluders: HashSet<u32>,
-    discarded_placement_overrides: HashSet<u32>,
+    /// Index of the first edit following the latest unreadable REFR for each identity.
+    unreadable_refs: HashMap<Option<u32>, usize>,
     unknown_discarded_scope: bool,
     damage: HashSet<DiscardedFrameScope>,
     damaged_creations: HashSet<u32>,
@@ -398,31 +404,22 @@ fn plugin_edits(
     for candidate in candidates {
         let mut record = match candidate {
             ParsedRecord::Usable(record) => record,
-            ParsedRecord::DamagedRecord { record, truncated } => {
-                record_damage(&mut damage_after, &mut import, &record, priority, &order);
-                if truncated && super::is_placed_record_type(&record.record_type) {
-                    if let Some(id) = source_identity::header_runtime_id(
-                        &record.record_type,
-                        record.form_id,
-                        priority,
-                        &order,
-                    )
-                    .filter(|&id| id != 0)
-                    {
-                        import.discarded_placement_overrides.insert(id);
-                    } else {
-                        import.unknown_discarded_scope = true;
-                    }
+            ParsedRecord::DamagedRecord(record) => {
+                let id = record_damage(&mut damage_after, &mut import, &record, priority, &order);
+                if record.record_type == REFR {
+                    import.unreadable_refs.insert(id, import.edits.len());
                 }
                 continue;
             }
             ParsedRecord::TruncatedPlacement(placement) => {
-                if let Some(id) = placement.runtime_id(priority, &order) {
+                let id = placement.runtime_id(priority, &order);
+                if placement.record_type == REFR {
+                    import.unreadable_refs.insert(id, import.edits.len());
+                }
+                if let Some(id) = id {
                     damage_after.insert(id, import.edits.len());
-                    import.discarded_placement_overrides.insert(id);
                 } else {
                     import.damage.insert(DiscardedFrameScope::Unknown);
-                    import.unknown_discarded_scope = true;
                 }
                 continue;
             }
@@ -522,7 +519,6 @@ fn plugin_edits(
                 import.damaged_occluders.insert(remapped);
             }
         }
-        import.discarded_placement_overrides.remove(&remapped);
         import.edits.push(Edit {
             source_id,
             record,
@@ -553,7 +549,7 @@ fn record_damage(
     record: &RawRecord,
     priority: usize,
     order: &LoadOrder,
-) {
+) -> Option<u32> {
     let scoped_cell = |cell: Option<u32>| DiscardedFrameScope::from(cell).resolve(priority, order);
     if record.record_type == CELL {
         let scope = scoped_cell(Some(record.form_id));
@@ -570,8 +566,10 @@ fn record_damage(
                 .filter(|&id| id != 0)
         {
             damage_after.insert(id, import.edits.len());
+            return Some(id);
         }
     }
+    None
 }
 
 fn mark_predecessor_damage(tx: &Transaction<'_>, import: &mut Import, id: u32) -> Result<()> {
@@ -588,32 +586,6 @@ fn mark_predecessor_damage(tx: &Transaction<'_>, import: &mut Import, id: u32) -
         import.damage.insert(DiscardedFrameScope::Cell(cell));
     }
     Ok(())
-}
-
-fn discarded_occluder_override(tx: &Transaction<'_>, discarded: &HashSet<u32>) -> Result<bool> {
-    if discarded.is_empty() {
-        return Ok(false);
-    }
-    // A retained marker can lack a runtime placement row, for example if DATA was unusable.
-    // Fall back to its canonical payload only when an import has not superseded that record.
-    let mut payload = tx.prepare_cached(
-        "SELECT coalesce(
-            (SELECT data FROM [references] WHERE id=?1),
-            (SELECT data FROM records WHERE form_id=?1 AND record_type='REFR'
-             AND NOT EXISTS(SELECT 1 FROM room_placement_edits WHERE form_id=?1)))",
-    )?;
-    for &id in discarded {
-        let data: Option<Vec<u8>> = payload.query_row([id], |row| row.get(0))?;
-        if let Some(data) = data {
-            let record = rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(&data)?;
-            if record.subrecords.iter().any(|subrecord| {
-                subrecord.tag == *b"NAME" && subrecord.data == OCCLUSION_MARKER_BASE.to_le_bytes()
-            }) {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
 }
 
 fn mark_incomplete(

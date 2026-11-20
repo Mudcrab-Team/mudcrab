@@ -1358,7 +1358,10 @@ Columns and rules:
   publishes `occlusion_version = 1` in `room_graph_stats`. It sets `occlusion_links_verified`
   to zero when a truncated marker payload or a malformed `XORD` can hide a cross-cell link.
   Full in-house exports and plugin placement imports also clear the flag when a discarded
-  override of a known occluder remains unresolved or the discarded frame has unknown scope.
+  frame has unknown scope or a `REFR` header or payload is unreadable. An unreadable
+  `REFR` can introduce a PlaneMarker even if its predecessor used an ordinary base or
+  the placement is new. A later usable replacement or deletion of the same FormID
+  supersedes that evidence within the conversion or import.
   These markers let the loader keep unrelated occluders in a complete cell that contains an
   all-null `XORD`. Subset exports invalidate cells that contain an old or new link target.
   A plugin placement import also clears pack-wide link verification when remapping reports

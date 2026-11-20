@@ -4888,7 +4888,11 @@ fn plugin_placement_import_skips_children_of_a_damaged_new_interior() {
             record(b"CELL", damaged_cell, 0, vec![0]),
             placement_group(
                 damaged_cell,
-                placement(0x0100_0800, PLACEMENT_STAT, 0, 0.0, Vec::new()),
+                [
+                    record(b"REFR", 0x0100_0800, 0, vec![0]),
+                    placement(0x0100_0800, PLACEMENT_STAT, 0, 0.0, Vec::new()),
+                ]
+                .concat(),
             ),
             record(
                 b"CELL",
@@ -4900,6 +4904,16 @@ fn plugin_placement_import_skips_children_of_a_damaged_new_interior() {
         ]
         .concat(),
     );
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    let links_verified = || {
+        db.query_row(
+            "SELECT value FROM room_graph_stats WHERE name='occlusion_links_verified'",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap()
+    };
+    assert!(links_verified());
     let result = run_placement_import(&assets, "--plugin", &source);
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(stderr.contains("its new CELL is damaged"), "{stderr}");
@@ -4907,7 +4921,7 @@ fn plugin_placement_import_skips_children_of_a_damaged_new_interior() {
         result,
         "Applied 1 room placements in 1 cells (1 created, 1 certified)",
     );
-    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    assert!(!links_verified());
     assert!(placement_certificate(&db, good_cell));
     assert!(placement_certificate(&db, PLACEMENT_CELL_A));
     let skipped: (u32, u32) = db
@@ -7491,29 +7505,53 @@ fn check_discarded_occluder_override(import: bool) {
             ),
             record(b"CELL", 0x901, 0, sub(b"DATA", &[1, 0])),
             placement_group(0x901, placement_marker(0x802, 0x17, Vec::new())),
+            record(b"CELL", 0x902, 0, sub(b"DATA", &[1, 0])),
         ]
         .concat(),
     );
     let mut failures = Vec::new();
-    for (name, id, header_len, superseded, expected) in [
-        ("ordinary", 0x803, 20, false, 1),
-        ("ordinary-overrun", 0x803, 24, false, 1),
-        ("superseded", 0x801, 20, true, 1),
-        ("superseded-overrun", 0x801, 24, true, 1),
-        ("unknown", 0x801, 15, false, 0),
-        ("marker", 0x801, 20, false, 0),
-        ("marker-overrun", 0x801, 24, false, 0),
+    let partial = |id, len| {
+        let links = sub(b"XORD", &[0x802u32, 0, 0, 0].map(u32::to_le_bytes).concat());
+        placement_marker(id, 0x17, links)[..len].to_vec()
+    };
+    let compressed = |tag, id| record(tag, id, 0x40000, vec![4, 0, 0, 0, 0xff]);
+    let restored = placement_marker(0x801, 0x17, Vec::new());
+    let deleted = record(b"REFR", 0x801, 0x20, Vec::new());
+    for (name, damaged, later, expected) in [
+        ("ordinary", partial(0x803, 20), None, 0),
+        ("ordinary-overrun", partial(0x803, 24), None, 0),
+        ("new", partial(0x0100_0801, 20), None, 0),
+        ("superseded", partial(0x801, 20), Some(&restored), 1),
+        ("superseded-overrun", partial(0x801, 24), Some(&restored), 1),
+        ("unknown", partial(0x801, 15), None, 0),
+        ("marker", partial(0x801, 20), None, 0),
+        ("marker-overrun", partial(0x801, 24), None, 0),
+        ("bounded-zlib", compressed(b"REFR", 0x801), None, 0),
+        (
+            "bounded-subrecord",
+            record(b"REFR", 0x801, 0, b"NAME".to_vec()),
+            None,
+            0,
+        ),
+        ("new-zlib", compressed(b"REFR", 0x0100_0801), None, 0),
+        ("actor-zlib", compressed(b"ACHR", 0x0100_0804), None, 1),
+        (
+            "zlib-restored",
+            compressed(b"REFR", 0x801),
+            Some(&restored),
+            1,
+        ),
+        (
+            "zlib-deleted",
+            compressed(b"REFR", 0x801),
+            Some(&deleted),
+            1,
+        ),
     ] {
-        let xord = sub(b"XORD", &[0x802u32, 0, 0, 0].map(u32::to_le_bytes).concat());
-        let mut contents = placement_group(
-            0x900,
-            placement_marker(id, 0x17, xord)[..header_len].to_vec(),
-        );
-        if superseded {
-            contents.extend(placement_group(
-                0x900,
-                placement_marker(id, 0x17, Vec::new()),
-            ));
+        let cell = if name == "bounded-zlib" { 0x902 } else { 0x900 };
+        let mut contents = placement_group(cell, damaged);
+        if let Some(later) = later {
+            contents.extend(placement_group(0x900, later.clone()));
         }
         let patch = plugin(data, &format!("{name}.esp"), &["Skyrim.esm"], 0, contents);
         let assets = data.join(name);
@@ -7553,6 +7591,27 @@ fn check_discarded_occluder_override(import: bool) {
             Some(name != "unknown"),
             "{name}"
         );
+        if name == "bounded-zlib" {
+            assert_eq!(stored_placement_certificate(&conn, 0x900), Some(false));
+            assert_eq!(stored_placement_certificate(&conn, 0x902), Some(false));
+            assert_eq!(
+                read(
+                    &conn,
+                    "SELECT count(*) FROM room_occluders WHERE ref_id=0x801"
+                ),
+                1
+            );
+            if !import {
+                assert_eq!(
+                    read(
+                        &conn,
+                        "SELECT count(*) FROM record_overrides WHERE form_id=0x801
+                    AND status='skipped' AND frame_complete=1 AND reason IS NOT NULL"
+                    ),
+                    1
+                );
+            }
+        }
         let actual = read(&conn, certificate);
         if actual != expected {
             failures.push(format!("{name}: certificate {actual}, expected {expected}"));
