@@ -605,9 +605,7 @@ fn validate_live_candidate(
     previous: Option<&DecodedRecord>,
     validate: &mut impl FnMut(&DecodedRecord) -> std::result::Result<(), String>,
 ) -> std::result::Result<(), String> {
-    crate::esm::validate_placement_parent(&record.record_type, record.cell_form_id, || {
-        previous.and_then(|prior| prior.cell_form_id)
-    })?;
+    crate::esm::validate_placement_parent(&record.record_type, record.cell_form_id, || None)?;
     if crate::esm::is_placed_record_type(&record.record_type)
         && previous.is_some()
         && (record.rejected_fields.contains(b"DATA")

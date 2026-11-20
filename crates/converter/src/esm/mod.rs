@@ -346,6 +346,7 @@ impl EsmParser {
         let mut unknown_discarded_scope = false;
         let mut room_link_layouts = HashMap::new();
         let mut placement_candidates = BTreeMap::new();
+        let mut deleted_ids = HashSet::new();
         let mut summaries = Vec::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
         // the first definition's key/owner while taking the last setting value.
@@ -415,12 +416,8 @@ impl EsmParser {
                 .and_then(|()| {
                     if !damaged && !record.is_deleted() {
                         if is_placed_record_type(&record_type) {
-                            validate_placement_parent(&record_type, record.cell_form_id, || {
-                                merged
-                                    .get(&record.form_id)
-                                    .and_then(|prior: &RawRecord| prior.cell_form_id)
-                            })
-                            .map_err(color_eyre::eyre::Report::msg)?;
+                            validate_placement_parent(&record_type, record.cell_form_id, || None)
+                                .map_err(color_eyre::eyre::Report::msg)?;
                             let view = extractors::SubrecordView::new(&record.subrecords);
                             if merged.contains_key(&record.form_id) {
                                 color_eyre::eyre::ensure!(
@@ -519,6 +516,9 @@ impl EsmParser {
                     room_link_layouts.insert(id, layout);
                 }
                 if record.is_deleted() {
+                    if id < 0x800 {
+                        deleted_ids.insert(id);
+                    }
                     merged.remove(&id);
                     placement_candidates.remove(&id);
                     damaged_placements.accepted(id);
@@ -563,6 +563,7 @@ impl EsmParser {
             &mut placement_candidates,
             &mut room_link_layouts,
             &mut damaged_placements,
+            &deleted_ids,
             order,
             &warnings,
         );
@@ -596,6 +597,7 @@ fn resolve_legacy_placements(
     candidates: &mut BTreeMap<u32, LegacyPlacementCandidate>,
     layouts: &mut HashMap<u32, rooms::RoomLinkLayout>,
     damage: &mut PlacementDamage,
+    deleted_ids: &HashSet<u32>,
     order: &load_order::LoadOrder,
     warnings: &RemapWarnings,
 ) {
@@ -603,17 +605,24 @@ fn resolve_legacy_placements(
         let rejected = invalid_placement_candidates(
             candidates.keys().copied(),
             |id| {
-                candidates
-                    .contains_key(&id)
-                    .then(|| legacy_placement_links(&winners[&id]))
+                candidates.contains_key(&id).then(|| {
+                    let record = &winners[&id];
+                    PlacementDependencies {
+                        own: legacy_placement_links(record),
+                        grouped: legacy_grouped_predecessors(record.cell_form_id, &candidates[&id])
+                            .map(|prior| (prior.record_type, legacy_placement_links(prior)))
+                            .collect(),
+                    }
+                })
             },
-            |id, [cell, base]| {
+            |id, dependencies, cycle| {
                 crate::records::validate_placement_targets(
                     None,
                     &winners[&id].record_type,
-                    cell,
-                    base,
+                    dependencies,
+                    cycle,
                     |target| winners.get(&target).map(|record| record.record_type),
+                    |target| deleted_ids.contains(&target),
                 )
             },
         );
@@ -661,18 +670,43 @@ fn legacy_placement_links(record: &RawRecord) -> [Option<u32>; 2] {
     ]
 }
 
+fn legacy_grouped_predecessors(
+    cell: Option<u32>,
+    candidate: &LegacyPlacementCandidate,
+) -> impl Iterator<Item = &RawRecord> {
+    let first = if cell.is_none() {
+        candidate.predecessor.as_deref()
+    } else {
+        None
+    };
+    std::iter::successors(first, |predecessor| {
+        predecessor
+            .previous_candidate
+            .as_ref()?
+            .predecessor
+            .as_deref()
+    })
+    .filter_map(|predecessor| predecessor.previous.as_ref())
+    .take_while(|previous| is_placed_record_type(&previous.record_type))
+    .filter(|previous| previous.cell_form_id.is_some())
+}
+
 /// Select failures against the current catalogue in dependency order. A caller
 /// restores predecessors and starts another round before checking their dependents.
 pub(crate) fn invalid_placement_candidates(
     placements: impl IntoIterator<Item = u32>,
-    links: impl Fn(u32) -> Option<PlacementLinks>,
-    validate: impl Fn(u32, PlacementLinks) -> std::result::Result<(), String>,
+    links: impl Fn(u32) -> Option<PlacementDependencies>,
+    validate: impl Fn(
+        u32,
+        &PlacementDependencies,
+        Option<&HashSet<u32>>,
+    ) -> std::result::Result<(), String>,
 ) -> Vec<(u32, String)> {
     // Gabow's path-based strongly connected components algorithm. Discovery indices
     // are retained while a placement is active. Edges to active nodes merge roots.
     let mut visited = HashMap::new();
     let mut traversal = Vec::new();
-    let mut active: Vec<(u32, PlacementLinks)> = Vec::new();
+    let mut active: Vec<(u32, PlacementDependencies)> = Vec::new();
     let mut roots: Vec<(u32, usize, usize)> = Vec::new();
     let mut unresolved = HashSet::new();
     let mut rejected = Vec::new();
@@ -688,12 +722,10 @@ pub(crate) fn invalid_placement_candidates(
                 }
                 roots.pop();
                 let component = &active[start..];
-                if component.iter().any(|(_, targets)| {
-                    targets
-                        .iter()
-                        .flatten()
-                        .any(|target| unresolved.contains(target))
-                }) {
+                if component
+                    .iter()
+                    .any(|(_, targets)| targets.all().any(|target| unresolved.contains(&target)))
+                {
                     unresolved.extend(component.iter().map(|&(member, _)| member));
                 } else if let Some(failure) = placement_component_failure(component, &validate) {
                     unresolved.extend(component.iter().map(|&(member, _)| member));
@@ -716,9 +748,9 @@ pub(crate) fn invalid_placement_candidates(
                 let index = visited.len();
                 visited.insert(id, Some(index));
                 roots.push((id, index, active.len()));
-                active.push((id, targets));
                 traversal.push((id, true));
-                traversal.extend(targets.into_iter().flatten().map(|target| (target, false)));
+                traversal.extend(targets.all().map(|target| (target, false)));
+                active.push((id, targets));
             }
         }
     }
@@ -727,29 +759,47 @@ pub(crate) fn invalid_placement_candidates(
 
 type PlacementLinks = [Option<u32>; 2];
 
+pub(crate) struct PlacementDependencies {
+    pub(crate) own: PlacementLinks,
+    pub(crate) grouped: Vec<([u8; 4], PlacementLinks)>,
+}
+
+impl PlacementDependencies {
+    fn all(&self) -> impl Iterator<Item = u32> + '_ {
+        self.own
+            .into_iter()
+            .chain(self.grouped.iter().flat_map(|(_, links)| *links))
+            .flatten()
+    }
+}
+
 fn placement_component_failure(
-    component: &[(u32, PlacementLinks)],
-    validate: &impl Fn(u32, PlacementLinks) -> std::result::Result<(), String>,
+    component: &[(u32, PlacementDependencies)],
+    validate: &impl Fn(
+        u32,
+        &PlacementDependencies,
+        Option<&HashSet<u32>>,
+    ) -> std::result::Result<(), String>,
 ) -> Option<(u32, String)> {
     if component.len() > 1
         || component
             .first()
-            .is_some_and(|(id, targets)| targets.contains(&Some(*id)))
+            .is_some_and(|(id, targets)| targets.all().any(|target| target == *id))
     {
         let members: HashSet<_> = component.iter().map(|&(id, _)| id).collect();
         // A failure outside the cycle can restore a usable target for another member.
-        for &(id, targets) in component.iter().rev() {
-            let targets = targets.map(|link| link.filter(|target| !members.contains(target)));
-            if let Err(reason) = validate(id, targets) {
-                return Some((id, reason));
+        for (id, targets) in component.iter().rev() {
+            if let Err(reason) = validate(*id, targets, Some(&members)) {
+                return Some((*id, reason));
             }
         }
     }
     // Try one rejection at a time when all failures are on links within the cycle.
-    component
-        .iter()
-        .rev()
-        .find_map(|&(id, targets)| validate(id, targets).err().map(|reason| (id, reason)))
+    component.iter().rev().find_map(|(id, targets)| {
+        validate(*id, targets, None)
+            .err()
+            .map(|reason| (*id, reason))
+    })
 }
 
 /// The `(use code, FormID)` pairs of a `DOBJ`'s `DNAM` subrecords, in stored order.
@@ -974,8 +1024,8 @@ pub(crate) fn valid_placement_transform<'a>(mut fields: impl Iterator<Item = &'a
             .all(|word| f32::from_le_bytes(*word).is_finite())
 }
 
-/// An ungrouped first definition has no earlier room to lose. An override of a
-/// cell-owned placement needs a destination before it can displace that winner.
+/// A missing parent disqualifies an override only if a usable predecessor owns a cell.
+/// Callers defer that lookup until the placement targets can be checked.
 pub(crate) fn validate_placement_parent(
     kind: &[u8; 4],
     cell: Option<u32>,
