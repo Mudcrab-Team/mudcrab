@@ -2452,7 +2452,7 @@ fn room_transform_and_link_damage_is_local_to_the_source_cell() {
         ));
     }
     let mut box_shape = [0; 32];
-    for component in box_shape[..12].chunks_exact_mut(4) {
+    for component in box_shape[..12].as_chunks_mut::<4>().0 {
         component.copy_from_slice(&100f32.to_le_bytes());
     }
     box_shape[28..].copy_from_slice(&1u32.to_le_bytes());
