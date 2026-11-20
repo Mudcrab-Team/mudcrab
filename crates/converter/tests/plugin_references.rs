@@ -3378,11 +3378,8 @@ fn malformed_authored_assignments_stay_unknown_in_both_readers() {
             {
                 for (flag_index, flags) in [0, 0x8000_0000].into_iter().enumerate() {
                     let id = 0x820 + (type_index * 10 + index * 2 + flag_index) as u32;
-                    let mut fields = [
-                        sub(b"NAME", &base.to_le_bytes()),
-                        sub(b"DATA", &[0; 24]),
-                    ]
-                    .concat();
+                    let mut fields =
+                        [sub(b"NAME", &base.to_le_bytes()), sub(b"DATA", &[0; 24])].concat();
                     if let Some(bytes) = &assignment {
                         fields.extend(sub(b"XMBR", bytes));
                     }
