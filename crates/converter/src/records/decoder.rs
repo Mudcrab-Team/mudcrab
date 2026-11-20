@@ -3107,7 +3107,7 @@ fn grouped_predecessors(chain: &[DecodedRecord]) -> impl Iterator<Item = &Decode
     chain[placement_chain_start(chain)..]
         .iter()
         .rev()
-        .filter(|prior| prior.cell_form_id.is_some())
+        .filter(|prior| prior.cell_form_id.is_some() && prior.has_placement_transform())
 }
 
 fn validate_live_duplicate(
@@ -3262,7 +3262,7 @@ impl RecoveryCandidates {
                     || !crate::esm::is_placed_record_type(&candidate.record_type)
                 {
                     grouped = None
-                } else if candidate.cell_form_id.is_some() {
+                } else if candidate.cell_form_id.is_some() && candidate.has_placement_transform() {
                     grouped = Some((candidate.record_type, placement_links(&candidate)));
                 }
             }
@@ -3758,6 +3758,10 @@ pub(crate) fn resolve_deferred(
         let rejected = crate::esm::invalid_placement_candidates(
             placements.iter().copied(),
             |id| {
+                !recovery.predecessor_chain(id).is_empty()
+                    || recovery.duplicate_queue(&result.records[&id]).is_some()
+            },
+            |id| {
                 recovery.can_recover_nonplacement(
                     &result.records[&id],
                     &mut **validate_candidate.borrow_mut(),
@@ -3768,7 +3772,7 @@ pub(crate) fn resolve_deferred(
                     .contains(&id)
                     .then(|| recovery.placement_dependencies(&result.records[&id]))
             },
-            |id, dependencies, cycle| {
+            |id, dependencies, cycle, absent| {
                 let record = &result.records[&id];
                 let chain = recovery.predecessor_chain(id);
                 let resolved;
@@ -3808,7 +3812,12 @@ pub(crate) fn resolve_deferred(
                     record.load_order,
                     dependencies,
                     cycle,
-                    |target| kinds.get(&target).copied(),
+                    |target| {
+                        kinds
+                            .get(&target)
+                            .filter(|_| !absent.contains(&target))
+                            .copied()
+                    },
                     &recovery.deleted,
                 )
             },

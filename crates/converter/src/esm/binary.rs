@@ -373,6 +373,9 @@ fn parse_group_inner(
                 curr = next;
                 decode_record_subrecords(&header, payload)
             } else {
+                if let Some(candidate) = discarded_prefix(rest, current_cell, current_worldspace) {
+                    visit(candidate);
+                }
                 visit(ParsedRecord::DiscardedFrame(
                     DiscardedFrameScope::unread_tail(current_cell, rest.len()),
                 ));

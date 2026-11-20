@@ -1494,20 +1494,7 @@ fn validate_candidate_with_string_sources(
     tables: &mut HashMap<(usize, String), RuntimeTextTable>,
 ) -> std::result::Result<(), String> {
     if super::is_placed_record_type(&record.record_type) {
-        if record.rejected_fields.contains(b"NAME") {
-            return Err("rejected placed base NAME".into());
-        }
-        let mut bases = record
-            .fields
-            .iter()
-            .filter(|field| field.signature == *b"NAME");
-        if !bases
-            .next()
-            .is_some_and(|field| matches!(field.value, Value::FormId(id) if id != 0))
-            || bases.next().is_some()
-        {
-            return Err("placement requires exactly one nonzero NAME reference".into());
-        }
+        record.validate_placement_base()?;
     }
     if !matches!(&record.record_type, b"LAND" | b"MOVT" | b"GMST" | b"RACE") {
         return Ok(());

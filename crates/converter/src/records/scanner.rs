@@ -54,6 +54,16 @@ pub(crate) struct ScanDamage {
     pub truncated_placements: Vec<(u64, TruncatedPlacement)>,
 }
 
+impl ScanDamage {
+    fn note_prefix(&mut self, bytes: &[u8], offset: usize) {
+        if let Some(scope) = DiscardedFrameScope::from_group_prefix(bytes) {
+            self.frames.insert(scope);
+        } else if let Some(placement) = TruncatedPlacement::from_prefix(bytes) {
+            self.truncated_placements.push((offset as u64, placement));
+        }
+    }
+}
+
 /// Read source inputs only; ownership and slot assignment remain with LoadOrder.
 pub(crate) fn scan_plugin(
     path: &Path,
@@ -107,7 +117,6 @@ fn scan_bytes_observed(
     let mut topic = None;
     let mut parents = Vec::new();
     let mut damage = ScanDamage::default();
-    let discarded_frames = &mut damage.frames;
     loop {
         if position == end {
             let Some((parent_end, parent_cell, parent_world, parent_topic)) = parents.pop() else {
@@ -125,14 +134,8 @@ fn scan_bytes_observed(
                 format!("incomplete frame at byte {position}; skipping containing group remainder")
             });
             let prefix = &bytes[position..end];
-            if let Some(scope) = DiscardedFrameScope::from_group_prefix(prefix) {
-                discarded_frames.insert(scope);
-            } else if let Some(placement) = TruncatedPlacement::from_prefix(prefix) {
-                damage
-                    .truncated_placements
-                    .push((position as u64, placement));
-            }
-            discarded_frames.insert(cell.into());
+            damage.note_prefix(prefix, position);
+            damage.frames.insert(cell.into());
             position = end;
             continue;
         }
@@ -156,15 +159,13 @@ fn scan_bytes_observed(
                 });
                 let child_offset = position + 24;
                 let child_prefix = &bytes[child_offset..end];
-                if let Some(scope) = DiscardedFrameScope::from_group_prefix(child_prefix) {
-                    discarded_frames.insert(scope);
-                } else if let Some(placement) = TruncatedPlacement::from_prefix(child_prefix) {
-                    damage
-                        .truncated_placements
-                        .push((child_offset as u64, placement));
-                }
-                discarded_frames.insert(DiscardedFrameScope::unread_tail(cell, child_prefix.len()));
-                discarded_frames.extend(cell_child.map(DiscardedFrameScope::Cell));
+                damage.note_prefix(child_prefix, child_offset);
+                damage
+                    .frames
+                    .insert(DiscardedFrameScope::unread_tail(cell, child_prefix.len()));
+                damage
+                    .frames
+                    .extend(cell_child.map(DiscardedFrameScope::Cell));
                 position = end;
                 continue;
             }
@@ -210,7 +211,11 @@ fn scan_bytes_observed(
             position = start + size;
             &bytes[start..position]
         } else {
-            discarded_frames.insert(DiscardedFrameScope::unread_tail(cell, end - position - 24));
+            let start = position + 24;
+            damage.note_prefix(&bytes[start..end], start);
+            damage
+                .frames
+                .insert(DiscardedFrameScope::unread_tail(cell, end - start));
             diagnostics.note("record", || {
                 format!(
                     "truncated {} {:08X} at byte {position}; skipping containing group remainder",

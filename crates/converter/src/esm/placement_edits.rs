@@ -14,7 +14,7 @@ use super::{
         RawRecord,
         achr::{SubrecordXESP, flags::INITIALLY_DISABLED},
     },
-    remap_record_form_ids,
+    reference_links, remap_record_form_ids,
     rooms::{
         PORTAL_MARKER_BASE, ROOM_MARKER_BASE, RoomLinkLayout, SHAPE_BOX, SHAPE_PORTAL,
         refresh_placement_cells,
@@ -103,6 +103,8 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     let bytes = fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
     let checksum = hash_bytes(&bytes);
     tx.execute_batch(LAYER_TABLES)?;
+    tx.execute_batch(reference_links::SUBSET_NONPLACEMENT_DELETIONS_SQL)?;
+    tx.execute_batch(reference_links::REFERENCE_LINK_TABLES_SQL)?;
 
     let name = if is_plugin {
         let name = normalize_plugin_name(name);
@@ -196,6 +198,8 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     }
     let mut cells = fresh_cells.clone();
     let mut changed = HashSet::new();
+    let mut unavailable_link_targets = Vec::new();
+    let mut available_link_targets = HashSet::new();
     let mut layouts = HashMap::new();
     let mut records = HashMap::new();
     for mut edit in import.edits {
@@ -214,6 +218,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         }
         ensure!(changed.insert(id), "duplicate placement edit for {id:08X}");
         let must_be_new = in_fresh_cell || (is_plugin && edit.owns_new_id);
+        let was_link_target = reference_links::has_live_target(&tx, id)?;
         apply_edit(
             &tx,
             &mut edit,
@@ -223,6 +228,13 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
             is_plugin,
         )
         .wrap_err_with(|| format!("placement {id:08X}"))?;
+        match (was_link_target, reference_links::has_live_target(&tx, id)?) {
+            (true, false) => unavailable_link_targets.push(id),
+            (false, true) => {
+                available_link_targets.insert(id);
+            }
+            _ => {}
+        }
         tx.execute(
             "INSERT INTO room_placement_edits VALUES (?1,?2,?3,?4)",
             params![layer, id, edit.source_id, edit.record.is_deleted()],
@@ -237,6 +249,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     let incomplete = mark_incomplete(&tx, &import.damage)?;
     certified_cells.retain(|cell| !incomplete.contains(cell));
     cells.extend(incomplete);
+    reference_links::refresh_incoming(&tx, &unavailable_link_targets, &available_link_targets)?;
     super::doors::refresh_placement_links(&tx, &changed)?;
     tx.commit()?;
     let mut affected_cells = cells.into_iter().collect::<Vec<_>>();
@@ -755,6 +768,13 @@ fn apply_edit(
 fn validate_placement(tx: &Transaction<'_>, record: &RawRecord, allow_doors: bool) -> Result<()> {
     validate_room_fields(tx, &record.subrecords, allow_doors)?;
     let view = SubrecordView::new(&record.subrecords);
+    let base = view.unique_form_id(b"NAME");
+    let deleted: bool = tx
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM subset_nonplacement_deletions WHERE form_id=?1)",
+        )?
+        .query_row([base], |row| row.get(0))?;
+    ensure!(!deleted, "placement base was deleted by a subset export");
     if let Some(bounds) = view.find(b"XMBO") {
         ensure!(
             view.find(b"XPRM").and_then(|data| data.get(..12)) == Some(bounds),
