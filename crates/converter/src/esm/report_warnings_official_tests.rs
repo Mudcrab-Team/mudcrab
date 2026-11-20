@@ -169,6 +169,7 @@ fn official_legacy_reader_report_has_no_warnings_and_is_complete() {
         [
             "notice: dawnguard.esm: 1 FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own (first: 0307B5B9 in ACTI)",
             "notice: skyrim.esm: 1 FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own (first: 0123C00E in GMST)",
+            "notice: skyrim.esm: omitted 1 placement candidate(s) whose base was deleted by a later plugin (first: 0010C5CD, required NAME 000BD6A5)",
             "notice: skyrim.esm: 5 localized IDs missing from readable string tables (first: 0003C7E3 FNAM missing localized ID 17)",
         ],
         "official control must retain compatibility and readable-bank missing-key notices"
