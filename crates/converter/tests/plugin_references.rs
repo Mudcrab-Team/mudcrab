@@ -4086,8 +4086,23 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
         ),
         (
             "cell-group-hides-move",
-            placement_group(a, [bad_group, moved_portal(0x800)].concat()),
+            placement_group(a, [bad_group.clone(), moved_portal(0x800)].concat()),
             [false, false, false],
+            [false, false, true],
+        ),
+        (
+            "cell-group-hides-partial-portal-header",
+            placement_group(
+                a,
+                [bad_group.clone(), moved_portal(0x800)[..20].to_vec()].concat(),
+            ),
+            [false, false, true],
+            [false, false, true],
+        ),
+        (
+            "cell-group-hides-short-nonplacement-tail",
+            placement_group(a, [bad_group, overrun[..20].to_vec()].concat()),
+            [false, true, true],
             [false, false, true],
         ),
         (
@@ -4549,7 +4564,12 @@ fn a_damaged_repeat_in_the_same_plugin_uncertifies_the_moved_reference() {
     );
     let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
     assert_eq!(placement_winner_cell(&db, id), Some(b));
-    assert!(placement_certificate(&db, PLACEMENT_CELL_UNRELATED));
+    assert_eq!(stored_placement_certificate(&db, a), Some(false), "cell A");
+    assert_eq!(stored_placement_certificate(&db, b), Some(false), "cell B");
+    assert_eq!(
+        stored_placement_certificate(&db, PLACEMENT_CELL_UNRELATED),
+        Some(true)
+    );
 }
 
 #[test]
@@ -4636,12 +4656,46 @@ fn plugin_placement_import_keeps_neighbors_of_damaged_records_and_frames() {
         (
             "discarded-unknown-frame",
             [
-                group(0, u32::from_le_bytes(*b"CELL"), bad_group),
+                group(0, u32::from_le_bytes(*b"CELL"), bad_group.clone()),
                 placement_group(a, good_neighbor()),
             ]
             .concat(),
             [false, false, false],
             5,
+        ),
+        (
+            "discarded-group-hides-partial-portal-header",
+            [
+                placement_group(
+                    a,
+                    [
+                        bad_group.clone(),
+                        record(b"REFR", 0x821, 0, Vec::new())[..20].to_vec(),
+                    ]
+                    .concat(),
+                ),
+                placement_group(a, good_neighbor()),
+            ]
+            .concat(),
+            [false, false, true],
+            3,
+        ),
+        (
+            "discarded-group-hides-short-nonplacement-tail",
+            [
+                placement_group(
+                    a,
+                    [
+                        bad_group,
+                        record(b"NAVM", 0x0100_0803, 0, Vec::new())[..20].to_vec(),
+                    ]
+                    .concat(),
+                ),
+                placement_group(a, good_neighbor()),
+            ]
+            .concat(),
+            [false, true, true],
+            2,
         ),
     ];
     for (name, mut contents, certificates, affected) in cases {
@@ -4675,23 +4729,17 @@ fn plugin_placement_import_keeps_neighbors_of_damaged_records_and_frames() {
         let result = run_placement_import(&assets, "--plugin", &source);
         assert!(String::from_utf8_lossy(&result.stderr).contains("skipped 1 malformed"));
         let certified = usize::from(certificates[2]);
+        let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+        assert_eq!(
+            [a, b, other].map(|cell| stored_placement_certificate(&db, cell)),
+            certificates.map(Some),
+            "{name}: certificates for cells {a:X}, {b:X}, {other:X}"
+        );
         assert_placement_import(
             result,
             &format!("Applied 2 room placements in {affected} cells ({certified} certified)"),
         );
-        let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
-        assert_eq!(
-            [a, b, other].map(|cell| {
-                db.query_row(
-                    "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
-                    [cell],
-                    |row| row.get::<_, bool>(0),
-                )
-                .unwrap()
-            }),
-            certificates,
-            "{name}"
-        );
+        assert_eq!(placement_winner_cell(&db, 0x821), Some(b), "{name}");
         let positions_and_edits: (f64, f64, u32, f64, u32) = db
             .query_row(
                 "SELECT (SELECT pos_x FROM [references] WHERE id=0x802),
