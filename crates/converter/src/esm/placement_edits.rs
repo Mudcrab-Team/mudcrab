@@ -107,6 +107,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     let bytes = fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
     let checksum = hash_bytes(&bytes);
     tx.execute_batch(LAYER_TABLES)?;
+    tx.execute_batch(reference_links::SUBSET_SOURCES_SQL)?;
 
     let name = if is_plugin {
         let name = normalize_plugin_name(name);
@@ -261,6 +262,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
             is_plugin,
         )
         .wrap_err_with(|| format!("placement {id:08X}"))?;
+        reference_links::forget_subset_source(&tx, id)?;
         match (was_link_target, reference_links::has_live_target(&tx, id)?) {
             (true, false) => unavailable_link_targets.push(id),
             (false, true) => {
