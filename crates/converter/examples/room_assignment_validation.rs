@@ -577,7 +577,7 @@ mod tests {
         .unwrap();
         let normal = root.path().join("normal");
         ArchiveExtractor::extract(&archive, &normal).unwrap();
-        let (staged, count) = prepare_model_sources(
+        let (staged, count, _) = prepare_model_sources(
             &data,
             root.path(),
             &BTreeSet::from([model.to_owned()]),
