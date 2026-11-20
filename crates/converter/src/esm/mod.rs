@@ -363,6 +363,12 @@ impl EsmParser {
             let (records, parser_summaries) = parse_plugin_file_with_warnings(path)?;
             summaries.extend(parser_summaries);
             for candidate in records {
+                let candidate = match candidate {
+                    ParsedRecord::DamagedRecord(record) if record.record_type == *b"CELL" => {
+                        ParsedRecord::DiscardedFrame(DiscardedFrameScope::Cell(record.form_id))
+                    }
+                    candidate => candidate,
+                };
                 let (mut record, damaged) = match candidate {
                     ParsedRecord::Usable(record) => (record, false),
                     ParsedRecord::DamagedRecord(record)

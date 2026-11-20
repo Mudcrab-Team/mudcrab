@@ -3595,6 +3595,89 @@ fn placement_cycle_recovers_static_before_checking_its_dependent() {
 }
 
 #[test]
+fn placement_cycle_recovers_queued_static_before_checking_its_dependent() {
+    use converter::config::RecordReader;
+
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let base = plugin(
+        data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            placement_group(0x900, placement(0x830, 0x850, 0, 0.0, Vec::new())),
+            placement_group(0x900, placement(0x850, 0x830, 0, 0.0, Vec::new())),
+            record(b"STAT", 0x830, 0, sub(b"EDID", b"RecoveredStatic\0")),
+        ]
+        .concat(),
+    );
+    let output = data.join("cycle.db");
+    EsmParser::convert_plugins_with_reader(&[base], &output, RecordReader::Inhouse, data).unwrap();
+    let db = rusqlite::Connection::open(output).unwrap();
+    assert_eq!(placement_winner_cell(&db, 0x850), Some(0x900));
+    let kind: String = db
+        .query_row(
+            "SELECT record_type FROM records WHERE form_id=0x830",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kind, "STAT");
+}
+
+#[test]
+fn bounded_damaged_legacy_cell_preserves_the_winner_and_invalidates_its_graph() {
+    use converter::config::RecordReader;
+
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let base = plugin(
+        data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [0x900, 0x901]
+            .into_iter()
+            .flat_map(|cell| {
+                [
+                    record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])),
+                    placement_group(cell, placement_marker(cell - 0x100, 0x1f, Vec::new())),
+                ]
+                .concat()
+            })
+            .collect(),
+    );
+    for (id, other_certified) in [(0x900, true), (0xff00_0900, false)] {
+        let patch = plugin(
+            data,
+            "Damaged.esp",
+            &["Skyrim.esm"],
+            0,
+            record(b"CELL", id, 0, vec![0]),
+        );
+        let output = data.join("graph.db");
+        EsmParser::convert_plugins_with_reader(
+            &[base.clone(), patch],
+            &output,
+            RecordReader::Legacy,
+            data,
+        )
+        .unwrap();
+        let db = rusqlite::Connection::open(output).unwrap();
+        assert!(!placement_certificate(&db, 0x900));
+        assert_eq!(placement_certificate(&db, 0x901), other_certified);
+        let count: usize = db
+            .query_row("SELECT count(*) FROM cells WHERE id=0x900", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}
+
+#[test]
 fn typed_placement_duplicates_claim_the_slot_only_after_admission() {
     use converter::config::RecordReader;
 
