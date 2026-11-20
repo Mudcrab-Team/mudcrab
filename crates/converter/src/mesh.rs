@@ -3075,7 +3075,11 @@ impl SkeletonIndex {
         )
     }
 
-    fn local_directory_union(&self, mesh_source: &Path) -> BTreeSet<String> {
+    fn local_directory_union(
+        &self,
+        mesh_source: &Path,
+        mesh_joints: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
         let paths = mesh_source
             .parent()
             .and_then(|directory| fs::read_dir(directory).ok())
@@ -3084,11 +3088,15 @@ impl SkeletonIndex {
             .filter_map(Result::ok)
             .map(|entry| entry.path())
             .filter(|path| {
-                path.extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("nif"))
+                path.file_name() != mesh_source.file_name()
+                    && path
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("nif"))
                     && !is_skeleton_path(path)
             });
-        self.joint_union(paths)
+        let mut union = self.joint_union(paths);
+        union.extend(mesh_joints.intersection(&self.skeleton_union).cloned());
+        union
     }
 }
 
@@ -3431,7 +3439,7 @@ impl SkeletonIndex {
             &candidates,
             self,
             &joints,
-            |_| Cow::Owned(self.local_directory_union(nif_path)),
+            |_| Cow::Owned(self.local_directory_union(nif_path, &joints)),
         )
     }
 }
@@ -3671,6 +3679,69 @@ mod tests {
         assert!(
             MeshConverter::convert_nif_to_glb_from_index(relative, &input, &output, &next).is_err()
         );
+    }
+
+    #[test]
+    fn local_rig_ranking_uses_captured_mesh_and_live_sibling_evidence() {
+        use dummy_content::nif::{LegacySkin, SkinInstanceKind, legacy_skinned_shape};
+
+        let directory = tempfile::tempdir().unwrap();
+        let actor = directory.path().join("actors/test");
+        let rigs = actor.join("rigs");
+        fs::create_dir_all(&rigs).unwrap();
+        let mesh = actor.join("skin.nif");
+        let skin = LegacySkin {
+            name: "SourceSkin",
+            instance_kind: SkinInstanceKind::Plain,
+            bone_transforms: [([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0); 2],
+            palette: &[1, 0],
+            weights: &[[0.75, 0.25, 0.0, 0.0]; 4],
+            with_geometry: true,
+            joint_override: None,
+        };
+        let original = legacy_skinned_shape(&skin).unwrap();
+        fs::write(&mesh, &original).unwrap();
+        let source = NifSnapshot::read(&mesh).unwrap();
+
+        let rig_hash = |filename, name| {
+            let path = rigs.join(filename);
+            let mut bytes = legacy_skinned_shape(&LegacySkin {
+                name,
+                with_geometry: false,
+                ..skin
+            })
+            .unwrap();
+            let (blocks, _) = parse_skyrim_header(&bytes, &path).unwrap();
+            let root = bytes.len() - blocks.len();
+            bytes[root..root + 4].copy_from_slice(&0u32.to_le_bytes());
+            fs::write(&path, &bytes).unwrap();
+            format!("{}:{}", source.hash(), crate::cache::hash_bytes(&bytes))
+        };
+        let first_rig = rig_hash("skeleton_a.nif", "First");
+        let second_rig = rig_hash("skeleton_b.nif", "Extra");
+
+        let output = directory.path().join("output.glb");
+        let convert = |expected_hash: &str| {
+            MeshConverter::convert_nif_with_local_resolution(
+                &source,
+                &output,
+                Some(expected_hash),
+            )
+            .unwrap();
+        };
+        convert(&first_rig);
+
+        let mut replacement = original;
+        let joint = replacement
+            .windows(5)
+            .position(|bytes| bytes == b"Bone1")
+            .unwrap();
+        replacement[joint..joint + 5].copy_from_slice(b"Extra");
+        fs::write(&mesh, &replacement).unwrap();
+        convert(&first_rig);
+
+        fs::write(actor.join("sibling.nif"), replacement).unwrap();
+        convert(&second_rig);
     }
 
     #[test]
