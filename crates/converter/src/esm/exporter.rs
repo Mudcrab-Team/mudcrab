@@ -767,6 +767,19 @@ fn export_records(
         check_record_insert(&statement)?;
         Some(statement)
     };
+    let insert_links = |record: &RawRecord| {
+        super::reference_links::insert(
+            &tx,
+            &super::reference_links::Context {
+                master,
+                order,
+                subset: order.is_none(),
+            },
+            record,
+            &SubrecordView::new(&record.subrecords),
+        )
+    };
+    let mut subset_link_sources = Vec::new();
     let mut edited_references = HashSet::new();
     for (&form_id, record) in ordered {
         let type_str = from_utf8(&record.record_type).unwrap_or("UNKN");
@@ -906,16 +919,11 @@ fn export_records(
                     );
                     continue;
                 }
-                crate::esm::reference_links::insert(
-                    &tx,
-                    &crate::esm::reference_links::Context {
-                        master,
-                        order,
-                        subset: order.is_none(),
-                    },
-                    record,
-                    &SubrecordView::new(&record.subrecords),
-                )?;
+                if order.is_none() {
+                    subset_link_sources.push(canonical_record);
+                } else {
+                    insert_links(record)?;
+                }
             }
             "LAND" => {
                 let cell_id = record.cell_form_id.unwrap_or(form_id);
@@ -1104,6 +1112,11 @@ fn export_records(
         }
     }
     drop(records_insert);
+    // A later edit can remove a placement while retaining its canonical record.
+    for source in subset_link_sources {
+        let projection = runtime_projection(source, unresolved_fields);
+        insert_links(projection.as_ref().unwrap_or(source))?;
+    }
     // Derived snapshots like the actor model catalog and the grass tables: only a full load-order
     // export owns them, so the movement annotator's subset export leaves them alone, and
     // diagnostic archives defer them. The emittance pass holds every reference and the records
@@ -3549,19 +3562,30 @@ mod tests {
         let deleted_target = 0x812;
         let new_target = 0x910;
         let edited = 0x900;
+        let unusable = 0x911;
         export_to_db(
             &db,
             &[
                 (target, placed(target)),
                 (keyword, record(keyword, b"KYWD", None, None, Vec::new())),
                 (deleted_target, placed(deleted_target)),
+                (unusable, placed(unusable)),
             ]
             .into(),
         )
         .unwrap();
 
         let mut source = placed(edited);
-        for id in [target, deleted_target, new_target, keyword, 0x999, 0x14, 0] {
+        for id in [
+            target,
+            deleted_target,
+            new_target,
+            unusable,
+            keyword,
+            0x999,
+            0x14,
+            0,
+        ] {
             source.subrecords.push((
                 b"XAPR".to_vec(),
                 [id.to_le_bytes(), 1.0f32.to_le_bytes()].concat(),
@@ -3578,6 +3602,7 @@ mod tests {
             Some(new_target),
             None,
             None,
+            None,
             Some(0x14),
             None,
         ];
@@ -3586,6 +3611,7 @@ mod tests {
                 (edited, source.clone()),
                 (deleted_target, deleted),
                 (new_target, placed(new_target)),
+                (unusable, record(unusable, b"REFR", None, None, Vec::new())),
             ]
             .into(),
             [(edited, source)].into(),
