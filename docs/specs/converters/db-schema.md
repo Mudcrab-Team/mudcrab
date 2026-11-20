@@ -927,6 +927,14 @@ were remapped. A future consumer of these fields must account for old packs.
 example movement annotations), preserving established `formid_map` ownership;
 it neither resolves plugin-local IDs nor upgrades an old pack.
 
+A sourced placement deletion checks the owning plugin, local ID and record type
+against the pack before removing the placement and its scripts. The owning
+identity survives deletion. For a low FormID without a stored identity, a subset
+records the deletion in `subset_placement_deletions(form_id INTEGER PRIMARY KEY)`.
+Later subsets leave links to these deleted placements null. A live replacement
+restores the link target, and a full conversion rebuilds the snapshot from its
+source plugins.
+
 ```sql
 CREATE TABLE IF NOT EXISTS formid_map (
     form_id INTEGER PRIMARY KEY,       -- Resolved 32-bit Skyrim FormID
