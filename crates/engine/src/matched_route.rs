@@ -96,6 +96,7 @@ impl MatchedRoute {
             .into_iter()
             .enumerate()
             .map(|(step, x)| Shot {
+                grass: true,
                 name: format!("route-{step:06}"),
                 worldspace_id: Some(self.worldspace_id),
                 interior_cell_id: None,
