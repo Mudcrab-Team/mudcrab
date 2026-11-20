@@ -34,10 +34,9 @@ pub const ADAPTER_VERSION: u32 = 14;
 /// Version 4 resolves localized string fields to the in-house reader's text (`legacy_text`).
 /// Version 5 expands placement coverage and clears absent past-master field targets.
 /// Version 6 resolves NPC outfits, outfit items and ARMA skin texture links before publication.
-/// Version 6 also projects STAT MODS alternate-texture entries (3D Index, TXST link) and remaps their TXST links.
 /// Later LAND paint recovery shares version 6; reconvert to pick up recovered paint.
 /// This identity does not change the independent converted-asset producer/settings proofs.
-/// Version 7 adds STAT MODS rows and TXST remapping, combining both version-6 branches.
+/// Version 7 adds STAT MODS alternate-texture rows (3D Index, TXST link) and remaps their TXST links.
 pub const LEGACY_PROJECTION_VERSION: u32 = 7;
 
 /// Earliest language-bound projection with the current converted-asset proof contract.
