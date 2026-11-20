@@ -41,7 +41,7 @@ use super::{
 use crate::esm::load_order::LoadOrder;
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap, hash_map::Entry},
+    collections::{BTreeMap, HashMap, hash_map},
     sync::OnceLock,
 };
 
@@ -3159,7 +3159,7 @@ pub(crate) fn resolve_deferred(
                 .then(|| placement_links(&result.records[&id]))
         });
         for id in selected {
-            let Entry::Occupied(entry) = result.records.entry(id) else {
+            let hash_map::Entry::Occupied(entry) = result.records.entry(id) else {
                 continue;
             };
             let record = entry.get();
