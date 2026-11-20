@@ -345,16 +345,17 @@ fn plugin_edits(
     parse_plugin_bytes(bytes, name, |candidate| candidates.push(candidate))?;
     let warnings = RemapWarnings::default();
     let mut import = Import::default();
+    let mut damage_after = HashMap::new();
     for candidate in candidates {
         let mut record = match candidate {
             ParsedRecord::Usable(record) => record,
             ParsedRecord::DamagedRecord(record) => {
-                record_damage(tx, &mut import, &record, priority, &order)?;
+                record_damage(&mut damage_after, &mut import, &record, priority, &order);
                 continue;
             }
             ParsedRecord::TruncatedPlacement(placement) => {
                 if let Some(id) = placement.runtime_id(priority, &order) {
-                    mark_predecessor_damage(tx, &mut import, id)?;
+                    damage_after.insert(id, import.edits.len());
                 } else {
                     import.damage.insert(DiscardedFrameScope::Unknown);
                 }
@@ -399,7 +400,7 @@ fn plugin_edits(
             validate_room_field_tags(&record.subrecords)?;
             if base.is_none_or(|id| id == 0) {
                 eprintln!("warning: {name}: skipped placement {source_id:08X} with malformed NAME");
-                record_damage(tx, &mut import, &record, priority, &order)?;
+                record_damage(&mut damage_after, &mut import, &record, priority, &order);
                 continue;
             }
             // Retain the previous link when the new arrival or destination is unusable.
@@ -416,7 +417,7 @@ fn plugin_edits(
                             .is_none_or(|id| id == 0))
             }) {
                 eprintln!("warning: {name}: skipped placement {source_id:08X} with malformed XTEL");
-                record_damage(tx, &mut import, &record, priority, &order)?;
+                record_damage(&mut damage_after, &mut import, &record, priority, &order);
                 continue;
             }
         }
@@ -439,16 +440,29 @@ fn plugin_edits(
         });
     }
     warnings.report();
+    for (index, edit) in import.edits.iter().enumerate() {
+        if damage_after
+            .get(&edit.record.form_id)
+            .is_some_and(|&end| index < end)
+            && !edit.record.is_deleted()
+            && let Some(cell) = edit.record.cell_form_id
+        {
+            import.damage.insert(DiscardedFrameScope::Cell(cell));
+        }
+    }
+    for id in damage_after.into_keys() {
+        mark_predecessor_damage(tx, &mut import, id)?;
+    }
     Ok(import)
 }
 
 fn record_damage(
-    tx: &Transaction<'_>,
+    damage_after: &mut HashMap<u32, usize>,
     import: &mut Import,
     record: &RawRecord,
     priority: usize,
     order: &LoadOrder,
-) -> Result<()> {
+) {
     let scoped_cell = |cell: Option<u32>| DiscardedFrameScope::from(cell).resolve(priority, order);
     if record.record_type == CELL {
         let scope = scoped_cell(Some(record.form_id));
@@ -464,10 +478,9 @@ fn record_damage(
             source_identity::header_runtime_id(&record.record_type, record.form_id, priority, order)
                 .filter(|&id| id != 0)
         {
-            mark_predecessor_damage(tx, import, id)?;
+            damage_after.insert(id, import.edits.len());
         }
     }
-    Ok(())
 }
 
 fn mark_predecessor_damage(tx: &Transaction<'_>, import: &mut Import, id: u32) -> Result<()> {

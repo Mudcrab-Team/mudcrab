@@ -3832,6 +3832,16 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
             [false, false, true],
         ),
         (
+            "overrun-with-complete-portal-header",
+            placement_group(a, {
+                let mut header = moved_portal(0x800)[..24].to_vec();
+                header[4..8].copy_from_slice(&100u32.to_le_bytes());
+                header
+            }),
+            [false, false, true],
+            [false, false, true],
+        ),
+        (
             "placement-tag-alone",
             placement_group(a, b"REFR".to_vec()),
             [false, false, false],
@@ -4248,6 +4258,36 @@ fn assert_placement_import(result: std::process::Output, summary: &str) {
         String::from_utf8_lossy(&result.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&result.stdout).trim(), summary);
+}
+
+#[test]
+fn a_damaged_repeat_in_the_same_plugin_uncertifies_the_moved_reference() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let a = PLACEMENT_CELL_A;
+    let b = PLACEMENT_CELL_B;
+    let id = 0x802;
+    let patch = plugin(
+        dir.path(),
+        "MovedThenDamaged.esp",
+        &["Skyrim.esm"],
+        0,
+        [
+            placement_group(b, placement(id, PLACEMENT_STAT, 0, 16.0, Vec::new())),
+            placement_group(
+                a,
+                record(b"REFR", id, 0, sub(b"NAME", &[0; 3])[..7].to_vec()),
+            ),
+        ]
+        .concat(),
+    );
+    assert_placement_import(
+        run_placement_import(&assets, "--plugin", &patch),
+        "Applied 1 room placements in 2 cells (0 certified)",
+    );
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    assert_eq!(placement_winner_cell(&db, id), Some(b));
+    assert!(placement_certificate(&db, PLACEMENT_CELL_UNRELATED));
 }
 
 #[test]
