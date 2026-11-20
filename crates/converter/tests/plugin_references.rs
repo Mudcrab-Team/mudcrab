@@ -6738,6 +6738,7 @@ fn placement_winner_checks_ungrouped_override_against_usable_predecessor() {
             record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
             record(b"STAT", 0x830, 0, sub(b"EDID", b"OriginalStatic\0")),
             record(b"STAT", 0x831, 0, sub(b"EDID", b"ReplacementStatic\0")),
+            record(b"STAT", 0x834, 0, sub(b"EDID", b"RestorableStatic\0")),
             placement_group(
                 0x900,
                 [
@@ -6746,6 +6747,7 @@ fn placement_winner_checks_ungrouped_override_against_usable_predecessor() {
                     placement(0x852, 0x832, 0, 1.0, Vec::new()),
                     placement(0x853, 0x830, 0, 1.0, Vec::new()),
                     placement(0x854, 0x830, 0, 1.0, Vec::new()),
+                    placement(0x855, 0x834, 0, 1.0, Vec::new()),
                 ]
                 .concat(),
             ),
@@ -6761,6 +6763,9 @@ fn placement_winner_checks_ungrouped_override_against_usable_predecessor() {
             placement(0x850, 0x831, 0, 2.0, Vec::new()),
             placement(0x851, 0x831, 0, 2.0, Vec::new()),
             placement(0x852, 0x832, 0, 2.0, Vec::new()),
+            // The prior owner of 855 needs the STAT hidden by 834's invalid move.
+            placement(0x855, 0x831, 0, 2.0, Vec::new()),
+            placement_group(0x901, placement(0x834, 0x855, 0, 2.0, Vec::new())),
             placement_group(
                 0x900,
                 [
@@ -6791,6 +6796,7 @@ fn placement_winner_checks_ungrouped_override_against_usable_predecessor() {
             (0x852, None),
             (0x853, Some((Some(0x900), 0x831))),
             (0x854, Some((Some(0x900), 0x830))),
+            (0x855, Some((Some(0x900), 0x834))),
         ],
         &mut failures,
     );
