@@ -343,6 +343,12 @@ pub(in crate::esm) fn update_subset(
                 &mut result,
                 omissions,
             )?;
+            if result.unverified_link_targets {
+                tx.prepare_cached(
+                    "UPDATE room_graph_stats SET value=0 WHERE name='occlusion_links_verified'",
+                )?
+                .execute([])?;
+            }
             // Remapped legacy XORD bytes cannot distinguish authored nulls from failed links.
             let unverified_links = source.is_none()
                 && SubrecordView::new(&record.subrecords)
