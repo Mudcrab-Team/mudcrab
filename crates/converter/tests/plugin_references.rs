@@ -3710,6 +3710,30 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
             [false, false, true],
         ),
         (
+            "placement-tag-alone",
+            placement_group(a, b"REFR".to_vec()),
+            [false, false, false],
+            [false, false, true],
+        ),
+        (
+            "partial-portal-id",
+            placement_group(a, moved_portal(0x800)[..15].to_vec()),
+            [false, false, false],
+            [false, false, true],
+        ),
+        (
+            "partial-cell-group",
+            placement_group(a, group(9, b, Vec::new())[..16].to_vec()),
+            [false, false, true],
+            [false, false, true],
+        ),
+        (
+            "partial-topic-group",
+            placement_group(a, group(7, b, Vec::new())[..16].to_vec()),
+            [false, true, true],
+            [false, false, true],
+        ),
+        (
             "partial-header-unresolved-identity",
             placement_group(
                 a,
@@ -3992,6 +4016,26 @@ fn plugin_placement_import_keeps_neighbors_of_damaged_records_and_frames() {
             "partial-move-header",
             [
                 placement_group(a, bad_move[..20].to_vec()),
+                placement_group(a, good_neighbor()),
+            ]
+            .concat(),
+            [false, false, true],
+            3,
+        ),
+        (
+            "partial-move-id",
+            [
+                placement_group(a, bad_move[..15].to_vec()),
+                placement_group(a, good_neighbor()),
+            ]
+            .concat(),
+            [false, false, false],
+            5,
+        ),
+        (
+            "partial-child-group",
+            [
+                placement_group(a, group(10, b, Vec::new())[..16].to_vec()),
                 placement_group(a, good_neighbor()),
             ]
             .concat(),
@@ -5447,7 +5491,7 @@ fn native_new_cell_and_placement_ids_cannot_reuse_an_earlier_edit() {
 }
 
 #[test]
-fn a_short_child_header_uncertifies_only_its_own_interior() {
+fn a_short_nonplacement_header_uncertifies_only_its_own_interior() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("Data");
     fs::create_dir(&data).unwrap();
@@ -5456,7 +5500,7 @@ fn a_short_child_header_uncertifies_only_its_own_interior() {
         records.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
         let mut children = placement_marker(room, 0x1f, Vec::new());
         if cell == 0x900 {
-            children.extend(b"REFR");
+            children.extend(b"NAVM");
         }
         records.extend(placement_group(cell, children));
     }

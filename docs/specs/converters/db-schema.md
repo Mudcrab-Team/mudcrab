@@ -1371,7 +1371,10 @@ with that cell. If a discarded frame tail could hide a placement header, an unse
 could refer to a placement from another cell. All surviving interiors then use the whole-cell
 fallback. A partial placement header that reaches the FormID marks the enclosing cell and the
 surviving predecessor’s cell incomplete. An unresolvable FormID leaves all interiors incomplete.
-A shorter header without a FormID affects only its known enclosing cell.
+A recognized placement tag with a missing or partial FormID also leaves all interiors incomplete,
+because its predecessor could be in any cell. A partial cell-child group header marks both its
+enclosing cell and the cell named by its label once the group kind is readable. Other short
+headers affect only the enclosing cell when it is known.
 Parsing resumes at the next trusted frame boundary.
 
 The tables are derived data: a full load-order export clears and rebuilds them from the winning

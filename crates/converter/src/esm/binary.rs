@@ -2,7 +2,7 @@ use crate::esm::{
     extractors::extract_subrecords,
     mmap_reader::EsmReader,
     records::RawRecord,
-    types::{GroupHeader, RecordHeader, WorldReference},
+    types::{GroupHeader, RecordHeader, WorldReference, group_child_cell},
 };
 use crate::records::{DiscardedFrameScope, TruncatedPlacement};
 use color_eyre::{
@@ -271,7 +271,11 @@ fn parse_group_inner(
                 "trailing {} bytes in bounded record frame",
                 curr.len(),
             ));
-            if let Some(placement) = TruncatedPlacement::from_prefix(curr) {
+            if let Some(child) = group_child_cell(curr) {
+                visit(ParsedRecord::DiscardedFrame(DiscardedFrameScope::Cell(
+                    child,
+                )));
+            } else if let Some(placement) = TruncatedPlacement::from_prefix(curr) {
                 visit(ParsedRecord::TruncatedPlacement(placement));
             }
             visit(ParsedRecord::DiscardedFrame(current_cell.into()));
@@ -286,7 +290,7 @@ fn parse_group_inner(
                 curr = &[];
                 continue;
             };
-            let cell_child = matches!(group.group_type, 6 | 8 | 9 | 10).then_some(group.label);
+            let cell_child = group_child_cell(curr);
             let content_size = (group.data_size as usize).checked_sub(24);
             let Some((group_content, siblings)) =
                 content_size.and_then(|size| rest.split_at_checked(size))
