@@ -364,7 +364,11 @@ fn parse_group_inner(
                         String::from_utf8_lossy(&header.type_tag),
                         header.form_id
                     ));
-                    visit(ParsedRecord::DamagedRecord(record));
+                    if record.is_deleted() {
+                        visit(ParsedRecord::Usable(record));
+                    } else {
+                        visit(ParsedRecord::DamagedRecord(record));
+                    }
                 }
             }
         }
@@ -376,7 +380,7 @@ fn decode_record_subrecords(
     raw_payload: &[u8],
 ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let subrecords = decode_record_subrecords_inner(header, raw_payload);
-    // A bounded deletion's header remains authoritative when its body cannot be decoded.
+    // The deletion flag is authoritative once the complete header is available.
     // Preserve a complete body: legacy named GMST deletions can resolve by EDID.
     if header.flags & 0x20 != 0 {
         return Ok(subrecords.unwrap_or_default());
