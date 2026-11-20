@@ -3076,6 +3076,32 @@ mod tests {
                 "a certified old pack with extent {half:?} must draw the mesh"
             );
         }
+        let falls_back = [
+            (1.0, 2.0),
+            (1.0e8, 1.0e8),
+            (1.0e10, 1.0e10),
+            (1.0e-10, 2.0),
+            (1.0e20, 1.0e20),
+        ]
+        .map(|half| {
+            connection
+                .execute(
+                    "UPDATE room_portals SET pos_x=1,pos_z=12,half_x=?1,half_z=?2",
+                    half,
+                )
+                .unwrap();
+            let graph = load_room_graph(&connection, 7).unwrap();
+            let portal = &graph.portals[0];
+            assert!(portal.corners.iter().all(|point| point.is_finite()));
+            graph
+                .visibility_volumes(Vec3::ZERO, Vec3::ZERO, clip_from_local())
+                .is_none()
+        });
+        assert_eq!(
+            falls_back,
+            [false, false, true, true, true],
+            "collapsed apertures and non-normalizable edge planes must draw the whole cell"
+        );
     }
 
     #[test]
