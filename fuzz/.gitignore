@@ -4,5 +4,3 @@ corpus/
 artifacts/
 coverage/
 
-# Resolved on first build; the fuzz workspace is separate from the release lockfile.
-Cargo.lock

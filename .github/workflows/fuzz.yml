@@ -42,7 +42,7 @@ jobs:
           toolchain: nightly
 
       - name: Install cargo-fuzz
-        run: cargo +nightly install cargo-fuzz --locked
+        run: cargo +nightly install cargo-fuzz --version 0.13.2 --locked
 
       - name: Fuzz each byte-level target
         working-directory: fuzz
@@ -57,6 +57,11 @@ jobs:
               exit 1
               ;;
           esac
+          # libFuzzer reads -max_total_time=0 as "no limit"; refuse it.
+          if [ "$SECONDS_PER_TARGET" -lt 1 ]; then
+            echo "::error::seconds_per_target must be at least 1"
+            exit 1
+          fi
 
           status=0
           for target in esm_subrecords record_inflate record_scan; do
