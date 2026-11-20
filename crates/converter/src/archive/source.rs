@@ -9,7 +9,7 @@ use std::{
 pub(super) enum ArchiveSource<'a> {
     Slice(&'a [u8]),
     File {
-        reader: Mutex<(BufReader<File>, usize)>,
+        reader: Mutex<(BufReader<File>, Option<usize>)>,
         len: usize,
     },
 }
@@ -21,7 +21,7 @@ impl<'a> ArchiveSource<'a> {
             .and_then(|len| usize::try_from(len).ok())
             .ok_or_else(|| io::Error::other("archive length does not fit file offsets"))?;
         Ok(Self::File {
-            reader: Mutex::new((BufReader::new(file), 0)),
+            reader: Mutex::new((BufReader::new(file), Some(0))),
             len,
         })
     }
@@ -51,20 +51,36 @@ impl<'a> ArchiveSource<'a> {
         match self {
             Self::Slice(bytes) => Ok(Cow::Borrowed(&bytes[start..end])),
             Self::File { reader, .. } => {
-                let mut bytes = Vec::with_capacity(len.min(64 * 1024));
                 let mut guard = reader.lock().unwrap();
                 let (reader, cursor) = &mut *guard;
-                // Payload reads start after arbitrary predicates may have run. Read
-                // directly from the file, bypassing any buffered metadata read-ahead.
-                let result = if payload {
+                let previous = cursor.take();
+                // Payload reads bypass metadata read-ahead and check for truncation
+                // before reserving the requested length.
+                if payload {
+                    let file_len = reader.get_ref().metadata()?.len();
+                    if end as u64 > file_len {
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "short archive read",
+                        ));
+                    }
                     reader.seek(SeekFrom::Start(start as u64))?;
-                    reader.get_mut().take(len as u64).read_to_end(&mut bytes)
+                    let mut bytes = Vec::new();
+                    bytes.try_reserve_exact(len).map_err(io::Error::other)?;
+                    bytes.resize(len, 0);
+                    reader.get_mut().read_exact(&mut bytes)?;
+                    *cursor = Some(end);
+                    return Ok(Cow::Owned(bytes));
+                }
+
+                if let Some(previous) = previous {
+                    reader.seek_relative(start as i64 - previous as i64)?;
                 } else {
-                    reader.seek_relative(start as i64 - *cursor as i64)?;
-                    reader.take(len as u64).read_to_end(&mut bytes)
-                };
-                *cursor = start + bytes.len();
-                result?;
+                    reader.seek(SeekFrom::Start(start as u64))?;
+                }
+                let mut bytes = Vec::with_capacity(len.min(64 * 1024));
+                reader.take(len as u64).read_to_end(&mut bytes)?;
+                *cursor = Some(start + bytes.len());
                 if bytes.len() != len {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
@@ -74,5 +90,38 @@ impl<'a> ArchiveSource<'a> {
                 Ok(Cow::Owned(bytes))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn owned_payload_read_has_exact_capacity_and_rejects_truncation() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let size = 96 * 1024 + 1;
+        let data = vec![b'x'; size];
+        file.write_all(&data).unwrap();
+        file.write_all(b"suffix").unwrap();
+        let source = ArchiveSource::from_file(file.reopen().unwrap()).unwrap();
+        let Cow::Owned(payload) = source.read_payload(0, size).unwrap() else {
+            panic!("file payload must be owned");
+        };
+        assert_eq!(payload, data);
+        assert_eq!(payload.capacity(), size);
+        assert_eq!(source.read(size, 6).unwrap().as_ref(), b"suffix");
+        assert_eq!(
+            source.read_payload(1, usize::MAX).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+
+        file.as_file().set_len(size as u64).unwrap();
+        assert_eq!(
+            source.read_payload(size, 6).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        assert_eq!(source.read(size - 1, 1).unwrap().as_ref(), b"x");
     }
 }
