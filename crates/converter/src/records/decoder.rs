@@ -41,7 +41,7 @@ use super::{
 use crate::esm::load_order::LoadOrder;
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap, hash_map},
+    collections::{BTreeMap, HashMap, VecDeque},
     sync::OnceLock,
 };
 
@@ -2835,13 +2835,13 @@ fn set_deferred_history(
     history_index: &HashMap<(u32, u64), usize>,
     record: &DecodedRecord,
     accepted: bool,
-    reason: String,
+    reason: Option<String>,
 ) {
     if let Some(&position) = history_index.get(&(record.load_order, record.source_record_offset))
         && let Some(entry) = result.history.get_mut(position)
     {
         entry.accepted = accepted;
-        entry.reason = Some(reason);
+        entry.reason = reason;
     }
 }
 
@@ -2853,7 +2853,7 @@ fn reject_deferred_candidate(
     order: &LoadOrder,
     reason: String,
 ) {
-    set_deferred_history(result, history_index, record, false, reason.clone());
+    set_deferred_history(result, history_index, record, false, Some(reason.clone()));
     let diagnostics = result
         .diagnostics
         .entry(order.names[record.load_order as usize].clone())
@@ -2939,31 +2939,101 @@ fn placement_links(record: &DecodedRecord) -> [Option<u32>; 2] {
     [record.cell_form_id, base]
 }
 
-fn recover_predecessor(
-    result: &mut ReadResult,
-    history_index: &HashMap<(u32, u64), usize>,
-    order: &LoadOrder,
-    predecessors: &mut Vec<DecodedRecord>,
-    validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
-    require_complete: bool,
-) -> Option<DecodedRecord> {
-    while let Some(previous) = predecessors.pop() {
-        let failure = if require_complete && !previous.payload_complete {
-            Some("recovery predecessor has incomplete payload".to_owned())
-        } else if record_contains_deferred(&previous) {
-            None
-        } else {
-            validate(&previous)
-                .err()
-                .map(|error| format!("recovery predecessor unusable: {error}"))
-        };
-        if let Some(reason) = failure {
-            reject_deferred_candidate(result, history_index, &previous, order, reason);
-        } else {
-            return Some(previous);
+#[derive(Default)]
+pub(super) struct RecoveryCandidates {
+    pub(super) predecessors: HashMap<u32, Vec<DecodedRecord>>,
+    // A tentative placement owns this queue until it fails or keeps its slot.
+    // Key by physical occurrence so a later plugin can have its own queue.
+    pub(super) duplicates: BTreeMap<(u32, u64), VecDeque<DecodedRecord>>,
+}
+
+impl RecoveryCandidates {
+    fn recover(
+        &mut self,
+        result: &mut ReadResult,
+        history_index: &HashMap<(u32, u64), usize>,
+        order: &LoadOrder,
+        rejected: &DecodedRecord,
+        validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+        require_complete: bool,
+    ) -> Option<DecodedRecord> {
+        let id = rejected.form_id;
+        let mut rejected_key = (rejected.load_order, rejected.source_record_offset);
+        loop {
+            if let Some(mut duplicates) = self.duplicates.remove(&rejected_key) {
+                while let Some(next) = duplicates.pop_front() {
+                    let deleted = next.flags & 0x20 != 0;
+                    if !deleted {
+                        let prior = self.predecessors.get(&id).and_then(|chain| chain.last());
+                        let failure = if require_complete
+                            && next.load_order < rejected.load_order
+                            && !next.payload_complete
+                        {
+                            Some("recovery predecessor has incomplete payload".to_owned())
+                        } else {
+                            super::validate_live_candidate(&next, prior, validate)
+                                .err()
+                                .map(|error| format!("unusable runtime candidate: {error}"))
+                                .or_else(|| {
+                                    super::incomplete_override(&next, prior)
+                                        .then(|| super::INCOMPLETE_OVERRIDE.to_owned())
+                                })
+                        };
+                        if let Some(reason) = failure {
+                            reject_deferred_candidate(result, history_index, &next, order, reason);
+                            continue;
+                        }
+                    }
+                    set_deferred_history(result, history_index, &next, true, None);
+                    if !duplicates.is_empty() {
+                        self.duplicates
+                            .insert((next.load_order, next.source_record_offset), duplicates);
+                    }
+                    super::merge_typed_default_objects(result, &next);
+                    if deleted {
+                        self.predecessors.remove(&id);
+                        return None;
+                    }
+                    return Some(next);
+                }
+            }
+            let previous = self.predecessors.get_mut(&id).and_then(Vec::pop)?;
+            let failure = if require_complete && !previous.payload_complete {
+                Some("recovery predecessor has incomplete payload".to_owned())
+            } else if record_contains_deferred(&previous) {
+                None
+            } else {
+                validate(&previous)
+                    .err()
+                    .map(|error| format!("recovery predecessor unusable: {error}"))
+            };
+            if let Some(reason) = failure {
+                reject_deferred_candidate(result, history_index, &previous, order, reason);
+                rejected_key = (previous.load_order, previous.source_record_offset);
+            } else {
+                return Some(previous);
+            }
         }
     }
-    None
+
+    fn reject_remaining_duplicates(
+        &mut self,
+        result: &mut ReadResult,
+        history_index: &HashMap<(u32, u64), usize>,
+        order: &LoadOrder,
+    ) {
+        for (claimant, duplicates) in std::mem::take(&mut self.duplicates) {
+            let Some(&position) = history_index.get(&claimant) else {
+                continue;
+            };
+            let source_id = result.history[position].source_form_id;
+            for duplicate in duplicates {
+                let reason =
+                    super::duplicate_reason(duplicate.form_id, source_id, duplicate.source_form_id);
+                reject_deferred_candidate(result, history_index, &duplicate, order, reason);
+            }
+        }
+    }
 }
 
 /// Finalize tentative winners against a stable catalogue, preserving only selective fallback chains.
@@ -2972,7 +3042,7 @@ pub(crate) fn resolve_deferred(
     schema: &Schema,
     prepared: &PreparedSchemas,
     order: &LoadOrder,
-    predecessors: &mut HashMap<u32, Vec<DecodedRecord>>,
+    recovery: &mut RecoveryCandidates,
     validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
 ) {
     let mut pending = BTreeMap::new();
@@ -3000,14 +3070,16 @@ pub(crate) fn resolve_deferred(
                 .iter()
                 .map(|(&id, record)| (id, record.record_type)),
         );
+        #[cfg(test)]
+        if !pending.is_empty() {
+            record_deferred_catalogue_build();
+        }
+    }
+    if !kinds.is_empty() || !recovery.duplicates.is_empty() {
         for (index, entry) in result.history.iter().enumerate() {
             history_index
                 .entry((entry.plugin_index, entry.source_record_offset))
                 .or_insert(index);
-        }
-        #[cfg(test)]
-        if !pending.is_empty() {
-            record_deferred_catalogue_build();
         }
     }
     // Every failure consumes a candidate or finishes its safe prefix. Stable
@@ -3066,23 +3138,13 @@ pub(crate) fn resolve_deferred(
             replay_diagnostics.remove(&id);
             changed_chains.entry(id).or_default();
             let source = pending.remove(&id).expect("selected deferred source");
-            if let Some(chain) = predecessors.get_mut(&id).filter(|chain| !chain.is_empty()) {
+            let replacement = if recovery
+                .predecessors
+                .get(&id)
+                .is_some_and(|chain| !chain.is_empty())
+            {
                 reject_deferred_candidate(result, &history_index, &record, order, reason);
-                if let Some(mut previous) =
-                    recover_predecessor(result, &history_index, order, chain, validate, true)
-                {
-                    if record_contains_deferred(&previous) {
-                        pending.insert(id, DeferredSource::take(&mut previous));
-                    }
-                    let kind = previous.record_type;
-                    if crate::esm::is_placed_record_type(&kind) {
-                        placements.insert(id);
-                    } else {
-                        placements.remove(&id);
-                    }
-                    result.records.insert(id, previous);
-                    kinds.insert(id, kind);
-                }
+                recovery.recover(result, &history_index, order, &record, validate, true)
             } else {
                 let omitted = source.safe_prefix(&mut record);
                 for (position, signature) in omitted.iter().enumerate() {
@@ -3130,17 +3192,25 @@ pub(crate) fn resolve_deferred(
                         order,
                         format!("{reason}; recovered prefix unusable: {error}"),
                     );
+                    recovery.recover(result, &history_index, order, &record, validate, true)
                 } else {
-                    set_deferred_history(result, &history_index, &record, true, reason);
-                    let record_type = record.record_type;
-                    result.records.insert(id, record);
-                    kinds.insert(id, record_type);
+                    set_deferred_history(result, &history_index, &record, true, Some(reason));
+                    Some(record)
                 }
-            }
-            // A record rejected without a successor leaves the winning catalogue.
-            if !result.records.contains_key(&id) {
+            };
+            placements.remove(&id);
+            if let Some(mut replacement) = replacement {
+                if record_contains_deferred(&replacement) {
+                    pending.insert(id, DeferredSource::take(&mut replacement));
+                }
+                let kind = replacement.record_type;
+                if crate::esm::is_placed_record_type(&kind) {
+                    placements.insert(id);
+                }
+                kinds.insert(id, kind);
+                result.records.insert(id, replacement);
+            } else {
                 kinds.remove(&id);
-                placements.remove(&id);
             }
             recovered = true;
             // A changed kind can affect a previously successful dependent. Restart
@@ -3152,46 +3222,36 @@ pub(crate) fn resolve_deferred(
         }
 
         // Wait for deferred candidates to settle before checking placement targets.
-        let mut unresolved = std::collections::HashSet::new();
-        let selected = crate::esm::placement_dependency_order(placements.iter().copied(), |id| {
-            placements
-                .contains(&id)
-                .then(|| placement_links(&result.records[&id]))
-        });
-        for id in selected {
-            let hash_map::Entry::Occupied(entry) = result.records.entry(id) else {
+        let rejected = crate::esm::invalid_placement_candidates(
+            placements.iter().copied(),
+            |id| {
+                placements
+                    .contains(&id)
+                    .then(|| placement_links(&result.records[&id]))
+            },
+            |id, [cell, base]| {
+                validate_placement_targets(
+                    Some(prepared),
+                    &result.records[&id].record_type,
+                    cell,
+                    base,
+                    |target| kinds.get(&target).copied(),
+                )
+            },
+        );
+        if rejected.is_empty() {
+            break;
+        }
+        for (id, reason) in rejected {
+            let Some(record) = result.records.remove(&id) else {
                 continue;
             };
-            let record = entry.get();
-            let links = placement_links(record);
-            if links
-                .into_iter()
-                .flatten()
-                .any(|target| unresolved.contains(&target))
-            {
-                unresolved.insert(id);
-                continue;
-            }
-            let [cell, base] = links;
-            let Err(reason) = validate_placement_targets(
-                Some(prepared),
-                &record.record_type,
-                cell,
-                base,
-                |target| kinds.get(&target).copied(),
-            ) else {
-                continue;
-            };
-            recovered = true;
-            unresolved.insert(id);
-            let record = entry.remove();
             reject_deferred_candidate(result, &history_index, &record, order, reason);
             replay_diagnostics.remove(&id);
             pending.remove(&id);
             changed_chains.entry(id).or_default();
-            let previous = predecessors.get_mut(&id).and_then(|chain| {
-                recover_predecessor(result, &history_index, order, chain, validate, false)
-            });
+            let previous =
+                recovery.recover(result, &history_index, order, &record, validate, false);
             placements.remove(&id);
             if let Some(mut previous) = previous {
                 let kind = previous.record_type;
@@ -3211,10 +3271,8 @@ pub(crate) fn resolve_deferred(
                 kinds.remove(&id);
             }
         }
-        if !recovered {
-            break;
-        }
     }
+    recovery.reject_remaining_duplicates(result, &history_index, order);
     for (id, (baseline, replay)) in replay_diagnostics {
         if let Some(record) = result.records.get(&id) {
             merge_new_diagnostics(
