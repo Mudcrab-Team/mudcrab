@@ -65,6 +65,15 @@ impl AssetSourceIndex {
     /// Builds a case-insensitive index. Roots are ordered from lowest to highest
     /// priority, matching load-order overlay semantics.
     pub fn build(roots: &[PathBuf], kind: AssetKind) -> Result<Self> {
+        Self::build_with_name_filter(roots, kind, |_| true)
+    }
+
+    /// Filters original root-relative source names before canonicalization and collision checks.
+    pub fn build_with_name_filter(
+        roots: &[PathBuf],
+        kind: AssetKind,
+        include_name: impl Fn(&str) -> bool,
+    ) -> Result<Self> {
         let mut index = Self::default();
         for (priority, root) in roots.iter().enumerate() {
             let mut within_root = BTreeMap::<String, PathBuf>::new();
@@ -84,7 +93,11 @@ impl AssetSourceIndex {
                 {
                     continue;
                 }
-                let key = canonical_asset_path(&relative.to_string_lossy(), kind, extension)?;
+                let name = relative.to_string_lossy();
+                if !include_name(&name) {
+                    continue;
+                }
+                let key = canonical_asset_path(&name, kind, extension)?;
                 if let Some(previous) = within_root.insert(key.clone(), entry.path().to_owned()) {
                     bail!(
                         "normalized asset collision for {key}: {} and {}",

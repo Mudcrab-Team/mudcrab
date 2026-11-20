@@ -722,14 +722,14 @@ impl ArchiveExtractor {
         archive_path: &Path,
         output_root: &Path,
     ) -> Result<Vec<ExtractedFile>> {
-        extract_selected_reporting(archive_path, output_root, is_script_input, None, None)
+        Self::extract_matching(archive_path, output_root, is_script_input)
     }
 
     pub(crate) fn extract_lod_settings(
         archive_path: &Path,
         output_root: &Path,
     ) -> Result<Vec<ExtractedFile>> {
-        extract_selected_reporting(archive_path, output_root, is_lod_setting, None, None)
+        Self::extract_matching(archive_path, output_root, is_lod_setting)
     }
 
     /// Extracts only the archive entries named in `paths`, writing them under `output_root`
@@ -753,7 +753,18 @@ impl ArchiveExtractor {
         output_root: &Path,
         include: impl Fn(&Path) -> bool + Sync,
     ) -> Result<Vec<ExtractedFile>> {
-        extract_selected_reporting(archive_path, output_root, include, None, None)
+        Self::extract_matching_with_name_filter(archive_path, output_root, |_| true, include)
+    }
+
+    /// Filters original entry names before canonicalization and collision checks, then selects
+    /// canonical paths and extracts their payloads from the same open archive.
+    pub fn extract_matching_with_name_filter(
+        archive_path: &Path,
+        output_root: &Path,
+        include_name: impl Fn(&str) -> bool,
+        include: impl Fn(&Path) -> bool + Sync,
+    ) -> Result<Vec<ExtractedFile>> {
+        extract_selected_reporting(archive_path, output_root, include_name, include, None, None)
     }
 }
 
@@ -765,12 +776,20 @@ fn extract_reporting(
     progress: Option<ExtractionProgressCallback<'_>>,
     stop: Option<StopCheck<'_>>,
 ) -> Result<Vec<ExtractedFile>> {
-    extract_selected_reporting(archive_path, output_root, |_| true, progress, stop)
+    extract_selected_reporting(
+        archive_path,
+        output_root,
+        |_| true,
+        |_| true,
+        progress,
+        stop,
+    )
 }
 
 fn extract_selected_reporting(
     archive_path: &Path,
     output_root: &Path,
+    include_name: impl Fn(&str) -> bool,
     include: impl Fn(&Path) -> bool + Sync,
     progress: Option<ExtractionProgressCallback<'_>>,
     stop: Option<StopCheck<'_>>,
@@ -778,6 +797,7 @@ fn extract_selected_reporting(
     extract_selected_with_sync_reporting(
         archive_path,
         output_root,
+        include_name,
         include,
         progress,
         stop,
@@ -798,6 +818,7 @@ struct ExtractionWriteContext<'a, 'session> {
 fn extract_selected_with_sync_reporting(
     archive_path: &Path,
     output_root: &Path,
+    include_name: impl Fn(&str) -> bool,
     include: impl Fn(&Path) -> bool + Sync,
     progress: Option<ExtractionProgressCallback<'_>>,
     stop: Option<StopCheck<'_>>,
@@ -824,6 +845,7 @@ fn extract_selected_with_sync_reporting(
             let mut seen = BTreeMap::new();
             let entries = entries
                 .into_iter()
+                .filter(|entry| include_name(&entry.name))
                 .map(|entry| {
                     let relative = safe_relative_path(&entry.name)?;
                     detect_archive_collision(&mut seen, &relative, &entry.name)?;
@@ -887,6 +909,9 @@ fn extract_selected_with_sync_reporting(
         Some(b"BTDX") => {
             let all_names = std::cell::RefCell::new(BTreeMap::new());
             let entries = ba2::read_entries_matching(&bytes, |name| {
+                if !include_name(name) {
+                    return Ok(false);
+                }
                 let relative = safe_relative_path(name)?;
                 detect_archive_collision(&mut all_names.borrow_mut(), &relative, name)?;
                 Ok(include(&relative))
@@ -2224,6 +2249,40 @@ mod tests {
             ArchiveExtractor::list_paths(&ba2).unwrap(),
             vec![PathBuf::from("meshes/a.hkx"), PathBuf::from("meshes/b.hkx")]
         );
+    }
+
+    #[test]
+    fn original_name_filter_excludes_aliases_from_archive_collision_checks() {
+        use crate::asset_path::is_authoring_resource;
+        use dummy_content::Entry;
+
+        let directory = tempfile::tempdir().unwrap();
+        for extension in ["bsa", "ba2"] {
+            let archive = directory.path().join(format!("meshes.{extension}"));
+            let output = directory.path().join(extension);
+            write_archive(
+                &archive,
+                &[
+                    Entry::new("meshes/test.nif", b"runtime"),
+                    Entry::new("CalienteTools/Meshes/Test.NIF", b"authoring"),
+                ],
+            );
+            let error =
+                ArchiveExtractor::extract_matching(&archive, &output, |_| true).unwrap_err();
+            assert!(error.to_string().contains("normalized path collision"));
+            let files = ArchiveExtractor::extract_matching_with_name_filter(
+                &archive,
+                &output,
+                |name| !is_authoring_resource(name),
+                |_| true,
+            )
+            .unwrap();
+            assert_eq!(files.len(), 1);
+            assert_eq!(
+                fs::read(output.join("meshes/test.nif")).unwrap(),
+                b"runtime"
+            );
+        }
     }
 
     #[test]
