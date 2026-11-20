@@ -516,7 +516,13 @@ pub(crate) struct TruncatedPlacement {
 
 impl TruncatedPlacement {
     pub(crate) fn from_prefix(bytes: &[u8]) -> Option<Self> {
-        let record_type = *bytes.first_chunk()?;
+        let Some(&record_type) = bytes.first_chunk() else {
+            // A short signature can still hide a reference to a placement in another cell.
+            return (!bytes.is_empty() && b"REFR".starts_with(bytes)).then_some(Self {
+                record_type: *b"REFR",
+                source_id: None,
+            });
+        };
         crate::esm::is_placed_record_type(&record_type).then(|| Self {
             record_type,
             source_id: bytes

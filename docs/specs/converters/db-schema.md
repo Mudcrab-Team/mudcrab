@@ -1398,7 +1398,8 @@ could refer to a placement from another cell. All surviving interiors then use t
 fallback. A partial placement header that reaches the FormID marks the enclosing cell and the
 surviving predecessor’s cell incomplete. An unresolvable FormID leaves all interiors incomplete.
 A recognized placement tag with a missing or partial FormID also leaves all interiors incomplete,
-because its predecessor could be in any cell. When the available group kind bytes are consistent
+because its predecessor could be in any cell. The same rule covers a discarded tag that ends
+after the first one, two, or three bytes of `REFR`. When the available group kind bytes are consistent
 with a cell-child group, the enclosing cell and the cell named by the label are incomplete.
 A discarded `GRUP` prefix with an incomplete label leaves all interiors incomplete. A kind
 that excludes cell-child groups affects only the enclosing cell when it is known.
