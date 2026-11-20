@@ -1,0 +1,21 @@
+{
+  "evidence": [
+    {
+      "anchor": "fn converted_texture_path(",
+      "path": "crates/engine/src/world/database.rs"
+    }
+  ],
+  "format_version": 1,
+  "owner": "asset/streaming maintainers",
+  "reason": "External model/texture paths are assets, not SQL field payloads. This slice names the store; no asset completeness or shader-use claim.",
+  "reviewed_at_commit": "99ac022c441810f0a8e0e571e1c950f80a6f9c71",
+  "states": {
+    "decoded": "unknown",
+    "mapped": "unknown",
+    "preserved": "unknown",
+    "projected": "unknown",
+    "query_dependent": "unknown",
+    "semantic_use": "unknown"
+  },
+  "store": "converted glTF/KTX2 assets"
+}
