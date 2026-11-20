@@ -653,8 +653,8 @@ fn validate_live_candidate(
     validate(record)
 }
 
-// A rejected, fully framed REFR can still have authored links from an ambiguous PlaneMarker.
-fn ambiguous_occluder_links(record: &DecodedRecord, plugin: usize, order: &LoadOrder) -> bool {
+// A fully framed REFR can still hide authored PlaneMarker links if admission rejects it.
+fn has_authored_occluder_links(record: &DecodedRecord, plugin: usize, order: &LoadOrder) -> bool {
     if !record
         .fields
         .iter()
@@ -673,8 +673,7 @@ fn ambiguous_occluder_links(record: &DecodedRecord, plugin: usize, order: &LoadO
     let names = fields
         .iter()
         .filter_map(|(tag, bytes)| (tag == b"NAME").then_some(*bytes));
-    names.clone().nth(1).is_some()
-        && crate::esm::rooms::names_occlusion_marker(names, plugin, order)
+    crate::esm::rooms::names_occlusion_marker(names, plugin, order)
 }
 
 fn incomplete_override(record: &DecodedRecord, previous: Option<&DecodedRecord>) -> bool {
@@ -769,6 +768,7 @@ fn read_plugins_with_prepared(
     let mut truncated_placements = HashMap::new();
     let mut unknown_cell_scope = false;
     let mut unreadable_refs = HashMap::new();
+    let mut linked_marker_candidates = HashMap::new();
     let mut recovery = decoder::RecoveryCandidates::default();
     let mut gmst_ids: HashMap<String, u32> = HashMap::new();
     let mut gmst_aliases: HashMap<u32, u32> = HashMap::new();
@@ -831,11 +831,13 @@ fn read_plugins_with_prepared(
                     return;
                 }
             };
-            if record.record_type == *b"REFR"
-                && record.flags & 0x20 == 0
-                && (!record.payload_complete || ambiguous_occluder_links(&record, index, order))
-            {
-                unreadable_refs.insert(Some(record.form_id), (index as u32, offset));
+            if record.record_type == *b"REFR" && record.flags & 0x20 == 0 {
+                let position = (index as u32, offset);
+                if !record.payload_complete {
+                    unreadable_refs.insert(Some(record.form_id), position);
+                } else if has_authored_occluder_links(&record, index, order) {
+                    linked_marker_candidates.insert(record.form_id, position);
+                }
             }
             if record.record_type == *b"TES4" {
                 result.headers.push(record);
@@ -1154,17 +1156,26 @@ fn read_plugins_with_prepared(
     }
     // Only a later admitted record (including a tombstone) settles the identity.
     // An old non-marker base cannot establish what the unread replacement contained.
-    if !unreadable_refs.is_empty() {
+    if !unreadable_refs.is_empty() || !linked_marker_candidates.is_empty() {
         for entry in result.history.iter().filter(|entry| entry.accepted) {
-            if entry.form_id.is_some()
-                && unreadable_refs.get(&entry.form_id).is_some_and(|&damage| {
-                    damage < (entry.plugin_index, entry.source_record_offset)
-                })
+            let Some(id) = entry.form_id else { continue };
+            let position = (entry.plugin_index, entry.source_record_offset);
+            if unreadable_refs
+                .get(&Some(id))
+                .is_some_and(|&damage| damage < position)
             {
-                unreadable_refs.remove(&entry.form_id);
+                unreadable_refs.remove(&Some(id));
+            }
+            // The accepted marker itself accounts for its fully read XORD.
+            if linked_marker_candidates
+                .get(&id)
+                .is_some_and(|&candidate| candidate <= position)
+            {
+                linked_marker_candidates.remove(&id);
             }
         }
-        result.unverified_occluder_links |= !unreadable_refs.is_empty();
+        result.unverified_occluder_links |=
+            !unreadable_refs.is_empty() || !linked_marker_candidates.is_empty();
     }
     if unknown_cell_scope {
         result.damaged_cell_groups.extend(

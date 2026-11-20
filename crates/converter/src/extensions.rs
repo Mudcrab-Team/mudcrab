@@ -114,6 +114,7 @@ const MAIN_CORE_TABLES: &[&str] = &[
     "script_property_values",
     "scripts",
     "statics",
+    "subset_placement_deletions",
     "texture_sets",
     "waters",
     "weather_colors",
@@ -964,7 +965,16 @@ mod tests {
         let directory = output_with_tables(&[]);
         with_identity(directory.path(), "abc");
         let mut entry = custom_entry(directory.path(), "mudcrab.extra", "extra_table", "extra");
-        for table in ["door_links", "Door_Links", "emittance", "EMITTANCE"] {
+        let connection = Connection::open(directory.path().join(DATABASE)).unwrap();
+        crate::esm::exporter::export_to_db(&connection, &Default::default()).unwrap();
+        assert!(table_exists(&connection, "subset_placement_deletions").unwrap());
+        for table in [
+            "door_links",
+            "Door_Links",
+            "emittance",
+            "EMITTANCE",
+            "subset_placement_deletions",
+        ] {
             entry.owns = ExtensionOwns {
                 tables: names(&[table]),
                 ..Default::default()

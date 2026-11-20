@@ -858,17 +858,10 @@ fn export_records(
         check_record_insert(&statement)?;
         Some(statement)
     };
-    let insert_links = |record: &RawRecord| {
-        super::reference_links::insert(
-            &tx,
-            &super::reference_links::Context {
-                master,
-                order,
-                subset: order.is_none(),
-            },
-            record,
-            &SubrecordView::new(&record.subrecords),
-        )
+    let link_context = super::reference_links::Context {
+        master,
+        order,
+        subset: order.is_none(),
     };
     let mut subset_link_sources = Vec::new();
     let mut unavailable_link_targets = Vec::new();
@@ -877,7 +870,7 @@ fn export_records(
     for (&form_id, record) in ordered {
         let type_str = from_utf8(&record.record_type).unwrap_or("UNKN");
         let subset_placement = order.is_none() && super::is_placed_record_type(&record.record_type);
-        if subset_placement && record.is_deleted() {
+        if subset_placement && (subset_sources.is_some() || record.is_deleted()) {
             let type_mismatch: bool = tx
                 .prepare_cached(
                     "SELECT EXISTS(
@@ -889,7 +882,7 @@ fn export_records(
                 .query_row(params![form_id, type_str], |row| row.get(0))?;
             if type_mismatch {
                 return Err(rusqlite::Error::InvalidParameterName(format!(
-                    "placed deletion {form_id:08X} does not match its existing record type"
+                    "placed edit {form_id:08X} does not match its existing record type"
                 )));
             }
         }
@@ -1086,7 +1079,7 @@ fn export_records(
                         available_link_targets.insert(form_id);
                     }
                 } else {
-                    insert_links(record)?;
+                    super::reference_links::insert(&tx, &link_context, record, None)?;
                 }
             }
             "LAND" => {
@@ -1287,10 +1280,9 @@ fn export_records(
     for source in subset_link_sources {
         let projection = runtime_projection(source, unresolved_fields);
         let projected = projection.as_ref().unwrap_or(source);
-        insert_links(projected)?;
         let typed = subset_sources
             .and_then(|(records, order)| Some((records.get(&source.form_id)?, order)));
-        super::reference_links::remember_subset_source(&tx, projected, typed)?;
+        super::reference_links::insert(&tx, &link_context, projected, typed)?;
     }
     super::reference_links::refresh_incoming(
         &tx,

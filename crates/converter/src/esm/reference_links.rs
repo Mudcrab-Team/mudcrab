@@ -193,30 +193,6 @@ pub(super) const SUBSET_SOURCES_SQL: &str = "
     );
 ";
 
-pub(super) fn remember_subset_source(
-    tx: &Transaction<'_>,
-    record: &RawRecord,
-    source: Option<(&DecodedRecord, &LoadOrder)>,
-) -> Result<()> {
-    let data = source.and_then(|(source, order)| {
-        let fields = record.subrecords.iter().filter_map(|(tag, bytes)| {
-            Some((<[u8; 4]>::try_from(tag.as_slice()).ok()?, bytes.as_slice()))
-        });
-        let restored = authored_link_fields(
-            fields,
-            &source.raw_payload,
-            source.load_order as usize,
-            order,
-        );
-        (!restored.is_empty()).then(|| serialize_subrecords(&restored))
-    });
-    tx.prepare_cached(
-        "INSERT OR REPLACE INTO reference_link_subset_sources(form_id,data) VALUES (?1,?2)",
-    )?
-    .execute(params![record.form_id, data])?;
-    Ok(())
-}
-
 pub(super) fn forget_subset_source(tx: &Transaction<'_>, id: u32) -> Result<()> {
     tx.prepare_cached("DELETE FROM reference_link_subset_sources WHERE form_id=?1")?
         .execute([id])?;
@@ -459,9 +435,32 @@ pub(crate) fn insert(
     tx: &Transaction<'_>,
     context: &Context<'_>,
     record: &RawRecord,
-    view: &SubrecordView<'_>,
+    source: Option<(&DecodedRecord, &LoadOrder)>,
 ) -> Result<()> {
     let id = record.form_id;
+    let view = SubrecordView::new(&record.subrecords);
+    let recovered = source.map(|(source, order)| {
+        let fields = record.subrecords.iter().filter_map(|(tag, bytes)| {
+            Some((<[u8; 4]>::try_from(tag.as_slice()).ok()?, bytes.as_slice()))
+        });
+        authored_link_fields(
+            fields,
+            &source.raw_payload,
+            source.load_order as usize,
+            order,
+        )
+    });
+    if context.subset {
+        let data = recovered
+            .as_ref()
+            .filter(|fields| !fields.is_empty())
+            .map(|fields| serialize_subrecords(fields));
+        tx.prepare_cached(
+            "INSERT OR REPLACE INTO reference_link_subset_sources(form_id,data) VALUES (?1,?2)",
+        )?
+        .execute(params![id, data])?;
+    }
+    let link_fields = SubrecordView::new(recovered.as_deref().unwrap_or(&record.subrecords));
     for table in REFERENCE_LINK_TABLES {
         tx.prepare_cached(&format!("DELETE FROM {table} WHERE reference_id=?1"))?
             .execute([id])?;
@@ -469,7 +468,7 @@ pub(crate) fn insert(
 
     // XLKR: one subrecord per link, a keyword and a reference, or (14 official references) the
     // reference alone.
-    for (position, (keyword, reference)) in linked_refs(view.find_all(b"XLKR")).enumerate() {
+    for (position, (keyword, reference)) in linked_refs(link_fields.find_all(b"XLKR")).enumerate() {
         tx.prepare_cached(
             "INSERT INTO reference_linked_refs(reference_id, position, keyword_id, linked_ref_id) VALUES (?1, ?2, ?3, ?4)",
         )?
@@ -482,7 +481,7 @@ pub(crate) fn insert(
     }
 
     // XAPR: one subrecord per activate parent, a reference then an f32 delay.
-    for (position, parent) in activate_parents(view.find_all(b"XAPR")).enumerate() {
+    for (position, parent) in activate_parents(link_fields.find_all(b"XAPR")).enumerate() {
         let delay = f32::from_le_bytes(parent[4..8].try_into().expect("eight-byte XAPR"));
         tx.prepare_cached(
             "INSERT INTO reference_activate_parents(reference_id, position, parent_ref_id, delay) VALUES (?1, ?2, ?3, ?4)",

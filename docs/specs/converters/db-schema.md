@@ -722,6 +722,7 @@ Rules:
   list to recover authored IDs that full conversion cleared. A slot stays NULL if surviving
   occurrences cannot be matched unambiguously. `reference_link_subset_sources` records
   which source a subset replaced and retains recoverable link fields for typed subsets.
+  Typed subset edits also resolve these recovered fields against targets already present in the pack.
   A later placement-layer edit removes that entry and supplies the effective source.
 - A field whose length the in-house schema rejects is skipped for both readers: `XLKR` must be 4
   or 8 bytes, `XAPR` 8, `XAPD` 1, `XOWN`/`XRNK`/`XLCN`/`XLRL`/`XEZN`/`XATR` 4, `FNAM` 1 and `TNAM`
@@ -935,6 +936,7 @@ were remapped. A future consumer of these fields must account for old packs.
 example movement annotations), preserving established `formid_map` ownership;
 it neither resolves plugin-local IDs nor upgrades an old pack.
 
+A live sourced placement must match the record type already stored for its FormID.
 A sourced placement deletion checks the owning plugin, local ID and record type
 against the pack before removing the placement and its scripts. The owning
 identity survives deletion. For a low FormID without a stored identity, a subset
@@ -1368,9 +1370,8 @@ Columns and rules:
   to zero when a truncated marker payload or a malformed `XORD` can hide a cross-cell link.
   Full in-house exports and plugin placement imports also clear the flag when a discarded
   frame has unknown scope, a `REFR` fails before its links can be read, or a rejected
-  placement has a possible `XORD` target and duplicate `NAME` fields that can name a PlaneMarker.
-  An unreadable
-  `REFR` can introduce a PlaneMarker even if its predecessor used an ordinary base or
+  placement has a possible `XORD` target and a `NAME` that can name a PlaneMarker.
+  An unreadable `REFR` can introduce a PlaneMarker even if its predecessor used an ordinary base or
   the placement is new. A later usable replacement or deletion of the same FormID
   supersedes that evidence within the conversion or import.
   These markers let the loader keep unrelated occluders in a complete cell that contains an
