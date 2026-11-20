@@ -1,7 +1,7 @@
 //! Final, asset-aware validation performed after all offline conversions.
 
 use crate::{
-    asset_path::{AssetKind, canonical_asset_path},
+    asset_path::{AssetKind, canonical_asset_path, canonical_literal_asset_path},
     esm::projection_omissions::ProjectionOmissions,
     mesh::glb_bounds_from_document,
 };
@@ -109,7 +109,7 @@ pub fn refresh_native_model_bounds(
     let mut report = NativeModelBoundsRefresh::default();
     let mut models = BTreeMap::new();
     for path in changed_paths {
-        let key = canonical_asset_path(path, AssetKind::Mesh, "glb")?;
+        let key = canonical_literal_asset_path(path, AssetKind::Mesh, "glb")?;
         ensure!(
             path == &key,
             "expected canonical GLB path {key}, got {path}"
@@ -127,6 +127,7 @@ pub fn refresh_native_model_bounds(
         ensure!(resolved.is_file(), "not a GLB file: {key}");
         match read_glb_bounds(&resolved) {
             Ok(projected) => *bounds = Some(projected),
+            Err(error) if error.downcast_ref::<std::io::Error>().is_some() => return Err(error),
             Err(error) => {
                 report
                     .unbounded_models
@@ -507,6 +508,7 @@ fn read_glb_bounds_from_reader(
 }
 
 fn read_glb_prefix(reader: &mut impl Read, file_length: u64) -> Result<Vec<u8>> {
+    ensure!(file_length >= 20, "invalid GLB container");
     let mut fields = [[0u8; 4]; 5];
     reader
         .read_exact(fields.as_flattened_mut())
