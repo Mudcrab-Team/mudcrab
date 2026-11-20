@@ -48,6 +48,28 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("checked frame"))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// A deterministic source change made while the decode-view digest is computed.
+    static DURING_SCAN_DIGEST: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Digest the exact view the records were decoded from. Tests may inject one source edit
+/// partway through, so the stability check after the digest must still see it.
+fn decode_view_digest(bytes: &[u8]) -> [u8; 32] {
+    #[cfg(test)]
+    if let Some(change) = DURING_SCAN_DIGEST.with(|slot| slot.borrow_mut().take()) {
+        let mut hasher = Sha256::new();
+        let split = bytes.len() / 2;
+        hasher.update(&bytes[..split]);
+        change();
+        hasher.update(&bytes[split..]);
+        return hasher.finalize().into();
+    }
+    Sha256::digest(bytes).into()
+}
+
 /// What a scanned input still proves after the source-stability check.
 pub(crate) enum ScanOutcome {
     /// The decode view verified; the digest covers exactly those bytes.
@@ -132,6 +154,10 @@ fn scan_plugin_impl(
         },
         &mut observe,
     );
+    // Digest the view the records were decoded from before the final stability check, so a
+    // change that lands while (or after) the digest is computed cannot be published as
+    // verified. The legacy reader hashes and then rechecks its source stamp the same way.
+    let digest = decode_view_digest(&map);
     if let Err(error) = map.verify(&file, path) {
         diagnostics.set_record(0, None, None, None, "input_stability");
         if map.is_snapshot() {
@@ -142,7 +168,7 @@ fn scan_plugin_impl(
                 format!("{error:#}; retained the stable captured snapshot")
             });
             return Ok(if delivered {
-                ScanOutcome::RetainedSnapshot(Sha256::digest(&map[..]).into())
+                ScanOutcome::RetainedSnapshot(digest)
             } else {
                 ScanOutcome::Skipped
             });
@@ -157,7 +183,7 @@ fn scan_plugin_impl(
             ScanOutcome::Skipped
         });
     }
-    Ok(ScanOutcome::Verified(Sha256::digest(&map[..]).into()))
+    Ok(ScanOutcome::Verified(digest))
 }
 
 /// Traverse groups iteratively, retaining siblings when an inner boundary is corrupt.
@@ -640,6 +666,55 @@ mod tests {
                     && line.contains("may mix versions")
                     && line.contains("inconsistent")),
             "changed direct views must warn that retained records may mix versions and be inconsistent: {warnings:?}"
+        );
+    }
+
+    /// A change made while the decode-view digest is computed must fail the source stamp.
+    /// The old order (stamp, then digest) accepted the changed body as verified.
+    #[test]
+    fn a_source_change_during_the_decode_digest_is_rejected() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Large.esp");
+        let mut bytes = frame(b"TES4", 0, 0, &[]);
+        bytes.extend(frame(b"STAT", 0x401, 0, b"EDID\x02\x00a\0"));
+        let edited_offset = bytes.len() as u64;
+        bytes.extend(frame(
+            b"STAT",
+            0x402,
+            0,
+            &vec![b'x'; crate::source_input::MEMORY_SNAPSHOT_LIMIT as usize],
+        ));
+        assert!(bytes.len() as u64 > crate::source_input::MEMORY_SNAPSHOT_LIMIT);
+        std::fs::write(&path, &bytes).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let edited = path.clone();
+        DURING_SCAN_DIGEST.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                let mut writer = File::options().write(true).open(&edited).unwrap();
+                writer.seek(SeekFrom::Start(edited_offset)).unwrap();
+                writer.write_all(b"EDID\x02\x00z\0").unwrap();
+                writer.flush().unwrap();
+                // Force an observable stamp change independently of filesystem clock precision.
+                writer
+                    .set_times(
+                        std::fs::FileTimes::new()
+                            .set_modified(modified + std::time::Duration::from_secs(2)),
+                    )
+                    .unwrap();
+            }));
+        });
+        let mut diagnostics = PluginDiagnostics::default();
+        let outcome = scan_plugin(&path, &mut diagnostics, |_| {}, |_, _| {}).unwrap();
+        assert!(
+            !matches!(outcome, ScanOutcome::Verified(_)),
+            "a change during the decode digest must never be accepted as verified"
+        );
+        assert_eq!(
+            diagnostics.event_context.action,
+            Some("kept_decoded_records")
         );
     }
 
