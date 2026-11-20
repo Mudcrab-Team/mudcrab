@@ -106,6 +106,8 @@ pub(crate) fn verify_admitted_metadata(data: &[u8], admitted: &PluginMetadata) -
 
 /// Bind an optional cache proof to admitted header facts on one checked source view.
 /// Its callers treat failure as absent proof, not a conversion-wide error.
+/// Production uses the streamed proof; this mapped form is the reference its tests compare with.
+#[cfg(test)]
 pub(crate) fn admitted_plugin_proof(
     path: &Path,
     admitted: &PluginMetadata,
@@ -120,7 +122,8 @@ pub(crate) fn admitted_plugin_proof(
 }
 
 /// The largest TES4 payload an admission read accepts; real plugin headers are far smaller.
-const MAX_TES4_HEADER_PAYLOAD: usize = 64 * 1024;
+/// Room for 255 long master names; a larger header only disables the optional cache proof.
+const MAX_TES4_HEADER_PAYLOAD: usize = 1024 * 1024;
 
 /// Optional proofs read one file handle instead of mapping the plugin. Streaming keeps a
 /// concurrent truncation or short read a declined proof, where a large direct mapping would
