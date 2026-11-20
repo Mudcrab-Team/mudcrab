@@ -708,7 +708,7 @@ impl AssetPipeline {
             .filter(|(_, source)| extension(source, &["bsa", "ba2"]))
             .map(|(relative, source)| (source.clone(), relative.clone()))
             .collect();
-        let plugins = match mo2_plugins {
+        let (plugins, admitted_order) = match mo2_plugins {
             Some(plugins) => {
                 let profile = &config
                     .mo2
@@ -735,22 +735,30 @@ impl AssetPipeline {
                     !plugins.is_empty(),
                     "MO2 profile {profile}: no usable active plugins remain"
                 );
-                crate::esm::load_order::LoadOrder::read(&plugins).wrap_err_with(|| {
-                    format!("MO2 profile {profile}: invalid plugin/master order")
-                })?;
-                plugins
+                let admitted =
+                    crate::esm::load_order::LoadOrder::read(&plugins).wrap_err_with(|| {
+                        format!("MO2 profile {profile}: invalid plugin/master order")
+                    })?;
+                // A source deleted or replaced after this validation reaches reader recovery:
+                // that keeps its admitted slot and warns instead of aborting on a later reopen.
+                #[cfg(test)]
+                crate::esm::after_plugin_admission_for_test();
+                (plugins, admitted)
             }
-            None => plugin_paths_with_diagnostics(
-                config,
-                &files,
-                &mut report.notices,
-                &mut report.skipped_plugins,
-                &mut report.selection_warnings,
-            )?,
+            None => {
+                let plugins = plugin_paths_with_diagnostics(
+                    config,
+                    &files,
+                    &mut report.notices,
+                    &mut report.skipped_plugins,
+                    &mut report.selection_warnings,
+                )?;
+                let admitted = crate::esm::load_order::LoadOrder::read(&plugins)?;
+                (plugins, admitted)
+            }
         };
         // Preserve admission flags, master lists and slot positions across archive extraction
         // and parsing. A later header reopen must not compact or reject this admitted order.
-        let admitted_order = crate::esm::load_order::LoadOrder::read(&plugins)?;
         #[cfg(test)]
         crate::esm::after_plugin_admission_for_test();
         report.load_order = plugins
@@ -1104,13 +1112,21 @@ impl AssetPipeline {
             let cache_identity = if plugin_hashes.iter().any(String::is_empty) {
                 None
             } else {
-                database_cache::identity_with_admitted_order(
+                let identity = database_cache::identity_with_admitted_order(
                     config,
                     &plugins,
                     string_sources,
                     cancellation,
                     &admitted_order,
-                )?
+                )?;
+                if identity.is_none() {
+                    report.notices.push(
+                        "base database cache is unused for this run because its cache proofs \
+                         could not be read; converted data is unaffected"
+                            .into(),
+                    );
+                }
+                identity
             };
             report.database_cache_key =
                 cache_identity.as_ref().map(|identity| identity.key.clone());
@@ -16138,6 +16154,132 @@ mod tests {
                 .unwrap();
             assert_eq!(later, 1);
         }
+    }
+
+    /// A plugin deleted after MO2 validated the order keeps its slot and its healthy neighbours.
+    #[tokio::test(flavor = "current_thread")]
+    async fn mo2_plugin_missing_after_order_validation_keeps_neighbors() {
+        fn frame(signature: &[u8; 4], id: u32, fields: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+            let mut payload = Vec::new();
+            for (tag, value) in fields {
+                payload.extend_from_slice(*tag);
+                payload.extend_from_slice(&(value.len() as u16).to_le_bytes());
+                payload.extend(value);
+            }
+            let mut bytes = signature.to_vec();
+            bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&id.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&44u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend(payload);
+            bytes
+        }
+        fn plugin(id: u32, masters: &[&str]) -> Vec<u8> {
+            let mut header = 1.7f32.to_le_bytes().to_vec();
+            header.extend(1u32.to_le_bytes());
+            header.extend(0x1000u32.to_le_bytes());
+            let mut fields: Vec<(&[u8; 4], Vec<u8>)> = vec![(b"HEDR", header)];
+            for master in masters {
+                let mut name = master.as_bytes().to_vec();
+                name.push(0);
+                fields.push((b"MAST", name));
+            }
+            fields.push((b"DATA", vec![0; 8]));
+            let mut bytes = frame(b"TES4", 0, &fields);
+            bytes.extend(frame(
+                b"KYWD",
+                id,
+                &[(b"EDID", b"HealthyNeighbor\0".to_vec())],
+            ));
+            bytes
+        }
+        struct ClearHook;
+        impl Drop for ClearHook {
+            fn drop(&mut self) {
+                crate::esm::AFTER_PLUGIN_ADMISSION.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        let instance = directory.path().join("MO2");
+        for folder in ["mods/Low", "profiles/Default", "overwrite"] {
+            fs::create_dir_all(instance.join(folder)).unwrap();
+        }
+        fs::write(
+            instance.join("ModOrganizer.ini"),
+            b"[General]\ngameName=Skyrim Special Edition\n",
+        )
+        .unwrap();
+        fs::write(instance.join("profiles/Default/modlist.txt"), b"+Low\n").unwrap();
+        fs::write(
+            instance.join("profiles/Default/plugins.txt"),
+            b"*MutableMod.esp\n*HealthyC.esp\n",
+        )
+        .unwrap();
+        fs::write(
+            instance.join("profiles/Default/loadorder.txt"),
+            b"Skyrim.esm\nMutableMod.esp\nHealthyC.esp\n",
+        )
+        .unwrap();
+        fs::write(data.join("Skyrim.esm"), plugin(0x0800, &[])).unwrap();
+        let missing = instance.join("mods/Low/MutableMod.esp");
+        fs::write(&missing, plugin(0x0100_0822, &["Skyrim.esm"])).unwrap();
+        fs::write(
+            instance.join("mods/Low/HealthyC.esp"),
+            plugin(0x0100_0833, &["MutableMod.esp"]),
+        )
+        .unwrap();
+        let retained = directory.path().join("removed-plugin.retained");
+        let clear = ClearHook;
+        crate::esm::AFTER_PLUGIN_ADMISSION.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || fs::rename(missing, retained).unwrap()));
+        });
+        let mut config = PipelineConfig::new(&data, &output);
+        config.mo2 = Some(mo2::Selection {
+            instance_path: instance.clone(),
+            profile: "Default".into(),
+        });
+        config.no_lod = true;
+        let (tx, mut rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let result = AssetPipeline::run_async(config, tx).await;
+        drain.await.unwrap();
+        drop(clear);
+        assert!(
+            !instance.join("mods/Low/MutableMod.esp").exists(),
+            "admission hook did not run"
+        );
+        let report = result
+            .expect("a plugin deleted after MO2 validated the order must reach reader recovery");
+        assert!(!report.complete);
+        assert_eq!(
+            report.load_order,
+            ["Skyrim.esm", "MutableMod.esp", "HealthyC.esp"]
+        );
+        assert_eq!(
+            report
+                .warnings
+                .iter()
+                .filter(|warning| warning.to_ascii_lowercase().contains("mutablemod.esp"))
+                .count(),
+            1,
+            "{:?}",
+            report.warnings
+        );
+        let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+        let healthy: u32 = conn
+            .query_row(
+                "SELECT count(*) FROM records WHERE form_id=?1",
+                [0x0200_0833u32],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(healthy, 1, "the healthy neighbour's record must survive");
     }
 
     /// Truncated mod inputs warn during publication while valid records on both sides survive.

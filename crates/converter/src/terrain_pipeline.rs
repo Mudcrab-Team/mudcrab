@@ -149,9 +149,9 @@ impl TerrainOptions {
 }
 
 /// Where entry 0's diffuse comes from, for the LOD bake (`crate::pipeline::compile_lod_chunks`).
-/// It reads the same setting and the same [`landscape_defaults`] as the merged-terrain arrays
-/// ([`run_merged_terrain_stage`]), so a quadrant with no `BTXT` (or a null one) is painted the
-/// same texture on both sides of the LOD switch distance.
+/// It reads the same setting and the same [`landscape_defaults`] as the merged-terrain arrays,
+/// so a quadrant with no `BTXT` (or a null one) is painted the same texture on both sides of
+/// the LOD switch distance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TerrainDefaultDiffuse {
     /// The generated white diffuse, explicitly selected or used as a fallback.
@@ -630,45 +630,6 @@ pub fn build_merged_terrain(
         },
         warnings,
     })
-}
-
-/// Runs the merged-terrain stage for one route that has just built its world database: the
-/// records, the load order's masters, the publish list and the report, around
-/// [`build_merged_terrain`].
-///
-/// `records` is the merged record map the database was exported from ([`terrain_records`] for a
-/// caller that kept only what this stage reads); the option being on without one (no plugin
-/// produced a world database) is an error naming `--merged-terrain`, never a silent skip. The
-/// build is heavy CPU and disk work, so it runs on the blocking pool rather than on the async
-/// runtime, as the LOD stage keeps its compilers off it. A stop cannot be honoured inside the
-/// build; it is checked by the caller at its next safe point.
-pub async fn run_merged_terrain_stage(
-    staging: &Path,
-    records: Option<HashMap<u32, RawRecord>>,
-    source_offsets: HashMap<u32, u64>,
-    plugins: &[PathBuf],
-    options: &TerrainOptions,
-    progress_tx: &Sender<ProgressEvent>,
-    report: &mut PipelineReport,
-) -> Result<()> {
-    if records.is_none() {
-        bail!(
-            "--merged-terrain was requested, but no plugin produced a world database for the \
-             merged terrain to be built from"
-        );
-    }
-    let order = LoadOrder::read(plugins)
-        .wrap_err("failed to read the load order for the merged terrain")?;
-    run_merged_terrain_stage_with_order(
-        staging,
-        records,
-        source_offsets,
-        &order,
-        options,
-        progress_tx,
-        report,
-    )
-    .await
 }
 
 /// Build from the same admitted master metadata that produced the database and cell cache.

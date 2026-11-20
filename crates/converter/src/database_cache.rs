@@ -237,8 +237,10 @@ fn identity_with_program_and_admission(
         // optional cache proof, not another opportunity to reject usable neighboring data.
         let input = (|| -> Result<(u64, String)> {
             if let Some(admitted) = admitted {
-                let (size, checksum) =
-                    crate::esm::binary::admitted_plugin_proof(plugin, &admitted.metadata[index])?;
+                let (size, checksum) = crate::esm::binary::admitted_plugin_stream_proof(
+                    plugin,
+                    &admitted.metadata[index],
+                )?;
                 let mut sha256 = String::with_capacity(64);
                 for byte in checksum {
                     write!(sha256, "{byte:02x}")?;
