@@ -2615,6 +2615,50 @@ fn occluder_link_verification_distinguishes_null_from_unusable_source() {
     }
 }
 
+#[test]
+fn truncated_occluder_link_to_another_cell_clears_pack_verification() {
+    for truncated in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("Data");
+        fs::create_dir(&data).unwrap();
+        let mut field = sub(b"XORD", &[0x802u32, 0, 0, 0].map(u32::to_le_bytes).concat());
+        if truncated {
+            field.pop();
+        }
+        plugin(
+            &data,
+            "Skyrim.esm",
+            &[],
+            1,
+            [
+                record(b"STAT", 0x17, 0, sub(b"EDID", b"PlaneMarker\0")),
+                record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+                placement_group(0x900, placement_marker(0x801, 0x17, field)),
+                record(b"CELL", 0x901, 0, sub(b"DATA", &[1, 0])),
+                placement_group(0x901, placement_marker(0x802, 0x17, Vec::new())),
+            ]
+            .concat(),
+        );
+        let db = export_room_review_fixture(&data, &dir.path().join("bundle"), true);
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let read = |sql| conn.query_row(sql, [], |row| row.get::<_, u32>(0)).unwrap();
+        assert_eq!(
+            read("SELECT count(*) FROM room_occluders WHERE ref_id=0x802 AND cell_id=0x901"),
+            1
+        );
+        assert_eq!(
+            read(
+                "SELECT count(*) FROM room_occluder_links WHERE ref_id=0x801 AND linked_ref=0x802"
+            ),
+            u32::from(!truncated)
+        );
+        assert_eq!(
+            read("SELECT value FROM room_graph_stats WHERE name='occlusion_links_verified'"),
+            u32::from(!truncated)
+        );
+    }
+}
+
 #[tokio::test]
 async fn dropped_occluder_fields_make_conversion_incomplete() {
     use converter::{AssetPipeline, config::RecordReader};
