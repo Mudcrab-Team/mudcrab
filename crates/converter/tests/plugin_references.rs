@@ -131,10 +131,11 @@ fn every_single_form_id_field_remaps_relocated_full_and_light_plugins() {
         }
         let mut records = Vec::new();
         let mut all_cases = cases.to_vec();
-        for record_type in [
+        let record_types_with_common_links = [
             b"CELL", b"REFR", b"ACHR", b"ACRE", b"PGRE", b"PMIS", b"PHZD", b"PARW", b"PBAR",
             b"PBEA", b"PCON", b"PFLA",
-        ] {
+        ];
+        for record_type in record_types_with_common_links {
             for tag in [b"XOWN", b"XGLB", b"XEZN", b"XLCN", b"XLRL"] {
                 all_cases.push((record_type, tag, 4));
             }
@@ -145,7 +146,16 @@ fn every_single_form_id_field_remaps_relocated_full_and_light_plugins() {
         for (i, (kind, tag, len)) in all_cases.iter().enumerate() {
             let mut data = vec![0xAB; *len];
             data[..4].copy_from_slice(&0x0100_0801u32.to_le_bytes());
-            records.extend(record(kind, 0x0100_0900 + i as u32, 0, sub(tag, &data)));
+            let field = sub(tag, &data);
+            let body = if *kind != b"CELL"
+                && *tag != b"NAME"
+                && record_types_with_common_links.contains(kind)
+            {
+                [sub(b"NAME", &0x42u32.to_le_bytes()), field].concat()
+            } else {
+                field
+            };
+            records.extend(record(kind, 0x0100_0900 + i as u32, 0, body));
         }
         paths.push(plugin(
             dir.path(),
@@ -156,10 +166,14 @@ fn every_single_form_id_field_remaps_relocated_full_and_light_plugins() {
         ));
         let merged = EsmParser::merge_plugins(&paths).unwrap();
         for (i, (kind, tag, len)) in all_cases.iter().enumerate() {
-            let data = &merged[&(expected_prefix | (0x900 + i as u32))].subrecords[0].1;
+            let fields = &merged[&(expected_prefix | (0x900 + i as u32))].subrecords;
             let mut expected = vec![0xAB; *len];
             expected[..4].copy_from_slice(&(expected_prefix | 0x801).to_le_bytes());
-            assert_eq!(data, &expected, "light={light}, {kind:?}.{tag:?}");
+            assert_eq!(
+                SubrecordView::new(fields).find(tag),
+                Some(expected.as_slice()),
+                "light={light}, {kind:?}.{tag:?}"
+            );
         }
     }
 }
@@ -677,10 +691,11 @@ fn reference_and_cell_form_id_fields_use_load_order_numbering() {
         &["Skyrim.esm", "Update.esm"],
         1,
         [
-            record(
-                b"REFR",
+            placement(
                 0x0200_0800,
+                0x42,
                 0,
+                0.0,
                 [sub(b"XTEL", &xtel), sub(b"XLKR", &xlkr)].concat(),
             ),
             record(
@@ -817,10 +832,11 @@ fn malformed_repeated_xapr_drops_only_the_bad_occurrence() {
         "Patch.esm",
         &["Base.esm"],
         1,
-        record(
-            b"REFR",
+        placement(
             0x0100_0800,
+            0x42,
             0,
+            0.0,
             [
                 sub(b"XAPR", &first),
                 sub(b"XAPR", &[0xAB; 12]),
@@ -862,10 +878,11 @@ fn legacy_linked_references_and_worldspace_lighting_templates_are_remapped() {
         &["Base.esm"],
         1,
         [
-            record(
-                b"REFR",
+            placement(
                 0x0100_0800,
+                0x42,
                 0,
+                0.0,
                 sub(b"XLKR", &0x0100_0801u32.to_le_bytes()),
             ),
             record(
@@ -947,12 +964,18 @@ fn every_covered_reference_and_cell_field_is_remapped_at_its_offsets() {
         let dir = tempfile::tempdir().unwrap();
         let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
         let filler = plugin(dir.path(), "Filler.esm", &["Base.esm"], 1, Vec::new());
+        let field = sub(tag, &payload);
+        let body = if !matches!(record_type, b"CELL" | b"WRLD") && tag != b"NAME" {
+            [sub(b"NAME", &0x42u32.to_le_bytes()), field].concat()
+        } else {
+            field
+        };
         let patch = plugin(
             dir.path(),
             "Patch.esm",
             &["Base.esm"],
             1,
-            record(record_type, 0x0100_0800, 0, sub(tag, &payload)),
+            record(record_type, 0x0100_0800, 0, body),
         );
         let merged = EsmParser::merge_plugins(&[base, filler, patch]).unwrap();
         let data = &merged[&0x0200_0800]
@@ -984,6 +1007,12 @@ fn room_marker_tags_on_other_record_types_keep_their_handling() {
         (b"CELL", b"XLRM", false),
     ];
     for &(record_type, tag, remapped) in cases {
+        let field = sub(tag, &0x0100_0900u32.to_le_bytes());
+        let body = if record_type == b"ACHR" {
+            [sub(b"NAME", &0x42u32.to_le_bytes()), field].concat()
+        } else {
+            field
+        };
         let dir = tempfile::tempdir().unwrap();
         let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
         let filler = plugin(dir.path(), "Filler.esm", &["Base.esm"], 1, Vec::new());
@@ -992,12 +1021,7 @@ fn room_marker_tags_on_other_record_types_keep_their_handling() {
             "Patch.esm",
             &["Base.esm"],
             1,
-            record(
-                record_type,
-                0x0100_0800,
-                0,
-                sub(tag, &0x0100_0900u32.to_le_bytes()),
-            ),
+            record(record_type, 0x0100_0800, 0, body),
         );
         let merged = EsmParser::merge_plugins(&[base, filler, patch]).unwrap();
         let data = &merged[&0x0200_0800]
@@ -1034,7 +1058,7 @@ fn light_plugin_reference_fields_use_the_light_slot() {
         "Light.esl",
         &["Base.esm"],
         0x201,
-        record(b"REFR", 0x0100_0800, 0, sub(b"XTEL", &xtel)),
+        placement(0x0100_0800, 0x42, 0, 0.0, sub(b"XTEL", &xtel)),
     );
     let merged = EsmParser::merge_plugins(&[base, light]).unwrap();
     let data = &merged[&0xFE00_0800]
@@ -1103,18 +1127,22 @@ fn reference_fields_skip_invalid_master_and_light_ids() {
                 &["Base.esm"],
                 flags,
                 [
-                    record(b"REFR", 0x0100_0800, 0, sub(tag, &payload)),
-                    record(
-                        b"REFR",
+                    placement(0x0100_0800, 0x42, 0, 0.0, sub(tag, &payload)),
+                    placement(
                         0x0100_0802,
+                        0x42,
                         0,
+                        0.0,
                         sub(b"XEMI", &0x42u32.to_le_bytes()),
                     ),
                 ]
                 .concat(),
             );
             let merged = EsmParser::merge_plugins(&[base, filler, patch]).unwrap();
-            assert_eq!(merged[&record_id].subrecords[0].1, expected);
+            assert_eq!(
+                SubrecordView::new(&merged[&record_id].subrecords).find(tag),
+                Some(expected.as_slice())
+            );
             assert_eq!(
                 SubrecordView::new(&merged[&(record_id + 2)].subrecords).get_form_id(b"XEMI"),
                 Some(0x42)
@@ -1138,10 +1166,11 @@ fn optional_links_to_wide_light_master_ids_preserve_valid_array_elements() {
             "Patch.esp",
             &["Second.esl", "Base.esm"],
             0,
-            record(
-                b"REFR",
+            placement(
                 0x0200_0800,
+                0x42,
                 0,
+                0.0,
                 sub(
                     b"XLRT",
                     &[
@@ -1157,7 +1186,9 @@ fn optional_links_to_wide_light_master_ids_preserve_valid_array_elements() {
     ];
     let merged = EsmParser::merge_plugins(&paths).unwrap();
     assert_eq!(
-        merged[&0x0200_0800].subrecords[0].1,
+        SubrecordView::new(&merged[&0x0200_0800].subrecords)
+            .find(b"XLRT")
+            .unwrap(),
         [
             0u32.to_le_bytes(),
             0xFE00_1802u32.to_le_bytes(),
@@ -1180,13 +1211,16 @@ fn null_links_and_unrelated_subrecords_are_preserved() {
         &[],
         0,
         [
-            record(b"REFR", 0x800, 0, sub(b"XESP", &payload)),
+            placement(0x800, 0x42, 0, 0.0, sub(b"XESP", &payload)),
             record(b"STAT", 0x801, 0, sub(b"XTEL", &[1, 2, 3])),
         ]
         .concat(),
     );
     let merged = EsmParser::merge_plugins(&[base, patch]).unwrap();
-    assert_eq!(merged[&0x0100_0800].subrecords[0].1, payload);
+    assert_eq!(
+        SubrecordView::new(&merged[&0x0100_0800].subrecords).find(b"XESP"),
+        Some(payload.as_slice())
+    );
     assert_eq!(merged[&0x0100_0801].subrecords[0].1, [1, 2, 3]);
 }
 
@@ -1322,6 +1356,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
                         placed(
                             0x0200_0800,
                             [
+                                sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
                                 sub(b"XTEL", &xtel),
                                 sub(b"XESP", &xesp),
                                 sub(b"XAPR", &xapr),
@@ -1383,6 +1418,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
                 placed(
                     0x0100_0800,
                     [
+                        sub(b"NAME", &0x0000_0003u32.to_le_bytes()),
                         sub(b"XTEL", &override_xtel),
                         sub(b"XLRT", &[0xAB; 6]),
                         sub(b"XAPR", &[0xAB; 12]),
@@ -1810,7 +1846,7 @@ fn a_two_pair_xpod_is_remapped_in_every_pair() {
         "Patch.esm",
         &["Base.esm"],
         1,
-        record(b"REFR", 0x0100_0900, 0, sub(b"XPOD", &payload)),
+        placement(0x0100_0900, 0x20, 0, 0.0, sub(b"XPOD", &payload)),
     );
     let merged = EsmParser::merge_plugins(&[base, filler, patch]).unwrap();
     let data = &merged[&0x0200_0900]
@@ -1838,7 +1874,7 @@ fn a_two_pair_xpod_is_remapped_in_every_pair() {
         "Patch.esm",
         &["Base.esm"],
         1,
-        record(b"REFR", 0x0100_0900, 0, sub(b"XPOD", &payload[..12])),
+        placement(0x0100_0900, 0x20, 0, 0.0, sub(b"XPOD", &payload[..12])),
     );
     let merged = EsmParser::merge_plugins(&[base, filler, patch]).unwrap();
     let data = &merged[&0x0200_0900]
@@ -1860,7 +1896,7 @@ fn a_two_pair_xpod_is_remapped_in_every_pair() {
         "Patch.esm",
         &["Base.esm"],
         1,
-        record(b"REFR", 0x0100_0900, 0, sub(b"XPOD", &payload[..14])),
+        placement(0x0100_0900, 0x20, 0, 0.0, sub(b"XPOD", &payload[..14])),
     );
     let merged = EsmParser::merge_plugins(&[base, patch]).unwrap();
     let xpods: Vec<_> = merged[&0x0100_0900]
@@ -1888,7 +1924,7 @@ fn broken_portal_links_do_not_become_authored_outside_endpoints() {
             "Patch.esm",
             &["Other.esm", "Base.esm"],
             1,
-            record(b"REFR", 0x0200_0900, 0, sub(b"XPOD", &payload)),
+            placement(0x0200_0900, 0x20, 0, 0.0, sub(b"XPOD", &payload)),
         );
         let merged = EsmParser::merge_plugins(&[base, other, patch]).unwrap();
         let xpods: Vec<_> = merged[&0x0200_0900]
@@ -5054,6 +5090,8 @@ fn duplicate_apertures_cannot_replace_a_certified_portal() {
 
 #[test]
 fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
+    use converter::config::RecordReader;
+
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("Data");
     fs::create_dir(&data).unwrap();
@@ -5067,52 +5105,148 @@ fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
         contents.extend(placement_group(cell, placements));
     }
     let base = plugin(&data, "Skyrim.esm", &[], 1, contents);
-    let torn = plugin(
-        &data,
-        "Torn.esp",
-        &["Skyrim.esm"],
-        0,
-        placement_group(0x901, record(b"REFR", 0x850, 0x40000, vec![0xff; 8])),
-    );
-    let restored = plugin(
+    let deleted = plugin(
         &data,
         "Fixed.esp",
         &["Skyrim.esm"],
         0,
         placement_group(0x901, record(b"REFR", 0x850, 0x20, Vec::new())),
     );
-    for repaired in [false, true] {
-        let mut plugins = vec![base.clone(), torn.clone()];
-        if repaired {
-            plugins.push(restored.clone());
-        }
-        for typed in [false, true] {
-            let output = dir.path().join(format!("world-{typed}-{repaired}.db"));
-            let reader = if typed {
-                converter::config::RecordReader::Inhouse
-            } else {
-                converter::config::RecordReader::Legacy
-            };
-            EsmParser::convert_plugins_with_reader(&plugins, &output, reader, &data).unwrap();
-            let db = rusqlite::Connection::open(output).unwrap();
-            for cell in [0x900, 0x901] {
-                assert_eq!(
-                    placement_certificate(&db, cell),
-                    repaired,
-                    "typed={typed} cell={cell} repaired={repaired}"
-                );
+    let restored = plugin(
+        &data,
+        "Restored.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(0x901, placement(0x850, 0x830, 0, 0.0, Vec::new())),
+    );
+    let cases = [
+        (
+            "torn",
+            0x901,
+            record(b"REFR", 0x850, 0x40000, vec![0xff; 8]),
+            [false, false, true],
+        ),
+        (
+            "invalid-parent",
+            0x0900_0901,
+            placement(0x850, 0x830, 0, 0.0, Vec::new()),
+            [false, true, true],
+        ),
+        (
+            "null-parent",
+            0,
+            placement(0x850, 0x830, 0, 0.0, Vec::new()),
+            [false, true, true],
+        ),
+        (
+            "missing-name",
+            0x901,
+            record(b"REFR", 0x850, 0, sub(b"DATA", &[0; 24])),
+            [false, false, true],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, destination, candidate, unresolved) in cases {
+        let broken = plugin(
+            &data,
+            "Broken.esp",
+            &["Skyrim.esm"],
+            0,
+            placement_group(destination, candidate),
+        );
+        for (followup, expected_cell, expected_certificates) in [
+            (None, Some(0x900), unresolved),
+            (Some(&restored), Some(0x901), [true; 3]),
+            (Some(&deleted), None, [true; 3]),
+        ] {
+            let plugins = [base.clone(), broken.clone()]
+                .into_iter()
+                .chain(followup.cloned())
+                .collect::<Vec<_>>();
+            for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+                let output = dir.path().join("world.db");
+                EsmParser::convert_plugins_with_reader(&plugins, &output, reader, &data).unwrap();
+                let db = rusqlite::Connection::open(output).unwrap();
+                let certificates =
+                    [0x900, 0x901, 0x902].map(|cell| placement_certificate(&db, cell));
+                let winner = placement_winner_cell(&db, 0x850);
+                if certificates != expected_certificates || winner != expected_cell {
+                    failures.push(format!(
+                        "{reader:?} {name} followup={followup:?}: certificates={certificates:?}, winner={winner:?}; expected {expected_certificates:?}, {expected_cell:?}"
+                    ));
+                }
             }
-            assert!(placement_certificate(&db, 0x902));
-            let exists: bool = db
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM records WHERE form_id=0x850)",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(exists, !repaired);
         }
     }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn rejected_placement_collision_keeps_destination_open_without_a_proven_alias() {
+    use converter::config::RecordReader;
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    let mut contents = record(b"STAT", 0x830, 0, sub(b"EDID", b"FixtureStatic\0"));
+    for (cell, room) in [(0x900, 0x800), (0x901, 0x810), (0x902, 0x820)] {
+        contents.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
+        contents.extend(placement_group(
+            cell,
+            placement_marker(room, 0x1f, Vec::new()),
+        ));
+    }
+    let base = plugin(data, "Skyrim.esm", &[], 1, contents);
+    let patch = plugin(
+        data,
+        "Patch.esp",
+        &["Skyrim.esm"],
+        0,
+        [
+            placement_group(0x900, placement(0x0100_0850, 0x830, 0, 0.0, Vec::new())),
+            placement_group(0x901, placement(0x0900_0850, 0x830, 0, 0.0, Vec::new())),
+        ]
+        .concat(),
+    );
+    let followup = plugin(
+        data,
+        "Fixed.esp",
+        &["Skyrim.esm", "Patch.esp"],
+        0,
+        placement_group(0x902, placement(0x0100_0850, 0x830, 0, 0.0, Vec::new())),
+    );
+    let mut failures = Vec::new();
+    for moved in [false, true] {
+        let plugins = [base.clone(), patch.clone()]
+            .into_iter()
+            .chain(moved.then(|| followup.clone()))
+            .collect::<Vec<_>>();
+        for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+            let output = data.join("world.db");
+            EsmParser::convert_plugins_with_reader(&plugins, &output, reader, data).unwrap();
+            let db = rusqlite::Connection::open(output).unwrap();
+            let certificates = [0x900, 0x901, 0x902].map(|cell| placement_certificate(&db, cell));
+            let winner = placement_winner_cell(&db, 0x0100_0850);
+            let expected_cell = Some(if moved { 0x902 } else { 0x900 });
+            if certificates != [true, false, true] || winner != expected_cell {
+                failures.push(format!(
+                    "{reader:?} moved={moved}: certificates={certificates:?}, winner={winner:?}; expected [true, false, true], {expected_cell:?}"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+fn placement_winner_cell(db: &rusqlite::Connection, id: u32) -> Option<u32> {
+    use rusqlite::OptionalExtension;
+
+    db.query_row(
+        "SELECT cell_id FROM [references] WHERE id=?1",
+        [id],
+        |row| row.get(0),
+    )
+    .optional()
+    .unwrap()
 }
 
 #[test]

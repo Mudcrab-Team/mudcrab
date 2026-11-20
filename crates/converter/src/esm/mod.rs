@@ -87,21 +87,23 @@ struct PlacementDamage {
 impl PlacementDamage {
     fn reject(
         &mut self,
-        id: Option<u32>,
+        record_type: &[u8; 4],
+        source_id: u32,
         source_cell: Option<u32>,
         plugin: usize,
         order: &load_order::LoadOrder,
     ) {
-        if let Some(cell) = source_cell
-            .and_then(|raw| {
-                crate::records::source_identity::header_runtime_id(b"CELL", raw, plugin, order)
-            })
-            .filter(|&cell| cell != 0)
-        {
-            self.cells_by_reference
-                .entry(id.filter(|&id| id != 0))
-                .or_default()
-                .insert(cell);
+        use crate::records::source_identity::header_runtime_id;
+
+        if !is_placed_record_type(record_type) {
+            return;
+        }
+        let id = header_runtime_id(record_type, source_id, plugin, order).filter(|&id| id != 0);
+        let cell = source_cell
+            .and_then(|raw| header_runtime_id(b"CELL", raw, plugin, order))
+            .filter(|&cell| cell != 0);
+        if id.is_some() || cell.is_some() {
+            self.cells_by_reference.entry(id).or_default().extend(cell);
         }
     }
 
@@ -353,6 +355,10 @@ impl EsmParser {
                         .is_some_and(|base| base & 0x00ff_ffff == rooms::ROOM_MARKER_BASE))
                 .then(|| rooms::RoomLinkLayout::from_raw(&record));
                 let source_cell = record.cell_form_id;
+                let record_type = record.record_type;
+                let reject_placement = |damage: &mut PlacementDamage| {
+                    damage.reject(&record_type, source_id, source_cell, priority, order);
+                };
                 let admission = remap_record_form_ids(
                     &mut record,
                     &order.names[priority],
@@ -363,6 +369,18 @@ impl EsmParser {
                 )
                 .and_then(|()| {
                     if !damaged && !record.is_deleted() {
+                        if is_placed_record_type(&record_type) {
+                            color_eyre::eyre::ensure!(
+                                record.cell_form_id != Some(0),
+                                "invalid placement parent cell"
+                            );
+                            color_eyre::eyre::ensure!(
+                                extractors::SubrecordView::new(&record.subrecords)
+                                    .find(b"NAME")
+                                    .is_some(),
+                                "missing required NAME reference"
+                            );
+                        }
                         validate_inhouse_record(&record)?;
                         if record.record_type == *b"LAND" {
                             cell_cache::validate_inhouse_land(&record)?;
@@ -370,16 +388,8 @@ impl EsmParser {
                     }
                     Ok(())
                 });
-                if (admission.is_err() || damaged) && is_placed_record_type(&record.record_type) {
-                    let id = crate::records::source_identity::header_runtime_id(
-                        &record.record_type,
-                        source_id,
-                        priority,
-                        order,
-                    );
-                    damaged_placements.reject(id, source_cell, priority, order);
-                }
                 if let Err(error) = admission {
+                    reject_placement(&mut damaged_placements);
                     warnings.skipped_record(
                         &order.names[priority],
                         &record,
@@ -393,6 +403,7 @@ impl EsmParser {
                     // Light-ID truncation keeps its documented last-record-wins behaviour; only
                     // an out-of-range master index is rejected when it lands on another record.
                     if *earlier != source_id && (out_of_range || *earlier_out_of_range) {
+                        reject_placement(&mut damaged_placements);
                         warnings.skipped_record(
                             &order.names[priority],
                             &record,
@@ -403,6 +414,7 @@ impl EsmParser {
                     }
                 }
                 if damaged {
+                    reject_placement(&mut damaged_placements);
                     continue;
                 }
                 if record.record_type == *b"GMST" {
@@ -430,6 +442,7 @@ impl EsmParser {
                         };
                     record.form_id = canonical;
                 } else if game_settings.aliases.contains_key(&record.form_id) {
+                    reject_placement(&mut damaged_placements);
                     warnings.skipped_record(
                         &order.names[priority],
                         &record,
