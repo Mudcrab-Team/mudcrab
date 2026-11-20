@@ -1048,18 +1048,14 @@ fn export_records(
                 // those are skipped; a light with geometry is stored like any
                 // other base object.
                 let model = view.get_string(b"MODL").filter(|path| !path.is_empty());
-                if order.is_none() {
-                    invalidate_changed_model_room_data(&tx, form_id, model.as_deref())?;
-                }
-                if let Some(model_path) = model {
-                    tx.prepare_cached(
-                        "INSERT OR REPLACE INTO statics(id, editor_id, model_path, flags, full_name) VALUES (?1, ?2, ?3, ?4, ?5)")?.execute(
-                        params![form_id, view.get_string(b"EDID"), model_path, record.flags, view.get_string(b"FULL")],
-                    )?;
-                } else if order.is_none() {
-                    tx.prepare_cached("DELETE FROM statics WHERE id=?1")?
-                        .execute([form_id])?;
-                }
+                write_static_model(
+                    &tx,
+                    form_id,
+                    record,
+                    &view,
+                    model.as_deref(),
+                    order.is_none(),
+                )?;
             }
             // Every base record type with a world model. The runtime spawns
             // anything that resolves a model path here, so trees, flora,
@@ -1085,12 +1081,13 @@ fn export_records(
                     view.get_string(b"MODL")
                 }
                 .filter(|path| !path.is_empty());
-                if order.is_none() {
-                    invalidate_changed_model_room_data(&tx, form_id, model.as_deref())?;
-                }
-                tx.prepare_cached(
-                    "INSERT OR REPLACE INTO statics(id, editor_id, model_path, flags, full_name) VALUES (?1, ?2, ?3, ?4, ?5)")?.execute(
-                    params![form_id, view.get_string(b"EDID"), model, record.flags, view.get_string(b"FULL")],
+                write_static_model(
+                    &tx,
+                    form_id,
+                    record,
+                    &view,
+                    model.as_deref(),
+                    order.is_none(),
                 )?;
             }
             "NPC_" => {
@@ -1270,25 +1267,58 @@ fn export_records(
     tx.commit()
 }
 
-fn invalidate_changed_model_room_data(
+fn write_static_model(
     tx: &Transaction<'_>,
-    base_form_id: u32,
+    form_id: u32,
+    record: &RawRecord,
+    view: &SubrecordView<'_>,
     model: Option<&str>,
+    subset: bool,
 ) -> Result<()> {
-    let changed: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM statics WHERE id=?1 AND model_path IS NOT ?2)",
-        params![base_form_id, model],
-        |row| row.get(0),
-    )?;
-    if changed {
-        tx.prepare_cached("DELETE FROM room_model_bounds WHERE base_form_id=?1")?
-            .execute([base_form_id])?;
-        tx.prepare_cached(
-            "INSERT INTO room_graph_cells(cell_id,complete) \
+    use rusqlite::OptionalExtension;
+    let fields = params![
+        form_id,
+        view.get_string(b"EDID"),
+        model,
+        record.flags,
+        view.get_string(b"FULL")
+    ];
+    if subset
+        && let Some(previous) = tx
+            .prepare_cached("SELECT model_path FROM statics WHERE id=?1")?
+            .query_row([form_id], |row| row.get::<_, Option<String>>(0))
+            .optional()?
+    {
+        let previous = previous.as_deref();
+        let unchanged = previous == model
+            || previous.zip(model).is_some_and(|(old, new)| {
+                let key = |path| canonical_asset_path(path, AssetKind::Mesh, "glb").ok();
+                key(old).is_some_and(|old_key| Some(old_key) == key(new))
+            });
+        if unchanged && model.is_some() {
+            // A different source spelling can identify the same converted GLB.
+            // Keep its measured render bounds as well as its room evidence.
+            tx.prepare_cached("UPDATE statics SET editor_id=?2, model_path=?3, flags=?4, full_name=?5 WHERE id=?1")?.execute(fields)?;
+            return Ok(());
+        }
+        if !unchanged {
+            tx.prepare_cached("DELETE FROM room_model_bounds WHERE base_form_id=?1")?
+                .execute([form_id])?;
+            tx.prepare_cached(
+                "INSERT INTO room_graph_cells(cell_id,complete) \
              SELECT DISTINCT cell_id,0 FROM [references] WHERE base_form_id=?1 \
              ON CONFLICT(cell_id) DO UPDATE SET complete=0",
-        )?
-        .execute([base_form_id])?;
+            )?
+            .execute([form_id])?;
+        }
+    }
+    if record.record_type == *b"LIGH" && model.is_none() {
+        if subset {
+            tx.prepare_cached("DELETE FROM statics WHERE id=?1")?
+                .execute([form_id])?;
+        }
+    } else {
+        tx.prepare_cached("INSERT OR REPLACE INTO statics(id, editor_id, model_path, flags, full_name) VALUES (?1, ?2, ?3, ?4, ?5)")?.execute(fields)?;
     }
     Ok(())
 }
@@ -4501,7 +4531,12 @@ mod tests {
     #[test]
     fn subset_base_model_updates_invalidate_spheres_and_referencing_cells() {
         for kind in [b"STAT", b"LIGH"] {
-            for replacement in [Some("A.nif"), Some("B.nif"), None] {
+            for (replacement, unchanged) in [
+                (Some("A.nif"), true),
+                (Some(r"Meshes\%41.NIF"), true),
+                (Some("B.nif"), false),
+                (None, false),
+            ] {
                 let base = |model: Option<&str>| {
                     let mut fields = model
                         .map(|path| (b"MODL".to_vec(), cstr(path)))
@@ -4525,11 +4560,16 @@ mod tests {
                     base(Some("A.nif")),
                 ]);
                 conn.execute_batch(
-                    "INSERT INTO room_model_bounds VALUES(1280,1,2,3,4),(1281,5,6,7,8)",
+                    "INSERT INTO room_model_bounds VALUES(1280,1,2,3,4),(1281,5,6,7,8);
+                     UPDATE statics SET bounds_valid=1,bounds_min_x=-12 WHERE id=1280",
                 )
                 .unwrap();
                 export_to_db(&conn, &HashMap::from([(0x500, base(replacement))])).unwrap();
-                let unchanged = replacement == Some("A.nif");
+                let measured: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM statics WHERE id=1280 AND bounds_valid=1 AND bounds_min_x=-12)",
+                    [], |row| row.get(0)
+                ).unwrap();
+                assert_eq!(measured, unchanged);
                 let retained: bool = conn
                     .query_row(
                         "SELECT EXISTS(SELECT 1 FROM room_model_bounds WHERE base_form_id=1280)",

@@ -148,14 +148,22 @@ pub fn canonical_asset_path(
     kind: AssetKind,
     output_extension: &str,
 ) -> Result<String> {
-    let decoded = percent_decode(input.trim())?;
-    if decoded.is_empty() {
+    canonical_literal_asset_path(&percent_decode(input.trim())?, kind, output_extension)
+}
+
+/// A path already decoded from its source spelling, including literal percent signs.
+pub(crate) fn canonical_literal_asset_path(
+    input: &str,
+    kind: AssetKind,
+    output_extension: &str,
+) -> Result<String> {
+    if input.is_empty() {
         bail!("asset path is empty");
     }
-    if decoded.chars().any(char::is_control) {
+    if input.chars().any(char::is_control) {
         bail!("asset path contains a control character");
     }
-    let normalized = decoded.replace('\\', "/");
+    let normalized = input.replace('\\', "/");
     if normalized.starts_with('/') || normalized.contains(':') {
         bail!("asset path is absolute: {input}");
     }

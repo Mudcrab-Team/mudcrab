@@ -598,11 +598,15 @@ fn only_supported_fixed_bodies_allow_a_skin_room_sphere() {
         MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
         let glb = read_glb(&output);
         assert_skinned_primitives(&glb);
-        assert_eq!(
-            glb.json["extras"]["mudcrabRoomSphere"].is_object(),
-            fixed,
-            "motion={motion}, quality={quality}"
-        );
+        let sphere = glb.json["extras"].get("mudcrabRoomSphere");
+        if fixed {
+            assert!(
+                sphere.is_some_and(serde_json::Value::is_object),
+                "motion={motion}, quality={quality}"
+            );
+        } else {
+            assert!(sphere.is_none(), "motion={motion}, quality={quality}");
+        }
     }
 }
 

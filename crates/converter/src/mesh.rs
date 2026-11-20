@@ -204,7 +204,7 @@ impl MeshConverter {
         glb_output_path: &Path,
         index: &SkeletonIndex,
     ) -> Result<()> {
-        let source = NifSnapshot::read(nif_path)?;
+        let source = index.input_snapshot(relative, nif_path)?;
         let parsed = source.parse()?;
         let resolution = resolve_indexed_skeleton(relative, &source, &parsed.0, &parsed.1, index);
         Self::export_nif_with_resolution(&source, parsed, glb_output_path, resolution)
@@ -3720,12 +3720,15 @@ mod tests {
     #[test]
     fn snapshot_export_keeps_geometry_and_collision_after_source_replacement() {
         let directory = tempfile::tempdir().unwrap();
-        let input = directory.path().join("source.nif");
+        let relative = Path::new("meshes/rigs/skeleton.nif");
+        let input = directory.path().join("skeleton.nif");
         let control = directory.path().join("control.glb");
         let output = directory.path().join("snapshot.glb");
         let source = collidable_static_nif();
         fs::write(&input, &source).unwrap();
         let snapshot = NifSnapshot::read(&input).unwrap();
+        let sources = BTreeMap::from([(relative.to_owned(), input.clone())]);
+        let index = SkeletonIndex::from_sources(&sources);
         MeshConverter::convert_nif_to_glb_with_skeleton(&input, &control, None).unwrap();
         let original = fs::read(control).unwrap();
         let document = glb_json_from_bytes(&original).unwrap();
@@ -3739,7 +3742,14 @@ mod tests {
         );
         fs::write(&input, b"replacement is not a NIF").unwrap();
         MeshConverter::convert_nif_snapshot(&snapshot, &output, None, None).unwrap();
-        assert_eq!(fs::read(output).unwrap(), original);
+        assert_eq!(fs::read(&output).unwrap(), original);
+
+        MeshConverter::convert_nif_to_glb_from_index(relative, &input, &output, &index).unwrap();
+        assert_eq!(fs::read(&output).unwrap(), original);
+        let next = SkeletonIndex::from_sources(&sources);
+        assert!(
+            MeshConverter::convert_nif_to_glb_from_index(relative, &input, &output, &next).is_err()
+        );
     }
 
     #[test]

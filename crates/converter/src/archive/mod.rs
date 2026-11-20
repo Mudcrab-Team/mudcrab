@@ -747,7 +747,7 @@ impl ArchiveExtractor {
         Self::extract_matching(archive_path, output_root, |path| paths.contains(path))
     }
 
-    /// Extracts matching normalized paths without decompressing other entries.
+    /// Extracts matching canonical paths from the same open archive used for selection.
     pub fn extract_matching(
         archive_path: &Path,
         output_root: &Path,
@@ -2170,6 +2170,30 @@ mod tests {
         )
         .unwrap();
         archive
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_payload_comes_from_the_archive_that_supplied_its_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = directory.path().join("rigs.bsa");
+        let replacement = directory.path().join("replacement.bsa");
+        let output = directory.path().join("extracted");
+        let key = "meshes/actors/skeleton.nif";
+        write_archive(&archive, &[dummy_content::Entry::new(key, b"original")]);
+        write_archive(&replacement, &[dummy_content::Entry::new(key, b"replaced")]);
+
+        let extracted = ArchiveExtractor::extract_matching(&archive, &output, |path| {
+            assert_eq!(path, Path::new(key));
+            fs::rename(&replacement, &archive).unwrap();
+            true
+        })
+        .unwrap();
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(fs::read(output.join(key)).unwrap(), b"original");
+        ArchiveExtractor::extract_paths(&archive, &output, &BTreeSet::from([PathBuf::from(key)]))
+            .unwrap();
+        assert_eq!(fs::read(output.join(key)).unwrap(), b"replaced");
     }
 
     #[test]
