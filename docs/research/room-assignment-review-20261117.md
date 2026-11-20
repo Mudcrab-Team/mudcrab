@@ -145,14 +145,40 @@ room, `0006EE1E`. The control wall `000C4A50` belonged to `0006EE4F`, absent fro
 Three samples of the wall room’s inclusion volume contained the plane at Creation y = 1408 and
 four side planes through the eye and the edges of portal `0006EF37`. These identify the doorway
 in the resulting volume. The readbacks did not trace individual branch decisions.
-[Main-view room IDs and plane coefficients](evidence/room-review-20261117/katariah-retail-wall-control.json)
+[Main-view room IDs and plane coefficients](evidence/room-review-20261117/katariah-retail-wall-control.json) · [Three raw wall-room plane readbacks](evidence/room-review-20261117/katariah-native-planes.json)
+
+A fresh launch reproduced the mapped wall room with the player at (−768, 1536, 627.5) and
+the eye at (−768, 1536, 748), first with the free camera and then in first person. Both positions
+are inside the bounds of `0006EE50`. Both maps started there with multibounds enabled. The
+carved patch in first person had a luminance correlation of 0.995 with the earlier wall-scale
+baseline. Moving the normal camera farther into the room, to (−400, 1780, 748), also mapped
+`0006EE1E`. At that different eye position the same screen patch samples different geometry.
+
+After `prid 0006EF37` and `disable`, the player left for `TPFParallelBoth`, re-entered
+Katariah01 and returned to the matched eye. The carved wall remained visible. The root room’s
+live doorway list still contained the link centered at (−508, 1408, 684) to `0006EE1E`,
+so the round trip did not test traversal with that link removed.
+
+Repeating the disable and running `pcb` (purge buffered cells) in the other cell removed
+the doorway on re-entry. The root still mapped `0006EDCA`, but its doorway count fell from
+five to four, `0006EE1E` disappeared from the map, and the carved patch disappeared. Its
+luminance standard deviation fell from 13.78 after the ordinary round trip to 0.41.
+A subsequent enable command and purge left the doorway absent. The reference still had
+flags `0x809`, including the disabled bit (`0x800`). A fresh launch without loading a save
+restored the fifth doorway, the mapped room and the carved wall at the same eye. This
+identifies the route for the captured wall. The branch within the admission routine remains untraced.
+[Camera, room maps, doorway endpoints and patch measurements](evidence/room-review-20261117/katariah-doorway-controls.json)
+
+![Top row, left to right, shows the matched free camera, matched first person, and first person deeper in the room. Bottom row shows disable and re-entry, disable with a cell purge, and the fresh launch.](evidence/room-review-20261117/katariah-camera-controls.jpg)
 
 The eye projects 260 units sideways from the portal center, beyond its half-width of 56.
 Skyrim SE 1.7.104 builds the corners from rotation columns X and Z (RVA `0xfe8770`).
 Its projected-eye extent check (RVA `0xfe94e0`) instead dots the projected displacement
 with rotation rows Y and Z (three floats each at portal offsets `+0x28` and `+0x34`). At this
 doorway’s 180° yaw those absolute components are approximately 0 and 64, within the half-extents
-of 56 and 84. Substituting the geometric width and height axes in the Mudcrab replay removed
+of 56 and 84. The Skyrim decompilation project maps this RVA in the same executable build and lists its implementation as unreconstructed. [Pinned reconstruction index](https://github.com/Mudcrab-Team/skyrim_decomp/blob/3eba0ceef22e7d7d2bc57962fe28f4aad772b79d/reconstruction/INDEX.md#L23707)
+
+Substituting the geometric width and height axes in the Mudcrab replay removed
 `000C4A65` from the camera draw list even with its verified sphere.
 
 At the limiting side plane the Skyrim drawable’s sphere extends 67.97 Creation units into the

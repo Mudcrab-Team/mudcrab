@@ -4345,11 +4345,31 @@ mod tests {
              INSERT INTO room_model_bounds VALUES(0x98594,0,128,0,181.057663);",
         )
         .unwrap();
-        let eye = Vec3::new(-768.0, 748.0, -1536.0);
-        let camera = GlobalTransform::from(
-            Transform::from_translation(eye)
-                .with_rotation(crate::shots::shot_camera_rotation(180.0, 60.0)),
-        );
+        #[derive(serde::Deserialize)]
+        struct Capture {
+            position_creation: [f32; 3],
+            yaw_degrees: f32,
+            pitch_degrees_down: f32,
+            vertical_fov_degrees: f32,
+            dimensions_pixels: [u32; 2],
+            near_plane_creation_units: f32,
+        }
+        #[derive(serde::Deserialize)]
+        struct Receipt {
+            retail_capture: Capture,
+            live_shape: [f32; 4],
+        }
+        let receipt: Receipt = serde_json::from_str(include_str!(
+            "../../../docs/research/evidence/room-review-20261117/katariah-retail-wall-control.json"
+        ))
+        .unwrap();
+        let capture = receipt.retail_capture;
+        let eye = Vec3::from_array(shared::coordinates::creation_to_runtime_vector(
+            capture.position_creation,
+        ));
+        let camera = GlobalTransform::from(Transform::from_translation(eye).with_rotation(
+            crate::shots::shot_camera_rotation(capture.yaw_degrees, capture.pitch_degrees_down),
+        ));
         let scene = scene_with(GlobalTransform::IDENTITY, camera);
         let mut app = scene.app;
         let world = app.world_mut();
@@ -4360,13 +4380,14 @@ mod tests {
             load_room_graph(&db, 7).unwrap(),
         );
         let mut camera = world.entity_mut(scene.camera);
-        let aspect_ratio = 4.0 / 3.0;
+        let [width, height] = capture.dimensions_pixels;
+        let aspect_ratio = width as f32 / height as f32;
         camera.insert((
             RoomCullingNear::SKYRIM,
             Projection::Perspective(PerspectiveProjection {
-                fov: crate::shots::vertical_fov_degrees(75.0, aspect_ratio).to_radians(),
+                fov: capture.vertical_fov_degrees.to_radians(),
                 aspect_ratio,
-                near: 15.0,
+                near: capture.near_plane_creation_units,
                 ..default()
             }),
         ));
@@ -4397,14 +4418,23 @@ mod tests {
                 )),
             ));
         }
-        for with_sphere in [false, true] {
+        for (with_sphere, doorway_present) in [(false, true), (true, true), (true, false)] {
             let world = app.world_mut();
+            if !doorway_present {
+                db.execute("DELETE FROM room_portals WHERE ref_id=0x6EF37", [])
+                    .unwrap();
+                world.resource_mut::<RoomCullingState>().insert_graph(
+                    7,
+                    loaded,
+                    load_room_graph(&db, 7).unwrap(),
+                );
+            }
             for entity in drawables {
                 if with_sphere {
                     world.entity_mut(entity).insert(bevy::gltf::GltfMeshExtras {
-                        value:
-                            r#"{"mudcrabDrawableSphere":{"center":[0,0,128],"radius":181.057663}}"#
-                                .into(),
+                        value: serde_json::json!({
+                            "mudcrabDrawableSphere": {"center": [0, 0, 128], "radius": receipt.live_shape[3]}
+                        }).to_string(),
                     });
                 }
             }
@@ -4415,12 +4445,12 @@ mod tests {
             world.run_schedule(PostUpdate);
             assert_eq!(
                 mesh_list(&app, scene.camera),
-                if with_sphere {
+                if with_sphere && doorway_present {
                     vec![scene.near]
                 } else {
                     Vec::new()
                 },
-                "drawable sphere supplied: {with_sphere}",
+                "drawable sphere {with_sphere}, doorway present {doorway_present}",
             );
         }
     }
