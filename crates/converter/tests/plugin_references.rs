@@ -3409,13 +3409,14 @@ fn typed_placement_duplicates_claim_the_slot_only_after_admission() {
         .unwrap();
         let db = rusqlite::Connection::open(output).unwrap();
         let winner = placement_winner_cell(&db, 0x850);
-        let projected: Option<u32> = db
-            .query_row(
-                "SELECT max(cell_id) FROM room_portals WHERE ref_id=0x850",
-                [],
-                |row| row.get(0),
-            )
+        let projected = db
+            .prepare("SELECT cell_id, pair_index FROM room_portals WHERE ref_id=0x850 ORDER BY cell_id, pair_index")
+            .unwrap()
+            .query_map([], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
+        let expected_pairs = expected_cell.map(|cell| (cell, 0));
         let history = db
             .prepare(
                 "SELECT status FROM record_overrides WHERE form_id=0x850 AND plugin_id=1
@@ -3426,7 +3427,10 @@ fn typed_placement_duplicates_claim_the_slot_only_after_admission() {
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
-        if winner != expected_cell || projected != expected_cell || history != expected_history {
+        if winner != expected_cell
+            || projected != expected_pairs.as_slice()
+            || history != expected_history
+        {
             failures.push(format!(
                 "{name}: winner={winner:?}, portal={projected:?}, history={history:?}; expected {expected_cell:?}, {expected_history:?}"
             ));
@@ -3812,6 +3816,12 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
                 [bad_group.clone(), group(9, b, Vec::new())[..15].to_vec()].concat(),
             ),
             [false, false, true],
+            [false, false, true],
+        ),
+        (
+            "partial-group-tag",
+            placement_group(a, b"GRU".to_vec()),
+            [false; 3],
             [false, false, true],
         ),
         (
@@ -4415,6 +4425,16 @@ fn plugin_placement_import_keeps_neighbors_of_damaged_records_and_frames() {
             5,
         ),
         (
+            "partial-group-tag",
+            [
+                placement_group(a, b"G".to_vec()),
+                placement_group(a, good_neighbor()),
+            ]
+            .concat(),
+            [false; 3],
+            5,
+        ),
+        (
             "partial-child-group",
             [
                 placement_group(a, group(10, b, Vec::new())[..16].to_vec()),
@@ -4665,6 +4685,14 @@ fn plugin_placement_import_uses_good_declaration_of_damaged_new_cell() {
     let assets = converted_placement_fixture(dir.path());
     let cell = 0x0100_0900;
     let child = 0x0100_0800;
+    let missing_cell = cell + 1;
+    let truncated = |id| {
+        group(
+            0,
+            u32::from_le_bytes(*b"CELL"),
+            record(b"CELL", id, 0, vec![])[..16].to_vec(),
+        )
+    };
     let source = plugin(
         dir.path(),
         "Recovered.esp",
@@ -4672,6 +4700,12 @@ fn plugin_placement_import_uses_good_declaration_of_damaged_new_cell() {
         0,
         [
             record(b"CELL", cell, 0, vec![0]),
+            truncated(missing_cell),
+            placement_group(
+                missing_cell,
+                placement(child + 1, PLACEMENT_STAT, 0, 7.0, Vec::new()),
+            ),
+            truncated(cell),
             record(
                 b"CELL",
                 cell,
@@ -4690,6 +4724,8 @@ fn plugin_placement_import_uses_good_declaration_of_damaged_new_cell() {
     );
     let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
     assert_eq!(placement_winner_cell(&db, child), Some(cell));
+    assert_eq!(placement_winner_cell(&db, child + 1), None);
+    assert!(String::from_utf8_lossy(&result.stderr).contains("its new CELL is damaged"));
 }
 
 #[test]
@@ -7239,4 +7275,98 @@ fn placement_winner_checks_ungrouped_override_against_usable_predecessor() {
         &mut failures,
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn typed_placement_winner_checks_grouped_duplicates_before_ungrouped_override() {
+    use converter::config::RecordReader;
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    let base = plugin(
+        data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            record(b"CELL", 0x901, 0, sub(b"DATA", &[1, 0])),
+            record(b"CELL", 0x902, 0, sub(b"DATA", &[1, 0])),
+            record(b"STAT", 0x830, 0, sub(b"EDID", b"OriginalStatic\0")),
+            record(b"STAT", 0x831, 0, sub(b"EDID", b"ReplacementStatic\0")),
+            placement_group(0x900, placement(0x853, 0x830, 0, 1.0, Vec::new())),
+        ]
+        .concat(),
+    );
+    let grouped = plugin(
+        data,
+        "Grouped.esp",
+        &["Skyrim.esm"],
+        0,
+        [
+            placement_group(
+                0x900,
+                [
+                    placement(0x850, 0x832, 0, 1.0, Vec::new()),
+                    placement(0x851, 0x830, 0, 1.0, Vec::new()),
+                    placement(0x852, 0x832, 0, 1.0, Vec::new()),
+                    placement(0x853, 0x832, 0, 1.0, Vec::new()),
+                    placement(0x854, 0x832, 0, 1.0, Vec::new()),
+                ]
+                .concat(),
+            ),
+            record(b"REFR", 0x853, 0x20, Vec::new()),
+            placement(0x854, 0x830, 0, 2.0, Vec::new()),
+            placement_group(
+                0x901,
+                [
+                    placement(0x850, 0x830, 0, 2.0, Vec::new()),
+                    placement(0x851, 0x831, 0, 2.0, Vec::new()),
+                    placement(0x852, 0x833, 0, 2.0, Vec::new()),
+                    placement(0x853, 0x831, 0, 2.0, Vec::new()),
+                    placement(0x854, 0x830, 0, 3.0, Vec::new()),
+                ]
+                .concat(),
+            ),
+            placement_group(0x902, placement(0x850, 0x831, 0, 3.0, Vec::new())),
+        ]
+        .concat(),
+    );
+    let ungrouped = plugin(
+        data,
+        "Ungrouped.esp",
+        &["Skyrim.esm"],
+        0,
+        (0x850..=0x854)
+            .flat_map(|id| placement(id, 0x831, 0, 4.0, Vec::new()))
+            .collect(),
+    );
+
+    let output = data.join("world.db");
+    let records = EsmParser::convert_plugins_with_reader(
+        &[base, grouped, ungrouped],
+        &output,
+        RecordReader::Inhouse,
+        data,
+    )
+    .unwrap();
+    let db = rusqlite::Connection::open(output).unwrap();
+    for (id, cell, base) in [
+        (0x850, Some(0x901), 0x830),
+        (0x851, Some(0x900), 0x830),
+        (0x852, None, 0x831),
+        (0x853, None, 0x831),
+        (0x854, None, 0x831),
+    ] {
+        assert_eq!(
+            placement_winner_cell(&db, id),
+            Some(cell.unwrap_or(0)),
+            "{id:08X}"
+        );
+        assert_eq!(
+            SubrecordView::new(&records[&id].subrecords).get_form_id(b"NAME"),
+            Some(base),
+            "{id:08X}"
+        );
+    }
 }
