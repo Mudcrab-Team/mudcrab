@@ -228,13 +228,13 @@ fn refresh_resolves_case_aliases_and_rejects_colliding_winners() {
             )
             .unwrap()
     };
-    write_glb(&path, 10.0);
+    write_glb(&path, 10.0, None);
     refresh(root, &[KEY]);
     assert_eq!(projection(), Some(10.0));
 
     let collision = root.join(KEY);
     fs::create_dir_all(collision.parent().unwrap()).unwrap();
-    write_glb(&collision, 20.0);
+    write_glb(&collision, 20.0, None);
     let result = run_refresh(root, &[KEY]);
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("multiple installed GLBs"));
@@ -255,7 +255,7 @@ fn refresh_rejects_an_escaping_mixed_case_glb_path() {
     fs::create_dir_all(root.join("Meshes")).unwrap();
     let outside = directory.path().join("outside");
     fs::create_dir(&outside).unwrap();
-    write_glb(&outside.join("Wall.GLB"), 20.0);
+    write_glb(&outside.join("Wall.GLB"), 20.0, None);
     let connection = Connection::open(root.join("skyrim_world.db")).unwrap();
     create_tables(&connection).unwrap();
     connection
