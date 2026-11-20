@@ -93,6 +93,48 @@ pub(crate) fn after_plugin_decode_for_test() {
     }
 }
 
+// Integration tests compile this crate without `cfg(test)`, so the `cfg(test)` hooks above are
+// out of reach there. This debug-build-only seam gives them one deterministic source edit at the
+// start of decoded-plugin work, after the source package was authenticated and before any record
+// is read. Release builds have no hook and no callback.
+#[cfg(debug_assertions)]
+thread_local! {
+    /// A deterministic source edit after source authentication and before plugin decoding.
+    static AFTER_SOURCE_MATCHED: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+}
+
+/// Clears [`after_source_matched_for_test`] if the hook never ran (debug builds only).
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+#[must_use = "the hook is cleared when this guard drops"]
+pub struct AfterSourceMatchedGuard;
+
+#[cfg(debug_assertions)]
+impl Drop for AfterSourceMatchedGuard {
+    fn drop(&mut self) {
+        AFTER_SOURCE_MATCHED.with(|slot| *slot.borrow_mut() = None);
+    }
+}
+
+/// Run one debug-build edit between source authentication and plugin decoding.
+///
+/// Metadata rebuild tests use this to replace a plugin after `matched_plugins` verified generation
+/// A and before the reader decodes generation B, without depending on task scheduling.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn after_source_matched_for_test(hook: impl FnOnce() + 'static) -> AfterSourceMatchedGuard {
+    AFTER_SOURCE_MATCHED.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    AfterSourceMatchedGuard
+}
+
+#[cfg(debug_assertions)]
+fn after_source_matched() {
+    let hook = AFTER_SOURCE_MATCHED.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 /// Winning records with bounded data-loss warnings and faithful-outcome notices.
 #[derive(Debug)]
 pub(crate) struct RecordConversion {
@@ -270,6 +312,10 @@ impl EsmParser {
         schemas: Option<&crate::records::addons::RuntimeSchemas>,
         order: load_order::LoadOrder,
     ) -> Result<RecordConversion> {
+        // The admitted order authenticated the source package before this decode. Rebuild tests
+        // edit the source here to prove the decoded generation is re-authenticated.
+        #[cfg(debug_assertions)]
+        after_source_matched();
         match reader {
             crate::config::RecordReader::Legacy => Self::convert_legacy_plugins_with_order_report(
                 plugin_paths,

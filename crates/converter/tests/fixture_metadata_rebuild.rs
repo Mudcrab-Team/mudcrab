@@ -1833,6 +1833,7 @@ async fn metadata_rebuild_rejects_changed_plugins_and_assets_without_publication
     }
 }
 
+#[cfg(debug_assertions)] // The deterministic replacement hook is a debug-build seam.
 #[tokio::test]
 async fn metadata_rebuild_rejects_readable_replacement_after_source_matching() {
     let directory = tempfile::tempdir().unwrap();
@@ -1854,19 +1855,18 @@ async fn metadata_rebuild_rejects_readable_replacement_after_source_matching() {
     replacement.extend(0u16.to_le_bytes());
     replacement.extend(payload);
     let (tx, mut rx) = tokio::sync::mpsc::channel::<converter::ProgressEvent>(64);
-    let watcher = tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            if event.stage == converter::ProgressStage::Extracting {
-                fs::write(&plugin, &replacement).unwrap();
-            }
-        }
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    // Replace the plugin after `matched_plugins` authenticated it and before the reader decodes
+    // it. A debug-build hook keeps this deterministic instead of racing a progress event.
+    let _replace = converter::esm::after_source_matched_for_test(move || {
+        fs::write(&plugin, &replacement).unwrap();
     });
     let error =
         AssetPipeline::rebuild_metadata_async(common::cpu_lod_config(&data, &output), &source, tx)
             .await
             .unwrap_err()
             .to_string();
-    watcher.await.unwrap();
+    drain.await.unwrap();
     assert!(
         error.contains("decoded bytes differ from the authenticated source package"),
         "a readable replacement must be refused at decode authentication: {error}"
