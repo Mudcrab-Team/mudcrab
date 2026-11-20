@@ -9,7 +9,7 @@ use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, btree_map::Entry},
     fs::File,
     io::Read,
     path::{Path, PathBuf},
@@ -572,6 +572,9 @@ fn resolve_legacy_placements(
                 .then(|| legacy_placement_links(&winners[&id]))
         });
         for id in selected {
+            let Entry::Occupied(entry) = candidates.entry(id) else {
+                continue;
+            };
             let record = &winners[&id];
             let links = legacy_placement_links(record);
             if links
@@ -594,7 +597,7 @@ fn resolve_legacy_placements(
             };
             recovered = true;
             unresolved.insert(id);
-            let candidate = candidates.remove(&id).expect("checked placement candidate");
+            let candidate = entry.remove();
             let priority = record.load_order as usize;
             warnings.skipped_record(&order.names[priority], record, candidate.source_id, reason);
             damage.reject(
