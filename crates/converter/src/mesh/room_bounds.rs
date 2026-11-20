@@ -143,6 +143,26 @@ pub(super) fn encloses_scene(glb: &[u8], sphere: ModelSphere) -> bool {
     scene_fits(glb, sphere).unwrap_or(false)
 }
 
+pub(crate) fn encloses_native_scene(
+    glb: &[u8],
+    document: &serde_json::Value,
+    sphere: ModelSphere,
+) -> bool {
+    // Streaming instantiates scene 0. Prove enclosure only for embedded, rigid geometry.
+    document["scene"].as_u64() == Some(0)
+        && ["animations", "skins", "extensionsUsed"]
+            .into_iter()
+            .all(|key| {
+                document
+                    .get(key)
+                    .is_none_or(|value| value.as_array().is_some_and(Vec::is_empty))
+            })
+        && document["buffers"].as_array().is_some_and(
+            |buffers| matches!(buffers.as_slice(), [buffer] if buffer.get("uri").is_none()),
+        )
+        && encloses_scene(glb, sphere)
+}
+
 fn scene_fits(glb: &[u8], sphere: ModelSphere) -> Option<bool> {
     let chunks = gltf::binary::Glb::from_slice(glb).ok()?;
     let gltf = gltf::Gltf::from_slice(&chunks.json).ok()?;
@@ -184,9 +204,8 @@ fn scene_fits(glb: &[u8], sphere: ModelSphere) -> Option<bool> {
             }
             for position in primitive.reader(buffer).read_positions()? {
                 let point = world.transform_point3(Vec3::from_array(position).as_dvec3());
-                // Compare at the precision of the authored radius, including vertices on its surface.
-                let distance = point.distance(center) as f32;
-                if !distance.is_finite() || distance > sphere.radius {
+                let distance = point.distance(center);
+                if !distance.is_finite() || distance > f64::from(sphere.radius) {
                     return Some(false);
                 }
                 seen_position = true;
