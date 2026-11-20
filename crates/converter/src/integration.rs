@@ -13,7 +13,7 @@ use rusqlite::{Connection, OpenFlags, Transaction, params};
 use serde::{Deserialize, Serialize};
 use shared::{Bounds3, asset_lock::AssetLock};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -112,16 +112,13 @@ pub fn refresh_native_model_bounds(
         );
         models.entry(key).or_insert(None);
     }
+    let paths = installed_glb_paths(&root, models.keys().map(String::as_str))?;
     for (key, bounds) in &mut models {
-        let path = root.join(key);
-        let resolved = match path.canonicalize() {
-            Ok(resolved) => resolved,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.into()),
+        let Some(resolved) = paths.get(key) else {
+            continue;
         };
-        ensure!(resolved.starts_with(&root), "GLB escapes pack: {key}");
         ensure!(resolved.is_file(), "not a GLB file: {key}");
-        match read_glb_bounds(&resolved) {
+        match read_glb_bounds(resolved) {
             Ok(projected) => *bounds = Some(projected),
             Err(error) => {
                 report
@@ -426,28 +423,72 @@ fn converted_file_index(staging: &Path) -> Result<HashMap<String, PathBuf>> {
 
 fn asset_file_index(root: &Path, folders: &[&str]) -> Result<HashMap<String, PathBuf>> {
     let mut files = HashMap::new();
+    visit_asset_entries(root, folders, |key, entry| {
+        if entry.depth() > 1 && entry.file_type().is_file() {
+            files.insert(key, entry.into_path());
+        }
+        Ok(())
+    })?;
+    Ok(files)
+}
+
+fn visit_asset_entries(
+    root: &Path,
+    folders: &[&str],
+    mut visit: impl FnMut(String, walkdir::DirEntry) -> Result<()>,
+) -> Result<()> {
     // Only runtime asset folders participate in integration. Walking all of
     // staging also visited source files, ingestion blobs and unrelated metadata.
     // Match folder names without case sensitivity, as the indexed keys do.
-    for entry in fs::read_dir(root)? {
+    for entry in WalkDir::new(root)
+        .min_depth(1)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            entry.depth() != 1
+                || entry.file_name().to_str().is_some_and(|name| {
+                    folders
+                        .iter()
+                        .any(|folder| name.eq_ignore_ascii_case(folder))
+                })
+        })
+    {
         let entry = entry?;
-        if !entry.file_name().to_str().is_some_and(|name| {
-            folders
-                .iter()
-                .any(|folder| name.eq_ignore_ascii_case(folder))
-        }) || !entry.file_type()?.is_dir()
-        {
-            continue;
-        }
-        for entry in WalkDir::new(entry.path()).follow_links(false) {
-            let entry = entry?;
-            if entry.file_type().is_file() {
-                let relative = entry.path().strip_prefix(root)?;
-                files.insert(normalize(relative), entry.into_path());
-            }
-        }
+        let relative = entry.path().strip_prefix(root)?;
+        visit(normalize(relative), entry)?;
     }
-    Ok(files)
+    Ok(())
+}
+
+fn installed_glb_paths<'a>(
+    root: &Path,
+    keys: impl Iterator<Item = &'a str>,
+) -> Result<BTreeMap<String, PathBuf>> {
+    let keys: BTreeSet<_> = keys.collect();
+    let directories: BTreeSet<_> = keys
+        .iter()
+        .flat_map(|key| key.match_indices('/').map(|(end, _)| &key[..end]))
+        .collect();
+    let mut paths = BTreeMap::new();
+    visit_asset_entries(root, &["meshes"], |key, entry| {
+        let is_model = keys.contains(key.as_str());
+        if !is_model && (!directories.contains(key.as_str()) || entry.file_type().is_dir()) {
+            return Ok(());
+        }
+        let resolved = entry.path().canonicalize()?;
+        ensure!(resolved.starts_with(root), "GLB escapes pack: {key}");
+        ensure!(
+            is_model && entry.file_type().is_file(),
+            "not a regular GLB file or directory: {}",
+            entry.path().display()
+        );
+        ensure!(
+            paths.insert(key.clone(), resolved).is_none(),
+            "multiple installed GLBs match {key}"
+        );
+        Ok(())
+    })?;
+    Ok(paths)
 }
 
 fn write_model_bounds(tx: &Transaction<'_>, id: u32, bounds: Bounds3) -> rusqlite::Result<()> {
