@@ -4516,19 +4516,24 @@ fn malformed_placed_base_keeps_its_known_cell_open() {
     let data = dir.path().join("Data");
     let damaged = record(b"REFR", 0x810, 0, sub(b"NAME", &[1, 2, 3]));
     room_graph_review_fixture_with_fields(&data, None, None, vec![damaged]);
-    let db = rusqlite::Connection::open(export_room_review_fixture(
-        &data,
-        &dir.path().join("bundle"),
-        false,
-    ))
-    .unwrap();
-    assert!(!placement_certificate(&db, 0x900));
-    let admitted: bool = db
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM records WHERE form_id=0x810)",
-            [],
-            |row| row.get(0),
-        )
+    for (name, typed) in [("legacy", false), ("typed", true)] {
+        let db = rusqlite::Connection::open(export_room_review_fixture(
+            &data,
+            &dir.path().join(name),
+            typed,
+        ))
         .unwrap();
-    assert!(!admitted);
+        assert!(
+            !placement_certificate(&db, 0x900),
+            "{name} certified a damaged placement"
+        );
+        let admitted: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM records WHERE form_id=0x810)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!admitted, "{name} admitted a damaged placement");
+    }
 }
