@@ -365,8 +365,6 @@ fn remaps_cell_and_world_water_references_and_preserves_nulls() {
 #[test]
 fn rejects_malformed_land_and_alternate_texture_references() {
     for (kind, payload) in [
-        (b"LAND", sub(b"BTXT", &[0; 7])),
-        (b"LAND", sub(b"ATXT", &[0; 9])),
         (b"LAND", sub(b"VTEX", &[0; 3])),
         (b"GRAS", sub(b"MODS", &1u32.to_le_bytes())),
         (b"GRAS", sub(b"MODS", &[0; 5])),

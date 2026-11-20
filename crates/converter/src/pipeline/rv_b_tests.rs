@@ -146,6 +146,7 @@ fn asset_bytes(output: &Path) -> BTreeMap<String, Vec<u8>> {
     manifest(output)
         .entries
         .values()
+        .filter(|entry| entry.output != "grass_cache.rkyv")
         .map(|entry| {
             (
                 entry.output.clone(),
@@ -294,9 +295,9 @@ async fn reader_switch_reuses_archives_and_assets_but_rebuilds_database_and_cell
     assert!(fixture.output.join("cell_cache_preserved.rkyv").is_file());
 }
 
-/// Known full legacy proofs retain DDS/PEX, but cannot prove the named NIF output contract.
+/// Known full settings retain unchanged BC1/BC5 textures and PEX, but cannot prove mesh contracts.
 #[tokio::test]
-async fn known_legacy_full_hashes_reuse_dds_and_pex_but_regenerate_nif_without_kind_keys() {
+async fn known_legacy_full_hashes_retain_textures_and_pex_without_nif_kind_keys() {
     for contract in [
         "historical",
         "projection-1",
@@ -696,7 +697,7 @@ async fn historical_legacy_reader_identity_with_current_nif_proof_survives_repea
             .unwrap(),
             _ => unreachable!(),
         };
-        // Retain the fresh mesh contract proof; historical combined proofs still cover DDS/PEX.
+        // Retain the fresh mesh proof; historical combined settings cover DDS/PEX.
         original
             .asset_configuration_hashes
             .retain(|kind, _| kind == "nif");
@@ -776,15 +777,22 @@ async fn historical_legacy_reader_identity_with_current_nif_proof_survives_repea
             manifest(&second_output).configuration_hash,
             original.configuration_hash
         );
-        let report = publish(second_config).await;
+        let report = publish(second_config.clone()).await;
         assert_eq!(
             report.converted, 1,
-            "metadata retention did not copy the archive cache"
+            "metadata retention lacks only the archive cache; these DDS recipes are unchanged"
         );
         assert_eq!(
             report.cache_hits, 5,
-            "original current-producer asset settings remain proven"
+            "current NIF and known historical DDS/PEX proofs remain valid"
         );
+        assert_asset_bytes(&second_output, &expected);
+        let warm = publish(second_config).await;
+        assert_eq!(
+            warm.converted, 0,
+            "re-extracted archive must become reusable"
+        );
+        assert_eq!(warm.cache_hits, 6);
         assert_asset_bytes(&second_output, &expected);
     }
 }
@@ -874,7 +882,7 @@ async fn unknown_retained_script_producer_does_not_gain_current_metadata_eligibi
     let mut recorded = manifest(&fixture.output);
     let expected = asset_bytes(&fixture.output);
     let original_archives = recorded.archives.clone();
-    let expected_asset_conversions = recorded.entries.len() as u64;
+    let expected_asset_conversions = expected.len() as u64;
     let archive_files: u64 = recorded
         .archives
         .values()
@@ -933,7 +941,7 @@ async fn unproven_metadata_retention_rebuilds_assets_and_preserves_archive_proof
     publish(config.clone()).await;
     let recorded = manifest(&fixture.output);
     let expected = asset_bytes(&fixture.output);
-    let expected_asset_conversions = recorded.entries.len() as u64;
+    let expected_asset_conversions = expected.len() as u64;
     let archive_files: u64 = recorded
         .archives
         .values()
@@ -969,7 +977,7 @@ async fn unknown_output_producer_rebuilds_assets_without_reextracting_unchanged_
     publish(config.clone()).await;
     let mut recorded = manifest(&fixture.output);
     let expected = asset_bytes(&fixture.output);
-    let expected_asset_conversions = recorded.entries.len() as u64;
+    let expected_asset_conversions = expected.len() as u64;
     let archive_files: u64 = recorded
         .archives
         .values()

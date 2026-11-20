@@ -25,6 +25,7 @@ pub mod exporter;
 pub mod extractors;
 pub mod form_key_merge;
 pub mod form_keys;
+pub mod grass_cache;
 pub mod inhouse;
 mod inhouse_script_properties;
 mod inhouse_terrain_diagnostics;
@@ -1098,6 +1099,12 @@ fn remap_record_using_optional(
     }
     record.cell_form_id = record.cell_form_id.map(&remap_group).transpose()?;
     record.worldspace_form_id = record.worldspace_form_id.map(&remap_group).transpose()?;
+    if record.record_type == *b"LAND" {
+        let omitted = cell_cache::malformed_texture_items(&record.subrecords);
+        if omitted != 0 {
+            warnings.skipped_optional(plugin_name, format!("LAND source {source_id:08X} omitted {omitted} malformed texture items; usable layers retained"));
+        }
+    }
     let mut malformed_subrecords = Vec::new();
     for (index, (tag, data)) in record.subrecords.iter_mut().enumerate() {
         if record.record_type == *b"STAT" && tag.as_slice() == b"MODS" {
@@ -1145,7 +1152,11 @@ fn remap_record_using_optional(
             continue;
         }
         if record.record_type == *b"LAND" && matches!(tag.as_slice(), b"BTXT" | b"ATXT") {
-            color_eyre::eyre::ensure!(data.len() == 8, "invalid LAND texture reference length");
+            // Preserve malformed assignment bytes for bounded grass diagnostics.
+            // Only a complete identity can be remapped; terrain drops short items.
+            if data.len() < 4 {
+                continue;
+            }
             let value = u32::from_le_bytes(data[..4].try_into().unwrap());
             data[..4].copy_from_slice(&remap_link(value)?.to_le_bytes());
             continue;
