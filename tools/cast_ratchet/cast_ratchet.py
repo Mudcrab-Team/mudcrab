@@ -6,26 +6,41 @@ truncating cast of a form ID, an offset or a count silently changes data, so the
 count may not rise. `baseline.json` holds the committed count per crate and lint.
 A fall is reported with the new number, and `--update` lowers the baseline.
 
-The ratchet reads a Clippy JSON log instead of running Clippy itself, so the
-normal `-D warnings` gate stays unchanged:
+The ratchet reads the JSON log of the normal Clippy pass:
 
-  cargo clippy -p converter -p shared --lib --bins --message-format=json \\
+  cargo clippy --workspace --all-targets --all-features --message-format=json \\
     -- -W clippy::cast_possible_truncation -W clippy::cast_sign_loss \\
        -W clippy::cast_possible_wrap -W clippy::float_cmp > clippy.json
   python3 tools/cast_ratchet/cast_ratchet.py --clippy-json clippy.json
 
-The count covers the `lib` and `bin` targets only. Run the command above: it
-builds no test harnesses, examples or benches. A log from `--all-targets` also
-holds those builds, and Cargo's message records do not identify them, so their
-hits would count. Only messages whose crate is in `CRATES` are counted; path
-dependencies such as `mo2` and the vendored parsers report their own hits, which
-are outside this ratchet.
+The pass runs no `-D warnings`. The four lints are allow-by-default, and `-W`
+raises them to warnings. `-D warnings` cannot stay: it denies the four, and `-W`
+cannot lower a deny from a lint group, while `--force-warn` overrides
+`#[allow(..., reason = "...")]` and would hide the approved sites. Clippy exits
+0 when the tree has only warnings, so this script is the gate for every
+diagnostic outside the four lints: it prints each one and fails. A hard error
+still makes Clippy exit nonzero, and the workflow keeps that status.
+
+The count covers the `lib` and `bin` targets of the ratcheted crates.
+`--all-targets` also builds the test harness of every lib and bin, and a message
+record has no `profile` field, so unit-test casts count too. Integration tests,
+benches and examples are excluded by `target.kind`. Only messages whose crate is
+in `CRATES` are counted; path dependencies such as `mo2` and the vendored
+parsers report their own hits, which are outside this ratchet.
+
+The baseline comes from the Linux CI run. A cast under `#[cfg(windows)]` or
+another platform `cfg` is not in the Linux log. No ratcheted cast is under a
+platform `cfg` today. A cast added there will not raise the Linux count, and a
+`--update` on another platform would commit a different baseline; keep the
+baseline measured on Linux only.
 
 An exception needs a reason at the site, so the reason stays with the cast:
 
   #[allow(clippy::cast_possible_truncation, reason = "a form ID is below 2^24")]
 
 `reason` needs Rust 1.81 or later; `rust-toolchain.toml` pins a newer release.
+No lint enforces the reason (`clippy::allow_attributes_without_reason` is off),
+so an allow without one is a review finding, not a CI failure.
 
 Usage:
   python3 tools/cast_ratchet/cast_ratchet.py --lint-flags          # flags for the Clippy run
@@ -35,7 +50,8 @@ Usage:
   python3 tools/cast_ratchet/cast_ratchet.py --clippy-json log --strict
 
 Exit codes: 0 = at or below the baseline, 1 = a count rose (or a fall with
-`--strict`), 2 = usage, log or baseline error.
+`--strict`, or a diagnostic outside the four lints), 2 = usage, log or baseline
+error.
 """
 
 import argparse
@@ -43,7 +59,8 @@ import json
 import sys
 from pathlib import Path
 
-# Keep this list in step with the Clippy command: `--lint-flags` prints it.
+# Keep this list in step with the Clippy command: `--lint-flags` prints it, and
+# the clippy workflow fails when the printed list differs from its array.
 LINTS = (
     "clippy::cast_possible_truncation",
     "clippy::cast_sign_loss",
@@ -52,6 +69,8 @@ LINTS = (
 )
 CRATES = ("converter", "shared")
 TARGET_KINDS = {"lib", "bin"}
+# A log that lacks one of these undercounts the crate, so the run is an error.
+REQUIRED_KINDS = {"converter": ("lib", "bin"), "shared": ("lib",)}
 DEFAULT_BASELINE = Path("tools/cast_ratchet/baseline.json")
 COUNTING_LEVELS = {"warning", "error"}
 
@@ -75,27 +94,60 @@ def crate_of(record):
     return None
 
 
+def call_site_of(span):
+    """The macro call site of a span, or an empty dict.
+
+    Cargo puts the expansion under `expansion.span`; some Cargo versions also
+    expose `expansion.call_site`.
+    """
+    expansion = span.get("expansion") or {}
+    return expansion.get("call_site") or expansion.get("span") or {}
+
+
 def span_key(message):
-    """A stable key for the primary span of a diagnostic, so duplicates collapse."""
+    """A stable key for the primary spans of a diagnostic, so duplicates collapse.
+
+    A local `macro_rules!` reports every use at the definition span. The call site
+    keeps those uses apart while the lib and lib-test reports of one cast still
+    share a key.
+    """
     spans = message.get("spans") or []
     primary = [span for span in spans if span.get("is_primary")] or spans
-    return tuple(
-        (span.get("file_name"), span.get("line_start"), span.get("column_start"))
-        for span in primary
-    )
+    key = []
+    for span in primary:
+        call_site = call_site_of(span)
+        key.append(
+            (
+                span.get("file_name"),
+                span.get("line_start"),
+                span.get("column_start"),
+                call_site.get("file_name"),
+                call_site.get("line_start"),
+                call_site.get("column_start"),
+            )
+        )
+    return tuple(key)
 
 
 def read_log(path, expected=CRATES):
     """Count each lint per crate in a Cargo Clippy JSON log.
 
-    Raises LogError when the log is unreadable, malformed, incomplete or has no
-    record for a crate in `expected`. A diagnostic that the count cannot
-    attribute is an error, not a skipped line.
+    Returns the counts, a list of problems, and a list of diagnostics outside the
+    four lints. A problem means the log is incomplete: no successful
+    `build-finished` record, or a required crate target missing. The caller
+    prints the table, then fails. A diagnostic outside the four lints is also a
+    failure, because the Clippy pass no longer denies warnings in the compiler.
+    A malformed record or an unattributable diagnostic raises LogError, because
+    the counts are then not trustworthy at all.
     """
     counts = {crate: {lint: 0 for lint in LINTS} for crate in CRATES}
     artifacts = set()
     seen = set()
+    reported = set()
+    ungated_seen = set()
+    ungated = []
     finished = False
+    problems = []
     try:
         handle = open(path, encoding="utf-8")
     except OSError as error:
@@ -117,25 +169,44 @@ def read_log(path, expected=CRATES):
             if reason == "compiler-artifact":
                 crate = crate_of(record)
                 if crate:
-                    artifacts.add(crate)
+                    kinds = (record.get("target") or {}).get("kind") or []
+                    artifacts.update((crate, kind) for kind in kinds)
                 continue
             if reason != "compiler-message":
                 continue
             message = record.get("message") or {}
-            if message.get("level") == "error" and message.get("rendered"):
-                print(message["rendered"], file=sys.stderr)
             code = (message.get("code") or {}).get("code")
-            if code not in LINTS:
-                continue
+            level = message.get("level")
             crate = crate_of(record)
+            if level not in COUNTING_LEVELS:
+                continue
+            key = (crate, code, message.get("message"), level, span_key(message))
+            if level == "error" and message.get("rendered") and key not in reported:
+                reported.add(key)
+                print(message["rendered"], file=sys.stderr)
+            if code not in LINTS:
+                # Clippy exits 0 when it reports only warnings, so this gate is the
+                # only check on every other lint. Print each one once.
+                if key not in ungated_seen:
+                    ungated_seen.add(key)
+                    if level != "error" and message.get("rendered"):
+                        print(message["rendered"], file=sys.stderr)
+                    ungated.append(
+                        f"{crate or 'unknown crate'}: {code or 'no lint code'}: "
+                        f"{message.get('message')}"
+                    )
+                continue
             if crate is None:
                 raise LogError(f"{path}:{number}: {code} has no crate manifest path")
             if crate not in counts:
                 continue
-            target = record.get("target") or {}
-            if not (set(target.get("kind") or []) & TARGET_KINDS):
-                continue
-            if message.get("level") not in COUNTING_LEVELS:
+            kinds = set((record.get("target") or {}).get("kind") or [])
+            if not kinds:
+                raise LogError(
+                    f"{path}:{number}: {code} in {crate} has no target kind, so the "
+                    "count cannot attribute it; check the Cargo JSON format"
+                )
+            if not (kinds & TARGET_KINDS):
                 continue
             key = (crate, code, message.get("message"), span_key(message))
             if key in seen:
@@ -143,17 +214,22 @@ def read_log(path, expected=CRATES):
             seen.add(key)
             counts[crate][code] += 1
     if not finished:
-        raise LogError(
+        problems.append(
             f"{path}: no successful build-finished record; the Clippy run did not finish"
         )
-    missing = [crate for crate in expected if crate not in artifacts]
+    missing = [
+        f"{crate} {kind}"
+        for crate in expected
+        for kind in REQUIRED_KINDS[crate]
+        if (crate, kind) not in artifacts
+    ]
     if missing:
-        raise LogError(
+        problems.append(
             f"{path}: no compiler-artifact record for "
             + ", ".join(missing)
-            + "; check that the Clippy command selects every ratcheted crate"
+            + "; check that the Clippy command selects every ratcheted target"
         )
-    return counts
+    return counts, problems, ungated
 
 
 def read_baseline(path):
@@ -202,6 +278,17 @@ def write_baseline(path, counts):
         handle.write(text)
 
 
+def print_ungated(ungated):
+    """Report the diagnostics outside the four lints that make the pass fail."""
+    print(
+        f"cast ratchet: {len(ungated)} diagnostic(s) outside the four ratchet lints. "
+        "The Clippy pass does not deny warnings, so this gate does; fix them.",
+        file=sys.stderr,
+    )
+    for label in ungated:
+        print(f"cast ratchet:   {label}", file=sys.stderr)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--clippy-json", type=Path, help="Cargo Clippy JSON log")
@@ -233,12 +320,28 @@ def main(argv=None):
     expected = args.crate or list(CRATES)
 
     try:
-        measured = read_log(args.clippy_json, expected)
+        measured, problems, ungated = read_log(args.clippy_json, expected)
     except LogError as error:
         print(f"cast ratchet: {error}", file=sys.stderr)
         return 2
 
     if args.update:
+        if problems:
+            for problem in problems:
+                print(f"cast ratchet: {problem}", file=sys.stderr)
+            print(
+                "cast ratchet: baseline not written from an incomplete log",
+                file=sys.stderr,
+            )
+            return 2
+        if ungated:
+            print_ungated(ungated)
+            print(
+                "cast ratchet: baseline not written while diagnostics outside the four "
+                "lints remain",
+                file=sys.stderr,
+            )
+            return 1
         try:
             write_baseline(baseline_path, measured)
         except OSError as error:
@@ -254,6 +357,8 @@ def main(argv=None):
         return 2
 
     raised, lowered = [], []
+    if problems:
+        print("cast ratchet: the log is incomplete; the counts below may be low", file=sys.stderr)
     print(f"{'crate':10} {'lint':34} {'count':>6} / {'baseline':>8}  state")
     for crate in expected:
         for lint in LINTS:
@@ -269,6 +374,12 @@ def main(argv=None):
                 state = "ok"
             print(f"{crate:10} {lint:34} {count:6} / {limit:8}  {state}")
 
+    sys.stdout.flush()
+    if problems:
+        for problem in problems:
+            print(f"cast ratchet: {problem}", file=sys.stderr)
+        return 2
+
     for crate, lint, count, limit in raised:
         print(
             f"cast ratchet: {crate} {lint} rose from {limit} to {count}. Replace the lossy "
@@ -282,7 +393,6 @@ def main(argv=None):
             "and an explanation in the pull request.",
             file=sys.stderr,
         )
-        return 1
 
     for crate, lint, count, limit in lowered:
         print(
@@ -291,7 +401,11 @@ def main(argv=None):
             f"it writes {count}.",
             file=sys.stderr,
         )
-    if lowered and args.strict:
+
+    if ungated:
+        print_ungated(ungated)
+
+    if raised or ungated or (lowered and args.strict):
         return 1
     return 0
 

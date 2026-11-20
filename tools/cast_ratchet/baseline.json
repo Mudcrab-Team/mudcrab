@@ -1,16 +1,16 @@
 {
   "counts": {
     "converter": {
-      "clippy::cast_possible_truncation": 140,
-      "clippy::cast_possible_wrap": 45,
-      "clippy::cast_sign_loss": 32,
-      "clippy::float_cmp": 5
+      "clippy::cast_possible_truncation": 457,
+      "clippy::cast_possible_wrap": 53,
+      "clippy::cast_sign_loss": 49,
+      "clippy::float_cmp": 147
     },
     "shared": {
-      "clippy::cast_possible_truncation": 11,
+      "clippy::cast_possible_truncation": 14,
       "clippy::cast_possible_wrap": 1,
       "clippy::cast_sign_loss": 1,
-      "clippy::float_cmp": 0
+      "clippy::float_cmp": 15
     }
   }
 }

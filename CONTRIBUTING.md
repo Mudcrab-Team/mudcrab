@@ -136,10 +136,15 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    CI also ratchets four Clippy lints that find lossy numeric casts and exact float comparisons
    (`cast_possible_truncation`, `cast_sign_loss`, `cast_possible_wrap`, `float_cmp`) in the
    `converter` and `shared` crates. The count per crate and lint may not rise above
-   `tools/cast_ratchet/baseline.json`. A fall prints the new number; run
-   `python3 tools/cast_ratchet/cast_ratchet.py --clippy-json <log> --update` to lower the baseline.
-   An exception needs a reason at the cast site, for example
+   `tools/cast_ratchet/baseline.json`. The ratchet reads the JSON log of the normal Clippy pass, so
+   it adds no second build. The count includes the lib and bin test builds, because `--all-targets`
+   compiles them; integration tests, benches and examples are excluded. A fall prints the new
+   number; run `python3 tools/cast_ratchet/cast_ratchet.py --clippy-json <log> --update` to lower
+   the baseline. The baseline is measured on Linux CI. No ratcheted cast is under a platform `cfg`
+   today; a cast in `#[cfg(windows)]` code does not appear in the Linux count. An exception needs a
+   reason at the cast site, for example
    `#[allow(clippy::cast_possible_truncation, reason = "the form ID is below 2^24")]`.
+   No lint checks the reason, so an allow without `reason =` is a review finding.
    `python3 tools/cast_ratchet/cast_ratchet.py --lint-flags` prints the Clippy flags for a local run.
 5. **Submit a Pull Request:**
    - Target the `main` branch and fill in the PR template; [`docs/contributing/writing-prs.md`](docs/contributing/writing-prs.md) shows how to write it so it is quick to review.
