@@ -1105,7 +1105,7 @@ fn drop_stale_graphs(
 pub fn cull_room_views(
     mut state: ResMut<RoomCullingState>,
     settings: Option<Res<crate::settings::RenderingSettings>>,
-    roots: Query<&GlobalTransform, With<StreamedCellRoot>>,
+    roots: Query<(&CellRef, &GlobalTransform), With<StreamedCellRoot>>,
     mut views: Query<
         (
             &GlobalTransform,
@@ -1160,28 +1160,37 @@ pub fn cull_room_views(
         )
     };
     // A named attachment is initial-only. Observe movement even if all meshes are off screen.
-    for (cell, loaded) in &state.graphs {
-        let Some(authored) = &loaded.graph.authored else {
-            continue;
-        };
-        let Ok(root) = roots.get(loaded.root) else {
-            continue;
-        };
-        let local_from_world = root.affine().inverse();
+    if state
+        .graphs
+        .values()
+        .any(|loaded| loaded.graph.authored.is_some())
+    {
         for (reference, id) in &changed_references {
-            if authored.has_named_target(id.0)
-                && parents
-                    .iter_ancestors(reference)
-                    .any(|parent| parent == loaded.root)
-                && let Some(transform) = placement(reference, loaded.root, local_from_world)
-            {
-                assignments.owners_at(
-                    (*cell, loaded.root, reference),
-                    authored,
-                    &loaded.graph,
-                    id.0,
-                    transform,
-                );
+            for parent in parents.iter_ancestors(reference) {
+                let Ok((CellRef(cell), root)) = roots.get(parent) else {
+                    continue;
+                };
+                let Some(loaded) = state
+                    .graphs
+                    .get(cell)
+                    .filter(|loaded| loaded.root == parent)
+                else {
+                    continue;
+                };
+                let Some(authored) = &loaded.graph.authored else {
+                    continue;
+                };
+                if authored.has_named_target(id.0)
+                    && let Some(transform) = placement(reference, parent, root.affine().inverse())
+                {
+                    assignments.owners_at(
+                        (*cell, parent, reference),
+                        authored,
+                        &loaded.graph,
+                        id.0,
+                        transform,
+                    );
+                }
             }
         }
     }
@@ -1206,7 +1215,7 @@ pub fn cull_room_views(
             projection.get_clip_from_view() * camera_transform.to_matrix().inverse();
         for cell in &cells {
             let loaded = &state.graphs[cell];
-            let Ok(root) = roots.get(loaded.root) else {
+            let Ok((_, root)) = roots.get(loaded.root) else {
                 continue;
             };
             let world_from_local = root.to_matrix();
