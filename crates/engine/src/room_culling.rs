@@ -867,7 +867,9 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
                         .copied()
                         .map(PortalSide::Room)
                         .unwrap_or(PortalSide::Unknown),
-                    None if row.get::<_, bool>(index + 2)? => PortalSide::Unbounded,
+                    None if row.get_ref(index + 2)? == rusqlite::types::ValueRef::Integer(1) => {
+                        PortalSide::Unbounded
+                    }
                     None => PortalSide::Unknown,
                 })
             };
@@ -2407,9 +2409,21 @@ mod tests {
         );
         assert_eq!(graph.membership[&100], Membership::default());
         assert!(!graph.membership.contains_key(&101));
+        assert!(reached_rooms(&graph, Vec3::ZERO, clip_from_local()).is_some());
+        for flag in [
+            rusqlite::types::Value::Integer(2),
+            "invalid".to_owned().into(),
+        ] {
+            connection
+                .execute("UPDATE room_portals SET unbounded_b=?1", [flag])
+                .unwrap();
+            let graph = load_room_graph(&connection, 7).unwrap();
+            assert_eq!(graph.portals[0].rooms[1], PortalSide::Unknown);
+            assert!(reached_rooms(&graph, Vec3::ZERO, clip_from_local()).is_none());
+        }
         // An inconsistent foreign-room ID must not acquire outside meaning from a flag.
         connection
-            .execute("UPDATE room_portals SET room_b=999", [])
+            .execute("UPDATE room_portals SET room_b=999,unbounded_b=1", [])
             .unwrap();
         let graph = load_room_graph(&connection, 7).unwrap();
         assert_eq!(graph.portals[0].rooms[1], PortalSide::Unknown);
