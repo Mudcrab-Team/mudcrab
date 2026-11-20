@@ -1,6 +1,6 @@
 # World-data inventory
 
-Schema status: **emitted**. Original field-trace baseline: `disposable-fixture`.
+Schema status: **emitted**. Checked at: `unknown`.
 
 Prepare dependencies are not executed rows, mapped rows, semantic use, population, or retail parity.
 

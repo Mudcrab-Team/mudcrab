@@ -1,0 +1,41 @@
+[package]
+name = "mudcrab-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+converter = { path = "../crates/converter" }
+
+[[bin]]
+name = "esm_subrecords"
+path = "fuzz_targets/esm_subrecords.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "record_inflate"
+path = "fuzz_targets/record_inflate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "record_scan"
+path = "fuzz_targets/record_scan.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1
+
+# A separate workspace keeps nightly cargo-fuzz builds out of the pinned stable
+# workspace. The package is deliberately absent from the root members list.
+[workspace]
+resolver = "2"
