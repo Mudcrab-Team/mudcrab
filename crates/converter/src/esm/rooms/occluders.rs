@@ -149,6 +149,7 @@ pub(super) fn export(
 enum MarkerSource<'a> {
     Canonical,
     Authored,
+    DamagedPlugin,
     Typed(&'a DecodedRecord, &'a LoadOrder),
 }
 
@@ -205,7 +206,8 @@ fn project(
             || authored(*tag).next().is_some()
             || source.is_some_and(|(record, _)| record.rejected_fields.contains(tag))
     };
-    let complete = source.is_none_or(|(record, _)| record.payload_complete);
+    let complete = !matches!(provenance, MarkerSource::DamagedPlugin)
+        && source.is_none_or(|(record, _)| record.payload_complete);
     if !complete {
         result.incomplete_cells.insert(cell);
     }

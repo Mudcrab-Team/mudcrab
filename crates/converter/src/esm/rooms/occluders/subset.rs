@@ -181,7 +181,15 @@ pub fn apply_native_occluders(conn: &Connection, changes: &[NativeOccluderChange
             )));
         }
     }
-    update_authored_subset(&tx, &master)?;
+    let omissions = update_authored_subset(&tx, &master, &HashSet::new())?;
+    for (category, details) in omissions.categories {
+        if let Some(sample) = details.samples.first() {
+            return Err(invalid_input(format!(
+                "occluder {:08X}: {category}: {}",
+                sample.form_id, sample.reason
+            )));
+        }
+    }
     tx.commit()
 }
 
@@ -272,18 +280,22 @@ pub(in crate::esm) fn update_subset(
 pub(in crate::esm) fn update_authored_subset(
     tx: &Transaction<'_>,
     master: &HashMap<u32, RawRecord>,
-) -> Result<()> {
+    damaged_occluders: &HashSet<u32>,
+) -> Result<ProjectionOmissions> {
     let mut omissions = ProjectionOmissions::default();
-    project_subset(tx, master, |_| MarkerSource::Authored, &mut omissions)?;
-    for (category, details) in omissions.categories {
-        if let Some(sample) = details.samples.first() {
-            return Err(invalid_input(format!(
-                "occluder {:08X}: {category}: {}",
-                sample.form_id, sample.reason
-            )));
-        }
-    }
-    Ok(())
+    project_subset(
+        tx,
+        master,
+        |id| {
+            if damaged_occluders.contains(&id) {
+                MarkerSource::DamagedPlugin
+            } else {
+                MarkerSource::Authored
+            }
+        },
+        &mut omissions,
+    )?;
+    Ok(omissions)
 }
 
 fn project_subset<'a>(
@@ -374,17 +386,18 @@ fn project_subset<'a>(
     }
 
     markers.sort_unstable_by_key(|(record, ..)| record.form_id);
-    let mut result = Exported::default();
     for (record, marker, interior, source) in &markers {
         let id = record.form_id;
         tx.prepare_cached("DELETE FROM room_occluder_links WHERE ref_id=?1")?
             .execute([id])?;
-        tx.prepare_cached("DELETE FROM room_occluders WHERE ref_id=?1")?
-            .execute([id])?;
+        let previous_cell: Option<u32> = tx
+            .prepare_cached("DELETE FROM room_occluders WHERE ref_id=?1 RETURNING cell_id")?
+            .query_row([id], |row| row.get(0))
+            .optional()?;
         tx.prepare_cached("DELETE FROM room_reference_rules WHERE reference_id=?1")?
             .execute([id])?;
         if *marker {
-            let invalid = result.invalid;
+            let mut result = Exported::default();
             project(
                 tx,
                 record,
@@ -406,8 +419,12 @@ fn project_subset<'a>(
                 && SubrecordView::new(&record.subrecords)
                     .find(b"XORD")
                     .is_some();
-            if result.invalid != invalid || unverified_links {
+            if result.invalid != 0 || unverified_links {
                 result.incomplete_cells.extend(record.cell_form_id);
+            }
+            if !result.incomplete_cells.is_empty() {
+                affected.extend(previous_cell);
+                affected.extend(result.incomplete_cells);
             }
         }
     }
@@ -416,7 +433,7 @@ fn project_subset<'a>(
             affected.insert(cell?);
         }
     }
-    for cell in affected.into_iter().chain(result.incomplete_cells) {
+    for cell in affected {
         tx.prepare_cached(
             "INSERT INTO room_graph_cells(cell_id,complete)
              SELECT id,0 FROM cells WHERE id=?1

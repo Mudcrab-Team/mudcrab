@@ -220,7 +220,20 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         }
         records.insert(edit.record.form_id, edit.record);
     }
-    update_authored_subset(&tx, &records)?;
+    let omissions = update_authored_subset(&tx, &records, &import.damaged_occluders)?;
+    for (category, details) in omissions.categories {
+        for sample in details.samples {
+            let message = format!(
+                "occluder {:08X}: {category}: {}",
+                sample.form_id, sample.reason
+            );
+            ensure!(is_plugin, "{message}");
+            eprintln!(
+                "warning: {name}: {message} ({} omissions in category)",
+                details.count
+            );
+        }
+    }
     let certified_cells = refresh_placement_cells(
         &tx,
         &cells,
@@ -247,6 +260,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
 struct Import {
     cells: Vec<CellCreation>,
     edits: Vec<Edit>,
+    damaged_occluders: HashSet<u32>,
 }
 
 struct CellCreation {
@@ -373,10 +387,9 @@ fn plugin_edits(
         )?;
         if occluder {
             let (warnings, notices) = marker_warnings.report();
-            ensure!(
-                warnings.is_empty() && notices.is_empty(),
-                "occluder {source_id:08X} has unresolved or malformed source fields"
-            );
+            if !warnings.is_empty() || !notices.is_empty() {
+                import.damaged_occluders.insert(remapped);
+            }
         }
         import.edits.push(Edit {
             source_id,
@@ -717,6 +730,7 @@ struct NativePlacements {
 impl NativePlacements {
     fn into_import(self, geometric_ownership: bool) -> Result<Import> {
         Ok(Import {
+            damaged_occluders: HashSet::new(),
             cells: self
                 .cells
                 .into_iter()
