@@ -2,7 +2,7 @@ use crate::esm::{
     extractors::extract_subrecords,
     mmap_reader::EsmReader,
     records::RawRecord,
-    types::{GroupHeader, RecordHeader, WorldReference, group_child_cell},
+    types::{CELL_CHILD_GROUP_KINDS, GroupHeader, RecordHeader, WorldReference},
 };
 use crate::records::{DiscardedFrameScope, TruncatedPlacement};
 use color_eyre::{
@@ -239,7 +239,10 @@ pub fn parse_group(
 pub(super) enum ParsedRecord {
     Usable(RawRecord),
     /// A known header with no usable payload.
-    DamagedRecord(RawRecord),
+    DamagedRecord {
+        record: RawRecord,
+        truncated: bool,
+    },
     DiscardedFrame(DiscardedFrameScope),
     TruncatedPlacement(TruncatedPlacement),
 }
@@ -271,10 +274,8 @@ fn parse_group_inner(
                 "trailing {} bytes in bounded record frame",
                 curr.len(),
             ));
-            if let Some(child) = group_child_cell(curr) {
-                visit(ParsedRecord::DiscardedFrame(DiscardedFrameScope::Cell(
-                    child,
-                )));
+            if let Some(scope) = DiscardedFrameScope::from_group_prefix(curr) {
+                visit(ParsedRecord::DiscardedFrame(scope));
             } else if let Some(placement) = TruncatedPlacement::from_prefix(curr) {
                 visit(ParsedRecord::TruncatedPlacement(placement));
             }
@@ -290,7 +291,9 @@ fn parse_group_inner(
                 curr = &[];
                 continue;
             };
-            let cell_child = group_child_cell(curr);
+            let cell_child = CELL_CHILD_GROUP_KINDS
+                .contains(&group.group_type)
+                .then_some(group.label);
             let content_size = (group.data_size as usize).checked_sub(24);
             let Some((group_content, siblings)) =
                 content_size.and_then(|size| rest.split_at_checked(size))
@@ -302,10 +305,8 @@ fn parse_group_inner(
                     ),
                     None => format!("invalid GRUP size {}", group.data_size),
                 });
-                if let Some(child) = group_child_cell(rest) {
-                    visit(ParsedRecord::DiscardedFrame(DiscardedFrameScope::Cell(
-                        child,
-                    )));
+                if let Some(scope) = DiscardedFrameScope::from_group_prefix(rest) {
+                    visit(ParsedRecord::DiscardedFrame(scope));
                 } else if let Some(placement) = TruncatedPlacement::from_prefix(rest) {
                     visit(ParsedRecord::TruncatedPlacement(placement));
                 }
@@ -347,6 +348,7 @@ fn parse_group_inner(
                 load_order: 0,
             };
             let record_len = header.data_size as usize;
+            let truncated = record_len > rest.len();
             let decoded = if let Some((payload, next)) = rest.split_at_checked(record_len) {
                 curr = next;
                 decode_record_subrecords(&header, payload)
@@ -374,7 +376,7 @@ fn parse_group_inner(
                     if record.is_deleted() {
                         visit(ParsedRecord::Usable(record));
                     } else {
-                        visit(ParsedRecord::DamagedRecord(record));
+                        visit(ParsedRecord::DamagedRecord { record, truncated });
                     }
                 }
             }

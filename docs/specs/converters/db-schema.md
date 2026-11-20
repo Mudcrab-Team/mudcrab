@@ -715,6 +715,9 @@ Rules:
   targets resolve to NULL. Valid-length `XLKR` and `XAPR` rows are kept in source order with
   contiguous positions among accepted-length entries, even when a target resolves to NULL. This
   makes legacy projection match the in-house reader's invalid-link clearing behavior.
+- When a subset removes a placement, incoming `XAPR` and `XLKR` slots that referenced it become
+  NULL in the same transaction. Restoring the target resolves the affected slots from the
+  effective source payload, including sources omitted from the subset.
 - A field whose length the in-house schema rejects is skipped for both readers: `XLKR` must be 4
   or 8 bytes, `XAPR` 8, `XAPD` 1, `XOWN`/`XRNK`/`XLCN`/`XLRL`/`XEZN`/`XATR` 4, `FNAM` 1 and `TNAM`
   2.
@@ -1357,8 +1360,9 @@ Columns and rules:
   independent occluder. An unreadable occurrence sets the source cell's `complete` flag to
   false. In-house exports also clear that flag for unresolved FormIDs. A full in-house export
   publishes `occlusion_version = 1` in `room_graph_stats`. It sets `occlusion_links_verified`
-  to zero if a marker payload is truncated or an `XORD` has the wrong length, since either
-  can hide a link to another cell. Otherwise it sets `occlusion_links_verified` to one.
+  to zero when a truncated marker payload or a malformed `XORD` can hide a cross-cell link.
+  Full in-house exports and plugin placement imports also clear the flag when a discarded
+  override of a known occluder remains unresolved or the discarded frame has unknown scope.
   These markers let the loader keep unrelated occluders in a complete cell that contains an
   all-null `XORD`. Subset exports invalidate cells at the other end of cross-cell or unverified
   links. A verified same-cell edge can be replaced or removed while the engine reloads its
@@ -1473,9 +1477,10 @@ could refer to a placement from another cell. All surviving interiors then use t
 fallback. A partial placement header that reaches the FormID marks the enclosing cell and the
 surviving predecessor’s cell incomplete. An unresolvable FormID leaves all interiors incomplete.
 A recognized placement tag with a missing or partial FormID also leaves all interiors incomplete,
-because its predecessor could be in any cell. A partial cell-child group header marks both its
-enclosing cell and the cell named by its label once the group kind is readable. Other short
-headers affect only the enclosing cell when it is known.
+because its predecessor could be in any cell. When the available group kind bytes are consistent
+with a cell-child group, the enclosing cell and the cell named by the label are incomplete.
+A discarded `GRUP` prefix with an incomplete label leaves all interiors incomplete. A kind
+that excludes cell-child groups affects only the enclosing cell when it is known.
 Parsing resumes at the next trusted frame boundary.
 
 The tables are derived data: a full load-order export clears and rebuilds them from the winning

@@ -552,6 +552,25 @@ impl From<Option<u32>> for DiscardedFrameScope {
 }
 
 impl DiscardedFrameScope {
+    /// A partial kind can still identify a possible child cell. Without the whole
+    /// label we cannot bound the damage to a particular cell.
+    pub(crate) fn from_group_prefix(bytes: &[u8]) -> Option<Self> {
+        if !bytes.starts_with(b"GRUP") {
+            return None;
+        }
+        let Some((label, tail)) = bytes
+            .get(8..)
+            .and_then(|rest| rest.split_first_chunk::<4>())
+        else {
+            return Some(Self::Unknown);
+        };
+        let kind_prefix = &tail[..tail.len().min(4)];
+        crate::esm::types::CELL_CHILD_GROUP_KINDS
+            .iter()
+            .any(|kind| kind.to_le_bytes().starts_with(kind_prefix))
+            .then(|| Self::Cell(u32::from_le_bytes(*label)))
+    }
+
     /// A complete unread header can override a placement previously stored in any cell.
     pub(crate) fn unread_tail(cell: Option<u32>, remaining: usize) -> Self {
         if remaining >= 24 {
@@ -582,6 +601,9 @@ pub struct ReadResult {
     pub history: Vec<history::HistoryEntry>,
     /// Runtime cell IDs potentially affected by discarded source frames.
     pub(crate) damaged_cell_groups: HashSet<u32>,
+    pub(crate) unknown_discarded_scope: bool,
+    /// Discarded placements later than the retained winner for their FormID.
+    pub(crate) discarded_placement_overrides: HashSet<u32>,
     /// Each winning `DOBJ` with its `DNAM` pairs merged key by key over every accepted
     /// earlier version, as the legacy reader does. A winning record alone would lose
     /// the keys that only an earlier plugin sets. The winners stay unmerged.
@@ -715,7 +737,6 @@ fn read_plugins_with_prepared(
         "plugin/order length mismatch"
     );
     let mut result = ReadResult::default();
-    let mut unknown_discarded_scope = false;
     let mut truncated_placements = HashMap::new();
     let mut recovery = decoder::RecoveryCandidates::default();
     let mut gmst_ids: HashMap<String, u32> = HashMap::new();
@@ -1005,11 +1026,32 @@ fn read_plugins_with_prepared(
             }
         };
         let damage = scanner::scan_plugin(path, &mut diagnostics, observe, receive)?;
-        for (offset, placement) in damage.truncated_placements {
-            if let Some(id) = placement.runtime_id(index, order) {
-                truncated_placements.insert(id, (index as u32, offset));
+        let history = history.into_inner();
+        let overruns = history
+            .iter()
+            .filter(|entry| {
+                !entry.frame_complete
+                    && entry.flags & 0x20 == 0
+                    && crate::esm::is_placed_record_type(&entry.record_type)
+            })
+            .map(|entry| {
+                (
+                    entry.source_record_offset,
+                    entry.form_id.filter(|&id| id != 0),
+                )
+            });
+        let partial_headers = damage
+            .truncated_placements
+            .into_iter()
+            .map(|(offset, placement)| (offset, placement.runtime_id(index, order)));
+        for (offset, id) in overruns.chain(partial_headers) {
+            if let Some(id) = id {
+                let latest = truncated_placements
+                    .entry(id)
+                    .or_insert((index as u32, offset));
+                *latest = (*latest).max((index as u32, offset));
             } else {
-                unknown_discarded_scope = true;
+                result.unknown_discarded_scope = true;
             }
         }
         for scope in damage.frames {
@@ -1017,10 +1059,10 @@ fn read_plugins_with_prepared(
                 DiscardedFrameScope::Cell(cell) => {
                     result.damaged_cell_groups.insert(cell);
                 }
-                DiscardedFrameScope::Unknown => unknown_discarded_scope = true,
+                DiscardedFrameScope::Unknown => result.unknown_discarded_scope = true,
             }
         }
-        result.history.extend(history.into_inner());
+        result.history.extend(history);
         result.diagnostics.insert(name.clone(), diagnostics);
     }
     scan_stage.finish(result.records.len());
@@ -1043,9 +1085,10 @@ fn read_plugins_with_prepared(
             && (winner.load_order, winner.source_record_offset) < truncated_at
         {
             result.damaged_cell_groups.extend(winner.cell_form_id);
+            result.discarded_placement_overrides.insert(id);
         }
     }
-    if unknown_discarded_scope {
+    if result.unknown_discarded_scope {
         result.damaged_cell_groups.extend(
             result
                 .records

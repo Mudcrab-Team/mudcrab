@@ -796,7 +796,7 @@ pub(super) fn export_room_graph_with_sources(
 ) -> Result<RoomGraphReport> {
     clear(tx)?;
     let occluder_sources = match &sources {
-        Some(RoomLinkSources::Typed(decoded)) => Some(&decoded.records).zip(order),
+        Some(RoomLinkSources::Typed(decoded)) => Some(*decoded).zip(order),
         _ => None,
     };
     let mut occluders = occluders::export(tx, master, interior_cells, occluder_sources, omissions)?;
