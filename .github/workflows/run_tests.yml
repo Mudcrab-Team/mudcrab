@@ -124,6 +124,7 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
           PUSH_BEFORE: ${{ github.event.before }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           if [ -n "${BASE_REF:-}" ]; then
@@ -132,9 +133,13 @@ jobs:
           elif [[ "${PUSH_BEFORE:-}" =~ ^[0-9a-f]{40}$ && "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ]] &&
                git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
             base="$(git merge-base "$PUSH_BEFORE" HEAD)"
+          elif [ "${GITHUB_EVENT_NAME:-}" = "push" ]; then
+            echo "::error::No base commit is available for the retail claim check on this push." >&2
+            exit 1
           else
-            echo "::warning::No base commit is available; the retail claim check did not run."
-            exit 0
+            # A manual dispatch has no before-commit. Check the branch against main.
+            git fetch --no-tags --depth=350 origin main
+            base="$(git merge-base FETCH_HEAD HEAD)"
           fi
           python3 -B scripts/check_retail_claims.py --base "$base"
 

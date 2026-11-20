@@ -1,10 +1,12 @@
 """Regressions for the retail-claim source gate; builds throwaway repositories."""
 
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 
 
@@ -16,6 +18,8 @@ CHECK = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = CHECK
 SPEC.loader.exec_module(CHECK)
 
+WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/run_tests.yml"
+
 
 def run_git(repo, *args):
     return subprocess.run(
@@ -24,6 +28,15 @@ def run_git(repo, *args):
         capture_output=True,
         check=True,
     )
+
+
+def retail_claim_step_script():
+    """Return the shell block of the retail-claim workflow step."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    start = workflow.index("run: |", workflow.index("name: Check retail claims cite a source"))
+    start = workflow.index("\n", start) + 1
+    end = workflow.index("\n      - name:", start)
+    return textwrap.dedent(workflow[start:end])
 
 
 class Repository:
@@ -44,6 +57,9 @@ class Repository:
     def commit(self, message):
         run_git(self.root, "add", "-A")
         run_git(self.root, "commit", "-q", "-m", message)
+
+    def mark_base(self):
+        self.base = run_git(self.root, "rev-parse", "HEAD").stdout.strip()
 
     def run(self, *extra):
         return subprocess.run(
@@ -98,12 +114,74 @@ class ClaimTests(unittest.TestCase):
     def test_old_unchanged_claim_is_ignored(self):
         self.repo.write("docs/specs/example.md", "# Example\n\nRetail does X.\n")
         self.repo.commit("old bare claim")
-        self.repo.base = run_git(self.repo.root, "rev-parse", "HEAD").stdout.strip()
+        self.repo.mark_base()
         self.repo.write("docs/specs/example.md", "# Example\n\nRetail does X.\n\nMore text.\n")
         self.repo.commit("unrelated doc change")
         code, out, err = self.check(self.repo.run())
         self.assertEqual(code, 0, err)
         self.assertIn("0 claim line(s)", out)
+
+    def test_pure_rename_checks_no_line(self):
+        self.repo.write(
+            "crates/example/src/lib.rs",
+            "// Retail does X.\nfn main() {}\n",
+        )
+        self.repo.commit("claim in the old path")
+        self.repo.mark_base()
+        run_git(self.repo.root, "mv", "crates/example/src/lib.rs",
+                "crates/example/src/lib2.rs")
+        self.repo.commit("pure rename")
+        code, out, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+        self.assertIn("0 claim line(s)", out)
+
+    def test_pure_copy_checks_no_line(self):
+        self.repo.write(
+            "crates/example/src/lib.rs",
+            "// Retail does X.\nfn main() {}\n",
+        )
+        self.repo.commit("claim in the source path")
+        self.repo.mark_base()
+        self.repo.write(
+            "crates/example/src/lib_copy.rs",
+            "// Retail does X.\nfn main() {}\n",
+        )
+        self.repo.commit("pure copy")
+        code, out, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+        self.assertIn("0 claim line(s)", out)
+
+    def test_moved_claim_is_not_a_new_claim(self):
+        self.repo.write(
+            "crates/example/src/lib.rs",
+            "fn a() {}\n// Retail does X.\nfn b() {}\nfn c() {}\nfn d() {}\n",
+        )
+        self.repo.commit("claim in the first position")
+        self.repo.mark_base()
+        self.repo.write(
+            "crates/example/src/lib.rs",
+            "fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}\n// Retail does X.\n",
+        )
+        self.repo.commit("move the claim to the last position")
+        code, out, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+        self.assertIn("0 claim line(s)", out)
+
+    def test_moved_claim_with_a_second_copy_is_checked(self):
+        self.repo.write(
+            "crates/example/src/lib.rs",
+            "fn a() {}\n// Retail does X.\nfn b() {}\n",
+        )
+        self.repo.commit("one claim")
+        self.repo.mark_base()
+        self.repo.write(
+            "crates/example/src/lib.rs",
+            "fn a() {}\nfn b() {}\n// Retail does X.\n// Retail does X.\n",
+        )
+        self.repo.commit("move and duplicate the claim")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 1)
+        self.assertIn("crates/example/src/lib.rs:4", err)
 
     def test_source_in_same_comment_block_passes(self):
         self.repo.write(
@@ -123,6 +201,31 @@ class ClaimTests(unittest.TestCase):
         code, _, err = self.check(self.repo.run())
         self.assertEqual(code, 1)
         self.assertIn("crates/engine/src/lib.rs:1", err)
+
+    def test_module_doc_with_registry_id_labels_the_file(self):
+        self.repo.write(
+            "crates/engine/src/lib.rs",
+            "//! The engine module (RF-ENGINE-001).\n\n"
+            "fn main() {}\n\n"
+            "/// Retail profiles hold zero speeds.\n"
+            "fn load() {}\n",
+        )
+        self.repo.commit("file labelled by its module doc")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+
+    def test_module_doc_without_registry_id_does_not_label_the_file(self):
+        self.repo.write(
+            "crates/engine/src/lib.rs",
+            "//! The engine module.\n\n"
+            "fn main() {}\n\n"
+            "/// Retail profiles hold zero speeds.\n"
+            "fn load() {}\n",
+        )
+        self.repo.commit("module doc without a source")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 1)
+        self.assertIn("crates/engine/src/lib.rs:5", err)
 
     def test_trailing_comment_is_checked(self):
         self.repo.write(
@@ -207,7 +310,7 @@ class ClaimTests(unittest.TestCase):
     def test_deleted_file_hunk_is_ignored(self):
         self.repo.write("docs/specs/example.md", "# Example\n\nRetail does X.\n")
         self.repo.commit("file to delete")
-        self.repo.base = run_git(self.repo.root, "rev-parse", "HEAD").stdout.strip()
+        self.repo.mark_base()
         (self.repo.root / "docs/specs/example.md").unlink()
         self.repo.commit("delete file")
         code, out, err = self.check(self.repo.run())
@@ -224,12 +327,70 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("0 claim line(s)", out)
 
+    def test_source_in_the_same_section_passes(self):
+        self.repo.write(
+            "docs/specs/example.md",
+            "# Example\n\n## Evidence\n\n"
+            "- [DoubleYou's investigation](https://example.invalid/defaults)\n\n"
+            "In retail, the setting defaults to 3.0.\n",
+        )
+        self.repo.commit("claim and source in one section")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+
+    def test_source_in_a_different_section_fails(self):
+        self.repo.write(
+            "docs/specs/example.md",
+            "# Example\n\n## Evidence\n\n"
+            "[notes](notes.md)\n\n"
+            "## Claim\n\n"
+            "In retail, the setting defaults to 3.0.\n",
+        )
+        self.repo.commit("source in another section")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 1)
+        self.assertIn("docs/specs/example.md:9", err)
+
+    def test_repository_markdown_link_outside_research_passes(self):
+        self.repo.write(
+            "docs/specs/example.md",
+            "# Example\n\nIn retail, the setting defaults to 3.0. "
+            "See [the record map](../player-movement-record-map.md).\n",
+        )
+        self.repo.commit("claim with a repository Markdown link")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+
+    def test_external_url_passes(self):
+        self.repo.write(
+            "docs/specs/example.md",
+            "# Example\n\nIn retail, the setting defaults to 3.0. "
+            "See https://example.invalid/defaults.\n",
+        )
+        self.repo.commit("claim with an external URL")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+
+    def test_sha256_in_the_same_section_passes(self):
+        digest = "a" * 64
+        self.repo.write(
+            "docs/specs/example.md",
+            "# Example\n\n## Claim\n\n"
+            f"Evidence: static analysis of game.exe (SHA-256 `{digest}`).\n\n"
+            "In retail, the setting defaults to 3.0.\n",
+        )
+        self.repo.commit("claim with a binary hash")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+
     def test_unreasoned_not_retail_note_fails(self):
         self.repo.write("docs/specs/example.md", "# Example\n\nThis is not retail behaviour.\n")
         self.repo.commit("bare non-retail note")
         code, _, err = self.check(self.repo.run())
         self.assertEqual(code, 1)
         self.assertIn("gives no reason", err)
+        self.assertIn("also needs a reason", err)
+        self.assertIn("because", err)
 
     def test_reasoned_not_retail_note_passes(self):
         self.repo.write(
@@ -237,6 +398,15 @@ class ClaimTests(unittest.TestCase):
             "# Example\n\nThis is Mudcrab-only because retail has no such setting.\n",
         )
         self.repo.commit("reasoned non-retail note")
+        code, _, err = self.check(self.repo.run())
+        self.assertEqual(code, 0, err)
+
+    def test_reasoned_not_vanilla_note_passes(self):
+        self.repo.write(
+            "docs/specs/example.md",
+            "# Example\n\nThis is not vanilla because Mudcrab needs deterministic replay.\n",
+        )
+        self.repo.commit("reasoned not-vanilla note")
         code, _, err = self.check(self.repo.run())
         self.assertEqual(code, 0, err)
 
@@ -296,6 +466,46 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("retail claim check", result.stderr)
 
 
+class ClaimRuleTests(unittest.TestCase):
+    """The audit lines from PR #841 review F3."""
+
+    ADJECTIVE_LINES = [
+        "The opt-in test `default_movement_types_of_the_real_masters_survive_overrides` "
+        "reads the retail masters.",
+        "The retail reference scale from the stored percent: [`stored_reference_scale`] "
+        "then [`reference_scale`].",
+        "The retail constant, written as its bits, apart from `PERCENT_TO_SCALE`.",
+        "Retail value tables: outputs that the retail game gives for chosen synthetic inputs.",
+        "A row here shows that the code equals the retail game for one input, bit for bit.",
+        "Each row names its registry ID. It names no address and no function from the "
+        "retail game.",
+    ]
+
+    CLAIM_LINES = [
+        "Retail movement types hold zero speeds where a creature cannot move.",
+        "Retail movement types can hold zero speeds (a creature that cannot strafe has "
+        "zero lateral speeds).",
+        "Any MOVT exports with its own editor ID, including retail zero speeds (no strafing).",
+        "Retail Update.esm holds hundreds of all-zero padding pairs.",
+        "Retail profiles hold zero speeds in some directions.",
+        "Retail heights are near 1.0.",
+        "For retail data both slots resolve to `NPC_Default_MT`.",
+        "In retail, `fLandTextureTilingMult:Landscape` defaults to 3.0.",
+        "The unset race links resolve through the default objects, like the player race "
+        "in Skyrim.esm.",
+    ]
+
+    def test_retail_as_an_adjective_or_label_is_not_a_claim(self):
+        for line in self.ADJECTIVE_LINES:
+            with self.subTest(line=line):
+                self.assertFalse(CHECK.makes_claim(line), line)
+
+    def test_retail_as_the_subject_is_a_claim(self):
+        for line in self.CLAIM_LINES:
+            with self.subTest(line=line):
+                self.assertTrue(CHECK.makes_claim(line), line)
+
+
 class BlockTests(unittest.TestCase):
     def test_markdown_heading_joins_its_first_paragraph(self):
         blocks, mapping = CHECK.build_markdown_blocks(
@@ -305,25 +515,53 @@ class BlockTests(unittest.TestCase):
         self.assertNotIn(2, mapping)
         self.assertIn("RF-EX-001", blocks[mapping[3]])
 
-    def test_markdown_list_items_are_separate_blocks(self):
+    def test_markdown_section_ends_at_the_next_same_level_heading(self):
         _, mapping = CHECK.build_markdown_blocks(
-            ["- Retail does X.", "- Source: RF-EX-001."]
+            ["## Evidence", "", "- Source: RF-EX-001.", "", "## Claim", "", "Retail does X."]
         )
-        self.assertNotEqual(mapping[1], mapping[2])
+        self.assertEqual(mapping[1], mapping[3])
+        self.assertNotEqual(mapping[3], mapping[7])
 
-    def test_markdown_table_rows_are_separate_blocks(self):
+    def test_markdown_subsection_is_its_own_block(self):
         _, mapping = CHECK.build_markdown_blocks(
-            ["| Claim | Source |", "| --- | --- |", "| Retail does X. | RF-EX-001 |"]
+            ["## Parent", "", "Text.", "", "### Child", "", "Retail does X."]
         )
-        self.assertNotEqual(mapping[1], mapping[2])
-        self.assertNotEqual(mapping[1], mapping[3])
-        self.assertNotEqual(mapping[2], mapping[3])
+        self.assertNotEqual(mapping[3], mapping[7])
 
-    def test_markdown_blockquote_blank_line_is_a_boundary(self):
+    def test_markdown_list_item_shares_its_section(self):
         _, mapping = CHECK.build_markdown_blocks(
-            ["> Retail does X.", ">", "> RF-EX-001."]
+            ["## Evidence", "- Retail does X.", "- Source: RF-EX-001."]
         )
-        self.assertNotEqual(mapping[1], mapping[3])
+        self.assertEqual(mapping[2], mapping[3])
+
+    def test_markdown_table_row_shares_its_section(self):
+        _, mapping = CHECK.build_markdown_blocks(
+            ["## Table", "", "| Claim | Source |", "| --- | --- |", "| Retail does X. | RF-EX-001 |"]
+        )
+        self.assertEqual(mapping[3], mapping[5])
+
+
+class WorkflowTests(unittest.TestCase):
+    def test_push_without_a_base_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            run_git(repo, "init", "-q")
+            result = subprocess.run(
+                ["bash", "-c", retail_claim_step_script()],
+                cwd=repo,
+                text=True,
+                capture_output=True,
+                check=False,
+                env=dict(
+                    os.environ,
+                    GITHUB_EVENT_NAME="push",
+                    GITHUB_BASE_REF="",
+                    BASE_REF="",
+                    PUSH_BEFORE="",
+                ),
+            )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("No base commit", result.stderr)
 
 
 if __name__ == "__main__":

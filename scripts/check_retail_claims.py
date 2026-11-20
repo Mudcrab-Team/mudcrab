@@ -1,25 +1,35 @@
 #!/usr/bin/env python3
 """Require a source on added comments and docs that state retail behaviour.
 
-The check reads ``git diff -U0 <base>...<head>`` and inspects only
-added lines.  A line in a Rust or WGSL ``//`` comment, or in Markdown under
-``docs/`` or ``crates/``, that makes a retail claim must carry one of these in
-the same comment block or Markdown paragraph:
+The check reads ``git diff -U0 <base>...<head>`` and inspects only added lines.
+Rename and copy detection is on, and an added line whose exact text was also
+deleted is a move, not a new claim.  A line in a Rust or WGSL ``//`` comment, or
+in Markdown under ``docs/`` or ``crates/``, that makes a retail claim must carry
+one of these in the same comment block or Markdown section:
 
 * a retail-facts registry ID such as ``RF-TEX-004``;
-* a link into ``docs/research/``;
+* a link to any repository Markdown file, such as ``[notes](notes.md)``;
+* an external ``http(s)`` URL;
+* a SHA-256 hash of the analysed file;
 * the word ``unverified``.
 
-A line that says ``not retail``, ``differs from retail`` or ``Mudcrab-only``
-is labelled only when it also states a reason.  Hyphenated compounds such as
-``retail-parity`` are not claims.  The accepted reason markers are listed in
-``REASON_RE`` and in ``docs/contributing/writing-prs.md``.
+A Markdown section runs from a heading to the next heading of the same or a
+higher level.  A ``//!`` module doc that cites an RF ID labels every comment in
+that Rust file.  "Retail" used as an adjective or a label is not a claim: a
+claim needs a behaviour verb, or the locative "in retail".
+
+A line that says ``not retail``, ``not vanilla``, ``differs from retail`` or
+``Mudcrab-only`` is labelled only when it also states a reason.  Hyphenated
+compounds such as ``retail-parity`` are not claims.  The accepted reason
+markers are listed in ``REASON_RE`` and in
+``docs/contributing/writing-prs.md``.
 
 Exit 0 means no unlabelled claims, 1 means findings, and 2 means the diff or
 one of its files could not be read.  Standard library only.
 """
 
 import argparse
+from collections import Counter
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -29,7 +39,22 @@ import sys
 
 
 CLAIM_RE = re.compile(
-    r"\bretail\b(?!-)"
+    # "In retail, X defaults to 3.0" locates the claim in the retail game.
+    r"\bin\s+retail\b"
+    # "including retail zero speeds" states that retail data holds them.
+    r"|\b(?:including|includes)\s+retail\b"
+    # "Retail profiles hold zero speeds": retail is the subject of a claim
+    # verb.  A determiner before "retail" marks an adjective or a label
+    # ("the retail constant"), which is not a claim.
+    r"|(?<![\w-])(?<!the )(?<!a )(?<!an )(?<!this )(?<!that )(?<!its )"
+    r"(?<!our )(?<!their )(?<!every )(?<!no )retail\b(?!-)"
+    r"(?:\s+[A-Za-z0-9_.`'&/()×%-]+){0,4}\s+"
+    r"(?:is|are|was|were|has|have|had|does|do|did|holds?|contains?|uses?|"
+    r"can|cannot|will|would|should|must|gives?|returns?|stores?|reads?|"
+    r"writes?|names?|keeps?|applies|comes?|defaults?|adds?|multiplies|"
+    r"computes?|counts?|sets?|takes?|makes?|runs?|loads?|treats?|clamps?|"
+    r"produces?|reports?|shows?|states?|records?|means?|requires?|allows?|"
+    r"resolves?|exports?|skips?|drops?|merges?)\b"
     r"|\bvanilla\b"
     r"|\bthe game does\b"
     r"|\bskyrim does\b"
@@ -44,6 +69,12 @@ RESEARCH_RE = re.compile(
     re.IGNORECASE,
 )
 UNVERIFIED_RE = re.compile(r"\bunverified\b", re.IGNORECASE)
+SHA256_RE = re.compile(r"\b[0-9a-f]{64}\b", re.IGNORECASE)
+MARKDOWN_LINK_RE = re.compile(r"\[[^\]\n]+\]\(\s*<?([^)\s>]+)")
+REFERENCE_LINK_RE = re.compile(
+    r"^\s{0,3}\[[^\]\n]+\]:\s*<?([^\s>]+)", re.MULTILINE
+)
+URL_RE = re.compile(r"https?://[^\s)\]>]+", re.IGNORECASE)
 NON_RETAIL_RE = re.compile(
     r"\bnot\s+(?:a\s+)?retail\b"
     r"|\bnon[-\s]?retail\b"
@@ -51,6 +82,10 @@ NON_RETAIL_RE = re.compile(
     r"|\bdiffers?\s+from\s+retail\b"
     r"|\bdifferent\s+from\s+retail\b"
     r"|\bunlike\s+retail\b"
+    r"|\bnot\s+(?:a\s+)?vanilla\b"
+    r"|\bnon[-\s]?vanilla\b"
+    r"|\bnot\s+in\s+skyrim\b"
+    r"|\bdiffers?\s+from\s+vanilla\b"
     r"|\bmudcrab[-\s]only\b"
     r"|\bno\s+retail\s+(?:equivalent|counterpart|behaviou?r)\b",
     re.IGNORECASE,
@@ -63,9 +98,7 @@ REASON_RE = re.compile(
     re.IGNORECASE,
 )
 HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
-HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s")
-TABLE_RE = re.compile(r"^\s*\|")
-LIST_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s")
 FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 BLOCKQUOTE_RE = re.compile(r"^\s*(?:>\s*)+")
 RAW_STRING_RE = re.compile(r'r(#*)"')
@@ -111,9 +144,10 @@ def language_for(path):
     return None
 
 
-def parse_added_lines(diff_text):
-    """Map each changed path to its added line numbers and text."""
+def parse_diff(diff_text):
+    """Return added lines per path and the texts of the deleted lines."""
     files = {}
+    removed = Counter()
     path = None
     new_line = None
     in_hunk = False
@@ -140,12 +174,12 @@ def parse_added_lines(diff_text):
                 files[path][new_line] = raw[1:]
                 new_line += 1
             elif raw.startswith("-"):
-                continue
+                removed[raw[1:]] += 1
             elif raw.startswith("\\"):
                 continue
             else:
                 new_line += 1
-    return files
+    return files, removed
 
 
 def read_file(repo, head, path):
@@ -259,16 +293,16 @@ def build_comment_blocks(lines, texts=None):
 
 
 def build_markdown_blocks(lines):
-    """Return block text and a line-to-block map for Markdown prose.
+    """Return block text and a line-to-section map for Markdown prose.
 
-    Fenced code is ignored.  A heading joins the paragraph below it so a
-    source in the first paragraph also labels the heading.  Table rows and
-    list items are separate blocks.
+    A block is a section: its heading to the next heading of the same or a
+    higher level.  A source anywhere in the section labels a claim in it.
+    Fenced code is ignored.  Content before the first heading is its own
+    block.
     """
     blocks = []
     line_block = {}
-    current = None
-    heading_pending = False
+    open_sections = []
     fence = None
     for number, raw in enumerate(lines, 1):
         line = raw.rstrip("\r")
@@ -280,49 +314,72 @@ def build_markdown_blocks(lines):
         match = FENCE_RE.match(line)
         if match is not None:
             fence = (match.group(1)[0], len(match.group(1)))
-            current = None
-            heading_pending = False
             continue
         content = BLOCKQUOTE_RE.sub("", line).strip()
         if not content:
-            if not heading_pending:
-                current = None
             continue
-        stripped = content
-        if HEADING_RE.match(stripped):
-            blocks.append(stripped)
-            current = len(blocks) - 1
-            line_block[number] = current
-            heading_pending = True
+        heading = HEADING_RE.match(content)
+        if heading is not None:
+            level = len(heading.group(1))
+            while open_sections and open_sections[-1][0] >= level:
+                open_sections.pop()
+            blocks.append(content)
+            open_sections.append((level, len(blocks) - 1))
+            line_block[number] = len(blocks) - 1
             continue
-        if TABLE_RE.match(stripped) or LIST_RE.match(stripped):
-            blocks.append(stripped)
-            current = len(blocks) - 1
-            line_block[number] = current
-            heading_pending = False
-            continue
-        if current is None:
-            blocks.append(stripped)
-            current = len(blocks) - 1
-        else:
-            blocks[current] += "\n" + stripped
-        line_block[number] = current
-        heading_pending = False
+        if not open_sections:
+            blocks.append("")
+            open_sections.append((1, len(blocks) - 1))
+        index = open_sections[-1][1]
+        blocks[index] += "\n" + content
+        line_block[number] = index
     return blocks, line_block
+
+
+def has_markdown_source(text):
+    """Return True when the text links to a Markdown file or an external URL."""
+    if URL_RE.search(text):
+        return True
+    for pattern in (MARKDOWN_LINK_RE, REFERENCE_LINK_RE):
+        for match in pattern.finditer(text):
+            target = match.group(1).split("#", 1)[0].split("?", 1)[0]
+            if target.lower().endswith(".md"):
+                return True
+    return False
 
 
 def is_labelled(block):
     """Return True when a block names a source or a reasoned non-retail note."""
-    if RF_RE.search(block) or RESEARCH_RE.search(block) or UNVERIFIED_RE.search(block):
+    if (RF_RE.search(block) or RESEARCH_RE.search(block)
+            or UNVERIFIED_RE.search(block) or SHA256_RE.search(block)):
+        return True
+    if has_markdown_source(block):
         return True
     return bool(NON_RETAIL_RE.search(block) and REASON_RE.search(block))
 
 
+def makes_claim(text):
+    """Return True when the text states retail behaviour or a non-retail note."""
+    return bool(CLAIM_RE.search(text) or NON_RETAIL_RE.search(text))
+
+
+def module_doc_cites_registry(lines, texts=None):
+    """Return True when a ``//!`` module doc in the file cites an RF ID."""
+    if texts is None:
+        texts = scan_comment_texts(lines)
+    return any(
+        text is not None and text.startswith("!") and RF_RE.search(text)
+        for text in texts
+    )
+
+
 def check(repo, base, head):
     """Return (checked lines, claim lines, findings) for one revision range."""
-    diff = git(repo, "-c", "diff.renames=false", "-c", "color.ui=false",
-               "diff", "-U0", f"{base}...{head}")
-    changed = parse_added_lines(diff)
+    # A second -C is the expensive copy search: it finds a copy whose source
+    # file did not change in the same diff.
+    diff = git(repo, "-c", "color.ui=false", "diff", "-U0", "-M", "-C", "-C",
+               f"{base}...{head}")
+    changed, removed = parse_diff(diff)
     checked = 0
     claims = 0
     findings = []
@@ -331,12 +388,15 @@ def check(repo, base, head):
         if language is None or not added:
             continue
         lines = read_file(repo, head, path)
+        file_labelled = False
         if language == "markdown":
             blocks, line_block = build_markdown_blocks(lines)
             texts = None
         else:
             texts = scan_comment_texts(lines)
             blocks, line_block = build_comment_blocks(lines, texts)
+            file_labelled = (language == "rust"
+                             and module_doc_cites_registry(lines, texts))
         for number in sorted(added):
             if number < 1 or number > len(lines):
                 raise CheckError(f"{path}:{number}: line is outside the checked revision")
@@ -346,12 +406,14 @@ def check(repo, base, head):
             claim = lines[number - 1].strip() if texts is None else texts[number - 1]
             if claim is None:
                 continue
+            if removed[text] > 0:
+                removed[text] -= 1
+                continue
             checked += 1
-            if not (CLAIM_RE.search(claim) or NON_RETAIL_RE.search(claim)):
+            if not makes_claim(claim):
                 continue
             claims += 1
-            block = blocks[line_block[number]]
-            if is_labelled(block):
+            if file_labelled or is_labelled(blocks[line_block[number]]):
                 continue
             findings.append(Finding(
                 path=path,
@@ -396,10 +458,18 @@ def main(argv=None):
                   file=sys.stderr)
         print(
             f"\n{len(findings)} retail claim line(s) need a source. Add an RF ID, "
-            "a docs/research/ link, or the word \"unverified\" on the same line, "
-            "in the same comment block, or in the same paragraph.",
+            "a link to a repository Markdown file, an external source URL, or the "
+            "word \"unverified\" on the same line, in the same comment block, or "
+            "in the same section.",
             file=sys.stderr,
         )
+        if any(finding.unreasoned_note for finding in findings):
+            print(
+                "A non-retail or Mudcrab-only note also needs a reason: "
+                "\"because\", \"since\", \"so that\", \"due to\", \"to keep\", "
+                "or what Mudcrab does instead.",
+                file=sys.stderr,
+            )
         return 1
     print(f"Retail claims: {claims} claim line(s) checked in {checked} added "
           "comment/doc line(s), all labelled.")
