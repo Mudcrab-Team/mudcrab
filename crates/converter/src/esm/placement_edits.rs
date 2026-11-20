@@ -69,7 +69,8 @@ pub struct PlacementEditReport {
     pub affected_cells: Vec<u32>,
     pub created_cells: Vec<u32>,
     pub certified_cells: Vec<u32>,
-    /// Occluder projection omissions from this import, with counts and sampled reasons by category.
+    /// Counts and sampled reasons for admitted placements with occluder projection omissions.
+    /// Placements skipped during plugin admission produce a separate warning.
     pub occluder_omissions: ProjectionOmissions,
 }
 
@@ -453,8 +454,9 @@ fn plugin_edits(
         );
         let view = SubrecordView::new(&record.subrecords);
         let base = view.unique_form_id(b"NAME");
-        let occluder =
-            super::rooms::names_occlusion_marker(view.find_all(b"NAME"), priority, &order);
+        let resolved_base =
+            base.and_then(|id| source_identity::header_runtime_id(b"REFR", id, priority, &order));
+        let occluder = resolved_base == Some(super::rooms::OCCLUSION_MARKER_BASE);
         if !record.is_deleted() {
             let missing_parent = record
                 .cell_form_id
@@ -462,14 +464,8 @@ fn plugin_edits(
             let rejection = if missing_parent {
                 Some("because its new CELL is damaged")
             } else {
-                validate_room_field_tags(&record.subrecords)?;
                 let mut primitives = view.find_all(b"XPRM");
-                if base
-                    .and_then(|id| {
-                        source_identity::header_runtime_id(b"REFR", id, priority, &order)
-                    })
-                    .is_none_or(|id| id == 0)
-                {
+                if resolved_base.is_none_or(|id| id == 0) {
                     Some("with malformed NAME")
                 } else if !occluder
                     && primitives
@@ -502,7 +498,13 @@ fn plugin_edits(
             };
             if let Some(reason) = rejection {
                 eprintln!("warning: {name}: skipped placement {source_id:08X} {reason}");
-                if occluder && view.find_all(b"XORD").any(super::rooms::xord_may_link) {
+                if view.find_all(b"XORD").any(super::rooms::xord_may_link)
+                    && super::rooms::may_name_occlusion_marker(
+                        view.find_all(b"NAME"),
+                        priority,
+                        &order,
+                    )
+                {
                     import
                         .unreadable_refs
                         .insert(Some(remapped), import.edits.len());
@@ -510,6 +512,7 @@ fn plugin_edits(
                 record_damage(&mut damage_after, &mut import, &record, priority, &order);
                 continue;
             }
+            validate_room_field_tags(&record.subrecords)?;
         }
         let room_links = base
             .filter(|id| id & 0x00ff_ffff == ROOM_MARKER_BASE)
