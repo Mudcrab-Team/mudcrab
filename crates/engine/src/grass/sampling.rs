@@ -135,8 +135,8 @@ pub(super) fn slope_allowed(normal_z: f32, min: u8, max: u8) -> bool {
     cosine(max) <= normal_z && normal_z <= cosine(min)
 }
 
-/// Spud port: 1.4222221 (512/360) and a 512-entry cosine table; not yet verified against retail
-/// in the registry.
+/// Retail value (RF-GRASS-020): 1.4222221 (512/360) and a 512-entry cosine table; the index
+/// wraps with `& 511`, so degrees past 360 wrap.
 pub(super) fn slope_bounds(min: u8, max: u8) -> [f32; 2] {
     let cosine = |angle: u8| {
         let index = ((f32::from(angle) * 1.422_222_1) as usize) & 511;

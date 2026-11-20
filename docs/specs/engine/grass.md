@@ -139,7 +139,7 @@ The color pass uses the camera's Bevy tone-mapping method, LUT and color grading
 for non-HDR targets, matching the color treatment of standard scene materials.
 HDR targets defer tone mapping to the later shared pass; depth remains colorless.
 This prevents exposed sunlight from clipping directly into an LDR target.
-Lighting follows the retail grass shader. The vertex shader computes `NdotL = saturate(N_instance . L)`
+Lighting follows the retail grass shader (RF-GRASS-024). The vertex shader computes `NdotL = saturate(N_instance . L)`
 on the instance normal (the terrain normal with Fit to Slope, else straight up), and passes
 `C = vertexColor * instance brightness`. The pixel output is
 `(NdotL * C * DirLightColor * albedo * lerp(0.3, 1, shadowMask) + C * AmbientColor * albedo) * outputScale`.

@@ -17,60 +17,61 @@ pub const SETTINGS_VERSION: u32 = 1;
 /// Grass values honoured by the engine, including reported-only Skyrim settings.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GrassSettings {
-    /// `iMinGrassSize`: Retail value: default 20, used directly as the candidate spacing divisor.
-    /// Not retail: MudCrab ignores values below 8 as a safety guard; retail has no lower clamp.
+    /// `iMinGrassSize`: Retail value (RF-GRASS-007): default 20, used directly as the candidate
+    /// spacing divisor. Retail value (RF-GRASS-010): no lower clamp; MudCrab ignores values below 8
+    /// as a safety guard.
     #[serde(rename = "iMinGrassSize")]
     pub min_grass_size: i32,
     /// Checked after adding a species: the default 2 admits up to 3 species.
-    /// `iMaxGrassTypesPerTexure`: Retail value: post-add limit 2 per texture.
+    /// `iMaxGrassTypesPerTexure`: Retail value (RF-GRASS-007): post-add limit 2 per texture.
     #[serde(rename = "iMaxGrassTypesPerTexure")]
     pub max_grass_types_per_texture: i32,
-    /// `fTexturePctThreshold`: Retail value: default 0.0, the minimum blended texture weight.
-    /// Retail differs (unverified): a value above 1 becomes 0.9 in retail; MudCrab rejects it at
-    /// launch validation (`crates/engine/src/config.rs:981` accepts 0..1 only; tracked in #823).
+    /// `fTexturePctThreshold`: Retail value (RF-GRASS-016): default 0.0, the minimum blended
+    /// texture weight. A value above 1 becomes 0.9 in retail; MudCrab rejects it at launch
+    /// validation (`crates/engine/src/config.rs:981` accepts 0..1 only; tracked in #823).
     #[serde(rename = "fTexturePctThreshold")]
     pub texture_pct_threshold: f64,
-    /// `iGrassCellRadius`: Retail value: 2 cells around the player.
+    /// `iGrassCellRadius`: Retail value (RF-GRASS-007): 2 cells around the player.
     #[serde(rename = "iGrassCellRadius")]
     pub cell_radius: i32,
-    /// `fGrassStartFadeDistance`: Retail value: compiled default 7000 (presets: Low 1000,
+    /// `fGrassStartFadeDistance`: Retail value (RF-GRASS-007): compiled default 7000 (presets: Low 1000,
     /// Medium 2300, High and Ultra 7000; shipped `SkyrimPrefs.ini` 7000). Start of distance
     /// thinning.
     #[serde(rename = "fGrassStartFadeDistance")]
     pub start_fade_distance: f64,
-    /// `fGrassFadeRange`: Retail value: 1000 Creation units. Retail's fade end is start plus range,
+    /// `fGrassFadeRange`: Retail value (RF-GRASS-007): 1000 Creation units. Retail's fade end is start plus range,
     /// clamped to uGridsToLoad x 4096, and the fade start used is min(fade end, start).
     #[serde(rename = "fGrassFadeRange")]
     pub fade_range: f64,
-    /// `fGrassMinStartFadeDistance`: Retail value: shipped as 0.0 in `Skyrim_Default.ini` and `SkyrimPrefs.ini`
+    /// `fGrassMinStartFadeDistance`: Retail value (RF-GRASS-007): shipped as 0.0 in `Skyrim_Default.ini` and `SkyrimPrefs.ini`
     /// (the compiled 400.0 is overridden); reported only.
     #[serde(rename = "fGrassMinStartFadeDistance")]
     pub min_start_fade_distance: f64,
-    /// `fGrassMaxStartFadeDistance`: Retail value: 7000.0, also shipped in `Skyrim_Default.ini`; reported only.
+    /// `fGrassMaxStartFadeDistance`: Retail value (RF-GRASS-007): 7000.0, also shipped in `Skyrim_Default.ini`; reported only.
     #[serde(rename = "fGrassMaxStartFadeDistance")]
     pub max_start_fade_distance: f64,
-    /// `fGrassWindMagnitudeMin`: Retail value: 5.0; reported only.
+    /// `fGrassWindMagnitudeMin`: Retail value (RF-GRASS-007): 5.0; reported only.
     #[serde(rename = "fGrassWindMagnitudeMin")]
     pub wind_magnitude_min: f64,
-    /// `fGrassWindMagnitudeMax`: Retail value: 125.0; reported only.
+    /// `fGrassWindMagnitudeMax`: Retail value (RF-GRASS-007): 125.0; reported only.
     #[serde(rename = "fGrassWindMagnitudeMax")]
     pub wind_magnitude_max: f64,
-    /// `bDrawShaderGrass`: Retail value: true. Retail differs (unverified): retail also requires
-    /// the start fade to be at least the minimum start fade plus 0.5. MudCrab gates grass on this
+    /// `bDrawShaderGrass`: Retail value (RF-GRASS-008): true. Retail is on only when this is set
+    /// and the start fade is at least the minimum start fade plus 0.5. MudCrab gates grass on this
     /// switch alone (`config/grass_ini.rs`), and reports the minimum start fade only. Launch-state
     /// resolution honors explicit CLI switches.
     #[serde(rename = "bDrawShaderGrass")]
     pub draw_shader_grass: bool,
-    /// `bEnableGrassFade`: Retail value: true.
+    /// `bEnableGrassFade`: Retail value (RF-GRASS-007): true.
     #[serde(rename = "bEnableGrassFade")]
     pub enable_grass_fade: bool,
-    /// `bAllowCreateGrass`: Retail value: true; reported legacy cache switch.
+    /// `bAllowCreateGrass`: Retail value (RF-GRASS-007): true; reported legacy cache switch.
     #[serde(rename = "bAllowCreateGrass")]
     pub allow_create_grass: bool,
-    /// `bAllowLoadGrass`: Retail value: false; reported legacy cache switch.
+    /// `bAllowLoadGrass`: Retail value (RF-GRASS-007): false; reported legacy cache switch.
     #[serde(rename = "bAllowLoadGrass")]
     pub allow_load_grass: bool,
-    /// `bGenerateGrassDataFiles`: Retail value: false; reported legacy cache switch.
+    /// `bGenerateGrassDataFiles`: Retail value (RF-GRASS-007): false; reported legacy cache switch.
     #[serde(rename = "bGenerateGrassDataFiles")]
     pub generate_grass_data_files: bool,
 }

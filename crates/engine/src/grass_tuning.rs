@@ -4,7 +4,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{io::Read, path::PathBuf, time::Duration};
 
-/// Retail value: grass shadow floor, `fShadowClampValue:Display` defaults to 0.3. The grass pixel
+/// Retail value (RF-GRASS-005): grass shadow floor, `fShadowClampValue:Display` defaults to 0.3. The grass pixel
 /// shader uses it as the shadow floor: `shadow = mask + floor * (1 - mask)`.
 pub const SHADOW_CLAMP_VALUE: f32 = 0.3;
 
@@ -42,10 +42,10 @@ pub struct GrassTuning {
 }
 
 impl Default for GrassTuning {
-    /// Retail value: grass light passes the sun direction, diffuse colour and ambient
+    /// Retail value (RF-GRASS-004): grass light passes the sun direction, diffuse colour and ambient
     /// colour to the shader unscaled, so every multiplier is the identity (1.0) and the
     /// sun-angle weight is the full Lambert response. The only retail number is
-    /// the shadow floor, `fShadowClampValue:Display` 0.3.
+    /// the shadow floor, `fShadowClampValue:Display` 0.3 (RF-GRASS-005).
     /// Authored colour variation stays on.
     fn default() -> Self {
         Self {

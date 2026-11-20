@@ -85,14 +85,15 @@ fn tuning_diffuse(normal:vec3<f32>, sun:vec3<f32>, light:vec4<f32>, surface:vec4
     return mix(1.0,wrapped,light.w) + surface.w * max(-cosine,0.0);
 }
 fn tuning_illumination(ambient:vec3<f32>, direct:vec3<f32>, shadow:f32, exposure:f32, light:vec4<f32>, surface:vec4<f32>, specular:vec4<f32>) -> vec3<f32> {
-    // Retail value: surface.z is the shadow floor (fShadowClampValue, 0.3 by default).
+    // Retail value (RF-GRASS-005): surface.z is the shadow floor (fShadowClampValue, 0.3 by default).
     let visibility = surface.z + (1.0-surface.z) * mix(1.0,shadow,surface.y);
-    // Not retail: retail applies grass ambient at factor 1.0; MudCrab keeps 1/pi until the
+    // Not retail: retail applies grass ambient at factor 1.0 (RF-GRASS-024); MudCrab keeps 1/pi until the
     // raw-domain lighting work (#362).
     return (ambient*light.y + direct*light.z*visibility) * exposure / 3.14159265;
 }
 fn tuning_finish(color:vec3<f32>, root_fraction:f32, light:vec4<f32>, tint:vec4<f32>) -> vec3<f32> {
-    // Not retail: Rec.709 luma (0.2126, 0.7152, 0.0722); retail uses 0.31/0.37/0.32 on the CPU.
+    // Not retail: Rec.709 luma (0.2126, 0.7152, 0.0722); retail uses 0.31/0.37/0.32 on the CPU
+    // (RF-GRASS-021).
     let luminance = dot(color,vec3(0.2126,0.7152,0.0722));
     return max(mix(vec3(luminance),color,tint.x),vec3(0.0)) * light.x * (1.0-tint.w*root_fraction);
 }
@@ -205,8 +206,8 @@ fn vertex(input: Vertex) -> Varyings {
 // discard avoids dynamic sample_mask exports, which crash AMD's Vulkan shader
 // compiler on the tested RX 9070 XT driver. The surviving sample prefix is
 // identical to the original (1 << count) - 1 mask; MSAA remains enabled.
-// Retail differs: retail multiplies fade into the alpha test; MudCrab fades by whole-instance
-// prefix culling and tests texture/material alpha only (tracked separately).
+// Retail value (RF-GRASS-025): retail multiplies fade into the alpha test; MudCrab fades by
+// whole-instance prefix culling and tests texture/material alpha only.
 fn coverage(alpha:f32,sample_index:u32) -> u32 {
 #if SAMPLES == 1
     // A negative threshold encodes an authored opaque material.
@@ -298,7 +299,7 @@ fn fragment(vertex_input:Varyings,@builtin(sample_index) sample_index:u32) -> Fr
     let base = textureSample(albedo,albedo_sampler,input.uv) * input.color;
     var out:Fragment;
     out.mask = coverage(base.a,sample_index);
-    // Retail grass pixel output:
+    // Retail grass pixel output (RF-GRASS-024):
     //   (NdotL * C * DirLightColor * albedo * lerp(0.3, 1, shadowMask) + C * AmbientColor * albedo) * outputScale
     // `base` is albedo * C (vertex colour times the per-instance brightness); input.light is
     // NdotL * DirLightColor from the vertex shader; the shadow floor 0.3 is grass.tuning_surface.z

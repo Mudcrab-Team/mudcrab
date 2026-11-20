@@ -43,8 +43,7 @@ fn entries(
     config: &EngineConfig,
 ) -> Vec<Entry> {
     let mut result = Vec::with_capacity(16);
-    // Spud port: nine-sample support at ±1, ±16, ±17 and ±18 around the centre; not yet verified
-    // against retail in the registry.
+    // Retail value (RF-GRASS-015): nine-sample support at ±1, ±16, ±17 and ±18 around the centre.
     let center = y * 17 + x;
     let nine = [
         center - 18,
@@ -60,12 +59,13 @@ fn entries(
     for layer in quadrant.layers.iter() {
         let support = nine.map(|i| f32::from(layer.weights[i]));
         if !layer.is_base
-            // Spud port at the default threshold 0: a layer needs one of the nine coverage bytes
-            // above 25/255 (not yet verified against retail in the registry). Retail also drops a
-            // layer when the mean of the nine is below fTexturePctThreshold, while MudCrab applies
-            // the threshold per sample; the two only differ with an edited INI.
-            // Retail differs (unverified, tracked in #823): retail treats a threshold above 1 as
-            // 0.9, while MudCrab rejects it at launch validation (config.rs accepts 0..1 only).
+            // Retail value (RF-GRASS-015): at the default threshold 0, a layer needs one of the
+            // nine coverage bytes above 25/255. Retail also drops a layer when the mean of the
+            // nine is below fTexturePctThreshold, while MudCrab applies the threshold per sample;
+            // the two only differ with an edited INI.
+            // Retail value (RF-GRASS-016): T is clamped to max(T, 0) and a value above 1 becomes
+            // 0.9; MudCrab rejects it at launch validation (config.rs accepts 0..1 only; tracked
+            // in #823).
             && !support
                 .iter()
                 .any(|weight| *weight > 25.0 / 255.0 && *weight >= config.grass_texture_threshold)
@@ -78,8 +78,7 @@ fn entries(
             .take(config.effective_grass_species_cap())
         {
             if result.len() == 16 {
-                // Spud port: at most 16 entries per spot; not yet verified against retail in the
-                // registry.
+                // Retail value (RF-GRASS-014): at most 16 entries per spot.
                 return result;
             }
             result.push(Entry {
@@ -103,8 +102,7 @@ fn support(weights: &[f32; 9], x: f32, y: f32) -> f32 {
         + ((1.0 - fx) * weights[i + 3] + weights[i + 4] * fx) * fy
 }
 
-/// Retail differs (unverified): retail has water modes 0..5 only; modes 6 and above are
-/// unconstrained here (tracked separately).
+/// Retail value (RF-GRASS-022): modes above 5 skip the water test.
 pub fn water_allowed(height: f32, water: Option<f32>, distance: u16, mode: u32) -> bool {
     let w = water.unwrap_or(-f32::MAX);
     let u = f32::from(distance);
@@ -119,12 +117,10 @@ pub fn water_allowed(height: f32, water: Option<f32>, distance: u16, mode: u32) 
     }
 }
 
-/// Spud port: the 256-unit tile caps candidates per axis at
-/// `min(256 / posRange, 256 / spacing)` for posRange > 0; not yet verified against retail in the
-/// registry.
-/// Retail differs (unverified): posRange = 0 places nothing in retail while MudCrab uses the
-/// spacing cap; posRange < 0 uses the spacing cap in retail while MudCrab rejects the layer
-/// (tracked in #823).
+/// Retail value (RF-GRASS-011): the 256-unit tile caps candidates per axis at
+/// `min(256 / posRange, 256 / spacing)` for posRange > 0.
+/// Retail value (RF-GRASS-012): posRange = 0 places nothing and posRange < 0 uses the spacing
+/// cap. MudCrab uses the spacing cap at 0 but rejects layers below 0 (tracked in #823).
 fn grid_side(position_range: f32, minimum: f32) -> usize {
     if position_range < 0.0 {
         return 0;
@@ -186,10 +182,9 @@ fn fade_rank(mut value: u32) -> u32 {
     (value ^ (value >> 16)) & (FADE_SLOTS - 1)
 }
 
-/// Spud port: colour factor `(r * 2^-33 - 0.25) * range + (1 - range)`, with values at or above
-/// 1 clamped to 0.99; not yet verified against retail in the registry. The spud audit records the
-/// 0.99 clamp as a deviation from a hard 1.0 clamp, so it is marked unverified
-/// (`docs/research/spud/wave2/grass-far-water.md`, grass-brightness).
+/// Retail value (RF-GRASS-021): colour factor `(r * 2^-33 - 0.25) * range + (1 - range)`, with
+/// only `x >= 1.0` becoming 0.99; values in `[0.99, 1.0)` pass unchanged (this is not a
+/// [0, 0.99] clamp).
 fn brightness(luma: f32, range: f32, word: u32) -> (u8, f32) {
     let factor = (word as f32 * 1.164_153_2e-10 - 0.25) * range + (1.0 - range);
     let value = luma * factor;
@@ -202,8 +197,8 @@ fn brightness(luma: f32, range: f32, word: u32) -> (u8, f32) {
     )
 }
 
-/// Retail differs: retail keeps sine/cosine floats; the 8-bit angle is a MudCrab encoding of
-/// the same yaw (tracked separately).
+/// Retail value (RF-GRASS-027, medium): retail keeps the rotation basis as sine/cosine floats;
+/// the 8-bit angle is a MudCrab encoding of the same yaw.
 fn rotation(word: u32, fit_to_slope: bool) -> u8 {
     let sine = signed(word).clamp(-1.0, 1.0);
     let cosine = (1.0 - sine * sine).max(0.0).sqrt();
@@ -373,7 +368,7 @@ fn generate_field<const OBSERVE: bool>(
     let cx = i32::from(cell.grid_x);
     let cy = i32::from(cell.grid_y);
     let cell_origin = [cx as f32 * 4096.0, cy as f32 * 4096.0];
-    // Retail value: 4096-unit cell, 2048-unit quadrant, 256-unit spots.
+    // Retail value (RF-GRASS-026): 4096-unit cell, 2048-unit quadrant, 256-unit spots.
     let block_origin = [
         (cx / 12 * 12) as f32 * 4096.0,
         (cy / 12 * 12) as f32 * 4096.0,
@@ -409,11 +404,10 @@ fn generate_field<const OBSERVE: bool>(
                             let identity = ordinal;
                             ordinal = ordinal.wrapping_add(1);
                             let if_ = i as f32 + 0.5;
-                            // Spud port: density byte times 0.01; not yet verified against retail
-                            // in the registry.
+                            // Retail value (RF-GRASS-017): density byte times 0.01.
                             let density = f32::from(rule.density) * 0.01;
-                            // Spud port: acceptance is 32768 and the draw keeps 15 bits; not yet
-                            // verified against retail in the registry.
+                            // Retail value (RF-GRASS-018): acceptance weights scale by 32768 and
+                            // the draw keeps 15 bits.
                             let chance = (support(
                                 &entry.weights.map(|weight| weight * density),
                                 two * jf,
@@ -424,8 +418,8 @@ fn generate_field<const OBSERVE: bool>(
                             if chance == 0 || (rng.next() & 0x7fff) as i32 >= chance {
                                 continue;
                             }
-                            // Spud port: jitter is rand(-1, 1) times half the spacing; not yet
-                            // verified against retail in the registry.
+                            // Retail value (RF-GRASS-019): jitter is rand(-1, 1) times half the
+                            // spacing.
                             let u1 = rng.next();
                             let u2 = rng.next();
                             let (world_x, px) = root_coordinates(
@@ -489,8 +483,8 @@ fn generate_field<const OBSERVE: bool>(
                                 .unwrap_or_else(|| {
                                     if cell.vertex_colors.len() == 3267 {
                                         let i = sample.nearest * 3;
-                                        // Spud port: CPU tint luma weights 0.31, 0.37, 0.32; not
-                                        // yet verified against retail in the registry.
+                                        // Retail value (RF-GRASS-021): CPU tint luma weights
+                                        // 0.31, 0.37, 0.32.
                                         (f32::from(cell.vertex_colors[i]) * 0.003_921_569 * 0.31
                                             + f32::from(cell.vertex_colors[i + 1])
                                                 * 0.003_921_569
@@ -512,8 +506,8 @@ fn generate_field<const OBSERVE: bool>(
                                     stage_height(rounded_height),
                                 ],
                                 rotation: rotation(u4, rule.flags & 4 != 0),
-                                // Retail differs: retail uses a half-float `1 + v * range`; this
-                                // byte encoding is MudCrab (tracked separately).
+                                // Retail value (RF-GRASS-027, medium): retail uses a half-float
+                                // `1 + v * range`; this byte encoding is MudCrab.
                                 scale: ((1.0 + signed(u5) * range).clamp(0.0, 2.0) * 127.5).round()
                                     as u8,
                                 color,
