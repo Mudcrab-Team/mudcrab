@@ -1,5 +1,5 @@
 use crate::esm::{
-    emittance,
+    default_object_pairs, emittance,
     extractors::{SubrecordView, extract_cell_info, extract_land_data, serialize_subrecords},
     load_order::{LoadOrder, StableId},
     projection_omissions::{OmissionCategory, ProjectionOmissions},
@@ -65,13 +65,18 @@ fn invalid_movement_field(form_id: u32, field: &str) -> rusqlite::Error {
     )))
 }
 
-fn decode_npc_default_speeds(view: &SubrecordView<'_>, form_id: u32) -> Result<[f32; 8]> {
-    if view.get_string(b"EDID").as_deref() != Some("NPC_Default_MT") {
-        return Err(invalid_movement_field(
-            form_id,
-            "MOVT EDID (expected NPC_Default_MT)",
-        ));
-    }
+/// Decode the editor ID and the eight directional walk and run speeds of a `MOVT`.
+///
+/// Retail movement types can hold zero speeds (a creature that cannot strafe has
+/// zero lateral speeds), so only negative and non-finite values are rejected. The
+/// engine checks the forward speed that a selected profile must supply. A `MOVT`
+/// with no editor ID is malformed: the table never holds an empty name as if it
+/// were authored.
+fn decode_movement_type(view: &SubrecordView<'_>, form_id: u32) -> Result<(String, [f32; 8])> {
+    let editor_id = view
+        .get_string(b"EDID")
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| invalid_movement_field(form_id, "MOVT EDID (missing)"))?;
     let data = view
         .find(b"SPED")
         .ok_or_else(|| invalid_movement_field(form_id, "MOVT SPED"))?;
@@ -84,14 +89,14 @@ fn decode_npc_default_speeds(view: &SubrecordView<'_>, form_id: u32) -> Result<[
     let mut speeds = [0.0; 8];
     for (index, speed) in speeds.iter_mut().enumerate() {
         *speed = f32::from_le_bytes(data[index * 4..index * 4 + 4].try_into().unwrap());
-        if !speed.is_finite() || *speed <= 0.0 {
+        if !speed.is_finite() || *speed < 0.0 {
             return Err(invalid_movement_field(
                 form_id,
                 &format!("MOVT SPED[{index}]"),
             ));
         }
     }
-    Ok(speeds)
+    Ok((editor_id, speeds))
 }
 
 fn decode_movement_setting(view: &SubrecordView<'_>, form_id: u32) -> Result<f32> {
@@ -241,6 +246,10 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
              id INTEGER PRIMARY KEY, walk_movt_id INTEGER, run_movt_id INTEGER,
              load_order INTEGER NOT NULL
          );
+         CREATE TABLE IF NOT EXISTS default_objects (
+             key TEXT PRIMARY KEY,          -- DOBJ DNAM use code, for example DMWL
+             form_id INTEGER NOT NULL       -- load-order FormID; a null link has no row
+         );
          CREATE TABLE IF NOT EXISTS movement_game_settings (
              id INTEGER PRIMARY KEY, editor_id TEXT NOT NULL,
              value REAL NOT NULL, load_order INTEGER NOT NULL
@@ -288,6 +297,7 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
          );
          CREATE TABLE IF NOT EXISTS landscape_texture_grasses (
              ltex_id INTEGER NOT NULL, gras_id INTEGER NOT NULL,
+             ordinal INTEGER NOT NULL DEFAULT 0,
              PRIMARY KEY (ltex_id, gras_id)
          );
          CREATE TABLE IF NOT EXISTS scripts (
@@ -332,6 +342,13 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     // `CREATE TABLE IF NOT EXISTS` leaves a reused older table as it was; give it the columns
     // later exports added, so a complete export can still insert into it.
     add_missing_columns(conn, "references", &[("emittance_id", "INTEGER")])?;
+    // Mark old rows for read-only recovery from the winning raw LTEX payload.
+    // Subset exports preserve these lists; included LTEX records replace their ordinals.
+    add_missing_columns(
+        conn,
+        "landscape_texture_grasses",
+        &[("ordinal", "INTEGER NOT NULL DEFAULT -1")],
+    )?;
     add_missing_columns(conn, "actor_models", ACTOR_SKIN_TONE_COLUMNS)?;
     add_missing_columns(conn, "actor_models", ACTOR_WEIGHT_COLUMNS)?;
     add_missing_columns(conn, "actor_model_parts", ACTOR_PART_SKIN_COLUMNS)?;
@@ -535,6 +552,7 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
         DROP TABLE IF EXISTS waters;
         DROP TABLE IF EXISTS movement_game_settings;
         DROP TABLE IF EXISTS race_movement_links;
+        DROP TABLE IF EXISTS default_objects;
         DROP TABLE IF EXISTS race_animation_sources;
         DROP TABLE IF EXISTS movement_types;
         DROP TABLE IF EXISTS npcs;
@@ -603,8 +621,8 @@ fn runtime_projection(
 pub(crate) fn validate_inhouse_record(record: &RawRecord) -> Result<()> {
     let view = SubrecordView::new(&record.subrecords);
     match &record.record_type {
-        b"MOVT" if record.form_id == 0x0003_580D => {
-            decode_npc_default_speeds(&view, record.form_id)?;
+        b"MOVT" => {
+            decode_movement_type(&view, record.form_id)?;
         }
         b"GMST"
             if view.get_string(b"EDID").is_some_and(|name| {
@@ -802,10 +820,11 @@ fn export_records(
                     &crate::esm::environment::Links { master },
                     record,
                     &view,
+                    &mut omissions,
                 )?;
             }
             "GRAS" => {
-                insert_grass(&tx, form_id, &view, record.load_order)?;
+                insert_grass(&tx, form_id, &view, record.load_order, &mut omissions)?;
             }
             "WRLD" => {
                 let view = SubrecordView::new(&record.subrecords);
@@ -825,7 +844,7 @@ fn export_records(
             }
             _ if super::is_placed_record_type(&record.record_type) => {
                 let cell_id = record.cell_form_id.unwrap_or(0);
-                insert_reference_with_canonical_data(
+                let inserted = insert_reference_with_canonical_data(
                     &tx,
                     form_id,
                     cell_id,
@@ -834,6 +853,18 @@ fn export_records(
                     &record.subrecords,
                     &canonical_record.subrecords,
                 )?;
+                if !inserted {
+                    omissions.record(
+                        OmissionCategory::ReferenceUnusableData,
+                        form_id,
+                        format!(
+                            "{} DATA is {} in the runtime projection; expected at least 24 bytes; no placement or spatial row",
+                            type_str,
+                            view.find(b"DATA").map_or_else(|| "unavailable".to_owned(), |data| format!("{} bytes", data.len())),
+                        ),
+                    );
+                    continue;
+                }
                 crate::esm::reference_links::insert(
                     &tx,
                     &crate::esm::reference_links::Context { master, order },
@@ -910,12 +941,32 @@ fn export_records(
                     params![form_id, walk, run, record.load_order],
                 )?;
             }
-            "MOVT" if form_id == 0x0003_580D => {
-                let speeds = decode_npc_default_speeds(&view, form_id)?;
+            "MOVT" => {
+                let (editor_id, speeds) = decode_movement_type(&view, form_id)?;
                 tx.prepare_cached(
                     "INSERT OR REPLACE INTO movement_types(id, editor_id, left_walk, left_run, right_walk, right_run, forward_walk, forward_run, back_walk, back_run, load_order) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)")?.execute(
-                    params![form_id, "NPC_Default_MT", speeds[0], speeds[1], speeds[2], speeds[3], speeds[4], speeds[5], speeds[6], speeds[7], record.load_order],
+                    params![form_id, editor_id, speeds[0], speeds[1], speeds[2], speeds[3], speeds[4], speeds[5], speeds[6], speeds[7], record.load_order],
                 )?;
+            }
+            // The readers merge overrides key by key before export (see `merge_default_objects`).
+            // A null link, or a record without usable pairs, adds no default: the engine then
+            // reports the missing default instead of inventing a movement type. A listed key
+            // with a null link removes its stored row. Only a complete snapshot clears the
+            // table, so a partial export keeps the rows it does not list.
+            "DOBJ" => {
+                for (key, target) in default_object_pairs(&record.subrecords) {
+                    let key = String::from_utf8_lossy(&key);
+                    if target == 0 {
+                        // The loader sets a listed slot to null, so a stored default goes too.
+                        tx.prepare_cached("DELETE FROM default_objects WHERE key=?1")?
+                            .execute(params![key])?;
+                    } else {
+                        tx.prepare_cached(
+                            "INSERT OR REPLACE INTO default_objects(key, form_id) VALUES (?1, ?2)",
+                        )?
+                        .execute(params![key, target])?;
+                    }
+                }
             }
             "GMST" => {
                 let editor_id = view.get_string(b"EDID");
@@ -986,13 +1037,19 @@ fn export_records(
                 // empty list, even when other records are outside this export.
                 tx.prepare_cached("DELETE FROM landscape_texture_grasses WHERE ltex_id=?1")?
                     .execute([form_id])?;
-                for (_, data) in record.subrecords.iter().filter(|(tag, _)| tag == b"GNAM") {
+                // Keep the first occurrence of each grass in the winning source list.
+                for (ordinal, (_, data)) in record
+                    .subrecords
+                    .iter()
+                    .filter(|(tag, _)| tag == b"GNAM")
+                    .enumerate()
+                {
                     if let Ok(bytes) = <[u8; 4]>::try_from(data.as_slice()) {
                         let grass_id = u32::from_le_bytes(bytes);
                         if grass_id != 0 {
                             tx.prepare_cached(
-                                "INSERT OR IGNORE INTO landscape_texture_grasses(ltex_id, gras_id) VALUES (?1, ?2)")?.execute(
-                                params![form_id, grass_id],
+                                "INSERT OR IGNORE INTO landscape_texture_grasses(ltex_id, gras_id, ordinal) VALUES (?1, ?2, ?3)")?.execute(
+                                params![form_id, grass_id, ordinal as i64],
                             )?;
                         }
                     }
@@ -1215,14 +1272,29 @@ fn insert_emittance_sources(
 
 /// Projects xEdit's TES5 GRAS/DATA layout without inventing missing fields.
 /// The complete payload is 32 bytes; unknown padding stays in records.data.
-/// See the primary definitions linked in the database schema specification.
+/// Short DATA retains each complete scalar at its known offset; unavailable values are NULL.
+/// Missing/short DATA is still a reported omission, and the model and identity survive.
+/// See xEdit xedit-4.1.5f Core/wbDefinitionsTES5.pas:10199-10230.
 fn insert_grass(
     tx: &Transaction<'_>,
     form_id: u32,
     view: &SubrecordView<'_>,
     load_order: u32,
+    omissions: &mut ProjectionOmissions,
 ) -> Result<()> {
-    let data = view.find(b"DATA").unwrap_or_default();
+    let data = view.find(b"DATA");
+    if !matches!(data, Some(data) if data.len() >= 32) {
+        let extent = data.map_or_else(
+            || "missing".to_owned(),
+            |data| format!("{} bytes", data.len()),
+        );
+        omissions.record(
+            OmissionCategory::GrassUnusableData,
+            form_id,
+            format!("GRAS DATA is {extent}; expected at least 32 bytes; unavailable scalar columns remain NULL"),
+        );
+    }
+    let data = data.unwrap_or_default();
     let float = |offset| {
         data.get(offset..offset + 4)
             .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
@@ -1452,7 +1524,10 @@ fn insert_light(
     Ok(())
 }
 
-/// Write a reference and its exterior spatial projection.
+/// Write a reference and its exterior spatial projection when DATA holds all six floats.
+/// An unusable transform removes any stale placement and warns; canonical records remain owned
+/// by the caller. This low-level subset helper has no report sink: its warning is terminal-only.
+/// Full exports separately persist placement omissions in their integration report.
 pub fn insert_reference(
     tx: &Transaction<'_>,
     form_id: u32,
@@ -1461,10 +1536,42 @@ pub fn insert_reference(
     header_flags: u32,
     subs: &[(Vec<u8>, Vec<u8>)],
 ) -> Result<()> {
-    insert_reference_with_canonical_data(tx, form_id, cell_id, cell, header_flags, subs, subs)
+    if !insert_reference_with_canonical_data(tx, form_id, cell_id, cell, header_flags, subs, subs)?
+    {
+        eprintln!(
+            "warning: placed record {form_id:08X} has missing or short DATA; no placement row"
+        );
+    }
+    Ok(())
 }
 
-/// Extract runtime reference columns from projected fields and preserve the canonical data mirror.
+/// Removes one unusable placement and every owned or spatially dependent runtime row.
+/// Incoming authored links may still name the canonical record; usable neighbors stay intact.
+/// Extend the table list when adding a placement table keyed on `reference_id`.
+fn clear_reference_placement(tx: &Transaction<'_>, form_id: u32) -> Result<()> {
+    for table in super::reference_links::REFERENCE_LINK_TABLES {
+        tx.prepare_cached(&format!("DELETE FROM {table} WHERE reference_id=?1"))?
+            .execute([form_id])?;
+    }
+    for sql in [
+        "DELETE FROM door_links WHERE ref_id=?1 OR destination_ref_id=?1",
+        "DELETE FROM reference_rooms WHERE reference_id=?1 OR room_ref=?1",
+        "DELETE FROM room_links WHERE room_ref=?1 OR linked_ref=?1",
+        "DELETE FROM room_portals WHERE ref_id=?1",
+        "UPDATE room_portals SET room_a=NULL WHERE room_a=?1",
+        "UPDATE room_portals SET room_b=NULL WHERE room_b=?1",
+        "DELETE FROM room_bounds WHERE ref_id=?1",
+        "DELETE FROM exterior_spatial WHERE id=?1",
+        "DELETE FROM \"references\" WHERE id=?1",
+    ] {
+        tx.prepare_cached(sql)?.execute([form_id])?;
+    }
+    Ok(())
+}
+
+/// Extract runtime columns from projected fields and preserve the canonical data mirror.
+/// Returns false after removing a placement whose required 24-byte DATA cannot be read.
+/// xEdit xedit-4.1.5f Core/wbDefinitionsTES5.pas:5320-5323 uses wbDATAPosRot for 3D data.
 fn insert_reference_with_canonical_data(
     tx: &Transaction<'_>,
     form_id: u32,
@@ -1473,19 +1580,24 @@ fn insert_reference_with_canonical_data(
     header_flags: u32,
     projected_subrecords: &[(Vec<u8>, Vec<u8>)],
     canonical_subrecords: &[(Vec<u8>, Vec<u8>)],
-) -> Result<()> {
+) -> Result<bool> {
     let view = SubrecordView::new(projected_subrecords);
-    let transform = view.get_f32_slice(b"DATA").unwrap_or_default();
-    let pos = [
-        *transform.first().unwrap_or(&0.0),
-        *transform.get(1).unwrap_or(&0.0),
-        *transform.get(2).unwrap_or(&0.0),
-    ];
-    let rot = [
-        *transform.get(3).unwrap_or(&0.0),
-        *transform.get(4).unwrap_or(&0.0),
-        *transform.get(5).unwrap_or(&0.0),
-    ];
+    let Some(transform) = view.find(b"DATA").and_then(|data| data.first_chunk::<24>()) else {
+        // A subset update must also clear a formerly usable placement. The complete export
+        // already replaced its snapshot; either route keeps records.data for inspection.
+        clear_reference_placement(tx, form_id)?;
+        return Ok(false);
+    };
+    let component = |offset| {
+        f32::from_le_bytes([
+            transform[offset],
+            transform[offset + 1],
+            transform[offset + 2],
+            transform[offset + 3],
+        ])
+    };
+    let pos = [component(0), component(4), component(8)];
+    let rot = [component(12), component(16), component(20)];
     let scale = view
         .find(b"XSCL")
         .filter(|data| data.len() >= 4)
@@ -1537,7 +1649,7 @@ fn insert_reference_with_canonical_data(
     if is_exterior {
         tx.prepare_cached("INSERT OR REPLACE INTO exterior_spatial(id, minX, maxX, minY, maxY, minZ, maxZ, cell_id, worldspace_id) VALUES (?1, ?2, ?2, ?3, ?3, ?4, ?4, ?5, ?6)")?.execute( params![form_id, pos[0], pos[1], pos[2], cell_id, worldspace_id])?;
     }
-    Ok(())
+    Ok(true)
 }
 
 struct CellRow<'a> {
@@ -1698,6 +1810,7 @@ mod tests {
             "npcs",
             "movement_types",
             "race_movement_links",
+            "default_objects",
             "movement_game_settings",
             "scripts",
             "waters",
@@ -1806,6 +1919,101 @@ mod tests {
         legacy.subrecords[1].1.truncate(40);
         export_to_db(&conn, &HashMap::from([(legacy.form_id, legacy)])).unwrap();
 
+        // Any MOVT exports with its own editor ID, including retail zero speeds (no strafing).
+        let mut creature = movement.clone();
+        creature.form_id = 0x000C_EFCF;
+        creature.subrecords[0].1 = b"NPC_Drunk_MT\0".to_vec();
+        creature.subrecords[1].1[0..4].copy_from_slice(&0.0f32.to_le_bytes());
+        let defaults = RawRecord {
+            form_id: 0x0000_0031,
+            record_type: *b"DOBJ",
+            flags: 0,
+            subrecords: vec![(
+                b"DNAM".to_vec(),
+                [
+                    *b"DMWL",
+                    0x0003_580Du32.to_le_bytes(),
+                    *b"DMRN",
+                    0x000C_EFCFu32.to_le_bytes(),
+                    // A null link names no movement type, so it exports no row.
+                    *b"DMSW",
+                    0u32.to_le_bytes(),
+                ]
+                .concat(),
+            )],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 4,
+        };
+        export_to_db(
+            &conn,
+            &HashMap::from([(creature.form_id, creature), (defaults.form_id, defaults)]),
+        )
+        .unwrap();
+        let (editor_id, left_walk): (String, f32) = conn
+            .query_row(
+                "SELECT editor_id, left_walk FROM movement_types WHERE id=0x000CEFCF",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((editor_id.as_str(), left_walk), ("NPC_Drunk_MT", 0.0));
+        let defaults: Vec<(String, u32)> = conn
+            .prepare("SELECT key, form_id FROM default_objects ORDER BY key")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            defaults,
+            [
+                ("DMRN".to_string(), 0x000C_EFCF),
+                ("DMWL".to_string(), 0x0003_580D)
+            ]
+        );
+
+        // A later export that lists DMRN with a null link removes it and keeps DMWL.
+        let null_run = RawRecord {
+            subrecords: vec![(
+                b"DNAM".to_vec(),
+                [b"DMRN".as_slice(), &0u32.to_le_bytes()].concat(),
+            )],
+            load_order: 5,
+            form_id: 0x0000_0031,
+            record_type: *b"DOBJ",
+            flags: 0,
+            cell_form_id: None,
+            worldspace_form_id: None,
+        };
+        export_to_db(&conn, &HashMap::from([(null_run.form_id, null_run)])).unwrap();
+        let after_null: Vec<String> = conn
+            .prepare("SELECT key FROM default_objects ORDER BY key")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(after_null, ["DMWL"]);
+
+        // A MOVT with no editor ID is malformed, not published under an empty name.
+        let mut unnamed = movement.clone();
+        unnamed.form_id = 0x000C_EFD0;
+        unnamed.subrecords.remove(0);
+        let error = export_to_db(&conn, &HashMap::from([(unnamed.form_id, unnamed)])).unwrap_err();
+        assert!(error.to_string().contains("MOVT EDID"), "{error}");
+        let mut empty_name = movement.clone();
+        empty_name.form_id = 0x000C_EFD1;
+        empty_name.subrecords[0].1 = b"\0".to_vec();
+        let error =
+            export_to_db(&conn, &HashMap::from([(empty_name.form_id, empty_name)])).unwrap_err();
+        assert!(error.to_string().contains("MOVT EDID"), "{error}");
+
+        let mut negative = movement.clone();
+        negative.subrecords[1].1[4..8].copy_from_slice(&(-1.0f32).to_le_bytes());
+        let error =
+            export_to_db(&conn, &HashMap::from([(negative.form_id, negative)])).unwrap_err();
+        assert!(error.to_string().contains("MOVT SPED[1]"));
         let mut broken = movement;
         broken.subrecords[1].1[0..4].copy_from_slice(&f32::NAN.to_le_bytes());
         let error = export_to_db(&conn, &HashMap::from([(broken.form_id, broken)])).unwrap_err();
@@ -1817,6 +2025,53 @@ mod tests {
         let error =
             export_to_db(&conn, &HashMap::from([(broken_race.form_id, broken_race)])).unwrap_err();
         assert!(error.to_string().contains("RACE WKMV length"));
+    }
+
+    #[test]
+    fn default_objects_without_usable_pairs_export_no_rows_and_do_not_fail() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        let dobj = |form_id: u32, subrecords: Vec<(Vec<u8>, Vec<u8>)>| RawRecord {
+            form_id,
+            record_type: *b"DOBJ",
+            flags: 0,
+            subrecords,
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 3,
+        };
+        let missing = dobj(0x0100_0031, vec![(b"EDID".to_vec(), b"Mod\0".to_vec())]);
+        // A trailing partial pair is ignored; the whole pair before it is kept.
+        let partial_tail = dobj(
+            0x0200_0031,
+            vec![(
+                b"DNAM".to_vec(),
+                [
+                    b"DMWL".as_slice(),
+                    &0x0003_580Du32.to_le_bytes(),
+                    &[1, 2, 3],
+                ]
+                .concat(),
+            )],
+        );
+        let short = dobj(0x0300_0031, vec![(b"DNAM".to_vec(), vec![1, 2, 3])]);
+        export_to_db(
+            &conn,
+            &HashMap::from([
+                (missing.form_id, missing),
+                (partial_tail.form_id, partial_tail),
+                (short.form_id, short),
+            ]),
+        )
+        .unwrap();
+        let rows: Vec<(String, u32)> = conn
+            .prepare("SELECT key, form_id FROM default_objects")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, [("DMWL".to_string(), 0x0003_580D)]);
     }
 
     #[test]
@@ -2796,6 +3051,56 @@ mod tests {
             .unwrap();
         assert_eq!(emittance_id, Some(0x8277B));
         assert!(emittance_row(&conn, 0x8277B).is_some());
+    }
+
+    /// Update.esm and every DLC override `DOBJ` `00000031` with a partial key list. Merged
+    /// key by key, Skyrim.esm's default walk and run movement types survive as
+    /// `NPC_Default_MT`, and every retail `MOVT` exports, zero strafe speeds included.
+    ///
+    /// Reads the game install, so it is opt-in:
+    /// `cargo test -p converter --lib -- --ignored`.
+    #[test]
+    #[ignore = "requires MUDCRAB_SKYRIM_DATA with locally installed game assets"]
+    fn default_movement_types_of_the_real_masters_survive_overrides() {
+        let data_dir = std::env::var_os("MUDCRAB_SKYRIM_DATA")
+            .map(std::path::PathBuf::from)
+            .expect("set MUDCRAB_SKYRIM_DATA to the Skyrim Data directory");
+        let plugins: Vec<_> = [
+            "Skyrim.esm",
+            "Update.esm",
+            "Dawnguard.esm",
+            "HearthFires.esm",
+            "Dragonborn.esm",
+        ]
+        .iter()
+        .map(|name| data_dir.join(name))
+        .collect();
+        let merged = crate::esm::EsmParser::merge_plugins(&plugins).unwrap();
+        let selected: HashMap<u32, RawRecord> = merged
+            .into_iter()
+            .filter(|(_, record)| matches!(&record.record_type, b"DOBJ" | b"MOVT"))
+            .collect();
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        export_to_db(&conn, &selected).unwrap();
+        for key in ["DMWL", "DMRN"] {
+            let (form_id, editor_id): (u32, String) = conn
+                .query_row(
+                    "SELECT d.form_id, m.editor_id FROM default_objects d \
+                     JOIN movement_types m ON m.id = d.form_id WHERE d.key = ?1",
+                    [key],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                (form_id, editor_id.as_str()),
+                (0x0003_580D, "NPC_Default_MT")
+            );
+        }
+        let movement_types: i64 = conn
+            .query_row("SELECT count(*) FROM movement_types", [], |row| row.get(0))
+            .unwrap();
+        assert!(movement_types >= 107, "only {movement_types} MOVT exported");
     }
 
     /// The Sleeping Giant Inn's reference in Riverwood names `FXLightRegionInvertWindowWhiterun`,
