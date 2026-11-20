@@ -219,35 +219,11 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
             let plugin_occluder =
                 is_plugin && view.get_form_id(b"NAME") == Some(OCCLUSION_MARKER_BASE);
             ensure!(
-                (plugin_occluder
+                plugin_occluder
                     || (view.find_all(b"XPRM").count() <= 1
-                        && view.find(b"XPRM").is_none_or(|data| data.len() <= 32)))
-                    && view.find_all(b"XSCL").count() <= 1,
-                "placement {id:08X} has unsupported primitive or scale data"
+                        && view.find(b"XPRM").is_none_or(|data| data.len() <= 32)),
+                "placement {id:08X} has unsupported primitive data"
             );
-            if !in_fresh_cell
-                && edit
-                    .record
-                    .cell_form_id
-                    .is_some_and(|cell| import.damaged_creations.contains(&cell))
-            {
-                ensure!(
-                    edit.owns_new_id,
-                    "placement needs a new source-owned FormID"
-                );
-                ensure!(
-                    edit.record.worldspace_form_id.is_none(),
-                    "placement has no interior parent cell"
-                );
-                require_unused_id(&tx, id, has_history)?;
-                validate_placement(&tx, &edit.record, is_plugin)
-                    .wrap_err_with(|| format!("placement {id:08X}"))?;
-                eprintln!(
-                    "warning: {name}: skipped placement {:08X} because its new CELL is damaged",
-                    edit.source_id
-                );
-                continue;
-            }
         }
         ensure!(changed.insert(id), "duplicate placement edit for {id:08X}");
         let must_be_new = in_fresh_cell || (is_plugin && edit.owns_new_id);
@@ -340,7 +316,6 @@ struct Import {
     unreadable_refs: HashMap<Option<u32>, usize>,
     unknown_discarded_scope: bool,
     damage: HashSet<DiscardedFrameScope>,
-    damaged_creations: HashSet<u32>,
 }
 
 struct CellCreation {
@@ -402,7 +377,27 @@ fn plugin_edits(
     order.metadata.push(metadata.clone());
     let order = LoadOrder::from_metadata(order.names, order.metadata)?;
     let mut candidates = Vec::new();
-    parse_plugin_bytes(bytes, name, |candidate| candidates.push(candidate))?;
+    let mut damaged_new_cells = HashSet::new();
+    parse_plugin_bytes(bytes, name, |candidate| {
+        if let ParsedRecord::DamagedRecord(cell) = &candidate
+            && cell.record_type == CELL
+            && (cell.form_id >> 24) as usize == metadata.masters.len()
+        {
+            damaged_new_cells.insert(cell.form_id);
+        }
+        candidates.push(candidate);
+    })?;
+    // A usable declaration in the same plugin can supply the missing parent.
+    if !damaged_new_cells.is_empty() {
+        for candidate in &candidates {
+            if let ParsedRecord::Usable(cell) = candidate
+                && cell.record_type == CELL
+                && !cell.is_deleted()
+            {
+                damaged_new_cells.remove(&cell.form_id);
+            }
+        }
+    }
     let warnings = RemapWarnings::default();
     let mut import = Import::default();
     let mut damage_after = HashMap::new();
@@ -418,7 +413,7 @@ fn plugin_edits(
             }
             ParsedRecord::TruncatedPlacement(placement) => {
                 let id = placement.runtime_id(priority, &order);
-                if placement.record_type == REFR {
+                if placement.could_be_reference() {
                     import.unreadable_refs.insert(id, import.edits.len());
                 }
                 if let Some(id) = id {
@@ -468,30 +463,40 @@ fn plugin_edits(
         let occluder =
             super::rooms::names_occlusion_marker(view.find_all(b"NAME"), priority, &order);
         if !record.is_deleted() {
-            validate_room_field_tags(&record.subrecords)?;
-            // Retain the previous link when the new arrival or destination is unusable.
-            let rejected_field = if base.is_none_or(|id| id == 0) {
-                Some("NAME")
-            } else if view.find_all(b"XTEL").enumerate().any(|(index, data)| {
-                let Some((target, arrival_and_flags)) = data.split_first_chunk::<4>() else {
-                    return true;
-                };
-                let target = u32::from_le_bytes(*target);
-                index != 0
-                    || arrival_and_flags.len() != 28
-                    || !super::valid_placement_transform(std::iter::once(&arrival_and_flags[..24]))
-                    || (target != 0
-                        && source_identity::header_runtime_id(b"REFR", target, priority, &order)
-                            .is_none_or(|id| id == 0))
-            }) {
-                Some("XTEL")
+            let missing_parent = record
+                .cell_form_id
+                .is_some_and(|id| damaged_new_cells.contains(&id));
+            let rejection = if missing_parent {
+                Some("because its new CELL is damaged")
             } else {
-                None
+                validate_room_field_tags(&record.subrecords)?;
+                if base.is_none_or(|id| id == 0) {
+                    Some("with malformed NAME")
+                } else if let Some(reason) = malformed_placement_geometry(&view) {
+                    Some(reason)
+                } else if view.find_all(b"XTEL").enumerate().any(|(index, data)| {
+                    let Some((target, arrival_and_flags)) = data.split_first_chunk::<4>() else {
+                        return true;
+                    };
+                    let target = u32::from_le_bytes(*target);
+                    index != 0
+                        || arrival_and_flags.len() != 28
+                        || !super::valid_placement_transform(std::iter::once(
+                            &arrival_and_flags[..24],
+                        ))
+                        || (target != 0
+                            && source_identity::header_runtime_id(
+                                b"REFR", target, priority, &order,
+                            )
+                            .is_none_or(|id| id == 0))
+                }) {
+                    Some("with malformed XTEL")
+                } else {
+                    None
+                }
             };
-            if let Some(field) = rejected_field {
-                eprintln!(
-                    "warning: {name}: skipped placement {source_id:08X} with malformed {field}"
-                );
+            if let Some(reason) = rejection {
+                eprintln!("warning: {name}: skipped placement {source_id:08X} {reason}");
                 if occluder && view.find_all(b"XORD").any(super::rooms::xord_may_link) {
                     import
                         .unreadable_refs
@@ -559,11 +564,6 @@ fn record_damage(
     if record.record_type == CELL {
         let scope = scoped_cell(Some(record.form_id));
         import.damage.insert(scope);
-        if let DiscardedFrameScope::Cell(cell) = scope
-            && (record.form_id >> 24) as usize == order.metadata[priority].masters.len()
-        {
-            import.damaged_creations.insert(cell);
-        }
     } else if super::is_placed_record_type(&record.record_type) {
         import.damage.insert(scoped_cell(record.cell_form_id));
         if let Some(id) =
@@ -866,20 +866,27 @@ fn validate_placement(tx: &Transaction<'_>, record: &RawRecord, allow_doors: boo
             "XMBO extents disagree with XPRM"
         );
     }
-    ensure!(
-        super::valid_placement_transform(view.find_all(b"DATA")),
-        "invalid placement transform"
-    );
-    ensure!(
-        view.find(b"XSCL")
-            .is_none_or(
-                |data| <[u8; 4]>::try_from(data)
-                    .is_ok_and(|word| f32::from_le_bytes(word).is_finite()
-                        && f32::from_le_bytes(word) > 0.0)
-            ),
-        "invalid placement scale"
-    );
+    if let Some(reason) = malformed_placement_geometry(&view) {
+        bail!("placement {reason}");
+    }
     Ok(())
+}
+
+fn malformed_placement_geometry(view: &SubrecordView<'_>) -> Option<&'static str> {
+    if !super::valid_placement_transform(view.find_all(b"DATA")) {
+        return Some("with malformed DATA");
+    }
+    let mut scales = view.find_all(b"XSCL");
+    if let Some(bytes) = scales.next()
+        && (scales.next().is_some()
+            || !<[u8; 4]>::try_from(bytes).is_ok_and(|word| {
+                let scale = f32::from_le_bytes(word);
+                scale.is_finite() && scale > 0.0
+            }))
+    {
+        return Some("with malformed XSCL");
+    }
+    None
 }
 
 fn validate_room_fields(

@@ -1045,21 +1045,13 @@ pub(crate) fn validate_placement_parent(
 
 /// Native records with a placed base and transform. Keep publication, required-link
 /// validation and room membership on the same set; schema coverage is checked in tests.
+pub(crate) const PLACED_RECORD_TYPES: &[[u8; 4]] = &[
+    *b"REFR", *b"ACHR", *b"ACRE", *b"PGRE", *b"PMIS", *b"PHZD", *b"PARW", *b"PBAR", *b"PBEA",
+    *b"PCON", *b"PFLA",
+];
+
 pub(crate) fn is_placed_record_type(record_type: &[u8; 4]) -> bool {
-    matches!(
-        record_type,
-        b"REFR"
-            | b"ACHR"
-            | b"ACRE"
-            | b"PGRE"
-            | b"PMIS"
-            | b"PHZD"
-            | b"PARW"
-            | b"PBAR"
-            | b"PBEA"
-            | b"PCON"
-            | b"PFLA"
-    )
+    PLACED_RECORD_TYPES.contains(record_type)
 }
 
 /// Explicit offsets for optional scalar, structure and array FormID fields.

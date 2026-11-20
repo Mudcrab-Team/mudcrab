@@ -1488,8 +1488,8 @@ could refer to a placement from another cell. All surviving interiors then use t
 fallback. A partial placement header that reaches the FormID marks the enclosing cell and the
 surviving predecessor’s cell incomplete. An unresolvable FormID leaves all interiors incomplete.
 A recognized placement tag with a missing or partial FormID also leaves all interiors incomplete,
-because its predecessor could be in any cell. The same rule covers a discarded tag that ends
-after the first one, two, or three bytes of `REFR`. When the available group kind bytes are consistent
+because its predecessor could be in any cell. The same rule covers a one-, two-, or three-byte
+prefix of any placed record type, including `REFR`, `ACHR`, and `PMIS`. When the available group kind bytes are consistent
 with a cell-child group, the enclosing cell and the cell named by the label are incomplete.
 A discarded `GRUP` prefix with an incomplete label leaves all interiors incomplete. A kind
 that excludes cell-child groups affects only the enclosing cell when it is known.
@@ -1615,7 +1615,8 @@ Static primitives, actor references, scripts, new base records, exterior changes
 
 The command warns when it skips a damaged record or discards the unread part of a group.
 The parser resumes at a verified record or group boundary, and the command applies the usable
-placements and interiors it reads. A damaged placement leaves its destination and any retained
+placements and interiors it reads. A plugin placement needs one finite 24-byte `DATA` transform.
+If present, `XSCL` must occur once and contain a finite positive 32-bit float. A damaged placement leaves its destination and any retained
 predecessor's cell incomplete. When a discarded tail could hide a placement header or the
 command cannot identify the affected cell, all interiors use the whole-cell fallback. The
 command also warns and skips placements that require a damaged new interior. Usable records
