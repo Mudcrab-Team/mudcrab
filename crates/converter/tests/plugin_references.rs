@@ -3368,6 +3368,13 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
     let b = 0x901;
     let c = 0x902;
     let cells = [(a, 0x800u32), (b, 0x810), (c, 0x820)];
+    let moved_portal = |room: u32| {
+        placement_marker(
+            0x870,
+            0x20,
+            sub(b"XPOD", &[room.to_le_bytes(), 0u32.to_le_bytes()].concat()),
+        )
+    };
     let base = plugin(
         data,
         "Skyrim.esm",
@@ -3378,7 +3385,18 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
             .flat_map(|(cell, room)| {
                 [
                     record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])),
-                    placement_group(cell, placement_marker(room, 0x1f, Vec::new())),
+                    placement_group(
+                        cell,
+                        [
+                            placement_marker(room, 0x1f, Vec::new()),
+                            if cell == b {
+                                moved_portal(room)
+                            } else {
+                                Vec::new()
+                            },
+                        ]
+                        .concat(),
+                    ),
                 ]
                 .concat()
             })
@@ -3410,7 +3428,7 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
     let cases = [
         (
             "bad-group",
-            unknown_frame(bad_group),
+            unknown_frame(bad_group.clone()),
             [false, false, false],
             [false, false, true],
         ),
@@ -3423,12 +3441,35 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
         (
             "cell-navmesh-overrun",
             [
-                placement_group(a, [overrun, portal(0x800)].concat()),
+                placement_group(a, [overrun.clone(), moved_portal(0x800)].concat()),
                 placement_group(b, portal(0x810)),
             ]
             .concat(),
+            [false, false, false],
             [false, true, true],
+        ),
+        (
+            "cell-group-hides-move",
+            placement_group(a, [bad_group, moved_portal(0x800)].concat()),
+            [false, false, false],
+            [false, false, true],
+        ),
+        (
+            "short-navmesh-tail",
+            placement_group(a, [overrun, vec![0; 23]].concat()),
             [false, true, true],
+            [false, false, true],
+        ),
+        (
+            "parentless-invalid-compressed-override",
+            record(
+                b"REFR",
+                0x870,
+                0x40000,
+                vec![4, 0, 0, 0, 0xff, 0xff, 0xff, 0xff],
+            ),
+            [true, false, true],
+            [false, false, true],
         ),
         (
             "invalid-compressed-placement",
@@ -3472,6 +3513,16 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
             )
             .unwrap();
             let db = rusqlite::Connection::open(output).unwrap();
+            assert_eq!(
+                db.query_row(
+                    "SELECT cell_id FROM room_portals WHERE ref_id=0x870",
+                    [],
+                    |r| r.get::<_, u32>(0)
+                )
+                .unwrap(),
+                b,
+                "prior portal survives in its original cell: {reader:?} {name}"
+            );
             for (index, (cell, room)) in cells.into_iter().enumerate() {
                 let actual: (bool, bool, bool) = db
                     .query_row(
@@ -3623,6 +3674,18 @@ fn placement_certificate(db: &rusqlite::Connection, cell: u32) -> bool {
     .unwrap()
 }
 
+fn stored_placement_certificate(db: &rusqlite::Connection, cell: u32) -> Option<bool> {
+    use rusqlite::OptionalExtension;
+
+    db.query_row(
+        "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
+        [cell],
+        |row| row.get(0),
+    )
+    .optional()
+    .unwrap()
+}
+
 fn run_placement_import(assets: &Path, flag: &str, source: &Path) -> std::process::Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_converter"))
         .arg("apply-room-placements")
@@ -3656,19 +3719,42 @@ fn plugin_placement_import_keeps_neighbors_of_damaged_records_and_frames() {
     let cases = [
         (
             "bounded-record",
-            placement_group(a, [bad_move, good_neighbor()].concat()),
+            placement_group(a, [bad_move.clone(), good_neighbor()].concat()),
             [false, false, true],
             3,
         ),
         (
             "discarded-cell-frame",
             [
-                placement_group(a, overrun),
+                placement_group(a, overrun.clone()),
                 placement_group(a, good_neighbor()),
             ]
             .concat(),
             [false, false, true],
             3,
+        ),
+        (
+            "discarded-cell-frame-hides-override",
+            [
+                placement_group(
+                    a,
+                    [
+                        overrun,
+                        placement(0x842, PLACEMENT_STAT, 0, 5.0, Vec::new()),
+                    ]
+                    .concat(),
+                ),
+                placement_group(a, good_neighbor()),
+            ]
+            .concat(),
+            [false, false, false],
+            5,
+        ),
+        (
+            "parentless-bounded-record",
+            [bad_move, placement_group(a, good_neighbor())].concat(),
+            [false, false, false],
+            5,
         ),
         (
             "discarded-unknown-frame",
@@ -4782,12 +4868,19 @@ fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("Data");
     fs::create_dir(&data).unwrap();
+    let portal = |room: u32| {
+        placement_marker(
+            0x850,
+            0x20,
+            sub(b"XPOD", &[room.to_le_bytes(), [0; 4]].concat()),
+        )
+    };
     let mut contents = record(b"STAT", 0x830, 0, sub(b"EDID", b"FixtureStatic\0"));
     for (cell, room) in [(0x900, 0x800), (0x901, 0x810), (0x902, 0x820)] {
         contents.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
         let mut placements = placement_marker(room, 0x1f, Vec::new());
         if cell == 0x900 {
-            placements.extend(placement(0x850, 0x830, 0, 0.0, Vec::new()));
+            placements.extend(portal(room));
         }
         contents.extend(placement_group(cell, placements));
     }
@@ -4797,37 +4890,55 @@ fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
         "Fixed.esp",
         &["Skyrim.esm"],
         0,
-        placement_group(0x901, record(b"REFR", 0x850, 0x20, Vec::new())),
+        record(b"REFR", 0x850, 0x20, Vec::new()),
     );
     let restored = plugin(
         &data,
         "Restored.esp",
         &["Skyrim.esm"],
         0,
-        placement_group(0x901, placement(0x850, 0x830, 0, 0.0, Vec::new())),
+        placement_group(0x901, portal(0x810)),
     );
     let cases = [
         (
             "torn",
-            0x901,
+            Some(0x901),
             record(b"REFR", 0x850, 0x40000, vec![0xff; 8]),
             [false, false, true],
         ),
         (
             "invalid-parent",
-            0x0900_0901,
+            Some(0x0900_0901),
             placement(0x850, 0x830, 0, 0.0, Vec::new()),
             [false, true, true],
         ),
         (
             "null-parent",
-            0,
+            Some(0),
             placement(0x850, 0x830, 0, 0.0, Vec::new()),
             [false, true, true],
         ),
         (
+            "ungrouped",
+            None,
+            placement(0x850, 0x830, 0, 0.0, Vec::new()),
+            [false, true, true],
+        ),
+        (
+            "null-name",
+            Some(0x901),
+            placement(0x850, 0, 0, 0.0, Vec::new()),
+            [false, false, true],
+        ),
+        (
+            "null-first-name",
+            Some(0x901),
+            placement(0x850, 0, 0, 0.0, sub(b"NAME", &0x830u32.to_le_bytes())),
+            [false, false, true],
+        ),
+        (
             "missing-name",
-            0x901,
+            Some(0x901),
             record(b"REFR", 0x850, 0, sub(b"DATA", &[0; 24])),
             [false, false, true],
         ),
@@ -4839,7 +4950,10 @@ fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
             "Broken.esp",
             &["Skyrim.esm"],
             0,
-            placement_group(destination, candidate),
+            match destination {
+                Some(cell) => placement_group(cell, candidate),
+                None => candidate,
+            },
         );
         for (followup, expected_cell, expected_certificates) in [
             (None, Some(0x900), unresolved),
@@ -4857,9 +4971,19 @@ fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
                 let certificates =
                     [0x900, 0x901, 0x902].map(|cell| placement_certificate(&db, cell));
                 let winner = placement_winner_cell(&db, 0x850);
-                if certificates != expected_certificates || winner != expected_cell {
+                let projected: Option<u32> = db
+                    .query_row(
+                        "SELECT max(cell_id) FROM room_portals WHERE ref_id=0x850",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                if certificates != expected_certificates
+                    || winner != expected_cell
+                    || projected != expected_cell
+                {
                     failures.push(format!(
-                        "{reader:?} {name} followup={followup:?}: certificates={certificates:?}, winner={winner:?}; expected {expected_certificates:?}, {expected_cell:?}"
+                        "{reader:?} {name} followup={followup:?}: certificates={certificates:?}, winner={winner:?}, portal={projected:?}; expected {expected_certificates:?}, {expected_cell:?}"
                     ));
                 }
             }
@@ -5424,7 +5548,11 @@ fn a_short_child_header_uncertifies_only_its_own_interior() {
     for typed in [false, true] {
         let path = export_room_review_fixture(&data, &dir.path().join("bundle"), typed);
         let db = rusqlite::Connection::open(path).unwrap();
-        assert!(!placement_certificate(&db, 0x900), "typed={typed}");
+        assert_eq!(
+            stored_placement_certificate(&db, 0x900),
+            Some(false),
+            "typed={typed}"
+        );
         assert!(placement_certificate(&db, 0x901), "typed={typed}");
     }
 }
@@ -5442,9 +5570,10 @@ fn malformed_placed_base_keeps_its_known_cell_open() {
             typed,
         ))
         .unwrap();
-        assert!(
-            !placement_certificate(&db, 0x900),
-            "{name} certified a damaged placement"
+        assert_eq!(
+            stored_placement_certificate(&db, 0x900),
+            Some(false),
+            "{name} must persist the damaged placement's cell certificate"
         );
         let admitted: bool = db
             .query_row(

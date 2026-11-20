@@ -166,6 +166,8 @@ no duplicate render submissions are inserted. AABBs support rotation, negative/n
 and shear even though native assignment transforms require a uniform scale. Missing mesh bounds
 skip aperture filtering but retain the unreached-space test.
 
+With geometric membership, a mesh can use either endpoint’s visible volume when its reference
+bounds intersect a doorway attached to a containing or overlapping room.
 In roomed cells, empty geometric membership leaves the mesh eligible for ordinary view culling.
 Authored automatic assignment to unbounded space requires a usable model sphere.
 

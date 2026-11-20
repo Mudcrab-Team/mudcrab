@@ -278,7 +278,7 @@ fn parse_group_inner(
         if peek_tag == b"GRUP" {
             let Ok((rest, group)) = parse_group_header(curr) else {
                 warnings.skipped("invalid GRUP header".into());
-                visit(ParsedRecord::DiscardedFrame(current_cell.into()));
+                visit(ParsedRecord::DiscardedFrame(DiscardedFrameScope::Unknown));
                 curr = &[];
                 continue;
             };
@@ -294,7 +294,9 @@ fn parse_group_inner(
                     ),
                     None => format!("invalid GRUP size {}", group.data_size),
                 });
-                visit(ParsedRecord::DiscardedFrame(current_cell.into()));
+                visit(ParsedRecord::DiscardedFrame(
+                    DiscardedFrameScope::unread_tail(current_cell, rest.len()),
+                ));
                 if let Some(child) = cell_child {
                     visit(ParsedRecord::DiscardedFrame(DiscardedFrameScope::Cell(
                         child,
@@ -316,7 +318,7 @@ fn parse_group_inner(
         } else {
             let Ok((rest, header)) = parse_record_header(curr) else {
                 warnings.skipped("invalid record header".into());
-                visit(ParsedRecord::DiscardedFrame(current_cell.into()));
+                visit(ParsedRecord::DiscardedFrame(DiscardedFrameScope::Unknown));
                 curr = &[];
                 continue;
             };
@@ -334,7 +336,9 @@ fn parse_group_inner(
                 curr = next;
                 decode_record_subrecords(&header, payload)
             } else {
-                visit(ParsedRecord::DiscardedFrame(current_cell.into()));
+                visit(ParsedRecord::DiscardedFrame(
+                    DiscardedFrameScope::unread_tail(current_cell, rest.len()),
+                ));
                 curr = &[];
                 Err(eyre!(
                     "truncated record payload: expected {record_len}, got {}",
