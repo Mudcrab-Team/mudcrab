@@ -939,6 +939,12 @@ fn export_records(
         if record.record_type == *b"STAT" {
             super::object_materials::insert(&tx, master, record, &view)?;
         }
+        if order.is_none()
+            && super::is_placed_record_type(&record.record_type)
+            && !record.is_deleted()
+        {
+            delete_reference_scripts(&tx, form_id, scalar_script_storage)?;
+        }
         let vmad_bytes = view.find(b"VMAD");
         if let Some(vmad_bytes) = vmad_bytes {
             let parsed = parse_vmad(vmad_bytes, &record.record_type);
@@ -1025,7 +1031,11 @@ fn export_records(
                 }
                 crate::esm::reference_links::insert(
                     &tx,
-                    &crate::esm::reference_links::Context { master, order },
+                    &crate::esm::reference_links::Context {
+                        master,
+                        order,
+                        subset: order.is_none(),
+                    },
                     record,
                     &SubrecordView::new(&record.subrecords),
                 )?;
@@ -1785,7 +1795,7 @@ pub fn insert_reference(
     Ok(())
 }
 
-/// A deleted reference no longer owns scripts in either runtime layout.
+/// Remove the previous script projection before a placed record is replaced or deleted.
 fn delete_reference_scripts(
     tx: &Transaction<'_>,
     form_id: u32,
@@ -3768,22 +3778,107 @@ mod tests {
     }
 
     #[test]
-    fn subset_reference_deletion_clears_only_its_script_projections() {
+    fn subset_reference_links_use_pack_targets_and_the_current_edit_set() {
+        let db = Connection::open_in_memory().unwrap();
+        create_tables(&db).unwrap();
+        let placed = |id| reference(id, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        let target = 0x810;
+        let keyword = 0x811;
+        let deleted_target = 0x812;
+        let new_target = 0x910;
+        let edited = 0x900;
+        export_to_db(
+            &db,
+            &[
+                (target, placed(target)),
+                (keyword, record(keyword, b"KYWD", None, None, Vec::new())),
+                (deleted_target, placed(deleted_target)),
+            ]
+            .into(),
+        )
+        .unwrap();
+
+        let mut source = placed(edited);
+        for id in [target, deleted_target, new_target, keyword, 0x999, 0x14, 0] {
+            source.subrecords.push((
+                b"XAPR".to_vec(),
+                [id.to_le_bytes(), 1.0f32.to_le_bytes()].concat(),
+            ));
+            source
+                .subrecords
+                .push((b"XLKR".to_vec(), [word(keyword), word(id)].concat()));
+        }
+        let mut deleted = record(deleted_target, b"REFR", None, None, Vec::new());
+        deleted.flags = 0x20;
+        let expected = [
+            Some(target),
+            None,
+            Some(new_target),
+            None,
+            None,
+            Some(0x14),
+            None,
+        ];
+        for edits in [
+            [
+                (edited, source.clone()),
+                (deleted_target, deleted),
+                (new_target, placed(new_target)),
+            ]
+            .into(),
+            [(edited, source)].into(),
+        ] {
+            export_to_db(&db, &edits).unwrap();
+            let parents = db
+                .prepare(
+                    "SELECT parent_ref_id, delay FROM reference_activate_parents
+                          WHERE reference_id=?1 ORDER BY position",
+                )
+                .unwrap()
+                .query_map([edited], |row| {
+                    Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, f32>(1)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>>>()
+                .unwrap();
+            let linked = db
+                .prepare(
+                    "SELECT keyword_id, linked_ref_id FROM reference_linked_refs
+                          WHERE reference_id=?1 ORDER BY position",
+                )
+                .unwrap()
+                .query_map([edited], |row| {
+                    Ok((row.get::<_, u32>(0)?, row.get::<_, Option<u32>>(1)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>>>()
+                .unwrap();
+            assert_eq!(parents, expected.map(|id| (id, 1.0)));
+            assert_eq!(linked, expected.map(|id| (keyword, id)));
+        }
+    }
+
+    #[test]
+    fn subset_reference_script_projections_replace_atomically() {
         use dummy_content::inhouse_vmad as fixture;
-        let vmad = fixture::field(
-            5,
-            2,
-            &[fixture::script(
+        let vmad = |name, limit: i32| {
+            fixture::field(
                 5,
-                "DoorScript",
-                0,
-                &[fixture::property(5, "Limit", 3, 1, &42i32.to_le_bytes())],
-            )],
-            &[],
-        );
-        let scripted = |id| {
+                2,
+                &[fixture::script(
+                    5,
+                    name,
+                    0,
+                    &[fixture::property(5, "Limit", 3, 1, &limit.to_le_bytes())],
+                )],
+                &[],
+            )
+        };
+        let original_vmad = vmad("DoorScript", 42);
+        let replacement_vmad = vmad("ReplacementScript", 71);
+        let scripted = |id, data: &[u8]| {
             let mut row = reference(id, 0x100, 0x500, [0.0; 3], [0.0; 3]);
-            row.subrecords.push((b"VMAD".to_vec(), vmad.clone()));
+            row.subrecords.push((b"VMAD".to_vec(), data.to_vec()));
             (id, row)
         };
         for normalized in [false, true] {
@@ -3799,24 +3894,80 @@ mod tests {
             } else {
                 &["scripts"][..]
             };
-            let owners = |table: &str| {
-                db.prepare(&format!("SELECT form_id FROM {table} ORDER BY form_id"))
-                    .unwrap()
-                    .query_map([], |row| row.get::<_, u32>(0))
-                    .unwrap()
-                    .collect::<Result<Vec<_>>>()
-                    .unwrap()
+            let assert_scripts = |expected: &[(u32, &str)]| {
+                for table in tables {
+                    let actual = db
+                        .prepare(&format!(
+                            "SELECT form_id, script_name FROM {table} ORDER BY form_id, script_name"
+                        ))
+                        .unwrap()
+                        .query_map([], |row| {
+                            Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
+                        })
+                        .unwrap()
+                        .collect::<Result<Vec<_>>>()
+                        .unwrap();
+                    assert_eq!(
+                        actual
+                            .iter()
+                            .map(|(id, name)| (*id, name.as_str()))
+                            .collect::<Vec<_>>(),
+                        expected,
+                        "{table}"
+                    );
+                }
             };
-            export_to_db(&db, &[scripted(0x801), scripted(0x802)].into()).unwrap();
-            for table in tables {
-                assert_eq!(owners(table), [0x801, 0x802], "{table}");
-            }
+            let owner_data = || {
+                db.query_row("SELECT data FROM records WHERE form_id=0x801", [], |row| {
+                    row.get::<_, Vec<u8>>(0)
+                })
+                .unwrap()
+            };
+            let original = [
+                scripted(0x801, &original_vmad),
+                scripted(0x802, &original_vmad),
+            ]
+            .into();
+            export_to_db(&db, &original).unwrap();
+            let original_scripts = [(0x801, "DoorScript"), (0x802, "DoorScript")];
+            assert_scripts(&original_scripts);
+            let before = owner_data();
+            let replacement = [scripted(0x801, &replacement_vmad)].into();
+            db.execute_batch(
+                "CREATE TRIGGER reject_script BEFORE INSERT ON scripts
+                 WHEN NEW.script_name='ReplacementScript'
+                 BEGIN SELECT RAISE(ABORT, 'script write rejected'); END;",
+            )
+            .unwrap();
+            assert!(
+                export_to_db(&db, &replacement)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("script write rejected")
+            );
+            assert_scripts(&original_scripts);
+            assert_eq!(owner_data(), before);
+            db.execute_batch("DROP TRIGGER reject_script").unwrap();
+
+            export_to_db(&db, &replacement).unwrap();
+            assert_scripts(&[(0x801, "ReplacementScript"), (0x802, "DoorScript")]);
+            let actual: Vec<u8> = db
+                .query_row("SELECT vmad FROM scripts WHERE form_id=0x801", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(actual, replacement_vmad);
+            assert_ne!(owner_data(), before);
+
+            let plain = reference(0x801, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+            export_to_db(&db, &[(0x801, plain)].into()).unwrap();
+            assert_scripts(&[(0x802, "DoorScript")]);
+
+            export_to_db(&db, &replacement).unwrap();
             let mut deleted = record(0x801, b"REFR", None, None, Vec::new());
             deleted.flags = 0x20;
             export_to_db(&db, &[(0x801, deleted)].into()).unwrap();
-            for table in tables {
-                assert_eq!(owners(table), [0x802], "{table}");
-            }
+            assert_scripts(&[(0x802, "DoorScript")]);
         }
     }
 
