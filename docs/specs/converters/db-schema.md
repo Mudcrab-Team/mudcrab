@@ -1443,7 +1443,9 @@ unused FormIDs owned by the same plugin.
 
 Supported `REFR` fields are `EDID`, `NAME`, `DATA`, `XSCL`, `XESP`, `XMBR`, and the marker fields
 `XPRM`, `XRMR`, `XLRM`, `XPOD`, `LNAM`, and `INAM`. A room marker can carry one 12-byte `XMBO`.
-On import its three extents must match the first 12 bytes of `XPRM`. A door can also carry an `XTEL` field.
+On import its three extents must match the first 12 bytes of `XPRM`. A door can also carry a 32-byte
+`XTEL` field. If its size is wrong or its nonzero source destination cannot be resolved, the importer
+skips the placement and preserves its previous door link.
 Static primitives, actor references, scripts, new base records, exterior changes, and other
 `CELL` fields require a normal conversion.
 
@@ -1469,8 +1471,8 @@ Both explicit ownership choices set the Multibound flag and keep the placement v
 
 `put_room` adds or replaces a box room marker. Its `half_extents` array gives the X, Y, and Z
 half-extents in Creation units. Optional `links` name joined rooms in authored order.
-`put_portal` adds or replaces a portal marker with X and Z `half_extents`. Its `endpoints`
-array names two rooms in that cell. Use `0` for an explicit outside endpoint.
+`put_portal` adds or replaces a portal marker with finite, positive X and Z `half_extents`. Its
+`endpoints` array names two rooms in that cell. Use `0` for an explicit outside endpoint.
 
 ```json
 {
@@ -1498,9 +1500,9 @@ array names two rooms in that cell. Use `0` for an explicit outside endpoint.
 One transaction creates the runtime cell rows and updates placements, geometric memberships, and the room
 graph. Moves refresh both the source and destination cells. The command uses the model bounds
 already in the pack. It reports how many cells were created and how many affected cells passed
-certification. A fresh interior can earn its first certificate when its graph passes the same
-checks as a refreshed graph. A cell with no usable rooms or incomplete graph evidence uses the
-whole-cell fallback. An existing cell must have a valid prior certificate to retain certification.
+certification. A fresh interior with complete input retains its certificate even when it has no
+rooms. A later import can add its first room and portal. A cell with no usable rooms or incomplete graph
+evidence uses the whole-cell fallback. An existing cell must have a valid prior certificate to retain certification.
 Unknown assignments and unverified portal endpoints retain their conservative behavior.
 
 The original conversion's canonical `records`, `formid_map`, source history, and reports remain
