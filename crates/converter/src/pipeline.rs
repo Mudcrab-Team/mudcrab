@@ -965,7 +965,8 @@ impl AssetPipeline {
             };
 
             let result = spawn_blocking(move || {
-                ArchiveExtractor::extract_batched_with_session(
+                let mut ignored_inputs_by_extension = BTreeMap::new();
+                let result = ArchiveExtractor::extract_batched_with_session(
                     &archive_for_worker,
                     &vfs_for_worker,
                     &previous_cache_root,
@@ -976,10 +977,13 @@ impl AssetPipeline {
                     Some(&progress),
                     Some(&stop),
                     &ingestion_session_for_worker,
-                )
+                    &mut ignored_inputs_by_extension,
+                );
+                (result, ignored_inputs_by_extension)
             })
             .await
             .wrap_err("archive worker panicked")?;
+            let (result, ignored_inputs_by_extension) = result;
             // An archive abandoned by a stop ends the run as an interrupt, the same as a stop
             // between archives, rather than being counted as a skipped archive. Its cache entry
             // was never recorded; a resume recovers its sealed partial batches.
@@ -1016,12 +1020,6 @@ impl AssetPipeline {
             };
             match result {
                 Ok(outcome) => {
-                    for (extension, count) in outcome.ignored_inputs_by_extension {
-                        *manifest
-                            .ignored_inputs_by_extension
-                            .entry(extension)
-                            .or_default() += count;
-                    }
                     if let Some(warning) = control_warning {
                         report.warnings.push(warning);
                     }
@@ -1050,6 +1048,14 @@ impl AssetPipeline {
                     report.warnings.push(message);
                 }
                 Err(error) => return Err(error),
+            }
+            // A completed directory scan keeps its inventory counts even when the archive
+            // fails, and every outcome merges them exactly once.
+            for (extension, count) in ignored_inputs_by_extension {
+                *manifest
+                    .ignored_inputs_by_extension
+                    .entry(extension)
+                    .or_default() += count;
             }
         }
 

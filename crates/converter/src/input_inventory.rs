@@ -14,6 +14,8 @@ pub(crate) fn record_ignored(counts: &mut BTreeMap<String, u64>, path: &Path) {
 /// Count a discovered loose input unless a pipeline stage accepts its kind.
 /// Reuse the archive superset policy; stages that publish additional paths must also
 /// update the counter's supported set and its regression test.
+/// The optional PC control files under `interface/controls/pc` are published by
+/// `controls.rs`, so their own paths are not ignored inputs.
 /// Keep the metadata extensions in sync with `esm::plugins_txt::plugin_name`
 /// and archive discovery in `pipeline::AssetPipeline::run_into`.
 pub(crate) fn count_loose(counts: &mut BTreeMap<String, u64>, relative: &Path) {
@@ -29,7 +31,10 @@ pub(crate) fn count_loose(counts: &mut BTreeMap<String, u64>, relative: &Path) {
         lower.as_str(),
         "plugins.txt" | "loadorder.txt" | "skyrim.ccc"
     );
-    if !metadata && !crate::cache::IngestionSelection::ConverterInputsV1.includes(path) {
+    if !metadata
+        && !crate::controls::owns_input(path)
+        && !crate::cache::IngestionSelection::ConverterInputsV1.includes(path)
+    {
         record_ignored(counts, path);
     }
 }

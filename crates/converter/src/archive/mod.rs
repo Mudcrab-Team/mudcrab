@@ -440,8 +440,6 @@ pub struct ExtractionOutcome {
     pub cache_entry: IngestionCacheEntry,
     pub cache_hit: bool,
     pub timings: ExtractionTimings,
-    /// Full archive-directory counts for paths omitted by the selected recipe.
-    pub ignored_inputs_by_extension: BTreeMap<String, u64>,
 }
 
 /// Current reader version of BSA archives, stored in their ingestion cache entries. Version 1
@@ -605,6 +603,7 @@ impl ArchiveExtractor {
         progress: Option<ExtractionProgressCallback<'_>>,
         stop: Option<StopCheck<'_>>,
         session: &RawIngestionSession,
+        ignored_inputs_by_extension: &mut BTreeMap<String, u64>,
     ) -> Result<ExtractionOutcome> {
         color_eyre::eyre::ensure!(
             options.sync != IngestionSync::None || verify_integrity,
@@ -625,6 +624,7 @@ impl ArchiveExtractor {
             stop,
             None,
             session,
+            ignored_inputs_by_extension,
         )
     }
 
@@ -714,6 +714,7 @@ impl ArchiveExtractor {
             stop,
             None,
             session,
+            &mut BTreeMap::new(),
         )
     }
 

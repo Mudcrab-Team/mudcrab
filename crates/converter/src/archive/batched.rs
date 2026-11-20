@@ -255,6 +255,7 @@ pub(super) fn extract(
         stop,
         observer,
         &session,
+        &mut BTreeMap::new(),
     )
 }
 
@@ -271,6 +272,7 @@ pub(super) fn extract_with_session(
     stop: Option<StopCheck<'_>>,
     observer: WriterObserver<'_>,
     session: &RawIngestionSession,
+    ignored_inputs_by_extension: &mut BTreeMap<String, u64>,
 ) -> Result<ExtractionOutcome> {
     ensure!(
         options.cpu_jobs > 0 && options.io_jobs > 0,
@@ -302,23 +304,31 @@ pub(super) fn extract_with_session(
         _ => bail!("unsupported archive magic in {}", archive_path.display()),
     };
     let mut seen = BTreeMap::new();
-    let mut selected = Vec::new();
-    let mut ignored_inputs_by_extension = BTreeMap::new();
+    let mut chosen = Vec::new();
+    let mut inventory = BTreeMap::new();
     for (name, payload) in raw {
         let path = safe_relative_path(&name)?;
         // Validate the whole namespace before filtering: unsupported files do
         // not conceal traversal or case-folded collisions.
         detect_archive_collision(&mut seen, &path, &name)?;
         if options.selection.includes(&path) {
-            let bytes = payload.decoded_size()?;
-            selected.push(Pending {
-                path,
-                bytes,
-                payload,
-            });
-        } else {
-            crate::input_inventory::record_ignored(&mut ignored_inputs_by_extension, &path);
+            chosen.push((path, payload));
+        } else if !crate::controls::owns_input(&path) {
+            crate::input_inventory::record_ignored(&mut inventory, &path);
         }
+    }
+    // Hand the completed directory inventory to the caller before payloads are
+    // decoded, so a recoverable payload error keeps these counts. A directory
+    // validation error returns without publishing partial counts.
+    *ignored_inputs_by_extension = inventory;
+    let mut selected = Vec::new();
+    for (path, payload) in chosen {
+        let bytes = payload.decoded_size()?;
+        selected.push(Pending {
+            path,
+            bytes,
+            payload,
+        });
     }
     let total_bytes = selected.iter().map(|entry| entry.bytes as u64).sum();
     let reporter = progress
@@ -407,7 +417,6 @@ pub(super) fn extract_with_session(
                 files,
                 cache_entry: entry,
                 cache_hit: true,
-                ignored_inputs_by_extension,
                 timings,
             });
         }
@@ -622,7 +631,6 @@ pub(super) fn extract_with_session(
         files,
         cache_entry: entry,
         cache_hit,
-        ignored_inputs_by_extension,
     })
 }
 

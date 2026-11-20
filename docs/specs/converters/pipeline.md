@@ -701,7 +701,8 @@ and malformed plugin records retain their existing warning/completeness behavior
 | Input source or kind | Existing selection policy | Inventory treatment |
 | --- | --- | --- |
 | Loose DDS, NIF, PEX and LOD | Existing asset/LOD stages consume their supported paths | Accepted input kinds; selection is unchanged |
-| Loose HKX | Existing animation path predicate selects consumed skeleton/project/clip inputs | Other HKX paths count as ignored |
+| Loose HKX | Existing `meshes/**` path rule selects consumed skeleton/project/clip inputs | Other HKX paths count as ignored |
+| `interface/controls/pc/controlmap.txt`, `keyboard_english.txt`, `gamepad.txt` | Existing control-file publisher selects these three optional paths, loose or archived | Published inputs; not counted as ignored |
 | STRINGS, DLSTRINGS, ILSTRINGS | Existing localized reader selects required banks | Accepted loose input kind; unused individual keys/banks are outside this extension inventory |
 | ESM, ESP, ESL; BSA, BA2 | Existing plugin activation and archive policy select usable inputs | Containers/plugins are metadata inputs, not ignored extensions; inactive containers are not inspected |
 | `plugins.txt`, `loadorder.txt`, `Skyrim.ccc` at Data root | Existing selection authority | Not counted as unsupported content |
@@ -711,9 +712,15 @@ and malformed plugin records retain their existing warning/completeness behavior
 
 Each enabled archive contributes its full directory inventory on fresh extraction and
 cache reuse. Counts are recomputed for every run, rather than accumulated from a prior
-manifest. Archive copies and loose copies are distinct discovered input occurrences;
-this inventory does not claim to count only final VFS winners. Existing
+manifest. An archive that fails after its directory scan keeps those counts, while an
+archive whose directory cannot be read before the scan completes contributes none.
+A metadata rebuild keeps the base manifest's counts, because it reuses the
+recorded inventory instead of re-reading source inputs. Archive copies and loose copies
+are distinct discovered input occurrences; this inventory does not claim to count only
+final VFS winners. Existing
 `excluded_inputs` still records per-path authoring-resource reasons independently.
 The inventory shares the existing converter-input selection predicate for supported
-paths. Stages that publish additional inputs outside that predicate must also update
-the counter's supported set and its regression test. No input-selection rule is added here.
+paths. The three optional control files are published outside that predicate, so the
+counter skips their own path list. Stages that publish additional inputs outside the
+predicate must also update the counter's supported set and its regression test. No
+input-selection rule is added here.
