@@ -532,7 +532,9 @@ fn handwritten_projection_notice_is_not_duplicated() {
     let projected: Vec<_> = conversion
         .notices
         .iter()
-        .filter(|line| line.contains("master list") || line.contains("out-of-range master"))
+        .filter(|line| {
+            line.contains("treated as the plugin's own") || line.contains("out-of-range master")
+        })
         .collect();
     assert_eq!(projected.len(), 1, "{projected:?}");
     assert!(projected[0].starts_with("notice:"), "{projected:?}");
