@@ -7517,7 +7517,42 @@ fn check_discarded_occluder_override(import: bool) {
     let compressed = |tag, id| record(tag, id, 0x40000, vec![4, 0, 0, 0, 0xff]);
     let restored = placement_marker(0x801, 0x17, Vec::new());
     let deleted = record(b"REFR", 0x801, 0x20, Vec::new());
-    for (name, damaged, later, expected) in [
+    let xord = || sub(b"XORD", &[0x802u32, 0, 0, 0].map(u32::to_le_bytes).concat());
+    let ambiguous = |first, second: u32| {
+        placement_marker(
+            0x801,
+            first,
+            [sub(b"NAME", &second.to_le_bytes()), xord()].concat(),
+        )
+    };
+    let cases = [
+        ("short-r", b"R".to_vec(), None, 0),
+        ("short-re", b"RE".to_vec(), None, 0),
+        ("short-ref", b"REF".to_vec(), None, 0),
+        ("short-reg", b"REG".to_vec(), None, 1),
+        ("ambiguous-marker-first", ambiguous(0x17, 0x999), None, 0),
+        ("ambiguous-marker-last", ambiguous(0x999, 0x17), None, 0),
+        ("ambiguous-ordinary", ambiguous(0x810, 0x999), None, 1),
+        (
+            "ambiguous-null-links",
+            placement_marker(
+                0x801,
+                0x17,
+                [
+                    sub(b"NAME", &0x999u32.to_le_bytes()),
+                    sub(b"XORD", &[0; 16]),
+                ]
+                .concat(),
+            ),
+            None,
+            1,
+        ),
+        (
+            "ambiguous-restored",
+            ambiguous(0x17, 0x999),
+            Some(&restored),
+            1,
+        ),
         ("ordinary", partial(0x803, 20), None, 0),
         ("ordinary-overrun", partial(0x803, 24), None, 0),
         ("new", partial(0x0100_0801, 20), None, 0),
@@ -7547,12 +7582,49 @@ fn check_discarded_occluder_override(import: bool) {
             Some(&deleted),
             1,
         ),
-    ] {
+    ]
+    .into_iter()
+    .map(|(name, damaged, later, expected)| {
         let cell = if name == "bounded-zlib" { 0x902 } else { 0x900 };
         let mut contents = placement_group(cell, damaged);
         if let Some(later) = later {
             contents.extend(placement_group(0x900, later.clone()));
         }
+        (name, contents, expected)
+    });
+    let wrong_parent = || placement_group(0, placement_marker(0x801, 0x17, xord()));
+    let typed_only = [
+        ("invalid-parent", wrong_parent(), 0),
+        (
+            "invalid-parent-unrelated-replacement",
+            [
+                wrong_parent(),
+                placement_group(0x900, placement(0x803, 0x810, 0, 0.0, Vec::new())),
+            ]
+            .concat(),
+            0,
+        ),
+        (
+            "unknown-record-id",
+            [
+                placement_group(0x900, placement_marker(0, 0x17, xord())),
+                placement_group(0x900, restored.clone()),
+            ]
+            .concat(),
+            0,
+        ),
+        (
+            "invalid-parent-restored",
+            [wrong_parent(), placement_group(0x900, restored.clone())].concat(),
+            1,
+        ),
+        (
+            "invalid-parent-deleted",
+            [wrong_parent(), placement_group(0x900, deleted.clone())].concat(),
+            1,
+        ),
+    ];
+    for (name, contents, expected) in cases.chain(typed_only.into_iter().filter(|_| !import)) {
         let patch = plugin(data, &format!("{name}.esp"), &["Skyrim.esm"], 0, contents);
         let assets = data.join(name);
         fs::create_dir(&assets).unwrap();
@@ -7586,11 +7658,12 @@ fn check_discarded_occluder_override(import: bool) {
             1,
             "{name}"
         );
-        assert_eq!(
-            stored_placement_certificate(&conn, 0x901),
-            Some(name != "unknown"),
-            "{name}"
-        );
+        let other_complete = !matches!(name, "unknown" | "short-r" | "short-re" | "short-ref");
+        if stored_placement_certificate(&conn, 0x901) != Some(other_complete) {
+            failures.push(format!(
+                "{name}: cell 0x901 expected complete={other_complete}"
+            ));
+        }
         if name == "bounded-zlib" {
             assert_eq!(stored_placement_certificate(&conn, 0x900), Some(false));
             assert_eq!(stored_placement_certificate(&conn, 0x902), Some(false));
