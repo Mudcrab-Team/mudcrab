@@ -290,6 +290,13 @@ impl Portal {
         }
     }
 
+    fn has_usable_aperture(&self) -> bool {
+        let [a, b, c, d] = self.corners.map(Vec3::as_dvec3);
+        // The diagonals give twice the area. Widen the calculation to check the final f32 area.
+        let area = (0.5 * (c - a).cross(d - b).length()) as f32;
+        area.is_finite() && area > 0.0
+    }
+
     fn center(&self) -> Vec3 {
         self.corners.iter().copied().sum::<Vec3>() / 4.0
     }
@@ -708,7 +715,7 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
         })?;
         for portal in rows {
             let (portal, valid) = portal?;
-            graph.incomplete |= !valid || portal.corners.iter().any(|point| !point.is_finite());
+            graph.incomplete |= !valid || !portal.has_usable_aperture();
             graph.portals.push(portal);
         }
     }
@@ -1399,6 +1406,31 @@ mod tests {
                 "a certified old pack with extent {half:?} must draw the mesh"
             );
         }
+        let falls_back = [
+            (1.0, 2.0),
+            (1.0e10, 1.0e10),
+            (1.0e-10, 2.0),
+            (1.0e20, 1.0e20),
+        ]
+        .map(|half| {
+            connection
+                .execute(
+                    "UPDATE room_portals SET pos_x=1,pos_z=12,half_x=?1,half_z=?2",
+                    half,
+                )
+                .unwrap();
+            let graph = load_room_graph(&connection, 7).unwrap();
+            let portal = &graph.portals[0];
+            assert!(portal.corners.iter().all(|point| point.is_finite()));
+            graph
+                .visibility_volumes(Vec3::ZERO, clip_from_local())
+                .is_none()
+        });
+        assert_eq!(
+            falls_back,
+            [false, false, true, true],
+            "only the collapsed and overflowing apertures must draw the whole cell"
+        );
     }
 
     #[test]
