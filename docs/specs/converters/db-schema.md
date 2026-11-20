@@ -715,9 +715,9 @@ Rules:
   targets resolve to NULL. Valid-length `XLKR` and `XAPR` rows are kept in source order with
   contiguous positions among accepted-length entries, even when a target resolves to NULL. This
   makes legacy projection match the in-house reader's invalid-link clearing behavior.
-- When a subset removes a placement, incoming `XAPR` and `XLKR` slots that referenced it become
-  NULL in the same transaction. Restoring the target resolves the affected slots from the
-  effective source payload, including sources omitted from the subset.
+- When a subset export or placement layer removes a placement, its incoming `XAPR` and `XLKR`
+  slots become NULL in the same transaction. Adding or restoring a target resolves matching
+  slots from the effective source payload, including sources outside the edit batch.
 - A field whose length the in-house schema rejects is skipped for both readers: `XLKR` must be 4
   or 8 bytes, `XAPR` 8, `XAPD` 1, `XOWN`/`XRNK`/`XLCN`/`XLRL`/`XEZN`/`XATR` 4, `FNAM` 1 and `TNAM`
   2.
