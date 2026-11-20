@@ -1550,6 +1550,11 @@ On import its three extents must match the first 12 bytes of `XPRM`. A door can 
 Static primitives, actor references, scripts, new base records, exterior changes, and other
 `CELL` fields require a normal conversion.
 
+If an imported plugin's occluder has unusable geometry or unresolved source fields, the
+command reports the omission and skips its occlusion geometry. Valid placements in the same
+plugin still apply. The affected cells stay incomplete. Resolved outgoing link slots continue
+to suppress their targets even when the source marker has no usable shape.
+
 `--native` accepts a `cells` array for new interiors and an `edits` array for placements.
 Provide at least one cell or edit. A cell declaration takes an `id`, an `editor_id`, and an optional
 `full_name`. `put` adds or replaces a static placement or occluder, and `delete` removes a placement by

@@ -171,7 +171,7 @@ fn project(
     tx: &Transaction<'_>,
     record: &RawRecord,
     interior: bool,
-    provenance: MarkerSource,
+    provenance: MarkerSource<'_>,
     target_exists: impl Fn(u32) -> Result<bool>,
     result: &mut Exported,
     omissions: &mut ProjectionOmissions,
