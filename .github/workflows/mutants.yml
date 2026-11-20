@@ -1,0 +1,303 @@
+name: mutants
+
+# Mutation testing of the converter's record readers and recovery code (#833).
+#
+# A mutant is one small source change, such as `<=` becoming `<`. If the tests still pass, the
+# mutant survived, and no test proves that line matters. The survivors are the report.
+#
+# This never runs on a pull request: every mutant rebuilds the converter and reruns its tests, so
+# one shard takes tens of minutes. The schedule and a manual dispatch produce a report; they do
+# not gate anything. Gating new code with `--in-diff` is a later change.
+#
+# The scope is split by `--shard k/n` so each job fits its timeout. Each shard uploads its own
+# mutants.out, because a shard that stops at the timeout still reports what it finished.
+# docs/contributing/mutants.md explains how to read the artifacts and how to run this locally.
+
+on:
+  schedule:
+    # Monday 04:17 UTC: off the hour, so the run does not queue behind the hourly jobs.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      files:
+        description: 'Space-separated cargo-mutants --file globs, relative to the repository root. Empty uses the reader default.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  # A scheduled report and a manual report may both finish; do not cancel a run that already spent
+  # an hour of runner time.
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+  RUSTUP_TOOLCHAIN: "1.98.1"
+  # Debug info is not needed to run a test, and linking without it is much faster. Each mutant
+  # relinks the converter's test binaries, so this is the main saving.
+  RUSTFLAGS: "-C debuginfo=0"
+  # Upgrade deliberately, together with the versions in docs/contributing/mutants.md.
+  CARGO_MUTANTS_VERSION: '27.1.0'
+  CARGO_NEXTEST_VERSION: '0.9.152'
+
+jobs:
+  mutants:
+    name: mutants shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    # The scope below is sized so that one shard finishes inside this cap with room to spare.
+    timeout-minutes: 120
+    strategy:
+      # One slow shard must not cancel the shards that would still report.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+
+      - name: Set up mold linker
+        uses: rui314/setup-mold@v1
+
+      - name: Install nextest ${{ env.CARGO_NEXTEST_VERSION }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@${{ env.CARGO_NEXTEST_VERSION }}
+
+      - name: Install cargo-mutants ${{ env.CARGO_MUTANTS_VERSION }}
+        run: cargo install --locked cargo-mutants --version "$CARGO_MUTANTS_VERSION"
+
+      - name: Run cargo-mutants
+        env:
+          # First slice of the reader and recovery scope: the framing reader, which recovers at
+          # trusted boundaries and bounds inflation, and the memory-mapped plugin reader. That is
+          # about 101 mutants. The measured cost is dominated by hanging mutants, which cost the
+          # full test timeout each, so keep the scheduled slice small.
+          # Run `crates/converter/src/esm/binary.rs` (116 mutants), `crates/converter/src/esm/load_order.rs`
+          # (127), or the wider `crates/converter/src/records/**` and
+          # `crates/converter/src/esm/**` globs by hand with the `files` input; see
+          # docs/contributing/mutants.md.
+          DEFAULT_FILES: >-
+            crates/converter/src/records/scanner.rs
+            crates/converter/src/esm/mmap_reader.rs
+          MUTANT_FILES: ${{ inputs.files }}
+        run: |
+          set -euo pipefail
+          files="${MUTANT_FILES:-$DEFAULT_FILES}"
+          file_args=()
+          for glob in $files; do
+            file_args+=(--file "$glob")
+          done
+          if [ "${#file_args[@]}" -eq 0 ]; then
+            echo '::error::No --file globs were given, so the run would cover the whole converter.'
+            exit 2
+          fi
+
+          # Count first, so a typo in a glob fails loudly instead of reporting an empty success.
+          if ! list_output=$(cargo mutants -p converter "${file_args[@]}" \
+            --shard "${{ matrix.shard }}/${{ strategy.job-total }}" --list --no-times); then
+            echo '::error::cargo-mutants could not list mutants. Check the workspace and the globs.'
+            exit 2
+          fi
+          planned=$(printf '%s\n' "$list_output" | grep -c '^crates/' || true)
+          echo "Shard ${{ matrix.shard }} plans to test $planned mutants." | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$planned" -eq 0 ]; then
+            echo '::error::No mutants were found for this shard. Check the --file globs.'
+            exit 2
+          fi
+
+          set +e
+          # Copy mode (the default) rather than --in-place: cargo-mutants refuses --jobs together
+          # with --in-place, and two jobs let one test run overlap the next build. Each job builds
+          # its own copy, so the first mutant of the second copy pays one full dependency build.
+          cargo mutants -p converter "${file_args[@]}" \
+            --test-tool nextest \
+            --timeout-multiplier 2 \
+            --jobs 2 \
+            --shard "${{ matrix.shard }}/${{ strategy.job-total }}"
+          status=$?
+          set -e
+
+          # 0: every mutant was caught. 2: survivors, which is a report, not an error. 3: at least
+          # one test timed out, which the summary counts. Anything else, including a failed
+          # baseline (4), is an infrastructure failure and fails this job.
+          echo "cargo-mutants exited with status $status"
+          case "$status" in
+            0 | 2 | 3) ;;
+            *) exit "$status" ;;
+          esac
+
+      - name: Summarize the shard
+        if: always()
+        run: |
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json
+          import os
+          from collections import Counter
+
+          # mutants.json writes a SummaryOutcome value per mutant. The report groups them into the
+          # four outcomes the docs name, plus "not tested" for a shard that stopped early.
+          OUTCOMES = {
+              "CaughtMutant": "caught",
+              "MissedMutant": "missed",
+              "Timeout": "timeout",
+              "Unviable": "unviable",
+              "Failure": "failure",
+              "Success": "not tested",
+              None: "not tested",
+          }
+
+          out = "mutants.out"
+          path = os.path.join(out, "mutants.json")
+          try:
+              with open(path, encoding="utf-8") as stream:
+                  mutants = json.load(stream)
+          except FileNotFoundError:
+              print("## Mutants shard ${{ matrix.shard }}")
+              print()
+              print("No mutants.json was written, so this shard tested nothing.")
+              print("cargo-mutants failed before it reported; read the job log.")
+              raise SystemExit(0)
+
+          counts = Counter(OUTCOMES.get(mutant.get("summary"), "not tested") for mutant in mutants)
+          print("## Mutants shard ${{ matrix.shard }} of ${{ strategy.job-total }}")
+          print()
+          print("| Outcome | Mutants |")
+          print("| --- | --- |")
+          for outcome in ("caught", "missed", "timeout", "unviable", "failure", "not tested"):
+              print(f"| {outcome} | {counts.get(outcome, 0)} |")
+          print(f"| total | {len(mutants)} |")
+
+          missed_path = os.path.join(out, "missed.txt")
+          if os.path.exists(missed_path):
+              missed = [line.strip() for line in open(missed_path, encoding="utf-8") if line.strip()]
+              if missed:
+                  print()
+                  print("Surviving mutants:")
+                  print()
+                  for name in missed:
+                      print(f"- `{name}`")
+          PY
+
+      - name: Upload the mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-shard-${{ matrix.shard }}
+          path: mutants.out/
+          # A missing report means the shard proved nothing; do not hide that.
+          if-no-files-found: error
+          retention-days: 30
+
+  report:
+    name: surviving mutants
+    needs: mutants
+    # Run even when a shard failed or reached its timeout: the other shards still reported.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download every shard report
+        uses: actions/download-artifact@v4
+        with:
+          pattern: mutants-shard-*
+          path: shards
+
+      - name: Merge the surviving mutants
+        run: |
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob
+          import json
+          import os
+          from collections import Counter
+
+          OUTCOMES = {
+              "CaughtMutant": "caught",
+              "MissedMutant": "missed",
+              "Timeout": "timeout",
+              "Unviable": "unviable",
+              "Failure": "failure",
+              "Success": "not tested",
+              None: "not tested",
+          }
+
+          counts = Counter()
+          survivors = set()
+          shards = sorted(glob.glob("shards/mutants-shard-*"))
+          reported = 0
+          for shard in shards:
+            out = os.path.join(shard, "mutants.out")
+            try:
+              with open(os.path.join(out, "mutants.json"), encoding="utf-8") as stream:
+                mutants = json.load(stream)
+            except FileNotFoundError:
+              counts["shard without a report"] += 1
+              continue
+            reported += 1
+            for mutant in mutants:
+              counts[OUTCOMES.get(mutant.get("summary"), "not tested")] += 1
+            missed = os.path.join(out, "missed.txt")
+            if os.path.exists(missed):
+              survivors.update(line.strip() for line in open(missed, encoding="utf-8") if line.strip())
+
+          with open("surviving-mutants.txt", "w", encoding="utf-8") as stream:
+            for name in sorted(survivors):
+              stream.write(name + "\n")
+
+          print("## Mutation report")
+          print()
+          print(f"Shards reporting: {reported} of {len(shards)}")
+          print()
+          print("| Outcome | Mutants |")
+          print("| --- | --- |")
+          for outcome in ("caught", "missed", "timeout", "unviable", "failure", "not tested"):
+            print(f"| {outcome} | {counts.get(outcome, 0)} |")
+          if counts.get("shard without a report"):
+            print(f"| shard without a report | {counts['shard without a report']} |")
+          print()
+          print(f"Surviving mutants: {len(survivors)}")
+          if survivors:
+            print()
+            for name in sorted(survivors):
+              print(f"- `{name}`")
+          PY
+          if [ ! -s surviving-mutants.txt ]; then
+            echo "No surviving mutants were reported." >> surviving-mutants.txt
+          fi
+
+      - name: Upload the merged list
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report
+          path: surviving-mutants.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      # The report exists, so this job succeeds even with survivors. A run that reported nothing is
+      # a broken schedule, so fail it loudly.
+      - name: Fail when no shard reported
+        run: |
+          if ! ls shards/mutants-shard-*/mutants.out/mutants.json >/dev/null 2>&1; then
+            echo '::error::No shard produced mutants.json, so the schedule produced no report.'
+            exit 1
+          fi
