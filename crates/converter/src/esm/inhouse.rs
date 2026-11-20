@@ -1387,7 +1387,7 @@ fn convert_plugins_with_text_sources_report_impl(
         )?;
         tx.execute(
             "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES
-             ('visibility_version',2),('occlusion_version',1),('occlusion_links_verified',1)",
+             ('visibility_version',2),('occlusion_version',1)",
             [],
         )?;
     }

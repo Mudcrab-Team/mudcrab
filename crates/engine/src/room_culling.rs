@@ -1799,6 +1799,37 @@ mod tests {
     }
 
     #[test]
+    fn malformed_occluder_values_preserve_portals_and_valid_occluders() {
+        let connection = occluder_database();
+        insert_room(&connection, 1, 7, [0.0; 3]);
+        connection
+            .execute_batch(
+                "INSERT INTO room_portals VALUES(10,7,0,0,0,0,0,0,4,6,1,NULL,0,1);
+                 INSERT INTO room_occluders VALUES(501,7,3,0,40,0,0,0,0,'invalid',0,8,1,0,0,0,NULL);",
+            )
+            .unwrap();
+        let graph = load_room_graph(&connection, 7).unwrap();
+        assert_eq!(
+            graph.portals[0].rooms,
+            [PortalSide::Room(0), PortalSide::Unbounded]
+        );
+        assert_eq!(
+            graph
+                .occluders
+                .values()
+                .flatten()
+                .map(|shape| shape.ref_id)
+                .collect::<Vec<_>>(),
+            [500]
+        );
+
+        connection
+            .execute_batch("ALTER TABLE room_occluders RENAME COLUMN half_x TO missing_half_x")
+            .unwrap();
+        assert!(load_room_graph(&connection, 7).is_err());
+    }
+
+    #[test]
     fn occluder_ownership_resolves_joined_bounds_and_skips_ambiguous_masters() {
         let connection = occluder_database();
         insert_room(&connection, 1, 7, [0.0; 3]);

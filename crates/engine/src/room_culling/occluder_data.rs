@@ -1,7 +1,7 @@
 //! Optional, source-versioned occluder facts. Unsupported ownership and state never hide meshes.
 
 use super::{PortalSide, RoomGraph, occlusion::Occluder};
-use rusqlite::{Connection, Result};
+use rusqlite::{Connection, Error, Result};
 use std::collections::HashSet;
 
 fn supported(conn: &Connection) -> Result<bool> {
@@ -71,7 +71,11 @@ pub(super) fn load(conn: &Connection, cell: u32, graph: &RoomGraph) -> Result<Ve
     })?;
     let mut occluders = Vec::new();
     for row in rows {
-        let (id, shape, position, rotation, half, scale, flags, parent, links, target) = row?;
+        let (id, shape, position, rotation, half, scale, flags, parent, links, target) = match row {
+            Ok(values) => values,
+            Err(Error::InvalidColumnType(..) | Error::IntegralValueOutOfRange(..)) => continue,
+            Err(error) => return Err(error),
+        };
         // Initially disabled, deleted, NONE, enable-parent, linked, and explicit override paths
         // need runtime state or construction rules not provided by the static room export.
         if flags & (0x800 | 0x20 | shared::records::MULTIBOUND_REFERENCE_FLAG) != 0

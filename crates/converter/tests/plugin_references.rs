@@ -2587,10 +2587,10 @@ fn occluder_links_keep_the_source_occurrence_after_a_rejected_xord() {
 #[test]
 fn occluder_link_verification_distinguishes_null_from_unusable_source() {
     let unresolved = [0u32, 0x0900_0802, 0, 0].map(u32::to_le_bytes).concat();
-    for (links, complete) in [
-        (&[0; 16][..], true),
-        (&[0; 12], false),
-        (&unresolved, false),
+    for (links, complete, verified) in [
+        (&[0; 16][..], true, 1),
+        (&[0; 12], false, 0),
+        (&unresolved, false, 1),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path().join("Data");
@@ -2601,7 +2601,7 @@ fn occluder_link_verification_distinguishes_null_from_unusable_source() {
         let read = |sql| conn.query_row(sql, [], |row| row.get::<_, u32>(0)).unwrap();
         assert_eq!(
             read("SELECT value FROM room_graph_stats WHERE name='occlusion_links_verified'"),
-            1
+            verified
         );
         assert_eq!(read("SELECT count(*) FROM room_occluder_links"), 0);
         assert_eq!(
