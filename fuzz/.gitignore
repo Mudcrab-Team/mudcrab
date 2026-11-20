@@ -1,0 +1,6 @@
+# cargo-fuzz output. The committed seeds are in `seeds/`.
+target/
+corpus/
+artifacts/
+coverage/
+
