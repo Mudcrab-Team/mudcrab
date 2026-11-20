@@ -4,6 +4,10 @@ use serde_json::{Value, json};
 use std::{fs, path::Path, process::Command};
 
 fn write_glb(path: &Path, x: f32, sphere: Option<Value>) {
+    write_glb_with(path, x, sphere, |_| {});
+}
+
+fn write_glb_with(path: &Path, x: f32, sphere: Option<Value>, configure: impl FnOnce(&mut Value)) {
     let mut document = json!({
         "asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],
         "nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
@@ -14,6 +18,7 @@ fn write_glb(path: &Path, x: f32, sphere: Option<Value>) {
     if let Some(sphere) = sphere {
         document["extras"]["mudcrabRoomSphere"] = sphere;
     }
+    configure(&mut document);
     let mut document = serde_json::to_vec(&document).unwrap();
     document.resize(document.len().next_multiple_of(4), b' ');
     let mut glb = b"glTF".to_vec();
@@ -201,6 +206,57 @@ fn installed_native_winners_refresh_all_matching_bases_and_room_ownership_inputs
         )
         .unwrap();
     assert_eq!(certification, (true, false, 100, true));
+}
+
+#[test]
+fn native_spheres_accept_shading_extensions_and_still_require_enclosure() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join("meshes")).unwrap();
+    let connection = Connection::open(root.join("skyrim_world.db")).unwrap();
+    create_tables(&connection).unwrap();
+    connection
+        .execute(
+            "INSERT INTO statics(id,model_path,flags) VALUES (10,'wall.nif',0)",
+            [],
+        )
+        .unwrap();
+    let key = "meshes/wall.glb";
+    for (additional, required, radius, expected) in [
+        (None, false, 2.0, true),
+        (None, true, 2.0, true),
+        (Some("KHR_texture_transform"), false, 2.0, true),
+        (None, false, 0.5, false),
+        (Some("KHR_mesh_quantization"), false, 2.0, false),
+        (Some("KHR_materials_unknown"), false, 2.0, false),
+    ] {
+        let sphere = json!({"version":1,"center":[1,1,0],"radius":radius});
+        write_glb_with(&root.join(key), 0.0, Some(sphere), |doc| {
+            let specular = "KHR_materials_specular";
+            doc["materials"] = json!([{"extensions":{(specular):{"specularFactor":0.5}}}]);
+            doc["meshes"][0]["primitives"][0]["material"] = json!(0);
+            doc["extensionsUsed"] = json!(
+                std::iter::once(specular)
+                    .chain(additional)
+                    .collect::<Vec<_>>()
+            );
+            if required {
+                doc["extensionsRequired"] = json!([specular]);
+            }
+        });
+        refresh(root, &[key]);
+        let retained: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM room_model_bounds WHERE base_form_id=10)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            retained, expected,
+            "{additional:?}, required={required}, radius={radius}"
+        );
+    }
 }
 
 #[cfg(target_os = "linux")]
