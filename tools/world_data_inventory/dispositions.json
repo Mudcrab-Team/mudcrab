@@ -855,7 +855,7 @@
     "inhouse_localized_fields": {
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+      "reason": "Preserves string ID, selected bank, source load order and resolution status for localized occurrences. A schema or selector error during bank selection keeps the existing signature-default fallback and records a decoder diagnostic."
     },
     "inhouse_plugin_masters": {
       "classification": "provenance",
