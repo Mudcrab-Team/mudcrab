@@ -1397,7 +1397,10 @@ with that cell. If a discarded frame tail could hide a placement header, an unse
 could refer to a placement from another cell. All surviving interiors then use the whole-cell
 fallback. A partial placement header that reaches the FormID marks the enclosing cell and the
 surviving predecessor’s cell incomplete. An unresolvable FormID leaves all interiors incomplete.
-A shorter header without a FormID affects only its known enclosing cell.
+A recognized placement tag with a missing or partial FormID also leaves all interiors incomplete,
+because its predecessor could be in any cell. A partial cell-child group header marks both its
+enclosing cell and the cell named by its label once the group kind is readable. Other short
+headers affect only the enclosing cell when it is known.
 Parsing resumes at the next trusted frame boundary.
 
 The tables are derived data: a full load-order export clears and rebuilds them from the winning
@@ -1504,8 +1507,8 @@ unused FormIDs owned by the same plugin.
 Supported `REFR` fields are `EDID`, `NAME`, `DATA`, `XSCL`, `XESP`, `XMBR`, and the marker fields
 `XPRM`, `XRMR`, `XLRM`, `XPOD`, `LNAM`, and `INAM`. A room marker can carry one 12-byte `XMBO`.
 On import its three extents must match the first 12 bytes of `XPRM`. A door can also carry a 32-byte
-`XTEL` field. If its size is wrong or its nonzero source destination cannot be resolved, the importer
-skips the placement and preserves its previous door link.
+`XTEL` field. If its width is wrong, its arrival frame is nonfinite, or its nonzero source
+destination cannot be resolved, the importer skips the placement and preserves its previous door link.
 Static primitives, actor references, scripts, new base records, exterior changes, and other
 `CELL` fields require a normal conversion.
 
@@ -1520,7 +1523,9 @@ with unsupported content still roll back the import.
 `--native` accepts a `cells` array for new interiors and an `edits` array for placements.
 Provide at least one cell or edit. A cell declaration takes an `id`, an `editor_id`, and an optional
 `full_name`. `put` adds or replaces a static placement, and `delete` removes a placement by
-`id`. Use numeric runtime FormIDs from the target pack. For a new native interior or placement,
+`id`. A native replacement preserves the existing `XESP` and initially-disabled flag. If the
+existing enable state is unavailable or cannot be preserved, the import fails. Use numeric runtime
+FormIDs from the target pack. For a new native interior or placement,
 choose an unused ID from `0xFF000001` through `0xFFFFFFFF`. A new interior takes only fresh
 placements. IDs used in earlier imports stay reserved for their original records even after a
 placement is deleted. Position uses Creation units. Rotation uses radians and defaults to
@@ -1528,8 +1533,8 @@ placement is deleted. Position uses Creation units. Rotation uses radians and de
 defaults to `{"kind": "auto"}`. Use `{"kind": "none"}` for a Multibound override without a
 target, or `{"kind": "target", "room": 2048}` for a named room.
 
-`put_room` adds or replaces a box room marker. Its `half_extents` array gives the X, Y, and Z
-half-extents in Creation units. Optional `links` name joined rooms in authored order.
+`put_room` adds or replaces a box room marker. Its `half_extents` array gives finite, nonnegative
+X, Y, and Z half-extents in Creation units. Optional `links` name joined rooms in authored order.
 `put_portal` adds or replaces a portal marker with finite, positive X and Z `half_extents`. Its
 `endpoints` array names two rooms in that cell. Use `0` for an explicit outside endpoint.
 
@@ -1568,9 +1573,14 @@ The original conversion's canonical `records`, `formid_map`, source history, and
 available for inspection. `room_placement_layers` retains the exact imported file and checksum.
 `room_placement_edits` maps each created cell and edited placement to its source FormID and
 records placement deletions.
-Reapplying the same source is a no-op. Subsequent imports apply in command order. A new conversion
-replaces this runtime snapshot. To reproduce the edited pack, reapply its placement sources in the
-same order.
+Reapplying the same source is a no-op. Plugins match existing imports by case-insensitive filename
+and checksum. Different contents under an imported filename are rejected, including after a
+successful import that skipped damaged records.
+To replace an imported plugin, start with a fresh conversion of the same base pack and replay
+the placement sources in their original order. Use the corrected plugin under the original name
+at its original position. Keep the plugin's full or light classification and the local FormIDs
+that later layers reference. To make a follow-up edit on the current pack, author a new patch
+with a different filename. List the imported plugin as a master when overriding its forms.
 
 The following table describes geometric membership. Whole-cell fallbacks and reference exemptions
 take precedence over the per-object rules. Other renderer visibility checks still apply.
