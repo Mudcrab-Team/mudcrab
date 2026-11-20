@@ -967,7 +967,8 @@ pub fn write_grass_cache_with_cancel(
         let last_y = (reference.max[1] / f64::from(GRASS_CELL_SIZE)).floor() as i32;
         let span = (i64::from(last_x) - i64::from(first_x) + 1)
             .saturating_mul(i64::from(last_y) - i64::from(first_y) + 1);
-        // Not retail: MudCrab span guard; a reference spanning more than 1,024 cells is skipped.
+        // Not retail: MudCrab span guard. A reference spanning more than 1,024 cells is matched by
+        // scanning the existing cells instead of walking its whole grid.
         if span <= 1024 {
             for y in first_y..=last_y {
                 for x in first_x..=last_x {

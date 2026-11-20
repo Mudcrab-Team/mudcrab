@@ -206,7 +206,7 @@ fn vertex(input: Vertex) -> Varyings {
 // compiler on the tested RX 9070 XT driver. The surviving sample prefix is
 // identical to the original (1 << count) - 1 mask; MSAA remains enabled.
 // Retail differs: retail multiplies fade into the alpha test; MudCrab fades by whole-instance
-// prefix culling and tests texture/vertex alpha only (tracked separately).
+// prefix culling and tests texture/material alpha only (tracked separately).
 fn coverage(alpha:f32,sample_index:u32) -> u32 {
 #if SAMPLES == 1
     // A negative threshold encodes an authored opaque material.
@@ -303,8 +303,9 @@ fn fragment(vertex_input:Varyings,@builtin(sample_index) sample_index:u32) -> Fr
     // `base` is albedo * C (vertex colour times the per-instance brightness); input.light is
     // NdotL * DirLightColor from the vertex shader; the shadow floor 0.3 is grass.tuning_surface.z
     // (fShadowClampValue); the ambient term is not shadowed; grass.fade.z is the per-pass
-    // output scale 1/FramebufferRange (~0.8333; retail value). Only grass applies it
-    // today; terrain, sky and water do not (open question: does retail apply it there too?).
+    // output scale 1/FramebufferRange (~0.8333 in MudCrab; the retail default is unconfirmed). Only
+    // grass applies it today; terrain, sky and water do not (open question: does retail apply it
+    // there too?).
     // Not retail: 1/pi is exact for the sun (it equals Bevy's Lambert for the sun
     // illuminance). Bevy's own ambient has no 1/pi, so this ambient is about pi times darker
     // than a Bevy PBR surface with the same ambient input. Retail has no such factor. The
