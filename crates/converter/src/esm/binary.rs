@@ -244,6 +244,34 @@ pub(super) enum ParsedRecord {
     TruncatedPlacement(TruncatedPlacement),
 }
 
+/// Recover identity only from the start of a discarded record or child frame.
+fn discarded_prefix(
+    bytes: &[u8],
+    cell_form_id: Option<u32>,
+    worldspace_form_id: Option<u32>,
+) -> Option<ParsedRecord> {
+    if let Some(scope) = DiscardedFrameScope::from_group_prefix(bytes) {
+        return Some(ParsedRecord::DiscardedFrame(scope));
+    }
+    if let Some(placement) = TruncatedPlacement::from_prefix(bytes) {
+        return Some(ParsedRecord::TruncatedPlacement(placement));
+    }
+    // A CELL's flags and source FormID are complete after 16 header bytes.
+    let (flags, rest) = bytes
+        .strip_prefix(b"CELL")?
+        .get(4..)?
+        .split_first_chunk::<4>()?;
+    Some(ParsedRecord::DamagedRecord(RawRecord {
+        record_type: *b"CELL",
+        flags: u32::from_le_bytes(*flags),
+        form_id: u32::from_le_bytes(*rest.first_chunk()?),
+        cell_form_id,
+        worldspace_form_id,
+        subrecords: Vec::new(),
+        load_order: 0,
+    }))
+}
+
 fn parse_group_inner(
     input: &[u8],
     current_cell: Option<u32>,
@@ -271,10 +299,8 @@ fn parse_group_inner(
                 "trailing {} bytes in bounded record frame",
                 curr.len(),
             ));
-            if let Some(scope) = DiscardedFrameScope::from_group_prefix(curr) {
-                visit(ParsedRecord::DiscardedFrame(scope));
-            } else if let Some(placement) = TruncatedPlacement::from_prefix(curr) {
-                visit(ParsedRecord::TruncatedPlacement(placement));
+            if let Some(candidate) = discarded_prefix(curr, current_cell, current_worldspace) {
+                visit(candidate);
             }
             visit(ParsedRecord::DiscardedFrame(current_cell.into()));
             curr = &[];
@@ -302,10 +328,8 @@ fn parse_group_inner(
                     ),
                     None => format!("invalid GRUP size {}", group.data_size),
                 });
-                if let Some(scope) = DiscardedFrameScope::from_group_prefix(rest) {
-                    visit(ParsedRecord::DiscardedFrame(scope));
-                } else if let Some(placement) = TruncatedPlacement::from_prefix(rest) {
-                    visit(ParsedRecord::TruncatedPlacement(placement));
+                if let Some(candidate) = discarded_prefix(rest, current_cell, current_worldspace) {
+                    visit(candidate);
                 }
                 visit(ParsedRecord::DiscardedFrame(
                     DiscardedFrameScope::unread_tail(current_cell, rest.len()),

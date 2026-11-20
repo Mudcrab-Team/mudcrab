@@ -283,26 +283,26 @@ fn read_filenames(
     file_count: usize,
 ) -> Result<Vec<(String, u64)>> {
     let mut names = Vec::new();
-    let mut partial_name = Vec::new();
+    let mut name_start = cursor;
     'blocks: while cursor < end {
+        let block_start = cursor;
         let block_len = (end - cursor).min(FILENAME_BLOCK_SIZE);
         let bytes = source.read(cursor, block_len)?;
         cursor += block_len;
         let mut block = bytes.as_ref();
         while !block.is_empty() && names.len() < file_count {
             let Some(terminator) = block.iter().position(|&byte| byte == 0) else {
-                partial_name.extend_from_slice(block);
                 continue 'blocks;
             };
-            let raw_name = if partial_name.is_empty() {
-                &block[..terminator]
+            let name_end = cursor - block.len() + terminator;
+            let raw_name = if name_start < block_start {
+                source.read(name_start, name_end - name_start)?
             } else {
-                partial_name.extend_from_slice(&block[..terminator]);
-                &partial_name
+                Cow::Borrowed(&block[..terminator])
             };
             ensure!(!raw_name.is_empty(), "BSA filename is empty");
-            names.push((decode_name(raw_name), file_hash(raw_name)));
-            partial_name.clear();
+            names.push((decode_name(&raw_name), file_hash(&raw_name)));
+            name_start = name_end + 1;
             block = &block[terminator + 1..];
         }
         // Distributed archives can pad the filename table with trailing zeros.
@@ -647,6 +647,27 @@ mod tests {
         let source = ArchiveSource::from_file(file.reopen().unwrap()).unwrap();
         assert!(
             matches!(read_entries(&source), Err(error) if error.to_string().contains("trailing bytes"))
+        );
+    }
+
+    #[test]
+    fn filename_table_requires_a_terminator_within_its_bounds_across_blocks() {
+        let mut bytes = b"first.nif\0".to_vec();
+        bytes.resize(FILENAME_BLOCK_SIZE + 1, b'a');
+        let end = bytes.len();
+        bytes.push(0);
+        let source = ArchiveSource::Slice(&bytes);
+
+        let error = read_filenames(&source, 0, end, 2).unwrap_err();
+        assert_eq!(error.to_string(), "unterminated BSA filename");
+        let names = read_filenames(&source, 0, bytes.len(), 2).unwrap();
+        let second = &bytes[b"first.nif\0".len()..end];
+        assert_eq!(
+            names,
+            [
+                ("first.nif".to_owned(), file_hash(b"first.nif")),
+                (decode_name(second), file_hash(second))
+            ]
         );
     }
 

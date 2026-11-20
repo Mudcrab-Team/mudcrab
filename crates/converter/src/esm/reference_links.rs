@@ -104,12 +104,16 @@ impl Context<'_> {
             }
         }
         if self.subset {
-            let (kind, placed): (Option<String>, bool) = tx
+            let (kind, placed, deleted): (Option<String>, bool, bool) = tx
                 .prepare_cached(
                     "SELECT (SELECT record_type FROM records WHERE form_id=?1),
-                            EXISTS(SELECT 1 FROM [references] WHERE id=?1)",
+                            EXISTS(SELECT 1 FROM [references] WHERE id=?1),
+                            EXISTS(SELECT 1 FROM subset_nonplacement_deletions WHERE form_id=?1)",
                 )?
-                .query_row([id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+                .query_row([id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+            if deleted {
+                return Ok(None);
+            }
             if let Some(kind) = kind {
                 // A deleted placement can still have a canonical row in an edited pack.
                 let valid = <&[u8; 4]>::try_from(kind.as_bytes()).is_ok_and(|kind| {
