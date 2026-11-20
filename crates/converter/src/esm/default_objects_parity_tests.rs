@@ -277,3 +277,155 @@ fn a_later_plugin_that_nulls_a_key_removes_the_default_in_both_readers() {
         "the null link removes DMWL; DMRN and DMSW survive; the zero key adds no row"
     );
 }
+
+#[test]
+fn superseded_placement_duplicates_contribute_only_admitted_default_objects() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("Skyrim.esm"), master_plugin()).unwrap();
+    let placement = |base: u32| {
+        let cell = 0x900u32;
+        let reference = record(
+            b"REFR",
+            DEFAULT_OBJECTS,
+            &[sub(b"NAME", &base.to_le_bytes()), sub(b"DATA", &[0; 24])].concat(),
+        );
+        let cell_group = |kind: u32, payload: Vec<u8>| {
+            let mut group = b"GRUP".to_vec();
+            group.extend((24 + u32::try_from(payload.len()).unwrap()).to_le_bytes());
+            group.extend(cell.to_le_bytes());
+            group.extend(kind.to_le_bytes());
+            group.extend([0; 8]);
+            group.extend(payload);
+            group
+        };
+        let group = cell_group(6, cell_group(9, reference));
+        top(b"CELL", &[group])
+    };
+    let cell = top(b"CELL", &[record(b"CELL", 0x900, &sub(b"DATA", &[1, 0]))]);
+    let defaults = "SELECT key, form_id FROM default_objects ORDER BY key";
+    let text = |key: &str, id: u32| vec![Value::Text(key.into()), Value::Integer(i64::from(id))];
+    let mut deleted = record(b"DOBJ", DEFAULT_OBJECTS, &[]);
+    deleted[8..12].copy_from_slice(&0x20u32.to_le_bytes());
+    let original = vec![
+        text("DMRN", DEFAULT_MT),
+        text("DMSW", CREATURE_MT),
+        text("DMWL", DEFAULT_MT),
+    ];
+    for (name, base, middle, intervening, expected, history) in [
+        (
+            "invalid first",
+            0xdead,
+            top(
+                b"DOBJ",
+                &[default_objects(&[
+                    (b"DMSN", CREATURE_MT),
+                    (b"DMRN", CREATURE_MT),
+                ])],
+            ),
+            vec![],
+            vec![
+                text("DMRN", DEFAULT_MT),
+                text("DMSN", CREATURE_MT),
+                text("DMSW", CREATURE_MT),
+                text("DMWL", DEFAULT_MT),
+            ],
+            vec!["skipped", "accepted", "skipped"],
+        ),
+        (
+            "valid first",
+            0x20,
+            top(b"DOBJ", &[default_objects(&[(b"DMSN", CREATURE_MT)])]),
+            vec![],
+            original.clone(),
+            vec!["accepted", "skipped", "skipped"],
+        ),
+        (
+            "usable placement before DOBJ",
+            0xdead,
+            placement(0x20),
+            vec![],
+            original.clone(),
+            vec!["skipped", "accepted", "skipped"],
+        ),
+        (
+            "queued tombstone",
+            0xdead,
+            top(b"DOBJ", &[deleted.clone()]),
+            vec![],
+            vec![text("DMRN", DEFAULT_MT)],
+            vec!["skipped", "accepted", "skipped"],
+        ),
+        (
+            "valid first before queued tombstone",
+            0x20,
+            top(b"DOBJ", &[deleted.clone()]),
+            vec![],
+            original,
+            vec!["accepted", "skipped", "skipped"],
+        ),
+        (
+            "intervening tombstone",
+            0xdead,
+            top(b"DOBJ", &[default_objects(&[(b"DMSN", CREATURE_MT)])]),
+            top(b"DOBJ", &[deleted]),
+            vec![text("DMRN", DEFAULT_MT)],
+            vec!["skipped", "accepted", "skipped"],
+        ),
+    ] {
+        fs::write(
+            root.path().join("Update.esm"),
+            [
+                header(1, &["Skyrim.esm"]),
+                cell.clone(),
+                placement(base),
+                middle,
+                top(b"DOBJ", &[default_objects(&[(b"DMBK", CREATURE_MT)])]),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        let intermediate = root.path().join("Intermediate.esp");
+        fs::write(
+            &intermediate,
+            [header(0, &["Skyrim.esm"]), intervening].concat(),
+        )
+        .unwrap();
+        let winner = default_objects(&[(b"DMRN", DEFAULT_MT)]);
+        fs::write(
+            root.path().join("Mod.esp"),
+            [
+                header(0, &["Skyrim.esm"]),
+                top(b"DOBJ", std::slice::from_ref(&winner)),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        let output = root.path().join(format!("{name}.db"));
+        let paths = ["Skyrim.esm", "Update.esm", "Intermediate.esp", "Mod.esp"]
+            .map(|name| root.path().join(name));
+        EsmParser::convert_plugins_with_reader(&paths, &output, RecordReader::Inhouse, root.path())
+            .unwrap();
+        let db = Connection::open(output).unwrap();
+        assert_eq!(rows(&db, defaults), expected, "{name}");
+        let source: (u32, Vec<u8>) = db
+            .query_row(
+                "SELECT load_order, payload FROM inhouse_source_records WHERE form_id=?1",
+                [DEFAULT_OBJECTS],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(source, (3, winner[24..].to_vec()), "{name}");
+
+        assert_eq!(
+            rows(
+                &db,
+                "SELECT status FROM record_overrides WHERE form_id=0x31 AND plugin_id=1 ORDER BY chain_position",
+            ),
+            history
+                .into_iter()
+                .map(|status| vec![Value::Text(status.into())])
+                .collect::<Vec<_>>(),
+            "{name}",
+        );
+    }
+}
