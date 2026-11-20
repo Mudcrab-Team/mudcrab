@@ -142,7 +142,11 @@ def primitive_geometry(document):
             views.add(accessor["bufferView"])
         if "sparse" in accessor:
             views.update(accessor["sparse"][part]["bufferView"] for part in ("indices", "values"))
-    return primitives, skins, accessors, {i: document["bufferViews"][i] for i in views}
+    mesh_weights = {i: mesh["weights"] for i, mesh in enumerate(document.get("meshes", []))
+                    if "weights" in mesh}
+    node_weights = {i: node["weights"] for i, node in enumerate(document.get("nodes", []))
+                    if "mesh" in node and "weights" in node}
+    return primitives, skins, accessors, {i: document["bufferViews"][i] for i in views}, mesh_weights, node_weights
 
 
 def compare(model, expected, baseline_assets, output):

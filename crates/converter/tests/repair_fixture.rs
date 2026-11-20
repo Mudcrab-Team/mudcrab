@@ -70,6 +70,11 @@ async fn archive_winner_repair_and_incremental_conversion_refresh_model_bounds()
     let repaired = bounds();
     assert_eq!(repaired.0, Some(256.0));
     assert!((repaired.1.unwrap() - 272.0).abs() < 1.0e-4);
+    assert!(
+        repaired
+            .2
+            .is_some_and(|radius| radius.is_finite() && radius > 0.0)
+    );
     assert_ne!(repaired.2, original.2);
 
     fs::remove_file(winner).unwrap();

@@ -57,7 +57,7 @@ fn installed_native_winners_refresh_all_matching_bases_and_room_ownership_inputs
     create_tables(&connection).unwrap();
     connection.execute_batch(
         r#"INSERT INTO statics(id,model_path,flags) VALUES
-              (10,'fern.nif',0),(11,'Meshes\FERN.GLB',0),(12,'unchanged.glb',0);
+              (10,'50%25fern.nif',0),(11,'Meshes\50%25FERN.GLB',0),(12,'unchanged.glb',0);
            INSERT INTO room_bounds(ref_id,cell_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_y,half_z) VALUES
               (100,7,0,0,0,0,0,0,4,4,4),(101,7,20,0,0,0,0,0,4,4,4),
               (102,8,0,0,0,0,0,0,4,4,4);
@@ -86,24 +86,38 @@ fn installed_native_winners_refresh_all_matching_bases_and_room_ownership_inputs
         }
     };
     let sphere = |x| json!({"version":1,"center":[x,1.0,0.0],"radius":2.0});
-    let path = root.join("meshes/fern.glb");
+    let path = root.join("meshes/50%fern.glb");
     write_glb(&path, -10.0, Some(sphere(-9.0)));
     write_glb(
         &root.join("meshes/unchanged.glb"),
         -10.0,
         Some(sphere(-9.0)),
     );
-    refresh(&root, &["meshes/fern.glb", "meshes/unchanged.glb"]);
+    refresh(&root, &["meshes/50%fern.glb", "meshes/unchanged.glb"]);
     assert_winner(Some(-10.0), Some(-9.0), Some(100));
 
     write_glb(&path, 10.0, Some(sphere(11.0)));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = fs::metadata(&path).unwrap().permissions();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0)).unwrap();
+        // A privileged test runner can still read a mode-000 file.
+        if fs::File::open(&path).is_err() {
+            let result = run_refresh(&root, &["meshes/50%fern.glb"]);
+            assert!(!result.status.success());
+            assert!(String::from_utf8_lossy(&result.stderr).contains("failed to open"));
+            assert_winner(Some(-10.0), Some(-9.0), Some(100));
+        }
+        fs::set_permissions(&path, permissions).unwrap();
+    }
     connection
         .execute_batch(
             "CREATE TRIGGER fail_overlap BEFORE INSERT ON reference_rooms WHEN NEW.room_ref=101
              BEGIN SELECT RAISE(ABORT, 'overlap update failure'); END;",
         )
         .unwrap();
-    let result = run_refresh(&root, &["meshes/fern.glb"]);
+    let result = run_refresh(&root, &["meshes/50%fern.glb"]);
     assert!(!result.status.success());
     let error = String::from_utf8_lossy(&result.stderr);
     assert!(error.contains("overlap update failure"), "{error}");
@@ -113,15 +127,15 @@ fn installed_native_winners_refresh_all_matching_bases_and_room_ownership_inputs
         .execute_batch("DROP TRIGGER fail_overlap")
         .unwrap();
 
-    refresh(&root, &["meshes/fern.glb"]);
+    refresh(&root, &["meshes/50%fern.glb"]);
     assert_winner(Some(10.0), Some(11.0), Some(101));
 
     write_glb(&path, 10.0, None);
-    refresh(&root, &["meshes/fern.glb"]);
+    refresh(&root, &["meshes/50%fern.glb"]);
     assert_winner(Some(10.0), None, Some(101));
 
     write_glb(&path, 10.0, Some(sphere(11.0)));
-    refresh(&root, &["meshes/fern.glb"]);
+    refresh(&root, &["meshes/50%fern.glb"]);
     assert_winner(Some(10.0), Some(11.0), Some(101));
 
     write_glb(
@@ -129,22 +143,22 @@ fn installed_native_winners_refresh_all_matching_bases_and_room_ownership_inputs
         10.0,
         Some(json!({"version":1,"center":[11,1,0],"radius":0})),
     );
-    refresh(&root, &["meshes/fern.glb"]);
+    refresh(&root, &["meshes/50%fern.glb"]);
     assert_winner(Some(10.0), None, Some(101));
 
     write_glb(&path, -10.0, Some(sphere(-9.0)));
-    refresh(&root, &["meshes/fern.glb"]);
+    refresh(&root, &["meshes/50%fern.glb"]);
     assert_winner(Some(-10.0), Some(-9.0), Some(100));
 
     fs::remove_file(&path).unwrap();
-    refresh(&root, &["meshes/fern.glb"]);
+    refresh(&root, &["meshes/50%fern.glb"]);
     assert_winner(None, None, None);
 
     write_glb(&path, 10.0, Some(sphere(11.0)));
-    refresh(&root, &["meshes/fern.glb"]);
+    refresh(&root, &["meshes/50%fern.glb"]);
     assert_winner(Some(10.0), Some(11.0), Some(101));
     fs::write(&path, b"invalid GLB").unwrap();
-    let result = run_refresh(&root, &["meshes/fern.glb"]);
+    let result = run_refresh(&root, &["meshes/50%fern.glb"]);
     assert!(result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("invalid GLB container"));
     assert_winner(None, None, None);
