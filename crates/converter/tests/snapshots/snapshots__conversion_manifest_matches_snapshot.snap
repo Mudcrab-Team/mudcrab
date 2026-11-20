@@ -1,5 +1,6 @@
 ---
 source: crates/converter/tests/snapshots.rs
+assertion_line: 217
 expression: manifest
 ---
 {
@@ -86,6 +87,12 @@ expression: manifest
   "complete": true,
   "configuration_hash": "39c027ffccf48bca6a178e96174d86476daca7e47a76c82945575de5adb2f5ac",
   "entries": {
+    "derived/grass-cache": {
+      "output": "grass_cache.rkyv",
+      "output_hash": "[output_hash]",
+      "output_size": 20,
+      "source_hash": "[source_hash]"
+    },
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",
       "output_hash": "[output_hash]",
