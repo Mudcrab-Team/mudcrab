@@ -109,6 +109,7 @@ const MAIN_CORE_TABLES: &[&str] = &[
     "script_property_values",
     "scripts",
     "statics",
+    "subset_nonplacement_deletions",
     "texture_sets",
     "waters",
     "weather_colors",

@@ -563,6 +563,7 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
         DROP TABLE IF EXISTS record_overrides;
         DROP TABLE IF EXISTS room_placement_edits;
         DROP TABLE IF EXISTS room_placement_layers;
+        DROP TABLE IF EXISTS subset_nonplacement_deletions;
         DROP TABLE IF EXISTS inhouse_schema_addons;
         DROP TABLE IF EXISTS inhouse_unresolved_terrain_textures;
         DROP TABLE IF EXISTS inhouse_terrain_layers;
@@ -701,6 +702,10 @@ fn export_records(
                 )))
             })?;
         }
+    } else {
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS subset_nonplacement_deletions (form_id INTEGER PRIMARY KEY)",
+        )?;
     }
     if scalar_scripts {
         // In-house exports own the complete script snapshot; legacy partial APIs retain theirs.
@@ -795,6 +800,17 @@ fn export_records(
             record.load_order,
             &blob,
         )?;
+        if order.is_none() {
+            if !record.is_deleted() {
+                tx.prepare_cached("DELETE FROM subset_nonplacement_deletions WHERE form_id=?1")?
+                    .execute([form_id])?;
+            } else if !super::is_placed_record_type(&record.record_type) {
+                tx.prepare_cached(
+                    "INSERT OR IGNORE INTO subset_nonplacement_deletions(form_id) VALUES (?1)",
+                )?
+                .execute([form_id])?;
+            }
+        }
         if let Some(order) = order {
             let identity = order.identity(form_id).map_err(|error| {
                 rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
@@ -3628,6 +3644,111 @@ mod tests {
             assert_eq!(parents, expected.map(|id| (id, 1.0)));
             assert_eq!(linked, expected.map(|id| (keyword, id)));
         }
+    }
+
+    #[test]
+    fn subset_reference_links_keep_deleted_keywords_unavailable() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        let db = Connection::open(&path).unwrap();
+        create_tables(&db).unwrap();
+        let placed = |id| reference(id, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        let target = 0x810;
+        let keyword = 0x811;
+        let live_keyword = 0x812;
+        let source_id = 0x900;
+        let order = LoadOrder::from_metadata(
+            vec!["Skyrim.esm".to_owned()],
+            vec![crate::esm::binary::PluginMetadata {
+                flags: 0,
+                masters: Vec::new(),
+            }],
+        )
+        .unwrap();
+        let keyword_record = |id| record(id, b"KYWD", None, None, Vec::new());
+        let mut source = placed(source_id);
+        for id in [keyword, live_keyword] {
+            source
+                .subrecords
+                .push((b"XLKR".to_vec(), [word(id), word(target)].concat()));
+        }
+        let assert_links = |db: &Connection, first_keyword| {
+            let links = db
+                .prepare(
+                    "SELECT keyword_id, linked_ref_id FROM reference_linked_refs
+                     WHERE reference_id=?1 ORDER BY position",
+                )
+                .unwrap()
+                .query_map([source_id], |row| {
+                    Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, u32>(1)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>>>()
+                .unwrap();
+            assert_eq!(
+                links,
+                [(first_keyword, target), (Some(live_keyword), target)]
+            );
+        };
+        let source_only = [(source_id, source.clone())].into();
+        let mut deleted = keyword_record(keyword);
+        deleted.flags = 0x20;
+        let delete_and_edit = [(keyword, deleted), (source_id, source.clone())].into();
+        let restore_and_edit = [
+            (keyword, keyword_record(keyword)),
+            (source_id, source.clone()),
+        ]
+        .into();
+        let reject_links = |db: &Connection, edits| {
+            db.execute_batch(
+                "CREATE TEMP TRIGGER reject_links BEFORE INSERT ON reference_linked_refs
+                 BEGIN SELECT RAISE(ABORT, 'link write rejected'); END",
+            )
+            .unwrap();
+            assert!(
+                export_to_db(db, edits)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("link write rejected")
+            );
+            db.execute_batch("DROP TRIGGER reject_links").unwrap();
+        };
+
+        let snapshot = [
+            (target, placed(target)),
+            (keyword, keyword_record(keyword)),
+            (live_keyword, keyword_record(live_keyword)),
+            (source_id, source),
+        ]
+        .into();
+        export_to_db_with_load_order(&db, &snapshot, &order).unwrap();
+        assert_links(&db, Some(keyword));
+
+        reject_links(&db, &delete_and_edit);
+        export_to_db(&db, &source_only).unwrap();
+        assert_links(&db, Some(keyword));
+
+        export_to_db(&db, &delete_and_edit).unwrap();
+        assert_links(&db, None);
+        drop(db);
+
+        let db = Connection::open(&path).unwrap();
+        export_to_db(&db, &source_only).unwrap();
+        assert_links(&db, None);
+
+        export_to_db(&db, &delete_and_edit).unwrap();
+        reject_links(&db, &restore_and_edit);
+        export_to_db(&db, &source_only).unwrap();
+        assert_links(&db, None);
+
+        export_to_db(&db, &[(keyword, keyword_record(keyword))].into()).unwrap();
+        export_to_db(&db, &source_only).unwrap();
+        assert_links(&db, Some(keyword));
+
+        export_to_db(&db, &delete_and_edit).unwrap();
+        export_to_db_with_load_order(&db, &snapshot, &order).unwrap();
+        export_to_db(&db, &source_only).unwrap();
+        assert_links(&db, Some(keyword));
     }
 
     #[test]
