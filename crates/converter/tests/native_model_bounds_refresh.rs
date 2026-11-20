@@ -101,7 +101,7 @@ fn installed_native_winners_refresh_all_matching_bases_and_room_ownership_inputs
     {
         use std::os::unix::fs::PermissionsExt;
         let permissions = fs::metadata(&path).unwrap().permissions();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
         // A privileged test runner can still read a mode-000 file.
         if fs::File::open(&path).is_err() {
             let result = run_refresh(&root, &["meshes/50%fern.glb"]);
