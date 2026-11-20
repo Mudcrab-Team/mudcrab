@@ -740,9 +740,7 @@ impl AssetPipeline {
                         format!("MO2 profile {profile}: invalid plugin/master order")
                     })?;
                 // A source deleted or replaced after this validation reaches reader recovery:
-                // that keeps its admitted slot and warns instead of aborting on a later reopen.
-                #[cfg(test)]
-                crate::esm::after_plugin_admission_for_test();
+                // that keeps its admitted slot and warns instead of aborting.
                 (plugins, admitted)
             }
             None => {
@@ -16268,7 +16266,8 @@ mod tests {
         struct ClearHook;
         impl Drop for ClearHook {
             fn drop(&mut self) {
-                crate::esm::AFTER_PLUGIN_ADMISSION.with(|slot| *slot.borrow_mut() = None);
+                crate::esm::load_order::AFTER_LOAD_ORDER_READ
+                    .with(|slot| *slot.borrow_mut() = None);
             }
         }
         let directory = tempfile::tempdir().unwrap();
@@ -16305,7 +16304,7 @@ mod tests {
         .unwrap();
         let retained = directory.path().join("removed-plugin.retained");
         let clear = ClearHook;
-        crate::esm::AFTER_PLUGIN_ADMISSION.with(|slot| {
+        crate::esm::load_order::AFTER_LOAD_ORDER_READ.with(|slot| {
             assert!(slot.borrow().is_none());
             *slot.borrow_mut() = Some(Box::new(move || fs::rename(missing, retained).unwrap()));
         });
