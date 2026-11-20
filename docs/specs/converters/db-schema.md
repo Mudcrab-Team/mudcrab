@@ -1362,13 +1362,16 @@ Columns and rules:
   the counts under `room_graph.room_link_anomalies`.
 
 Both plugin readers require a nonzero, resolved `NAME` base on live placements. A live override
-of a cell-owned placement also needs a usable destination cell. Rejecting an override
+needs one 24-byte `DATA` transform with six finite coordinates. A cell-owned predecessor also
+requires a usable destination cell. Rejecting an override
 preserves its predecessor and marks the affected interiors incomplete. If only the reference
 ID resolves, the reader can still identify the predecessor’s cell. A later accepted override or
 deletion clears damage tied to that ID. If only the destination cell resolves, the damage stays
 with that cell. If a discarded frame tail could hide a placement header, an unseen override
 could refer to a placement from another cell. All surviving interiors then use the whole-cell
-fallback. A shorter tail marks only the enclosing cell incomplete when that cell is known.
+fallback. A partial placement header that reaches the FormID marks the enclosing cell and the
+surviving predecessor’s cell incomplete. An unresolvable FormID leaves all interiors incomplete.
+A shorter header without a FormID affects only its known enclosing cell.
 Parsing resumes at the next trusted frame boundary.
 
 The tables are derived data: a full load-order export clears and rebuilds them from the winning

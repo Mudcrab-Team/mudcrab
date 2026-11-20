@@ -3149,6 +3149,29 @@ fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
             [false, false, true],
         ),
         (
+            "short-transform",
+            Some(0x901),
+            record(
+                b"REFR",
+                0x850,
+                0,
+                [sub(b"NAME", &0x20u32.to_le_bytes()), sub(b"DATA", &[0; 20])].concat(),
+            ),
+            [false, false, true],
+        ),
+        (
+            "duplicate-transform",
+            Some(0x901),
+            placement(0x850, 0x20, 0, 0.0, sub(b"DATA", &[0; 24])),
+            [false, false, true],
+        ),
+        (
+            "nonfinite-transform",
+            Some(0x901),
+            placement(0x850, 0x20, 0, f32::NAN, Vec::new()),
+            [false, false, true],
+        ),
+        (
             "null-first-name",
             Some(0x901),
             placement(0x850, 0, 0, 0.0, sub(b"NAME", &0x830u32.to_le_bytes())),
@@ -3681,6 +3704,31 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
             [false, false, true],
         ),
         (
+            "partial-portal-header",
+            placement_group(a, moved_portal(0x800)[..20].to_vec()),
+            [false, false, true],
+            [false, false, true],
+        ),
+        (
+            "partial-header-unresolved-identity",
+            placement_group(
+                a,
+                record(b"REFR", 0xff00_0870, 0, Vec::new())[..16].to_vec(),
+            ),
+            [false, false, false],
+            [false, false, true],
+        ),
+        (
+            "partial-header-then-valid-override",
+            [
+                placement_group(a, moved_portal(0x800)[..16].to_vec()),
+                placement_group(b, moved_portal(0x810)),
+            ]
+            .concat(),
+            [false, true, true],
+            [false, false, true],
+        ),
+        (
             "short-navmesh-tail",
             placement_group(a, [overrun, vec![0; 23]].concat()),
             [false, true, true],
@@ -3937,6 +3985,16 @@ fn plugin_placement_import_keeps_neighbors_of_damaged_records_and_frames() {
         (
             "bounded-record",
             placement_group(a, [bad_move.clone(), good_neighbor()].concat()),
+            [false, false, true],
+            3,
+        ),
+        (
+            "partial-move-header",
+            [
+                placement_group(a, bad_move[..20].to_vec()),
+                placement_group(a, good_neighbor()),
+            ]
+            .concat(),
             [false, false, true],
             3,
         ),

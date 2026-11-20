@@ -325,6 +325,14 @@ fn plugin_edits(
                 record_damage(tx, &mut import, &record, priority, &order)?;
                 continue;
             }
+            ParsedRecord::TruncatedPlacement(placement) => {
+                if let Some(id) = placement.runtime_id(priority, &order) {
+                    mark_predecessor_damage(tx, &mut import, id)?;
+                } else {
+                    import.damage.insert(DiscardedFrameScope::Unknown);
+                }
+                continue;
+            }
             ParsedRecord::DiscardedFrame(scope) => {
                 import.damage.insert(scope.resolve(priority, &order));
                 continue;
@@ -428,19 +436,24 @@ fn record_damage(
             source_identity::header_runtime_id(&record.record_type, record.form_id, priority, order)
                 .filter(|&id| id != 0)
         {
-            // A prior import can move or delete the canonical placement.
-            let predecessor = tx
-                .prepare_cached(
-                    "SELECT coalesce(
-                        (SELECT cell_id FROM [references] WHERE id=?1),
-                        (SELECT cell_id FROM records WHERE form_id=?1 AND record_type='REFR'
-                         AND NOT EXISTS(SELECT 1 FROM room_placement_edits WHERE form_id=?1)))",
-                )?
-                .query_row([id], |row| row.get::<_, Option<u32>>(0))?;
-            if let Some(cell) = predecessor {
-                import.damage.insert(DiscardedFrameScope::Cell(cell));
-            }
+            mark_predecessor_damage(tx, import, id)?;
         }
+    }
+    Ok(())
+}
+
+fn mark_predecessor_damage(tx: &Transaction<'_>, import: &mut Import, id: u32) -> Result<()> {
+    // A prior import can move or delete the canonical placement.
+    let predecessor = tx
+        .prepare_cached(
+            "SELECT coalesce(
+                (SELECT cell_id FROM [references] WHERE id=?1),
+                (SELECT cell_id FROM records WHERE form_id=?1 AND record_type='REFR'
+                 AND NOT EXISTS(SELECT 1 FROM room_placement_edits WHERE form_id=?1)))",
+        )?
+        .query_row([id], |row| row.get::<_, Option<u32>>(0))?;
+    if let Some(cell) = predecessor {
+        import.damage.insert(DiscardedFrameScope::Cell(cell));
     }
     Ok(())
 }
@@ -669,17 +682,8 @@ fn validate_placement(tx: &Transaction<'_>, record: &RawRecord, allow_doors: boo
             "XMBO extents disagree with XPRM"
         );
     }
-    let mut transforms = view.find_all(b"DATA");
-    let transform = transforms
-        .next()
-        .and_then(|data| <&[u8; 24]>::try_from(data).ok());
     ensure!(
-        transforms.next().is_none()
-            && transform.is_some_and(|data| data
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .all(|word| f32::from_le_bytes(*word).is_finite())),
+        super::valid_placement_transform(view.find_all(b"DATA")),
         "invalid placement transform"
     );
     ensure!(
