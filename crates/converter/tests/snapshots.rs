@@ -8,11 +8,9 @@
 //!   a converted static model: node tree, mesh primitives and their attributes,
 //!   the material with its extras, and accessor bounds. The binary chunk is
 //!   deliberately not part of the snapshot.
-//! * [`world_database_tables_match_snapshot`] - the exported
-//!   `skyrim_world.db`'s rows (worldspaces, exterior and interior cells,
-//!   references with their transforms and flags, the door references, statics,
-//!   texture sets, landscape textures, terrain and the FormID map), ordered by
-//!   primary key.
+//! * [`world_database_tables_match_snapshot`] - every row of every table in the
+//!   exported `skyrim_world.db`, one sorted line per row, so a published value
+//!   change appears as a row diff instead of as a wrong render later.
 //! * [`conversion_manifest_matches_snapshot`] - the published
 //!   `conversion-manifest.json`: schema version, completeness, input counts and
 //!   one entry per converted asset.
@@ -22,16 +20,23 @@
 //! To accept an intentional change run `cargo insta review` and approve it, or
 //! read the `*.snap.new` file the failing run writes into
 //! `crates/converter/tests/snapshots/` and rename it to `*.snap` once it holds
-//! what the converter is meant to produce.
+//! what the converter is meant to produce. The failing output is a unified diff
+//! of the changed rows.
+//!
+//! A pull request that changes
+//! `snapshots__world_database_tables_match_snapshot.snap` must list each changed
+//! row and the reason in its body. See `docs/contributing/writing-prs.md`.
 
 mod common;
 
 use common::cpu_lod_config;
 use dummy_content::{esm, layout};
-use insta::assert_json_snapshot;
+use insta::{assert_json_snapshot, assert_snapshot};
 use rusqlite::{Connection, types::Value as SqlValue};
-use serde_json::{Value, json};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
+    fmt::Write as _,
     fs,
     path::{Path, PathBuf},
 };
@@ -84,37 +89,212 @@ fn glb_json(path: &Path) -> Value {
     json
 }
 
-/// Every row of `table` as JSON, ordered by `order_by` so the snapshot is
-/// stable. Blob columns are reported as their length: the archive-encoded
-/// subrecords are input to the rkyv cell cache, not something a reviewer reads.
-fn table_rows(connection: &Connection, table: &str, order_by: &str) -> Vec<Value> {
+/// Columns the world database dump normalizes before comparison, with the
+/// reason. The machine and the wall clock set them, not the converter. The
+/// snapshot header names them, so no exclusion is silent, and the snapshot test
+/// fails if one leaves the schema.
+const NORMALIZED_COLUMNS: [(&str, &str, &str); 3] = [
+    (
+        "conversion_cache",
+        "plugin_path",
+        "the fixture's temporary directory, which differs between runs and machines",
+    ),
+    (
+        "conversion_cache",
+        "last_converted",
+        "the wall-clock time when the cache row was written",
+    ),
+    (
+        "record_overrides",
+        "source_path",
+        "the plugin path in the fixture's temporary directory",
+    ),
+];
+
+/// Every table the converter publishes, sorted by name. SQLite's internal
+/// tables are skipped. Shadow tables are skipped too: they are the R-tree blocks
+/// behind a virtual table, not rows the converter writes. The virtual table's
+/// own rows stay, because they are the published spatial index.
+fn database_tables(connection: &Connection) -> Vec<String> {
     let mut statement = connection
-        .prepare(&format!("SELECT * FROM {table} ORDER BY {order_by}"))
+        .prepare(
+            "SELECT name FROM pragma_table_list
+             WHERE schema = 'main'
+               AND type IN ('table', 'virtual')
+               AND name NOT LIKE 'sqlite_%'
+             ORDER BY name",
+        )
         .unwrap();
-    let columns: Vec<String> = statement.column_names().map(str::to_owned).collect();
     statement
-        .query_map([], |row| {
-            let mut object = serde_json::Map::new();
-            for (index, column) in columns.iter().enumerate() {
-                object.insert(column.clone(), column_value(row.get::<_, SqlValue>(index)?));
-            }
-            Ok(Value::Object(object))
-        })
+        .query_map([], |row| row.get(0))
         .unwrap()
-        .collect::<rusqlite::Result<Vec<_>>>()
+        .collect::<rusqlite::Result<Vec<String>>>()
         .unwrap()
 }
 
-fn column_value(value: SqlValue) -> Value {
+/// One SQLite value as a stable token. NULL is `NULL`, text is a JSON string so
+/// a quote or newline cannot break the line, integers are decimal, reals use
+/// nine fixed decimals (enough for an `f32` in a `REAL` column), and a blob is
+/// its SHA-256 prefix and byte length.
+fn value_token(value: &SqlValue) -> String {
     match value {
-        SqlValue::Null => Value::Null,
-        SqlValue::Integer(number) => Value::from(number),
-        SqlValue::Real(number) => serde_json::Number::from_f64(number)
-            .map(Value::Number)
-            .unwrap_or_else(|| Value::from(format!("{number}"))),
-        SqlValue::Text(text) => Value::from(text),
-        SqlValue::Blob(bytes) => json!({ "encoded_bytes": bytes.len() }),
+        SqlValue::Null => "NULL".to_owned(),
+        SqlValue::Integer(number) => number.to_string(),
+        SqlValue::Real(number) => format!("{number:.9}"),
+        SqlValue::Text(text) => serde_json::to_string(text).unwrap(),
+        SqlValue::Blob(bytes) => blob_token(bytes),
     }
+}
+
+fn blob_token(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut hash = String::with_capacity(16);
+    for byte in &digest[..8] {
+        write!(hash, "{byte:02x}").unwrap();
+    }
+    format!("blob:{hash}:{}", bytes.len())
+}
+
+/// Values sort by kind (NULL, number, text, blob) and then by value. Numbers
+/// compare numerically across INTEGER and REAL, so a FormID column reads
+/// `1, 2, 10` instead of `1, 10, 2`. This is a total order for every value
+/// SQLite stores here.
+fn value_order(left: &SqlValue, right: &SqlValue) -> std::cmp::Ordering {
+    use SqlValue::{Blob, Integer, Null, Real, Text};
+    use std::cmp::Ordering;
+
+    match (left, right) {
+        (Null, Null) => Ordering::Equal,
+        (Integer(a), Integer(b)) => a.cmp(b),
+        (Real(a), Real(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
+        (Integer(a), Real(b)) => (*a as f64).partial_cmp(b).unwrap_or(Ordering::Equal),
+        (Real(a), Integer(b)) => a.partial_cmp(&(*b as f64)).unwrap_or(Ordering::Equal),
+        (Text(a), Text(b)) => a.cmp(b),
+        (Blob(a), Blob(b)) => a.cmp(b),
+        _ => value_rank(left).cmp(&value_rank(right)),
+    }
+}
+
+fn value_rank(value: &SqlValue) -> u8 {
+    match value {
+        SqlValue::Null => 0,
+        SqlValue::Integer(_) | SqlValue::Real(_) => 1,
+        SqlValue::Text(_) => 2,
+        SqlValue::Blob(_) => 3,
+    }
+}
+
+/// A path with the fixture's temporary directory replaced by `<fixture>`, so a
+/// run on another machine or in another temporary directory produces the same
+/// token. macOS returns `/var/...` from `tempdir` while the converter may
+/// canonicalize it to `/private/var/...`. Windows canonical paths carry a
+/// verbatim prefix. Both forms are accepted, and forward slashes make Windows
+/// and Unix paths read the same way.
+fn path_token(path: &str, fixture_roots: &[String]) -> String {
+    let path = normalize_path(path);
+    let path = fixture_roots
+        .iter()
+        .find_map(|root| {
+            path.strip_prefix(root)
+                .map(|rest| format!("<fixture>{rest}"))
+        })
+        .unwrap_or(path);
+    serde_json::to_string(&path).unwrap()
+}
+
+fn normalize_path(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    match path.strip_prefix("//?/") {
+        Some(path) => path.to_owned(),
+        None => path,
+    }
+}
+
+/// The temporary directory and its canonical form, without duplicates.
+fn fixture_roots(fixture: &Path) -> Vec<String> {
+    let mut roots = vec![normalize_path(&fixture.to_string_lossy())];
+    if let Ok(canonical) = fixture.canonicalize() {
+        let canonical = normalize_path(&canonical.to_string_lossy());
+        if !roots.contains(&canonical) {
+            roots.push(canonical);
+        }
+    }
+    roots
+}
+
+/// Format one cell, replacing the values the machine owns. `fixture_roots` are
+/// normalized to forward slashes, like the paths they replace.
+fn cell_token(table: &str, column: &str, value: &SqlValue, fixture_roots: &[String]) -> String {
+    match (table, column, value) {
+        ("conversion_cache", "plugin_path", SqlValue::Text(path))
+        | ("record_overrides", "source_path", SqlValue::Text(path)) => {
+            path_token(path, fixture_roots)
+        }
+        ("conversion_cache", "last_converted", _) => "<timestamp>".to_owned(),
+        (_, _, value) => value_token(value),
+    }
+}
+
+/// Every table with one sorted line per row: `table|column=value|...`. Sorting
+/// the typed rows removes SQLite row order and the `HashMap` iteration that
+/// fills many tables as sources of churn.
+fn world_database_dump(connection: &Connection, fixture: &Path) -> String {
+    let fixture_roots = fixture_roots(fixture);
+    let mut snapshot = String::new();
+    snapshot.push_str(
+        "# Rows of a world database built from dummy-content's preset interior\n\
+         # plugin (one exterior cell, one interior cell and their load-door pair)\n\
+         # through the default in-house reader. Every table is listed, including\n\
+         # empty ones. One line per row: table|column=value|column=value.\n\
+         # Rows are sorted by column values before formatting, so SQLite row order\n\
+         # and HashMap iteration cannot churn. NULL is NULL, text is a JSON string,\n\
+         # REAL has nine fixed decimals, and a BLOB is blob:<sha256 prefix>:<length>.\n\
+         # Normalized columns, because the machine or clock sets them:\n",
+    );
+    for (table, column, reason) in NORMALIZED_COLUMNS {
+        writeln!(snapshot, "#   {table}.{column}: {reason}").unwrap();
+    }
+    snapshot.push_str(
+        "# Omitted tables: the shadow tables of a virtual table hold SQLite's\n\
+         # R-tree blocks; the virtual tables (exterior_spatial,\n\
+         # lod_chunks_spatial) are included.\n",
+    );
+
+    for table in database_tables(connection) {
+        let mut statement = connection
+            .prepare(&format!("SELECT * FROM \"{table}\""))
+            .unwrap();
+        let columns: Vec<String> = statement.column_names().map(str::to_owned).collect();
+        let mut rows: Vec<Vec<SqlValue>> = statement
+            .query_map([], |row| {
+                (0..columns.len())
+                    .map(|index| row.get::<_, SqlValue>(index))
+                    .collect()
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        rows.sort_by(|left, right| {
+            left.iter()
+                .zip(right)
+                .map(|(left, right)| value_order(left, right))
+                .find(|order| !order.is_eq())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        writeln!(snapshot, "## {table} ({} rows)", rows.len()).unwrap();
+        for row in rows {
+            let mut line = table.clone();
+            for (column, value) in columns.iter().zip(&row) {
+                line.push('|');
+                line.push_str(column);
+                line.push('=');
+                line.push_str(&cell_token(&table, column, value, &fixture_roots));
+            }
+            snapshot.push_str(&line);
+            snapshot.push('\n');
+        }
+    }
+    snapshot
 }
 
 /// Fails any snapshot that carries a machine-specific path, so none can be
@@ -180,30 +360,44 @@ fn world_database_tables_match_snapshot() {
     let directory = tempfile::tempdir().unwrap();
     let plugin_path = write_preset_plugin(directory.path());
     let database = directory.path().join("skyrim_world.db");
-    converter::EsmParser::convert_plugins(std::slice::from_ref(&plugin_path), &database).unwrap();
+    converter::EsmParser::convert_plugins_with_reader(
+        std::slice::from_ref(&plugin_path),
+        &database,
+        converter::config::RecordReader::Inhouse,
+        directory.path(),
+    )
+    .unwrap();
 
     let connection = Connection::open(&database).unwrap();
-    // The tables a wrong render comes from: the cell grid the streamer loads,
-    // the reference transforms it places, the door references it must not place
-    // as statics, and the base records their models come from. `plugins`,
-    // `conversion_cache` and `records` are left out: they carry the plugin's
-    // absolute path, a conversion timestamp and raw subrecord blobs.
-    let snapshot = json!({
-        "worldspaces": table_rows(&connection, "worldspaces", "id"),
-        "cells": table_rows(&connection, "cells", "id"),
-        "references": table_rows(&connection, "\"references\"", "id"),
-        "statics": table_rows(&connection, "statics", "id"),
-        "npcs": table_rows(&connection, "npcs", "id"),
-        "actor_models": table_rows(&connection, "actor_models", "id"),
-        "actor_model_parts": table_rows(&connection, "actor_model_parts", "npc_id, slot"),
-        "texture_sets": table_rows(&connection, "texture_sets", "id"),
-        "landscape_textures": table_rows(&connection, "landscape_textures", "id"),
-        "land": table_rows(&connection, "land", "cell_id"),
-        "formid_map": table_rows(&connection, "formid_map", "form_id"),
-    });
+    // A schema rename must not turn a normalization rule into a silent no-op.
+    for (table, column, _) in NORMALIZED_COLUMNS {
+        connection
+            .prepare(&format!("SELECT {column} FROM \"{table}\" LIMIT 0"))
+            .unwrap_or_else(|error| {
+                panic!("normalized column {table}.{column} is missing: {error}")
+            });
+    }
+    let snapshot = world_database_dump(&connection, directory.path());
 
-    assert_no_machine_paths(&snapshot, directory.path());
-    assert_json_snapshot!(snapshot);
+    // The machine that runs the test is not part of what the converter
+    // publishes. A temporary directory or a drive-qualified path here means a
+    // normalization rule is missing.
+    for root in fixture_roots(directory.path()) {
+        assert!(
+            !snapshot.contains(&root),
+            "snapshot carries the fixture directory: {}",
+            snapshot
+                .lines()
+                .find(|line| line.contains(&root))
+                .unwrap_or_default()
+        );
+    }
+    assert!(
+        !snapshot.contains(":/"),
+        "snapshot carries an absolute path"
+    );
+
+    assert_snapshot!(snapshot);
 }
 
 #[tokio::test]

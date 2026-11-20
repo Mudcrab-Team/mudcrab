@@ -55,6 +55,18 @@ Fill in [the PR template](../../.github/PULL_REQUEST_TEMPLATE.md): a one-sentenc
 - **Evidence:** for a visual change, before/after pictures from the same command on both builds, cropped to the game window. For a speed change, numbers from a quiet machine, repeated, with the setup stated. For a command-line change, the real output (`$ command`, then what it printed).
 - **Pictures:** host them where they won't change (a commit-pinned link, for example `raw.githubusercontent.com/<fork>/<commit>/<file>`), not a link that can move or expire.
 
+### Converter database snapshot
+
+[`world_database_tables_match_snapshot`](../../crates/converter/tests/snapshots.rs) writes every table of a world database built from the synthetic `dummy-content` fixture to a committed snapshot, one sorted line per row. A converter change that alters a published row fails the test and prints a row diff.
+
+A PR that changes `crates/converter/tests/snapshots/snapshots__world_database_tables_match_snapshot.snap` must list each changed, added or removed row in its body and say why the converter now publishes it. To write a reviewed snapshot, run:
+
+```bash
+INSTA_UPDATE=always python3 scripts/workspace.py cargo test --locked -p converter --test snapshots world_database_tables_match_snapshot
+```
+
+Read the diff before you commit it. The snapshot header names every normalized column and omitted table, so no exclusion is silent.
+
 ## Draft PRs
 
 Open a draft for anything that isn't ready for review yet: work in progress, or code that works while something is still undecided or unmeasured (a design choice for the maintainers, or a measurement you couldn't do). End **For reviewers** with **Still open (why this is a draft):** what is missing, and what would make it ready. Mark it ready for review once that is done.

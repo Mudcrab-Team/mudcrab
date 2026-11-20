@@ -10,6 +10,8 @@
 
 <!-- Describe what was modified, added, or refactored. -->
 
+- [ ] If `crates/converter/tests/snapshots/snapshots__world_database_tables_match_snapshot.snap` changed, this body lists each changed row and why it changed.
+
 ## Verification & Testing
 
 <!-- Describe how these changes were tested (OS, GPU/backend, test commands). -->
