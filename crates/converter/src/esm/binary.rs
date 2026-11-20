@@ -302,7 +302,11 @@ fn parse_group_inner(
                     ),
                     None => format!("invalid GRUP size {}", group.data_size),
                 });
-                if let Some(placement) = TruncatedPlacement::from_prefix(rest) {
+                if let Some(child) = group_child_cell(rest) {
+                    visit(ParsedRecord::DiscardedFrame(DiscardedFrameScope::Cell(
+                        child,
+                    )));
+                } else if let Some(placement) = TruncatedPlacement::from_prefix(rest) {
                     visit(ParsedRecord::TruncatedPlacement(placement));
                 }
                 visit(ParsedRecord::DiscardedFrame(

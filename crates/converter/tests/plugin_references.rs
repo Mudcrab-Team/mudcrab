@@ -4144,6 +4144,15 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
             [false, false, true],
         ),
         (
+            "invalid-group-hides-partial-cell-group",
+            placement_group(
+                a,
+                [bad_group.clone(), group(9, b, Vec::new())[..16].to_vec()].concat(),
+            ),
+            [false, false, true],
+            [false, false, true],
+        ),
+        (
             "cell-group-hides-short-nonplacement-tail",
             placement_group(a, [bad_group, overrun[..20].to_vec()].concat()),
             [false, true, true],
@@ -4717,6 +4726,19 @@ fn plugin_placement_import_keeps_neighbors_of_damaged_records_and_frames() {
                         record(b"REFR", 0x821, 0, Vec::new())[..20].to_vec(),
                     ]
                     .concat(),
+                ),
+                placement_group(a, good_neighbor()),
+            ]
+            .concat(),
+            [false, false, true],
+            3,
+        ),
+        (
+            "discarded-group-hides-child-cell",
+            [
+                placement_group(
+                    a,
+                    [bad_group.clone(), group(10, b, Vec::new())[..23].to_vec()].concat(),
                 ),
                 placement_group(a, good_neighbor()),
             ]
