@@ -1,0 +1,5 @@
+# These acquisition artifacts and the frozen evaluator are verified byte-for-byte.
+docs/research/evidence/skyrim-physics-221/** -text
+tools/skyrim-recorder/reference/** -text
+tools/skyrim-recorder/fixtures/jump*.json -text
+scripts/evaluate_skyrim_jump.py -text

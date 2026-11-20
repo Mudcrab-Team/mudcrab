@@ -1,4 +1,4 @@
-//! Interactive rendering preferences. Automated runs keep their explicit configuration.
+//! Interactive rendering and control preferences. Automated runs keep explicit configuration.
 
 use crate::{config::EngineConfig, world::components::StreamingCamera};
 use bevy::{
@@ -95,6 +95,8 @@ pub struct RenderingSettings {
     pub grade_pivot: f32,
     /// Bit mask of explicitly edited grade fields; zero leaves source values intact.
     pub grade_override_mask: u16,
+    /// Multiplier on retail fMouseHeadingSensitivity; 1 preserves the movement-type defaults.
+    pub mouse_sensitivity: f32,
     pub fov_degrees: f32,
     pub vsync: bool,
     pub window_mode: usize,
@@ -123,6 +125,7 @@ pub struct RenderingSettings {
 }
 
 impl Default for RenderingSettings {
+    /// Starts controls at the retail baseline and rendering at the approved defaults.
     fn default() -> Self {
         let config = EngineConfig::default();
         let weather = crate::sky::WeatherLighting::default();
@@ -175,6 +178,7 @@ impl Default for RenderingSettings {
             grade_tint_blue: 0.72,
             grade_pivot: 0.18,
             grade_override_mask: 0,
+            mouse_sensitivity: 1.0,
             fov_degrees: PerspectiveProjection::default().fov.to_degrees(),
             vsync: true,
             window_mode: 0,
@@ -403,6 +407,9 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
     number!(Streaming, "Per-frame budgets", "Model spawns per frame (0 = unlimited)", model_spawns; 0.0, 512.0, 8.0),
     number!(Streaming, "Per-frame budgets", "Asset upload MiB per frame (0 = unlimited)", upload_mib; 0.0, 256.0, 4.0),
     number!(Streaming, "Threads", "IO threads (restart; 0 = automatic)", io_threads; 0.0, 64.0, 1.0),
+    // Divide retail fMouseHeadingSensitivityMin (0.01) and fMouseHeadingSensitivityMax (0.05)
+    // by the nominal default (0.0125) to get the UI multiplier bounds. See the settings UI spec.
+    number!(Controls, "Mouse look", "Mouse sensitivity (x)", mouse_sensitivity; 0.8, 4.0, 0.05),
 ];
 
 impl SettingSpec {
@@ -2820,6 +2827,63 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Mouse sensitivity belongs to Controls and preserves the retail baseline at 1x.
+    #[test]
+    fn mouse_sensitivity_has_a_control_setting_at_one_times() {
+        let spec = SETTING_SPECS
+            .iter()
+            .find(|spec| spec.label == "Mouse sensitivity (x)")
+            .expect("Controls must expose mouse sensitivity");
+        assert!(spec.page == SettingsPage::Controls);
+        assert_eq!((spec.read)(&RenderingSettings::default()), 1.0);
+    }
+
+    /// Saved multipliers round-trip and version-1 files without the field retain 1x.
+    #[test]
+    fn mouse_sensitivity_persists_and_old_preferences_keep_one_times() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let settings = RenderingSettings {
+            mouse_sensitivity: 2.35,
+            ..default()
+        };
+        save_settings(&path, &settings).unwrap();
+        let (loaded, _) = prepare_settings_at(&mut EngineConfig::default(), Some(path.clone()));
+        assert_eq!(loaded.mouse_sensitivity, 2.35);
+        std::fs::write(&path, br#"{"version":1,"hud":false}"#).unwrap();
+        let (old, _) = prepare_settings_at(&mut EngineConfig::default(), Some(path));
+        assert_eq!(old.mouse_sensitivity, 1.0);
+        assert!(!old.hud);
+    }
+
+    /// Bounds reject unusable file values and constrain keyboard changes at both ends.
+    #[test]
+    fn mouse_sensitivity_validates_and_adjusts_within_documented_bounds() {
+        let spec = SETTING_SPECS
+            .iter()
+            .find(|spec| spec.label == "Mouse sensitivity (x)")
+            .unwrap();
+        for value in [0.0, 0.79, 4.01, f32::NAN, f32::INFINITY] {
+            let invalid = RenderingSettings {
+                mouse_sensitivity: value,
+                ..default()
+            };
+            assert!(
+                invalid
+                    .validate()
+                    .unwrap_err()
+                    .contains("Mouse sensitivity")
+            );
+        }
+        let mut settings = RenderingSettings::default();
+        spec.adjust(&mut settings, -100);
+        assert_eq!(settings.mouse_sensitivity, 0.8);
+        settings.validate().unwrap();
+        spec.adjust(&mut settings, 100);
+        assert_eq!(settings.mouse_sensitivity, 4.0);
+        settings.validate().unwrap();
     }
 
     #[test]
