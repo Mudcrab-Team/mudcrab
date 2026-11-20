@@ -3158,6 +3158,37 @@ impl RecoveryCandidates {
             .get(&(record.load_order, record.source_record_offset))
     }
 
+    fn can_recover_nonplacement(
+        &self,
+        rejected: &DecodedRecord,
+        validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+    ) -> bool {
+        let mut earlier = self.predecessor_chain(rejected.form_id);
+        let mut claimant = rejected;
+        loop {
+            for next in self.duplicate_queue(claimant).into_iter().flatten() {
+                if next.flags & 0x20 != 0 {
+                    return false;
+                }
+                if !crate::esm::is_placed_record_type(&next.record_type)
+                    && validate_live_duplicate(next, earlier.last(), validate).is_ok()
+                {
+                    return true;
+                }
+            }
+            let Some((previous, rest)) = earlier.split_last() else {
+                return false;
+            };
+            if !crate::esm::is_placed_record_type(&previous.record_type)
+                && (record_contains_deferred(previous) || validate(previous).is_ok())
+            {
+                return true;
+            }
+            earlier = rest;
+            claimant = previous;
+        }
+    }
+
     fn has_queued_predecessor(&self, chain: &[DecodedRecord]) -> bool {
         !self.duplicates.is_empty()
             && chain[placement_chain_start(chain)..]
@@ -3732,11 +3763,10 @@ pub(crate) fn resolve_deferred(
         let rejected = crate::esm::invalid_placement_candidates(
             placements.iter().copied(),
             |id| {
-                recovery.predecessors.get(&id).is_some_and(|chain| {
-                    chain
-                        .iter()
-                        .any(|prior| !crate::esm::is_placed_record_type(&prior.record_type))
-                })
+                recovery.can_recover_nonplacement(
+                    &result.records[&id],
+                    &mut **validate_candidate.borrow_mut(),
+                )
             },
             |id| {
                 placements
