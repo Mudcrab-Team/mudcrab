@@ -239,7 +239,10 @@ pub fn parse_group(
 pub(super) enum ParsedRecord {
     Usable(RawRecord),
     /// A known header with no usable payload.
-    DamagedRecord(RawRecord),
+    DamagedRecord {
+        record: RawRecord,
+        truncated: bool,
+    },
     DiscardedFrame(DiscardedFrameScope),
     TruncatedPlacement(TruncatedPlacement),
 }
@@ -347,6 +350,7 @@ fn parse_group_inner(
                 load_order: 0,
             };
             let record_len = header.data_size as usize;
+            let truncated = record_len > rest.len();
             let decoded = if let Some((payload, next)) = rest.split_at_checked(record_len) {
                 curr = next;
                 decode_record_subrecords(&header, payload)
@@ -374,7 +378,7 @@ fn parse_group_inner(
                     if record.is_deleted() {
                         visit(ParsedRecord::Usable(record));
                     } else {
-                        visit(ParsedRecord::DamagedRecord(record));
+                        visit(ParsedRecord::DamagedRecord { record, truncated });
                     }
                 }
             }

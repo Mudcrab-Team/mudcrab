@@ -5,7 +5,7 @@ use crate::esm::{
     load_order::LoadOrder,
     projection_omissions::{OmissionCategory, ProjectionOmissions},
 };
-use crate::records::{DecodedRecord, source_identity};
+use crate::records::{DecodedRecord, ReadResult, source_identity};
 use rusqlite::{Result, Transaction, params};
 use std::collections::{HashMap, HashSet};
 
@@ -107,10 +107,14 @@ pub(super) fn export(
     tx: &Transaction<'_>,
     master: &HashMap<u32, RawRecord>,
     interior_cells: &HashSet<u32>,
-    sources: Option<(&HashMap<u32, DecodedRecord>, &LoadOrder)>,
+    sources: Option<(&ReadResult, &LoadOrder)>,
     omissions: &mut ProjectionOmissions,
 ) -> Result<Exported> {
-    let mut result = Exported::default();
+    let mut result = Exported {
+        unverified_link_targets: sources
+            .is_some_and(|(decoded, _)| decoded.unknown_discarded_scope),
+        ..Exported::default()
+    };
     let in_interior = |record: &RawRecord| {
         record
             .cell_form_id
@@ -126,8 +130,19 @@ pub(super) fn export(
         .collect();
     markers.sort_unstable_by_key(|record| record.form_id);
     for record in markers {
-        let source = sources.and_then(|(records, order)| {
-            records.get(&record.form_id).map(|record| (record, order))
+        let source = sources.and_then(|(decoded, order)| {
+            if decoded
+                .discarded_placement_overrides
+                .contains(&record.form_id)
+            {
+                // The retained marker's links are available, but its discarded override
+                // could have introduced links into any cell.
+                result.unverified_link_targets = true;
+            }
+            decoded
+                .records
+                .get(&record.form_id)
+                .map(|record| (record, order))
         });
         project(
             tx,
