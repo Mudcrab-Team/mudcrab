@@ -207,11 +207,14 @@ fn project(
             || authored(*tag).next().is_some()
             || source.is_some_and(|(record, _)| record.rejected_fields.contains(tag))
     };
-    let payload_complete = source.is_none_or(|(record, _)| record.payload_complete);
-    // An unframed tail can contain outgoing links to markers in other cells.
-    result.unverified_link_targets |= !payload_complete;
-    let complete = payload_complete && !matches!(provenance, MarkerSource::DamagedPlugin);
+    let complete = match provenance {
+        MarkerSource::Canonical => true,
+        MarkerSource::DamagedPlugin => false,
+        MarkerSource::Typed(record, _) => record.payload_complete,
+    };
     if !complete {
+        // Truncation or plugin remapping can hide an outgoing link to another cell.
+        result.unverified_link_targets = true;
         result.incomplete_cells.insert(cell);
     }
 

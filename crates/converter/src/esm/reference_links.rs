@@ -115,6 +115,22 @@ impl Context<'_> {
                 // Placement imports can add REFRs without modifying the canonical archive.
                 return Ok(targets.contains(&b"REFR").then_some(id));
             }
+            if id < 0x800 {
+                // Subset deletions remove the placement and archive row. Owning identities
+                // survive; edits without an identity leave a separate marker.
+                let known: bool = tx
+                    .prepare_cached(
+                        "SELECT EXISTS(
+                             SELECT 1 FROM formid_map WHERE form_id=?1
+                             UNION ALL
+                             SELECT 1 FROM subset_placement_deletions WHERE form_id=?1
+                         )",
+                    )?
+                    .query_row([id], |row| row.get(0))?;
+                if known {
+                    return Ok(None);
+                }
+            }
         }
         Ok((id < 0x800).then_some(id))
     }

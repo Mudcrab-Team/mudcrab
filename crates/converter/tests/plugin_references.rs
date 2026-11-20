@@ -4231,6 +4231,15 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
             [false, false, true],
         ),
         (
+            "invalid-group-hides-partial-cell-group",
+            placement_group(
+                a,
+                [bad_group.clone(), group(9, b, Vec::new())[..16].to_vec()].concat(),
+            ),
+            [false, false, true],
+            [false, false, true],
+        ),
+        (
             "cell-group-hides-short-nonplacement-tail",
             placement_group(a, [bad_group, overrun[..20].to_vec()].concat()),
             [false, true, true],
@@ -4804,6 +4813,19 @@ fn plugin_placement_import_keeps_neighbors_of_damaged_records_and_frames() {
                         record(b"REFR", 0x821, 0, Vec::new())[..20].to_vec(),
                     ]
                     .concat(),
+                ),
+                placement_group(a, good_neighbor()),
+            ]
+            .concat(),
+            [false, false, true],
+            3,
+        ),
+        (
+            "discarded-group-hides-child-cell",
+            [
+                placement_group(
+                    a,
+                    [bad_group.clone(), group(10, b, Vec::new())[..23].to_vec()].concat(),
                 ),
                 placement_group(a, good_neighbor()),
             ]
@@ -5874,6 +5896,16 @@ fn damaged_plugin_occluders_leave_valid_neighbors_and_verified_link_slots_intact
     assert!(!placement_certificate(&db, cell));
     assert!(placement_certificate(&db, PLACEMENT_CELL_B));
 
+    let links_verified = || {
+        db.query_row(
+            "SELECT value FROM room_graph_stats WHERE name='occlusion_links_verified'",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap()
+    };
+    assert!(links_verified());
+
     // The moved marker has one broken slot and one valid outgoing link. Dropping
     // the entire XORD would make the latter's target usable as an independent plane.
     let slots = [0x0100_0904u32, 0x9900_0000, 0, 0];
@@ -5904,6 +5936,7 @@ fn damaged_plugin_occluders_leave_valid_neighbors_and_verified_link_slots_intact
         result.status.success() && error.contains("01000903"),
         "{error}"
     );
+    assert!(!links_verified());
     assert_eq!(shape_count(cell + 3), 0);
     assert_eq!(shape_count(0x0200_0900), 1);
     assert_eq!(

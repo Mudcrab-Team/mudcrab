@@ -1355,6 +1355,8 @@ Columns and rules:
   all-null `XORD`. Subset exports invalidate cells at the other end of cross-cell or unverified
   links. A verified same-cell edge can be replaced or removed while the engine reloads its
   endpoints and checks their shared owner.
+  A plugin placement import also clears pack-wide link verification when remapping reports
+  damage on an occlusion marker. It retains each outgoing link it can resolve.
   Occluder shadows require both markers because an unverified source in another cell can have a
   missing incoming link to a local occluder. Legacy exports omit both markers.
   A single complete source `XORD` with exactly one nonzero slot sets `single_target_verified`
