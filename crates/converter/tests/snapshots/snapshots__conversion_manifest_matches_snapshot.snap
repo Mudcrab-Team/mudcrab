@@ -1,6 +1,5 @@
 ---
 source: crates/converter/tests/snapshots.rs
-assertion_line: 217
 expression: manifest
 ---
 {
@@ -96,7 +95,7 @@ expression: manifest
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",
       "output_hash": "[output_hash]",
-      "output_size": 2540,
+      "output_size": 2452,
       "source_hash": "[source_hash]"
     },
     "scripts/generated.pex": {
