@@ -41,7 +41,7 @@ use super::{
 use crate::esm::load_order::LoadOrder;
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, hash_map::Entry},
     sync::OnceLock,
 };
 
@@ -3164,7 +3164,10 @@ pub(crate) fn resolve_deferred(
                 .then(|| placement_links(&result.records[&id]))
         });
         for id in selected {
-            let record = &result.records[&id];
+            let Entry::Occupied(entry) = result.records.entry(id) else {
+                continue;
+            };
+            let record = entry.get();
             let links = placement_links(record);
             if links
                 .into_iter()
@@ -3186,7 +3189,7 @@ pub(crate) fn resolve_deferred(
             };
             recovered = true;
             unresolved.insert(id);
-            let record = result.records.remove(&id).expect("checked candidate");
+            let record = entry.remove();
             reject_deferred_candidate(result, &history_index, &record, order, reason);
             replay_diagnostics.remove(&id);
             pending.remove(&id);
