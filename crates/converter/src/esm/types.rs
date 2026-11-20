@@ -11,14 +11,8 @@ pub struct GroupHeader {
     pub group_type: i32,
 }
 
-/// A cell-child GRUP identifies its cell once the label and group kind are readable.
-pub(crate) fn group_child_cell(header: &[u8]) -> Option<u32> {
-    let [tag, _, label, kind, ..] = header.as_chunks::<4>().0 else {
-        return None;
-    };
-    (tag == b"GRUP" && matches!(i32::from_le_bytes(*kind), 6 | 8 | 9 | 10))
-        .then(|| u32::from_le_bytes(*label))
-}
+/// GRUP kinds whose label is the owning CELL FormID.
+pub(crate) const CELL_CHILD_GROUP_KINDS: [i32; 4] = [6, 8, 9, 10];
 
 /// Skyrim Record Header (24 Bytes)
 #[derive(Debug, Clone, PartialEq, Eq)]

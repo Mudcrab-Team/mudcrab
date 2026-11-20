@@ -4153,6 +4153,33 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
             [false, false, true],
         ),
         (
+            "invalid-group-hides-partial-kind",
+            placement_group(
+                a,
+                [bad_group.clone(), group(9, b, Vec::new())[..15].to_vec()].concat(),
+            ),
+            [false, false, true],
+            [false, false, true],
+        ),
+        (
+            "partial-group-label-without-kind",
+            placement_group(a, group(9, b, Vec::new())[..12].to_vec()),
+            [false, false, true],
+            [false, false, true],
+        ),
+        (
+            "partial-group-label",
+            placement_group(a, group(9, b, Vec::new())[..11].to_vec()),
+            [false, false, false],
+            [false, false, true],
+        ),
+        (
+            "partial-kind-excludes-cell",
+            placement_group(a, group(7, b, Vec::new())[..13].to_vec()),
+            [false, true, true],
+            [false, false, true],
+        ),
+        (
             "cell-group-hides-short-nonplacement-tail",
             placement_group(a, [bad_group, overrun[..20].to_vec()].concat()),
             [false, true, true],
@@ -4739,6 +4766,19 @@ fn plugin_placement_import_keeps_neighbors_of_damaged_records_and_frames() {
                 placement_group(
                     a,
                     [bad_group.clone(), group(10, b, Vec::new())[..23].to_vec()].concat(),
+                ),
+                placement_group(a, good_neighbor()),
+            ]
+            .concat(),
+            [false, false, true],
+            3,
+        ),
+        (
+            "discarded-group-hides-partial-kind",
+            [
+                placement_group(
+                    a,
+                    [bad_group.clone(), group(10, b, Vec::new())[..15].to_vec()].concat(),
                 ),
                 placement_group(a, good_neighbor()),
             ]

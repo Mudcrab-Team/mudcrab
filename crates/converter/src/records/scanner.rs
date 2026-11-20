@@ -1,6 +1,6 @@
 //! Memory-mapped framing with recoverable record errors and bounded inflation.
 use super::{DiscardedFrameScope, PluginDiagnostics, TruncatedPlacement};
-use crate::esm::types::group_child_cell;
+use crate::esm::types::CELL_CHILD_GROUP_KINDS;
 use color_eyre::{Result, eyre::WrapErr};
 use flate2::{Decompress, FlushDecompress, Status};
 use memmap2::Mmap;
@@ -125,8 +125,8 @@ fn scan_bytes_observed(
                 format!("incomplete frame at byte {position}; skipping containing group remainder")
             });
             let prefix = &bytes[position..end];
-            if let Some(child) = group_child_cell(prefix) {
-                discarded_frames.insert(DiscardedFrameScope::Cell(child));
+            if let Some(scope) = DiscardedFrameScope::from_group_prefix(prefix) {
+                discarded_frames.insert(scope);
             } else if let Some(placement) = TruncatedPlacement::from_prefix(prefix) {
                 damage
                     .truncated_placements
@@ -149,15 +149,15 @@ fn scan_bytes_observed(
         if signature == *b"GRUP" {
             let label = u32_at(header, 8);
             let kind = u32_at(header, 12) as i32;
-            let cell_child = group_child_cell(header);
+            let cell_child = CELL_CHILD_GROUP_KINDS.contains(&kind).then_some(label);
             if size < 24 || size > end - position || parents.len() >= 4096 {
                 diagnostics.note("record", || {
                     format!("invalid group boundary/nesting at byte {position}")
                 });
                 let child_offset = position + 24;
                 let child_prefix = &bytes[child_offset..end];
-                if let Some(child) = group_child_cell(child_prefix) {
-                    discarded_frames.insert(DiscardedFrameScope::Cell(child));
+                if let Some(scope) = DiscardedFrameScope::from_group_prefix(child_prefix) {
+                    discarded_frames.insert(scope);
                 } else if let Some(placement) = TruncatedPlacement::from_prefix(child_prefix) {
                     damage
                         .truncated_placements
