@@ -2017,6 +2017,7 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
         &[],
         1,
         [
+            record(b"STAT", 0x999, 0, Vec::new()),
             record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
             group(
                 6,
@@ -2631,6 +2632,9 @@ fn room_graph_review_fixture_with_fields(
         &[],
         1,
         [
+            record(b"STAT", 0x999, 0, Vec::new()),
+            record(b"NPC_", 0x99a, 0, Vec::new()),
+            record(b"PROJ", 0x99b, 0, Vec::new()),
             record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
             group(6, 0x900, group(9, 0x900, markers.concat())),
         ]
@@ -3342,6 +3346,11 @@ fn malformed_authored_assignments_stay_unknown_in_both_readers() {
         .into_iter()
         .enumerate()
         {
+            let base: u32 = match record_type {
+                b"REFR" | b"ACRE" => 0x999,
+                b"ACHR" => 0x99a,
+                _ => 0x99b,
+            };
             for (index, assignment) in [
                 None,
                 Some(vec![0; 3]),
@@ -3355,7 +3364,7 @@ fn malformed_authored_assignments_stay_unknown_in_both_readers() {
                 for (flag_index, flags) in [0, 0x8000_0000].into_iter().enumerate() {
                     let id = 0x820 + (type_index * 10 + index * 2 + flag_index) as u32;
                     let mut fields = [
-                        sub(b"NAME", &0x999u32.to_le_bytes()),
+                        sub(b"NAME", &base.to_le_bytes()),
                         sub(b"DATA", &[0; 24]),
                     ]
                     .concat();
@@ -3448,12 +3457,12 @@ fn repeated_multibound_targets_stay_unknown_in_both_readers() {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let mut references = Vec::new();
-        for record_type in [b"REFR", b"ACHR"] {
+        for (record_type, base) in [(b"REFR", 0x999u32), (b"ACHR", 0x99a)] {
             for flags in [0, 0x8000_0000] {
                 for targets in [[0x800u32, 0x801], [0x800, 0x800]] {
                     let id = 0xa00 + references.len() as u32;
                     let fields = [
-                        sub(b"NAME", &0x999u32.to_le_bytes()),
+                        sub(b"NAME", &base.to_le_bytes()),
                         sub(b"DATA", &[0; 24]),
                         sub(b"XMBR", &targets[0].to_le_bytes()),
                         sub(b"XMBR", &targets[1].to_le_bytes()),
