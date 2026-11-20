@@ -6612,6 +6612,7 @@ fn duplicate_apertures_cannot_replace_a_certified_portal() {
                     [
                         sub(b"XPOD", &[0x820u32.to_le_bytes(), [0; 4]].concat()),
                         sub(b"XPRM", &[0; 32]),
+                        sub(b"VMAD", &[0; 8]),
                     ]
                     .concat(),
                 ),
@@ -6650,6 +6651,31 @@ fn duplicate_apertures_cannot_replace_a_certified_portal() {
     assert!(!placement_certificate(&db, PLACEMENT_CELL_A));
     assert!(!placement_certificate(&db, PLACEMENT_CELL_B));
     assert!(placement_certificate(&db, PLACEMENT_CELL_UNRELATED));
+
+    let unsupported = plugin(
+        dir.path(),
+        "Unsupported.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(
+            PLACEMENT_CELL_B,
+            [
+                placement(0x822, PLACEMENT_STAT, 0, 60.0, Vec::new()),
+                placement_marker(0x801, 0x20, sub(b"VMAD", &[0; 8])),
+            ]
+            .concat(),
+        ),
+    );
+    let result = run_placement_import(&assets, "--plugin", &unsupported);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("unsupported REFR field VMAD"));
+    assert_eq!(
+        db.query_row("SELECT pos_x FROM [references] WHERE id=0x822", [], |row| {
+            row.get::<_, f32>(0)
+        })
+        .unwrap(),
+        42.0
+    );
 }
 
 #[test]
@@ -7920,6 +7946,14 @@ fn check_discarded_occluder_override(import: bool) {
             [sub(b"NAME", &second.to_le_bytes()), xord()].concat(),
         )
     };
+    let damaged_name = |name: &[u8]| {
+        record(
+            b"REFR",
+            0x801,
+            0,
+            [sub(b"NAME", name), sub(b"DATA", &[0; 24]), xord()].concat(),
+        )
+    };
     let cases = [
         ("short-r", b"R".to_vec(), None, 0),
         ("short-re", b"RE".to_vec(), None, 0),
@@ -7927,6 +7961,8 @@ fn check_discarded_occluder_override(import: bool) {
         ("short-ach", b"ACH".to_vec(), None, 1),
         ("short-p", b"P".to_vec(), None, 1),
         ("short-reg", b"REG".to_vec(), None, 1),
+        ("oversized-name", damaged_name(&[0x17, 0, 0, 0, 1]), None, 0),
+        ("short-name", damaged_name(&[0x17]), None, 0),
         ("ambiguous-marker-first", ambiguous(0x17, 0x999), None, 0),
         ("ambiguous-marker-last", ambiguous(0x999, 0x17), None, 0),
         ("ambiguous-ordinary", ambiguous(0x810, 0x999), None, 1),

@@ -31,21 +31,25 @@ pub const OCCLUSION_MARKER_BASE: u32 = 0x17;
 pub(super) const SHAPE_BOX: u32 = 1;
 pub(super) const SHAPE_PORTAL: u32 = 3;
 
-/// A duplicate NAME can still identify an occlusion marker in the supplying plugin.
-pub(crate) fn names_occlusion_marker<'a>(
+/// Rejected REFRs with unreadable or missing NAME fields can hide PlaneMarker links.
+pub(crate) fn may_name_occlusion_marker<'a>(
     names: impl Iterator<Item = &'a [u8]>,
     plugin: usize,
     order: &LoadOrder,
 ) -> bool {
-    names
-        .filter_map(|bytes| <[u8; 4]>::try_from(bytes).ok())
-        .any(|word| {
+    let mut names = names.peekable();
+    names.peek().is_none()
+        || names.any(|bytes| {
+            let Ok(word) = <[u8; 4]>::try_from(bytes) else {
+                return true;
+            };
             crate::records::source_identity::header_runtime_id(
                 b"REFR",
                 u32::from_le_bytes(word),
                 plugin,
                 order,
-            ) == Some(OCCLUSION_MARKER_BASE)
+            )
+            .is_none_or(|id| id == OCCLUSION_MARKER_BASE)
         })
 }
 

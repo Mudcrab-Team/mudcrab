@@ -1679,11 +1679,13 @@ command cannot identify the affected cell, all interiors use the whole-cell fall
 command also warns and skips placements that require a damaged new interior. Usable records
 with unsupported content still roll back the import.
 
-If an imported plugin's occluder has unusable geometry or unresolved source fields, the
-command reports the omission and skips its occlusion geometry. The placement edit report includes
-counts by omission category and sampled FormIDs with reasons. Valid placements in the same
-plugin still apply. The affected cells stay incomplete. Resolved outgoing link slots continue
-to suppress their targets even when the source marker has no usable shape.
+An occluder that passes placement admission can still have an unusable shape, such as a
+malformed `XPRM`. The placement edit report counts projection omissions by category and samples
+FormIDs and reasons. Resolved outgoing `XORD` slots still suppress their targets when the source
+shape is omitted. A placement rejected earlier, for example for a nonfinite `DATA` transform,
+produces a warning and leaves its affected cells incomplete. It contributes no projection
+omission or new link slots. If it could hide outgoing PlaneMarker links, the importer clears
+link verification. Valid neighboring placements still apply.
 
 `--native` accepts a `cells` array for new interiors and an `edits` array for placements.
 Provide at least one cell or edit. A cell declaration takes an `id`, an `editor_id`, and an optional

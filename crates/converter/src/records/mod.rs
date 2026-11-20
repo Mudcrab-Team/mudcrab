@@ -700,7 +700,7 @@ fn has_authored_occluder_links(record: &DecodedRecord, plugin: usize, order: &Lo
     let names = fields
         .iter()
         .filter_map(|(tag, bytes)| (tag == b"NAME").then_some(*bytes));
-    crate::esm::rooms::names_occlusion_marker(names, plugin, order)
+    crate::esm::rooms::may_name_occlusion_marker(names, plugin, order)
 }
 
 fn incomplete_override(record: &DecodedRecord, previous: Option<&DecodedRecord>) -> bool {
