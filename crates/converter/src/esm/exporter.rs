@@ -1060,8 +1060,10 @@ fn export_records(
                 }
                 if order.is_none() {
                     if (1..0x800).contains(&form_id) {
-                        tx.prepare_cached("DELETE FROM subset_placement_deletions WHERE form_id=?1")?
-                            .execute([form_id])?;
+                        tx.prepare_cached(
+                            "DELETE FROM subset_placement_deletions WHERE form_id=?1",
+                        )?
+                        .execute([form_id])?;
                     }
                     subset_link_sources.push(canonical_record);
                 } else {
