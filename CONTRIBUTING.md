@@ -132,6 +132,18 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    `tools/unwrap_ratchet/baseline.json` (it also raises `revision`, so the approval shows in the diff even
    when a number does not change), and explain the reason in the pull request. A baseline that your pull
    request did not change never raises the limit.
+
+   CI also counts silent error drops in the same production code: a propagated error whose value is
+   dropped (`let _ = ...?;`), a `Result` error turned into `None` (`.ok()`, including `.ok()?`), an error or
+   absence replaced by a default or empty value (`.unwrap_or_default()`, `.unwrap_or("")`), and failed items
+   dropped from an iterator (`filter_map(Result::ok)`). It fails when a crate's count is higher than at its
+   base commit, so it judges only the sites you add. To keep an intended drop, put a comment with a reason
+   on the same or the previous line: `// silent-ok: an absent tag means this record has no tag`. A marker
+   with no reason is not an exception. Check locally with
+   `python3 tools/silent_failure_ratchet/silent_failure_ratchet.py --base-root <a worktree of main>`. To
+   accept a justified rise that has no marker, run `--update` (it raises that crate's entry and the file's
+   `revision`) and explain the reason in the pull request. The walk ignores `#[cfg(test)]` code and test
+   files exactly as the unwrap ratchet does.
 5. **Submit a Pull Request:**
    - Target the `main` branch and fill in the PR template; [`docs/contributing/writing-prs.md`](docs/contributing/writing-prs.md) shows how to write it so it is quick to review.
    - Link the issue (`Closes #N`), apply the [labels](docs/contributing/labels.md) that fit (if a label there doesn't exist on the repository yet, use the closest one that does; without triage access, name them in the PR instead), and reference any relevant planning docs in `docs/specs/`.
