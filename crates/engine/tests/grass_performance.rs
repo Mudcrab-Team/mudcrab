@@ -389,6 +389,20 @@ fn judged_median_fails_a_slow_remeasure() {
     assert_eq!(median, Duration::from_micros(20_500));
 }
 
+/// A slowdown present in only half of the eight samples passes: the median of eight is the mean
+/// of the fourth and fifth samples. This is the documented limit of the single re-measure.
+#[test]
+fn judged_median_accepts_a_mixed_remeasure_with_half_the_samples_slow() {
+    let slow = Duration::from_micros(9_050);
+    let fast = Duration::from_micros(4_930);
+    let first = [slow, slow, slow];
+    let (median, within_budget, remeasured) =
+        judged_median(&first, || vec![slow, fast, fast, fast, fast], millis(9));
+    assert!(remeasured);
+    assert_eq!(median, Duration::from_micros(6_990));
+    assert!(within_budget, "four of eight samples over budget still pass on the median");
+}
+
 /// Check bounded deterministic generation and report each cell's median budget result.
 fn measured(
     cache: &GrassCache,
@@ -512,7 +526,7 @@ fn measured(
         timing_passed &= within_budget;
         if remeasured {
             eprintln!(
-                "grass cell generation re-measured: spacing={spacing}, cell={id:08X}, first_median={first_median:?}, samples=8, median={median:?}, effective_budget={ceiling:?}, within_budget={within_budget}"
+                "grass cell generation re-measured: spacing={spacing}, cell={id:08X}, first_median={first_median:?}, samples=8, median={median:?}, strict_budget={strict_ceiling:?}, allowance={allowance}, effective_budget={ceiling:?}, within_budget={within_budget}"
             );
         }
         eprintln!(
