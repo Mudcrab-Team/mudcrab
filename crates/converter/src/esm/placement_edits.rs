@@ -393,36 +393,34 @@ fn plugin_edits(
             "{name}: unsupported {} record {source_id:08X}",
             String::from_utf8_lossy(&record.record_type)
         );
+        let view = SubrecordView::new(&record.subrecords);
+        let base = view.unique_form_id(b"NAME");
         if !record.is_deleted() {
             validate_room_field_tags(&record.subrecords)?;
-            // Reject malformed arrivals before they replace the last usable door placement.
-            if SubrecordView::new(&record.subrecords)
-                .find_all(b"XTEL")
-                .enumerate()
-                .any(|(index, data)| {
-                    let Some((target, arrival_and_flags)) = data.split_first_chunk::<4>() else {
-                        return true;
-                    };
-                    let target = u32::from_le_bytes(*target);
-                    index != 0
-                        || arrival_and_flags.len() != 28
-                        || !super::valid_placement_transform(std::iter::once(
-                            &arrival_and_flags[..24],
-                        ))
-                        || (target != 0
-                            && source_identity::header_runtime_id(
-                                b"REFR", target, priority, &order,
-                            )
+            if base.is_none_or(|id| id == 0) {
+                eprintln!("warning: {name}: skipped placement {source_id:08X} with malformed NAME");
+                record_damage(tx, &mut import, &record, priority, &order)?;
+                continue;
+            }
+            // Retain the previous link when the new arrival or destination is unusable.
+            if view.find_all(b"XTEL").enumerate().any(|(index, data)| {
+                let Some((target, arrival_and_flags)) = data.split_first_chunk::<4>() else {
+                    return true;
+                };
+                let target = u32::from_le_bytes(*target);
+                index != 0
+                    || arrival_and_flags.len() != 28
+                    || !super::valid_placement_transform(std::iter::once(&arrival_and_flags[..24]))
+                    || (target != 0
+                        && source_identity::header_runtime_id(b"REFR", target, priority, &order)
                             .is_none_or(|id| id == 0))
-                })
-            {
+            }) {
                 eprintln!("warning: {name}: skipped placement {source_id:08X} with malformed XTEL");
                 record_damage(tx, &mut import, &record, priority, &order)?;
                 continue;
             }
         }
-        let room_links = SubrecordView::new(&record.subrecords)
-            .get_form_id(b"NAME")
+        let room_links = base
             .filter(|id| id & 0x00ff_ffff == ROOM_MARKER_BASE)
             .map(|_| RoomLinkLayout::from_raw(&record));
         remap_record_form_ids(
@@ -764,12 +762,8 @@ fn validate_room_fields(
 ) -> Result<()> {
     validate_room_field_tags(subrecords)?;
     let view = SubrecordView::new(subrecords);
-    let mut bases = view.find_all(b"NAME");
-    let base = bases
-        .next()
-        .and_then(|data| <[u8; 4]>::try_from(data).ok())
-        .map(u32::from_le_bytes)
-        .filter(|_| bases.next().is_none())
+    let base = view
+        .unique_form_id(b"NAME")
         .ok_or_else(|| color_eyre::eyre::eyre!("placement requires one base FormID"))?;
     let mut marker_bounds = view.find_all(b"XMBO");
     if let Some(bounds) = marker_bounds.next() {

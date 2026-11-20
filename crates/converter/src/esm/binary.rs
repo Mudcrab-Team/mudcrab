@@ -376,7 +376,7 @@ fn decode_record_subrecords(
     raw_payload: &[u8],
 ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let subrecords = decode_record_subrecords_inner(header, raw_payload);
-    // A deletion's header remains authoritative when its discarded body is torn.
+    // A bounded deletion's header remains authoritative when its body cannot be decoded.
     // Preserve a complete body: legacy named GMST deletions can resolve by EDID.
     if header.flags & 0x20 != 0 {
         return Ok(subrecords.unwrap_or_default());
