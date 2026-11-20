@@ -1277,6 +1277,13 @@ pub fn cull_room_views(
                 let Some((form_id, reference)) = owner else {
                     return true;
                 };
+                let owns_reference = match &loaded.graph.authored {
+                    Some(rules) => rules.has_rule(form_id),
+                    None => loaded.graph.membership.contains_key(&form_id),
+                };
+                if !owns_reference {
+                    return true;
+                }
                 // Re-read every frame: a body can be added after the mesh spawns.
                 // Authored rules and source spheres supply ownership independently.
                 let exempted =
@@ -1318,9 +1325,6 @@ pub fn cull_room_views(
                     MeshBounds::transformed(aabb, local_from_world * transform.affine())
                 });
                 if let Some(authored) = &loaded.graph.authored {
-                    if !authored.has_rule(form_id) {
-                        return true;
-                    }
                     let Some(transform) = placement(reference, loaded.root, local_from_world)
                     else {
                         return true;
