@@ -4448,88 +4448,94 @@ fn assert_created_interior(
 }
 
 #[test]
-fn fresh_interior_with_a_malformed_occluder_rolls_back_and_can_be_retried() {
+fn damaged_plugin_occluders_leave_valid_neighbors_and_verified_link_slots_intact() {
     let dir = tempfile::tempdir().unwrap();
     let assets = converted_placement_fixture(dir.path());
     let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
     let cell = 0x0100_0900;
-    let source = |plane| {
-        plugin(
-            dir.path(),
-            "FreshPlane.esp",
-            &["Skyrim.esm"],
-            0,
-            [
-                authored_cell(cell, Vec::new()),
-                placement_group(
-                    cell,
-                    [placement_marker(cell + 1, 0x1f, Vec::new()), plane].concat(),
-                ),
-            ]
-            .concat(),
-        )
-    };
-    let bad = source(placement(cell + 2, 23, 0, 0.0, sub(b"XPRM", &[0; 31])));
-    let result = run_placement_import(&assets, "--plugin", &bad);
-    assert!(!result.status.success());
-    let error = String::from_utf8_lossy(&result.stderr);
-    assert!(
-        error.contains("01000902") && error.contains("XPRM"),
-        "{error}"
-    );
-    let cell_exists: bool = db
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM cells WHERE id=?1)",
-            [cell],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert!(!cell_exists);
-    let good = source(placement_marker(cell + 2, 23, Vec::new()));
-    assert_placement_import(
-        run_placement_import(&assets, "--plugin", &good),
-        "Applied 2 room placements in 1 cells (1 created, 1 certified)",
-    );
-    assert!(placement_certificate(&db, cell));
-
-    let replace = |shape: u32| {
-        let mut primitive = [0u8; 32];
-        for extent in primitive[..12].as_chunks_mut::<4>().0 {
-            extent.copy_from_slice(&10f32.to_le_bytes());
-        }
-        primitive[28..].copy_from_slice(&shape.to_le_bytes());
-        plugin(
-            dir.path(),
-            "ReplacePlane.esp",
-            &["Skyrim.esm", "FreshPlane.esp"],
-            0,
+    let fresh = plugin(
+        dir.path(),
+        "FreshPlane.esp",
+        &["Skyrim.esm"],
+        0,
+        [
+            authored_cell(cell, Vec::new()),
             placement_group(
                 cell,
-                placement(cell + 2, 23, 0, 1.0, sub(b"XPRM", &primitive)),
+                [
+                    placement_marker(cell + 1, 0x1f, Vec::new()),
+                    placement_marker(cell + 4, 23, Vec::new()),
+                    placement(cell + 2, 23, 0, 0.0, sub(b"XPRM", &[0; 31])),
+                ]
+                .concat(),
             ),
-        )
-    };
-    let stored_shape = || {
+            placement_group(PLACEMENT_CELL_B, placement_marker(cell + 3, 23, Vec::new())),
+        ]
+        .concat(),
+    );
+    let result = run_placement_import(&assets, "--plugin", &fresh);
+    let error = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        result.status.success() && error.contains("01000902") && error.contains("XPRM"),
+        "{error}"
+    );
+    let shape_count = |id: u32| {
         db.query_row(
-            "SELECT shape FROM room_occluders WHERE ref_id=?1",
-            [cell + 2],
-            |row| row.get::<_, u32>(0),
+            "SELECT count(*) FROM room_occluders WHERE ref_id=?1",
+            [id],
+            |r| r.get::<_, u32>(0),
         )
         .unwrap()
     };
-    let invalid = run_placement_import(&assets, "--plugin", &replace(2));
-    assert!(!invalid.status.success());
-    assert!(String::from_utf8_lossy(&invalid.stderr).contains("01000902"));
-    assert_eq!(stored_shape(), 3);
-    assert!(placement_certificate(&db, cell));
-    let corrected = run_placement_import(&assets, "--plugin", &replace(1));
-    assert!(
-        corrected.status.success(),
-        "{}",
-        String::from_utf8_lossy(&corrected.stderr)
+    assert_eq!(shape_count(cell + 2), 0);
+    assert_eq!(shape_count(cell + 3), 1);
+    assert!(!placement_certificate(&db, cell));
+    assert!(placement_certificate(&db, PLACEMENT_CELL_B));
+
+    // The moved marker has one broken slot and one valid outgoing link. Dropping
+    // the entire XORD would make the latter's target usable as an independent plane.
+    let slots = [0x0100_0904u32, 0x9900_0000, 0, 0];
+    let moved = plugin(
+        dir.path(),
+        "MovedPlane.esp",
+        &["Skyrim.esm", "FreshPlane.esp"],
+        0,
+        [
+            placement_group(
+                PLACEMENT_CELL_A,
+                placement_marker(
+                    cell + 3,
+                    23,
+                    sub(b"XORD", &slots.map(u32::to_le_bytes).concat()),
+                ),
+            ),
+            placement_group(
+                PLACEMENT_CELL_UNRELATED,
+                placement_marker(0x0200_0900, 23, Vec::new()),
+            ),
+        ]
+        .concat(),
     );
-    assert_eq!(stored_shape(), 1);
-    assert!(placement_certificate(&db, cell));
+    let result = run_placement_import(&assets, "--plugin", &moved);
+    let error = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        result.status.success() && error.contains("01000903"),
+        "{error}"
+    );
+    assert_eq!(shape_count(cell + 3), 0);
+    assert_eq!(shape_count(0x0200_0900), 1);
+    assert_eq!(
+        db.query_row(
+            "SELECT linked_ref FROM room_occluder_links WHERE ref_id=?1 AND link_index=0",
+            [cell + 3],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap(),
+        cell + 4
+    );
+    assert!(!placement_certificate(&db, PLACEMENT_CELL_A));
+    assert!(!placement_certificate(&db, PLACEMENT_CELL_B));
+    assert!(placement_certificate(&db, PLACEMENT_CELL_UNRELATED));
 }
 
 #[test]

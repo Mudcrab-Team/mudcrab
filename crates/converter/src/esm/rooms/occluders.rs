@@ -132,7 +132,7 @@ pub(super) fn export(
             tx,
             record,
             in_interior(record),
-            source,
+            MarkerSource::from_typed(source),
             |id| {
                 Ok(master.get(&id).map_or(id < 0x800, |record| {
                     record.record_type == *b"REFR" && !record.is_deleted()
@@ -145,11 +145,33 @@ pub(super) fn export(
     Ok(result)
 }
 
+#[derive(Clone, Copy)]
+enum MarkerSource<'a> {
+    Canonical,
+    DamagedPlugin,
+    Typed(&'a DecodedRecord, &'a LoadOrder),
+}
+
+impl<'a> MarkerSource<'a> {
+    fn from_typed(source: Option<(&'a DecodedRecord, &'a LoadOrder)>) -> Self {
+        source.map_or(Self::Canonical, |(record, order)| {
+            Self::Typed(record, order)
+        })
+    }
+
+    fn typed(self) -> Option<(&'a DecodedRecord, &'a LoadOrder)> {
+        match self {
+            Self::Typed(record, order) => Some((record, order)),
+            _ => None,
+        }
+    }
+}
+
 fn project(
     tx: &Transaction<'_>,
     record: &RawRecord,
     interior: bool,
-    source: Option<(&DecodedRecord, &LoadOrder)>,
+    provenance: MarkerSource,
     target_exists: impl Fn(u32) -> Result<bool>,
     result: &mut Exported,
     omissions: &mut ProjectionOmissions,
@@ -157,6 +179,7 @@ fn project(
     let id = record.form_id;
     let view = SubrecordView::new(&record.subrecords);
     let cell = record.cell_form_id.unwrap_or(0);
+    let source = provenance.typed();
     let source_fields = source.map(|(record, _)| record.framed_source_prefix());
     let authored = |tag: [u8; 4]| {
         source_fields
@@ -181,7 +204,8 @@ fn project(
             || authored(*tag).next().is_some()
             || source.is_some_and(|(record, _)| record.rejected_fields.contains(tag))
     };
-    let complete = source.is_none_or(|(record, _)| record.payload_complete);
+    let complete = !matches!(provenance, MarkerSource::DamagedPlugin)
+        && source.is_none_or(|(record, _)| record.payload_complete);
     if !complete {
         result.incomplete_cells.insert(cell);
     }

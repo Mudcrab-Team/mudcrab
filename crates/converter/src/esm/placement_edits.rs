@@ -222,13 +222,23 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         records.insert(edit.record.form_id, edit.record);
     }
     let mut omissions = ProjectionOmissions::default();
-    update_subset_occluders(&tx, &records, None, &mut omissions)?;
+    update_subset_occluders(
+        &tx,
+        &records,
+        None,
+        &import.damaged_occluders,
+        &mut omissions,
+    )?;
     for (category, details) in omissions.categories {
-        if let Some(sample) = details.samples.first() {
-            bail!(
+        for sample in details.samples {
+            let message = format!(
                 "occluder {:08X}: {category}: {}",
-                sample.form_id,
-                sample.reason
+                sample.form_id, sample.reason
+            );
+            ensure!(is_plugin, "{message}");
+            eprintln!(
+                "warning: {name}: {message} ({} omissions in category)",
+                details.count
             );
         }
     }
@@ -258,6 +268,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
 struct Import {
     cells: Vec<CellCreation>,
     edits: Vec<Edit>,
+    damaged_occluders: HashSet<u32>,
 }
 
 struct CellCreation {
@@ -384,10 +395,9 @@ fn plugin_edits(
         )?;
         if occluder {
             let (warnings, notices) = marker_warnings.report();
-            ensure!(
-                warnings.is_empty() && notices.is_empty(),
-                "occluder {source_id:08X} has unresolved or malformed source fields"
-            );
+            if !warnings.is_empty() || !notices.is_empty() {
+                import.damaged_occluders.insert(remapped);
+            }
         }
         import.edits.push(Edit {
             source_id,
@@ -728,6 +738,7 @@ struct NativePlacements {
 impl NativePlacements {
     fn into_import(self, geometric_ownership: bool) -> Result<Import> {
         Ok(Import {
+            damaged_occluders: HashSet::new(),
             cells: self
                 .cells
                 .into_iter()

@@ -834,7 +834,13 @@ fn export_records(
         .collect();
 
     let only_occluders = if runtime_views && order.is_none() {
-        crate::esm::rooms::update_subset_occluders(&tx, master, subset_sources, &mut omissions)?
+        crate::esm::rooms::update_subset_occluders(
+            &tx,
+            master,
+            subset_sources,
+            &HashSet::new(),
+            &mut omissions,
+        )?
     } else {
         HashSet::new()
     };

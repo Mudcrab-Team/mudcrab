@@ -1,6 +1,6 @@
 //! Incremental edits to authored occluders in a converted world database.
 
-use super::{Exported, is_marker, placement, primitive, project};
+use super::{Exported, MarkerSource, is_marker, placement, primitive, project};
 use crate::{
     esm::{
         extractors::SubrecordView,
@@ -151,7 +151,13 @@ pub fn apply_native_occluders(conn: &Connection, changes: &[NativeOccluderChange
             )));
         }
     }
-    update_subset(&tx, &master, None, &mut ProjectionOmissions::default())?;
+    update_subset(
+        &tx,
+        &master,
+        None,
+        &HashSet::new(),
+        &mut ProjectionOmissions::default(),
+    )?;
     tx.commit()
 }
 
@@ -224,6 +230,7 @@ pub(in crate::esm) fn update_subset(
     tx: &Transaction<'_>,
     master: &HashMap<u32, RawRecord>,
     sources: Option<(&HashMap<u32, DecodedRecord>, &LoadOrder)>,
+    damaged_occluders: &HashSet<u32>,
     omissions: &mut ProjectionOmissions,
 ) -> Result<HashSet<u32>> {
     let mut only_occluders = HashSet::new();
@@ -304,22 +311,27 @@ pub(in crate::esm) fn update_subset(
     }
 
     markers.sort_unstable_by_key(|(record, ..)| record.form_id);
-    let mut result = Exported::default();
     for (record, marker, interior, source) in &markers {
         let id = record.form_id;
         tx.prepare_cached("DELETE FROM room_occluder_links WHERE ref_id=?1")?
             .execute([id])?;
-        tx.prepare_cached("DELETE FROM room_occluders WHERE ref_id=?1")?
-            .execute([id])?;
+        let previous_cell: Option<u32> = tx
+            .prepare_cached("DELETE FROM room_occluders WHERE ref_id=?1 RETURNING cell_id")?
+            .query_row([id], |row| row.get(0))
+            .optional()?;
         tx.prepare_cached("DELETE FROM room_reference_rules WHERE reference_id=?1")?
             .execute([id])?;
         if *marker {
-            let invalid = result.invalid;
+            let mut result = Exported::default();
             project(
                 tx,
                 record,
                 *interior,
-                *source,
+                if damaged_occluders.contains(&id) {
+                    MarkerSource::DamagedPlugin
+                } else {
+                    MarkerSource::from_typed(*source)
+                },
                 |target| {
                     if let Some(record) = master.get(&target) {
                         return Ok(record.record_type == *b"REFR" && !record.is_deleted());
@@ -336,8 +348,12 @@ pub(in crate::esm) fn update_subset(
                 && SubrecordView::new(&record.subrecords)
                     .find(b"XORD")
                     .is_some();
-            if result.invalid != invalid || unverified_links {
+            if result.invalid != 0 || unverified_links {
                 result.incomplete_cells.extend(record.cell_form_id);
+            }
+            if !result.incomplete_cells.is_empty() {
+                affected.extend(previous_cell);
+                affected.extend(result.incomplete_cells);
             }
         }
     }
@@ -346,7 +362,7 @@ pub(in crate::esm) fn update_subset(
             affected.insert(cell?);
         }
     }
-    for cell in affected.into_iter().chain(result.incomplete_cells) {
+    for cell in affected {
         tx.prepare_cached(
             "INSERT INTO room_graph_cells(cell_id,complete)
              SELECT id,0 FROM cells WHERE id=?1
