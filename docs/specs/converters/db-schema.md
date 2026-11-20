@@ -785,6 +785,9 @@ Rules:
   targets resolve to NULL. Valid-length `XLKR` and `XAPR` rows are kept in source order with
   contiguous positions among accepted-length entries, even when a target resolves to NULL. This
   makes legacy projection match the in-house reader's invalid-link clearing behavior.
+- A subset can delete and restore a target without replaying its sources. Supply the live
+  target record on restoration. The exporter uses the effective source payload to refill
+  matching `XLKR`, `XAPR` and `XATR` targets and preserves unrelated columns.
 - A field whose length the in-house schema rejects is skipped for both readers: `XLKR` must be 4
   or 8 bytes, `XAPR` 8, `XAPD` 1, `XOWN`/`XRNK`/`XLCN`/`XLRL`/`XEZN`/`XATR` 4, `FNAM` 1 and `TNAM`
   2.
@@ -1446,7 +1449,9 @@ Columns and rules:
   `portals_with_missing_side` (`room_portals` rows with a NULL side, so a portal with several
   pairs can add several), `portals_with_extra_pairs` (markers whose `XPOD` holds more than one
   pair), `portals_with_trailing_xpod_bytes` (markers whose `XPOD` length is not a multiple of 8),
-  `non_box_rooms_skipped`, `portals_without_size_skipped`, `invalid_markers_skipped` (rooms and portals with a missing, truncated, or non-finite transform, or a non-finite size), `objects_in_no_room` and
+  `non_box_rooms_skipped`, `portals_without_size_skipped`, `invalid_markers_skipped` (rooms and portals skipped for invalid geometry
+  or ambiguous portal fields, including missing, truncated, duplicate or non-finite transforms,
+  non-finite sizes, negative room half-extents, nonpositive portal X or Z half-extents, and repeated `XPOD` fields), `objects_in_no_room` and
   `objects_in_several_rooms` (both by pivot), and `overlap_rows`.
   `assignment_version = 1` enables authored master/slave resolution and reference ownership,
   together with the three assignment tables, `link_index`, and `visibility_version = 2`.
