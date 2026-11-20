@@ -1416,9 +1416,10 @@ Columns and rules:
   cells with no room markers. Shape 1 is a box. Shape 3 is a local X-Z plane. `DATA` supplies
   the transform and `XPRM` supplies the unscaled half-extents. The native record loader consumes
   legacy `XOCP` without retaining its geometry. The converter skips deleted placements.
-  Unusable geometry leaves no row and marks the cell incomplete. The `scale` column preserves a
-  single finite `XSCL`, defaults to 1 when absent, and stores 0 for an unreadable, repeated, or
-  non-finite field. The runtime skips occluders with invalid or non-positive scale. For positive
+  Unusable geometry leaves no row and marks the cell incomplete. An absent `XSCL` gives scale 1. An authored scale must be one finite,
+  positive float. A repeated, malformed, or non-positive scale skips the geometry and records
+  an `occluder_unusable_geometry` omission. Resolved outgoing links are still stored.
+  The runtime also skips invalid scale rows in older packs. For a valid
   scale it uses the authored extents at scale 1 or higher and shrinks them below 1. This bounds
   the shadow whether retail uses authored extents or scales them.
   The row retains disabled-state flags, enable-parent presence, and linked-plane presence for

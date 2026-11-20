@@ -72,11 +72,13 @@ struct Geometry {
     half: [f32; 3],
     position: [f32; 3],
     rotation: [f32; 3],
+    scale: f32,
 }
 
 fn geometry<'a>(
     view: &SubrecordView<'_>,
     complete: bool,
+    has_scale: bool,
     field: impl Fn(&[u8; 4]) -> Option<&'a [u8]>,
 ) -> std::result::Result<Geometry, &'static str> {
     if !complete {
@@ -95,11 +97,21 @@ fn geometry<'a>(
     let (position, rotation) = field(b"DATA")
         .and_then(placement)
         .ok_or("missing or invalid PlaneMarker DATA placement")?;
+    let scale = if has_scale {
+        field(b"XSCL")
+            .and_then(|data| <[u8; 4]>::try_from(data).ok())
+            .map(f32::from_le_bytes)
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .ok_or("PlaneMarker XSCL must be one finite positive float")?
+    } else {
+        1.0
+    };
     Ok(Geometry {
         shape,
         half,
         position,
         rotation,
+        scale,
     })
 }
 
@@ -284,7 +296,8 @@ fn project(
         half,
         position,
         rotation,
-    } = match geometry(&view, complete, field) {
+        scale,
+    } = match geometry(&view, complete, present(b"XSCL"), field) {
         Ok(geometry) => geometry,
         Err(reason) => {
             result.invalid += 1;
@@ -292,15 +305,6 @@ fn project(
             omissions.record(OmissionCategory::OccluderUnusableGeometry, id, reason);
             return Ok(());
         }
-    };
-    let scale = if present(b"XSCL") {
-        field(b"XSCL")
-            .and_then(|data| <[u8; 4]>::try_from(data).ok())
-            .map(f32::from_le_bytes)
-            .filter(|value| value.is_finite())
-            .unwrap_or(0.0)
-    } else {
-        1.0
     };
     let target = present(b"XMBR").then(|| {
         view.find(b"XMBR")
@@ -552,36 +556,93 @@ mod tests {
     }
 
     #[test]
-    fn geometry_rows_preserve_finite_scale_and_flag_unreadable_scale() {
+    fn invalid_scales_report_omissions_and_preserve_cross_cell_links() {
         let cases = [
-            (vec![], 1.0),
-            (vec![0.5f32.to_le_bytes().to_vec()], 0.5),
-            (vec![(-1.0f32).to_le_bytes().to_vec()], -1.0),
-            (vec![f32::NAN.to_le_bytes().to_vec()], 0.0),
-            (vec![vec![0; 3]], 0.0),
-            (vec![0.5f32.to_le_bytes().to_vec(); 2], 0.0),
+            vec![],
+            vec![0.5f32.to_le_bytes().to_vec()],
+            vec![(-1.0f32).to_le_bytes().to_vec()],
+            vec![0.0f32.to_le_bytes().to_vec()],
+            vec![f32::NAN.to_le_bytes().to_vec()],
+            vec![vec![0; 3]],
+            vec![0.5f32.to_le_bytes().to_vec(); 2],
         ];
-        let placements = cases
-            .iter()
+        let mut master: HashMap<_, _> = cases
+            .into_iter()
             .enumerate()
-            .map(|(index, (scales, _))| {
-                let mut plane = marker(100 + index as u32, 3);
+            .map(|(index, scales)| {
+                let id = 100 + index as u32;
+                let mut plane = marker(id, 3);
                 plane
                     .subrecords
-                    .extend(scales.iter().map(|bytes| (b"XSCL".to_vec(), bytes.clone())));
-                plane
+                    .extend(scales.into_iter().map(|bytes| (b"XSCL".to_vec(), bytes)));
+                (id, plane)
             })
             .collect();
-        let (conn, report) = exported(placements);
-        assert_eq!(report.invalid_occluders_skipped, 0);
-        let scales = conn
-            .prepare("SELECT scale FROM room_occluders ORDER BY ref_id")
+        let mut target = marker(200, 3);
+        target.cell_form_id = Some(8);
+        master.insert(200, target);
+        master.get_mut(&106).unwrap().subrecords.push((
+            b"XORD".to_vec(),
+            [200u32, 0, 0, 0].map(u32::to_le_bytes).concat(),
+        ));
+        let mut conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        let tx = conn.transaction().unwrap();
+        let mut omissions = ProjectionOmissions::default();
+        let report = super::super::export_room_graph_with_sources(
+            &tx,
+            &master,
+            &HashSet::from([7, 8]),
+            None,
+            None,
+            None,
+            &mut omissions,
+        )
+        .unwrap();
+        assert_eq!((report.occluders, report.invalid_occluders_skipped), (3, 5));
+        let omitted = &omissions.categories["occluder_unusable_geometry"];
+        assert_eq!(omitted.count, 5);
+        assert_eq!(
+            omitted
+                .samples
+                .iter()
+                .map(|sample| sample.form_id)
+                .collect::<Vec<_>>(),
+            [102, 103, 104, 105, 106]
+        );
+        assert!(
+            omitted
+                .samples
+                .iter()
+                .all(|sample| sample.reason.contains("XSCL"))
+        );
+        let scales = tx
+            .prepare("SELECT ref_id,scale FROM room_occluders ORDER BY ref_id")
             .unwrap()
-            .query_map([], |row| row.get::<_, f32>(0))
+            .query_map([], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, f32>(1)?)))
             .unwrap()
             .collect::<Result<Vec<_>>>()
             .unwrap();
-        assert_eq!(scales, cases.map(|(_, scale)| scale));
+        assert_eq!(scales, [(100, 1.0), (101, 0.5), (200, 1.0)]);
+        assert_eq!(
+            tx.query_row(
+                "SELECT linked_ref FROM room_occluder_links WHERE ref_id=106 AND link_index=0",
+                [],
+                |row| row.get::<_, u32>(0)
+            )
+            .unwrap(),
+            200
+        );
+        let complete = |cell: u32| {
+            tx.query_row(
+                "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
+                [cell],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap()
+        };
+        assert!(!complete(7));
+        assert!(complete(8));
     }
 
     #[test]
