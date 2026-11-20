@@ -69,6 +69,8 @@ pub struct PlacementEditReport {
     pub affected_cells: Vec<u32>,
     pub created_cells: Vec<u32>,
     pub certified_cells: Vec<u32>,
+    /// Occluder projection omissions from this import, with counts and sampled reasons by category.
+    pub occluder_omissions: ProjectionOmissions,
 }
 
 /// Apply one source under the pack lock. Runtime placements, room projections and the retained
@@ -215,17 +217,6 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
             .record
             .cell_form_id
             .is_some_and(|cell| fresh_cells.contains(&cell));
-        if !edit.record.is_deleted() {
-            let view = SubrecordView::new(&edit.record.subrecords);
-            let plugin_occluder =
-                is_plugin && view.get_form_id(b"NAME") == Some(OCCLUSION_MARKER_BASE);
-            ensure!(
-                plugin_occluder
-                    || (view.find_all(b"XPRM").count() <= 1
-                        && view.find(b"XPRM").is_none_or(|data| data.len() <= 32)),
-                "placement {id:08X} has unsupported primitive data"
-            );
-        }
         ensure!(changed.insert(id), "duplicate placement edit for {id:08X}");
         let must_be_new = in_fresh_cell || (is_plugin && edit.owns_new_id);
         let was_link_target = reference_links::has_live_target(&tx, id)?;
@@ -270,8 +261,8 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         &import.damaged_occluders,
         &mut omissions,
     )?;
-    for (category, details) in omissions.categories {
-        for sample in details.samples {
+    for (category, details) in &omissions.categories {
+        for sample in &details.samples {
             let message = format!(
                 "occluder {:08X}: {category}: {}",
                 sample.form_id, sample.reason
@@ -312,6 +303,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         affected_cells,
         created_cells,
         certified_cells,
+        occluder_omissions: omissions,
     })
 }
 
@@ -478,8 +470,15 @@ fn plugin_edits(
                 Some("because its new CELL is damaged")
             } else {
                 validate_room_field_tags(&record.subrecords)?;
+                let mut primitives = view.find_all(b"XPRM");
                 if base.is_none_or(|id| id == 0) {
                     Some("with malformed NAME")
+                } else if !occluder
+                    && primitives
+                        .next()
+                        .is_some_and(|bytes| bytes.len() > 32 || primitives.next().is_some())
+                {
+                    Some("with repeated or oversized XPRM")
                 } else if let Some(reason) = malformed_placement_geometry(&view) {
                     Some(reason)
                 } else if view.find_all(b"XTEL").enumerate().any(|(index, data)| {

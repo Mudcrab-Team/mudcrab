@@ -1599,14 +1599,17 @@ Static primitives, actor references, scripts, new base records, exterior changes
 The command warns when it skips a damaged record or discards the unread part of a group.
 The parser resumes at a verified record or group boundary, and the command applies the usable
 placements and interiors it reads. A plugin placement needs one finite 24-byte `DATA` transform.
-If present, `XSCL` must occur once and contain a finite positive 32-bit float. A damaged placement leaves its destination and any retained
+If present, `XSCL` must occur once and contain a finite positive 32-bit float. The importer skips a
+non-occluder placement if `XPRM` occurs more than once or exceeds 32 bytes. A damaged
+placement leaves its destination and any retained
 predecessor's cell incomplete. When a discarded tail could hide a placement header or the
 command cannot identify the affected cell, all interiors use the whole-cell fallback. The
 command also warns and skips placements that require a damaged new interior. Usable records
 with unsupported content still roll back the import.
 
 If an imported plugin's occluder has unusable geometry or unresolved source fields, the
-command reports the omission and skips its occlusion geometry. Valid placements in the same
+command reports the omission and skips its occlusion geometry. The placement edit report includes
+counts by omission category and sampled FormIDs with reasons. Valid placements in the same
 plugin still apply. The affected cells stay incomplete. Resolved outgoing link slots continue
 to suppress their targets even when the source marker has no usable shape.
 

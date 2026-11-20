@@ -5905,11 +5905,29 @@ fn damaged_plugin_occluders_leave_valid_neighbors_and_verified_link_slots_intact
         ]
         .concat(),
     );
-    let result = run_placement_import(&assets, "--plugin", &fresh);
-    let error = String::from_utf8_lossy(&result.stderr);
+    use converter::esm::placement_edits::{PlacementSource, apply};
+    let report = apply(&assets, PlacementSource::SkyrimPlugin(&fresh)).unwrap();
+    let geometry = &report.occluder_omissions.categories["occluder_unusable_geometry"];
+    assert_eq!(geometry.count, 3);
+    assert_eq!(
+        geometry
+            .samples
+            .iter()
+            .map(|sample| sample.form_id)
+            .collect::<Vec<_>>(),
+        [cell + 2, cell + 5, cell + 6]
+    );
     assert!(
-        result.status.success() && error.contains("01000902") && error.contains("XPRM"),
-        "{error}"
+        geometry
+            .samples
+            .iter()
+            .all(|sample| sample.reason.contains("XPRM"))
+    );
+    assert!(
+        apply(&assets, PlacementSource::SkyrimPlugin(&fresh))
+            .unwrap()
+            .occluder_omissions
+            .is_empty()
     );
     let shape_count = |id: u32| {
         db.query_row(
@@ -6223,10 +6241,6 @@ fn plugin_placement_import_rejects_unsupported_cells_and_keeps_an_incomplete_gra
             placement_group(cell, placement_marker(0x800, 0x1f, Vec::new())),
             "new source-owned FormID",
         ),
-        (
-            placement_group(cell, placement_marker(room, 0x1f, sub(b"XPRM", &[0; 32]))),
-            "unsupported primitive",
-        ),
     ] {
         let source = plugin(
             dir.path(),
@@ -6260,6 +6274,7 @@ fn plugin_placement_import_rejects_unsupported_cells_and_keeps_an_incomplete_gra
             placement_group(
                 cell,
                 [
+                    placement_marker(cell + 3, 0x1f, sub(b"XPRM", &[0; 32])),
                     placement_marker(room, 0x1f, Vec::new()),
                     placement_marker(
                         portal,
@@ -6483,37 +6498,58 @@ fn duplicate_apertures_cannot_replace_a_certified_portal() {
     let dir = tempfile::tempdir().unwrap();
     let assets = converted_placement_fixture(dir.path());
     let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
-    let portal = |extra: Vec<u8>| {
-        plugin(
-            dir.path(),
-            "Aperture.esp",
-            &["Skyrim.esm"],
-            0,
-            placement_group(
-                PLACEMENT_CELL_A,
+    let source = plugin(
+        dir.path(),
+        "Aperture.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(
+            PLACEMENT_CELL_B,
+            [
                 placement_marker(
                     0x801,
                     0x20,
                     [
-                        sub(b"XPOD", &[0x800u32.to_le_bytes(), [0; 4]].concat()),
-                        extra,
+                        sub(b"XPOD", &[0x820u32.to_le_bytes(), [0; 4]].concat()),
+                        sub(b"XPRM", &[0; 32]),
                     ]
                     .concat(),
                 ),
-            ),
-        )
-    };
-    let result = run_placement_import(&assets, "--plugin", &portal(sub(b"XPRM", &[0; 32])));
-    assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("primitive"));
-    assert!(placement_certificate(&db, PLACEMENT_CELL_A));
-    let result = run_placement_import(&assets, "--plugin", &portal(Vec::new()));
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
+                placement(0x820, 0x1f, 0, 32.0, sub(b"XPRM", &[0; 33])),
+                placement(0x822, PLACEMENT_STAT, 0, 42.0, Vec::new()),
+            ]
+            .concat(),
+        ),
     );
-    assert!(placement_certificate(&db, PLACEMENT_CELL_A));
+    let result = run_placement_import(&assets, "--plugin", &source);
+    let warnings = String::from_utf8_lossy(&result.stderr);
+    for id in ["00000801", "00000820"] {
+        assert!(
+            warnings.contains(&format!("{id} with repeated or oversized XPRM")),
+            "{warnings}"
+        );
+    }
+    assert_placement_import(result, "Applied 1 room placements in 2 cells (0 certified)");
+    assert_eq!(placement_winner_cell(&db, 0x801), Some(PLACEMENT_CELL_A));
+    assert_eq!(
+        db.query_row(
+            "SELECT cell_id,room_a FROM room_portals WHERE ref_id=0x801",
+            [],
+            |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?))
+        )
+        .unwrap(),
+        (PLACEMENT_CELL_A, 0x800)
+    );
+    assert_eq!(
+        db.query_row("SELECT pos_x FROM [references] WHERE id=0x822", [], |row| {
+            row.get::<_, f32>(0)
+        })
+        .unwrap(),
+        42.0
+    );
+    assert!(!placement_certificate(&db, PLACEMENT_CELL_A));
+    assert!(!placement_certificate(&db, PLACEMENT_CELL_B));
+    assert!(placement_certificate(&db, PLACEMENT_CELL_UNRELATED));
 }
 
 #[test]
