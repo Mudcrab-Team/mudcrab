@@ -107,13 +107,13 @@ pub fn water_allowed(height: f32, water: Option<f32>, distance: u16, mode: u32) 
     }
 }
 
-/// Retail places no candidates when the authored range is zero.
+/// Retail places no candidates for a zero range and lets the spacing cap bound a negative one.
 fn grid_side(position_range: f32, minimum: f32) -> usize {
-    if position_range < 0.0 {
-        return 0;
-    }
     let authored = if position_range > 0.0 {
         (256.0 / position_range) as usize
+    } else if position_range < 0.0 {
+        // Retail's unsigned compare treats a negative range as unbounded, so the spacing cap wins.
+        usize::MAX
     } else {
         // Retail truncates 256/0 out of range to zero, so a zero range places nothing.
         0
