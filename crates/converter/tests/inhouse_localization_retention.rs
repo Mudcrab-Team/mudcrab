@@ -1043,6 +1043,7 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "actor_model_parts",
             "movement_types",
             "race_movement_links",
+            "default_objects",
             "race_animation_sources",
             "movement_game_settings",
             "waters",

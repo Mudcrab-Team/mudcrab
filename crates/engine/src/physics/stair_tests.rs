@@ -58,7 +58,7 @@ fn traverse(app: &mut App, direction: Vec3, speed: f32, target: impl Fn(Vec3) ->
         let pose = headless::player_pose(app).0;
         assert!(pose.is_finite());
         let mut query = app.world_mut().query::<&WalkState>();
-        assert!(!query.single(app.world()).unwrap().jump_active);
+        assert!(!query.single(app.world()).unwrap().jump_active());
         if target(pose) {
             app.insert_resource(WalkIntent::default());
             // Brake before inspecting support; the controller must stand on the landing.
@@ -704,18 +704,18 @@ fn measure_stair_descent_per_tick_profile() {
         let dy = previous_y.map_or(0.0, |y| pose.y - y);
         previous_y = Some(pose.y);
         if (0.0..=32.0 * STAIR_TREAD).contains(&pose.x) && pose.y < 32.0 * STAIR_RISE + 100.0 {
-            if state.grounded {
+            if state.grounded() {
                 grounded_ticks += 1;
             } else {
                 airborne_ticks += 1;
-                deepest_fall = deepest_fall.min(state.vertical_velocity);
+                deepest_fall = deepest_fall.min(state.vertical_velocity());
             }
             println!(
                 "{tick},{:.1},{:.2},{dy:.2},{},{:.1}",
                 pose.x,
                 pose.y,
-                u8::from(state.grounded),
-                state.vertical_velocity
+                u8::from(state.grounded()),
+                state.vertical_velocity()
             );
         }
         if pose.x < -STAIR_TREAD {
@@ -795,7 +795,7 @@ fn measure_steep_ramp_speed_along_the_surface() {
                     .unwrap();
                 let on_ramp = (300.0..top.x - 300.0).contains(&pose.x);
                 if on_ramp {
-                    if state.grounded {
+                    if state.grounded() {
                         grounded += 1;
                     } else {
                         airborne += 1;
@@ -858,9 +858,9 @@ fn log_walk_tick(
     if let Ok((body, state, output)) = player.single() {
         log.0.push(WalkTick {
             position: body.translation,
-            grounded: state.grounded,
+            grounded: state.grounded(),
             supported: output.is_some_and(|output| output.grounded),
-            vertical_velocity: state.vertical_velocity,
+            vertical_velocity: state.vertical_velocity(),
         });
     }
 }
@@ -1020,9 +1020,9 @@ fn measure_real_walkway_stairs15() {
     let tuning = MovementTuning::default();
     let eye = tuning.eye_height;
     println!(
-        "controller: autostep budget {} units, no ground snap, gravity {}, capsule radius {}, centre {} above the ground",
+        "controller: autostep budget {} units, no ground snap, jump height {} units, capsule radius {}, centre {} above the ground",
         tuning.autostep_height,
-        tuning.gravity,
+        tuning.jump_height.creation(),
         tuning.capsule_radius,
         tuning.capsule_standing_height * 0.5 + PLAYER_CONTROLLER_OFFSET
     );

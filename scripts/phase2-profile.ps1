@@ -155,6 +155,7 @@ function Get-ScenarioArguments {
         [int]$WaterGridY = 0
     )
     $arguments = @(
+        "--no-grass",
         "--benchmark-duration", $(if ($Name -eq "stability") { "$StabilitySeconds" } else { "$DurationSeconds" }),
         "--benchmark-output", (Join-Path $RunDirectory "acceptance.json"),
         "--profile-output", $RunDirectory,
