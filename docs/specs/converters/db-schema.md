@@ -1306,8 +1306,7 @@ Columns and rules:
 - **`room_bounds`**: the box is centred on the marker's position and oriented by its rotation
   (the same Euler convention as any reference, `shared::coordinates`). Exactly one 24-byte `DATA`
   supplies the transform. An invalid transform omits the room and marks its cell incomplete.
-  `half_*` are the `XPRM`
-  half-extents in the room's own frame. `lighting_template_id` (`LNAM`) and `image_space_id`
+  Exactly one 32-byte box `XPRM` supplies the `half_*` extents in the room’s own frame. `lighting_template_id` (`LNAM`) and `image_space_id`
   (`INAM`) are decoded for the lighting work in #129-#135; nothing in the engine uses them yet.
 - **`room_portals`**: a portal's doorway is the marker's local X-Z rectangle (normal along local
   +Y); `half_x`/`half_z` are its half-width and half-height. The converter requires a 32-byte `XPRM` with shape 3.

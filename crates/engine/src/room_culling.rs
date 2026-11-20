@@ -243,7 +243,8 @@ pub(crate) fn mark_reference_exemptions(
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct RoomCullingView;
 
-/// Mudcrab keeps portals within 8 Creation units open when the camera leans into an edge-on aperture.
+/// Skyrim checks the aperture near the portal plane (5 Creation units). Mudcrab keeps an
+/// 8-unit band open to avoid hiding the next room when the camera leans into a doorway.
 const PORTAL_OPEN_DISTANCE: f32 = 8.0;
 
 /// The owner cache is emptied past this many entries, which drops the despawned meshes in it.
@@ -2472,13 +2473,13 @@ mod tests {
             .visibility_volumes(eye, clip_from_local() * Mat4::from_translation(-eye))
             .unwrap();
         assert!(!away.unbounded.is_reached());
-        let in_front = MeshBounds::transformed(
-            &Aabb::from_min_max(-Vec3::splat(0.1), Vec3::splat(0.1)),
-            Affine3A::from_translation(Vec3::new(0.0, 0.0, -35.0)),
-        )
-        .unwrap();
-        assert!(away.rooms[0].intersects(Some(&in_front)));
-        assert!(graph.mesh_is_drawn(102, &away, Some(&in_front), None));
+        let outside_volumes = bounds_at(0.0);
+        assert!(
+            away.rooms
+                .iter()
+                .all(|room| !room.intersects(Some(&outside_volumes)))
+        );
+        assert!(graph.mesh_is_drawn(102, &away, Some(&outside_volumes), None));
     }
 
     #[test]
