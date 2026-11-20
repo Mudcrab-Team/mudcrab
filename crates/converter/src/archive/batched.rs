@@ -3108,10 +3108,12 @@ mod tests {
         let truncated = AtomicBool::new(false);
         let progress = |progress: super::super::ExtractionProgress| {
             if progress.completed_files > 0 && !attempted.swap(true, Ordering::AcqRel) {
+                // The open must succeed, so only set_len(0) can be blocked by the live map.
                 let result = File::options()
                     .write(true)
                     .open(&archive)
-                    .and_then(|file| file.set_len(0));
+                    .expect("open warm source for write")
+                    .set_len(0);
                 truncated.store(result.is_ok(), Ordering::Release);
             }
         };
