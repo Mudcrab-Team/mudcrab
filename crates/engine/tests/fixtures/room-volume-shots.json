@@ -1,0 +1,90 @@
+{
+  "width": 1400,
+  "height": 1050,
+  "shots": [
+    {
+      "name": "BleakFallsBarrow01-room0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 225758,
+      "position": [
+        -6000.0,
+        1088.0,
+        1792.0
+      ],
+      "yaw": 83.22,
+      "pitch": 13.99,
+      "hfov": 75.0,
+      "note": "room 226772 centre, looking at the doorway (portal 226052) into room 226771"
+    },
+    {
+      "name": "BleakFallsBarrow01-room1-c",
+      "worldspace_id": null,
+      "interior_cell_id": 225758,
+      "position": [
+        -467.16,
+        -3488.0,
+        -2080.0
+      ],
+      "yaw": 90.0,
+      "pitch": -0.0,
+      "hfov": 75.0,
+      "note": "room 234060 centre, no portal, looking down the room's long axis"
+    },
+    {
+      "name": "BleakFallsBarrow01-portal0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 225758,
+      "position": [
+        1018.55,
+        -4962.72,
+        -2011.23
+      ],
+      "yaw": 260.12,
+      "pitch": 2.13,
+      "hfov": 75.0,
+      "note": "through portal 234056 (234061 -> 234037), eye in room 234061"
+    },
+    {
+      "name": "NightcallerTemple01-room0-c",
+      "worldspace_id": null,
+      "interior_cell_id": 633418,
+      "position": [
+        13005.47,
+        2099.15,
+        -144.0
+      ],
+      "yaw": 49.95,
+      "pitch": 34.02,
+      "hfov": 75.0,
+      "note": "room 644895 centre, looking at the doorway (portal 644926) into room 644897"
+    },
+    {
+      "name": "AbandonedPrison01-room0-portal",
+      "worldspace_id": null,
+      "interior_cell_id": 136596,
+      "position": [
+        1027.923583984375,
+        893.726318359375,
+        1073.4879150390625
+      ],
+      "yaw": 41.67834995451039,
+      "pitch": 0.0,
+      "hfov": 75.0,
+      "note": "room centre toward its first portal; this cell has no portal-less rooms or unresolved portal sides"
+    },
+    {
+      "name": "riverwood-return",
+      "worldspace_id": 60,
+      "interior_cell_id": null,
+      "position": [
+        21340.0,
+        -44890.0,
+        520.0
+      ],
+      "yaw": 152.7,
+      "pitch": 7.9,
+      "hfov": 75.0,
+      "note": "Exterior return control from docs/specs/engine/reference-shots.md"
+    }
+  ]
+}

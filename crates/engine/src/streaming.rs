@@ -1928,8 +1928,14 @@ fn spawn_cell(
                 entity.insert(bounds);
             }
             // Authored multibound policies and movable references override stored room membership.
-            if reference.has_multibound_override
-                || crate::room_culling::exempt_record_type(reference.base_record_type.as_deref())
+            let loose = crate::room_culling::assignment_follows_transform(
+                reference.base_record_type.as_deref(),
+            );
+            if reference.has_multibound_override || loose {
+                entity.insert(crate::room_culling::RoomCullLegacyExempt);
+            }
+            if !loose
+                && crate::room_culling::exempt_record_type(reference.base_record_type.as_deref())
             {
                 entity.insert(crate::room_culling::RoomCullExempt);
             }
@@ -11427,7 +11433,10 @@ mod tests {
                     Vec3::new(1.0, 1.0, 10.0),
                     Vec3::new(-1.0, 1.0, 10.0),
                 ],
-                rooms: [Some(0), Some(1)],
+                rooms: [
+                    crate::room_culling::PortalSide::Room(0),
+                    crate::room_culling::PortalSide::Room(1),
+                ],
             }],
             membership: [1, 2, 3]
                 .into_iter()

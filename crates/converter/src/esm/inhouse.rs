@@ -114,8 +114,12 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "room_bounds",
     "room_portals",
     "room_links",
+    "room_reference_rules",
+    "room_model_bounds",
+    "room_graph_cells",
     "reference_rooms",
     "room_graph_stats",
+    "room_link_anomalies",
     "projection_omission_stats",
     "projection_omission_samples",
     "cell_environment",
@@ -1273,6 +1277,7 @@ fn convert_plugins_with_text_sources_report_impl(
             plugin_paths,
             &unresolved_fields,
             &terrain_offsets,
+            &decoded,
         )?;
     } else {
         export_inhouse_record_archive_to_db(&conn, &master, &order, plugin_paths)?;
@@ -1334,6 +1339,57 @@ fn convert_plugins_with_text_sources_report_impl(
         .execute(params![id, offset])?;
     }
     let source_count = decoded.records.len();
+    if mode == RecordBundleMode::Full {
+        let portal_ids = tx
+            .prepare("SELECT DISTINCT ref_id FROM room_portals")?
+            .query_map([], |row| row.get::<_, u32>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        super::rooms::restore_portal_endpoint_provenance(
+            &tx,
+            portal_ids.into_iter().map(|id| {
+                let source = decoded
+                    .records
+                    .get(&id)
+                    .and_then(|record| record.unique_source_subrecord(b"XPOD"));
+                (id, source)
+            }),
+        )?;
+        let mut damage = super::PlacementDamage::default();
+        for entry in &decoded.history {
+            if entry.accepted {
+                if let Some(id) = entry.form_id {
+                    damage.accepted(id);
+                }
+            } else {
+                damage.reject(
+                    &entry.record_type,
+                    entry.source_form_id,
+                    entry.source_cell_form_id,
+                    entry.plugin_index as usize,
+                    &order,
+                );
+            }
+        }
+        let mut incomplete = tx.prepare_cached(
+            "INSERT INTO room_graph_cells(cell_id,complete)
+             SELECT id,0 FROM cells WHERE id=?1 AND worldspace_id IS NULL AND grid_x IS NULL AND grid_y IS NULL
+             ON CONFLICT(cell_id) DO UPDATE SET complete=0",
+        )?;
+        for cell in damage.affected_cells(&master) {
+            incomplete.execute([cell])?;
+        }
+        super::rooms::restore_rejected_room_fields(
+            &tx,
+            decoded
+                .records
+                .values()
+                .filter(|record| super::is_placed_record_type(&record.record_type)),
+        )?;
+        tx.execute(
+            "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES ('visibility_version',2)",
+            [],
+        )?;
+    }
     let source_records_started = Instant::now();
     write_source_records(&tx, &mut decoded.records)?;
     phases.insert(
@@ -1446,6 +1502,9 @@ fn validate_candidate_with_string_sources(
     string_sources: StringSources<'_>,
     tables: &mut HashMap<(usize, String), RuntimeTextTable>,
 ) -> std::result::Result<(), String> {
+    if super::is_placed_record_type(&record.record_type) {
+        record.validate_placement_base()?;
+    }
     if !matches!(&record.record_type, b"LAND" | b"MOVT" | b"GMST" | b"RACE") {
         return Ok(());
     }

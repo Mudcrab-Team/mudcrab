@@ -693,84 +693,11 @@
     "Python SQLite version, R-tree support and authorizer behavior may differ from bundled rusqlite. Rust prepares composed variants independently; cross-version failures remain visible.",
     "Schema-driven decoding and reader identities remain authoritative. No second record decoder, live engine instrumentation, conversion campaign or native semantic/parity evidence is provided."
   ],
-  "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
-  "stores": {
-    "cell_cache.rkyv": {
-      "evidence": [
-        {
-          "anchor": "pub fn terrain(&self, cell_id: u32)",
-          "path": "crates/engine/src/world/cache.rs"
-        },
-        {
-          "anchor": "let mut terrain = cache.terrain(payload.cell_id);",
-          "path": "crates/engine/src/streaming.rs"
-        }
-      ],
-      "owner": "terrain/cache maintainers",
-      "reason": "Versioned rkyv store supplies terrain heights, normals, colors, layers, water height/type through CellCache. SQLite absence does not mean terrain is unused. Source path only; native draw evidence pending.",
-      "states": {
-        "decoded": "source_decoded",
-        "mapped": "source_mapping",
-        "preserved": "source_preserved",
-        "projected": "source_projected",
-        "query_dependent": "unknown",
-        "semantic_use": "unknown"
-      }
-    },
-    "converted glTF/KTX2 assets": {
-      "evidence": [
-        {
-          "anchor": "fn converted_texture_path(",
-          "path": "crates/engine/src/world/database.rs"
-        }
-      ],
-      "owner": "asset/streaming maintainers",
-      "reason": "External model/texture paths are assets, not SQL field payloads. This slice names the store; no asset completeness or shader-use claim.",
-      "states": {
-        "decoded": "unknown",
-        "mapped": "unknown",
-        "preserved": "unknown",
-        "projected": "unknown",
-        "query_dependent": "unknown",
-        "semantic_use": "unknown"
-      }
-    },
-    "merged-terrain JSON/KTX2/rkyv": {
-      "evidence": [
-        {
-          "anchor": "serde_json::from_str(&text)",
-          "path": "crates/engine/src/terrain_merge/mod.rs"
-        },
-        {
-          "anchor": "rkyv::deserialize::<TerrainCellMesh, RkyvError>(cell)",
-          "path": "crates/engine/src/terrain_merge/mod.rs"
-        },
-        {
-          "anchor": "pub fn check_ktx2_header(",
-          "path": "crates/engine/src/terrain_merge/mod.rs"
-        },
-        {
-          "anchor": "pub const LAND_TEXTURE_TABLE_PATH: &str = \"terrain/land-textures.json\";",
-          "path": "crates/shared/src/terrain_mesh.rs"
-        }
-      ],
-      "owner": "terrain merge maintainers (#236 merged)",
-      "reason": "terrain/land-textures.json, KTX2 texture arrays and terrain/<worldspace>/chunk_<x>_<y>.rkyv form an alternative terrain path with per-cell fallback. Mapping is not GPU residency or draw confirmation.",
-      "states": {
-        "decoded": "source_decoded",
-        "mapped": "source_mapping",
-        "preserved": "source_preserved",
-        "projected": "source_projected",
-        "query_dependent": "unknown",
-        "semantic_use": "unknown"
-      }
-    }
-  },
   "tables": {
     "actor_model_parts": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "The actor catalog uses the shared RACE authoring scan when selecting creature body parts. Unreadable authoring retains the existing body selection fallback. Field-level semantics remain deferred."
     },
     "actor_models": {
       "classification": "deferred",
@@ -855,7 +782,7 @@
     "inhouse_localized_fields": {
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+      "reason": "Preserves string ID, selected bank, source load order and resolution status for localized occurrences. A schema or selector error during bank selection keeps the existing signature-default fallback and records a decoder diagnostic."
     },
     "inhouse_plugin_masters": {
       "classification": "provenance",
@@ -955,17 +882,17 @@
     "projection_omission_samples": {
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Bounded diagnostic examples include unusable GRAS DATA, placed-reference transforms and LGTM DATA."
+      "reason": "Bounded FormID and reason samples include unusable GRAS DATA, placed-reference transforms and LGTM DATA, and unreadable RACE animation authoring."
     },
     "projection_omission_stats": {
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Diagnostic counts include unusable GRAS DATA, placed-reference transforms and LGTM DATA. Full conversion reports these categories as data-loss warnings."
+      "reason": "Persists counts and severity for runtime projection omissions. Unusable GRAS DATA, placed-reference transforms and LGTM DATA, and each live RACE with unreadable animation authoring contribute data-loss omissions to the conversion report."
     },
     "race_animation_sources": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
-      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+      "reason": "Projects readable live RACE animation authoring by FormID and sex from the scan shared with actor body selection. Unreadable authoring omits those rows and retains the canonical RACE record. Field-level semantics remain deferred."
     },
     "race_movement_links": {
       "classification": "deferred",
@@ -1022,20 +949,50 @@
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Placements with missing or short DATA cannot become room bounds. A subset update clears stale bounds for that reference. Field-level semantics remain deferred."
     },
+    "room_graph_cells": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; room culling #188)",
+      "reason": "Room-graph coverage projection. Field-level semantic tracing is deferred; prepared query dependencies remain separate."
+    },
     "room_graph_stats": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "room_link_anomalies": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#745)",
+      "reason": "Records each supplying plugin's room-link anomaly count and identifies its lowest affected room marker and that marker's cell for conversion diagnostics."
     },
     "room_links": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "A subset update with unusable placement DATA removes stale links involving that reference. Field-level semantics remain deferred."
     },
+    "room_model_bounds": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; room culling #188)",
+      "reason": "Authored room-assignment projection. Field-level semantic tracing is deferred; prepared query dependencies remain separate."
+    },
+    "room_placement_edits": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#745)",
+      "reason": "Post-conversion imports map created cells and edited placements to their supplying layer and source FormID, and record placement deletions."
+    },
+    "room_placement_layers": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#745)",
+      "reason": "Post-conversion placement import retains exact source files and the plugin headers needed to preserve FormID slots across imports."
+    },
     "room_portals": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Placements with missing or short DATA cannot become portals. A subset update removes a stale portal for the reference and clears links to its removed room bounds. Field-level semantics remain deferred."
+    },
+    "room_reference_rules": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; room culling #188)",
+      "reason": "Authored room-assignment projection. Field-level semantic tracing is deferred; prepared query dependencies remain separate."
     },
     "schema_info": {
       "classification": "provenance",
@@ -1061,6 +1018,11 @@
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "subset_nonplacement_deletions": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#744)",
+      "reason": "Subset updates retain deleted non-placement identities so later edits can validate incoming links. Restoring the record clears its entry. A full export replaces the subset history."
     },
     "texture_sets": {
       "classification": "deferred",

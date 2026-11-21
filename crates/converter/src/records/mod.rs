@@ -18,13 +18,16 @@ pub mod vmad;
 #[cfg(test)]
 pub(crate) mod review_recovery_tests;
 
+#[cfg(fuzzing)]
+pub use scanner::{fuzz_inflate, fuzz_scan};
+
 use crate::esm::{load_order::LoadOrder, records::RawRecord};
 use color_eyre::Result;
 use schema_format::Schema;
 use serde::{Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
     sync::OnceLock,
 };
@@ -183,6 +186,45 @@ pub struct DecodedRecord {
 }
 
 impl DecodedRecord {
+    pub(crate) fn validate_placement_base(&self) -> Result<(), String> {
+        if self.rejected_fields.contains(b"NAME") {
+            return Err("rejected placed base NAME".into());
+        }
+        let mut bases = self
+            .fields
+            .iter()
+            .filter(|field| field.signature == *b"NAME");
+        if !bases
+            .next()
+            .is_some_and(|field| matches!(field.value, Value::FormId(id) if id != 0))
+            || bases.next().is_some()
+        {
+            return Err("placement requires exactly one nonzero NAME reference".into());
+        }
+        Ok(())
+    }
+
+    fn has_placement_transform(&self) -> bool {
+        !self.rejected_fields.contains(b"DATA")
+            && crate::esm::valid_placement_transform(
+                self.fields
+                    .iter()
+                    .filter(|field| field.signature == *b"DATA")
+                    .map(|field| field.canonical_bytes.as_slice()),
+            )
+    }
+
+    pub(crate) fn framed_source_subrecords(&self) -> Option<Vec<([u8; 4], &[u8])>> {
+        decoder::framed_source_subrecords(&self.raw_payload)
+    }
+
+    pub(crate) fn unique_source_subrecord(&self, signature: &[u8; 4]) -> Option<&[u8]> {
+        if self.rejected_fields.contains(signature) {
+            return None;
+        }
+        decoder::unique_source_subrecord(&self.raw_payload, signature)
+    }
+
     /// Adapt canonical bytes to the established record format, retaining opaque occurrences.
     pub fn to_raw_record(&self) -> RawRecord {
         RawRecord {
@@ -278,6 +320,7 @@ impl DiagnosticSummaryKey {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct PluginDiagnostics {
     pub skipped_records: u64,
+    pub retired_base_placements: u64,
     pub skipped_fields: u64,
     pub unexpected_subrecords: u64,
     /// Links faithfully cleared when their targets are absent, disallowed or outside the master list.
@@ -303,6 +346,16 @@ pub struct PluginDiagnostics {
 }
 
 impl PluginDiagnostics {
+    /// Summary-only diagnostics for the fuzz targets: counters and bounded examples,
+    /// no per-input disk journal. Ordinary builds do not compile this.
+    #[cfg(fuzzing)]
+    pub(crate) fn fuzz_summary_only() -> Self {
+        Self {
+            event_log: diagnostics::EventLog::summary_only(),
+            ..Self::default()
+        }
+    }
+
     /// Summarize omitted records, fields and unexpected subrecords as bounded warnings.
     pub(crate) fn warning_summary_lines(&self, plugin: &str) -> Vec<String> {
         let mut lines = Vec::new();
@@ -332,6 +385,12 @@ impl PluginDiagnostics {
                 self.compatibility_headers
             ));
         }
+        if let Some(example) = self.first_by_category.get("retired_base") {
+            lines.push(format!(
+                "notice: {plugin}: omitted {} placement candidate(s) whose base was deleted by a later plugin (first: {example})",
+                self.retired_base_placements
+            ));
+        }
         if self.invalid_links != 0
             && let Some(example) = self.first_by_category.get("link")
         {
@@ -347,6 +406,10 @@ impl PluginDiagnostics {
     /// Unrecognized recovery categories remain field-loss warnings rather than link notices.
     pub(crate) fn note(&mut self, category: &str, example: impl FnOnce() -> String) {
         let summary_category = match category {
+            "retired_base" => {
+                self.retired_base_placements += 1;
+                category
+            }
             "record" => {
                 self.skipped_records += 1;
                 category
@@ -497,6 +560,98 @@ pub struct RecordSource {
     pub deleted: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TruncatedPlacement {
+    signature: &'static [u8],
+    source_id: Option<u32>,
+}
+
+impl TruncatedPlacement {
+    pub(crate) fn from_prefix(bytes: &[u8]) -> Option<Self> {
+        let prefix = &bytes[..bytes.len().min(4)];
+        if prefix.is_empty() {
+            return None;
+        }
+        let kind = crate::esm::PLACED_RECORD_TYPES
+            .iter()
+            .find(|kind| kind.starts_with(prefix))?;
+        Some(Self {
+            // Keep only the bytes actually seen when several placed types share a prefix.
+            signature: &kind[..prefix.len()],
+            source_id: bytes
+                .get(12..)
+                .and_then(|tail| tail.first_chunk())
+                .copied()
+                .map(u32::from_le_bytes),
+        })
+    }
+
+    pub(crate) fn runtime_id(self, plugin: usize, order: &LoadOrder) -> Option<u32> {
+        source_identity::header_runtime_id(
+            // silent-ok: A partial signature cannot establish a runtime record identity.
+            self.signature.try_into().ok()?,
+            self.source_id?,
+            plugin,
+            order,
+        )
+        .filter(|&id| id != 0)
+    }
+}
+
+/// The cells whose room graph may depend on unread records in a discarded frame.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum DiscardedFrameScope {
+    Cell(u32),
+    /// Unread children can belong to cells from other plugins in the load order.
+    Unknown,
+}
+
+impl From<Option<u32>> for DiscardedFrameScope {
+    fn from(cell: Option<u32>) -> Self {
+        cell.map_or(Self::Unknown, Self::Cell)
+    }
+}
+
+impl DiscardedFrameScope {
+    /// A partial kind can still identify a possible child cell. Without the whole
+    /// label we cannot bound the damage to a particular cell.
+    pub(crate) fn from_group_prefix(bytes: &[u8]) -> Option<Self> {
+        let tag = &bytes[..bytes.len().min(4)];
+        if tag.is_empty() || !b"GRUP".starts_with(tag) {
+            return None;
+        }
+        let Some((label, tail)) = bytes
+            .get(8..)
+            .and_then(|rest| rest.split_first_chunk::<4>())
+        else {
+            return Some(Self::Unknown);
+        };
+        let kind_prefix = &tail[..tail.len().min(4)];
+        crate::esm::types::CELL_CHILD_GROUP_KINDS
+            .iter()
+            .any(|kind| kind.to_le_bytes().starts_with(kind_prefix))
+            .then(|| Self::Cell(u32::from_le_bytes(*label)))
+    }
+
+    /// A complete unread header can override a placement previously stored in any cell.
+    pub(crate) fn unread_tail(cell: Option<u32>, remaining: usize) -> Self {
+        if remaining >= 24 {
+            Self::Unknown
+        } else {
+            cell.into()
+        }
+    }
+
+    pub(crate) fn resolve(self, plugin: usize, order: &LoadOrder) -> Self {
+        match self {
+            Self::Cell(label) => source_identity::header_runtime_id(b"CELL", label, plugin, order)
+                .filter(|&id| id != 0)
+                .into(),
+            Self::Unknown => Self::Unknown,
+        }
+    }
+}
+
 /// Winners, nontrivial override chains and bounded scan/decode diagnostics.
 #[derive(Debug, Default)]
 pub struct ReadResult {
@@ -506,6 +661,8 @@ pub struct ReadResult {
     pub overrides: HashMap<u32, Vec<RecordSource>>,
     /// Physical header provenance includes accepted, deleted and rejected versions.
     pub history: Vec<history::HistoryEntry>,
+    /// Runtime cell IDs potentially affected by discarded source frames.
+    pub(crate) damaged_cell_groups: HashSet<u32>,
     /// Each winning `DOBJ` with its `DNAM` pairs merged key by key over every accepted
     /// earlier version, as the legacy reader does. A winning record alone would lose
     /// the keys that only an earlier plugin sets. The winners stay unmerged.
@@ -524,8 +681,34 @@ pub(crate) fn decode_text(bytes: &[u8]) -> String {
 }
 
 pub(crate) use decoder::{
-    PreparedSchemas, localized_field_bank, prepare_runtime_schema, string_table_with_prepared,
+    DeletedBases, PlacementFailure, PreparedSchemas, localized_field_bank, prepare_runtime_schema,
+    string_table_with_prepared, validate_placement_targets,
 };
+
+fn validate_live_candidate(
+    record: &DecodedRecord,
+    previous: Option<&DecodedRecord>,
+    validate: &mut impl FnMut(&DecodedRecord) -> std::result::Result<(), String>,
+) -> std::result::Result<(), String> {
+    crate::esm::validate_placement_parent(&record.record_type, record.cell_form_id, || None)?;
+    if crate::esm::is_placed_record_type(&record.record_type) && previous.is_some() {
+        if !record.has_placement_transform() {
+            return Err("invalid placement override transform".into());
+        }
+        record.validate_placement_base()?;
+    }
+    validate(record)
+}
+
+fn incomplete_override(record: &DecodedRecord, previous: Option<&DecodedRecord>) -> bool {
+    !record.payload_complete && previous.is_some_and(|previous| previous.payload_complete)
+}
+
+const INCOMPLETE_OVERRIDE: &str = "incomplete override keeps the earlier complete version";
+
+fn duplicate_reason(id: u32, previous: u32, source: u32) -> String {
+    format!("duplicate/colliding record {id:08X}: source {previous:08X}, {source:08X}")
+}
 
 /// Scan in load order using the converter's single slot/master authority.
 pub fn read_plugins(plugin_paths: &[PathBuf], order: &LoadOrder) -> Result<ReadResult> {
@@ -606,8 +789,9 @@ fn read_plugins_with_prepared(
         "plugin/order length mismatch"
     );
     let mut result = ReadResult::default();
-    // Retain payloads only while an admitted winner still needs catalogue replay.
-    let mut deferred_predecessors: HashMap<u32, Vec<DecodedRecord>> = HashMap::new();
+    let mut unknown_discarded_scope = false;
+    let mut truncated_placements = HashMap::new();
+    let mut recovery = decoder::RecoveryCandidates::default();
     let mut gmst_ids: HashMap<String, u32> = HashMap::new();
     let mut gmst_aliases: HashMap<u32, u32> = HashMap::new();
     let scan_stage = profile::ProfileStage::start("scan_decode_merge");
@@ -621,8 +805,10 @@ fn read_plugins_with_prepared(
                 .borrow_mut()
                 .push(history::header_entry(header, order, index));
         };
-        scanner::scan_plugin(path, &mut diagnostics, observe, |scanned, diagnostics| {
+        let mut rejected_cells = HashSet::new();
+        let receive = |scanned: scanner::ScannedRecord, diagnostics: &mut PluginDiagnostics| {
             let offset = scanned.source_record_offset;
+            let source_cell = (scanned.record_type == *b"CELL").then_some(scanned.source_form_id);
             let context = decoder::Context {
                 order,
                 plugin_index: index,
@@ -644,6 +830,7 @@ fn read_plugins_with_prepared(
             ) {
                 Ok(record) => record,
                 Err(error) => {
+                    rejected_cells.extend(source_cell);
                     if let Some(entry) = history.borrow_mut().last_mut() {
                         entry.reason = Some(error.clone());
                     }
@@ -658,6 +845,9 @@ fn read_plugins_with_prepared(
                     return;
                 }
             };
+            if !record.payload_complete {
+                rejected_cells.extend(source_cell);
+            }
             if record.record_type == *b"TES4" {
                 result.headers.push(record);
                 return;
@@ -685,9 +875,23 @@ fn read_plugins_with_prepared(
                     })
                     .flatten();
             }
-            if record.flags & 0x20 == 0
-                && let Err(error) = validate(&record)
+            // Ordinary identities can try later occurrences if the first placement is
+            // rejected. Check them against the earlier plugin's winner at that point.
+            if record.record_type != *b"GMST"
+                && !gmst_aliases.contains_key(&record.form_id)
+                && let Some(&(_, Some(placement_offset))) = seen.get(&record.form_id)
             {
+                recovery.queue_duplicate((index as u32, placement_offset), record, &result.records);
+                return;
+            }
+            if record.flags & 0x20 == 0
+                && let Err(error) = validate_live_candidate(
+                    &record,
+                    result.records.get(&record.form_id),
+                    &mut validate,
+                )
+            {
+                rejected_cells.extend(source_cell);
                 if let Some(entry) = history.borrow_mut().last_mut() {
                     entry.reason = Some(format!("unusable runtime candidate: {error}"));
                 }
@@ -725,20 +929,15 @@ fn read_plugins_with_prepared(
                 record.form_id
             };
             if record.flags & 0x20 == 0
-                && !record.payload_complete
-                && result
-                    .records
-                    .get(&candidate_id)
-                    .is_some_and(|previous| previous.payload_complete)
+                && incomplete_override(&record, result.records.get(&candidate_id))
             {
                 if let Some(entry) = history.borrow_mut().last_mut() {
-                    entry.reason =
-                        Some("incomplete override keeps the earlier complete version".into());
+                    entry.reason = Some(INCOMPLETE_OVERRIDE.into());
                 }
                 diagnostics.event_context.action = Some("kept_earlier_version");
                 diagnostics.note("record", || {
                     format!(
-                        "{} {:08X}: incomplete override keeps the earlier complete version",
+                        "{} {:08X}: {INCOMPLETE_OVERRIDE}",
                         String::from_utf8_lossy(&record.record_type),
                         record.form_id
                     )
@@ -754,20 +953,12 @@ fn read_plugins_with_prepared(
                 Some(record.form_id)
             };
             if let Some(seen_id) = duplicate_key
-                && let Some(&previous) = seen.get(&seen_id)
+                && let Some(&(previous, _)) = seen.get(&seen_id)
             {
                 if let Some(entry) = history.borrow_mut().last_mut() {
-                    entry.reason = Some(format!(
-                        "duplicate/colliding record {:08X}: source {previous:08X}, {source_id:08X}",
-                        seen_id
-                    ));
+                    entry.reason = Some(duplicate_reason(seen_id, previous, source_id));
                 }
-                diagnostics.note("record", || {
-                    format!(
-                        "duplicate/colliding record {:08X}: source {previous:08X}, {source_id:08X}",
-                        seen_id
-                    )
-                });
+                diagnostics.note("record", || duplicate_reason(seen_id, previous, source_id));
                 return;
             }
             if record.record_type == *b"GMST" {
@@ -840,14 +1031,19 @@ fn read_plugins_with_prepared(
                 });
                 return;
             }
+            let deleted = record.flags & 0x20 != 0;
+            let placement = crate::esm::is_placed_record_type(&record.record_type);
             // Rejected identities cannot claim a later usable candidate's duplicate key.
             if let Some(seen_id) = duplicate_key {
-                seen.insert(seen_id, source_id);
+                seen.insert(
+                    seen_id,
+                    (source_id, (placement && !deleted).then_some(offset)),
+                );
             }
             let source = RecordSource {
                 plugin_index: index as u32,
                 source_form_id: source_id,
-                deleted: record.flags & 0x20 != 0,
+                deleted,
             };
             if let Some(entry) = history.borrow_mut().last_mut() {
                 debug_assert_eq!(entry.source_record_offset, offset);
@@ -872,33 +1068,50 @@ fn read_plugins_with_prepared(
             } else if source.deleted {
                 result.overrides.insert(record.form_id, vec![source]);
             }
-            if record.record_type == *b"DOBJ" {
-                if record.flags & 0x20 != 0 {
-                    result.default_objects.remove(&record.form_id);
-                } else {
-                    let mut raw = record.to_raw_record();
-                    if let Some(previous) = result.default_objects.get(&record.form_id) {
-                        crate::esm::merge_default_objects(previous, &mut raw);
-                    }
-                    result.default_objects.insert(record.form_id, raw);
-                }
-            }
-            if record.flags & 0x20 != 0 {
-                result.records.remove(&record.form_id);
-                deferred_predecessors.remove(&record.form_id);
+            recovery.record_default_object(&record);
+            if deleted {
+                recovery.remove_for_deletion(
+                    &record,
+                    &mut result.records,
+                    order,
+                    schema,
+                    prepared,
+                    &mut validate,
+                );
             } else {
                 let id = record.form_id;
-                let tentative = decoder::record_contains_deferred(&record);
+                recovery.deleted.restored(id, record.load_order);
+                let tentative = decoder::record_contains_deferred(&record) || placement;
                 let previous = result.records.insert(id, record);
                 if tentative {
                     if let Some(previous) = previous {
-                        deferred_predecessors.entry(id).or_default().push(previous);
+                        recovery.predecessors.entry(id).or_default().push(previous);
                     }
                 } else {
-                    deferred_predecessors.remove(&id);
+                    recovery.predecessors.remove(&id);
                 }
             }
-        })?;
+        };
+        let damage = scanner::scan_plugin(path, &mut diagnostics, observe, receive)?;
+        for (offset, placement) in damage.truncated_placements {
+            if let Some(id) = placement.runtime_id(index, order) {
+                truncated_placements.insert(id, (index as u32, offset));
+            } else {
+                unknown_discarded_scope = true;
+            }
+        }
+        for scope in damage
+            .frames
+            .into_iter()
+            .chain(rejected_cells.into_iter().map(DiscardedFrameScope::Cell))
+        {
+            match scope.resolve(index, order) {
+                DiscardedFrameScope::Cell(cell) => {
+                    result.damaged_cell_groups.insert(cell);
+                }
+                DiscardedFrameScope::Unknown => unknown_discarded_scope = true,
+            }
+        }
         result.history.extend(history.into_inner());
         result.diagnostics.insert(name.clone(), diagnostics);
     }
@@ -910,10 +1123,29 @@ fn read_plugins_with_prepared(
         schema,
         prepared,
         order,
-        &mut deferred_predecessors,
+        &mut recovery,
         &mut validate,
     );
     deferred_stage.finish(result.records.len());
+    // Deferred validation may restore a predecessor. A later usable move or deletion
+    // supersedes the incomplete header's evidence about that predecessor.
+    for (id, truncated_at) in truncated_placements {
+        if let Some(winner) = result.records.get(&id)
+            && crate::esm::is_placed_record_type(&winner.record_type)
+            && (winner.load_order, winner.source_record_offset) < truncated_at
+        {
+            result.damaged_cell_groups.extend(winner.cell_form_id);
+        }
+    }
+    if unknown_discarded_scope {
+        result.damaged_cell_groups.extend(
+            result
+                .records
+                .values()
+                .filter(|record| record.record_type == *b"CELL")
+                .map(|record| record.form_id),
+        );
+    }
     let preservation_stage = profile::ProfileStage::start("preservation_observer");
     observe(&result);
     preservation_stage.finish(result.records.len());

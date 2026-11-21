@@ -394,6 +394,10 @@ pub struct ConversionManifest {
     /// Non-runtime inputs deliberately excluded, with an auditable reason.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub excluded_inputs: BTreeMap<String, String>,
+    /// Discovered input occurrences outside the selected input policy, grouped by
+    /// lowercase extension without a dot; `<none>` represents extensionless paths.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ignored_inputs_by_extension: BTreeMap<String, u64>,
     /// Texture references a published mesh omits because the game data does not
     /// contain that texture, keyed by the published `.glb` and holding the
     /// resolved texture paths it dropped. Kept out of `failures`: nothing failed
@@ -468,6 +472,10 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "skin-static-fallback",
     "object-texture-swap-geometry-index-v1",
     "object-texture-swap-geometry-index-v2",
+    "native-room-assignment-spheres",
+    "complete-root-room-spheres",
+    "rigid-child-and-depth-room-spheres",
+    "renderer-verified-room-spheres",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical

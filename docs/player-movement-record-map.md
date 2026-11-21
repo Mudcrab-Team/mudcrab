@@ -1,6 +1,6 @@
 # Player movement record map (Skyrim Special Edition masters)
 
-The directional Riverwood WALK speeds remain a first-pass profile. Character jump semantics now follow the [native investigation](research/skyrim-physics-221.md). The record values below came from the retail ESM files at a local unmodded `Skyrim Special Edition/Data` directory and a locally converted Riverwood package (`<package>/assets/skyrim_world.db`). The [source manifest](player-movement-plugin-manifest.csv) lists all 80 package plugins in load order with SHA-256 checksums verified against the installed files. The table below highlights the relevant priorities.
+The directional Riverwood WALK speeds remain a first-pass profile. Character jump semantics now follow the [native investigation](research/skyrim-physics-221.md) and [implementation evidence](research/skyrim-physics-221-implementation.md). The record values below came from the retail ESM files at a local unmodded `Skyrim Special Edition/Data` directory and a locally converted Riverwood package (`<package>/assets/skyrim_world.db`). The [source manifest](player-movement-plugin-manifest.csv) lists all 80 package plugins in load order with SHA-256 checksums verified against the installed files. The table below highlights the relevant priorities.
 
 | Priority | Plugin | SHA-256 |
 | --- | --- | --- |
