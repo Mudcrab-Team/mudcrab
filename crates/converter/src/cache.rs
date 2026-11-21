@@ -485,6 +485,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "renderer-verified-room-spheres",
     "scene-ancestor-skin-motion",
     "verified-fixed-ordered-descendants",
+    "non-finite-uv-repair-v1",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
