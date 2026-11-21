@@ -1044,13 +1044,13 @@ fn project_room_graph(
             if linked != 0 {
                 let inserted = tx.execute(
                     "INSERT OR IGNORE INTO room_links(room_ref, linked_ref, link_index) VALUES (?1, ?2, ?3)",
-                    params![form_id, linked, index as i64],
+                    params![form_id, linked, index],
                 )?;
                 if inserted == 0 {
                     // The reverse scan must see the last authored occurrence of this target.
                     tx.execute(
                         "UPDATE room_links SET link_index=?3 WHERE room_ref=?1 AND linked_ref=?2",
-                        params![form_id, linked, index as i64],
+                        params![form_id, linked, index],
                     )?;
                 }
                 report.links += inserted as u64;
@@ -1157,10 +1157,12 @@ fn project_room_graph(
         for pair in 0..pairs.max(1) {
             let room_a = side(pair, 0, &mut incomplete);
             let room_b = side(pair, 4, &mut incomplete);
+            let pair_index = i64::try_from(pair)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
             let proven = match refresh {
                 Some(refresh) if !refresh.changed.contains(&form_id) => refresh
                     .previous_outside
-                    .get(&(form_id, pair as i64))
+                    .get(&(form_id, pair_index))
                     .copied()
                     .unwrap_or([false; 2]),
                 _ => [true; 2],
@@ -1177,7 +1179,7 @@ fn project_room_graph(
                 "INSERT OR REPLACE INTO room_portals(ref_id, pair_index, cell_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, half_x, half_z, room_a, room_b, unbounded_a, unbounded_b)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
-                    form_id, pair as i64, cell, position[0], position[1], position[2],
+                    form_id, pair_index, cell, position[0], position[1], position[2],
                     rotation[0], rotation[1], rotation[2], half_x, half_z, room_a, room_b,
                     outside[0], outside[1]
                 ],
@@ -1471,7 +1473,7 @@ mod tests {
                 (b"XPRM".to_vec(), shape),
                 (
                     b"XRMR".to_vec(),
-                    vec![links.len() as u8, 0, u8::from(master), 0],
+                    vec![u8::try_from(links.len()).unwrap(), 0, u8::from(master), 0],
                 ),
             ];
             fields.extend(

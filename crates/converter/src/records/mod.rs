@@ -812,6 +812,7 @@ fn read_plugins_with_prepared(
     let mut gmst_aliases: HashMap<u32, u32> = HashMap::new();
     let scan_stage = profile::ProfileStage::start("scan_decode_merge");
     for (index, path) in plugin_paths.iter().enumerate() {
+        let plugin_index = u32::try_from(index)?;
         let name = &order.names[index];
         let mut diagnostics = PluginDiagnostics::default();
         let mut seen = HashMap::new();
@@ -897,7 +898,7 @@ fn read_plugins_with_prepared(
                 && !gmst_aliases.contains_key(&record.form_id)
                 && let Some(&(_, Some(placement_offset))) = seen.get(&record.form_id)
             {
-                recovery.queue_duplicate((index as u32, placement_offset), record);
+                recovery.queue_duplicate((plugin_index, placement_offset), record);
                 return;
             }
             if record.flags & 0x20 == 0
@@ -1057,7 +1058,7 @@ fn read_plugins_with_prepared(
                 );
             }
             let source = RecordSource {
-                plugin_index: index as u32,
+                plugin_index,
                 source_form_id: source_id,
                 deleted,
             };
@@ -1111,7 +1112,7 @@ fn read_plugins_with_prepared(
         let damage = scanner::scan_plugin(path, &mut diagnostics, observe, receive)?;
         for (offset, placement) in damage.truncated_placements {
             if let Some(id) = placement.runtime_id(index, order) {
-                truncated_placements.insert(id, (index as u32, offset));
+                truncated_placements.insert(id, (plugin_index, offset));
             } else {
                 unknown_discarded_scope = true;
             }

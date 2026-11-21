@@ -340,6 +340,7 @@ fn plugin_edits(
         });
     }
     let priority = order.names.len();
+    let load_order = u32::try_from(priority)?;
     order.names.push(name.to_owned());
     order.metadata.push(metadata.clone());
     let order = LoadOrder::from_metadata(order.names, order.metadata)?;
@@ -481,7 +482,7 @@ fn plugin_edits(
         let room_links = base
             .filter(|id| id & 0x00ff_ffff == ROOM_MARKER_BASE)
             .map(|_| RoomLinkLayout::from_raw(&record));
-        record.load_order = priority as u32;
+        record.load_order = load_order;
         remap_record_form_ids(
             &mut record,
             name,
@@ -1117,7 +1118,7 @@ impl NativeEdit {
                     .push(native_primitive(half_extents, SHAPE_BOX));
                 ensure!(links.len() <= 0x3fff, "room has too many links");
                 inherit_room_master = master.is_none();
-                let [low, high] = (links.len() as u16).to_le_bytes();
+                let [low, high] = u16::try_from(links.len())?.to_le_bytes();
                 record.subrecords.push((
                     b"XRMR".to_vec(),
                     vec![low, high, u8::from(master.unwrap_or(false)), 0],
