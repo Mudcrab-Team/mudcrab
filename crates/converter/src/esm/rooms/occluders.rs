@@ -274,7 +274,7 @@ fn project(
             tx.prepare_cached(
                 "INSERT INTO room_occluder_links(ref_id,link_index,linked_ref) VALUES(?1,?2,?3)",
             )?
-            .execute(params![id, (occurrence * 4 + slot) as i64, linked])?;
+            .execute(params![id, occurrence * 4 + slot, linked])?;
         }
     }
     if let Some(reason) = link_omission {
@@ -557,7 +557,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(index, scales)| {
-                let id = 100 + index as u32;
+                let id = 100 + u32::try_from(index).unwrap();
                 let mut plane = marker(id, 3);
                 plane
                     .subrecords

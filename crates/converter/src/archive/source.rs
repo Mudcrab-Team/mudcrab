@@ -73,7 +73,9 @@ impl<'a> ArchiveSource<'a> {
                 }
 
                 if let Some(previous) = previous {
-                    reader.seek_relative(start as i64 - previous as i64)?;
+                    let start = i64::try_from(start).map_err(io::Error::other)?;
+                    let previous = i64::try_from(previous).map_err(io::Error::other)?;
+                    reader.seek_relative(start - previous)?;
                 } else {
                     reader.seek(SeekFrom::Start(start as u64))?;
                 }
