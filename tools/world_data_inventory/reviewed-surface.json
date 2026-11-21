@@ -722,6 +722,7 @@
     "statics.id",
     "statics.model_path",
     "subset_nonplacement_deletions.form_id",
+    "subset_placement_deletions.form_id",
     "texture_sets.detail_path",
     "texture_sets.diffuse_path",
     "texture_sets.editor_id",
