@@ -4928,6 +4928,49 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_positions_omit_room_membership_and_report_the_placements() {
+        let mut missing = reference(0x1010, 0x100, 0x700, [0.0; 3], [0.0; 3]);
+        missing.subrecords.retain(|(tag, _)| tag != b"DATA");
+        let mut short = missing.clone();
+        short.form_id = 0x1011;
+        short.subrecords.push((b"DATA".to_vec(), vec![0; 8]));
+        let records = [
+            interior_cell(0x100),
+            record(0x700, b"STAT", None, None, Vec::new()),
+            room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            missing,
+            short,
+            reference(0x1012, 0x100, 0x700, [0.0; 3], [0.0; 3]),
+        ]
+        .into_iter()
+        .map(|record| (record.form_id, record))
+        .collect();
+        let order = LoadOrder::from_metadata(
+            vec!["Rooms.esp".into()],
+            vec![crate::esm::binary::PluginMetadata {
+                masters: vec![],
+                flags: 0,
+            }],
+        )
+        .unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        export_to_db_with_load_order(&conn, &records, &order).unwrap();
+
+        assert!(rooms_of(&conn, 0x1010).is_empty());
+        assert!(rooms_of(&conn, 0x1011).is_empty());
+        assert_eq!(rooms_of(&conn, 0x1012), [(0x1001, 1)]);
+        assert_eq!(
+            omission_ids(&conn),
+            [(
+                "reference_unusable_data".to_owned(),
+                2,
+                vec![0x1010, 0x1011]
+            )]
+        );
+    }
+
+    #[test]
     fn room_and_portal_markers_require_a_complete_transform() {
         for is_room in [true, false] {
             for truncated in [false, true] {

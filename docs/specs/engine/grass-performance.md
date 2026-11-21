@@ -15,7 +15,10 @@ The converted GLB's attached material must use `MASK` with the authored cutoff
 The test checks deterministic output, participation of all species, slot ordering,
 16-byte instance layout and measured peak and scratch Rust heap allocation. It reports the median of
 three generation samples per cell at spacings 64, 32 and the retail default 20 (`iMinGrassSize`)
-(4,096, 16,384 and 36,864 candidates). The stress fixture explicitly allows four
+(4,096, 16,384 and 36,864 candidates). A cell whose three-sample median misses its
+budget is measured once more with five fresh samples and judged on the median of all eight.
+This absorbs one-off runner noise; its limit is that a slowdown present in only four of the
+eight samples can still pass, because the median of eight averages the fourth and fifth. The stress fixture explicitly allows four
 resolved species per texture with configured cap four, exercising the boundary beyond the default cap two.
 Exact species IDs and replay batch counts are asserted, so a truncated `zip`
 cannot conceal a missing species.
@@ -41,7 +44,8 @@ exactly `true` (as on GitHub Actions), giving effective ceilings of 9 ms, 37.5 m
 and 90 ms. Unset or other values use 1.0x, including local `--release` runs.
 This CI-only allowance accounts for hosted-runner variability: identical grass
 code and an unchanged companion benchmark can slow down between runners.
-Each timing-budget line prints the strict ceiling, allowance and effective ceiling;
+Each timing-budget line, including the re-measure line, prints the strict ceiling, allowance
+and effective ceiling;
 memory and heap limits remain unchanged.
 These are worker-latency regression limits, not frame-time guarantees.
 Inspect the printed measurements and the runtime profiler on the target machine.

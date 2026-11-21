@@ -36,6 +36,11 @@ pub(crate) fn input_key(path: &Path) -> Option<String> {
     PATHS.contains(&key.as_str()).then_some(key)
 }
 
+/// Report whether this module publishes the path, so inventory does not count it as ignored.
+pub(crate) fn owns_input(path: &Path) -> bool {
+    input_key(path).is_some()
+}
+
 /// Archives arrive in load order; each later provider replaces the earlier one.
 pub(crate) fn record_archive(
     sources: &mut BTreeMap<String, Source>,

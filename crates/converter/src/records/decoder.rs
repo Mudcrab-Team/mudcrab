@@ -2427,6 +2427,7 @@ impl GrammarReplay<'_, '_> {
                 true,
                 &mut PluginDiagnostics::default(),
             )
+            // silent-ok: An unmappable link has no winning type for field selection.
             .ok()?;
             self.context.winning_types?.kind(id)
         };
