@@ -1206,6 +1206,12 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
         assert!(preserved.is_disjoint(&deferred_manifest));
         // R6 creates add-on provenance even when empty; archive scope must classify it.
         assert!(preserved.contains("inhouse_schema_addons"));
+        assert!(preserved.contains("subset_nonplacement_deletions"));
+        assert_eq!(
+            archive_tables["subset_nonplacement_deletions"],
+            vec![vec![MoveSqlCell::Integer(4)]],
+            "archive retains the deleted LTEX identity"
+        );
         assert!(archive_tables["inhouse_schema_addons"].is_empty());
         assert_eq!(deferred_manifest, deferred.into_iter().collect());
         for table in archive_tables.keys() {

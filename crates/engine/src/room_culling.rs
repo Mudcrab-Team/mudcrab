@@ -82,15 +82,29 @@
 //! The converter records room membership for every placed record, actors included, but a room is
 //! where something *was placed*, not where it is. These are treated as in no room and stay drawn:
 //!
-//! - a reference carrying [`RoomCullExempt`], inserted for actors, doors and activators.
-//!   [`RoomCullLegacyExempt`] protects authored overrides and loose inventory items in legacy
+//! - a reference carrying [`RoomCullExempt`], inserted for actors and doors.
+//!   [`RoomCullLegacyExempt`] protects authored overrides, activators and loose inventory items in legacy
 //!   graphs; authored assignment preserves `NONE` and updates supported moving reference roots.
 //!   **Future actor spawning hooks in here:** whatever spawns an actor
 //!   or an animated door outside `spawn_cell` inserts `RoomCullExempt` on the reference entity;
 //! - a mesh whose own entity, or whose reference, has a `RigidBody` that moves
 //!   (`Dynamic`, `KinematicPositionBased` or `KinematicVelocityBased`), except an authored
-//!   reference root with a known source sphere. Moving child meshes still stay drawn.
+//!   reference root, which follows its assignment rule. Moving child meshes still stay drawn.
 //!   `Fixed` bodies, which static collision uses, are culled normally.
+//! - a mesh with `AnimatedBy` on itself or on an ancestor below its reference root. The mesh can
+//!   move independently of the placement used for room assignment. `start_actor_animations` marks
+//!   the composed NPC body hierarchy, and those actors already carry `RoomCullExempt`. Bevy also
+//!   marks nodes in streamed GLBs with embedded animation targets, including native mod models.
+//! - a `SkinnedMesh` with a valid authored room target and no source sphere. Its joints can move
+//!   the mesh beyond the named room with the reference root still at its authored placement.
+//!
+//! Skyrim appears to keep a web's assignment bound fixed while its bones move, so the web can
+//! disappear when its room is culled. MudCrab keeps these uncertain meshes in the camera's draw
+//! list to avoid hiding geometry that can move independently of the placement. That can add draw
+//! work for meshes hidden behind walls. The converted Bleak Falls models `FXcobwebRoundWall01`
+//! and `FXspiderWebKitDoorSpecial` have skins without animation clips. In the captured cell their
+//! automatic assignments keep them drawn because they lack source spheres. The native bound probes
+//! and rendered controls are in `docs/research/skyrim-culling-mismatches.md`.
 //!
 //! Streamed actors and doors receive the exemption when their reference root is spawned.
 //!
@@ -198,7 +212,17 @@ pub fn assignment_follows_transform(record_type: Option<&str>) -> bool {
     matches!(
         record_type,
         Some(
-            "MISC" | "ALCH" | "AMMO" | "ARMO" | "BOOK" | "INGR" | "KEYM" | "SCRL" | "SLGM" | "WEAP"
+            "ACTI"
+                | "MISC"
+                | "ALCH"
+                | "AMMO"
+                | "ARMO"
+                | "BOOK"
+                | "INGR"
+                | "KEYM"
+                | "SCRL"
+                | "SLGM"
+                | "WEAP"
         )
     )
 }
@@ -230,6 +254,20 @@ pub fn exempt_record_type(record_type: Option<&str>) -> bool {
                 | "WEAP"
         )
     )
+}
+
+pub(crate) fn mark_reference_exemptions(
+    entity: &mut bevy::ecs::system::EntityCommands,
+    record_type: Option<&str>,
+    has_override: bool,
+) {
+    let movable = assignment_follows_transform(record_type);
+    if movable || has_override {
+        entity.insert(RoomCullLegacyExempt);
+    }
+    if !movable && exempt_record_type(record_type) {
+        entity.insert(RoomCullExempt);
+    }
 }
 
 /// Opt-in marker for a camera, other than the main one, that culls by room (a portal view).
@@ -528,6 +566,10 @@ impl RoomGraph {
             return None;
         }
         let outside = room_count;
+        // Parallel rays can enter disconnected rooms anywhere across an orthographic near plane.
+        if clip_from_local.row(3).truncate() == Vec3::ZERO {
+            return None;
+        }
         let starts = self.rooms_containing(camera);
         if starts.is_empty() {
             // Room boxes do not prove outside-space coverage: the camera may be in a seam.
@@ -820,8 +862,21 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
             }
         }
     }
-    if graph.supports_unbounded {
-        graph.authored = assignment::load(connection, cell_id, &graph.rooms, &mut graph.portals)?;
+    let assignment_version: Option<i64> = if stats_present {
+        connection.query_row(
+            "SELECT (SELECT value FROM room_graph_stats WHERE name='assignment_version')",
+            [],
+            |row| row.get(0),
+        )?
+    } else {
+        None
+    };
+    if let Some(version) = assignment_version {
+        if version == 1 && graph.supports_unbounded {
+            graph.authored =
+                assignment::load(connection, cell_id, &graph.rooms, &mut graph.portals)?;
+        }
+        graph.incomplete |= graph.authored.is_none();
     }
     if graph.authored.is_some() {
         graph.links.clear();
@@ -1149,6 +1204,8 @@ pub fn cull_room_views(
         Has<RoomCullExempt>,
         Has<RoomCullLegacyExempt>,
         Has<ExpectedModelBounds>,
+        Has<bevy::animation::AnimatedBy>,
+        Has<bevy::mesh::skinning::SkinnedMesh>,
     )>,
     changed_references: Query<
         (Entity, &FormId),
@@ -1281,19 +1338,25 @@ pub fn cull_room_views(
                 }
                 // Re-read every frame: a body can be added after the mesh spawns.
                 // Authored rules and source spheres supply ownership independently.
-                let exempted = |entity| {
-                    exemptions
-                        .get(entity)
-                        .is_ok_and(|(body, marked, legacy, has_model_bounds)| {
-                            marked
-                                || (entity == reference
-                                    && !has_model_bounds
-                                    && loaded.graph.authored.is_none())
-                                || (legacy && loaded.graph.authored.is_none())
-                                || (body.is_some_and(|body| body_moves(*body))
-                                    && (entity != reference || loaded.graph.authored.is_none()))
-                        })
-                };
+                let exempted =
+                    |entity| {
+                        exemptions.get(entity).is_ok_and(
+                            |(body, marked, legacy, has_model_bounds, animated, skinned)| {
+                                marked
+                                    || (entity != reference && animated)
+                                    || (skinned
+                                        && loaded.graph.authored.as_ref().is_some_and(|rules| {
+                                            rules.unbounded_named_skin(form_id)
+                                        }))
+                                    || (entity == reference
+                                        && !has_model_bounds
+                                        && loaded.graph.authored.is_none())
+                                    || (legacy && loaded.graph.authored.is_none())
+                                    || (body.is_some_and(|body| body_moves(*body))
+                                        && (entity != reference || loaded.graph.authored.is_none()))
+                            },
+                        )
+                    };
                 let mut ancestor = entity;
                 for _ in 0..=32 {
                     if exempted(ancestor) {
@@ -1404,6 +1467,7 @@ mod tests {
         },
         ecs::system::RunSystemOnce,
         math::{Affine3A, primitives::ViewFrustum},
+        mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes},
         transform::TransformPlugin,
     };
 
@@ -1483,6 +1547,34 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_assignment_version_draws_the_full_cell() {
+        let db = authored_database();
+        insert_room(&db, 1, 7, [0.0; 3]);
+        db.execute(
+            "UPDATE room_graph_stats SET value=2 WHERE name='assignment_version'",
+            [],
+        )
+        .unwrap();
+        let graph = load_room_graph(&db, 7).unwrap();
+        assert!(graph.incomplete);
+        assert!(reached_rooms(&graph, Vec3::ZERO, clip_from_local()).is_none());
+    }
+
+    #[test]
+    fn missing_advertised_assignment_table_invalidates_visibility() {
+        let db = authored_database();
+        insert_room(&db, 1, 7, [0.0; 3]);
+        db.execute("DROP TABLE room_model_bounds", []).unwrap();
+        assert!(load_room_graph(&db, 7).unwrap().incomplete);
+        db.execute(
+            "DELETE FROM room_graph_stats WHERE name='assignment_version'",
+            [],
+        )
+        .unwrap();
+        assert!(!load_room_graph(&db, 7).unwrap().incomplete);
+    }
+
+    #[test]
     fn authored_join_redirects_portals_and_preserves_disjoint_bounds() {
         let connection = authored_database();
         insert_room(&connection, 1, 7, [0.0; 3]);
@@ -1507,7 +1599,7 @@ mod tests {
     }
 
     #[test]
-    fn an_initial_named_target_does_not_require_legacy_stored_bounds() {
+    fn a_named_activator_without_a_sphere_attaches_until_it_moves() {
         let connection = authored_database();
         insert_room(&connection, 1, 7, [0.0; 3]);
         insert_room(&connection, 2, 7, [0.0, 25.0, 0.0]);
@@ -1543,6 +1635,12 @@ mod tests {
                 Transform::IDENTITY,
                 GlobalTransform::IDENTITY,
             ));
+        mark_reference_exemptions(
+            &mut scene.app.world_mut().commands().entity(reference),
+            Some("ACTI"),
+            true,
+        );
+        scene.app.world_mut().flush();
         scene.app.world_mut().entity_mut(scene.far).insert((
             Aabb::from_min_max(-Vec3::splat(0.5), Vec3::splat(0.5)),
             GlobalTransform::from_translation(Vec3::new(0.0, 0.0, -25.0)),
@@ -1554,6 +1652,33 @@ mod tests {
             "an explicit initial target supplies ownership without geometric memberships or spheres"
         );
         assert!(mesh_list(&scene.app, scene.camera).contains(&scene.near));
+        // A descendant can move independently while the named placement stays in its original room.
+        let animated = scene
+            .app
+            .world_mut()
+            .spawn((ChildOf(reference), bevy::animation::AnimatedBy(reference)))
+            .id();
+        scene
+            .app
+            .world_mut()
+            .entity_mut(scene.far)
+            .insert((ChildOf(animated), GlobalTransform::from_xyz(0.0, 0.0, -1.0)));
+        scene
+            .app
+            .world_mut()
+            .get_mut::<VisibleEntities>(scene.camera)
+            .unwrap()
+            .get_mut(TypeId::of::<Mesh3d>())
+            .push(scene.far);
+        scene.app.world_mut().run_schedule(Update);
+        assert!(mesh_list(&scene.app, scene.camera).contains(&scene.far));
+        scene
+            .app
+            .world_mut()
+            .entity_mut(scene.far)
+            .insert(ChildOf(reference));
+        scene.app.world_mut().run_schedule(Update);
+        assert!(!mesh_list(&scene.app, scene.camera).contains(&scene.far));
         scene
             .app
             .insert_resource(crate::settings::RenderingSettings {
@@ -1588,6 +1713,85 @@ mod tests {
         assert!(
             mesh_list(&scene.app, scene.camera).contains(&scene.far),
             "a moved root without a source sphere stays visible after returning to its original placement"
+        );
+    }
+
+    #[test]
+    fn a_named_skin_without_a_source_sphere_skips_room_culling() {
+        let connection = authored_database();
+        insert_room(&connection, 1, 7, [0.0; 3]);
+        insert_room(&connection, 2, 7, [0.0, 25.0, 0.0]);
+        connection
+            .execute_batch(
+                "INSERT INTO \"references\"(id,cell_id,base_form_id,pos_y) VALUES(101,7,91,25),(102,7,92,25);
+                 INSERT INTO room_reference_rules VALUES(101,7,'target',2),(102,7,'target',2);
+                 INSERT INTO room_model_bounds VALUES(92,0,0,0,1);",
+            )
+            .unwrap();
+        let mut scene = scene();
+        let world = scene.app.world_mut();
+        let root = {
+            let mut state = world.resource_mut::<RoomCullingState>();
+            let loaded = state.graphs.get_mut(&7).unwrap();
+            loaded.graph = load_room_graph(&connection, 7).unwrap();
+            loaded.root
+        };
+        let inverse_bindposes = world
+            .get_resource_or_init::<Assets<SkinnedMeshInverseBindposes>>()
+            .add(SkinnedMeshInverseBindposes::from(vec![Mat4::IDENTITY]));
+        let placement = Transform::from_xyz(0.0, 0.0, -25.0);
+        let global = GlobalTransform::from(placement);
+        let bounds = Aabb::from_min_max(-Vec3::splat(0.5), Vec3::splat(0.5));
+        let [(unbounded, unbounded_skin), (_, bounded_skin)] = [101, 102].map(|form_id| {
+            let reference = world
+                .spawn((FormId(form_id), ChildOf(root), placement, global))
+                .id();
+            let joint = world
+                .spawn((ChildOf(reference), Transform::IDENTITY, global))
+                .id();
+            let mesh = world
+                .spawn((
+                    Mesh3d::default(),
+                    ChildOf(reference),
+                    bounds,
+                    global,
+                    SkinnedMesh {
+                        inverse_bindposes: inverse_bindposes.clone(),
+                        joints: vec![joint],
+                    },
+                ))
+                .id();
+            (reference, mesh)
+        });
+        let unskinned_mesh = world
+            .spawn((Mesh3d::default(), ChildOf(unbounded), bounds, global))
+            .id();
+        *world
+            .get_mut::<VisibleEntities>(scene.camera)
+            .unwrap()
+            .get_mut(TypeId::of::<Mesh3d>()) = vec![unbounded_skin, unskinned_mesh, bounded_skin];
+
+        run_cull(&mut scene.app);
+        assert_eq!(
+            mesh_list(&scene.app, scene.camera),
+            [unbounded_skin],
+            "the unreached target hides the unskinned sibling and the skin with a source sphere"
+        );
+
+        let world = scene.app.world_mut();
+        world
+            .entity_mut(scene.camera)
+            .insert(GlobalTransform::from_xyz(0.0, 0.0, -22.0));
+        world
+            .get_mut::<VisibleEntities>(scene.camera)
+            .unwrap()
+            .get_mut(TypeId::of::<Mesh3d>())
+            .extend([unskinned_mesh, bounded_skin]);
+        run_cull(&mut scene.app);
+        assert_eq!(
+            mesh_list(&scene.app, scene.camera),
+            [unbounded_skin, unskinned_mesh, bounded_skin],
+            "all three meshes draw when the camera enters their room"
         );
     }
 
@@ -1909,6 +2113,7 @@ mod tests {
 
     #[test]
     fn current_source_bound_assignment_replaces_stale_membership_for_a_moving_reference() {
+        assert!(assignment_follows_transform(Some("ACTI")));
         let connection = authored_database();
         insert_room(&connection, 1, 7, [0.0; 3]);
         insert_room(&connection, 2, 7, [0.0, 25.0, 0.0]);
@@ -2376,6 +2581,13 @@ mod tests {
                 .execute("UPDATE room_portals SET pos_x=0", [])
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn an_orthographic_near_plane_cannot_seed_room_traversal_at_one_point() {
+        let graph = chain(doorway(11, Vec3::new(0.0, 0.0, -30.0), 3.0, [1, 2]));
+        let clip = Mat4::orthographic_rh(-30.0, 30.0, -30.0, 30.0, 100.0, 0.1);
+        assert!(reached_rooms(&graph, Vec3::ZERO, clip).is_none());
     }
 
     #[test]

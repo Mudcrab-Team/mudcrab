@@ -160,7 +160,7 @@ impl Prepared {
     }
 }
 
-struct ByteBudget {
+pub(super) struct ByteBudget {
     limit: usize,
     used: Mutex<usize>,
     ready: Condvar,
@@ -168,9 +168,19 @@ struct ByteBudget {
 }
 
 impl ByteBudget {
-    fn reserve(self: &Arc<Self>, bytes: usize) -> Result<BudgetPermit> {
+    pub(super) fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            used: Mutex::new(0),
+            ready: Condvar::new(),
+            closed: AtomicBool::new(false),
+        }
+    }
+
+    pub(super) fn reserve(self: &Arc<Self>, bytes: usize) -> Result<BudgetPermit> {
+        let bytes = bytes.clamp(1, self.limit);
         let mut used = self.used.lock().unwrap();
-        while *used + bytes > self.limit {
+        while bytes > self.limit - *used {
             if self.closed.load(Ordering::Acquire) {
                 return Err(WriterQueueStopped.into());
             }
@@ -194,7 +204,7 @@ impl ByteBudget {
     }
 }
 
-struct BudgetPermit {
+pub(super) struct BudgetPermit {
     budget: Arc<ByteBudget>,
     bytes: usize,
 }
@@ -448,12 +458,7 @@ pub(super) fn extract_with_session(
         .unwrap_or(0);
     // Oversize textures use a single batch, still bounded by the 1 GiB entry
     // limit. Ordinary batches share a 64 MiB decoded-byte budget.
-    let budget = Arc::new(ByteBudget {
-        limit: QUEUED_BYTES.max(largest),
-        used: Mutex::new(0),
-        ready: Condvar::new(),
-        closed: AtomicBool::new(false),
-    });
+    let budget = Arc::new(ByteBudget::new(QUEUED_BYTES.max(largest)));
     let cpu_pool = rayon::ThreadPoolBuilder::new()
         .num_threads(options.cpu_jobs)
         .build()?;
@@ -2553,13 +2558,22 @@ mod tests {
     }
 
     #[test]
+    fn an_oversized_reservation_uses_the_entire_budget_and_releases_it() {
+        let budget = Arc::new(ByteBudget::new(8));
+        let permit = budget.reserve(usize::MAX).unwrap();
+        assert_eq!(*budget.used.lock().unwrap(), budget.limit);
+        drop(permit);
+
+        let first = budget.reserve(4).unwrap();
+        let second = budget.reserve(4).unwrap();
+        assert_eq!(*budget.used.lock().unwrap(), budget.limit);
+        drop((first, second));
+        assert_eq!(*budget.used.lock().unwrap(), 0);
+    }
+
+    #[test]
     fn writer_failure_wakes_byte_budget_waiters_without_dropping_existing_reservations() {
-        let budget = Arc::new(ByteBudget {
-            limit: 1,
-            used: Mutex::new(0),
-            ready: Condvar::new(),
-            closed: AtomicBool::new(false),
-        });
+        let budget = Arc::new(ByteBudget::new(1));
         let permit = budget.reserve(1).unwrap();
         let (sent, received) = std::sync::mpsc::channel();
         let waiting = Arc::clone(&budget);

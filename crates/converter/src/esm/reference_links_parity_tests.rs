@@ -148,6 +148,243 @@ fn interior(references: &[u8]) -> Vec<u8> {
     )
 }
 
+#[test]
+fn plugin_deletion_disables_hardcoded_owner_fallback_across_subset_exports() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("Skyrim.esm");
+    let patch = dir.path().join("Delete.esp");
+    let deleted = 0x600;
+    let absent = 0x601;
+    let owner = |id| [sub(b"XOWN", &le(id)), sub(b"XRNK", &le(7))];
+    fs::write(
+        &base,
+        [
+            header(1, &[]),
+            named(b"STAT", CRATE),
+            named(b"FACT", deleted),
+            interior(
+                &[
+                    reference(CHEST, &owner(deleted)),
+                    reference(LEVER, &owner(absent)),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    fs::write(
+        &patch,
+        [
+            header(0, &["Skyrim.esm"]),
+            top(b"FACT", &record_with_flags(b"FACT", deleted, 0x20, &[])),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let paths = [base, patch];
+    let subset: HashMap<_, _> = EsmParser::merge_plugins(&paths)
+        .unwrap()
+        .into_iter()
+        .filter(|(id, _)| [CHEST, LEVER].contains(id))
+        .collect();
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let db_path = dir.path().join(format!("{reader:?}.db"));
+        EsmParser::convert_plugins_with_reader(&paths, &db_path, reader, dir.path()).unwrap();
+        let db = Connection::open(db_path).unwrap();
+        let projected_owner = |id| {
+            db.query_row(
+                "SELECT owner_id FROM reference_details WHERE reference_id=?1",
+                [id],
+                |row| row.get::<_, Option<u32>>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(projected_owner(CHEST), None);
+        assert_eq!(projected_owner(LEVER), Some(absent));
+        super::exporter::export_to_db(&db, &subset).unwrap();
+        assert_eq!(projected_owner(CHEST), None);
+        assert_eq!(projected_owner(LEVER), Some(absent));
+    }
+}
+
+#[test]
+fn typed_owner_restoration_respects_authored_zero_and_rank() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("Skyrim.esm");
+    let owner = |id| [sub(b"XOWN", &le(id)), sub(b"XRNK", &le(7))];
+    fs::write(
+        &base,
+        [
+            header(1, &[]),
+            named(b"STAT", CRATE),
+            interior(
+                &[
+                    reference(CHEST, &owner(FACTION)),
+                    reference(LEVER, &owner(0)),
+                    reference(TRAP, &owner(FACTION)),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let paths = [base];
+    let mut records = EsmParser::merge_plugins(&paths).unwrap();
+    let mut trap = records.remove(&TRAP).unwrap();
+    trap.subrecords
+        .iter_mut()
+        .find(|(tag, _)| tag == b"XOWN")
+        .unwrap()
+        .1
+        .fill(0);
+    let mut target = records.remove(&CRATE).unwrap();
+    target.form_id = FACTION;
+    target.record_type = *b"FACT";
+    let subset = HashMap::from([(TRAP, trap)]);
+    let addition = HashMap::from([(FACTION, target)]);
+    for (name, has_legacy_column) in [("current.db", false), ("old.db", true)] {
+        let db_path = dir.path().join(name);
+        let publish = || {
+            EsmParser::convert_plugins_with_reader(
+                &paths,
+                &db_path,
+                RecordReader::Inhouse,
+                dir.path(),
+            )
+            .unwrap();
+        };
+        publish();
+        let db = Connection::open(&db_path).unwrap();
+        let columns = || {
+            db.query_row(
+                "SELECT count(*) FROM pragma_table_info('reference_link_subset_sources')",
+                [],
+                |row| row.get::<_, usize>(0),
+            )
+            .unwrap()
+        };
+        let owner_rank = |id| {
+            db.query_row(
+                "SELECT owner_id,owner_rank FROM reference_details WHERE reference_id=?1",
+                [id],
+                |r| Ok((r.get::<_, Option<u32>>(0)?, r.get::<_, i32>(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(columns(), 0);
+        if has_legacy_column {
+            db.execute_batch(
+                "CREATE TABLE reference_link_subset_sources(form_id INTEGER PRIMARY KEY, data BLOB)",
+            )
+            .unwrap();
+        }
+        assert_eq!(owner_rank(CHEST), (None, 7));
+        super::exporter::export_to_db(&db, &subset).unwrap();
+        assert_eq!(columns(), 1 + usize::from(has_legacy_column));
+        assert_eq!(
+            db.query_row(
+                "SELECT form_id FROM reference_link_subset_sources",
+                [],
+                |row| { row.get::<_, u32>(0) }
+            )
+            .unwrap(),
+            TRAP
+        );
+        super::exporter::export_to_db(&db, &addition).unwrap();
+        assert_eq!(owner_rank(CHEST), (Some(FACTION), 7));
+        assert_eq!(owner_rank(LEVER), (None, 7));
+        assert_eq!(owner_rank(TRAP), (None, 7));
+        drop(db);
+        publish();
+        let db = Connection::open(&db_path).unwrap();
+        assert!(
+            !db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='reference_link_subset_sources')",
+                [],
+                |row| row.get::<_, bool>(0)
+            )
+            .unwrap()
+        );
+    }
+}
+
+#[test]
+fn malformed_placement_enable_parent_keeps_predecessor() {
+    use super::placement_edits::{PlacementSource, apply};
+
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("Skyrim.esm");
+    let db_path = dir.path().join("skyrim_world.db");
+    let xesp = |id, flags| sub(b"XESP", &[le(id), [flags, 0, 0, 0]].concat());
+    fs::write(
+        &base,
+        [
+            header(1, &[]),
+            named(b"STAT", CRATE),
+            interior(
+                &[
+                    reference(CHEST, &[xesp(LEVER, 1)]),
+                    reference(LEVER, &[]),
+                    reference(TRAP, &[]),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    EsmParser::convert_plugins_with_reader(&[base], &db_path, RecordReader::Inhouse, dir.path())
+        .unwrap();
+    let db = Connection::open(db_path).unwrap();
+    let parent = || {
+        db.query_row(
+            "SELECT enable_parent_id,enable_parent_flags FROM [references] WHERE id=?1",
+            [CHEST],
+            |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, Option<u32>>(1)?)),
+        )
+        .unwrap()
+    };
+    let apply_patch = |name: &str, fields: &[Vec<u8>]| {
+        let path = dir.path().join(name);
+        fs::write(
+            &path,
+            [
+                header(0, &["Skyrim.esm"]),
+                group(6, CELL, &group(9, CELL, &reference(CHEST, fields))),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        apply(dir.path(), PlacementSource::SkyrimPlugin(&path)).unwrap()
+    };
+
+    assert_eq!(parent(), (Some(LEVER), Some(1)));
+    assert_eq!(
+        apply_patch("Malformed.esp", &[sub(b"XESP", &le(TRAP))]).changed_references,
+        0
+    );
+    assert_eq!(parent(), (Some(LEVER), Some(1)));
+    assert_eq!(
+        apply_patch("BadMaster.esp", &[xesp(0x9900_0802, 2)]).changed_references,
+        0
+    );
+    assert_eq!(parent(), (Some(LEVER), Some(1)));
+    assert_eq!(
+        apply_patch("Repeated.esp", &[xesp(TRAP, 2), xesp(LEVER, 1)]).changed_references,
+        0
+    );
+    assert_eq!(parent(), (Some(LEVER), Some(1)));
+    assert_eq!(
+        apply_patch("Changed.esp", &[xesp(TRAP, 2)]).changed_references,
+        1
+    );
+    assert_eq!(parent(), (Some(TRAP), Some(2)));
+    assert_eq!(apply_patch("Cleared.esp", &[]).changed_references, 1);
+    assert_eq!(parent(), (None, None));
+}
+
 fn master_plugin() -> Vec<u8> {
     let chest = reference(
         CHEST,

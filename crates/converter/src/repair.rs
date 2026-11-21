@@ -10,7 +10,7 @@ use crate::{
     config::{PipelineConfig, TextureEncoder},
     esm::grass_cache::{validate_grass_cache, write_grass_cache},
     integration::finalize_world_database_with_sources,
-    mesh::MeshConverter,
+    mesh::{MeshConverter, NifSnapshot},
     pipeline::{
         collect_texture_semantics, installed_archive_owners, mo2_archive_is_active,
         mo2_installed_archive_owners, non_mo2_archive_is_active, plugin_paths,
@@ -1133,42 +1133,39 @@ fn attempt(
         let source = sources
             .get(key)
             .ok_or_else(|| color_eyre::eyre::eyre!("winning source is missing: {key}"))?;
-        let mut source_hash = verified_source_hash(source, key, verified)?;
         let (asset_kind, ext, target_ext) =
             kind(key).ok_or_else(|| color_eyre::eyre::eyre!("unsupported repair target: {key}"))?;
+        let skeletons = (ext == "nif").then(|| {
+            skeletons.get_or_init(|| crate::mesh::SkeletonIndex::from_sources(mesh_sources))
+        });
+        let nif = skeletons
+            .map(|index| index.input_snapshot(Path::new(key), &source.path))
+            .transpose()?;
+        let mut source_hash = verified_source_hash(source, key, verified, nif.as_deref())?;
         let output = canonical_asset_path(key, asset_kind, target_ext)?;
         let target = checked_destination(staged, &output)?;
-        if ext == "nif" {
-            let skeletons =
-                skeletons.get_or_init(|| crate::mesh::SkeletonIndex::from_sources(mesh_sources));
-            let skeleton_key =
-                crate::mesh::resolve_skeleton_with_index(Path::new(key), mesh_sources, skeletons);
+        if let (Some(nif), Some(skeletons)) = (&nif, skeletons) {
+            let resolution =
+                crate::mesh::resolve_skeleton_from_snapshot(Path::new(key), nif, skeletons);
             let mut unresolved_skin = None;
-            let skeleton = match skeleton_key {
-                crate::mesh::SkeletonResolution::Skeleton(path) => {
-                    // The resolver returns the normalized key, while archive
-                    // keys keep their original case.
-                    let (dependency_key, dependency_source) = sources
-                        .get_key_value(path.to_string_lossy().as_ref())
-                        .or_else(|| {
-                            sources.iter().find(|(candidate, _)| {
-                                crate::mesh::normalize_path_key(Path::new(candidate.as_str()))
-                                    == crate::mesh::normalize_path_key(&path)
-                            })
-                        })
-                        .ok_or_else(|| {
+            let skeleton = match resolution {
+                crate::mesh::SkeletonResolution::Skeleton(entry) => {
+                    let dependency_key = entry.path.to_string_lossy();
+                    let dependency_source =
+                        sources.get(dependency_key.as_ref()).ok_or_else(|| {
                             color_eyre::eyre::eyre!(
-                                "resolved skeleton {} has no winning source",
-                                path.display()
+                                "resolved skeleton {dependency_key} has no winning source"
                             )
                         })?;
                     source_hash.push(':');
+                    let dependency = entry.snapshot()?;
                     source_hash.push_str(&verified_source_hash(
                         dependency_source,
-                        dependency_key,
+                        &dependency_key,
                         verified,
+                        Some(&dependency),
                     )?);
-                    Some(dependency_source.path.as_path())
+                    Some(dependency)
                 }
                 crate::mesh::SkeletonResolution::SelfContained => None,
                 crate::mesh::SkeletonResolution::Unresolved { best_coverage } => {
@@ -1180,14 +1177,14 @@ fn attempt(
                     None
                 }
             };
-            MeshConverter::convert_nif_to_glb_with_skin_resolution(
-                &source.path,
+            MeshConverter::convert_nif_snapshot(
+                nif,
                 &target,
-                skeleton,
+                skeleton.as_deref(),
                 unresolved_skin.as_deref(),
             )?;
             MeshConverter::glb_texture_dependencies(&target)?;
-            if MeshConverter::is_geometry_template(&source.path)? {
+            if nif.is_geometry_template()? {
                 manifest.excluded_inputs.insert(key.into(), "Geometryless overlay template; standalone mesh is empty, runtime overlays are not implemented".into());
                 report.excluded += 1;
             } else {
@@ -1279,6 +1276,7 @@ fn verified_source_hash(
     source: &Source,
     key: &str,
     verified: &mut BTreeSet<PathBuf>,
+    snapshot: Option<&NifSnapshot>,
 ) -> Result<String> {
     if let Some((archive, expected)) = &source.archive
         && !verified.contains(archive)
@@ -1290,7 +1288,10 @@ fn verified_source_hash(
         );
         verified.insert(archive.clone());
     }
-    let hash = hash_file(&source.path)?;
+    let hash = match snapshot {
+        Some(nif) => nif.hash().to_owned(),
+        None => hash_file(&source.path)?,
+    };
     if let Some(expected) = &source.expected_hash {
         ensure!(hash == *expected, "ingestion blob hash mismatch for {key}");
     }
@@ -1714,8 +1715,7 @@ mod tests {
         let archive = root.path().join("source.bsa");
         fs::write(&archive, "archive provenance fixture").unwrap();
         let key = "meshes/actors/character/armor/body.nif";
-        // Archive keys keep their authored case; the resolver answers with a
-        // normalized key, so the lookup must not depend on matching spelling.
+        // Candidate lookup is case-insensitive, but provenance uses this exact archive key.
         let skeleton_key = "meshes/actors/character/Character Assets/skeleton.nif";
         let skeleton = Source {
             path: blob.clone(),
@@ -1859,20 +1859,29 @@ mod tests {
             archive: Some((archive.clone(), hash_file(&archive).unwrap())),
             expected_hash: Some(hash_file(&blob).unwrap()),
         };
+        let captured = NifSnapshot::read(&blob).unwrap();
         fs::write(&blob, "modified skeleton").unwrap();
-        assert!(
-            verified_source_hash(&source, "skeleton", &mut BTreeSet::new())
-                .unwrap_err()
-                .to_string()
-                .contains("blob hash mismatch")
-        );
+        let modified = NifSnapshot::read(&blob).unwrap();
+        let verify =
+            |snapshot| verified_source_hash(&source, "skeleton", &mut BTreeSet::new(), snapshot);
+        assert_eq!(verify(Some(&captured)).unwrap(), captured.hash());
+        for snapshot in [None, Some(&modified)] {
+            assert!(
+                verify(snapshot)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("blob hash mismatch")
+            );
+        }
         fs::write(&archive, "modified archive").unwrap();
-        assert!(
-            verified_source_hash(&source, "skeleton", &mut BTreeSet::new())
-                .unwrap_err()
-                .to_string()
-                .contains("archive changed")
-        );
+        for snapshot in [None, Some(&captured)] {
+            assert!(
+                verify(snapshot)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("archive changed")
+            );
+        }
     }
 
     #[test]

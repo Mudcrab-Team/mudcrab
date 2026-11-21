@@ -1,7 +1,7 @@
 //! Retain the source spheres used by native static-reference room assignment.
 
 use project_wormhole_nif::{nif_block::NifBlock, nif_file::NifFile};
-use project_wormhole_shared::glam::{Affine3A, Mat3, Mat4, Quat, Vec3};
+use project_wormhole_shared::glam::{Affine3A, DVec3, Mat3, Mat4, Quat, Vec3, Vec4};
 use shared::room_assignment::ModelSphere;
 
 /// Unsupported node types stay unknown instead of becoming an AABB approximation.
@@ -24,18 +24,48 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
         }
         path.push(index);
         let (av, sphere, children) = match block {
-            NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => {
-                (&node.av, None, node.children.as_slice())
+            NifBlock::NiNode(node)
+            | NifBlock::BSFadeNode(node)
+            | NifBlock::BSLeafAnimNode(node) => (&node.av, None, node.children.as_slice()),
+            // LoadBinary overwrites the file bit and clears it for zero or unordered radii.
+            NifBlock::BSOrderedNode(node)
+                if node.static_bound != 0 && node.alpha_sort_bound[3].abs() > 0.0 =>
+            {
+                let [x, y, z, radius] = node.alpha_sort_bound;
+                let bound = ModelSphere {
+                    center: [x, y, z],
+                    radius,
+                };
+                (&node.node.av, Some(bound), node.node.children.as_slice())
             }
-            NifBlock::BSTriShape(shape) => (&shape.av, Some(shape.bounding_sphere), &[][..]),
+            NifBlock::BSOrderedNode(node) => (&node.node.av, None, node.node.children.as_slice()),
+            // Empty damage-stage nodes contribute a zero sphere. Nonempty ranges still need
+            // native selection semantics before they can supply assignment metadata.
+            NifBlock::BSBlastNode(node) if node.node.children.is_empty() => {
+                (&node.node.av, None, &[][..])
+            }
+            NifBlock::BSTriShape(shape) => (
+                &shape.av,
+                Some(ModelSphere {
+                    center: shape.bounding_sphere.center,
+                    radius: shape.bounding_sphere.radius,
+                }),
+                &[][..],
+            ),
             NifBlock::BSLODTriShape(shape) => (
                 &shape.bs_tri_shape.av,
-                Some(shape.bs_tri_shape.bounding_sphere),
+                Some(ModelSphere {
+                    center: shape.bs_tri_shape.bounding_sphere.center,
+                    radius: shape.bs_tri_shape.bounding_sphere.radius,
+                }),
                 &[][..],
             ),
             NifBlock::BSSubIndexTriShape(shape) => (
                 &shape.bs_tri_shape.av,
-                Some(shape.bs_tri_shape.bounding_sphere),
+                Some(ModelSphere {
+                    center: shape.bs_tri_shape.bounding_sphere.center,
+                    radius: shape.bs_tri_shape.bounding_sphere.radius,
+                }),
                 &[][..],
             ),
             _ => return None,
@@ -88,7 +118,10 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
             }
         };
         for &child in children.iter().filter(|&&child| child != u32::MAX) {
-            result = result.merge(visit(nif, child, world, scale, path, remaining)?);
+            let child_bound = visit(nif, child, world, scale, path, remaining)?;
+            if sphere.is_none() {
+                result = result.merge(child_bound);
+            }
         }
         path.pop();
         result.valid().then_some(result)
@@ -140,7 +173,7 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
 
 /// A native bound is usable only when it also covers the emitted render pose.
 pub(super) fn encloses_scene(glb: &[u8], sphere: ModelSphere) -> bool {
-    scene_fits(glb, sphere).unwrap_or(false)
+    scene_fits(glb, sphere, None).unwrap_or(false)
 }
 
 // These extensions affect shading or UVs and leave the positions used for enclosure intact.
@@ -165,33 +198,30 @@ fn material_or_uv_extension(name: &str) -> bool {
     )
 }
 
-pub(crate) fn encloses_native_scene(
-    glb: &[u8],
-    document: &serde_json::Value,
-    sphere: ModelSphere,
-) -> bool {
+pub(crate) fn native_sphere_eligible(document: &serde_json::Value) -> bool {
     // Streaming instantiates scene 0. Prove enclosure only for embedded, rigid geometry.
-    document["scene"].as_u64() == Some(0)
-        && ["animations", "skins"].into_iter().all(|key| {
-            document
-                .get(key)
-                .is_none_or(|value| value.as_array().is_some_and(Vec::is_empty))
-        })
-        && ["extensionsUsed", "extensionsRequired"]
-            .into_iter()
-            .all(|key| {
-                document.get(key).is_none_or(|value| {
-                    value.as_array().is_some_and(|names| {
-                        names
-                            .iter()
-                            .all(|name| name.as_str().is_some_and(material_or_uv_extension))
-                    })
+    ["animations", "skins"].into_iter().all(|key| {
+        document
+            .get(key)
+            .is_none_or(|value| value.as_array().is_some_and(Vec::is_empty))
+    }) && ["extensionsUsed", "extensionsRequired"]
+        .into_iter()
+        .all(|key| {
+            document.get(key).is_none_or(|value| {
+                value.as_array().is_some_and(|names| {
+                    names
+                        .iter()
+                        .all(|name| name.as_str().is_some_and(material_or_uv_extension))
                 })
             })
+        })
         && document["buffers"].as_array().is_some_and(
             |buffers| matches!(buffers.as_slice(), [buffer] if buffer.get("uri").is_none()),
         )
-        && encloses_scene(glb, sphere)
+}
+
+pub(crate) fn encloses_native_scene(glb: &[u8], sphere: ModelSphere) -> bool {
+    scene_fits(glb, sphere, Some(0)).unwrap_or(false)
 }
 
 fn geometry_document(mut root: gltf::json::Root) -> Option<gltf::Document> {
@@ -202,22 +232,24 @@ fn geometry_document(mut root: gltf::json::Root) -> Option<gltf::Document> {
     gltf::Document::from_json(root).ok()
 }
 
-fn scene_fits(glb: &[u8], sphere: ModelSphere) -> Option<bool> {
+fn scene_fits(glb: &[u8], sphere: ModelSphere, scene_index: Option<usize>) -> Option<bool> {
     // silent-ok: A malformed GLB cannot certify sphere enclosure.
     let chunks = gltf::binary::Glb::from_slice(glb).ok()?;
     // silent-ok: A malformed scene description cannot certify sphere enclosure.
     let root = serde_json::from_slice(&chunks.json).ok()?;
     let gltf = geometry_document(root)?;
-    let scene = gltf.default_scene()?;
+    let scene = match scene_index {
+        Some(index) => gltf.scenes().nth(index),
+        None => gltf.default_scene(),
+    }?;
     let blob = chunks.bin.as_deref()?;
     let buffer = |buffer: gltf::Buffer<'_>| (buffer.index() == 0).then_some(blob);
-    let mut visited = vec![false; gltf.nodes().len()];
-    let center = Vec3::from_array(sphere.center).as_dvec3();
+    let mut transforms = vec![None; gltf.nodes().len()];
     let mut pending: Vec<_> = scene
         .nodes()
         .map(|node| (node, Affine3A::IDENTITY))
         .collect();
-    let mut seen_position = false;
+    let mut drawables = Vec::new();
     while let Some((node, parent)) = pending.pop() {
         let gltf::scene::Transform::Decomposed {
             translation,
@@ -233,24 +265,77 @@ fn scene_fits(glb: &[u8], sphere: ModelSphere) -> Option<bool> {
                 Quat::from_array(rotation),
                 Vec3::from_array(translation),
             );
-        if !world.is_finite() || visited[node.index()] || node.skin().is_some() {
+        if !world.is_finite() || transforms[node.index()].replace(world).is_some() {
             return None;
         }
-        visited[node.index()] = true;
         pending.extend(node.children().map(|child| (child, world)));
-        let Some(mesh) = node.mesh() else { continue };
-        let world = Mat4::from(world).as_dmat4();
+        if let Some(mesh) = node.mesh() {
+            drawables.push((mesh, node.skin(), world));
+        }
+    }
+    let center = Vec3::from_array(sphere.center).as_dvec3();
+    let contains = |point: DVec3| point.distance(center) <= f64::from(sphere.radius);
+    let mut seen_position = false;
+    for (mesh, skin, world) in drawables {
+        let joint_transforms = if let Some(skin) = skin {
+            let matrices = skin.reader(buffer).read_inverse_bind_matrices()?;
+            let joints = skin.joints();
+            if joints.len() == 0 || matrices.len() != joints.len() {
+                return None;
+            }
+            joints
+                .zip(matrices)
+                .map(|(joint, matrix)| {
+                    let inverse_bind = Mat4::from_cols_array_2d(&matrix);
+                    // Skinning uses the world joint transform directly. Only affine
+                    // bind matrices support the point transformation below.
+                    if inverse_bind.row(3) != Vec4::W {
+                        return None;
+                    }
+                    let pose = Mat4::from(transforms[joint.index()]?) * inverse_bind;
+                    pose.is_finite().then_some(pose.as_dmat4())
+                })
+                .collect::<Option<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
         for primitive in mesh.primitives() {
             if primitive.morph_targets().len() != 0 {
                 return None;
             }
-            for position in primitive.reader(buffer).read_positions()? {
-                let point = world.transform_point3(Vec3::from_array(position).as_dvec3());
-                let distance = point.distance(center);
-                if !distance.is_finite() || distance > f64::from(sphere.radius) {
+            let reader = primitive.reader(buffer);
+            let positions = reader.read_positions()?;
+            seen_position |= positions.len() != 0;
+            if joint_transforms.is_empty() {
+                let world = Mat4::from(world).as_dmat4();
+                if !positions
+                    .map(|position| world.transform_point3(Vec3::from_array(position).as_dvec3()))
+                    .all(contains)
+                {
                     return Some(false);
                 }
-                seen_position = true;
+                continue;
+            }
+            let joints = reader.read_joints(0)?.into_u16();
+            let weights = reader.read_weights(0)?.into_f32();
+            if joints.len() != positions.len() || weights.len() != positions.len() {
+                return None;
+            }
+            for ((position, joints), weights) in positions.zip(joints).zip(weights) {
+                let position = Vec3::from_array(position).as_dvec3();
+                let mut deformed = DVec3::ZERO;
+                for (joint, weight) in joints.into_iter().zip(weights) {
+                    if !weight.is_finite() || weight < 0.0 {
+                        return None;
+                    }
+                    let transform = joint_transforms.get(joint as usize)?;
+                    deformed += transform.transform_point3(position) * f64::from(weight);
+                }
+                if (weights.iter().sum::<f32>() - 1.0).abs() > 4.0 * f32::EPSILON
+                    || !contains(deformed)
+                {
+                    return Some(false);
+                }
             }
         }
     }

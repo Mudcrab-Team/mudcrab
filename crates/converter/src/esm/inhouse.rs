@@ -405,7 +405,7 @@ fn write_record_archive_scope(output: &Path, complete: bool, signatures: &[[u8; 
             "status": if complete { "COMPLETE_DIAGNOSTIC_ARCHIVE_RUNTIME_VIEWS_DEFERRED" } else { "INCOMPLETE" },
             "runtime_ready": false,
             "runtime_views_materialized": false,
-            "preserved_sql_tables": ["schema_info", "plugins", "records", "formid_map",
+            "preserved_sql_tables": ["schema_info", "plugins", "records", "formid_map", "subset_nonplacement_deletions",
                 "inhouse_source_records", "inhouse_localized_fields", "inhouse_terrain_source_order",
                 "inhouse_terrain_layers", "inhouse_unresolved_terrain_textures", "record_overrides", "inhouse_plugin_masters", "inhouse_schema_addons", "record_diagnostics"],
         "deferred_runtime_tables": DEFERRED_RUNTIME_TABLES,
@@ -1280,7 +1280,13 @@ fn convert_plugins_with_text_sources_report_impl(
             &decoded,
         )?;
     } else {
-        export_inhouse_record_archive_to_db(&conn, &master, &order, plugin_paths)?;
+        export_inhouse_record_archive_to_db(
+            &conn,
+            &master,
+            &order,
+            plugin_paths,
+            &decoded.deleted_ids,
+        )?;
     }
     runtime_stage.finish(master.len());
     phases.insert(
@@ -1360,7 +1366,10 @@ fn convert_plugins_with_text_sources_report_impl(
                 if let Some(id) = entry.form_id {
                     damage.accepted(id);
                 }
-            } else {
+            } else if !decoded
+                .retired_placements
+                .contains(&(entry.plugin_index, entry.source_record_offset))
+            {
                 damage.reject(
                     &entry.record_type,
                     entry.source_form_id,
@@ -1378,13 +1387,6 @@ fn convert_plugins_with_text_sources_report_impl(
         for cell in damage.affected_cells(&master) {
             incomplete.execute([cell])?;
         }
-        super::rooms::restore_rejected_room_fields(
-            &tx,
-            decoded
-                .records
-                .values()
-                .filter(|record| super::is_placed_record_type(&record.record_type)),
-        )?;
         tx.execute(
             "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES ('visibility_version',2)",
             [],
@@ -1504,6 +1506,27 @@ fn validate_candidate_with_string_sources(
 ) -> std::result::Result<(), String> {
     if super::is_placed_record_type(&record.record_type) {
         record.validate_placement_base()?;
+        let kept_transform = record
+            .fields
+            .iter()
+            .find(|field| field.signature == *b"DATA");
+        let valid_transform = if let Some(field) = kept_transform {
+            super::valid_initial_placement_transform(Some(&field.canonical_bytes))
+        } else if record.rejected_fields.contains(b"DATA") {
+            // Rejected nonfinite coordinates disappear from the typed projection. A short
+            // source field can still carry a canonical record with no spatial row.
+            record.framed_source_subrecords().is_some_and(|fields| {
+                fields
+                    .into_iter()
+                    .filter(|(tag, _)| tag == b"DATA")
+                    .all(|(_, data)| super::valid_initial_placement_transform(Some(data)))
+            })
+        } else {
+            true
+        };
+        if !valid_transform {
+            return Err("invalid placement transform".into());
+        }
     }
     if !matches!(&record.record_type, b"LAND" | b"MOVT" | b"GMST" | b"RACE") {
         return Ok(());

@@ -473,9 +473,18 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "object-texture-swap-geometry-index-v1",
     "object-texture-swap-geometry-index-v2",
     "native-room-assignment-spheres",
+    "leaf-ordered-and-static-skin-room-spheres",
     "complete-root-room-spheres",
     "rigid-child-and-depth-room-spheres",
+    "export-leaf-scene-nodes",
+    "skin-auto-quality-room-spheres",
+    "ordered-node-loader-room-spheres",
+    "snapshot-and-keyframed-skin-room-spheres",
+    "animated-skin-bone-room-spheres",
+    "animated-skin-ancestor-and-character-room-spheres",
     "renderer-verified-room-spheres",
+    "scene-ancestor-skin-motion",
+    "verified-fixed-ordered-descendants",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical

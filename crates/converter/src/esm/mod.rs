@@ -75,6 +75,7 @@ pub(crate) struct RecordConversion {
 }
 
 struct LegacyPluginMerge {
+    deleted_ids: HashSet<u32>,
     conversion: RecordConversion,
     damaged_cells: HashSet<u32>,
     room_link_layouts: HashMap<u32, rooms::RoomLinkLayout>,
@@ -89,7 +90,7 @@ struct LegacyPlacementCandidate {
 struct LegacyPlacementPredecessor {
     previous: Option<RawRecord>,
     previous_layout: Option<rooms::RoomLinkLayout>,
-    previous_damage: Option<HashSet<u32>>,
+    previous_damage: Option<HashSet<Option<u32>>>,
     previous_candidate: Option<LegacyPlacementCandidate>,
 }
 
@@ -97,7 +98,8 @@ struct LegacyPlacementPredecessor {
 /// A later usable record or deletion supersedes damage with a proven identity.
 #[derive(Default)]
 struct PlacementDamage {
-    cells_by_reference: HashMap<Option<u32>, HashSet<u32>>,
+    cells_by_reference: HashMap<Option<u32>, HashSet<Option<u32>>>,
+    unknown_scope: bool,
 }
 
 impl PlacementDamage {
@@ -135,8 +137,13 @@ impl PlacementDamage {
         let cell = source_cell
             .and_then(|raw| header_runtime_id(b"CELL", raw, plugin, order))
             .filter(|&cell| cell != 0);
-        if id.is_some() || cell.is_some() {
-            self.cells_by_reference.entry(id).or_default().extend(cell);
+        if id.is_none() && cell.is_none() {
+            self.unknown_scope = true;
+        } else {
+            let cells = self.cells_by_reference.entry(id).or_default();
+            if source_cell.is_some() {
+                cells.insert(cell);
+            }
         }
     }
 
@@ -145,14 +152,27 @@ impl PlacementDamage {
     }
 
     fn affected_cells(self, winners: &HashMap<u32, RawRecord>) -> HashSet<u32> {
+        let all_cells = || {
+            winners
+                .values()
+                .filter(|record| record.record_type == *b"CELL")
+                .map(|record| record.form_id)
+                .collect()
+        };
+        if self.unknown_scope {
+            return all_cells();
+        }
         let mut cells = HashSet::new();
         for (id, rejected) in self.cells_by_reference {
-            cells.extend(rejected);
-            if let Some(earlier) = id.and_then(|id| winners.get(&id))
-                && is_placed_record_type(&earlier.record_type)
-            {
-                cells.extend(earlier.cell_form_id);
+            let earlier_cell = id
+                .and_then(|id| winners.get(&id))
+                .filter(|record| is_placed_record_type(&record.record_type))
+                .and_then(|record| record.cell_form_id);
+            if earlier_cell.is_none() && rejected.contains(&None) {
+                return all_cells();
             }
+            cells.extend(rejected.into_iter().flatten());
+            cells.extend(earlier_cell);
         }
         cells
     }
@@ -298,33 +318,22 @@ impl EsmParser {
         string_sources: inhouse::StringSources<'_>,
     ) -> Result<RecordConversion> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
-        let LegacyPluginMerge {
-            conversion: mut master,
-            damaged_cells,
-            room_link_layouts,
-        } = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
+        let mut merged = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
         let (unresolved, localization_warnings, localization_notices) =
             legacy_text::resolve_localized_fields(
-                &mut master.records,
+                &mut merged.conversion.records,
                 plugin_paths,
                 &order,
                 string_sources,
             );
         let conn = Connection::open(db_path)?;
         create_tables(&conn)?;
-        exporter::export_plugins_to_db(
-            &conn,
-            &master.records,
-            &order,
-            plugin_paths,
-            &unresolved,
-            &damaged_cells,
-            &room_link_layouts,
-        )?;
+        exporter::export_plugins_to_db(&conn, &merged, &order, plugin_paths, &unresolved)?;
 
         for diagnostic in localization_warnings.iter().chain(&localization_notices) {
             eprintln!("{diagnostic}");
         }
+        let mut master = merged.conversion;
         master.warnings.extend(localization_warnings);
         master.notices.extend(localization_notices);
         Ok(master)
@@ -427,12 +436,15 @@ impl EsmParser {
                             validate_placement_parent(&record_type, record.cell_form_id, || None)
                                 .map_err(color_eyre::eyre::Report::msg)?;
                             let view = extractors::SubrecordView::new(&record.subrecords);
-                            if merged.contains_key(&record.form_id) {
-                                color_eyre::eyre::ensure!(
-                                    valid_placement_transform(view.find_all(b"DATA")),
-                                    "invalid placement override transform"
-                                );
-                            }
+                            let valid_transform = if merged.contains_key(&record.form_id) {
+                                valid_placement_transform(view.find_all(b"DATA"))
+                            } else {
+                                valid_initial_placement_transform(view.find(b"DATA"))
+                            };
+                            color_eyre::eyre::ensure!(
+                                valid_transform,
+                                "invalid placement transform"
+                            );
                             color_eyre::eyre::ensure!(
                                 view.unique_form_id(b"NAME").is_some_and(|id| id != 0),
                                 "placement requires exactly one nonzero NAME reference"
@@ -584,16 +596,10 @@ impl EsmParser {
         );
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
-        if unknown_discarded_scope {
-            damaged_cells.extend(
-                merged
-                    .values()
-                    .filter(|record| record.record_type == *b"CELL")
-                    .map(|record| record.form_id),
-            );
-        }
+        damaged_placements.unknown_scope |= unknown_discarded_scope;
         damaged_cells.extend(damaged_placements.affected_cells(&merged));
         Ok(LegacyPluginMerge {
+            deleted_ids: deleted_ids.absent_from(&merged),
             conversion: RecordConversion {
                 records: merged,
                 warnings: summaries,
@@ -696,6 +702,10 @@ fn resolve_legacy_placements(
             let priority = record.load_order as usize;
             match reason {
                 crate::records::PlacementFailure::Invalid(reason) => {
+                    let source_slot = (candidate.source_id >> 24) as usize;
+                    let resolved =
+                        (source_slot <= order.metadata[priority].masters.len()).then_some(id);
+                    damage.reject_resolved(resolved, candidate.source_cell, priority, order);
                     warnings.skipped_record(
                         &order.names[priority],
                         record,
@@ -711,9 +721,6 @@ fn resolve_legacy_placements(
                     entry.0 += 1;
                 }
             }
-            let source_slot = (candidate.source_id >> 24) as usize;
-            let resolved = (source_slot <= order.metadata[priority].masters.len()).then_some(id);
-            damage.reject_resolved(resolved, candidate.source_cell, priority, order);
             winners.remove(&id);
             layouts.remove(&id);
             if let Some(predecessor) = candidate.predecessor {
@@ -1146,17 +1153,24 @@ fn is_required_form_id_subrecord(record_type: &[u8; 4], tag: &[u8]) -> bool {
     tag == b"NAME" && is_placed_record_type(record_type)
 }
 
-/// A publishable placement transform is exactly one position/rotation tuple.
+/// A first definition with no projectable DATA retains its canonical identity.
+fn valid_initial_placement_transform(data: Option<&[u8]>) -> bool {
+    data.and_then(|bytes| bytes.first_chunk::<24>())
+        .is_none_or(|transform| {
+            transform
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|word| f32::from_le_bytes(*word).is_finite())
+        })
+}
+
+/// Replacing a placement requires exactly one position/rotation tuple.
 pub(crate) fn valid_placement_transform<'a>(mut fields: impl Iterator<Item = &'a [u8]>) -> bool {
     let Some(data) = fields.next().filter(|bytes| bytes.len() == 24) else {
         return false;
     };
-    fields.next().is_none()
-        && data
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .all(|word| f32::from_le_bytes(*word).is_finite())
+    fields.next().is_none() && valid_initial_placement_transform(Some(data))
 }
 
 /// A missing parent disqualifies an override only if a usable predecessor owns a cell.

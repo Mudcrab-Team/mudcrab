@@ -719,7 +719,8 @@ Rows come from every placeable base type with a world model: `STAT`, `MSTT`, `FU
 `KEYM`, `SCRL`, `ARMO`, `APPA`, `ADDN`, `ARTO`, `PROJ`, `HAZD`, and `LIGH` when it has a model. `TACT`
 (talking activators), `APPA` (apparatus), `ADDN` (addon nodes) and `ARTO` (art objects) were
 added for #269; before that their references had no row and did not render. The engine still
-skips models under `effects/`, `sky/` or `markers/`
+skips models under `effects/`, `sky/` or `markers/`, with one drawable activator exception for
+`effects/fxcobwebroundwall01.nif`
 (`converted_model_path` in `crates/engine/src/streaming.rs`), which covers many `ADDN` and `ARTO`
 models; that is render policy, not data the table lacks. Marker filenames alone are not excluded:
 the base record's `Is Marker` flag controls editor-marker admission. They are additive
@@ -781,18 +782,24 @@ Rules:
   and `PFLA` (not `ACHR` or `ACRE`). `owner_id` accepts `FACT`, `ACHR` or `NPC_`; `lock_key_id`
   accepts `KEYM`; `XLCN` accepts `LCTN`; `XLRL` accepts `LCRT` or `LCTN`; and `XEZN` accepts
   `ECZN`. A zero ID resolves to NULL. A nonzero hardcoded ID below `0x800` is retained if no
-  plugin record exists; a present winner must be non-deleted and have an allowed type. Other
+  plugin record exists and no accepted deletion removed it; a present winner must be non-deleted and have an allowed type. Other
   targets resolve to NULL. Valid-length `XLKR` and `XAPR` rows are kept in source order with
   contiguous positions among accepted-length entries, even when a target resolves to NULL. This
   makes legacy projection match the in-house reader's invalid-link clearing behavior.
 - Subset exports refresh incoming `XLKR`, `XAPR`, `XATR` and `XOWN` links when a target is
   added, deleted, restored or changes record type. The exporter reads each surviving source's
   effective payload to refill compatible links and preserves unrelated columns, including owner rank.
-- A subset export stores the FormID of each deleted non-placement record in
-  `subset_nonplacement_deletions(form_id INTEGER PRIMARY KEY)`. The table persists across
-  exports so a later link edit can recognize a deleted target even if its canonical record
-  still exists. Exporting a live record with the same FormID clears its deletion entry.
-  A full load-order export drops the table when it replaces the snapshot.
+- A subset export records each edited placed FormID in
+  `reference_link_subset_sources(form_id INTEGER PRIMARY KEY)`. When restoring an owner link,
+  the exporter skips the native payload from the full snapshot for each marked source.
+  Full exports drop the table, and the next subset export creates it if absent.
+  Older packs with a `data` column keep that column until a full export. The exporter uses only
+  `form_id` in both layouts.
+- The exporter stores the FormID of each deleted non-placement record it receives in
+  `subset_nonplacement_deletions(form_id INTEGER PRIMARY KEY)`. A later subset uses the table
+  to recognize deleted targets whose canonical records still exist. A live subset replacement
+  clears the FormID's deletion entry. Full plugin exports also store accepted deletions that
+  have no surviving winner, including placements absent from the canonical archive.
 - A field whose length the in-house schema rejects is skipped for both readers: `XLKR` must be 4
   or 8 bytes, `XAPR` 8, `XAPD` 1, `XOWN`/`XRNK`/`XLCN`/`XLRL`/`XEZN`/`XATR` 4, `FNAM` 1 and `TNAM`
   2.
@@ -1460,6 +1467,7 @@ Columns and rules:
   `objects_in_several_rooms` (both by pivot), and `overlap_rows`.
   `assignment_version = 1` enables authored master/slave resolution and reference ownership,
   together with the three assignment tables, `link_index`, and `visibility_version = 2`.
+  If the pack declares an unsupported assignment version, the engine draws the full cell.
   `visibility_version = 2` additionally marks graphs whose outside endpoints have verified
   source provenance. The typed reader publishes this marker and the flags in the source-data
   transaction. Until that transaction commits, the runtime uses legacy fallback behavior.
@@ -1524,13 +1532,17 @@ Authored assignment metadata:
   metre scaling. Mesh conversion writes GLB root extras `mudcrabRoomSphere` version 1, and model
   integration rebuilds this table transactionally. It merges supported source child spheres in
   native order, ignoring the placed root's source transform. Models with disconnected exported geometry
-  retain no assignment sphere. Skinned/specialized or unsupported
+  retain no assignment sphere. Supported fixed, self-contained skins
+  also receive source bounds. External or unresolved rigs, physics-deformed skins, and unsupported
   trees have no row. Render AABBs are not substituted for missing native assignment bounds.
+  The converter rejects a NIF that ends inside a declared block during parsing, before the skin
+  pose check runs.
   Incremental Skyrim conversion and failed-asset repair project both bounds from the final
   staged GLB winner. Missing or unreadable winners clear the validity flag and prior sphere.
-  For native GLBs installed in a private runtime copy of a pack, close the engine and run
-  `room-model-bounds-refresh <assets-dir> <meshes/path.glb>...` after replacing or removing the
-  files. If the refresh fails, keep the pack offline until it succeeds or you restore the previous GLBs.
+  After a mod update replaces or removes native GLBs in a private runtime copy, the pack maintainer
+  or the mod installation script runs `room-model-bounds-refresh <assets-dir> <meshes/path.glb>...`
+  with the engine closed. The launcher and engine leave this step to the caller. If the refresh
+  fails, keep the pack offline until it succeeds or you restore the previous GLBs.
   List each changed lowercase runtime path. Native GLBs can supply a sphere in the same
   version 1 root extra. The command updates all matching base forms and geometric room overlaps
   in one SQLite transaction. Keep the original conversion pack for manifest verification and
@@ -1539,16 +1551,19 @@ Authored assignment metadata:
   unsupported room shape or invalid/missing marker size makes the cell incomplete. Incomplete
   cells retain full rendering in authored mode.
 
-Initial attachment honors a valid named target directly, including targets whose bounds do not
-contain the object. Later reference-transform changes reclassify supported bounds. Automatic
+Initial attachment honors a valid named target directly, even when the object's center lies outside
+the room bounds. Later reference-transform changes reclassify supported bounds. Automatic
 assignment uses the sphere center, tests the union of each master's bounds, and classifies zero,
 one, or multiple touched physical portals as ordinary-space, portal-shared, or common-node
 ownership. Portal sharing uses the native sphere test, and each child mesh tests the resulting
-volume with its current affine AABB. Ambiguous overlapping masters retain all possible owners;
-native runtime handle/hash order is not reconstructed from FormIDs.
-Automatic assignment keeps unknown bounds visible. A valid initial named target assigns directly
-without requiring a source sphere. `NONE`, unsupported transforms, actors, doors, and activators remain drawn. Named-target neighboring-room
-priority and specialized/forced native assignment paths are not fully reproduced.
+volume with its current affine AABB. Ambiguous overlapping masters retain all possible owners.
+The native runtime's choice depends on handle and hash order. `NONE`, unsupported transforms,
+actors, and doors remain drawn. Activators (`ACTI`), including static webs, stay visible in legacy
+graphs. An initial named target can cull an unskinned mesh without a source sphere. A skinned mesh with
+a valid named target stays drawn if the model lacks a source sphere. A mesh also stays drawn if it
+or one of its ancestors below the reference root carries `AnimatedBy`. Automatic attachment and
+reassignment after movement keep meshes with unknown source bounds visible. Named-target
+neighboring-room priority and specialized/forced native assignment paths are not fully reproduced.
 
 Legacy `reference_rooms` rows remain for compatibility. Multibound-flagged references are omitted
 from both pivot and overlap membership; integration removes stale rows. Legacy runtime exemptions

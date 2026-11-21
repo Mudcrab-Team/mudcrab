@@ -24,7 +24,7 @@ use crate::{
     },
     integration::finalize_world_database,
     lod::albedo::terrain_diffuse_paths,
-    mesh::{MeshConverter, nif_source_hash, nif_unrepaired_source_hash, prune_glb_texture_bytes},
+    mesh::{MeshConverter, NifSnapshot, prune_glb_texture_bytes, volcanic_normal_cache_suffix},
     pipeline::{
         LodWorkerOwnership, archive_load_order_priority, compile_lod_chunks,
         conversion_is_complete, convert_staged_scripts, discover, installed_archive_owners,
@@ -1592,7 +1592,9 @@ fn stage_script_archives(
             let extracted: Vec<PathBuf> =
                 match ArchiveExtractor::extract_script_inputs(archive, &scratch) {
                     Ok(extracted) => extracted.into_iter().map(|file| file.path).collect(),
-                    Err(error) if config.fail_fast => {
+                    Err(error)
+                        if config.fail_fast || error.is::<crate::archive::StagingUnavailable>() =>
+                    {
                         return Err(error).wrap_err_with(|| {
                             format!("failed to extract scripts from {}", archive.display())
                         });
@@ -1620,6 +1622,9 @@ fn stage_script_archives(
                                 &BTreeSet::from([path.clone()]),
                             ) {
                                 Ok(_) => extracted.push(path),
+                                Err(error) if error.is::<crate::archive::StagingUnavailable>() => {
+                                    return Err(error);
+                                }
                                 Err(error) => {
                                     let destination = vfs.join(&key);
                                     match fs::remove_file(&destination) {
@@ -1760,19 +1765,23 @@ fn verify_legacy_prune(
         "legacy pruned GLB replay requires raw source NIF {} for {glb}; this runtime package omits the source. Run a normal conversion into a new package, then reuse that package instead",
         nif.display()
     );
-    ensure!(
-        nif_source_hash(&nif, &source_key, source_textures)? == entry.source_hash
-            || nif_unrepaired_source_hash(&nif)? == entry.source_hash,
-        "pruned GLB source checksum mismatch: {glb}"
-    );
+    let suffix = volcanic_normal_cache_suffix(&source_key, source_textures);
+    let expected = suffix
+        .as_deref()
+        .and_then(|suffix| entry.source_hash.strip_suffix(suffix))
+        .unwrap_or(&entry.source_hash);
     let target = staging.join(glb);
-    // Older manifests hashed GLBs before pruning. Prove the exact original
-    // checksum and deterministic postprocess; arbitrary mutations still fail.
-    MeshConverter::convert_nif_to_glb(&nif, &target)?;
+    // Older manifests hashed GLBs before pruning. Replay the exact source
+    // proof before checking the original GLB and deterministic postprocess.
+    MeshConverter::convert_nif_with_local_resolution(
+        &NifSnapshot::read(&nif)?,
+        &target,
+        Some(expected),
+    )?;
     ensure!(
         hash_file(&target)? == entry.output_hash
             && fs::metadata(&target)?.len() == entry.output_size,
-        "cannot reproduce original pruned GLB checksum: {glb}"
+        "cannot reproduce original pruned GLB checksum: {glb}. Run a normal conversion into a new package, then reuse that package instead"
     );
     let original = fs::read(&target)?;
     let source_document = source.join(glb);

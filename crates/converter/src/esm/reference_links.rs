@@ -13,6 +13,10 @@ use std::collections::{HashMap, HashSet};
 pub(super) const SUBSET_NONPLACEMENT_DELETIONS_SQL: &str =
     "CREATE TABLE IF NOT EXISTS subset_nonplacement_deletions (form_id INTEGER PRIMARY KEY)";
 
+// A subset replacement supersedes the source retained in the full snapshot.
+pub(super) const SUBSET_SOURCES_SQL: &str =
+    "CREATE TABLE IF NOT EXISTS reference_link_subset_sources (form_id INTEGER PRIMARY KEY)";
+
 /// Tables this module owns. A complete export drops and recreates them.
 pub(crate) const REFERENCE_LINK_TABLES: [&str; 3] = [
     "reference_linked_refs",
@@ -126,6 +130,7 @@ pub(crate) struct Context<'a> {
     /// exports, where the key stays NULL.
     pub(crate) order: Option<&'a LoadOrder>,
     pub(crate) subset: bool,
+    pub(crate) deleted_ids: Option<&'a HashSet<u32>>,
 }
 
 impl Context<'_> {
@@ -155,7 +160,7 @@ impl Context<'_> {
                 StoredTarget::Absent => {}
             }
         }
-        Ok((id < 0x800).then_some(id))
+        Ok((id < 0x800 && !self.deleted_ids.is_some_and(|ids| ids.contains(&id))).then_some(id))
     }
 }
 
@@ -200,6 +205,27 @@ pub(super) fn has_live_target(tx: &Transaction<'_>, id: u32) -> Result<bool> {
         .query_row([id], |row| row.get(0))
         .optional()?;
     Ok(kind.is_some_and(|kind| accepts_placement_target(kind.as_bytes())))
+}
+
+/// Recover a single retained owner word only when the supplier proves this placement's identity.
+fn authored_owner(row: &rusqlite::Row<'_>, id: u32, order: &LoadOrder) -> Result<Option<u32>> {
+    use crate::records::source_identity::header_runtime_id;
+    let supplier: usize = row.get(1)?;
+    let raw_id = row.get(2)?;
+    let kind: String = row.get(3)?;
+    let Ok(kind) = kind.as_bytes().try_into() else {
+        return Ok(None);
+    };
+    if supplier >= order.names.len() || header_runtime_id(kind, raw_id, supplier, order) != Some(id)
+    {
+        return Ok(None);
+    }
+    let payload = row.get_ref(0)?.as_blob()?;
+    let owner = crate::records::unique_source_subrecord(payload, b"XOWN")
+        .filter(|field| field.len() == 4)
+        .and_then(|field| u32_at(field, 0))
+        .and_then(|raw| header_runtime_id(b"REFR", raw, supplier, order));
+    Ok(owner)
 }
 
 /// Refresh only the target columns. In particular, a source outside the edit retains its delay,
@@ -276,8 +302,8 @@ pub(super) fn refresh_incoming(
     } else {
         "coalesce(raw.data,r.data)"
     };
-    // A NULL projection carries no target ID. Scan only sources with nullable link slots
-    // once per restoring batch. Materialize their IDs before updating the link tables.
+    // A source with only an unresolved detail can have no detail row.
+    // Materialize the candidate IDs before updating the link tables.
     let mut sources = tx.prepare(&format!(
         "WITH candidates(id) AS MATERIALIZED (
              SELECT reference_id FROM reference_linked_refs WHERE ?1 AND linked_ref_id IS NULL
@@ -285,6 +311,8 @@ pub(super) fn refresh_incoming(
              UNION SELECT reference_id FROM reference_activate_parents WHERE ?1 AND parent_ref_id IS NULL
              UNION SELECT reference_id FROM reference_details
                    WHERE (?3 AND attached_ref_id IS NULL) OR (?4 AND owner_id IS NULL)
+             UNION SELECT id FROM [references] r WHERE (?3 OR ?4)
+                   AND NOT EXISTS(SELECT 1 FROM reference_details WHERE reference_id=r.id)
          )
          SELECT r.id, {data} FROM candidates
          JOIN [references] r ON r.id=candidates.id
@@ -303,12 +331,49 @@ pub(super) fn refresh_incoming(
          WHERE reference_id=?1 AND position=?2 AND parent_ref_id IS NULL",
     )?;
     let mut attached = tx.prepare_cached(
-        "UPDATE reference_details SET attached_ref_id=?2 WHERE reference_id=?1 AND attached_ref_id IS NULL",
+        "INSERT INTO reference_details(reference_id,attached_ref_id) VALUES(?1,?2)
+         ON CONFLICT(reference_id) DO UPDATE SET attached_ref_id=excluded.attached_ref_id
+         WHERE reference_details.attached_ref_id IS NULL",
     )?;
     let mut owner = tx.prepare_cached(
-        "UPDATE reference_details SET owner_id=?2 WHERE reference_id=?1 AND owner_id IS NULL",
+        "INSERT INTO reference_details(reference_id,owner_id) VALUES(?1,?2)
+         ON CONFLICT(reference_id) DO UPDATE SET owner_id=excluded.owner_id
+         WHERE reference_details.owner_id IS NULL",
     )?;
     let can_restore = |allowed: &[&[u8; 4]]| kinds.values().any(|kind| allowed.contains(&kind));
+    let has_table = |name: &str| -> Result<bool> {
+        tx.prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
+        )?
+        .query_row([name], |row| row.get(0))
+    };
+    let mut native = if can_restore(OWNER)
+        && has_table("inhouse_source_records")?
+        && has_table("record_overrides")?
+    {
+        let (order, _) = crate::records::history::stored_order(tx).map_err(|error| {
+            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(
+                error.to_string(),
+            )))
+        })?;
+        let complete = order.names.len()
+            == tx.query_row("SELECT count(*) FROM plugins", [], |r| r.get::<_, usize>(0))?;
+        let mut sql = String::from("SELECT n.payload,n.load_order,n.source_form_id,n.record_type FROM inhouse_source_records n
+            JOIN records r USING(form_id,load_order,record_type) WHERE n.form_id=?1");
+        if has_layers {
+            sql.push_str(" AND NOT EXISTS(SELECT 1 FROM room_placement_edits WHERE form_id=?1)");
+        }
+        if has_table("reference_link_subset_sources")? {
+            sql.push_str(
+                " AND NOT EXISTS(SELECT 1 FROM reference_link_subset_sources WHERE form_id=?1)",
+            );
+        }
+        complete
+            .then(|| tx.prepare(&sql).map(|statement| (order, statement)))
+            .transpose()?
+    } else {
+        None
+    };
     let mut sources = sources.query(params![
         can_restore(LINKED_REFERENCE),
         can_restore(LINKED_KEYWORD),
@@ -348,7 +413,15 @@ pub(super) fn refresh_incoming(
                 parent.execute(params![id, position as i64, value])?;
             }
         }
-        let ownership = sized(fields(*b"XOWN").next(), &[4]).and_then(|field| u32_at(field, 0));
+        let mut ownership = sized(fields(*b"XOWN").next(), &[4]).and_then(|field| u32_at(field, 0));
+        if ownership == Some(0)
+            && let Some((order, lookup)) = &mut native
+        {
+            ownership = lookup
+                .query_row([id], |row| authored_owner(row, id, order))
+                .optional()?
+                .flatten();
+        }
         if let Some(value) = restored_target(ownership, OWNER) {
             owner.execute(params![id, value])?;
         }

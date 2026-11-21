@@ -321,6 +321,69 @@ pub fn legacy_skinned_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
     legacy_skinned_shape_with(spec, LegacyShapeKind::Plain, false, SkinNormals::Authored)
 }
 
+/// Generates a legacy skin with a named transform track on a root controller chain.
+pub fn legacy_skinned_shape_with_transform_track(
+    spec: &LegacySkin<'_>,
+    target_bone: bool,
+) -> Result<Vec<u8>> {
+    legacy_skinned_shape_with_shader(
+        spec,
+        LegacyShapeKind::Plain,
+        false,
+        SkinNormals::Authored,
+        false,
+        SkinFixtureExtra::Track(target_bone),
+    )
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SkinController {
+    Direct,
+    MultiTarget,
+    NamedTrack,
+    LagBone,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SkinControllerTarget {
+    Joint,
+    Ancestor,
+    Unrelated,
+    AboveSkinRoot,
+    WeightedRoot,
+}
+
+/// Generates a skin with a non-joint ancestor and a separate branch for controller tests.
+pub fn legacy_skinned_shape_with_controller(
+    spec: &LegacySkin<'_>,
+    controller: SkinController,
+    target: SkinControllerTarget,
+) -> Result<Vec<u8>> {
+    legacy_skinned_shape_with_shader(
+        spec,
+        LegacyShapeKind::Plain,
+        true,
+        SkinNormals::Authored,
+        false,
+        SkinFixtureExtra::Controller(controller, target),
+    )
+}
+
+/// Adds a rigid body block without linking it to a collision object.
+pub fn legacy_skinned_shape_with_unattached_body(
+    spec: &LegacySkin<'_>,
+    body: &BoxBody<'_>,
+) -> Result<Vec<u8>> {
+    legacy_skinned_shape_with_shader(
+        spec,
+        LegacyShapeKind::Plain,
+        false,
+        SkinNormals::Authored,
+        false,
+        SkinFixtureExtra::Body(body),
+    )
+}
+
 /// Like [`legacy_skinned_shape`], with the shading normals supplied as `normals` says.
 pub fn legacy_skinned_shape_with_normals(
     spec: &LegacySkin<'_>,
@@ -475,6 +538,7 @@ pub fn legacy_skin_tint_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
         false,
         SkinNormals::ModelSpaceMap,
         true,
+        SkinFixtureExtra::None,
     )
 }
 
@@ -484,7 +548,14 @@ fn legacy_skinned_shape_with(
     nested: bool,
     normals: SkinNormals,
 ) -> Result<Vec<u8>> {
-    legacy_skinned_shape_with_shader(spec, kind, nested, normals, false)
+    legacy_skinned_shape_with_shader(spec, kind, nested, normals, false, SkinFixtureExtra::None)
+}
+
+enum SkinFixtureExtra<'a> {
+    None,
+    Track(bool),
+    Controller(SkinController, SkinControllerTarget),
+    Body(&'a BoxBody<'a>),
 }
 
 fn legacy_skinned_shape_with_shader(
@@ -493,6 +564,7 @@ fn legacy_skinned_shape_with_shader(
     nested: bool,
     normals: SkinNormals,
     skin_tint: bool,
+    extra: SkinFixtureExtra<'_>,
 ) -> Result<Vec<u8>> {
     validate_skin(spec)?;
 
@@ -639,6 +711,189 @@ fn legacy_skinned_shape_with_shader(
         "textures/generated_skin_n.dds",
     )?);
     block_types.push("BSShaderTextureSet");
+
+    let controller = match extra {
+        SkinFixtureExtra::None => None,
+        SkinFixtureExtra::Body(body) => {
+            validate_body(body)?;
+            blocks.push(rigid_body(body, NULL_REF));
+            block_types.push(if body.transform.is_some() {
+                "bhkRigidBodyT"
+            } else {
+                "bhkRigidBody"
+            });
+            None
+        }
+        SkinFixtureExtra::Track(target_bone) => {
+            let root_name = u32::try_from(strings.len())?;
+            strings.push(if spec.name == "SceneRoot" {
+                "FixtureRoot"
+            } else {
+                "SceneRoot"
+            });
+            blocks[0][..4].copy_from_slice(&root_name.to_le_bytes());
+            Some((
+                SkinController::NamedTrack,
+                if target_bone { 1 } else { root_name },
+                if target_bone { bone0 } else { 0 },
+            ))
+        }
+        SkinFixtureExtra::Controller(kind, target) => {
+            let outer = u32::try_from(blocks.len())?;
+            let unrelated = outer + 1;
+            let mut children = vec![outer, unrelated];
+            children.extend(shape_block);
+            blocks[0] = fade_node(&children);
+            blocks[instance_block as usize][8..12].copy_from_slice(&bone0.to_le_bytes());
+            blocks.extend([bone_node_with_children(4, &[bone0]), bone_node(5)]);
+            block_types.extend(["NiNode", "NiNode"]);
+            strings.extend(["OuterParent", "Unrelated"]);
+            let (name, block) = match target {
+                SkinControllerTarget::Joint => (1, bone0),
+                SkinControllerTarget::Ancestor => (3, 2),
+                SkinControllerTarget::Unrelated => (5, unrelated),
+                SkinControllerTarget::AboveSkinRoot => (4, outer),
+                SkinControllerTarget::WeightedRoot => {
+                    let name = u32::try_from(strings.len())?;
+                    strings.push("WeightedRoot");
+                    blocks[0][..4].copy_from_slice(&name.to_le_bytes());
+                    let instance = &mut blocks[instance_block as usize];
+                    instance[8..12].copy_from_slice(&0u32.to_le_bytes()); // skin root
+                    instance[16..20].copy_from_slice(&0u32.to_le_bytes()); // first joint
+                    (name, 0)
+                }
+            };
+            Some((kind, name, block))
+        }
+    };
+    if let Some((kind, target_name_index, target_block_index)) = controller {
+        let manager_index = u32::try_from(blocks.len())?;
+        blocks[0][8..12].copy_from_slice(&manager_index.to_le_bytes());
+        let controller_index = manager_index + 1;
+        let sequence_index = manager_index + 2;
+        let palette_index = manager_index + 3;
+        let interpolator_index = manager_index + 4;
+        let data_index = manager_index + 5;
+        let transform_type = u32::try_from(strings.len())?;
+        strings.extend(["NiTransformController", "FixtureSequence"]);
+
+        let time_controller = |next, flags| {
+            let mut bytes = Vec::new();
+            push_u32(&mut bytes, next);
+            push_u16(&mut bytes, flags);
+            for value in [1.0, 0.0, 0.0, 1.0] {
+                push_f32(&mut bytes, value);
+            }
+            push_u32(&mut bytes, 0);
+            bytes
+        };
+
+        let mut manager = time_controller(controller_index, 0x4c);
+        manager.push(0);
+        for value in [1, sequence_index, palette_index] {
+            push_u32(&mut manager, value);
+        }
+
+        let mut controller = time_controller(NULL_REF, 0x6c);
+        let controller_type = match kind {
+            SkinController::LagBone => {
+                controller[22..26].copy_from_slice(&target_block_index.to_le_bytes());
+                blocks[target_block_index as usize][8..12]
+                    .copy_from_slice(&controller_index.to_le_bytes());
+                for value in [3.0, 1.0, 400.0] {
+                    push_f32(&mut controller, value);
+                }
+                "BSLagBoneController"
+            }
+            SkinController::Direct => {
+                controller[22..26].copy_from_slice(&target_block_index.to_le_bytes());
+                push_u32(&mut controller, interpolator_index);
+                "NiTransformController"
+            }
+            SkinController::MultiTarget | SkinController::NamedTrack => {
+                push_u16(&mut controller, 2);
+                push_u32(&mut controller, NULL_REF);
+                push_u32(
+                    &mut controller,
+                    if matches!(kind, SkinController::MultiTarget) {
+                        target_block_index
+                    } else {
+                        NULL_REF
+                    },
+                );
+                "NiMultiTargetTransformController"
+            }
+        };
+
+        let mut sequence = Vec::new();
+        for value in [
+            transform_type + 1,
+            1,
+            1,
+            interpolator_index,
+            controller_index,
+        ] {
+            push_u32(&mut sequence, value);
+        }
+        sequence.push(0); // track priority
+        let track_name = if matches!(kind, SkinController::NamedTrack) {
+            target_name_index
+        } else {
+            NULL_REF
+        };
+        for value in [track_name, NULL_REF, transform_type, NULL_REF, NULL_REF] {
+            push_u32(&mut sequence, value);
+        }
+        push_f32(&mut sequence, 1.0); // weight
+        push_u32(&mut sequence, NULL_REF); // text keys
+        push_u32(&mut sequence, 0); // loop
+        for value in [1.0, 0.0, 1.0] {
+            push_f32(&mut sequence, value);
+        }
+        push_u32(&mut sequence, manager_index);
+        push_u32(&mut sequence, NULL_REF); // accumulation root
+        push_u16(&mut sequence, 0); // animation notes
+
+        let mut palette = Vec::new();
+        push_u32(&mut palette, 0);
+        push_u32(&mut palette, 1);
+        let target_name = strings[target_name_index as usize];
+        push_u32(&mut palette, u32::try_from(target_name.len())?);
+        palette.extend_from_slice(target_name.as_bytes());
+        push_u32(&mut palette, target_block_index);
+
+        let mut interpolator = Vec::new();
+        for value in [f32::MIN; 8] {
+            push_f32(&mut interpolator, value);
+        }
+        push_u32(&mut interpolator, data_index);
+
+        let mut transform_data = Vec::new();
+        for value in [0, 2, 1] {
+            push_u32(&mut transform_data, value); // no rotation, two linear translation keys
+        }
+        for value in [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 5.0, 0.0] {
+            push_f32(&mut transform_data, value);
+        }
+        push_u32(&mut transform_data, 0); // no scale keys
+
+        blocks.extend([
+            manager,
+            controller,
+            sequence,
+            palette,
+            interpolator,
+            transform_data,
+        ]);
+        block_types.extend([
+            "NiControllerManager",
+            controller_type,
+            "NiControllerSequence",
+            "NiDefaultAVObjectPalette",
+            "NiTransformInterpolator",
+            "NiTransformData",
+        ]);
+    }
 
     assemble(blocks, block_types, strings)
 }

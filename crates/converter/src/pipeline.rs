@@ -2265,8 +2265,7 @@ impl ConversionBatch<'_> {
                 ))
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
-        // Parsing every skeleton once per run keeps the per-mesh resolution
-        // cheap; only the directory-union cache inside needs a lock.
+        // One rig snapshot is shared by all NIF workers, including cache-hit checks.
         let skeleton_index =
             (source_kind == "nif").then(|| crate::mesh::SkeletonIndex::from_sources(&mesh_sources));
         let source_textures = texture_source_keys(self.staging, files);
@@ -2434,9 +2433,18 @@ impl ConversionBatch<'_> {
                         let target = staging_root.join(&target_rel);
 
                         // Dependencies come from the merged winners below, not physical neighbors.
-                        let source_hash = hash_file(&source);
-                        let mut hash = match source_hash {
-                            Ok(h) => h,
+                        let snapshot = skeleton_index
+                            .as_ref()
+                            .map(|skeletons| skeletons.input_snapshot(&relative, &source))
+                            .transpose();
+                        let (nif, mut hash) = match snapshot.and_then(|nif| {
+                            let hash = match &nif {
+                                Some(nif) => nif.hash().to_owned(),
+                                None => hash_file(&source)?,
+                            };
+                            Ok((nif, hash))
+                        }) {
+                            Ok(input) => input,
                             Err(err) => {
                                 let (err, fatal) = match remove_invalid_staged_output(&target) {
                                     Ok(()) => (err, false),
@@ -2471,20 +2479,41 @@ impl ConversionBatch<'_> {
                         }
 
                         let mut unresolved_skin = None;
-                        let skeleton = if source_kind == "nif" {
-                            let resolution = crate::mesh::resolve_skeleton_with_index(
-                                &relative,
-                                &mesh_sources,
-                                skeleton_index
-                                    .as_ref()
-                                    .expect("a nif batch always builds a skeleton index"),
+                        let skeleton = if let Some(nif) = &nif {
+                            let skeletons = skeleton_index
+                                .as_ref()
+                                .expect("a nif batch always builds a skeleton index");
+                            let resolution = crate::mesh::resolve_skeleton_from_snapshot(
+                                &relative, nif, skeletons,
                             );
                             match resolution {
-                                crate::mesh::SkeletonResolution::Skeleton(key) => skeleton_index
-                                    .as_ref()
-                                    .and_then(|index| index.source_for(&key))
-                                    .map(Path::to_path_buf)
-                                    .or(Some(key)),
+                                crate::mesh::SkeletonResolution::Skeleton(entry) => {
+                                    match entry.snapshot() {
+                                        Ok(dependency) => {
+                                            hash.push(':');
+                                            hash.push_str(dependency.hash());
+                                            Some(dependency)
+                                        }
+                                        Err(err) => {
+                                            let (err, fatal) =
+                                                match remove_invalid_staged_output(&target) {
+                                                    Ok(()) => (err, false),
+                                                    Err(remove_error) => (remove_error, true),
+                                                };
+                                            let _ = outcome_tx.send((
+                                                index,
+                                                key,
+                                                hash,
+                                                target_rel,
+                                                relative.clone(),
+                                                Err(err),
+                                                target,
+                                                fatal,
+                                            ));
+                                            return;
+                                        }
+                                    }
+                                }
                                 crate::mesh::SkeletonResolution::SelfContained => None,
                                 crate::mesh::SkeletonResolution::Unresolved { best_coverage } => {
                                     hash.push_str(crate::mesh::UNRESOLVED_SKIN_HASH_SUFFIX);
@@ -2499,34 +2528,6 @@ impl ConversionBatch<'_> {
                         } else {
                             None
                         };
-                        if source_kind == "nif"
-                            && let Some(dependency) = &skeleton
-                        {
-                            match hash_file(dependency) {
-                                Ok(dep_hash) => {
-                                    hash.push(':');
-                                    hash.push_str(&dep_hash);
-                                }
-                                Err(err) => {
-                                    let (err, fatal) = match remove_invalid_staged_output(&target) {
-                                        Ok(()) => (err, false),
-                                        Err(remove_error) => (remove_error, true),
-                                    };
-                                    let _ = outcome_tx.send((
-                                        index,
-                                        key,
-                                        hash,
-                                        target_rel,
-                                        relative.clone(),
-                                        Err(err),
-                                        target,
-                                        fatal,
-                                    ));
-                                    return;
-                                }
-                            }
-                        }
-
                         if source_kind == "nif"
                             && let Some(suffix) =
                                 crate::mesh::volcanic_normal_cache_suffix(&key, &source_textures)
@@ -2656,8 +2657,8 @@ impl ConversionBatch<'_> {
                             match remove_invalid_staged_output(&target) {
                                 Err(error) => (Err(error), true),
                                 Ok(()) => {
-                                    let conversion = match source_kind.as_str() {
-                                        "dds" => {
+                                    let conversion = match (source_kind.as_str(), nif.as_ref()) {
+                                        ("dds", None) => {
                                             TextureConverter::convert_dds_to_ktx2_with_options(
                                                 &source,
                                                 &target,
@@ -2669,18 +2670,21 @@ impl ConversionBatch<'_> {
                                             )
                                             .map(|_| ())
                                         }
-                                        "nif" => {
-                                            MeshConverter::convert_nif_to_glb_with_skin_resolution(
-                                                &source,
+                                        ("nif", Some(snapshot)) => {
+                                            MeshConverter::convert_nif_snapshot(
+                                                snapshot,
                                                 &target,
                                                 skeleton.as_deref(),
                                                 unresolved_skin.as_deref(),
                                             )
                                         }
-                                        "pex" => {
+                                        ("pex", None) => {
                                             ScriptConverter::convert_pex_to_luau(&source, &target)
                                         }
-                                        _ => unreachable!(),
+                                        _ => Err(eyre!(
+                                            "invalid conversion input for {}",
+                                            source.display()
+                                        )),
                                     };
                                     remove_partial_output_after_failure(&target, conversion)
                                 }
@@ -4553,6 +4557,7 @@ pub(crate) fn mo2_archive_is_active(archive: &Path, plugins: &[PathBuf]) -> bool
 /// Sort archives by their longest matching active stem's load order, then lowercase stem.
 /// Priority retains the legacy space/dash/underscore suffixes; unmatched archives sort last
 /// and same-stem plugins retain the first owner's priority.
+/// Ties follow normalized path order, with the raw path deciding normalized collisions.
 pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[PathBuf]) {
     archives.sort_by_cached_key(|archive| {
         (
@@ -4560,6 +4565,7 @@ pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[P
             crate::esm::load_order::normalize_plugin_name(
                 &archive.file_stem().unwrap_or_default().to_string_lossy(),
             ),
+            normalize_separators(archive).to_ascii_lowercase(),
             archive.clone(),
         )
     });
@@ -11433,6 +11439,25 @@ mod tests {
                 PathBuf::from("A/Update.bsa"),
                 PathBuf::from("b/update.bsa"),
                 PathBuf::from("Example - Textures.bsa"),
+            ]
+        );
+    }
+
+    #[test]
+    fn equal_priority_and_stem_archives_sort_by_normalized_data_path_then_raw_path() {
+        let plugins = [PathBuf::from("Update.esm")];
+        let mut archives = [
+            PathBuf::from("Data/Z/update.bsa"),
+            PathBuf::from("Data/a/update.bsa"),
+            PathBuf::from("Data/A/Update.bsa"),
+        ];
+        sort_archives_by_load_order(&mut archives, &plugins);
+        assert_eq!(
+            archives,
+            [
+                PathBuf::from("Data/A/Update.bsa"),
+                PathBuf::from("Data/a/update.bsa"),
+                PathBuf::from("Data/Z/update.bsa"),
             ]
         );
     }

@@ -205,13 +205,29 @@ impl DecodedRecord {
     }
 
     fn has_placement_transform(&self) -> bool {
-        !self.rejected_fields.contains(b"DATA")
-            && crate::esm::valid_placement_transform(
-                self.fields
-                    .iter()
-                    .filter(|field| field.signature == *b"DATA")
-                    .map(|field| field.canonical_bytes.as_slice()),
-            )
+        crate::esm::valid_placement_transform(
+            self.fields
+                .iter()
+                .filter(|field| field.signature == *b"DATA")
+                .map(|field| field.canonical_bytes.as_slice()),
+        )
+    }
+
+    fn valid_override_transform(&self) -> bool {
+        if !self.has_placement_transform() {
+            return false;
+        }
+        if !self.rejected_fields.contains(b"DATA") {
+            return true;
+        }
+        // A rejected prefix can precede the retained tuple. Any DATA after it
+        // makes the override ambiguous, including a field omitted by the decoder.
+        let Some(source) = self.framed_source_subrecords() else {
+            return false;
+        };
+        let mut transforms = source.into_iter().filter(|(tag, _)| tag == b"DATA");
+        transforms.any(|(_, bytes)| crate::esm::valid_placement_transform(std::iter::once(bytes)))
+            && transforms.next().is_none()
     }
 
     pub(crate) fn framed_source_subrecords(&self) -> Option<Vec<([u8; 4], &[u8])>> {
@@ -613,6 +629,18 @@ impl From<Option<u32>> for DiscardedFrameScope {
 }
 
 impl DiscardedFrameScope {
+    pub(crate) fn from_cell_prefix(bytes: &[u8]) -> Option<Self> {
+        let tag = &bytes[..bytes.len().min(4)];
+        if tag.is_empty() || !b"CELL".starts_with(tag) {
+            return None;
+        }
+        let id = bytes
+            .get(12..)
+            .and_then(|rest| rest.first_chunk::<4>())
+            .map(|word| u32::from_le_bytes(*word));
+        Some(id.into())
+    }
+
     /// A partial kind can still identify a possible child cell. Without the whole
     /// label we cannot bound the damage to a particular cell.
     pub(crate) fn from_group_prefix(bytes: &[u8]) -> Option<Self> {
@@ -661,8 +689,12 @@ pub struct ReadResult {
     pub overrides: HashMap<u32, Vec<RecordSource>>,
     /// Physical header provenance includes accepted, deleted and rejected versions.
     pub history: Vec<history::HistoryEntry>,
+    /// Accepted deletions without a surviving record after duplicate recovery.
+    pub(crate) deleted_ids: HashSet<u32>,
     /// Runtime cell IDs potentially affected by discarded source frames.
     pub(crate) damaged_cell_groups: HashSet<u32>,
+    /// Physical placement omissions explained by the later deletion of a usable base.
+    pub(crate) retired_placements: HashSet<(u32, u64)>,
     /// Each winning `DOBJ` with its `DNAM` pairs merged key by key over every accepted
     /// earlier version, as the legacy reader does. A winning record alone would lose
     /// the keys that only an earlier plugin sets. The winners stay unmerged.
@@ -682,7 +714,7 @@ pub(crate) fn decode_text(bytes: &[u8]) -> String {
 
 pub(crate) use decoder::{
     DeletedBases, PlacementFailure, PreparedSchemas, localized_field_bank, prepare_runtime_schema,
-    string_table_with_prepared, validate_placement_targets,
+    string_table_with_prepared, unique_source_subrecord, validate_placement_targets,
 };
 
 fn validate_live_candidate(
@@ -692,7 +724,7 @@ fn validate_live_candidate(
 ) -> std::result::Result<(), String> {
     crate::esm::validate_placement_parent(&record.record_type, record.cell_form_id, || None)?;
     if crate::esm::is_placed_record_type(&record.record_type) && previous.is_some() {
-        if !record.has_placement_transform() {
+        if !record.valid_override_transform() {
             return Err("invalid placement override transform".into());
         }
         record.validate_placement_base()?;
@@ -796,6 +828,7 @@ fn read_plugins_with_prepared(
     let mut gmst_aliases: HashMap<u32, u32> = HashMap::new();
     let scan_stage = profile::ProfileStage::start("scan_decode_merge");
     for (index, path) in plugin_paths.iter().enumerate() {
+        let plugin_index = u32::try_from(index)?;
         let name = &order.names[index];
         let mut diagnostics = PluginDiagnostics::default();
         let mut seen = HashMap::new();
@@ -881,7 +914,7 @@ fn read_plugins_with_prepared(
                 && !gmst_aliases.contains_key(&record.form_id)
                 && let Some(&(_, Some(placement_offset))) = seen.get(&record.form_id)
             {
-                recovery.queue_duplicate((index as u32, placement_offset), record, &result.records);
+                recovery.queue_duplicate((plugin_index, placement_offset), record);
                 return;
             }
             if record.flags & 0x20 == 0
@@ -1041,7 +1074,7 @@ fn read_plugins_with_prepared(
                 );
             }
             let source = RecordSource {
-                plugin_index: index as u32,
+                plugin_index,
                 source_form_id: source_id,
                 deleted,
             };
@@ -1088,14 +1121,14 @@ fn read_plugins_with_prepared(
                         recovery.predecessors.entry(id).or_default().push(previous);
                     }
                 } else {
-                    recovery.predecessors.remove(&id);
+                    recovery.end_predecessor_chain(id, previous);
                 }
             }
         };
         let damage = scanner::scan_plugin(path, &mut diagnostics, observe, receive)?;
         for (offset, placement) in damage.truncated_placements {
             if let Some(id) = placement.runtime_id(index, order) {
-                truncated_placements.insert(id, (index as u32, offset));
+                truncated_placements.insert(id, (plugin_index, offset));
             } else {
                 unknown_discarded_scope = true;
             }
@@ -1126,6 +1159,7 @@ fn read_plugins_with_prepared(
         &mut recovery,
         &mut validate,
     );
+    result.deleted_ids = recovery.deleted.absent_from(&result.records);
     deferred_stage.finish(result.records.len());
     // Deferred validation may restore a predecessor. A later usable move or deletion
     // supersedes the incomplete header's evidence about that predecessor.
