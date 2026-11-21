@@ -4401,6 +4401,15 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
             [false, false, true],
         ),
         (
+            "overrun-hides-identifiable-portal-prefix",
+            placement_group(
+                a,
+                [overrun.clone(), moved_portal(0x800)[..20].to_vec()].concat(),
+            ),
+            [false, false, true],
+            [false, false, true],
+        ),
+        (
             "short-navmesh-tail",
             placement_group(a, [overrun, vec![0; 23]].concat()),
             [false, true, true],
@@ -5587,6 +5596,83 @@ fn corrected_plugin_placement_import_requires_replay_or_a_new_patch() {
     );
     assert_eq!(retained_source(&db), (fs::read(&corrected).unwrap(), 2));
     assert!(placement_certificate(&db, cell));
+}
+
+#[test]
+fn placement_import_rejects_retired_base_and_clears_links_on_deletion() {
+    use converter::esm::{exporter::export_to_db, records::RawRecord};
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    let target = 0x802u32;
+    let source = 0x880u32;
+    let reference = RawRecord {
+        form_id: source,
+        record_type: *b"REFR",
+        flags: 0,
+        load_order: 0,
+        cell_form_id: Some(PLACEMENT_CELL_A),
+        worldspace_form_id: None,
+        subrecords: vec![
+            (b"NAME".to_vec(), PLACEMENT_STAT.to_le_bytes().to_vec()),
+            (b"DATA".to_vec(), vec![0; 24]),
+            (b"XLKR".to_vec(), target.to_le_bytes().to_vec()),
+        ],
+    };
+    export_to_db(&db, &[(source, reference.clone())].into()).unwrap();
+    let link = || {
+        db.query_row(
+            "SELECT linked_ref_id FROM reference_linked_refs WHERE reference_id=?1 AND position=0",
+            [source],
+            |r| r.get::<_, Option<u32>>(0),
+        )
+        .unwrap()
+    };
+    let put = dir.path().join("put.json");
+    fs::write(
+        &put,
+        serde_json::json!({"edits":[{"op":"put","id":target,"base":PLACEMENT_STAT,
+        "position":[15,0,0],"cell":PLACEMENT_CELL_A}]})
+        .to_string(),
+    )
+    .unwrap();
+    assert!(
+        run_placement_import(&assets, "--native", &put)
+            .status
+            .success()
+    );
+    assert_eq!(link(), Some(target));
+    let tombstone = RawRecord {
+        form_id: PLACEMENT_STAT,
+        record_type: *b"STAT",
+        flags: 0x20,
+        subrecords: Vec::new(),
+        cell_form_id: None,
+        ..reference
+    };
+    export_to_db(&db, &[(PLACEMENT_STAT, tombstone)].into()).unwrap();
+    fs::write(
+        &put,
+        serde_json::json!({"edits":[{"op":"put","id":0xff00_0001u32,"base":PLACEMENT_STAT,
+        "position":[0,0,0],"cell":PLACEMENT_CELL_A}]})
+        .to_string(),
+    )
+    .unwrap();
+    let rejected = run_placement_import(&assets, "--native", &put);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("base was deleted"));
+    let delete = dir.path().join("delete.json");
+    fs::write(
+        &delete,
+        serde_json::json!({"edits":[{"op":"delete","id":target}]}).to_string(),
+    )
+    .unwrap();
+    assert!(
+        run_placement_import(&assets, "--native", &delete)
+            .status
+            .success()
+    );
+    assert_eq!(link(), None);
 }
 
 #[test]
@@ -6930,7 +7016,10 @@ fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
             0,
             [rejected, stat_control].concat(),
         );
-        if name == "duplicate-live-bases" {
+        if matches!(
+            name,
+            "duplicate-live-bases" | "null-name" | "missing-name" | "null-first-name"
+        ) {
             let plugins = [base.clone(), broken.clone()];
             let order = LoadOrder::read(&plugins).unwrap();
             let decoded = converter::records::read_plugins(&plugins, &order).unwrap();
@@ -7936,6 +8025,7 @@ fn placement_winner_checks_ungrouped_override_against_usable_predecessor() {
                     placement(0x853, 0x830, 0, 1.0, Vec::new()),
                     placement(0x854, 0x830, 0, 1.0, Vec::new()),
                     placement(0x855, 0x834, 0, 1.0, Vec::new()),
+                    record(b"REFR", 0x856, 0, sub(b"NAME", &0x830u32.to_le_bytes())),
                 ]
                 .concat(),
             ),
@@ -7949,6 +8039,7 @@ fn placement_winner_checks_ungrouped_override_against_usable_predecessor() {
         0,
         [
             placement(0x850, 0x831, 0, 2.0, Vec::new()),
+            placement(0x856, 0x831, 0, 2.0, Vec::new()),
             placement(0x851, 0x831, 0, 2.0, Vec::new()),
             placement(0x852, 0x832, 0, 2.0, Vec::new()),
             // The prior owner of 855 needs the STAT hidden by 834's invalid move.
@@ -7985,6 +8076,7 @@ fn placement_winner_checks_ungrouped_override_against_usable_predecessor() {
             (0x853, Some((Some(0x900), 0x831))),
             (0x854, Some((Some(0x900), 0x830))),
             (0x855, Some((Some(0x900), 0x834))),
+            (0x856, Some((None, 0x831))),
         ],
         &mut failures,
     );

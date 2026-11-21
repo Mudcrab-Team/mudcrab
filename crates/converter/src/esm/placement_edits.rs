@@ -111,6 +111,8 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     let checksum = hash_bytes(&bytes);
     tx.execute_batch(LAYER_TABLES)?;
     tx.execute_batch(reference_links::SUBSET_SOURCES_SQL)?;
+    tx.execute_batch(reference_links::SUBSET_NONPLACEMENT_DELETIONS_SQL)?;
+    tx.execute_batch(reference_links::REFERENCE_LINK_TABLES_SQL)?;
 
     let name = if is_plugin {
         let name = normalize_plugin_name(name);
@@ -875,6 +877,13 @@ fn apply_edit(
 fn validate_placement(tx: &Transaction<'_>, record: &RawRecord, allow_doors: bool) -> Result<()> {
     validate_room_fields(tx, &record.subrecords, allow_doors)?;
     let view = SubrecordView::new(&record.subrecords);
+    let base = view.unique_form_id(b"NAME");
+    let deleted: bool = tx
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM subset_nonplacement_deletions WHERE form_id=?1)",
+        )?
+        .query_row([base], |row| row.get(0))?;
+    ensure!(!deleted, "placement base was deleted by a subset export");
     if let Some(bounds) = view.find(b"XMBO") {
         ensure!(
             view.find(b"XPRM").and_then(|data| data.get(..12)) == Some(bounds),

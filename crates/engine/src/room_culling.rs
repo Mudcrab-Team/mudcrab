@@ -182,6 +182,24 @@ pub struct RoomCullLegacyExempt;
 pub struct RoomAssignmentCache(HashMap<(u32, Entity, Entity), assignment::CachedAssignment>);
 
 impl RoomAssignmentCache {
+    fn observe(
+        &mut self,
+        key: (u32, Entity, Entity),
+        transform: bevy::math::Affine3A,
+    ) -> &mut assignment::CachedAssignment {
+        let entry = self.0.entry(key).or_insert(assignment::CachedAssignment {
+            transform,
+            moved: false,
+            owners: None,
+        });
+        if entry.transform != transform {
+            entry.moved = true;
+            entry.transform = transform;
+            entry.owners = None;
+        }
+        entry
+    }
+
     fn owners_at(
         &mut self,
         key: (u32, Entity, Entity),
@@ -190,19 +208,14 @@ impl RoomAssignmentCache {
         form_id: u32,
         transform: bevy::math::Affine3A,
     ) -> &[assignment::Owner] {
-        let assigned = self
-            .0
-            .entry(key)
-            .or_insert_with(|| assignment::CachedAssignment {
-                transform,
-                owners: authored.initial_owners(form_id, transform, &graph.rooms, &graph.portals),
-            });
-        if assigned.transform != transform {
-            assigned.transform = transform;
-            assigned.owners =
-                authored.owners(form_id, Some(transform), &graph.rooms, &graph.portals);
-        }
-        &assigned.owners
+        let entry = self.observe(key, transform);
+        entry.owners.get_or_insert_with(|| {
+            if entry.moved {
+                authored.owners(form_id, Some(transform), &graph.rooms, &graph.portals)
+            } else {
+                authored.initial_owners(form_id, transform, &graph.rooms, &graph.portals)
+            }
+        })
     }
 }
 
@@ -1223,7 +1236,7 @@ fn drop_stale_graphs(
 pub fn cull_room_views(
     mut state: ResMut<RoomCullingState>,
     settings: Option<Res<crate::settings::RenderingSettings>>,
-    roots: Query<(&CellRef, &GlobalTransform), With<StreamedCellRoot>>,
+    roots: Query<(&CellRef, &GlobalTransform), InteriorRoot>,
     mut views: Query<
         (
             &GlobalTransform,
@@ -1260,12 +1273,19 @@ pub fn cull_room_views(
     cells.sort_unstable();
     let mut culled = 0;
     let mut main_view = None;
-    assignments.0.retain(|&(cell, root, reference), _| {
-        state
-            .graphs
-            .get(&cell)
-            .is_some_and(|loaded| loaded.root == root)
-            && reference_transforms.get(reference).is_ok()
+    assignments.0.retain(|&(cell, root, reference), entry| {
+        roots.contains(root)
+            && reference_transforms.contains(reference)
+            && match state.graphs.get(&cell) {
+                Some(loaded) => {
+                    loaded.root == root
+                        && (entry.owners.is_some()
+                            || loaded.graph.authored.as_ref().is_some_and(|rules| {
+                                ids.get(reference).is_ok_and(|id| rules.has_rule(id.0))
+                            }))
+                }
+                None => state.active() && !state.failed.contains(&cell),
+            }
     });
     // Direct children retain their exact cell-local transform across world-origin rebases.
     let placement = |reference, root, local_from_world: bevy::math::Affine3A| {
@@ -1280,37 +1300,29 @@ pub fn cull_room_views(
         )
     };
     // A named attachment is initial-only. Observe movement even if all meshes are off screen.
-    if state
-        .graphs
-        .values()
-        .any(|loaded| loaded.graph.authored.is_some())
-    {
+    if state.active() && !roots.is_empty() {
         for (reference, id) in &changed_references {
             for parent in parents.iter_ancestors(reference) {
                 let Ok((CellRef(cell), root)) = roots.get(parent) else {
                     continue;
                 };
-                let Some(loaded) = state
-                    .graphs
-                    .get(cell)
-                    .filter(|loaded| loaded.root == parent)
-                else {
-                    continue;
+                let track = match state.graphs.get(cell) {
+                    Some(loaded) => {
+                        loaded.root == parent
+                            && loaded
+                                .graph
+                                .authored
+                                .as_ref()
+                                .is_some_and(|authored| authored.has_named_target(id.0))
+                    }
+                    None => !state.failed.contains(cell),
                 };
-                let Some(authored) = &loaded.graph.authored else {
-                    continue;
-                };
-                if authored.has_named_target(id.0)
+                if track
                     && let Some(transform) = placement(reference, parent, root.affine().inverse())
                 {
-                    assignments.owners_at(
-                        (*cell, parent, reference),
-                        authored,
-                        &loaded.graph,
-                        id.0,
-                        transform,
-                    );
+                    assignments.observe((*cell, parent, reference), transform);
                 }
+                break;
             }
         }
     }
@@ -2079,6 +2091,15 @@ mod tests {
 
     #[test]
     fn offscreen_movement_only_releases_the_named_target_in_its_own_cell() {
+        check_offscreen_movement(false);
+    }
+
+    #[test]
+    fn offscreen_movement_before_graph_load_releases_only_the_moved_target() {
+        check_offscreen_movement(true);
+    }
+
+    fn check_offscreen_movement(load_after_movement: bool) {
         let db = authored_database();
         db.execute("INSERT INTO room_graph_cells VALUES(8,1)", [])
             .unwrap();
@@ -2094,7 +2115,7 @@ mod tests {
                 VisibleEntities::default(),
             ))
             .id();
-        let [(moved, mesh_a), (_, mesh_b)] = [(7, 100), (8, 200)].map(|(cell, id)| {
+        let [(moved, mesh_a, a), (_, mesh_b, b)] = [(7, 100), (8, 200)].map(|(cell, id)| {
             insert_room(&db, id + 1, cell, [0.0; 3]);
             insert_room(&db, id + 2, cell, [0.0, 25.0, 0.0]);
             db.execute(
@@ -2112,9 +2133,6 @@ mod tests {
             let root = world
                 .spawn((StreamedCellRoot, CellRef(cell), GlobalTransform::IDENTITY))
                 .id();
-            world
-                .resource_mut::<RoomCullingState>()
-                .insert_graph(cell, root, graph);
             let reference = world
                 .spawn((
                     FormId(id),
@@ -2123,7 +2141,11 @@ mod tests {
                     GlobalTransform::IDENTITY,
                 ))
                 .id();
-            (reference, world.spawn(ChildOf(reference)).id())
+            (
+                reference,
+                world.spawn(ChildOf(reference)).id(),
+                (cell, root, graph),
+            )
         });
         let list_both = |app: &mut App| {
             app.world_mut()
@@ -2132,7 +2154,18 @@ mod tests {
                 .get_mut(TypeId::of::<Mesh3d>())
                 .extend([mesh_a, mesh_b]);
         };
-        list_both(&mut app);
+        let mut graphs = [a, b].into_iter();
+        let mut load_graphs = |app: &mut App| {
+            for (cell, root, graph) in graphs.by_ref() {
+                app.world_mut()
+                    .resource_mut::<RoomCullingState>()
+                    .insert_graph(cell, root, graph);
+            }
+        };
+        if !load_after_movement {
+            load_graphs(&mut app);
+            list_both(&mut app);
+        }
         app.world_mut().run_schedule(Update);
         assert!(mesh_list(&app, camera).is_empty());
 
@@ -2142,6 +2175,9 @@ mod tests {
                 .entity_mut(moved)
                 .insert((transform, GlobalTransform::from(transform)));
             app.world_mut().run_schedule(Update);
+        }
+        if load_after_movement {
+            load_graphs(&mut app);
         }
         list_both(&mut app);
         app.world_mut().run_schedule(Update);

@@ -5836,8 +5836,11 @@ mod tests {
 
     /// Extend the static fixture's root-to-shape path while retaining all material references.
     fn static_scene_chain_nif(depth: usize) -> Vec<u8> {
+        scene_chain_from_shape(depth, static_nif())
+    }
+
+    fn scene_chain_from_shape(depth: usize, source: Vec<u8>) -> Vec<u8> {
         assert!(depth > 0);
-        let source = static_nif();
         let (data, header) = parse_skyrim_header(&source, Path::new("fixture.nif")).unwrap();
         let data_start = source.len() - data.len();
         let mut remaining = data;
@@ -5904,10 +5907,17 @@ mod tests {
     fn scene_chains_through_256_export_geometry_and_walk_bounds() {
         std::thread::spawn(|| {
             let directory = tempfile::tempdir().unwrap();
+            // Each corner is exactly five units from the center in both f32 and f64.
+            let shape = static_nif_with_positions(&[
+                [-3.0, -4.0, 0.0],
+                [3.0, -4.0, 0.0],
+                [3.0, 4.0, 0.0],
+                [-3.0, 4.0, 0.0],
+            ]);
             for (depth, exported_nodes) in [(64, 66), (65, 67), (256, 258)] {
                 let input = directory.path().join(format!("chain-{depth}.nif"));
                 let output = input.with_extension("glb");
-                fs::write(&input, static_scene_chain_nif(depth)).unwrap();
+                fs::write(&input, scene_chain_from_shape(depth, shape.clone())).unwrap();
                 let diagnostics = MeshConverter::inspect_nif(&input).unwrap();
                 assert_eq!(diagnostics.max_scene_depth, depth);
                 assert!(
@@ -5931,7 +5941,7 @@ mod tests {
                 );
             }
             let input = directory.path().join("chain-257.nif");
-            fs::write(&input, static_scene_chain_nif(257)).unwrap();
+            fs::write(&input, scene_chain_from_shape(257, shape)).unwrap();
             let (nif, diagnostics, _) = open_nif_resilient(&input).unwrap();
             assert_eq!(diagnostics.max_scene_depth, 257);
             assert!(room_bounds::source_sphere(&nif).is_none());
