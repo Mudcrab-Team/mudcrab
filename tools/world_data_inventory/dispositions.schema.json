@@ -222,18 +222,11 @@
         "type": "string"
       },
       "type": "array"
-    },
-    "tables": {
-      "additionalProperties": {
-        "$ref": "#/$defs/policy"
-      },
-      "type": "object"
     }
   },
   "required": [
     "format_version",
     "fields",
-    "tables",
     "blob_default",
     "legacy_shapes",
     "limitations"

@@ -1,0 +1,7 @@
+{
+  "classification": "provenance",
+  "format_version": 1,
+  "owner": "Mudcrab maintainers (#745)",
+  "reason": "Post-conversion placement import retains exact source files and the plugin headers needed to preserve FormID slots across imports.",
+  "table": "room_placement_layers"
+}
