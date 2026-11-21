@@ -555,8 +555,8 @@ impl ArchiveExtractor {
         include_name: impl Fn(&str) -> bool,
     ) -> Result<Vec<PathBuf>> {
         let file = File::open(archive_path)?;
-        // An archive edited while it is read gives a mixed inventory; refuse it.
-        let stamp = crate::source_input::SourceStamp::capture(&file)?;
+        // An archive edited in place while it is read gives a mixed inventory; refuse it.
+        let stamp = OpenedArchiveStamp::capture(&file)?;
         let source = ArchiveSource::from_file(file.try_clone()?)?;
         let mut paths = select_entries(&source, archive_path, include_name)?
             .into_iter()
@@ -811,9 +811,10 @@ impl ArchiveExtractor {
     ) -> Result<Vec<ExtractedFile>> {
         let file = File::open(archive_path)
             .wrap_err_with(|| format!("failed to open archive {}", archive_path.display()))?;
-        // An archive edited during extraction could mix old and new payloads; the stamp is
-        // checked again before anything is published.
-        let stamp = crate::source_input::SourceStamp::capture(&file)?;
+        // An archive edited in place during extraction could mix old and new payloads; the
+        // opened file is checked again before anything is published. Replacing the path is
+        // fine: reads keep using the opened file.
+        let stamp = OpenedArchiveStamp::capture(&file)?;
         let source = ArchiveSource::from_file(file.try_clone()?)?;
         let selected = select_entries(&source, archive_path, include_name)?
             .into_iter()
@@ -929,6 +930,38 @@ fn select_entries(
         }
     }
     Ok(selected)
+}
+
+/// Length and modification time of the opened archive descriptor (not its pathname, which
+/// may be replaced while the open file keeps supplying bytes).
+struct OpenedArchiveStamp {
+    length: u64,
+    modified: std::time::SystemTime,
+}
+
+impl OpenedArchiveStamp {
+    fn capture(file: &File) -> Result<Self> {
+        let metadata = file.metadata()?;
+        Ok(Self {
+            length: metadata.len(),
+            modified: metadata.modified()?,
+        })
+    }
+
+    fn verify(&self, file: &File, path: &Path) -> Result<()> {
+        let metadata = file
+            .metadata()
+            .wrap_err_with(|| format!("could not verify archive {}", path.display()))?;
+        let unchanged = metadata.len() == self.length
+            && metadata
+                .modified()
+                .wrap_err_with(|| format!("could not verify archive {}", path.display()))?
+                == self.modified;
+        if !unchanged {
+            bail!("archive changed while it was read: {}", path.display());
+        }
+        Ok(())
+    }
 }
 
 /// Keep authored Havok metadata beside its clips. RACE projects may live outside
@@ -2164,6 +2197,31 @@ mod tests {
             )
             .unwrap();
             assert_eq!(fs::read(output.join(key)).unwrap(), b"replaced");
+        }
+    }
+
+    /// Replacing the path is allowed (above); editing the opened archive in place is not:
+    /// its payloads could mix two versions, so nothing is published.
+    #[test]
+    fn an_archive_edited_in_place_during_extraction_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        for extension in ["bsa", "ba2"] {
+            let archive = directory.path().join(format!("rigs.{extension}"));
+            let output = directory.path().join(extension);
+            let key = "meshes/actors/skeleton.nif";
+            write_archive(&archive, &[dummy_content::Entry::new(key, b"original")]);
+
+            let error = ArchiveExtractor::extract_matching(&archive, &output, |_| {
+                let mut file = fs::OpenOptions::new().append(true).open(&archive).unwrap();
+                std::io::Write::write_all(&mut file, b"tail").unwrap();
+                true
+            })
+            .unwrap_err();
+            assert!(
+                format!("{error:#}").contains("archive changed while it was read"),
+                "{error:#}"
+            );
+            assert!(!output.join(key).exists());
         }
     }
 
