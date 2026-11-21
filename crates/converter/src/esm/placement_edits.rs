@@ -469,8 +469,11 @@ fn plugin_edits(
         );
         let view = SubrecordView::new(&record.subrecords);
         let base = view.unique_form_id(b"NAME");
-        let resolved_base =
-            base.and_then(|id| source_identity::header_runtime_id(b"REFR", id, priority, &order));
+        let resolve_target = |id| {
+            source_identity::header_runtime_id(b"REFR", id, priority, &order)
+                .filter(|&runtime| runtime != 0)
+        };
+        let resolved_base = base.and_then(resolve_target);
         let occluder = resolved_base == Some(super::rooms::OCCLUSION_MARKER_BASE);
         if !record.is_deleted() {
             let missing_parent = record
@@ -485,7 +488,7 @@ fn plugin_edits(
                 Some("with invalid parent CELL")
             } else {
                 let mut primitives = view.find_all(b"XPRM");
-                if resolved_base.is_none_or(|id| id == 0) {
+                if resolved_base.is_none() {
                     Some("with malformed NAME")
                 } else if !occluder
                     && primitives
@@ -495,7 +498,12 @@ fn plugin_edits(
                     Some("with repeated or oversized XPRM")
                 } else if let Some(reason) = malformed_placement_geometry(&view) {
                     Some(reason)
-                } else if view.find_all(b"XESP").any(|bytes| bytes.len() != 8) {
+                } else if view.find_all(b"XESP").any(|bytes| {
+                    bytes.len() != 8
+                        || SubrecordXESP::parse(bytes).is_none_or(|parent| {
+                            parent.parent_ref != 0 && resolve_target(parent.parent_ref).is_none()
+                        })
+                }) {
                     Some("with malformed XESP")
                 } else if view.find_all(b"XTEL").enumerate().any(|(index, data)| {
                     let Some((target, arrival_and_flags)) = data.split_first_chunk::<4>() else {
@@ -507,11 +515,7 @@ fn plugin_edits(
                         || !super::valid_placement_transform(std::iter::once(
                             &arrival_and_flags[..24],
                         ))
-                        || (target != 0
-                            && source_identity::header_runtime_id(
-                                b"REFR", target, priority, &order,
-                            )
-                            .is_none_or(|id| id == 0))
+                        || (target != 0 && resolve_target(target).is_none())
                 }) {
                     Some("with malformed XTEL")
                 } else {

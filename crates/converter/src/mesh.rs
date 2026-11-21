@@ -2372,6 +2372,7 @@ pub(crate) fn drawable_scene_bounds(
         .unwrap_or_default();
     let roots = scene_roots(document, nodes, scene_index)?;
     let mut bounds = BoundsAccumulator::default();
+    let mut visited = vec![false; nodes.len()];
     let mut remaining = nodes.len();
     let mut pending: Vec<_> = roots
         .iter()
@@ -2385,6 +2386,11 @@ pub(crate) fn drawable_scene_bounds(
         let node = nodes
             .get(index)
             .ok_or_else(|| color_eyre::eyre::eyre!("glTF node {index} is out of range"))?;
+        ensure!(
+            !visited[index],
+            "glTF node {index} occurs more than once in the scene"
+        );
+        visited[index] = true;
         let transform = parent.mul(Mat4::from_node(node));
         if let Some(value) = node.get("mesh") {
             let mesh = value
@@ -4680,6 +4686,11 @@ mod tests {
         assert_eq!(bounds.max, [4.0, 1.0, 1.0]);
 
         document["nodes"][1]["children"][0] = 2.into();
+        let repeated = drawable_bounds(&document).unwrap_err();
+        assert_eq!(
+            repeated.to_string(),
+            "glTF node 2 occurs more than once in the scene"
+        );
         document["nodes"].as_array_mut().unwrap().pop();
         let error = drawable_bounds(&document).unwrap_err();
         assert_eq!(

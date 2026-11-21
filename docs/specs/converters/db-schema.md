@@ -782,7 +782,7 @@ Rules:
   and `PFLA` (not `ACHR` or `ACRE`). `owner_id` accepts `FACT`, `ACHR` or `NPC_`; `lock_key_id`
   accepts `KEYM`; `XLCN` accepts `LCTN`; `XLRL` accepts `LCRT` or `LCTN`; and `XEZN` accepts
   `ECZN`. A zero ID resolves to NULL. A nonzero hardcoded ID below `0x800` is retained if no
-  plugin record exists; a present winner must be non-deleted and have an allowed type. Other
+  plugin record exists and no accepted deletion removed it; a present winner must be non-deleted and have an allowed type. Other
   targets resolve to NULL. Valid-length `XLKR` and `XAPR` rows are kept in source order with
   contiguous positions among accepted-length entries, even when a target resolves to NULL. This
   makes legacy projection match the in-house reader's invalid-link clearing behavior.
@@ -799,7 +799,8 @@ Rules:
 - The exporter stores the FormID of each deleted non-placement record it receives in
   `subset_nonplacement_deletions(form_id INTEGER PRIMARY KEY)`. A later subset uses the table
   to recognize deleted targets whose canonical records still exist. A live subset replacement
-  clears the FormID's deletion entry. A full load-order export rebuilds the table from its snapshot.
+  clears the FormID's deletion entry. Full plugin exports also store accepted deletions that
+  have no surviving winner, including placements absent from the canonical archive.
 - A field whose length the in-house schema rejects is skipped for both readers: `XLKR` must be 4
   or 8 bytes, `XAPR` 8, `XAPD` 1, `XOWN`/`XRNK`/`XLCN`/`XLRL`/`XEZN`/`XATR` 4, `FNAM` 1 and `TNAM`
   2.
