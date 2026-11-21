@@ -206,8 +206,8 @@ pub fn assignment_follows_transform(record_type: Option<&str>) -> bool {
 /// Whether a base record type (the `records.record_type` of a reference's base object) is one
 /// room culling must not hide: actors and their leveled lists, doors, activators, and the
 /// inventory records that become loose, physics-driven objects when placed. Mudcrab keeps
-/// these types visible as a precaution. For the native assignment path, see
-/// docs/research/skyrim-native-culling.md (RVA 0x2d8740).
+/// these types visible as a precaution. For initial attachment to a supplied multibound node
+/// (RVA 0x2d8740) and normal reassignment (RVA 0x2ca230), see docs/research/skyrim-native-culling.md.
 pub fn exempt_record_type(record_type: Option<&str>) -> bool {
     matches!(
         record_type,
