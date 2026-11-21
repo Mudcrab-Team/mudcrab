@@ -46,6 +46,8 @@ camera lies in room 454224. Its floor remains visible in retail and the enabled 
 255 meshes retained. The full-render control covers much of that view with a close shell surface.
 The side-by-side captures show differences in props and material sampling between Skyrim and
 both Mudcrab modes. The wall-scale controls below identify the carved wall.
+[Retail camera and image receipts](https://github.com/aivv73/mudcrab/blob/baca8725601b4492b08e4bd4f27677673b9f9946/docs/research/evidence/room-review-20261117/retail-captures.json#L1498-L1863) ·
+[Mudcrab named-floor draw count](https://github.com/aivv73/mudcrab/blob/baca8725601b4492b08e4bd4f27677673b9f9946/docs/research/evidence/room-review-20261117/authored-review.json#L65-L71)
 
 The fresh combined-stack recheck has 48 settled images at eight poses, three runs per mode.
 It includes the review toggle and gap fixes plus the upper layer's bounds support. It is recorded
