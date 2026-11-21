@@ -10,6 +10,8 @@
 
 <!-- Describe what was modified, added, or refactored. -->
 
+- [ ] If either world database snapshot changed, the body must list each changed row, each added or removed table, and each header change, and say why.
+
 ## Verification & Testing
 
 <!-- Describe how these changes were tested (OS, GPU/backend, test commands). -->
