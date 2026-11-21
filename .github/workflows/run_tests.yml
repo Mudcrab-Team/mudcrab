@@ -69,7 +69,7 @@ jobs:
           if LC_ALL=C grep -zqE '^vendor/' "$changed_paths"; then
             echo "check_rust=true" >> "$GITHUB_OUTPUT"
           fi
-          check_pattern "check_scripts" '(\.(ps1|py)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^tools/skyrim-recorder/|^docs/research/evidence/skyrim-physics-221/|^tools/world_data_inventory/|^docs/data-inventory/|^crates/(converter|shared)/|^crates/engine/src/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
+          check_pattern "check_scripts" '(\.(ps1|py)$|^docs/.*\.md$|^crates/.*\.md$|^crates/.*\.(rs|wgsl)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^tools/skyrim-recorder/|^docs/research/evidence/skyrim-physics-221/|^tools/world_data_inventory/|^docs/data-inventory/|^crates/(converter|shared)/|^crates/engine/src/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
           check_pattern "check_world_data" '^(tools/world_data_inventory/|docs/data-inventory/|crates/(converter|shared)/|crates/engine/src/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_lod_experiment" '^(scripts/lod-experiment/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_native_profiling" '^(scripts/profiling/(analyze_native\.py|correlate_drawables\.py|metal_trace\.m|source-manifest\.json|fixtures/.*\.json)|scripts/tests/test_native_metal_profiling\.py|\.github/workflows/run_tests\.yml)$'
@@ -121,6 +121,33 @@ jobs:
         uses: actions/checkout@v4
         with:
           clean: false
+          fetch-depth: 350
+
+      - name: Check retail claims cite a source
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ -n "${BASE_REF:-}" ]; then
+            git fetch --no-tags --depth=350 origin "$BASE_REF"
+            base="$(git merge-base FETCH_HEAD HEAD)"
+          elif [[ "${PUSH_BEFORE:-}" =~ ^[0-9a-f]{40}$ && "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ]] &&
+               git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            base="$(git merge-base "$PUSH_BEFORE" HEAD)"
+          elif [ "${GITHUB_EVENT_NAME:-}" = "push" ]; then
+            echo "::error::No base commit is available for the retail claim check on this push." >&2
+            exit 1
+          else
+            # A manual dispatch has no before-commit. Check the branch against main.
+            git fetch --no-tags --depth=350 origin main
+            base="$(git merge-base FETCH_HEAD HEAD)"
+          fi
+          python3 -B scripts/check_retail_claims.py --base "$base"
+
+      - name: Test retail claim source gate
+        run: python3 -B -m unittest discover -s scripts/tests -p test_check_retail_claims.py -v
 
       - name: Test model inspector launcher
         run: python3 -B -m unittest discover -s scripts/tests -p test_inspect_model.py -v
