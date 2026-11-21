@@ -365,8 +365,18 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     let terrain_merge = runtime_data
         .is_some()
         .then(|| crate::terrain_merge::TerrainMerge::open(&config.assets_dir));
-    let grade_source =
+    let mut grade_source =
         SceneGradeSource::load(&config, runtime_data.is_some() && !config.streaming_fixture)?;
+    // `--weather`: a test aid that forces one weather's day sky and fog colours.
+    if let Some(query) = &config.weather {
+        let catalog = environment.as_ref().ok_or_else(|| {
+            color_eyre::eyre::eyre!("--weather needs a converted world database to read weathers")
+        })?;
+        let weather = crate::sky::ForcedWeather::find(catalog, query)
+            .map_err(|error| color_eyre::eyre::eyre!("--weather {query}: {error}"))?;
+        eprintln!("weather forced: {}", weather.label());
+        grade_source.weather = Some(weather);
+    }
     let mut tone_map_source = SceneToneMapSource::load(&config, &grade_source)?;
     if let Some((settings, _)) = preferences.as_mut() {
         tone_map_source.bevy_tonemapping = crate::settings::TONE_MAPS[settings.tone_map];

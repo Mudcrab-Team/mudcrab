@@ -197,6 +197,40 @@ impl Default for WeatherLighting {
     }
 }
 
+/// A weather forced by `--weather` or the `Weather` console command: a test aid that replaces the
+/// sky and fog palette with one `WTHR` record's day colours. Nothing else follows it: the sun and
+/// ambient lights, the water multiplier and the image space keep their own sources.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForcedWeather {
+    pub form_id: u32,
+    pub editor_id: Option<String>,
+    pub palette: SkyPalette,
+}
+
+impl ForcedWeather {
+    /// Looks `query` (an editor id, or a hex form id) up in the pack and reads its day palette.
+    pub fn find(
+        catalog: &crate::world::environment::EnvironmentCatalog,
+        query: &str,
+    ) -> Result<Self, String> {
+        let (form_id, weather) = catalog.find_weather(query)?;
+        Ok(Self {
+            form_id,
+            editor_id: weather.editor_id.clone(),
+            palette: SkyPalette::from_weather_day(weather)
+                .map_err(|error| format!("weather {form_id:08X}: {error}"))?,
+        })
+    }
+
+    /// `SkyrimClear (0000081A)`, or the form id alone for a weather with no editor id.
+    pub fn label(&self) -> String {
+        match &self.editor_id {
+            Some(name) => format!("{name} ({:08X})", self.form_id),
+            None => format!("{:08X}", self.form_id),
+        }
+    }
+}
+
 /// The colours one weather gives the sky at one time of day.
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
 pub struct SkyPalette {
@@ -233,6 +267,29 @@ impl SkyPalette {
         fog_density_scale: 1.0,
         brightness: 1.0,
     };
+
+    /// The palette of a weather's day column: its `NAM0` Sky-Upper, Sky-Lower, Horizon, Fog Near
+    /// and Fog Far colours, with the density and brightness scales left at 1 as in
+    /// [`Self::SKYRIM_CLEAR_DAY`]. For `SkyrimClear` it equals that constant. A weather that lacks
+    /// one of the five colours is refused rather than filled from another weather.
+    pub fn from_weather_day(weather: &crate::world::environment::Weather) -> Result<Self, String> {
+        use crate::world::environment::TimeOfDay;
+        let colour = |name: &str| {
+            weather
+                .color(name, TimeOfDay::Day)
+                .map(|[r, g, b]| Color::srgb_u8(r, g, b))
+                .ok_or_else(|| format!("the weather has no day {name} colour"))
+        };
+        Ok(Self {
+            upper: colour("sky_upper")?,
+            lower: colour("sky_lower")?,
+            horizon: colour("horizon")?,
+            fog_near: colour("fog_near")?,
+            fog_far: colour("fog_far")?,
+            fog_density_scale: 1.0,
+            brightness: 1.0,
+        })
+    }
 
     /// The dome colour at an elevation: `R * Horizon + G * Sky-Lower + B * Sky-Upper` over the
     /// sRGB-encoded colours, as vanilla mixes them, with the dome's alpha.
@@ -736,6 +793,36 @@ fn same_fog(current: &DistanceFog, wanted: &DistanceFog) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// The day palette read from a weather record is the constant `SkyrimClear` was typed from, and
+    /// a weather missing a colour is refused.
+    #[test]
+    fn a_weather_gives_its_day_palette() {
+        use crate::world::environment::{TimeOfDay, Weather};
+        let mut weather = Weather::default();
+        for (name, rgb) in [
+            ("sky_upper", [21, 77, 117]),
+            ("sky_lower", [60, 135, 183]),
+            ("horizon", [125, 163, 183]),
+            ("fog_near", [35, 98, 124]),
+            ("fog_far", [116, 168, 203]),
+        ] {
+            weather
+                .colors
+                .insert((name.to_owned(), TimeOfDay::Day), rgb);
+        }
+        assert_eq!(
+            SkyPalette::from_weather_day(&weather),
+            Ok(SkyPalette::SKYRIM_CLEAR_DAY)
+        );
+        weather
+            .colors
+            .remove(&("horizon".to_owned(), TimeOfDay::Day));
+        assert_eq!(
+            SkyPalette::from_weather_day(&weather),
+            Err("the weather has no day horizon colour".to_owned())
+        );
+    }
+
     use super::*;
 
     const EPSILON: f32 = 1.0e-5;

@@ -538,8 +538,51 @@ impl EnvironmentCatalog {
         self.templates.get(&id)
     }
 
+    /// A catalog holding only `weathers`, for tests of consumers.
+    #[cfg(test)]
+    pub(crate) fn with_weathers(weathers: impl IntoIterator<Item = (u32, Weather)>) -> Self {
+        Self {
+            weathers: weathers.into_iter().collect(),
+            ..Default::default()
+        }
+    }
+
     pub fn weather(&self, id: u32) -> Option<&Weather> {
         self.weathers.get(&id)
+    }
+
+    /// A weather by editor id (ignoring case) or by form id: `0x81A`, or bare hex such as `81A`
+    /// when no editor id matches first. The form id is the load-order-resolved one the pack
+    /// stores, the value the `weathers` table lists. A name two weathers share gives the lowest
+    /// form id, so the answer is stable.
+    pub fn find_weather(&self, query: &str) -> Result<(u32, &Weather), String> {
+        let query = query.trim();
+        let hex = |digits: &str| {
+            (!digits.is_empty() && digits.len() <= 8)
+                .then(|| u32::from_str_radix(digits, 16).ok())
+                .flatten()
+        };
+        let by_id = |id: u32| self.weathers.get(&id).map(|weather| (id, weather));
+        let by_name = || {
+            self.weathers
+                .iter()
+                .filter(|(_, weather)| {
+                    weather
+                        .editor_id
+                        .as_deref()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(query))
+                })
+                .min_by_key(|(id, _)| **id)
+                .map(|(id, weather)| (*id, weather))
+        };
+        let found = match query
+            .strip_prefix("0x")
+            .or_else(|| query.strip_prefix("0X"))
+        {
+            Some(digits) => hex(digits).and_then(by_id),
+            None => by_name().or_else(|| hex(query).and_then(by_id)),
+        };
+        found.ok_or_else(|| format!("no weather with editor id or form id \"{query}\""))
     }
 
     pub fn image_space(&self, id: u32) -> Option<&ImageSpace> {
@@ -1334,5 +1377,49 @@ mod tests {
         assert_eq!(climate[0].weather, Some(0x81A), "authored order");
         assert_eq!(climate[0].chance_global, Some(0x6000));
         assert_eq!(climate[1].chance, 20);
+    }
+    /// A weather is found by editor id (any case), by `0x` form id, or by bare hex; an unknown
+    /// query is an error, and a bare hex string that is also a name resolves as the name.
+    #[test]
+    fn a_weather_is_found_by_editor_id_or_form_id() {
+        let mut catalog = EnvironmentCatalog::default();
+        // 0x1234 is named "Face" and a different weather has the id 0xFACE, so a lookup that tried
+        // the hex spelling first would find the wrong one.
+        for (id, name) in [
+            (0x81A, "SkyrimClear"),
+            (0x12F89, "SkyrimCloudy"),
+            (0x1234, "Face"),
+            (0xFACE, "Other"),
+        ] {
+            catalog.weathers.insert(
+                id,
+                Weather {
+                    editor_id: Some(name.to_owned()),
+                    ..Default::default()
+                },
+            );
+        }
+        let id_of = |query: &str| catalog.find_weather(query).map(|(id, _)| id);
+        assert_eq!(id_of("SkyrimClear"), Ok(0x81A));
+        assert_eq!(id_of("skyrimcloudy"), Ok(0x12F89));
+        assert_eq!(id_of("0x81A"), Ok(0x81A));
+        assert_eq!(id_of("0X00081a"), Ok(0x81A));
+        assert_eq!(id_of("81A"), Ok(0x81A));
+        assert_eq!(id_of(" SkyrimClear "), Ok(0x81A));
+        assert_eq!(id_of("Face"), Ok(0x1234), "a name wins over bare hex");
+        assert_eq!(id_of("0xFACE"), Ok(0xFACE));
+        assert_eq!(
+            id_of("FACE"),
+            Ok(0x1234),
+            "the name matches before the hex spelling"
+        );
+        assert!(id_of("0x999").is_err());
+        assert!(id_of("Nothing").is_err());
+        assert!(id_of("").is_err());
+        assert!(id_of("0x").is_err());
+        assert!(
+            id_of("123456789").is_err(),
+            "more than eight digits is not a form id"
+        );
     }
 }

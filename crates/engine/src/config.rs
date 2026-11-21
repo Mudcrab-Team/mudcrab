@@ -259,6 +259,9 @@ pub struct EngineConfig {
     /// `GameHour` global (8.0 in the pack data). A capture that needs another hour, such as noon
     /// for the native Riverwood comparison, passes `--game-hour` explicitly.
     pub game_hour: f64,
+    /// `--weather <EditorID or hex FormID>`: a `WTHR` record whose day colours replace the sky
+    /// and fog palette, a test aid. `None` keeps the default look.
+    pub weather: Option<String>,
     /// Game seconds per real second during ordinary play; zero freezes the clock. The default 20
     /// is the retail `TimeScale` (GLOB record, form id 0x3A, editor id `TimeScale`): 20.0 in the pack.
     pub timescale: f64,
@@ -463,6 +466,7 @@ impl Default for EngineConfig {
             grass_terrain_radii: None,
             sun_shadow_distance_limit: None,
             sun_position: None,
+            weather: None,
             game_hour: crate::sun::RETAIL_GAME_HOUR, // GLOB 0x38 `GameHour` = 8.0 in the pack
             timescale: 20.0,
             sun_settings_overrides: [None; 5],
@@ -679,6 +683,7 @@ Benchmark and profiling:
   --image-space-slot <slot>            sunrise|day|sunset|night; requires --image-space-weather
   --visual-preset <vivid|cool-gray>      select sky and grading look (default: cool-gray)
   --game-hour <hour>                   initial hour, 0 <= hour < 24 (default 8; captures freeze)
+  --weather <editor id|form id>        force a weather's day sky and fog colours (test aid; default: none)
   --timescale <scale>                  game seconds per real second (default 20; 0 freezes)
   --sun-position <azimuth,elevation>     sun bearing clockwise from north and elevation above horizon, degrees
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
@@ -1657,6 +1662,14 @@ impl EngineConfig {
                         )
                     })?;
                 }
+                "--weather" => {
+                    const EXPECTED: &str = "a weather editor id or hex form id";
+                    let raw = take_raw("--weather", EXPECTED, args.next())?;
+                    if raw.trim().is_empty() {
+                        return Err(ConfigError::invalid_value("--weather", Some(raw), EXPECTED));
+                    }
+                    config.weather = Some(raw);
+                }
                 "--game-hour" => {
                     config.game_hour = take_clock_value("--game-hour", args.next())?;
                 }
@@ -2432,6 +2445,27 @@ mod tests {
             ("--timescale", "-1"),
         ] {
             assert!(EngineConfig::from_args([key.to_string(), value.to_string()]).is_err());
+        }
+    }
+
+    /// `--weather` is off by default, keeps the text as written, and refuses a missing value.
+    #[test]
+    fn weather_override_is_off_by_default_and_takes_a_name_or_form_id() {
+        assert_eq!(run_config(&[]).weather, None);
+        assert_eq!(
+            run_config(&["--weather", "SkyrimClear"]).weather.as_deref(),
+            Some("SkyrimClear")
+        );
+        assert_eq!(
+            run_config(&["--weather", "0x81A"]).weather.as_deref(),
+            Some("0x81A")
+        );
+        for args in [
+            &["--weather"][..],
+            &["--weather", "--game-hour", "8"][..],
+            &["--weather", " "][..],
+        ] {
+            assert!(parse_error(args).to_string().contains("--weather"));
         }
     }
 
