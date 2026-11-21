@@ -318,7 +318,7 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     // here, and an older-shaped `room_portals` (no `pair_index`) is migrated in place.
     crate::esm::rooms::migrate_room_portals(conn)?;
     conn.execute_batch(crate::esm::rooms::ROOM_TABLES_SQL)?;
-    crate::esm::rooms::migrate_portal_endpoints(conn)?;
+    crate::esm::rooms::migrate_room_metadata(conn)?;
     // Typed race animation identity (db-schema.md, actor models). Archive-only snapshots keep
     // the same schema and defer its rows like the other runtime views.
     conn.execute_batch(crate::animation::authoring::RACE_ANIMATION_SOURCES_SQL)?;
@@ -787,12 +787,13 @@ fn export_records(
     let mut available_link_targets = HashSet::new();
     let mut edited_references = HashSet::new();
     for (&form_id, record) in ordered {
-        let link_target = order.is_none()
+        let link_target =
+            form_id != 0 && super::reference_links::accepts_link_target(&record.record_type);
+        let target_changed = order.is_none()
             && runtime_views
             && form_id != 0
-            && super::is_placed_record_type(&record.record_type)
-            && super::reference_links::accepts_placement_target(&record.record_type);
-        let was_link_target = link_target && super::reference_links::has_live_target(&tx, form_id)?;
+            && !record.is_deleted()
+            && super::reference_links::target_kind_changed(&tx, form_id, &record.record_type)?;
         let type_str = from_utf8(&record.record_type).unwrap_or("UNKN");
         let blob = serialize_subrecords(&record.subrecords);
         let insert = records_insert.as_mut().expect("nonempty record loop");
@@ -807,14 +808,14 @@ fn export_records(
         )?;
         if order.is_none() {
             if !record.is_deleted() {
-                let restored = tx
-                    .prepare_cached("DELETE FROM subset_nonplacement_deletions WHERE form_id=?1")?
+                tx.prepare_cached("DELETE FROM subset_nonplacement_deletions WHERE form_id=?1")?
                     .execute([form_id])?;
-                if restored != 0
-                    && runtime_views
-                    && matches!(&record.record_type, b"KYWD" | b"PLYR")
-                {
-                    available_link_targets.insert(form_id);
+                if target_changed && !super::is_placed_record_type(&record.record_type) {
+                    if link_target {
+                        available_link_targets.insert(form_id);
+                    } else {
+                        unavailable_link_targets.push(form_id);
+                    }
                 }
             } else if !super::is_placed_record_type(&record.record_type) {
                 if runtime_views {
@@ -958,7 +959,7 @@ fn export_records(
                     subset_link_sources.push(canonical_record);
                     if !link_target {
                         unavailable_link_targets.push(form_id);
-                    } else if !was_link_target {
+                    } else if target_changed {
                         available_link_targets.insert(form_id);
                     }
                 } else {
@@ -983,12 +984,15 @@ fn export_records(
                 // a meshless entry in `statics` for every candle in the game, so
                 // those are skipped; a light with geometry is stored like any
                 // other base object.
-                if let Some(model_path) = view.get_string(b"MODL").filter(|path| !path.is_empty()) {
-                    tx.prepare_cached(
-                        "INSERT OR REPLACE INTO statics(id, editor_id, model_path, flags, full_name) VALUES (?1, ?2, ?3, ?4, ?5)")?.execute(
-                        params![form_id, view.get_string(b"EDID"), model_path, record.flags, view.get_string(b"FULL")],
-                    )?;
-                }
+                let model = view.get_string(b"MODL").filter(|path| !path.is_empty());
+                write_static_model(
+                    &tx,
+                    form_id,
+                    record,
+                    &view,
+                    model.as_deref(),
+                    order.is_none(),
+                )?;
             }
             // Every base record type with a world model. The runtime spawns
             // anything that resolves a model path here, so trees, flora,
@@ -1014,9 +1018,13 @@ fn export_records(
                     view.get_string(b"MODL")
                 }
                 .filter(|path| !path.is_empty());
-                tx.prepare_cached(
-                    "INSERT OR REPLACE INTO statics(id, editor_id, model_path, flags, full_name) VALUES (?1, ?2, ?3, ?4, ?5)")?.execute(
-                    params![form_id, view.get_string(b"EDID"), model, record.flags, view.get_string(b"FULL")],
+                write_static_model(
+                    &tx,
+                    form_id,
+                    record,
+                    &view,
+                    model.as_deref(),
+                    order.is_none(),
                 )?;
             }
             "NPC_" => {
@@ -1195,6 +1203,63 @@ fn export_records(
         super::doors::refresh_placement_links(&tx, &edited_references)?;
     }
     tx.commit()
+}
+
+fn write_static_model(
+    tx: &Transaction<'_>,
+    form_id: u32,
+    record: &RawRecord,
+    view: &SubrecordView<'_>,
+    model: Option<&str>,
+    subset: bool,
+) -> Result<()> {
+    use rusqlite::OptionalExtension;
+    let fields = params![
+        form_id,
+        view.get_string(b"EDID"),
+        model,
+        record.flags,
+        view.get_string(b"FULL")
+    ];
+    if subset
+        && let Some(previous) = tx
+            .prepare_cached("SELECT model_path FROM statics WHERE id=?1")?
+            .query_row([form_id], |row| row.get::<_, Option<String>>(0))
+            .optional()?
+    {
+        let previous = previous.as_deref();
+        let unchanged = previous == model
+            || previous.zip(model).is_some_and(|(old, new)| {
+                // silent-ok: Both paths need valid asset keys to reuse the stored model bounds.
+                let key = |path| canonical_asset_path(path, AssetKind::Mesh, "glb").ok();
+                key(old).is_some_and(|old_key| Some(old_key) == key(new))
+            });
+        if unchanged && model.is_some() {
+            // A different source spelling can identify the same converted GLB.
+            // Keep its measured render bounds as well as its room evidence.
+            tx.prepare_cached("UPDATE statics SET editor_id=?2, model_path=?3, flags=?4, full_name=?5 WHERE id=?1")?.execute(fields)?;
+            return Ok(());
+        }
+        if !unchanged {
+            tx.prepare_cached("DELETE FROM room_model_bounds WHERE base_form_id=?1")?
+                .execute([form_id])?;
+            tx.prepare_cached(
+                "INSERT INTO room_graph_cells(cell_id,complete) \
+             SELECT DISTINCT cell_id,0 FROM [references] WHERE base_form_id=?1 \
+             ON CONFLICT(cell_id) DO UPDATE SET complete=0",
+            )?
+            .execute([form_id])?;
+        }
+    }
+    if record.record_type == *b"LIGH" && model.is_none() {
+        if subset {
+            tx.prepare_cached("DELETE FROM statics WHERE id=?1")?
+                .execute([form_id])?;
+        }
+    } else {
+        tx.prepare_cached("INSERT OR REPLACE INTO statics(id, editor_id, model_path, flags, full_name) VALUES (?1, ?2, ?3, ?4, ?5)")?.execute(fields)?;
+    }
+    Ok(())
 }
 
 /// Publishes actor models and their shared RACE authoring projection in the record transaction.
@@ -3514,9 +3579,17 @@ mod tests {
         assert_eq!((expected.rooms, expected.portals), (1, 1));
         assert_eq!(rooms_of(&conn, 0x2001), vec![(0x1001, 1)]);
 
+        conn.execute("INSERT INTO room_model_bounds VALUES(1280,1,2,3,4)", [])
+            .unwrap();
         export_to_db(&conn, &HashMap::new()).unwrap();
         assert_eq!(rooms::RoomGraphReport::read(&conn).unwrap(), expected);
         assert_eq!(rooms_of(&conn, 0x2001), vec![(0x1001, 1)]);
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM room_model_bounds", [], |r| r
+                .get::<_, u32>(0))
+                .unwrap(),
+            1
+        );
 
         export_inhouse_record_archive_to_db(&conn, &master, &order, &paths).unwrap();
         for table in [
@@ -3526,6 +3599,9 @@ mod tests {
             "room_graph_cells",
             "reference_rooms",
             "room_graph_stats",
+            "room_reference_rules",
+            "room_graph_cells",
+            "room_model_bounds",
             "projection_omission_stats",
             "projection_omission_samples",
             "cells",
@@ -3739,6 +3815,20 @@ mod tests {
             db.execute_batch("DROP TRIGGER reject_links").unwrap();
         };
 
+        export_to_db(
+            &db,
+            &[
+                (target, placed(target)),
+                (live_keyword, keyword_record(live_keyword)),
+                (source_id, source.clone()),
+            ]
+            .into(),
+        )
+        .unwrap();
+        assert_links(&db, None);
+        export_to_db(&db, &[(keyword, keyword_record(keyword))].into()).unwrap();
+        assert_links(&db, Some(keyword));
+
         let snapshot = [
             (target, placed(target)),
             (keyword, keyword_record(keyword)),
@@ -3815,10 +3905,20 @@ mod tests {
             &[(target, placed(target)), (source.form_id, source)].into(),
         )
         .unwrap();
+        let player = record(target, b"PLYR", None, None, Vec::new());
         let mut deleted = placed(target);
         deleted.flags = 0x20;
+        export_to_db(&db, &[(target, deleted.clone())].into()).unwrap();
+        export_to_db(&db, &[(target, player)].into()).unwrap();
+        check(Some(target), Some(target), None);
+        export_to_db(&db, &[(target, placed(target))].into()).unwrap();
+        check(Some(target), Some(target), Some(target));
         let mut actor = placed(target);
         actor.record_type = *b"ACHR";
+        export_to_db(&db, &[(target, actor.clone())].into()).unwrap();
+        check(Some(target), Some(target), None);
+        export_to_db(&db, &[(target, placed(target))].into()).unwrap();
+        check(Some(target), Some(target), Some(target));
         for replacement in [actor, placed(target)] {
             export_to_db(&db, &[(target, deleted.clone())].into()).unwrap();
             check(None, None, None);
@@ -3827,6 +3927,89 @@ mod tests {
             export_to_db(&db, &[(target, replacement)].into()).unwrap();
             check(Some(target), Some(target), attached);
         }
+    }
+
+    #[test]
+    fn subset_attachment_only_source_survives_target_deletion_and_reexport() {
+        let db = Connection::open_in_memory().unwrap();
+        create_tables(&db).unwrap();
+        let placed = |id| reference(id, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        let target = 0x880;
+        let mut source = placed(0x881);
+        source.subrecords.push((b"XATR".to_vec(), word(target)));
+        let mut malformed = placed(0x882);
+        malformed.subrecords.push((b"XATR".to_vec(), vec![1]));
+        let read = || {
+            db.prepare(
+                "SELECT reference_id,attached_ref_id FROM reference_details ORDER BY reference_id",
+            )
+            .unwrap()
+            .query_map([], |r| {
+                Ok((r.get::<_, u32>(0)?, r.get::<_, Option<u32>>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap()
+        };
+        export_to_db(
+            &db,
+            &[
+                (target, placed(target)),
+                (0x881, source.clone()),
+                (0x882, malformed),
+                (0x883, placed(0x883)),
+            ]
+            .into(),
+        )
+        .unwrap();
+        assert_eq!(read(), [(0x881, Some(target))]);
+        let mut deleted = placed(target);
+        deleted.flags = 0x20;
+        export_to_db(&db, &[(target, deleted)].into()).unwrap();
+        export_to_db(&db, &[(0x881, source)].into()).unwrap();
+        assert_eq!(read(), [(0x881, None)]);
+        export_to_db(&db, &[(target, placed(target))].into()).unwrap();
+        assert_eq!(read(), [(0x881, Some(target))]);
+    }
+
+    #[test]
+    fn subset_owner_deletion_preserves_rank_and_flags() {
+        let db = Connection::open_in_memory().unwrap();
+        create_tables(&db).unwrap();
+        let owner = 0x880;
+        let mut source = reference(0x881, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        source.subrecords.extend([
+            (b"XOWN".to_vec(), word(owner)),
+            (b"XRNK".to_vec(), word(7)),
+            (b"XAPD".to_vec(), vec![3]),
+        ]);
+        let mut faction = record(owner, b"FACT", None, None, Vec::new());
+        let details = || {
+            db.query_row(
+                "SELECT owner_id, owner_rank, activate_parent_flags
+                 FROM reference_details WHERE reference_id=0x881",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<u32>>(0)?,
+                        r.get::<_, i32>(1)?,
+                        r.get::<_, u8>(2)?,
+                    ))
+                },
+            )
+            .unwrap()
+        };
+        export_to_db(&db, &[(owner, faction.clone()), (0x881, source)].into()).unwrap();
+        assert_eq!(details(), (Some(owner), 7, 3));
+        faction.flags = 0x20;
+        export_to_db(&db, &[(owner, faction)].into()).unwrap();
+        assert_eq!(details(), (None, 7, 3));
+        export_to_db(
+            &db,
+            &[(owner, record(owner, b"FACT", None, None, Vec::new()))].into(),
+        )
+        .unwrap();
+        assert_eq!(details(), (Some(owner), 7, 3));
     }
 
     #[test]
@@ -4172,6 +4355,23 @@ mod tests {
             "authored targets bypass geometric membership too"
         );
         assert_eq!(rooms_of(&conn, 0x2003), vec![(0x1001, 1)]);
+        let rules = conn
+            .prepare("SELECT assignment,target_ref FROM room_reference_rules ORDER BY reference_id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<u32>>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            rules,
+            vec![
+                ("none".into(), None),
+                ("target".into(), Some(0x1001)),
+                ("auto".into(), None)
+            ]
+        );
     }
 
     #[test]
@@ -4360,6 +4560,32 @@ mod tests {
         rooms::restore_portal_endpoint_provenance(&conn, [(0x3001, Some(outside.as_slice()))])
             .unwrap();
         assert_eq!(flags(0x3001), (false, true));
+    }
+
+    #[test]
+    fn a_nonzero_missing_endpoint_invalidates_only_its_cell() {
+        let (conn, _) = export_rooms(vec![
+            interior_cell(0x100),
+            interior_cell(0x200),
+            room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            room(0x2001, 0x200, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            portal(0x3001, 0x100, Some((0x1001, 0))),
+            portal(0x3002, 0x200, Some((0x2001, 0x1001))),
+        ]);
+        let complete = |cell: u32| {
+            conn.query_row(
+                "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
+                [cell],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap()
+        };
+        assert!(complete(0x100));
+        assert!(!complete(0x200));
+        let invalid = [word(0x1001), word(0x0900_1234)].concat();
+        rooms::restore_portal_endpoint_provenance(&conn, [(0x3001, Some(invalid.as_slice()))])
+            .unwrap();
+        assert!(!complete(0x100));
     }
 
     #[test]
@@ -4778,6 +5004,93 @@ mod tests {
     }
 
     #[test]
+    fn subset_base_model_updates_invalidate_spheres_and_referencing_cells() {
+        for kind in [b"STAT", b"LIGH"] {
+            for (replacement, unchanged) in [
+                (Some("A.nif"), true),
+                (Some(r"Meshes\%41.NIF"), true),
+                (Some("B.nif"), false),
+                (None, false),
+            ] {
+                let base = |model: Option<&str>| {
+                    let mut fields = model
+                        .map(|path| (b"MODL".to_vec(), cstr(path)))
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    if kind == b"LIGH" {
+                        fields.push((b"DATA".to_vec(), vec![0; 48]));
+                    }
+                    record(0x500, kind, None, None, fields)
+                };
+                let (conn, _) = export_rooms(vec![
+                    interior_cell(0x100),
+                    interior_cell(0x200),
+                    interior_cell(0x300),
+                    room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+                    room(0x1002, 0x200, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+                    room(0x1003, 0x300, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+                    reference(0x2001, 0x100, 0x500, [0.0; 3], [0.0; 3]),
+                    reference(0x2002, 0x200, 0x500, [0.0; 3], [0.0; 3]),
+                    reference(0x2003, 0x300, 0x501, [0.0; 3], [0.0; 3]),
+                    base(Some("A.nif")),
+                ]);
+                conn.execute_batch(
+                    "INSERT INTO room_model_bounds VALUES(1280,1,2,3,4),(1281,5,6,7,8);
+                     UPDATE statics SET bounds_valid=1,bounds_min_x=-12 WHERE id=1280",
+                )
+                .unwrap();
+                export_to_db(&conn, &HashMap::from([(0x500, base(replacement))])).unwrap();
+                let measured: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM statics WHERE id=1280 AND bounds_valid=1 AND bounds_min_x=-12)",
+                    [], |row| row.get(0)
+                ).unwrap();
+                assert_eq!(measured, unchanged);
+                let retained: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM room_model_bounds WHERE base_form_id=1280)",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    retained, unchanged,
+                    "kind={kind:?}, replacement={replacement:?}: never keep another model's sphere"
+                );
+                for cell in [0x100, 0x200, 0x300] {
+                    let complete: bool = conn
+                        .query_row(
+                            "SELECT complete FROM room_graph_cells WHERE cell_id=?1",
+                            [cell],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        complete,
+                        unchanged || cell == 0x300,
+                        "kind={kind:?}, replacement={replacement:?}, cell={cell:x}"
+                    );
+                }
+                let path: Option<String> = conn
+                    .query_row(
+                        "SELECT max(model_path) FROM statics WHERE id=1280",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(path.as_deref(), replacement);
+                let other_radius: f32 = conn
+                    .query_row(
+                        "SELECT radius FROM room_model_bounds WHERE base_form_id=1281",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert!((other_radius - 8.0).abs() < f32::EPSILON);
+            }
+        }
+    }
+
+    #[test]
     fn subset_reference_updates_invalidate_room_membership_and_affected_cells() {
         for destination in [0x100, 0x200] {
             let (conn, _) = export_rooms(vec![
@@ -4828,6 +5141,57 @@ mod tests {
                 )
                 .unwrap();
             assert!(unrelated);
+        }
+    }
+
+    #[test]
+    fn dangling_authored_room_links_mark_only_their_cell_incomplete() {
+        for target in [0x9999, 0x3001] {
+            let (conn, _) = export_rooms(vec![
+                interior_cell(0x100),
+                interior_cell(0x200),
+                room(
+                    0x1001,
+                    0x100,
+                    [0.0; 3],
+                    [0.0; 3],
+                    [10.0; 3],
+                    vec![(b"XRMR", vec![1, 0, 1, 0]), (b"XLRM", word(target))],
+                ),
+                room(
+                    0x1002,
+                    0x100,
+                    [100.0, 0.0, 0.0],
+                    [0.0; 3],
+                    [10.0; 3],
+                    vec![],
+                ),
+                room(0x3001, 0x200, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            ]);
+            let complete: bool = conn
+                .query_row(
+                    "SELECT complete FROM room_graph_cells WHERE cell_id=0x100",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(!complete);
+            let unrelated: bool = conn
+                .query_row(
+                    "SELECT complete FROM room_graph_cells WHERE cell_id=0x200",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(unrelated);
+            let stored: u32 = conn
+                .query_row(
+                    "SELECT linked_ref FROM room_links WHERE room_ref=0x1001",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, target);
         }
     }
 

@@ -785,9 +785,14 @@ Rules:
   targets resolve to NULL. Valid-length `XLKR` and `XAPR` rows are kept in source order with
   contiguous positions among accepted-length entries, even when a target resolves to NULL. This
   makes legacy projection match the in-house reader's invalid-link clearing behavior.
-- A subset can delete and restore a target without replaying its sources. Supply the live
-  target record on restoration. The exporter uses the effective source payload to refill
-  matching `XLKR`, `XAPR` and `XATR` targets and preserves unrelated columns.
+- Subset exports refresh incoming `XLKR`, `XAPR`, `XATR` and `XOWN` links when a target is
+  added, deleted, restored or changes record type. The exporter reads each surviving source's
+  effective payload to refill compatible links and preserves unrelated columns, including owner rank.
+- A subset export stores the FormID of each deleted non-placement record in
+  `subset_nonplacement_deletions(form_id INTEGER PRIMARY KEY)`. The table persists across
+  exports so a later link edit can recognize a deleted target even if its canonical record
+  still exists. Exporting a live record with the same FormID clears its deletion entry.
+  A full load-order export drops the table when it replaces the snapshot.
 - A field whose length the in-house schema rejects is skipped for both readers: `XLKR` must be 4
   or 8 bytes, `XAPR` 8, `XAPD` 1, `XOWN`/`XRNK`/`XLCN`/`XLRL`/`XEZN`/`XATR` 4, `FNAM` 1 and `TNAM`
   2.
@@ -1331,9 +1336,10 @@ CREATE TABLE IF NOT EXISTS room_portals (      -- one row per XPOD pair of an in
 );
 CREATE INDEX IF NOT EXISTS idx_room_portals_cell ON room_portals(cell_id);
 
-CREATE TABLE IF NOT EXISTS room_links (        -- XLRM: rooms seen together without a portal
+CREATE TABLE IF NOT EXISTS room_links (        -- ordered authored room-group links
     room_ref INTEGER NOT NULL,
     linked_ref INTEGER NOT NULL,
+    link_index INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (room_ref, linked_ref)
 );
 
@@ -1345,11 +1351,23 @@ CREATE TABLE IF NOT EXISTS reference_rooms (   -- room membership, interiors wit
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_reference_rooms_room ON reference_rooms(room_ref);
 
+CREATE TABLE IF NOT EXISTS room_reference_rules (
+    reference_id INTEGER PRIMARY KEY,
+    cell_id INTEGER NOT NULL,
+    assignment TEXT NOT NULL CHECK(assignment IN ('auto','none','target','unknown')),
+    target_ref INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_room_reference_rules_cell ON room_reference_rules(cell_id);
+CREATE TABLE IF NOT EXISTS room_model_bounds (
+    base_form_id INTEGER PRIMARY KEY,
+    center_x REAL NOT NULL, center_y REAL NOT NULL, center_z REAL NOT NULL,
+    radius REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS room_graph_cells (
     cell_id INTEGER PRIMARY KEY,
     complete INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS room_graph_stats (  -- report counters and visibility_version marker
+CREATE TABLE IF NOT EXISTS room_graph_stats (  -- report counters and version markers
     name TEXT PRIMARY KEY,
     value INTEGER NOT NULL
 );
@@ -1394,15 +1412,26 @@ Columns and rules:
   so malformed siblings cannot disappear and establish false uniqueness or authored nulls.
   The typed reader restores flags only from a unique source field containing whole eight-byte
   pairs; its canonical cleared links cannot establish outside connectivity.
-- **`room_links`**: one row per `XLRM` as stored on the room, with no mirror rows. A link joins
-  rooms that may have no portal between them but must be seen together: if one is visible, so is
-  the other. The target is stored as written. A missing target or a target in another cell marks
-  the source cell incomplete.
+- **`room_links`**: one row per distinct `XLRM` target, retaining the last occurrence's
+  zero-based `link_index`, with no synthesized mirror rows. Migration adds the column with zero defaults; only a fresh export
+  publishes the authored-assignment version. A missing target or a target in another cell marks
+  the source cell incomplete. The target is retained in either case.
   Both readers check the source order before publishing resolved links. One four-byte `XRMR`
   header precedes four-byte `LNAM` and `INAM` fields, in that order, when their flags are set.
   The lower 14 bits of the first `XRMR` word give the number of contiguous four-byte `XLRM`
   slots that follow. A misplaced field or count mismatch marks the cell incomplete. The export
   retains links from the valid prefix of this run, up to the declared count.
+  In authored mode, `XRMR[2] != 0` marks a master (`(flags >> 8) & 255` in `room_bounds`).
+  An unlinked marker is also a master. Slaves resolve linked masters, preferring direct masters
+  before recursive links and traversing reverse source order. Explicit masters install missing
+  reciprocal links during resolution. Distinct masters remain distinct, even within a connected
+  component. Unresolvable cycles or construction-order ambiguity retain the whole-cell fallback.
+  The room is the union of its primary and joined bounds; gaps are not filled by an enclosing box.
+  Malformed or unresolved `XLRM` occurrences keep the cell incomplete in both readers,
+  including fields rejected before typed canonical publication.
+  The legacy reader also marks the cell incomplete when it skips a damaged placement with a
+  known parent cell and no usable version supplies that placement.
+  Legacy graphs continue treating links as open visibility edges.
 - **`reference_rooms`**: written for every placed object (`REFR`, `ACHR`, `ACRE`, `PGRE`,
   `PMIS`) in an interior cell that has at least one room, except the room and portal markers
   themselves. `contained = 1` rows come from the ESM export: the object's pivot (its position)
@@ -1429,6 +1458,8 @@ Columns and rules:
   or ambiguous portal fields, including missing, truncated, duplicate or non-finite transforms,
   non-finite sizes, negative room half-extents, nonpositive portal X or Z half-extents, and repeated `XPOD` fields), `objects_in_no_room` and
   `objects_in_several_rooms` (both by pivot), and `overlap_rows`.
+  `assignment_version = 1` enables authored master/slave resolution and reference ownership,
+  together with the three assignment tables, `link_index`, and `visibility_version = 2`.
   `visibility_version = 2` additionally marks graphs whose outside endpoints have verified
   source provenance. The typed reader publishes this marker and the flags in the source-data
   transaction. Until that transaction commits, the runtime uses legacy fallback behavior.
@@ -1459,6 +1490,12 @@ The tables are derived data: a full load-order export clears and rebuilds them f
 records on every conversion, like the grass tables. Subsets without placed references, including
 movement annotation, leave the graph alone. A subset that replaces a placed reference clears its
 membership and marks its previous and new cells incomplete until a full export rebuilds the graph.
+A subset that changes or removes an existing base model also deletes that base's source sphere
+and marks every referencing cell incomplete in the same transaction. An unchanged model retains
+its sphere and cell completeness. A full room export restores completeness after rebuilding.
+The certificate stores one completeness bit for the whole cell. A model-bounds refresh cannot
+distinguish an outdated model from an unresolved room or portal in the same cell. Restoring
+culling after a base-model change therefore requires a full room export.
 `create_tables` adds these tables to an older reused database.
 
 **These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`.** The engine reads
@@ -1473,42 +1510,63 @@ geometry, links and portal endpoints. Set `complete=0` for an interior with inco
 In a versioned graph, the engine reads the cell's `references.id` values to distinguish known
 placements from references belonging to other cells or unknown runtime objects.
 
-Placed references carrying the `Multibound` header flag (`0x80000000`) have an authored visibility
-policy, including `NONE`. Both pivot and bounds-overlap export omit their geometric memberships;
-integration also removes stale rows for these references. The engine reads the existing
-`references.header_flags` column and exempts flagged roots even when an older conversion still
-contains geometric room rows. Named overrides are conservatively kept visible too.
+Authored assignment metadata:
 
-The following table describes geometric membership. Whole-cell fallbacks and reference exemptions
-take precedence over the per-object rules. Other renderer visibility checks still apply.
+- **`room_reference_rules`** records ordinary placements independently of geometric overlap rows.
+  A nonzero, remapped `XMBR` is `target`; a Multibound header flag with no `XMBR` is `none`;
+  an ordinary placement is `auto`. Malformed/zero targets and unsupported primitive overrides
+  are `unknown`. Repeated `XMBR` fields also produce `unknown` with no target, including identical
+  repetitions. Both readers preserve malformed `XMBR` presence for every supported placed
+  record type, including references carrying the Multibound flag; rejection cannot turn it
+  into `auto` or `none`.
+  Missing/foreign targets remain visible. An absent `XMBR` alone does not mean `NONE`.
+- **`room_model_bounds`** stores source NIF spheres in runtime axes and Creation units, without
+  metre scaling. Mesh conversion writes GLB root extras `mudcrabRoomSphere` version 1, and model
+  integration rebuilds this table transactionally. It merges supported source child spheres in
+  native order, ignoring the placed root's source transform. Models with disconnected exported geometry
+  retain no assignment sphere. Skinned/specialized or unsupported
+  trees have no row. Render AABBs are not substituted for missing native assignment bounds.
+  Incremental Skyrim conversion and failed-asset repair project both bounds from the final
+  staged GLB winner. Missing or unreadable winners clear the validity flag and prior sphere.
+  For native GLBs installed in a private runtime copy of a pack, close the engine and run
+  `room-model-bounds-refresh <assets-dir> <meshes/path.glb>...` after replacing or removing the
+  files. If the refresh fails, keep the pack offline until it succeeds or you restore the previous GLBs.
+  List each changed lowercase runtime path. Native GLBs can supply a sphere in the same
+  version 1 root extra. The command updates all matching base forms and geometric room overlaps
+  in one SQLite transaction. Keep the original conversion pack for manifest verification and
+  later Skyrim conversion or repair.
+- **`room_graph_cells`** marks cells whose authored geometry was fully exported. A skipped
+  unsupported room shape or invalid/missing marker size makes the cell incomplete. Incomplete
+  cells retain full rendering in authored mode.
 
-| Case | Converter writes | Engine room filter |
-|---|---|---|
-| Interior without room markers | no room rows | retain the cell |
-| Old database, tables absent | n/a | feature off, no error |
-| Source-verified outside portal side | NULL with an unbounded-side flag | traverse the explicit unbounded node |
-| Missing, invalid, or foreign portal endpoint | NULL without verified outside provenance | retain the cell |
-| Object in several rooms | several `contained = 1` rows | always retained by geometric membership |
-| Object in no room, legacy graph | no `contained = 1` row | always retained |
-| Object without geometric membership in a roomed cell | no `reference_rooms` rows | retain for ordinary view culling |
-| Known object overlapping rooms in a complete versioned graph | overlap rows only | retained when a visible candidate volume passes its mesh-bound test; candidates come from unbounded space, overlap rooms, and portal sharing |
-| Camera outside every room | n/a | retain the cell, including possible gaps between bounds |
-| Non-box room shape in a new conversion | skipped, counted; cell marked incomplete | retain the cell |
-| Exterior markers | not written | out of scope (#106) |
+Initial attachment honors a valid named target directly, including targets whose bounds do not
+contain the object. Later reference-transform changes reclassify supported bounds. Automatic
+assignment uses the sphere center, tests the union of each master's bounds, and classifies zero,
+one, or multiple touched physical portals as ordinary-space, portal-shared, or common-node
+ownership. Portal sharing uses the native sphere test, and each child mesh tests the resulting
+volume with its current affine AABB. Ambiguous overlapping masters retain all possible owners;
+native runtime handle/hash order is not reconstructed from FormIDs.
+Automatic assignment keeps unknown bounds visible. A valid initial named target assigns directly
+without requiring a source sphere. `NONE`, unsupported transforms, actors, doors, and activators remain drawn. Named-target neighboring-room
+priority and specialized/forced native assignment paths are not fully reproduced.
 
-The geometric filter retains authored overrides including `NONE`, actors and their leveled lists,
-doors, activators, loose inventory references, moving rigid bodies, and explicitly exempt roots
-or meshes. References without valid stored model bounds also stay drawn because pivot-only rows
-do not establish overlap coverage. Unknown references outside the graph are retained.
-Missing or invalid per-mesh bounds and `NoFrustumCulling` skip aperture-bound testing; a candidate
-space must still be reached. Portal-shared geometry can use either endpoint's visible volume.
-
----
+Legacy `reference_rooms` rows remain for compatibility. Multibound-flagged references are omitted
+from both pivot and overlap membership; integration removes stale rows. Legacy runtime exemptions
+protect these references even before reconversion. Reconvert normally to obtain authored assignment:
+the compiled converter digest invalidates old base-database cache bundles, and the
+`native-room-assignment-spheres` and `complete-root-room-spheres` mesh-output contracts
+regenerate source-sphere metadata. These
+additive tables do not change the global world schema or add a feature flag.
 
 #### Import interiors and room placements after conversion
 
-`converter apply-room-placements` updates a private, offline asset directory with the current
-world database schema and `visibility_version = 2`. The command takes the pack's exclusive lock.
+Use `converter apply-room-placements` on a private, offline asset directory. The command takes
+the pack's exclusive lock and requires world database schema 9 and `visibility_version = 2`.
+It accepts either `assignment_version = 1` or an absent assignment marker. With version 1,
+a valid native `target` assigns the reference to its named room. Without the marker, the import
+succeeds and sets the Multibound exemption, so the reference stays drawn even when that room is
+hidden. Reconvert the pack as described above to enable authored assignment.
+
 
 ```sh
 converter apply-room-placements path/to/assets --plugin Decorations.esp
@@ -1559,10 +1617,11 @@ placement is deleted. Position uses Creation units. Rotation uses radians and de
 `[0, 0, 0]`. Scale defaults to `1`. Ownership
 defaults to `{"kind": "auto"}`. Use `{"kind": "none"}` for a Multibound override without a
 target, or `{"kind": "target", "room": 2048}` for a named room.
-Both explicit ownership choices set the Multibound flag and keep the placement visible on this geometric path.
 
 `put_room` adds or replaces a box room marker. Its `half_extents` array gives finite, nonnegative
 X, Y, and Z half-extents in Creation units. Optional `links` name joined rooms in authored order.
+Set `master` to `true` or `false` to change the room's master flag. Omitting it preserves the
+flag on an existing room. A new room defaults to `false`.
 `put_portal` adds or replaces a portal marker with finite, positive X and Z `half_extents`. Its
 `endpoints` array names two rooms in that cell. Use `0` for an explicit outside endpoint.
 
@@ -1589,7 +1648,7 @@ X, Y, and Z half-extents in Creation units. Optional `links` name joined rooms i
 }
 ```
 
-One transaction creates the runtime cell rows and updates placements, geometric memberships, and the room
+One transaction creates the runtime cell rows and updates placements, ownership rules, and the room
 graph. Moves refresh both the source and destination cells. The command uses the model bounds
 already in the pack. It reports how many cells were created and how many affected cells passed
 certification. A fresh interior with complete input retains its certificate even when it has no
@@ -1601,6 +1660,8 @@ The original conversion's canonical `records`, `formid_map`, source history, and
 available for inspection. `room_placement_layers` retains the exact imported file and checksum.
 `room_placement_edits` maps each created cell and edited placement to its source FormID and
 records placement deletions.
+A native `put` fails if its base FormID is in `subset_nonplacement_deletions`. The import
+rolls back. A `delete` can still remove an existing placement that uses that base.
 Reapplying the same source is a no-op. Plugins match existing imports by case-insensitive filename
 and checksum. Different contents under an imported filename are rejected, including after a
 successful import that skipped damaged records.
@@ -1610,17 +1671,43 @@ at its original position. Keep the plugin's full or light classification and the
 that later layers reference. To make a follow-up edit on the current pack, author a new patch
 with a different filename. List the imported plugin as a master when overriding its forms.
 
-#### Refresh bounds from runtime GLBs
+The following table describes geometric membership. Whole-cell fallbacks and reference exemptions
+take precedence over the per-object rules. Other renderer visibility checks still apply.
 
-Conversion and failed-asset repair read static bounds from the winning staged GLB. Missing
-or unreadable winners clear `bounds_valid` and remove stale overlaps.
+| Case | Converter writes | Engine room filter |
+|---|---|---|
+| Interior without room markers | no room rows | retain the cell |
+| Old database, tables absent | n/a | feature off, no error |
+| Source-verified outside portal side | NULL with an unbounded-side flag | traverse the explicit unbounded node |
+| Missing, invalid, or foreign portal endpoint | NULL without verified outside provenance | retain the cell |
+| Object in several rooms | several `contained = 1` rows | always retained by geometric membership |
+| Object in no room, legacy graph | no `contained = 1` row | always retained |
+| Object without geometric membership in a roomed cell | no `reference_rooms` rows | retain for ordinary view culling |
+| Known object overlapping rooms in a complete versioned graph | overlap rows only | retained when a visible candidate volume passes its mesh-bound test; candidates come from unbounded space, overlap rooms, and portal sharing |
+| Camera outside every room | n/a | retain the cell, including possible gaps between bounds |
+| Non-box room shape in a new conversion | skipped, counted; cell marked incomplete | retain the cell |
+| Exterior markers | not written | out of scope (#106) |
 
-`room-model-bounds-refresh <assets-dir> <meshes/path.glb>...` updates a private, offline pack
-after native GLBs are replaced or removed. If the command fails, keep the pack offline until the
-refresh succeeds or you restore the previous GLBs. Each argument gives a changed lowercase runtime path.
-One transaction updates every matching base form and refreshes geometric room overlaps. The
-original conversion pack remains the input for manifest verification and later conversion or
-repair.
+The geometric filter retains authored overrides including `NONE`, actors and their leveled lists,
+doors, activators, loose inventory references, moving rigid bodies, and explicitly exempt roots
+or meshes. References without valid stored model bounds also stay drawn because pivot-only rows
+do not establish overlap coverage. Unknown references outside the graph are retained.
+Missing or invalid per-mesh bounds and `NoFrustumCulling` skip aperture-bound testing; a candidate
+space must still be reached. Portal-shared geometry can use either endpoint's visible volume.
+
+The authored-assignment path uses these rules:
+
+| Case | Engine |
+|---|---|
+| Interior without room markers or absent room tables | normal rendering |
+| Verified source NULL endpoint in a versioned graph | unbounded-space traversal |
+| Unknown portal endpoint | whole-cell fallback |
+| Incomplete authored cell or unresolved master | whole-cell fallback |
+| Camera outside every authored room union | whole-cell fallback, including possible gaps between bounds |
+| Reference with no recoverable assignment | keep visible |
+| Exterior markers | outside this feature's scope |
+
+---
 
 ### 16. Reference Emittance Sources (`emittance`)
 

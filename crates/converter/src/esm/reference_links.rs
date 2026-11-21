@@ -73,6 +73,52 @@ const ATTACHED_REFERENCE: &[&[u8; 4]] = &[
     b"REFR", b"PGRE", b"PHZD", b"PMIS", b"PARW", b"PBAR", b"PBEA", b"PCON", b"PFLA",
 ];
 
+const OWNER: &[&[u8; 4]] = &[b"FACT", b"ACHR", b"NPC_"];
+
+enum StoredTarget {
+    Absent,
+    Unavailable,
+    Live([u8; 4]),
+}
+
+fn stored_target(tx: &Transaction<'_>, id: u32) -> Result<StoredTarget> {
+    let (kind, placed, deleted): (Option<String>, bool, bool) = tx
+        .prepare_cached(
+            "SELECT (SELECT record_type FROM records WHERE form_id=?1),
+                    EXISTS(SELECT 1 FROM [references] WHERE id=?1),
+                    EXISTS(SELECT 1 FROM subset_nonplacement_deletions WHERE form_id=?1)",
+        )?
+        .query_row([id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+    Ok(match (deleted, kind, placed) {
+        (true, _, _) => StoredTarget::Unavailable,
+        (false, Some(kind), placed) => match <[u8; 4]>::try_from(kind.as_bytes()) {
+            Ok(kind) if placed || !super::is_placed_record_type(&kind) => StoredTarget::Live(kind),
+            _ => StoredTarget::Unavailable,
+        },
+        // A placement import can add a REFR without modifying the canonical archive.
+        (false, None, true) => StoredTarget::Live(*b"REFR"),
+        (false, None, false) => StoredTarget::Absent,
+    })
+}
+
+pub(super) fn accepts_link_target(kind: &[u8; 4]) -> bool {
+    LINKED_KEYWORD.contains(&kind) || OWNER.contains(&kind)
+}
+
+pub(super) fn target_kind_changed(
+    tx: &Transaction<'_>,
+    id: u32,
+    replacement: &[u8; 4],
+) -> Result<bool> {
+    Ok(match stored_target(tx, id)? {
+        StoredTarget::Live(kind) => {
+            kind != *replacement && (accepts_link_target(&kind) || accepts_link_target(replacement))
+        }
+        StoredTarget::Absent if id < 0x800 => true,
+        _ => accepts_link_target(replacement),
+    })
+}
+
 /// What the projection needs beyond the record itself.
 pub(crate) struct Context<'a> {
     pub(crate) master: &'a HashMap<u32, RawRecord>,
@@ -103,26 +149,10 @@ impl Context<'_> {
             }
         }
         if self.subset {
-            let (kind, placed, deleted): (Option<String>, bool, bool) = tx
-                .prepare_cached(
-                    "SELECT (SELECT record_type FROM records WHERE form_id=?1),
-                            EXISTS(SELECT 1 FROM [references] WHERE id=?1),
-                            EXISTS(SELECT 1 FROM subset_nonplacement_deletions WHERE form_id=?1)",
-                )?
-                .query_row([id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-            if deleted {
-                return Ok(None);
-            }
-            if let Some(kind) = kind {
-                // A deleted placement can still have a canonical row in an edited pack.
-                let valid = <&[u8; 4]>::try_from(kind.as_bytes()).is_ok_and(|kind| {
-                    targets.contains(&kind) && (placed || !super::is_placed_record_type(kind))
-                });
-                return Ok(valid.then_some(id));
-            }
-            if placed {
-                // Placement imports can add REFRs without modifying the canonical archive.
-                return Ok(targets.contains(&b"REFR").then_some(id));
+            match stored_target(tx, id)? {
+                StoredTarget::Unavailable => return Ok(None),
+                StoredTarget::Live(kind) => return Ok(targets.contains(&&kind).then_some(id)),
+                StoredTarget::Absent => {}
             }
         }
         Ok((id < 0x800).then_some(id))
@@ -179,24 +209,9 @@ pub(super) fn refresh_incoming(
     unavailable: &[u32],
     available: &HashSet<u32>,
 ) -> Result<()> {
-    if !unavailable.is_empty() {
-        let ids = serde_json::json!(unavailable).to_string();
-        for (table, column) in [
-            ("reference_linked_refs", "linked_ref_id"),
-            ("reference_linked_refs", "keyword_id"),
-            ("reference_activate_parents", "parent_ref_id"),
-            ("reference_details", "attached_ref_id"),
-        ] {
-            tx.prepare_cached(&format!(
-                "UPDATE {table} SET {column}=NULL WHERE {column} IN (SELECT value FROM json_each(?1))"
-            ))?
-            .execute([&ids])?;
-        }
-    }
-    if available.is_empty() {
+    if unavailable.is_empty() && available.is_empty() {
         return Ok(());
     }
-
     // Placement-layer additions may have only a placement row. A restored keyword
     // can fill the first XLKR word, while an actor cannot fill XATR.
     let mut kinds = HashMap::new();
@@ -210,6 +225,38 @@ pub(super) fn refresh_incoming(
                 kinds.insert(id, signature);
             }
         }
+    }
+    // A direct kind change invalidates only the fields that reject its new type.
+    // Compatible values can survive even in packs without recoverable source bytes.
+    for (table, column, allowed) in [
+        ("reference_linked_refs", "linked_ref_id", LINKED_REFERENCE),
+        ("reference_linked_refs", "keyword_id", LINKED_KEYWORD),
+        (
+            "reference_activate_parents",
+            "parent_ref_id",
+            LINKED_REFERENCE,
+        ),
+        ("reference_details", "attached_ref_id", ATTACHED_REFERENCE),
+        ("reference_details", "owner_id", OWNER),
+    ] {
+        let invalid: Vec<_> = unavailable
+            .iter()
+            .copied()
+            .chain(
+                kinds
+                    .iter()
+                    .filter_map(|(&id, kind)| (!allowed.contains(&kind)).then_some(id)),
+            )
+            .collect();
+        if !invalid.is_empty() {
+            tx.prepare_cached(&format!(
+                "UPDATE {table} SET {column}=NULL WHERE {column} IN (SELECT value FROM json_each(?1))"
+            ))?
+            .execute([serde_json::json!(invalid).to_string()])?;
+        }
+    }
+    if kinds.is_empty() {
+        return Ok(());
     }
     let restored_target = |value: Option<u32>, allowed: &[&[u8; 4]]| {
         value.filter(|id| kinds.get(id).is_some_and(|kind| allowed.contains(&kind)))
@@ -233,10 +280,11 @@ pub(super) fn refresh_incoming(
     // once per restoring batch. Materialize their IDs before updating the link tables.
     let mut sources = tx.prepare(&format!(
         "WITH candidates(id) AS MATERIALIZED (
-             SELECT reference_id FROM reference_linked_refs WHERE linked_ref_id IS NULL
-             UNION SELECT reference_id FROM reference_linked_refs WHERE keyword_id IS NULL
-             UNION SELECT reference_id FROM reference_activate_parents WHERE parent_ref_id IS NULL
-             UNION SELECT reference_id FROM reference_details WHERE attached_ref_id IS NULL
+             SELECT reference_id FROM reference_linked_refs WHERE ?1 AND linked_ref_id IS NULL
+             UNION SELECT reference_id FROM reference_linked_refs WHERE ?2 AND keyword_id IS NULL
+             UNION SELECT reference_id FROM reference_activate_parents WHERE ?1 AND parent_ref_id IS NULL
+             UNION SELECT reference_id FROM reference_details
+                   WHERE (?3 AND attached_ref_id IS NULL) OR (?4 AND owner_id IS NULL)
          )
          SELECT r.id, {data} FROM candidates
          JOIN [references] r ON r.id=candidates.id
@@ -257,7 +305,16 @@ pub(super) fn refresh_incoming(
     let mut attached = tx.prepare_cached(
         "UPDATE reference_details SET attached_ref_id=?2 WHERE reference_id=?1 AND attached_ref_id IS NULL",
     )?;
-    let mut sources = sources.query([])?;
+    let mut owner = tx.prepare_cached(
+        "UPDATE reference_details SET owner_id=?2 WHERE reference_id=?1 AND owner_id IS NULL",
+    )?;
+    let can_restore = |allowed: &[&[u8; 4]]| kinds.values().any(|kind| allowed.contains(&kind));
+    let mut sources = sources.query(params![
+        can_restore(LINKED_REFERENCE),
+        can_restore(LINKED_KEYWORD),
+        can_restore(ATTACHED_REFERENCE),
+        can_restore(OWNER),
+    ])?;
     while let Some(row) = sources.next()? {
         let id: u32 = row.get(0)?;
         let Some(blob): Option<Vec<u8>> = row.get(1)? else {
@@ -290,6 +347,10 @@ pub(super) fn refresh_incoming(
             if let Some(value) = restored_target(u32_at(field, 0), LINKED_REFERENCE) {
                 parent.execute(params![id, position as i64, value])?;
             }
+        }
+        let ownership = sized(fields(*b"XOWN").next(), &[4]).and_then(|field| u32_at(field, 0));
+        if let Some(value) = restored_target(ownership, OWNER) {
+            owner.execute(params![id, value])?;
         }
         let attachment = sized(fields(*b"XATR").next(), &[4]).and_then(|field| u32_at(field, 0));
         if let Some(value) = restored_target(attachment, ATTACHED_REFERENCE) {
@@ -347,7 +408,7 @@ pub(crate) fn insert(
             targets,
         )
     };
-    let owner = link(b"XOWN", &[b"FACT", b"ACHR", b"NPC_"])?;
+    let owner = link(b"XOWN", OWNER)?;
     let owner_rank = sized(view.find(b"XRNK"), &[4]).and_then(|bytes| u32_at(bytes, 0));
     let activate_parent_flags = sized(view.find(b"XAPD"), &[1]).map(|bytes| bytes[0]);
     // XLOC: level byte, three unused, key FormID, flags byte (0x04 leveled lock), padding. It is
@@ -370,6 +431,12 @@ pub(crate) fn insert(
     let location_ref_type = link(b"XLRL", &[b"LCRT", b"LCTN"])?;
     let encounter_zone = link(b"XEZN", &[b"ECZN"])?;
     let attached = link(b"XATR", ATTACHED_REFERENCE)?;
+    // A later target-only edit can fill an authored slot on a subset source.
+    // Complete snapshots retain their sparse projection for invalid detail links.
+    let pending_detail = context.subset
+        && [b"XATR", b"XOWN"]
+            .iter()
+            .any(|tag| sized(view.find(tag), &[4]).is_some());
     let any = owner.is_some()
         || owner_rank.is_some()
         || activate_parent_flags.is_some()
@@ -379,7 +446,8 @@ pub(crate) fn insert(
         || location.is_some()
         || location_ref_type.is_some()
         || encounter_zone.is_some()
-        || attached.is_some();
+        || attached.is_some()
+        || pending_detail;
     if any {
         tx.prepare_cached(
             "INSERT INTO reference_details(reference_id, owner_id, owner_rank, activate_parent_flags, lock_level, lock_key_id, lock_flags, open_by_default, map_marker, map_marker_flags, map_marker_type, location_id, location_ref_type_id, encounter_zone_id, attached_ref_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",

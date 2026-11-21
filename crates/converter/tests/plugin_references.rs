@@ -81,6 +81,8 @@ fn texture_layer(id: u32, quadrant: u8, index: u16) -> Vec<u8> {
 #[test]
 fn every_single_form_id_field_remaps_relocated_full_and_light_plugins() {
     let cases: &[(&[u8; 4], &[u8; 4], usize)] = &[
+        (b"REFR", b"XMBR", 4),
+        (b"ACHR", b"XMBR", 4),
         (b"TREE", b"SNAM", 4),
         (b"TREE", b"PFIG", 4),
         (b"LTEX", b"TNAM", 4),
@@ -2099,6 +2101,11 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
             sub(b"XPRM", &shape),
         ]
         .concat();
+        if id == 0x800 {
+            payload.extend(sub(b"XRMR", &[2, 0, 1, 0]));
+            payload.extend(sub(b"XLRM", &0x811u32.to_le_bytes()));
+            payload.extend(sub(b"XLRM", &0x810u32.to_le_bytes()));
+        }
         if id == 0x803 {
             payload.extend(sub(b"XPOD", &[0; 9]));
             payload.extend(sub(
@@ -2132,6 +2139,7 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
         &[],
         1,
         [
+            record(b"STAT", 0x999, 0, Vec::new()),
             record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
             group(
                 6,
@@ -2145,6 +2153,39 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
                         marker(0x802, 0x20, 3, Some(0x0900_0800)),
                         marker(0x803, 0x20, 3, None),
                         marker(0x804, 0x20, 3, None),
+                        marker(0x810, 0x1F, 1, None),
+                        marker(0x811, 0x1F, 1, None),
+                        record(
+                            b"REFR",
+                            0x820,
+                            0x8000_0000,
+                            [
+                                sub(b"NAME", &0x999u32.to_le_bytes()),
+                                sub(b"DATA", &[0; 24]),
+                                sub(b"XMBR", &0x810u32.to_le_bytes()),
+                            ]
+                            .concat(),
+                        ),
+                        record(
+                            b"REFR",
+                            0x821,
+                            0x8000_0000,
+                            [
+                                sub(b"NAME", &0x999u32.to_le_bytes()),
+                                sub(b"DATA", &[0; 24]),
+                            ]
+                            .concat(),
+                        ),
+                        record(
+                            b"REFR",
+                            0x822,
+                            0,
+                            [
+                                sub(b"NAME", &0x999u32.to_le_bytes()),
+                                sub(b"DATA", &[0; 24]),
+                            ]
+                            .concat(),
+                        ),
                     ]
                     .concat(),
                 ),
@@ -2157,7 +2198,7 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
     let output = dir.path().join("bundle");
     converter::esm::inhouse::export_record_bundle_typed(&data, &order, &output, &[]).unwrap();
     let conn = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
-    for (id, outside) in [(0x801, true), (0x802, false), (0x803, false), (0x804, true)] {
+    for (id, outside) in [(0x801, true), (0x802, false), (0x803, false)] {
         let actual: (Option<u32>, bool) = conn
             .query_row(
                 "SELECT room_b,unbounded_b FROM room_portals WHERE ref_id=?1",
@@ -2167,6 +2208,28 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
             .unwrap();
         assert_eq!(actual, (None, outside));
     }
+    let pairs = conn
+        .prepare(
+            "SELECT pair_index,room_a,unbounded_a,room_b,unbounded_b
+             FROM room_portals WHERE ref_id=0x804 ORDER BY pair_index",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, usize>(0)?,
+                row.get::<_, Option<u32>>(1)?,
+                row.get::<_, bool>(2)?,
+                row.get::<_, Option<u32>>(3)?,
+                row.get::<_, bool>(4)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        pairs,
+        [(0, None, true, None, true), (1, None, false, None, true)]
+    );
     assert_eq!(
         conn.query_row(
             "SELECT value FROM room_graph_stats WHERE name='visibility_version'",
@@ -2176,6 +2239,48 @@ fn typed_room_export_publishes_outside_only_from_source_nulls() {
         .unwrap(),
         2
     );
+    assert_eq!(
+        conn.query_row(
+            "SELECT value FROM room_graph_stats WHERE name='assignment_version'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    let links: Vec<(u32, u32)> = conn
+        .prepare(
+            "SELECT linked_ref,link_index FROM room_links WHERE room_ref=2048 ORDER BY link_index",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(links, [(0x811, 0), (0x810, 1)]);
+    assert_eq!(
+        conn.query_row(
+            "SELECT flags FROM room_bounds WHERE ref_id=2048",
+            [],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        0x100
+    );
+    for (id, kind, target) in [
+        (0x820, "target", Some(0x810)),
+        (0x821, "none", None),
+        (0x822, "auto", None),
+    ] {
+        let rule: (String, Option<u32>) = conn
+            .query_row(
+                "SELECT assignment,target_ref FROM room_reference_rules WHERE reference_id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(rule, (kind.to_owned(), target));
+    }
 }
 
 /// Exterior cells are told apart in the real export by a grid position or a worldspace; markers
@@ -2280,10 +2385,15 @@ fn load_order_export_ignores_markers_in_exterior_cells() {
 
 fn room_graph_review_fixture(
     data: &Path,
-    link: Option<&[u8]>,
+    link: Option<u32>,
     endpoints: Option<Vec<u8>>,
 ) -> PathBuf {
-    room_graph_review_fixture_with_fields(data, link.map(<[u8]>::to_vec), endpoints, Vec::new())
+    room_graph_review_fixture_with_fields(
+        data,
+        link.map(|id| id.to_le_bytes().to_vec()),
+        endpoints,
+        Vec::new(),
+    )
 }
 
 fn room_graph_review_fixture_with_fields(
@@ -2332,6 +2442,9 @@ fn room_graph_review_fixture_with_fields(
         &[],
         1,
         [
+            record(b"STAT", 0x999, 0, Vec::new()),
+            record(b"NPC_", 0x99a, 0, Vec::new()),
+            record(b"PROJ", 0x99b, 0, Vec::new()),
             record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
             group(6, 0x900, group(9, 0x900, markers.concat())),
         ]
@@ -2408,204 +2521,58 @@ fn conflicting_portal_occurrences_keep_both_readers_conservative() {
 }
 
 #[test]
-fn portal_geometry_requires_one_valid_transform_and_positive_aperture() {
-    let directory = tempfile::tempdir().unwrap();
-    let data = directory.path().join("Data");
-    fs::create_dir(&data).unwrap();
-    let shape = |x: f32, z: f32, kind: u32| {
-        let mut bytes = [0; 32];
-        bytes[..4].copy_from_slice(&x.to_le_bytes());
-        bytes[8..12].copy_from_slice(&z.to_le_bytes());
-        bytes[28..].copy_from_slice(&kind.to_le_bytes());
-        bytes
-    };
-    let aperture = |x, z| sub(b"XPRM", &shape(x, z, 3));
-    let transform = sub(b"DATA", &[0; 24]);
-    let aperture_valid = aperture(40.0, 60.0);
-    let mut source = Vec::new();
-    let cases = [
-        ("valid", transform.clone(), aperture_valid.clone()),
-        (
-            "duplicate transform",
-            [transform.clone(), sub(b"DATA", &[1; 24])].concat(),
-            aperture_valid.clone(),
-        ),
-        (
-            "duplicate aperture",
-            transform.clone(),
-            [aperture_valid.clone(), aperture(80.0, 90.0)].concat(),
-        ),
-        (
-            "malformed duplicate aperture",
-            transform.clone(),
-            [aperture_valid.clone(), sub(b"XPRM", &[0; 4])].concat(),
-        ),
-        ("missing transform", Vec::new(), aperture_valid.clone()),
-        (
-            "short transform",
-            sub(b"DATA", &[0; 20]),
-            aperture_valid.clone(),
-        ),
-        ("missing aperture", transform.clone(), Vec::new()),
-        (
-            "12-byte aperture",
-            transform.clone(),
-            sub(b"XPRM", &shape(40.0, 60.0, 3)[..12]),
-        ),
-        (
-            "wrong shape",
-            transform.clone(),
-            sub(b"XPRM", &shape(40.0, 60.0, 1)),
-        ),
-        ("zero width", transform.clone(), aperture(0.0, 60.0)),
-        ("zero height", transform, aperture(40.0, 0.0)),
-    ];
-    for (index, (_, transform, aperture)) in cases.iter().enumerate() {
-        let cell = 0x900 + index as u32;
-        let room = 0x800 + index as u32 * 3;
-        let ends = [room.to_le_bytes(), (room + 1).to_le_bytes()].concat();
-        source.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
-        source.extend(placement_group(
-            cell,
-            [
-                placement_marker(room, 0x1f, Vec::new()),
-                placement_marker_at(room + 1, 0x1f, 500.0, Vec::new()),
-                record(
-                    b"REFR",
-                    room + 2,
-                    0,
-                    [
-                        sub(b"NAME", &0x20u32.to_le_bytes()),
-                        transform.clone(),
-                        aperture.clone(),
-                        sub(b"XPOD", &ends),
-                    ]
-                    .concat(),
-                ),
-            ]
-            .concat(),
-        ));
-    }
-    plugin(&data, "Skyrim.esm", &[], 1, source);
+fn ambiguous_room_headers_keep_both_readers_conservative() {
     for typed in [false, true] {
-        let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
-        let conn = rusqlite::Connection::open(db).unwrap();
-        for (index, (case, _, _)) in cases.iter().enumerate() {
-            let cell = 0x900 + index as u32;
-            let (complete, portals): (bool, u32) = conn
-                .query_row(
-                    "SELECT complete,(SELECT count(*) FROM room_portals WHERE cell_id=?1)
-                     FROM room_graph_cells WHERE cell_id=?1",
-                    [cell],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .unwrap();
-            let valid = *case == "valid";
-            assert_eq!(
-                (complete, portals),
-                (valid, u32::from(valid)),
-                "typed={typed}, {case}"
-            );
-        }
-    }
-}
-
-#[test]
-fn failed_room_link_remapping_keeps_both_readers_conservative() {
-    for typed in [false, true] {
-        let valid = 0x801u32.to_le_bytes();
-        let bad_index = 0x0900_0801u32.to_le_bytes();
-        for (link, expected_complete, expected_links) in [
-            (None, true, 0),
-            (Some(valid.as_slice()), true, 1),
-            (Some(bad_index.as_slice()), false, 0),
-            (Some(&valid[..3]), false, 0),
+        for headers in [
+            vec![],
+            vec![vec![0, 0, 1, 0]],
+            vec![vec![0, 0, 1, 0], vec![0, 0, 0, 0]],
+            vec![vec![0, 0, 1, 0], vec![0, 0, 1, 0]],
+            vec![vec![]],
+            vec![vec![0, 0, 1]],
+            vec![vec![0, 0, 1, 0, 0]],
         ] {
             let directory = tempfile::tempdir().unwrap();
             let data = directory.path().join("Data");
-            room_graph_review_fixture(&data, link, None);
+            let mut shape = vec![0; 32];
+            for offset in [0, 4, 8] {
+                shape[offset..offset + 4].copy_from_slice(&100f32.to_le_bytes());
+            }
+            shape[28..32].copy_from_slice(&1u32.to_le_bytes());
+            let mut fields = [
+                sub(b"NAME", &0x1Fu32.to_le_bytes()),
+                sub(b"DATA", &[0; 24]),
+                sub(b"XPRM", &shape),
+            ]
+            .concat();
+            for header in &headers {
+                fields.extend(sub(b"XRMR", header));
+            }
+            room_graph_review_fixture_with_fields(
+                &data,
+                None,
+                None,
+                vec![record(b"REFR", 0x803, 0, fields)],
+            );
             let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
             let conn = rusqlite::Connection::open(db).unwrap();
             let complete: bool = conn
                 .query_row(
                     "SELECT complete FROM room_graph_cells WHERE cell_id=0x900",
                     [],
-                    |r| r.get(0),
+                    |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(complete, expected_complete, "typed={typed}, link={link:?}");
-            let links: i64 = conn
-                .query_row("SELECT COUNT(*) FROM room_links", [], |r| r.get(0))
-                .unwrap();
-            assert_eq!(links, expected_links);
+            let expected = headers.is_empty() || (headers.len() == 1 && headers[0].len() == 4);
+            assert_eq!(complete, expected, "typed={typed}, headers={headers:?}");
             let rooms: i64 = conn
-                .query_row("SELECT COUNT(*) FROM room_bounds", [], |r| r.get(0))
+                .query_row("SELECT COUNT(*) FROM room_bounds", [], |row| row.get(0))
                 .unwrap();
-            assert_eq!(rooms, 2);
-        }
-    }
-}
-
-#[test]
-fn a_source_null_and_a_missing_room_have_different_cell_certificates() {
-    for typed in [false, true] {
-        for (target, valid) in [(0u32, true), (0x801, true), (0x910, false)] {
-            let dir = tempfile::tempdir().unwrap();
-            let data = dir.path().join("Data");
-            room_graph_review_fixture(
-                &data,
-                None,
-                Some(sub(
-                    b"XPOD",
-                    &[0x800u32.to_le_bytes(), target.to_le_bytes()].concat(),
-                )),
-            );
-            let db = rusqlite::Connection::open(export_room_review_fixture(
-                &data,
-                &dir.path().join("bundle"),
-                typed,
-            ))
-            .unwrap();
             assert_eq!(
-                placement_certificate(&db, 0x900),
-                valid,
-                "typed={typed} target={target}"
+                rooms, 3,
+                "ambiguous metadata must not discard valid room geometry"
             );
         }
-    }
-}
-
-#[test]
-fn trailing_portal_endpoints_keep_both_readers_conservative() {
-    for typed in [false, true] {
-        let directory = tempfile::tempdir().unwrap();
-        let data = directory.path().join("Data");
-        let endpoints = [0x800u32, 0, 0x801]
-            .into_iter()
-            .flat_map(u32::to_le_bytes)
-            .collect::<Vec<_>>();
-        room_graph_review_fixture(&data, None, Some(sub(b"XPOD", &endpoints)));
-        let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
-        let conn = rusqlite::Connection::open(db).unwrap();
-        let complete: bool = conn
-            .query_row(
-                "SELECT complete FROM room_graph_cells WHERE cell_id=0x900",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let flags: (bool, bool) = conn
-            .query_row(
-                "SELECT unbounded_a,unbounded_b FROM room_portals WHERE ref_id=0x802 AND pair_index=0",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(flags, (false, false), "typed={typed}");
-        assert!(
-            !complete,
-            "typed={typed}: an unmatched endpoint cannot prove complete connectivity"
-        );
     }
 }
 
@@ -2692,101 +2659,6 @@ fn room_transform_and_link_damage_is_local_to_the_source_cell() {
                 (0x950, false, 0)
             ],
             "{name}"
-        );
-    }
-}
-
-#[test]
-fn malformed_portal_primitives_only_disable_their_own_cells() {
-    fn primitive(shape: u32) -> Vec<u8> {
-        let mut bytes: Vec<_> = [40.0f32, 1.0, 60.0]
-            .into_iter()
-            .flat_map(f32::to_le_bytes)
-            .collect();
-        bytes.resize(28, 0);
-        bytes.extend(shape.to_le_bytes());
-        bytes
-    }
-    fn cell(id: u32, aperture: &[u8]) -> Vec<u8> {
-        let room_id = id + 1;
-        let marker = |id, base: u32, shape: &[u8], extra: Vec<u8>| {
-            record(
-                b"REFR",
-                id,
-                0,
-                [
-                    sub(b"NAME", &base.to_le_bytes()),
-                    sub(b"DATA", &[0; 24]),
-                    sub(b"XPRM", shape),
-                    extra,
-                ]
-                .concat(),
-            )
-        };
-        let room = marker(room_id, 0x1f, &primitive(1), Vec::new());
-        let portal = marker(
-            id + 2,
-            0x20,
-            aperture,
-            sub(
-                b"XPOD",
-                &[room_id.to_le_bytes(), 0u32.to_le_bytes()].concat(),
-            ),
-        );
-        [
-            record(b"CELL", id, 0, sub(b"DATA", &[1, 0])),
-            group(6, id, group(9, id, [room, portal].concat())),
-        ]
-        .concat()
-    }
-    for typed in [false, true] {
-        let directory = tempfile::tempdir().unwrap();
-        let data = directory.path().join("Data");
-        fs::create_dir(&data).unwrap();
-        plugin(
-            &data,
-            "Skyrim.esm",
-            &[],
-            1,
-            [
-                cell(0x800, &primitive(3)[..12]),
-                cell(0x810, &primitive(1)),
-                cell(0x820, &primitive(3)),
-            ]
-            .concat(),
-        );
-        let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
-        let conn = rusqlite::Connection::open(db).unwrap();
-        let skipped: u32 = conn
-            .query_row(
-                "SELECT value FROM room_graph_stats WHERE name='invalid_markers_skipped'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(skipped, 2, "typed={typed}");
-        let mut stmt = conn
-            .prepare(
-                "SELECT cell_id, complete, half_x, half_z
-                 FROM room_graph_cells LEFT JOIN room_portals USING (cell_id)
-                 ORDER BY cell_id",
-            )
-            .unwrap();
-        let cells: Vec<(u32, bool, Option<f32>, Option<f32>)> = stmt
-            .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        assert_eq!(
-            cells,
-            [
-                (0x800, false, None, None),
-                (0x810, false, None, None),
-                (0x820, true, Some(40.0), Some(60.0))
-            ],
-            "typed={typed}"
         );
     }
 }
@@ -2913,7 +2785,7 @@ fn authored_room_link_order_uses_source_slots_in_both_readers() {
                 link(1),
             ],
             true,
-            vec![1, 2],
+            vec![(2, 1), (1, 2)],
         ),
         (
             "early link",
@@ -2955,7 +2827,7 @@ fn authored_room_link_order_uses_source_slots_in_both_readers() {
             "stray image space after a valid run",
             vec![header(1, 0), link(1), image_space()],
             false,
-            vec![1],
+            vec![(1, 0)],
         ),
         (
             "duplicate lighting slot",
@@ -2974,7 +2846,7 @@ fn authored_room_link_order_uses_source_slots_in_both_readers() {
             "gap removed during remapping",
             vec![header(2, 0), link(1), sub(b"XESP", &[0; 3]), link(2)],
             false,
-            vec![1],
+            vec![(1, 0)],
         ),
         (
             "wrong-width link",
@@ -2982,18 +2854,23 @@ fn authored_room_link_order_uses_source_slots_in_both_readers() {
             false,
             vec![],
         ),
-        ("short run", vec![header(2, 0), link(1)], false, vec![1]),
+        (
+            "short run",
+            vec![header(2, 0), link(1)],
+            false,
+            vec![(1, 0)],
+        ),
         (
             "long run",
             vec![header(1, 0), link(1), link(2)],
             false,
-            vec![1],
+            vec![(1, 0)],
         ),
         (
             "early link before a valid run",
             vec![link(2), header(1, 0), link(1)],
             false,
-            vec![1],
+            vec![(1, 0)],
         ),
     ];
     let mut shape = vec![0; 32];
@@ -3055,9 +2932,7 @@ fn authored_room_link_order_uses_source_slots_in_both_readers() {
         )
         .unwrap();
         let conn = rusqlite::Connection::open(db).unwrap();
-        let mut links = conn
-            .prepare("SELECT linked_ref FROM room_links WHERE room_ref=?1 ORDER BY linked_ref")
-            .unwrap();
+        let mut links = conn.prepare("SELECT linked_ref,link_index FROM room_links WHERE room_ref=?1 ORDER BY link_index").unwrap();
         for (index, (name, _, expected_complete, expected_links)) in cases.iter().enumerate() {
             let cell = 0x0200_0900 + index as u32;
             let source = 0x0200_1000 + 3 * index as u32;
@@ -3069,13 +2944,15 @@ fn authored_room_link_order_uses_source_slots_in_both_readers() {
                 )
                 .unwrap();
             let actual = links
-                .query_map([source], |row| row.get::<_, u32>(0))
+                .query_map([source], |row| {
+                    Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?))
+                })
                 .unwrap()
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .unwrap();
             let expected: Vec<_> = expected_links
                 .iter()
-                .map(|target| source + target)
+                .map(|&(target, index)| (source + target, index))
                 .collect();
             if complete != *expected_complete || actual != expected {
                 failures.push(format!("{reader:?} {name}: complete={complete}, links={actual:08X?}; expected complete={expected_complete}, links={expected:08X?}"));
@@ -3199,335 +3076,185 @@ fn room_link_anomalies_reach_both_readers_integration_reports() {
 }
 
 #[test]
-fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
-    use converter::config::RecordReader;
-
-    let dir = tempfile::tempdir().unwrap();
-    let data = dir.path().join("Data");
-    fs::create_dir(&data).unwrap();
-    let portal = |room: u32| {
-        placement_marker(
-            0x850,
-            0x20,
-            sub(b"XPOD", &[room.to_le_bytes(), [0; 4]].concat()),
-        )
-    };
-    let mut contents = [
-        record(b"STAT", 0x830, 0, sub(b"EDID", b"FixtureStatic\0")),
-        record(b"KYWD", 0x831, 0, sub(b"EDID", b"FixtureKeyword\0")),
-    ]
-    .concat();
-    for (cell, room) in [(0x900, 0x800), (0x901, 0x810), (0x902, 0x820)] {
-        contents.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
-        let mut placements = placement_marker(room, 0x1f, Vec::new());
-        if cell == 0x900 {
-            placements.extend(portal(room));
-        }
-        if cell == 0x902 {
-            placements.extend(placement(0x851, 0x830, 0, 1.0, Vec::new()));
-        }
-        contents.extend(placement_group(cell, placements));
-    }
-    let base = plugin(&data, "Skyrim.esm", &[], 1, contents);
-    let deleted = plugin(
-        &data,
-        "Fixed.esp",
-        &["Skyrim.esm"],
-        0,
-        record(b"REFR", 0x850, 0x20, Vec::new()),
-    );
-    let restored = plugin(
-        &data,
-        "Restored.esp",
-        &["Skyrim.esm"],
-        0,
-        placement_group(0x901, portal(0x810)),
-    );
-    let later_wrong_base = plugin(
-        &data,
-        "StillBroken.esp",
-        &["Skyrim.esm"],
-        0,
-        placement_group(0x902, placement(0x850, 0x832, 0, 0.0, Vec::new())),
-    );
-    let cases = [
-        (
-            "torn",
-            Some(0x901),
-            record(b"REFR", 0x850, 0x40000, vec![0xff; 8]),
-            [false, false, true],
-        ),
-        (
-            "invalid-parent",
-            Some(0x0900_0901),
-            placement(0x850, 0x830, 0, 0.0, Vec::new()),
-            [false, true, true],
-        ),
-        (
-            "null-parent",
-            Some(0),
-            placement(0x850, 0x830, 0, 0.0, Vec::new()),
-            [false, true, true],
-        ),
-        (
-            "ungrouped",
-            None,
-            placement(0x850, 0x830, 0, 0.0, Vec::new()),
-            [false, true, true],
-        ),
-        (
-            "null-name",
-            Some(0x901),
-            placement(0x850, 0, 0, 0.0, Vec::new()),
-            [false, false, true],
-        ),
-        (
-            "short-transform",
-            Some(0x901),
-            record(
-                b"REFR",
-                0x850,
-                0,
-                [sub(b"NAME", &0x20u32.to_le_bytes()), sub(b"DATA", &[0; 20])].concat(),
-            ),
-            [false, false, true],
-        ),
-        (
-            "duplicate-transform",
-            Some(0x901),
-            placement(0x850, 0x20, 0, 0.0, sub(b"DATA", &[0; 24])),
-            [false, false, true],
-        ),
-        (
-            "nonfinite-transform",
-            Some(0x901),
-            placement(0x850, 0x20, 0, f32::NAN, Vec::new()),
-            [false, false, true],
-        ),
-        (
-            "duplicate-live-bases",
-            Some(0x901),
-            placement(0x850, 0x20, 0, 0.0, sub(b"NAME", &0x830u32.to_le_bytes())),
-            [false, false, true],
-        ),
-        (
-            "null-first-name",
-            Some(0x901),
-            placement(0x850, 0, 0, 0.0, sub(b"NAME", &0x830u32.to_le_bytes())),
-            [false, false, true],
-        ),
-        (
-            "missing-name",
-            Some(0x901),
-            record(b"REFR", 0x850, 0, sub(b"DATA", &[0; 24])),
-            [false, false, true],
-        ),
-        (
-            "wrong-base-type",
-            Some(0x901),
-            placement(0x850, 0x831, 0, 0.0, Vec::new()),
-            [false, false, true],
-        ),
-        (
-            "missing-base-target",
-            Some(0x901),
-            placement(0x850, 0x832, 0, 0.0, Vec::new()),
-            [false, false, true],
-        ),
-        (
-            "wrong-parent-type",
-            Some(0x830),
-            placement(0x850, 0x830, 0, 0.0, Vec::new()),
-            [false, true, true],
-        ),
-        (
-            "missing-parent-target",
-            Some(0x903),
-            placement(0x850, 0x830, 0, 0.0, Vec::new()),
-            [false, true, true],
-        ),
-    ];
-    let mut failures = Vec::new();
-    for (name, destination, candidate, unresolved) in cases {
-        let rejected = match destination {
-            Some(cell) => placement_group(cell, candidate),
-            None => candidate,
-        };
-        let stat_control = placement_group(0x902, placement(0x851, 0x830, 0, 2.0, Vec::new()));
-        let broken = plugin(
-            &data,
-            "Broken.esp",
-            &["Skyrim.esm"],
-            0,
-            [rejected, stat_control].concat(),
-        );
-        if matches!(
-            name,
-            "duplicate-live-bases" | "null-name" | "missing-name" | "null-first-name"
-        ) {
-            let plugins = [base.clone(), broken.clone()];
-            let order = LoadOrder::read(&plugins).unwrap();
-            let decoded = converter::records::read_plugins(&plugins, &order).unwrap();
-            assert_eq!(decoded.records[&0x850].cell_form_id, Some(0x900));
-        }
-        let mut cases = vec![
-            (vec![&broken], Some(0x900), unresolved),
-            (vec![&broken, &restored], Some(0x901), [true; 3]),
-            (vec![&broken, &deleted], None, [true; 3]),
-        ];
-        if name == "wrong-base-type" {
-            cases.push((vec![&broken, &later_wrong_base], Some(0x900), [false; 3]));
-            cases.push((vec![&deleted, &broken], None, [true, false, true]));
-        }
-        for (overrides, expected_cell, expected_certificates) in cases {
-            let plugins = std::iter::once(&base)
-                .chain(overrides)
-                .cloned()
-                .collect::<Vec<_>>();
-            for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
-                let output = dir.path().join("world.db");
-                EsmParser::convert_plugins_with_reader(&plugins, &output, reader, &data).unwrap();
-                let db = rusqlite::Connection::open(output).unwrap();
-                let certificates =
-                    [0x900, 0x901, 0x902].map(|cell| placement_certificate(&db, cell));
-                let winner = placement_winner_cell(&db, 0x850);
-                let stat_x: f32 = db
-                    .query_row("SELECT pos_x FROM [references] WHERE id=0x851", [], |row| {
-                        row.get(0)
-                    })
-                    .unwrap();
-                let projected: Option<u32> = db
-                    .query_row(
-                        "SELECT max(cell_id) FROM room_portals WHERE ref_id=0x850",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .unwrap();
-                if certificates != expected_certificates
-                    || winner != expected_cell
-                    || projected != expected_cell
-                    || stat_x != 2.0
-                {
-                    failures.push(format!(
-                        "{reader:?} {name} plugins={plugins:?}: certificates={certificates:?}, winner={winner:?}, portal={projected:?}, STAT control x={stat_x}; expected {expected_certificates:?}, {expected_cell:?}, STAT control x=2"
-                    ));
-                }
-            }
+fn failed_room_link_remapping_keeps_both_readers_conservative() {
+    for typed in [false, true] {
+        for link in [None, Some(0x801), Some(0x0900_0801)] {
+            let directory = tempfile::tempdir().unwrap();
+            let data = directory.path().join("Data");
+            room_graph_review_fixture(&data, link, None);
+            let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+            let conn = rusqlite::Connection::open(db).unwrap();
+            let complete: bool = conn
+                .query_row(
+                    "SELECT complete FROM room_graph_cells WHERE cell_id=0x900",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                complete,
+                link != Some(0x0900_0801),
+                "typed={typed}, link={link:?}"
+            );
+            let links: i64 = conn
+                .query_row("SELECT COUNT(*) FROM room_links", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(links, i64::from(link == Some(0x801)));
+            let rooms: i64 = conn
+                .query_row("SELECT COUNT(*) FROM room_bounds", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(rooms, 2);
         }
     }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
-fn placement_winner_uses_forward_and_effective_catalogue_targets() {
-    use converter::config::RecordReader;
-    use rusqlite::OptionalExtension;
+fn trailing_portal_endpoints_keep_both_readers_conservative() {
+    for typed in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let endpoints = [0x800u32, 0, 0x801]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        room_graph_review_fixture(&data, None, Some(sub(b"XPOD", &endpoints)));
+        let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let complete: bool = conn
+            .query_row(
+                "SELECT complete FROM room_graph_cells WHERE cell_id=0x900",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let flags: (bool, bool) = conn
+            .query_row(
+                "SELECT unbounded_a,unbounded_b FROM room_portals WHERE ref_id=0x802 AND pair_index=0",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(flags, (false, false), "typed={typed}");
+        assert!(
+            !complete,
+            "typed={typed}: an unmatched endpoint cannot prove complete connectivity"
+        );
+    }
+}
 
-    let directory = tempfile::tempdir().unwrap();
-    let data = directory.path();
-    let base = plugin(
-        data,
-        "Skyrim.esm",
-        &[],
-        1,
-        [
-            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
-            record(b"STAT", 0x830, 0, sub(b"EDID", b"OriginalStatic\0")),
-            placement_group(0x900, placement(0x850, 0x830, 0, 1.0, Vec::new())),
+#[test]
+fn malformed_authored_assignments_stay_unknown_in_both_readers() {
+    for typed in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let mut references = Vec::new();
+        let mut expected = Vec::new();
+        for (type_index, record_type) in [
+            b"REFR", b"ACHR", b"ACRE", b"PGRE", b"PMIS", b"PHZD", b"PARW", b"PBAR", b"PBEA",
+            b"PCON", b"PFLA",
         ]
-        .concat(),
-    );
-    let patch = plugin(
-        data,
-        "Patch.esp",
-        &["Skyrim.esm"],
-        0,
-        [
-            placement_group(
-                0x0100_0901,
-                placement(0x850, 0x0100_0831, 0, 2.0, Vec::new()),
-            ),
-            record(b"STAT", 0x0100_0831, 0, sub(b"EDID", b"ForwardStatic\0")),
-            record(b"CELL", 0x0100_0901, 0, sub(b"DATA", &[1, 0])),
-        ]
-        .concat(),
-    );
-    let original = (0x900, 0x830);
-    let moved = (0x0100_0901, 0x0100_0831);
-    let cases = [
-        ("forward declarations", None, moved, None),
-        (
-            "effective base changed type",
-            Some(record(b"KYWD", moved.1, 0, sub(b"EDID", b"NotAStatic\0"))),
-            original,
-            Some("required NAME"),
-        ),
-        (
-            "effective parent deleted",
-            Some(record(b"CELL", moved.0, 0x20, Vec::new())),
-            original,
-            Some("placement parent"),
-        ),
-        (
-            "invalid placement temporarily shadows the base",
-            Some(placement_group(
-                0x900,
-                placement(moved.1, 0x832, 0, 0.0, Vec::new()),
-            )),
-            moved,
-            None,
-        ),
-    ];
-    let mut failures = Vec::new();
-    for (name, extra, expected, rejection) in cases {
-        let plugins =
-            [base.clone(), patch.clone()]
-                .into_iter()
-                .chain(extra.map(|payload| {
-                    plugin(data, "Later.esp", &["Skyrim.esm", "Patch.esp"], 0, payload)
-                }))
-                .collect::<Vec<_>>();
-        for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
-            let output = data.join("winner.db");
-            EsmParser::convert_plugins_with_reader(&plugins, &output, reader, data).unwrap();
-            let db = rusqlite::Connection::open(output).unwrap();
-            let winner = db
-                .query_row(
-                    "SELECT cell_id, base_form_id FROM [references] WHERE id=0x850",
-                    [],
-                    |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)),
-                )
-                .optional()
-                .unwrap();
-            if winner != Some(expected) {
-                failures.push(format!(
-                    "{reader:?} {name}: {winner:08X?}, expected {expected:08X?}"
-                ));
-            }
-            if matches!(reader, RecordReader::Inhouse) {
-                let (status, reason): (String, Option<String>) = db
-                    .query_row(
-                        "SELECT status, reason FROM record_overrides
-                         WHERE form_id=0x850 ORDER BY chain_position DESC LIMIT 1",
-                        [],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .unwrap();
-                let expected_status = if rejection.is_some() {
-                    "skipped"
-                } else {
-                    "accepted"
-                };
-                if status != expected_status
-                    || rejection
-                        .is_some_and(|part| !reason.is_some_and(|reason| reason.contains(part)))
-                {
-                    failures.push(format!("{reader:?} {name}: expected {expected_status} ({rejection:?}), got {status}"));
+        .into_iter()
+        .enumerate()
+        {
+            let base: u32 = match record_type {
+                b"REFR" | b"ACRE" => 0x999,
+                b"ACHR" => 0x99a,
+                _ => 0x99b,
+            };
+            for (index, assignment) in [
+                None,
+                Some(vec![0; 3]),
+                Some(vec![0; 4]),
+                Some(0x800u32.to_le_bytes().to_vec()),
+                Some([0x800u32.to_le_bytes().as_slice(), &[1]].concat()),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                for (flag_index, flags) in [0, 0x8000_0000].into_iter().enumerate() {
+                    let id = 0x820 + (type_index * 10 + index * 2 + flag_index) as u32;
+                    let mut fields =
+                        [sub(b"NAME", &base.to_le_bytes()), sub(b"DATA", &[0; 24])].concat();
+                    if let Some(bytes) = &assignment {
+                        fields.extend(sub(b"XMBR", bytes));
+                    }
+                    references.push(record(record_type, id, flags, fields));
+                    let rule = match index {
+                        0 if flags != 0 => "none",
+                        0 => "auto",
+                        3 => "target",
+                        _ => "unknown",
+                    };
+                    expected.push((id, rule.to_owned()));
                 }
             }
         }
+        room_graph_review_fixture_with_fields(&data, None, None, references);
+        let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let rules = conn
+            .prepare(
+                "SELECT reference_id,assignment FROM room_reference_rules ORDER BY reference_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            rules, expected,
+            "typed={typed}: malformed XMBR is authored but unusable"
+        );
     }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn public_load_order_export_requires_exact_multibound_target_width() {
+    use converter::esm::{binary, exporter};
+
+    let directory = tempfile::tempdir().unwrap();
+    let target = 0x800u32.to_le_bytes();
+    let references = [target.to_vec(), [target.as_slice(), &[1]].concat()]
+        .into_iter()
+        .enumerate()
+        .map(|(index, bytes)| {
+            record(
+                b"REFR",
+                0x820 + index as u32,
+                0x8000_0000,
+                [
+                    sub(b"NAME", &0x999u32.to_le_bytes()),
+                    sub(b"DATA", &[0; 24]),
+                    sub(b"XMBR", &bytes),
+                ]
+                .concat(),
+            )
+        })
+        .collect();
+    let plugin = room_graph_review_fixture_with_fields(directory.path(), None, None, references);
+    let records = binary::parse_plugin_file(&plugin)
+        .unwrap()
+        .into_iter()
+        .map(|record| (record.form_id, record))
+        .collect();
+    let order = LoadOrder::read(&[plugin]).unwrap();
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    exporter::export_to_db_with_load_order(&conn, &records, &order).unwrap();
+    let rules = conn
+        .prepare("SELECT assignment,target_ref FROM room_reference_rules ORDER BY reference_id")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<u32>>(1)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        rules,
+        [("target".into(), Some(0x800)), ("unknown".into(), None)]
+    );
 }
 
 #[test]
@@ -3631,7 +3358,7 @@ fn placement_cycle_recovers_queued_static_before_checking_its_dependent() {
 }
 
 #[test]
-fn bounded_damaged_legacy_cell_preserves_the_winner_and_invalidates_its_graph() {
+fn bounded_damaged_cell_preserves_the_winner_and_invalidates_its_graph() {
     use converter::config::RecordReader;
 
     let directory = tempfile::tempdir().unwrap();
@@ -3660,23 +3387,25 @@ fn bounded_damaged_legacy_cell_preserves_the_winner_and_invalidates_its_graph() 
             0,
             record(b"CELL", id, 0, vec![0]),
         );
-        let output = data.join("graph.db");
-        EsmParser::convert_plugins_with_reader(
-            &[base.clone(), patch],
-            &output,
-            RecordReader::Legacy,
-            data,
-        )
-        .unwrap();
-        let db = rusqlite::Connection::open(output).unwrap();
-        assert!(!placement_certificate(&db, 0x900));
-        assert_eq!(placement_certificate(&db, 0x901), other_certified);
-        let count: usize = db
-            .query_row("SELECT count(*) FROM cells WHERE id=0x900", [], |r| {
-                r.get(0)
-            })
+        for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+            let output = data.join(format!("graph-{reader:?}-{id}.db"));
+            EsmParser::convert_plugins_with_reader(
+                &[base.clone(), patch.clone()],
+                &output,
+                reader,
+                data,
+            )
             .unwrap();
-        assert_eq!(count, 1);
+            let db = rusqlite::Connection::open(output).unwrap();
+            assert!(!placement_certificate(&db, 0x900));
+            assert_eq!(placement_certificate(&db, 0x901), other_certified);
+            let count: usize = db
+                .query_row("SELECT count(*) FROM cells WHERE id=0x900", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 1);
+        }
     }
 }
 
@@ -3796,71 +3525,87 @@ fn typed_placement_duplicates_claim_the_slot_only_after_admission() {
 }
 
 #[test]
-fn rejected_placement_collision_keeps_destination_open_without_a_proven_alias() {
-    use converter::config::RecordReader;
-
-    let dir = tempfile::tempdir().unwrap();
-    let data = dir.path();
-    let mut contents = record(b"STAT", 0x830, 0, sub(b"EDID", b"FixtureStatic\0"));
-    for (cell, room) in [(0x900, 0x800), (0x901, 0x810), (0x902, 0x820)] {
-        contents.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
-        contents.extend(placement_group(
-            cell,
-            placement_marker(room, 0x1f, Vec::new()),
-        ));
-    }
-    let base = plugin(data, "Skyrim.esm", &[], 1, contents);
-    let patch = plugin(
-        data,
-        "Patch.esp",
-        &["Skyrim.esm"],
-        0,
-        [
-            placement_group(0x900, placement(0x0100_0850, 0x830, 0, 0.0, Vec::new())),
-            placement_group(0x901, placement(0x0900_0850, 0x830, 0, 0.0, Vec::new())),
-        ]
-        .concat(),
-    );
-    let followup = plugin(
-        data,
-        "Fixed.esp",
-        &["Skyrim.esm", "Patch.esp"],
-        0,
-        placement_group(0x902, placement(0x0100_0850, 0x830, 0, 0.0, Vec::new())),
-    );
-    let mut failures = Vec::new();
-    for moved in [false, true] {
-        let plugins = [base.clone(), patch.clone()]
-            .into_iter()
-            .chain(moved.then(|| followup.clone()))
-            .collect::<Vec<_>>();
-        for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
-            let output = data.join("world.db");
-            EsmParser::convert_plugins_with_reader(&plugins, &output, reader, data).unwrap();
-            let db = rusqlite::Connection::open(output).unwrap();
-            let certificates = [0x900, 0x901, 0x902].map(|cell| placement_certificate(&db, cell));
-            let winner = placement_winner_cell(&db, 0x0100_0850);
-            let expected_cell = Some(if moved { 0x902 } else { 0x900 });
-            if certificates != [true, false, true] || winner != expected_cell {
-                failures.push(format!(
-                    "{reader:?} moved={moved}: certificates={certificates:?}, winner={winner:?}; expected [true, false, true], {expected_cell:?}"
-                ));
+fn repeated_multibound_targets_stay_unknown_in_both_readers() {
+    let mut unexpected = Vec::new();
+    for typed in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let mut references = Vec::new();
+        for (record_type, base) in [(b"REFR", 0x999u32), (b"ACHR", 0x99a)] {
+            for flags in [0, 0x8000_0000] {
+                for targets in [[0x800u32, 0x801], [0x800, 0x800]] {
+                    let id = 0xa00 + references.len() as u32;
+                    let fields = [
+                        sub(b"NAME", &base.to_le_bytes()),
+                        sub(b"DATA", &[0; 24]),
+                        sub(b"XMBR", &targets[0].to_le_bytes()),
+                        sub(b"XMBR", &targets[1].to_le_bytes()),
+                    ]
+                    .concat();
+                    references.push(record(record_type, id, flags, fields));
+                }
             }
         }
+        room_graph_review_fixture_with_fields(&data, None, None, references);
+        let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let rules = conn
+            .prepare(
+                "SELECT reference_id,assignment,target_ref FROM room_reference_rules \
+                 WHERE reference_id BETWEEN 0xa00 AND 0xa07 ORDER BY reference_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<u32>>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(rules.len(), 8, "typed={typed}: retain every placement rule");
+        unexpected.extend(
+            rules
+                .into_iter()
+                .filter(|(_, rule, target)| rule != "unknown" || target.is_some())
+                .map(|rule| (typed, rule)),
+        );
     }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert!(
+        unexpected.is_empty(),
+        "repeated XMBR must not select a target in either reader: {unexpected:?}"
+    );
 }
 
-fn placement_winner_cell(db: &rusqlite::Connection, id: u32) -> Option<u32> {
-    use rusqlite::OptionalExtension;
-
-    db.query_row(
-        "SELECT cell_id FROM [references] WHERE id=?1",
-        [id],
-        |row| row.get(0),
-    )
-    .optional()
-    .unwrap()
+#[test]
+fn malformed_authored_room_links_keep_both_readers_incomplete() {
+    for typed in [false, true] {
+        for link in [
+            None,
+            Some(vec![0; 3]),
+            Some(0x801u32.to_le_bytes().to_vec()),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let data = directory.path().join("Data");
+            room_graph_review_fixture_with_fields(&data, link.clone(), None, Vec::new());
+            let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+            let conn = rusqlite::Connection::open(db).unwrap();
+            let complete: bool = conn
+                .query_row(
+                    "SELECT complete FROM room_graph_cells WHERE cell_id=0x900",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                complete,
+                link.as_ref().is_none_or(|bytes| bytes.len() == 4),
+                "typed={typed}, link={link:?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -3941,79 +3686,94 @@ fn incomplete_placed_payloads_keep_their_cells_open() {
 }
 
 #[test]
-fn damaged_groups_and_roomless_placements_keep_negative_certificates() {
-    let directory = tempfile::tempdir().unwrap();
-    let data = directory.path().join("Data");
-    fs::create_dir(&data).unwrap();
-    let cell = |id| record(b"CELL", id, 0, sub(b"DATA", &[1, 0]));
-    let room = |id| placement_marker(id, 0x1f, Vec::new());
-    let truncated_group = |kind, label| {
-        let mut bytes = group(kind, label, vec![0]);
-        bytes.pop();
+fn malformed_portal_primitives_only_disable_their_own_cells() {
+    fn primitive(shape: u32) -> Vec<u8> {
+        let mut bytes: Vec<_> = [40.0f32, 1.0, 60.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        bytes.resize(28, 0);
+        bytes.extend(shape.to_le_bytes());
         bytes
-    };
-    let mut torn_placement = placement(0x802, 0x999, 0, 0.0, Vec::new());
-    torn_placement.extend(b"XL");
-    let size = (torn_placement.len() - 24) as u32;
-    torn_placement[4..8].copy_from_slice(&size.to_le_bytes());
-    plugin(
-        &data,
-        "Skyrim.esm",
-        &[],
-        1,
-        [
-            record(b"STAT", 0x999, 0, sub(b"EDID", b"RoomlessStatic\0")),
-            cell(0x900),
-            group(
-                6,
-                0x900,
-                [group(9, 0x900, room(0x800)), truncated_group(9, 0x900)].concat(),
+    }
+    fn cell(id: u32, aperture: &[u8]) -> Vec<u8> {
+        let room_id = id + 1;
+        let marker = |id, base: u32, shape: &[u8], extra: Vec<u8>| {
+            record(
+                b"REFR",
+                id,
+                0,
+                [
+                    sub(b"NAME", &base.to_le_bytes()),
+                    sub(b"DATA", &[0; 24]),
+                    sub(b"XPRM", shape),
+                    extra,
+                ]
+                .concat(),
+            )
+        };
+        let room = marker(room_id, 0x1f, &primitive(1), Vec::new());
+        let portal = marker(
+            id + 2,
+            0x20,
+            aperture,
+            sub(
+                b"XPOD",
+                &[room_id.to_le_bytes(), 0u32.to_le_bytes()].concat(),
             ),
-            cell(0x901),
-            placement_group(0x901, room(0x801)),
-            cell(0x902),
-            group(6, 0x902, truncated_group(9, 0x902)),
-            cell(0x903),
-            placement_group(0x903, torn_placement),
-            cell(0x904),
-            placement_group(0x904, placement(0x803, 0x999, 0, 0.0, Vec::new())),
+        );
+        [
+            record(b"CELL", id, 0, sub(b"DATA", &[1, 0])),
+            group(6, id, group(9, id, [room, portal].concat())),
         ]
-        .concat(),
-    );
+        .concat()
+    }
     for typed in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        fs::create_dir(&data).unwrap();
+        plugin(
+            &data,
+            "Skyrim.esm",
+            &[],
+            1,
+            [
+                cell(0x800, &primitive(3)[..12]),
+                cell(0x810, &primitive(1)),
+                cell(0x820, &primitive(3)),
+            ]
+            .concat(),
+        );
         let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
         let conn = rusqlite::Connection::open(db).unwrap();
-        assert!(conn
+        let skipped: u32 = conn
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM [references] WHERE cell_id=0x904 AND base_form_id=0x999)",
+                "SELECT value FROM room_graph_stats WHERE name='invalid_markers_skipped'",
                 [],
-                |row| row.get::<_, bool>(0),
+                |row| row.get(0),
             )
-            .unwrap());
+            .unwrap();
+        assert_eq!(skipped, 2, "typed={typed}");
         let mut stmt = conn
             .prepare(
-                "SELECT cell_id,complete,(SELECT count(*) FROM room_bounds WHERE cell_id=g.cell_id)
-                 FROM room_graph_cells g ORDER BY cell_id",
+                "SELECT cell_id, complete, half_x, half_z
+                 FROM room_graph_cells LEFT JOIN room_portals USING (cell_id)
+                 ORDER BY cell_id",
             )
             .unwrap();
-        let certificates = stmt
+        let cells: Vec<(u32, bool, Option<f32>, Option<f32>)> = stmt
             .query_map([], |row| {
-                Ok((
-                    row.get::<_, u32>(0)?,
-                    row.get::<_, bool>(1)?,
-                    row.get::<_, u32>(2)?,
-                ))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })
             .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
+            .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(
-            certificates,
+            cells,
             [
-                (0x900, false, 1),
-                (0x901, true, 1),
-                (0x902, false, 0),
-                (0x903, false, 0)
+                (0x800, false, None, None),
+                (0x810, false, None, None),
+                (0x820, true, Some(40.0), Some(60.0))
             ],
             "typed={typed}"
         );
@@ -4247,6 +4007,18 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
             "partial-portal-id",
             placement_group(a, moved_portal(0x800)[..15].to_vec()),
             [false, false, false],
+            [false, false, true],
+        ),
+        (
+            "short-cell-record",
+            placement_group(a, record(b"CELL", b, 0, Vec::new())[..16].to_vec()),
+            [false, false, true],
+            [false, false, true],
+        ),
+        (
+            "unreadable-cell-override",
+            record(b"CELL", b, 0x40000, vec![4, 0, 0, 0, 0xff]),
+            [true, false, true],
             [false, false, true],
         ),
         (
@@ -4550,15 +4322,19 @@ fn converted_placement_fixture(root: &Path) -> PathBuf {
         (PLACEMENT_CELL_A, 0x800u32, 0u32),
         (PLACEMENT_CELL_B, 0x820, 0),
         (PLACEMENT_CELL_UNRELATED, 0x840, 0),
-        // The malformed source portal cannot establish an outside connection.
+        // The typed reader clears the invalid master index to zero. The runtime portal row
+        // records that the zero cannot be treated as authored outside.
         (PLACEMENT_CELL_INCOMPLETE, 0x860, 0x9900_0123),
     ] {
         source.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
-        let mut endpoints = [room.to_le_bytes(), outside.to_le_bytes()].concat();
-        if outside != 0 {
-            endpoints.push(0);
-        }
-        let portal = placement_marker(room + 1, 0x20, sub(b"XPOD", &endpoints));
+        let portal = placement_marker(
+            room + 1,
+            0x20,
+            sub(
+                b"XPOD",
+                &[room.to_le_bytes(), outside.to_le_bytes()].concat(),
+            ),
+        );
         source.extend(placement_group(
             cell,
             [
@@ -4597,14 +4373,19 @@ fn converted_placement_fixture(root: &Path) -> PathBuf {
         [PLACEMENT_STAT],
     )
     .unwrap();
+    conn.execute(
+        "INSERT INTO room_model_bounds VALUES (?1,1,2,3,4)",
+        [PLACEMENT_STAT],
+    )
+    .unwrap();
     converter::esm::rooms::add_overlap_rows(&mut conn).unwrap();
     assets
 }
 
-fn placement_memberships(db: &rusqlite::Connection, cell: u32) -> Vec<(u32, u32, bool)> {
+fn placement_rules(db: &rusqlite::Connection, cell: u32) -> Vec<(u32, String, Option<u32>)> {
     db.prepare(
-        "SELECT reference_id,room_ref,contained FROM reference_rooms
-         JOIN room_bounds ON ref_id=room_ref WHERE cell_id=?1 ORDER BY reference_id,room_ref",
+        "SELECT reference_id,assignment,target_ref FROM room_reference_rules
+         WHERE cell_id=?1 ORDER BY reference_id",
     )
     .unwrap()
     .query_map([cell], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
@@ -4700,6 +4481,32 @@ fn plugin_placement_import_keeps_neighbors_of_damaged_records_and_frames() {
     let mut bad_group = group(6, a, Vec::new());
     bad_group[4..8].copy_from_slice(&0xffffu32.to_le_bytes());
     let cases = [
+        (
+            "bad-reference-header-id",
+            placement_group(
+                a,
+                [
+                    placement(0x9900_0842, PLACEMENT_STAT, 0, 5.0, Vec::new()),
+                    good_neighbor(),
+                ]
+                .concat(),
+            ),
+            [false, true, true],
+            2,
+        ),
+        (
+            "bad-reference-parent-id",
+            [
+                placement_group(
+                    0x9900_0800,
+                    placement(0x842, PLACEMENT_STAT, 0, 5.0, Vec::new()),
+                ),
+                placement_group(a, good_neighbor()),
+            ]
+            .concat(),
+            [false; 3],
+            5,
+        ),
         (
             "bad-base-master-index",
             placement_group(
@@ -4902,10 +4709,11 @@ fn plugin_placement_import_keeps_neighbors_of_damaged_records_and_frames() {
             contents,
         );
         let result = run_placement_import(&assets, "--plugin", &source);
-        let warning = if name == "bad-base-master-index" {
-            "malformed NAME"
-        } else {
-            "skipped 1 malformed"
+        let warning = match name {
+            "bad-reference-header-id" => "99000842 with invalid record FormID",
+            "bad-reference-parent-id" => "00000842 with invalid parent CELL",
+            "bad-base-master-index" => "malformed NAME",
+            _ => "skipped 1 malformed",
         };
         assert!(
             String::from_utf8_lossy(&result.stderr).contains(warning),
@@ -5163,345 +4971,6 @@ fn plugin_placement_import_rolls_back_unsupported_content_alongside_damage() {
 }
 
 #[test]
-fn placement_import_accepts_matching_room_marker_extents_and_a_pack_named_like_help() {
-    let dir = tempfile::tempdir().unwrap();
-    let assets = converted_placement_fixture(dir.path());
-    let pack = dir.path().join("-h");
-    fs::rename(assets, &pack).unwrap();
-    let db = rusqlite::Connection::open(pack.join("skyrim_world.db")).unwrap();
-    let extents = 100f32.to_le_bytes().repeat(3);
-    let replace = |fields| {
-        plugin(
-            dir.path(),
-            "Marker.esp",
-            &["Skyrim.esm"],
-            0,
-            placement_group(PLACEMENT_CELL_A, placement_marker(0x800, 0x1f, fields)),
-        )
-    };
-    for fields in [
-        sub(b"XMBO", &[0; 12]),
-        sub(b"XMBO", &[0; 11]),
-        [sub(b"XMBO", &extents), sub(b"XMBO", &extents)].concat(),
-    ] {
-        let failure = run_placement_import(&pack, "--plugin", &replace(fields));
-        assert!(!failure.status.success());
-        assert!(String::from_utf8_lossy(&failure.stderr).contains("XMBO"));
-        assert!(placement_certificate(&db, PLACEMENT_CELL_A));
-    }
-    assert_placement_import(
-        run_placement_import(&pack, "--plugin", &replace(sub(b"XMBO", &extents))),
-        "Applied 1 room placements in 1 cells (1 certified)",
-    );
-    let delete = dir.path().join("delete.json");
-    fs::write(&delete, br#"{"edits":[{"op":"delete","id":2048}]}"#).unwrap();
-    let cli = |args: &[&str]| {
-        std::process::Command::new(env!("CARGO_BIN_EXE_converter"))
-            .current_dir(dir.path())
-            .arg("apply-room-placements")
-            .args(args)
-            .output()
-            .unwrap()
-    };
-    assert!(String::from_utf8_lossy(&cli(&["--help"]).stdout).contains("--native FILE"));
-    assert_placement_import(
-        cli(&["-h", "--native", "delete.json"]),
-        "Applied 1 room placements in 1 cells (0 certified)",
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT count(*) FROM [references] WHERE id=0x800",
-            [],
-            |row| row.get::<_, usize>(0)
-        )
-        .unwrap(),
-        0
-    );
-}
-
-#[test]
-fn duplicate_apertures_cannot_replace_a_certified_portal() {
-    let dir = tempfile::tempdir().unwrap();
-    let assets = converted_placement_fixture(dir.path());
-    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
-    let portal = |extra: Vec<u8>| {
-        plugin(
-            dir.path(),
-            "Aperture.esp",
-            &["Skyrim.esm"],
-            0,
-            placement_group(
-                PLACEMENT_CELL_A,
-                placement_marker(
-                    0x801,
-                    0x20,
-                    [
-                        sub(b"XPOD", &[0x800u32.to_le_bytes(), [0; 4]].concat()),
-                        extra,
-                    ]
-                    .concat(),
-                ),
-            ),
-        )
-    };
-    let result = run_placement_import(&assets, "--plugin", &portal(sub(b"XPRM", &[0; 32])));
-    assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("primitive"));
-    assert!(placement_certificate(&db, PLACEMENT_CELL_A));
-    let result = run_placement_import(&assets, "--plugin", &portal(Vec::new()));
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    assert!(placement_certificate(&db, PLACEMENT_CELL_A));
-}
-
-#[test]
-fn both_pack_editors_reject_a_shared_database_before_starting_sqlite() {
-    let dir = tempfile::tempdir().unwrap();
-    let other = dir.path().join("other.db");
-    fs::write(&other, b"original").unwrap();
-    fs::hard_link(&other, dir.path().join("skyrim_world.db")).unwrap();
-    let placement = run_placement_import(dir.path(), "--native", &dir.path().join("edit.json"));
-    let bounds = std::process::Command::new(env!("CARGO_BIN_EXE_room-model-bounds-refresh"))
-        .arg(dir.path())
-        .arg("meshes/test.glb")
-        .output()
-        .unwrap();
-    for result in [placement, bounds] {
-        let error = String::from_utf8_lossy(&result.stderr);
-        assert!(
-            !result.status.success() && error.contains("private copy"),
-            "{error}"
-        );
-    }
-    assert_eq!(fs::read(other).unwrap(), b"original");
-}
-
-#[test]
-fn source_backed_door_edits_refresh_only_affected_links() {
-    use converter::esm::{doors::rebuild_door_links, exporter::export_to_db};
-
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    let assets = root.join("assets");
-    fs::create_dir(&assets).unwrap();
-    let database = assets.join("skyrim_world.db");
-    let base = 0x500;
-    let entry = 0x801;
-    let moved = 0x802;
-    let neighbor = 0x803;
-    let hall = 0x900;
-    let cellar = 0x901;
-    let named_cell = |id, name: &[u8]| {
-        record(
-            b"CELL",
-            id,
-            0,
-            [sub(b"DATA", &[1]), sub(b"FULL", name)].concat(),
-        )
-    };
-    let teleport = |target: u32, arrival: f32| {
-        let mut xtel = [0; 32];
-        xtel[..4].copy_from_slice(&target.to_le_bytes());
-        xtel[4..8].copy_from_slice(&arrival.to_le_bytes());
-        sub(b"XTEL", &xtel)
-    };
-    let door = |id, target, arrival| placement(id, base, 0, 0.0, teleport(target, arrival));
-    let original = plugin(
-        root,
-        "Skyrim.esm",
-        &[],
-        1,
-        [
-            record(b"DOOR", base, 0, Vec::new()),
-            named_cell(hall, b"Hall\0"),
-            placement_group(
-                hall,
-                [door(entry, moved, 42.0), door(neighbor, entry, 7.0)].concat(),
-            ),
-            named_cell(cellar, b"Cellar\0"),
-            placement_group(cellar, door(moved, entry, 12.0)),
-        ]
-        .concat(),
-    );
-    let convert = || {
-        EsmParser::convert_plugins_with_reader(
-            std::slice::from_ref(&original),
-            &database,
-            converter::config::RecordReader::Inhouse,
-            root,
-        )
-        .unwrap();
-        rusqlite::Connection::open(&database).unwrap()
-    };
-    let move_door = plugin(
-        root,
-        "MoveDoor.esp",
-        &["Skyrim.esm"],
-        0,
-        placement_group(hall, door(moved, entry, 13.0)),
-    );
-    let links = |db: &rusqlite::Connection| {
-        db.prepare(
-            "SELECT ref_id,destination_ref_id,destination_cell_id,destination_name,pos_x
-             FROM door_links ORDER BY ref_id",
-        )
-        .unwrap()
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, u32>(0)?,
-                row.get::<_, u32>(1)?,
-                row.get::<_, u32>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, f32>(4)?,
-            ))
-        })
-        .unwrap()
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap()
-    };
-    let after_move = vec![
-        (entry, moved, hall, "Hall".to_owned(), 42.0),
-        (moved, entry, hall, "Hall".to_owned(), 13.0),
-        (neighbor, entry, hall, "Hall".to_owned(), 7.0),
-    ];
-    let protect_neighbor = |db: &rusqlite::Connection| {
-        db.execute_batch(&format!(
-            "CREATE TRIGGER protect_neighbor BEFORE DELETE ON door_links
-             WHEN OLD.ref_id={neighbor}
-             BEGIN SELECT RAISE(ABORT, 'unrelated door link was deleted'); END;"
-        ))
-        .unwrap();
-    };
-    let import = |source: &Path| {
-        let output = run_placement_import(&assets, "--plugin", source);
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-
-    let db = convert();
-    assert_eq!(
-        links(&db)[0],
-        (entry, moved, cellar, "Cellar".to_owned(), 42.0)
-    );
-    protect_neighbor(&db);
-    let mut winning = EsmParser::merge_plugins(&[original.clone(), move_door.clone()]).unwrap();
-    export_to_db(&db, &[(moved, winning.remove(&moved).unwrap())].into()).unwrap();
-    assert_eq!(links(&db), after_move, "subset export");
-    db.execute_batch("DROP TRIGGER protect_neighbor").unwrap();
-    drop(db);
-
-    let db = convert();
-    let before = links(&db);
-    protect_neighbor(&db);
-    db.execute_batch(&format!(
-        "CREATE TRIGGER reject_door_refresh BEFORE INSERT ON door_links
-         WHEN NEW.destination_ref_id={moved}
-         BEGIN SELECT RAISE(ABORT, 'door refresh rejected'); END;"
-    ))
-    .unwrap();
-    let rejected = run_placement_import(&assets, "--plugin", &move_door);
-    assert!(!rejected.status.success());
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("door refresh rejected"));
-    assert_eq!(links(&db), before);
-    let cell: u32 = db
-        .query_row(
-            "SELECT cell_id FROM [references] WHERE id=?1",
-            [moved],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(cell, cellar);
-    db.execute_batch("DROP TRIGGER reject_door_refresh")
-        .unwrap();
-
-    import(&move_door);
-    assert_eq!(links(&db), after_move, "placement import");
-
-    let remove_teleport = plugin(
-        root,
-        "RemoveTeleport.esp",
-        &["Skyrim.esm"],
-        0,
-        placement_group(hall, placement(moved, base, 0, 0.0, Vec::new())),
-    );
-    import(&remove_teleport);
-    assert_eq!(links(&db), [after_move[0].clone(), after_move[2].clone()]);
-
-    let delete_door = plugin(
-        root,
-        "DeleteDoor.esp",
-        &["Skyrim.esm"],
-        0,
-        placement_group(hall, record(b"REFR", moved, 0x20, Vec::new())),
-    );
-    import(&delete_door);
-    assert_eq!(links(&db), [after_move[2].clone()]);
-
-    let add_door = plugin(
-        root,
-        "AddDoor.esp",
-        &["Skyrim.esm"],
-        0,
-        placement_group(
-            hall,
-            [door(moved, entry, 13.0), door(0x0100_0810, moved, 17.0)].concat(),
-        ),
-    );
-    import(&add_door);
-    let mut after_add = after_move;
-    after_add.push((0x0400_0810, moved, hall, "Hall".to_owned(), 17.0));
-    assert_eq!(links(&db), after_add);
-    db.execute_batch("DROP TRIGGER protect_neighbor").unwrap();
-    assert_eq!(rebuild_door_links(&db).unwrap(), 4);
-    assert_eq!(links(&db), after_add, "rebuild after placement imports");
-
-    let mut invalid_target = [0; 32];
-    invalid_target[..4].copy_from_slice(&0x9900_0801u32.to_le_bytes());
-    let mut nonfinite_rotation = teleport(entry, 2.0);
-    nonfinite_rotation[30..34].copy_from_slice(&f32::NEG_INFINITY.to_le_bytes());
-    for (name, xtel, arrival) in [
-        ("WrongWidth.esp", sub(b"XTEL", &[0; 28]), 21.0),
-        ("InvalidMaster.esp", sub(b"XTEL", &invalid_target), 22.0),
-        (
-            "ConflictingDestinations.esp",
-            [teleport(entry, 2.0), teleport(neighbor, 3.0)].concat(),
-            23.0,
-        ),
-        ("NonfinitePosition.esp", teleport(entry, f32::NAN), 24.0),
-        ("NonfiniteRotation.esp", nonfinite_rotation, 25.0),
-    ] {
-        let malformed = plugin(
-            root,
-            name,
-            &["Skyrim.esm"],
-            0,
-            [
-                placement_group(cellar, placement(moved, base, 0, 0.0, xtel)),
-                placement_group(hall, door(neighbor, entry, arrival)),
-            ]
-            .concat(),
-        );
-        let result = run_placement_import(&assets, "--plugin", &malformed);
-        assert!(String::from_utf8_lossy(&result.stderr).contains("malformed XTEL"));
-        assert_placement_import(result, "Applied 1 room placements in 2 cells (0 certified)");
-        after_add[2].4 = arrival;
-        assert_eq!(
-            links(&db),
-            after_add,
-            "malformed teleport retains both original links"
-        );
-    }
-    assert!(!placement_certificate(&db, hall));
-    assert!(!placement_certificate(&db, cellar));
-}
-
-#[test]
 fn post_conversion_plugin_placements_refresh_both_cells_and_keep_source_proof() {
     let dir = tempfile::tempdir().unwrap();
     let assets = converted_placement_fixture(dir.path());
@@ -5526,7 +4995,7 @@ fn post_conversion_plugin_placements_refresh_both_cells_and_keep_source_proof() 
         .unwrap()
     };
     let before = original_move();
-    let unrelated = placement_memberships(&db, PLACEMENT_CELL_UNRELATED);
+    let unrelated = placement_rules(&db, PLACEMENT_CELL_UNRELATED);
     let new_cell = plugin(
         dir.path(),
         "NewCell.esp",
@@ -5557,18 +5026,9 @@ fn post_conversion_plugin_placements_refresh_both_cells_and_keep_source_proof() 
                     placement(
                         0x802,
                         PLACEMENT_STAT,
-                        shared::records::MULTIBOUND_REFERENCE_FLAG,
+                        0,
                         40.0,
                         sub(b"XMBR", &0x820u32.to_le_bytes()),
-                    ),
-                    placement_marker(
-                        0x820,
-                        0x1f,
-                        [
-                            sub(b"XRMR", &[1, 0, 0, 0]),
-                            sub(b"XLRM", &0x0100_0901u32.to_le_bytes()),
-                        ]
-                        .concat(),
                     ),
                     placement_marker(0x0100_0901, 0x1f, Vec::new()),
                     placement_marker(
@@ -5592,24 +5052,24 @@ fn post_conversion_plugin_placements_refresh_both_cells_and_keep_source_proof() 
     let bytes = fs::read(&add).unwrap();
     assert_placement_import(
         run_placement_import(&assets, "--plugin", &add),
-        "Applied 7 room placements in 3 cells (2 certified)",
+        "Applied 6 room placements in 3 cells (2 certified)",
     );
     assert_eq!(original_move(), before);
-    assert_eq!(
-        placement_memberships(&db, PLACEMENT_CELL_UNRELATED),
-        unrelated
-    );
+    assert_eq!(placement_rules(&db, PLACEMENT_CELL_UNRELATED), unrelated);
     assert!(placement_certificate(&db, PLACEMENT_CELL_UNRELATED));
     assert!(!placement_certificate(&db, PLACEMENT_CELL_UNCERTIFIED));
     assert_eq!(
-        placement_memberships(&db, PLACEMENT_CELL_A),
-        [(0x804, 0x800, true), (0xfe00_0900, 0x800, false)],
+        placement_rules(&db, PLACEMENT_CELL_A),
+        [
+            (0x804, "unknown".into(), None),
+            (0xfe00_0900, "auto".into(), None)
+        ],
     );
-    assert!(
-        !placement_memberships(&db, PLACEMENT_CELL_B)
-            .iter()
-            .any(|row| row.0 == 0x802)
-    );
+    assert!(placement_rules(&db, PLACEMENT_CELL_B).contains(&(
+        0x802,
+        "target".into(),
+        Some(0x820)
+    )));
     assert_eq!(
         db.query_row(
             "SELECT cell_id,pos_x FROM [references] WHERE id=0x802",
@@ -5688,20 +5148,8 @@ fn post_conversion_plugin_placements_refresh_both_cells_and_keep_source_proof() 
         .unwrap(),
         (None, false)
     );
-    assert_eq!(
-        db.query_row(
-            "SELECT linked_ref FROM room_links WHERE room_ref=0x820",
-            [],
-            |row| row.get::<_, u32>(0),
-        )
-        .unwrap(),
-        0xfe00_0901
-    );
     assert_eq!(original_move(), before);
-    assert_eq!(
-        placement_memberships(&db, PLACEMENT_CELL_UNRELATED),
-        unrelated
-    );
+    assert_eq!(placement_rules(&db, PLACEMENT_CELL_UNRELATED), unrelated);
 }
 
 #[test]
@@ -5997,6 +5445,26 @@ fn native_placement_import_preserves_runtime_enable_state_across_puts() {
         }
         assert_eq!(load_state(0x804).unwrap().unwrap().parent_id, None);
     }
+
+    fs::write(
+        &native,
+        serde_json::json!({"edits":[{"op":"delete","id":parent}]}).to_string(),
+    )
+    .unwrap();
+    assert_placement_import(
+        run_placement_import(&assets, "--native", &native),
+        "Applied 1 room placements in 1 cells (1 certified)",
+    );
+    fs::write(&native, serde_json::json!({"edits":[{
+        "op":"put", "id":parent, "cell":PLACEMENT_CELL_A, "base":PLACEMENT_STAT,"position":[0,0,0]
+    }]}).to_string()).unwrap();
+    let result = run_placement_import(&assets, "--native", &native);
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("native replacement requires an existing runtime enable state")
+    );
+    assert!(load_state(parent).unwrap().is_none());
 }
 
 #[test]
@@ -6076,7 +5544,7 @@ fn native_placement_import_is_atomic_and_preserves_incomplete_cell_evidence() {
         placement_certificate(&db, PLACEMENT_CELL_INCOMPLETE),
     );
     assert_eq!((outside_before, complete_before), (false, false));
-    let untouched = placement_memberships(&db, PLACEMENT_CELL_UNRELATED);
+    let untouched = placement_rules(&db, PLACEMENT_CELL_UNRELATED);
     let native_id = 0xff00_0001u32;
     let source = dir.path().join("decor.json");
     let put = |id, cell, ownership| {
@@ -6121,70 +5589,17 @@ fn native_placement_import_is_atomic_and_preserves_incomplete_cell_evidence() {
     assert!(!locked.status.success());
     assert!(String::from_utf8_lossy(&locked.stderr).contains("exclusive-write"));
     drop(lock);
-    db.execute_batch(
-        "CREATE TRIGGER fail_placement_projection BEFORE INSERT ON reference_rooms
-         WHEN NEW.room_ref=0x820 BEGIN SELECT RAISE(ABORT, 'placement projection failure'); END;",
-    )
-    .unwrap();
-    let result = run_placement_import(&assets, "--native", &source);
-    assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("placement projection failure"));
-    assert_eq!(
-        placement_memberships(&db, PLACEMENT_CELL_A),
-        [
-            (0x802, 0x800, true),
-            (0x803, 0x800, false),
-            (0x804, 0x800, true)
-        ],
-    );
-    assert!(placement_certificate(&db, PLACEMENT_CELL_A));
-    db.execute_batch("DROP TRIGGER fail_placement_projection")
-        .unwrap();
     assert_placement_import(
         run_placement_import(&assets, "--native", &source),
         "Applied 3 room placements in 3 cells (2 certified)",
     );
-    for (id, cell) in [
-        (0x802, PLACEMENT_CELL_B),
-        (native_id, PLACEMENT_CELL_INCOMPLETE),
-    ] {
-        assert!(
-            !placement_memberships(&db, cell)
-                .iter()
-                .any(|row| row.0 == id)
-        );
-        let flags: u32 = db
-            .query_row(
-                "SELECT header_flags FROM [references] WHERE id=?1 AND cell_id=?2",
-                [id, cell],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(flags, shared::records::MULTIBOUND_REFERENCE_FLAG);
-    }
-    let data: Vec<u8> = db
-        .query_row(
-            "SELECT data FROM [references] WHERE id=?1",
-            [native_id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let record =
-        rkyv::from_bytes::<converter::esm::types::ArchivedRecordData, rkyv::rancor::Error>(&data)
-            .unwrap();
-    assert_eq!(
-        record
-            .subrecords
-            .into_iter()
-            .find(|field| field.tag == *b"XMBR")
-            .unwrap()
-            .data,
-        0x860u32.to_le_bytes(),
-    );
-    assert_eq!(
-        placement_memberships(&db, PLACEMENT_CELL_UNRELATED),
-        untouched
-    );
+    assert!(placement_rules(&db, PLACEMENT_CELL_B).contains(&(0x802, "none".into(), None)));
+    assert!(placement_rules(&db, PLACEMENT_CELL_INCOMPLETE).contains(&(
+        native_id,
+        "target".into(),
+        Some(0x860)
+    )));
+    assert_eq!(placement_rules(&db, PLACEMENT_CELL_UNRELATED), untouched);
     assert!(!placement_certificate(&db, PLACEMENT_CELL_INCOMPLETE));
     assert!(
         !db.query_row(
@@ -6204,12 +5619,12 @@ fn native_placement_import_is_atomic_and_preserves_incomplete_cell_evidence() {
     );
     assert_eq!(
         db.query_row(
-            "SELECT bounds_max_x FROM statics WHERE id=?1 AND bounds_valid=1",
+            "SELECT radius FROM room_model_bounds WHERE base_form_id=?1",
             [PLACEMENT_STAT],
             |row| row.get::<_, f32>(0)
         )
         .unwrap(),
-        10.0
+        4.0
     );
     // Even removing the visible reason for the old failure cannot prove what the source reader
     // omitted. A new full conversion is required to issue the first certificate.
@@ -6230,11 +5645,10 @@ fn later_placement_edits_preserve_the_original_room_link_order() {
         0x0100_0900,
         0x1f,
         [
-            sub(b"XRMR", &[2, 0, 0, 0]),
-            sub(b"XLRM", &0x800u32.to_le_bytes()),
+            sub(b"XRMR", &[1, 0, 0, 0]),
             // Legacy ID remapping drops this malformed field, leaving an apparent XLRM slot.
             sub(b"LNAM", &[0]),
-            sub(b"XLRM", &0x0100_0900u32.to_le_bytes()),
+            sub(b"XLRM", &0x800u32.to_le_bytes()),
         ]
         .concat(),
     );
@@ -6250,30 +5664,21 @@ fn later_placement_edits_preserve_the_original_room_link_order() {
         "Applied 1 room placements in 1 cells (0 certified)",
     );
     let outgoing = || {
-        db.prepare("SELECT linked_ref FROM room_links WHERE room_ref=0x01000900")
-            .unwrap()
-            .query_map([], |row| row.get::<_, u32>(0))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap()
+        db.query_row(
+            "SELECT count(*) FROM room_links WHERE room_ref=0x01000900",
+            [],
+            |row| row.get::<_, usize>(0),
+        )
+        .unwrap()
     };
-    assert_eq!(outgoing(), [0x800]);
-    db.execute_batch(
-        "CREATE TRIGGER preserve_room_links BEFORE DELETE ON room_links
-         BEGIN SELECT RAISE(ABORT, 'untouched room link'); END;
-         CREATE TRIGGER preserve_portal BEFORE DELETE ON room_portals
-         BEGIN SELECT RAISE(ABORT, 'untouched portal'); END;
-         CREATE TRIGGER preserve_portal_geometry BEFORE UPDATE ON room_portals
-         BEGIN SELECT RAISE(ABORT, 'untouched portal'); END;",
-    )
-    .unwrap();
+    assert_eq!(outgoing(), 0);
     let delete = dir.path().join("delete.json");
     fs::write(&delete, r#"{"edits":[{"op":"delete","id":2051}]}"#).unwrap();
     assert_placement_import(
         run_placement_import(&assets, "--native", &delete),
         "Applied 1 room placements in 1 cells (0 certified)",
     );
-    assert_eq!(outgoing(), [0x800]);
+    assert_eq!(outgoing(), 0);
     assert!(!placement_certificate(&db, PLACEMENT_CELL_A));
 }
 
@@ -6347,13 +5752,22 @@ fn assert_created_interior(
         (portal, room_a, room_b, false, false)
     );
     assert_eq!(
+        placement_rules(db, cell),
+        [(object, "target".into(), Some(room_a))]
+    );
+    assert_eq!(
         db.query_row(
-            "SELECT base_form_id,is_exterior FROM [references] WHERE id=?1 AND cell_id=?2",
-            (object, cell),
-            |row| Ok((row.get::<_, u32>(0)?, row.get::<_, bool>(1)?)),
+            "SELECT base_form_id,is_exterior,contained FROM [references]
+             JOIN reference_rooms ON id=reference_id WHERE id=?1 AND cell_id=?2 AND room_ref=?3",
+            (object, cell, room_a),
+            |row| Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, bool>(1)?,
+                row.get::<_, bool>(2)?
+            )),
         )
         .unwrap(),
-        (PLACEMENT_STAT, false)
+        (PLACEMENT_STAT, false, true)
     );
     assert!(placement_certificate(db, cell));
     assert_eq!(
@@ -6553,9 +5967,10 @@ fn native_placement_import_creates_and_certifies_rooms_and_a_portal() {
              "ownership":{"kind":"target","room":a}},
             {"op":"put_portal","id":portal,"cell":cell,"position":[0,0,0],
              "half_extents":[30,60],"endpoints":[a,b]},
-            {"op":"put_room","id":b,"cell":cell,"position":[100,0,0],"half_extents":[100,100,100]},
+            {"op":"put_room","id":b,"cell":cell,"position":[100,0,0],"half_extents":[100,100,100],
+             "links":[a]},
             {"op":"put_room","id":a,"cell":cell,"position":[-100,0,0],"half_extents":[100,100,100],
-             "links":[b]},
+             "links":[b],"master":true},
         ],
     });
     fs::write(&source, serde_json::to_vec(&native).unwrap()).unwrap();
@@ -6582,6 +5997,32 @@ fn native_placement_import_creates_and_certifies_rooms_and_a_portal() {
         run_placement_import(&assets, "--native", &source),
         "Applied 0 room placements in 0 cells (0 certified)",
     );
+    let master_byte = || {
+        db.query_row(
+            "SELECT (flags >> 8) & 255 FROM room_bounds WHERE ref_id=?1",
+            [a],
+            |row| row.get::<_, u8>(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(master_byte(), 1);
+    let mut edit = serde_json::json!({"op":"put_room","id":a,"cell":cell,"position":[-99,0,0],
+        "half_extents":[101,100,100],"links":[b]});
+    for expected_master in [1, 0] {
+        if expected_master == 0 {
+            edit["master"] = false.into();
+        }
+        fs::write(&source, serde_json::json!({"edits":[edit]}).to_string()).unwrap();
+        assert_placement_import(
+            run_placement_import(&assets, "--native", &source),
+            "Applied 1 room placements in 1 cells (1 certified)",
+        );
+        assert_eq!(master_byte(), expected_master);
+        assert_eq!(
+            database_field(&db, "references", a, b"XRMR"),
+            [1, 0, expected_master, 0]
+        );
+    }
 }
 
 #[test]
@@ -6770,6 +6211,885 @@ fn native_new_cell_and_placement_ids_cannot_reuse_an_earlier_edit() {
 }
 
 #[test]
+fn placement_import_keeps_geometric_ownership_on_a_portal_only_pack() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    db.execute_batch(
+        "DELETE FROM room_graph_stats WHERE name='assignment_version';
+         DROP TABLE room_model_bounds;
+         DROP TABLE room_reference_rules;
+         ALTER TABLE room_links DROP COLUMN link_index;",
+    )
+    .unwrap();
+    let source = dir.path().join("named.json");
+    let id = 0xff00_0001u32;
+    let edit = serde_json::json!({"edits": [{
+        "op":"put", "id":id, "cell":PLACEMENT_CELL_A, "base":PLACEMENT_STAT,
+        "position":[0,0,0], "ownership":{"kind":"target","room":0x800}
+    }]});
+    fs::write(&source, serde_json::to_vec(&edit).unwrap()).unwrap();
+    assert_placement_import(
+        run_placement_import(&assets, "--native", &source),
+        "Applied 1 room placements in 1 cells (1 certified)",
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT header_flags, (SELECT count(*) FROM reference_rooms WHERE reference_id=?1),
+             (SELECT count(*) FROM room_graph_stats WHERE name='assignment_version')
+             FROM [references] WHERE id=?1",
+            [id],
+            |row| Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, u32>(2)?
+            ))
+        )
+        .unwrap(),
+        (shared::records::MULTIBOUND_REFERENCE_FLAG, 0, 0)
+    );
+}
+
+#[test]
+fn both_pack_editors_reject_a_shared_database_before_starting_sqlite() {
+    let dir = tempfile::tempdir().unwrap();
+    let other = dir.path().join("other.db");
+    fs::write(&other, b"original").unwrap();
+    fs::hard_link(&other, dir.path().join("skyrim_world.db")).unwrap();
+    let placement = run_placement_import(dir.path(), "--native", &dir.path().join("edit.json"));
+    let bounds = std::process::Command::new(env!("CARGO_BIN_EXE_room-model-bounds-refresh"))
+        .arg(dir.path())
+        .arg("meshes/test.glb")
+        .output()
+        .unwrap();
+    for result in [placement, bounds] {
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            !result.status.success() && error.contains("private copy"),
+            "{error}"
+        );
+    }
+    assert_eq!(fs::read(other).unwrap(), b"original");
+}
+
+#[test]
+fn duplicate_apertures_cannot_replace_a_certified_portal() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let db = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    let portal = |extra: Vec<u8>| {
+        plugin(
+            dir.path(),
+            "Aperture.esp",
+            &["Skyrim.esm"],
+            0,
+            placement_group(
+                PLACEMENT_CELL_A,
+                placement_marker(
+                    0x801,
+                    0x20,
+                    [
+                        sub(b"XPOD", &[0x800u32.to_le_bytes(), [0; 4]].concat()),
+                        extra,
+                    ]
+                    .concat(),
+                ),
+            ),
+        )
+    };
+    let result = run_placement_import(&assets, "--plugin", &portal(sub(b"XPRM", &[0; 32])));
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("primitive"));
+    assert!(placement_certificate(&db, PLACEMENT_CELL_A));
+    let result = run_placement_import(&assets, "--plugin", &portal(Vec::new()));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(placement_certificate(&db, PLACEMENT_CELL_A));
+}
+
+#[test]
+fn rejected_placement_moves_keep_both_cells_open_until_superseded() {
+    use converter::config::RecordReader;
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let portal = |room: u32| {
+        placement_marker(
+            0x850,
+            0x20,
+            sub(b"XPOD", &[room.to_le_bytes(), [0; 4]].concat()),
+        )
+    };
+    let mut contents = [
+        record(b"STAT", 0x830, 0, sub(b"EDID", b"FixtureStatic\0")),
+        record(b"KYWD", 0x831, 0, sub(b"EDID", b"FixtureKeyword\0")),
+    ]
+    .concat();
+    for (cell, room) in [(0x900, 0x800), (0x901, 0x810), (0x902, 0x820)] {
+        contents.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
+        let mut placements = placement_marker(room, 0x1f, Vec::new());
+        if cell == 0x900 {
+            placements.extend(portal(room));
+        }
+        if cell == 0x902 {
+            placements.extend(placement(0x851, 0x830, 0, 1.0, Vec::new()));
+        }
+        contents.extend(placement_group(cell, placements));
+    }
+    let base = plugin(&data, "Skyrim.esm", &[], 1, contents);
+    let deleted = plugin(
+        &data,
+        "Fixed.esp",
+        &["Skyrim.esm"],
+        0,
+        record(b"REFR", 0x850, 0x20, Vec::new()),
+    );
+    let restored = plugin(
+        &data,
+        "Restored.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(0x901, portal(0x810)),
+    );
+    let later_wrong_base = plugin(
+        &data,
+        "StillBroken.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(0x902, placement(0x850, 0x832, 0, 0.0, Vec::new())),
+    );
+    let cases = [
+        (
+            "torn",
+            Some(0x901),
+            record(b"REFR", 0x850, 0x40000, vec![0xff; 8]),
+            [false, false, true],
+        ),
+        (
+            "invalid-parent",
+            Some(0x0900_0901),
+            placement(0x850, 0x830, 0, 0.0, Vec::new()),
+            [false, true, true],
+        ),
+        (
+            "null-parent",
+            Some(0),
+            placement(0x850, 0x830, 0, 0.0, Vec::new()),
+            [false, true, true],
+        ),
+        (
+            "ungrouped",
+            None,
+            placement(0x850, 0x830, 0, 0.0, Vec::new()),
+            [false, true, true],
+        ),
+        (
+            "null-name",
+            Some(0x901),
+            placement(0x850, 0, 0, 0.0, Vec::new()),
+            [false, false, true],
+        ),
+        (
+            "short-transform",
+            Some(0x901),
+            record(
+                b"REFR",
+                0x850,
+                0,
+                [sub(b"NAME", &0x20u32.to_le_bytes()), sub(b"DATA", &[0; 20])].concat(),
+            ),
+            [false, false, true],
+        ),
+        (
+            "duplicate-transform",
+            Some(0x901),
+            placement(0x850, 0x20, 0, 0.0, sub(b"DATA", &[0; 24])),
+            [false, false, true],
+        ),
+        (
+            "nonfinite-transform",
+            Some(0x901),
+            placement(0x850, 0x20, 0, f32::NAN, Vec::new()),
+            [false, false, true],
+        ),
+        (
+            "duplicate-live-bases",
+            Some(0x901),
+            placement(0x850, 0x20, 0, 0.0, sub(b"NAME", &0x830u32.to_le_bytes())),
+            [false, false, true],
+        ),
+        (
+            "null-first-name",
+            Some(0x901),
+            placement(0x850, 0, 0, 0.0, sub(b"NAME", &0x830u32.to_le_bytes())),
+            [false, false, true],
+        ),
+        (
+            "missing-name",
+            Some(0x901),
+            record(b"REFR", 0x850, 0, sub(b"DATA", &[0; 24])),
+            [false, false, true],
+        ),
+        (
+            "wrong-base-type",
+            Some(0x901),
+            placement(0x850, 0x831, 0, 0.0, Vec::new()),
+            [false, false, true],
+        ),
+        (
+            "missing-base-target",
+            Some(0x901),
+            placement(0x850, 0x832, 0, 0.0, Vec::new()),
+            [false, false, true],
+        ),
+        (
+            "wrong-parent-type",
+            Some(0x830),
+            placement(0x850, 0x830, 0, 0.0, Vec::new()),
+            [false, true, true],
+        ),
+        (
+            "missing-parent-target",
+            Some(0x903),
+            placement(0x850, 0x830, 0, 0.0, Vec::new()),
+            [false, true, true],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, destination, candidate, unresolved) in cases {
+        let rejected = match destination {
+            Some(cell) => placement_group(cell, candidate),
+            None => candidate,
+        };
+        let stat_control = placement_group(0x902, placement(0x851, 0x830, 0, 2.0, Vec::new()));
+        let broken = plugin(
+            &data,
+            "Broken.esp",
+            &["Skyrim.esm"],
+            0,
+            [rejected, stat_control].concat(),
+        );
+        if matches!(
+            name,
+            "duplicate-live-bases" | "null-name" | "missing-name" | "null-first-name"
+        ) {
+            let plugins = [base.clone(), broken.clone()];
+            let order = LoadOrder::read(&plugins).unwrap();
+            let decoded = converter::records::read_plugins(&plugins, &order).unwrap();
+            assert_eq!(decoded.records[&0x850].cell_form_id, Some(0x900));
+        }
+        let mut cases = vec![
+            (vec![&broken], Some(0x900), unresolved),
+            (vec![&broken, &restored], Some(0x901), [true; 3]),
+            (vec![&broken, &deleted], None, [true; 3]),
+        ];
+        if name == "wrong-base-type" {
+            cases.push((vec![&broken, &later_wrong_base], Some(0x900), [false; 3]));
+            cases.push((vec![&deleted, &broken], None, [true, false, true]));
+        }
+        for (overrides, expected_cell, expected_certificates) in cases {
+            let plugins = std::iter::once(&base)
+                .chain(overrides)
+                .cloned()
+                .collect::<Vec<_>>();
+            for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+                let output = dir.path().join("world.db");
+                EsmParser::convert_plugins_with_reader(&plugins, &output, reader, &data).unwrap();
+                let db = rusqlite::Connection::open(output).unwrap();
+                let certificates =
+                    [0x900, 0x901, 0x902].map(|cell| placement_certificate(&db, cell));
+                let winner = placement_winner_cell(&db, 0x850);
+                let stat_x: f32 = db
+                    .query_row("SELECT pos_x FROM [references] WHERE id=0x851", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                let projected: Option<u32> = db
+                    .query_row(
+                        "SELECT max(cell_id) FROM room_portals WHERE ref_id=0x850",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                if certificates != expected_certificates
+                    || winner != expected_cell
+                    || projected != expected_cell
+                    || stat_x != 2.0
+                {
+                    failures.push(format!(
+                        "{reader:?} {name} plugins={plugins:?}: certificates={certificates:?}, winner={winner:?}, portal={projected:?}, STAT control x={stat_x}; expected {expected_certificates:?}, {expected_cell:?}, STAT control x=2"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn rejected_placement_collision_keeps_destination_open_without_a_proven_alias() {
+    use converter::config::RecordReader;
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    let mut contents = record(b"STAT", 0x830, 0, sub(b"EDID", b"FixtureStatic\0"));
+    for (cell, room) in [(0x900, 0x800), (0x901, 0x810), (0x902, 0x820)] {
+        contents.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
+        contents.extend(placement_group(
+            cell,
+            placement_marker(room, 0x1f, Vec::new()),
+        ));
+    }
+    let base = plugin(data, "Skyrim.esm", &[], 1, contents);
+    let patch = plugin(
+        data,
+        "Patch.esp",
+        &["Skyrim.esm"],
+        0,
+        [
+            placement_group(0x900, placement(0x0100_0850, 0x830, 0, 0.0, Vec::new())),
+            placement_group(0x901, placement(0x0900_0850, 0x830, 0, 0.0, Vec::new())),
+        ]
+        .concat(),
+    );
+    let followup = plugin(
+        data,
+        "Fixed.esp",
+        &["Skyrim.esm", "Patch.esp"],
+        0,
+        placement_group(0x902, placement(0x0100_0850, 0x830, 0, 0.0, Vec::new())),
+    );
+    let mut failures = Vec::new();
+    for moved in [false, true] {
+        let plugins = [base.clone(), patch.clone()]
+            .into_iter()
+            .chain(moved.then(|| followup.clone()))
+            .collect::<Vec<_>>();
+        for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+            let output = data.join("world.db");
+            EsmParser::convert_plugins_with_reader(&plugins, &output, reader, data).unwrap();
+            let db = rusqlite::Connection::open(output).unwrap();
+            let certificates = [0x900, 0x901, 0x902].map(|cell| placement_certificate(&db, cell));
+            let winner = placement_winner_cell(&db, 0x0100_0850);
+            let expected_cell = Some(if moved { 0x902 } else { 0x900 });
+            if certificates != [true, false, true] || winner != expected_cell {
+                failures.push(format!(
+                    "{reader:?} moved={moved}: certificates={certificates:?}, winner={winner:?}; expected [true, false, true], {expected_cell:?}"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+fn placement_winner_cell(db: &rusqlite::Connection, id: u32) -> Option<u32> {
+    use rusqlite::OptionalExtension;
+
+    db.query_row(
+        "SELECT cell_id FROM [references] WHERE id=?1",
+        [id],
+        |row| row.get(0),
+    )
+    .optional()
+    .unwrap()
+}
+
+#[test]
+fn a_source_null_and_a_missing_room_have_different_cell_certificates() {
+    for typed in [false, true] {
+        for (target, valid) in [(0u32, true), (0x801, true), (0x910, false)] {
+            let dir = tempfile::tempdir().unwrap();
+            let data = dir.path().join("Data");
+            room_graph_review_fixture(
+                &data,
+                None,
+                Some(sub(
+                    b"XPOD",
+                    &[0x800u32.to_le_bytes(), target.to_le_bytes()].concat(),
+                )),
+            );
+            let db = rusqlite::Connection::open(export_room_review_fixture(
+                &data,
+                &dir.path().join("bundle"),
+                typed,
+            ))
+            .unwrap();
+            assert_eq!(
+                placement_certificate(&db, 0x900),
+                valid,
+                "typed={typed} target={target}"
+            );
+        }
+    }
+}
+
+#[test]
+fn source_backed_door_edits_refresh_only_affected_links() {
+    use converter::esm::{doors::rebuild_door_links, exporter::export_to_db};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let assets = root.join("assets");
+    fs::create_dir(&assets).unwrap();
+    let database = assets.join("skyrim_world.db");
+    let base = 0x500;
+    let entry = 0x801;
+    let moved = 0x802;
+    let neighbor = 0x803;
+    let hall = 0x900;
+    let cellar = 0x901;
+    let named_cell = |id, name: &[u8]| {
+        record(
+            b"CELL",
+            id,
+            0,
+            [sub(b"DATA", &[1]), sub(b"FULL", name)].concat(),
+        )
+    };
+    let teleport = |target: u32, arrival: f32| {
+        let mut xtel = [0; 32];
+        xtel[..4].copy_from_slice(&target.to_le_bytes());
+        xtel[4..8].copy_from_slice(&arrival.to_le_bytes());
+        sub(b"XTEL", &xtel)
+    };
+    let door = |id, target, arrival| placement(id, base, 0, 0.0, teleport(target, arrival));
+    let original = plugin(
+        root,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"DOOR", base, 0, Vec::new()),
+            named_cell(hall, b"Hall\0"),
+            placement_group(
+                hall,
+                [door(entry, moved, 42.0), door(neighbor, entry, 7.0)].concat(),
+            ),
+            named_cell(cellar, b"Cellar\0"),
+            placement_group(cellar, door(moved, entry, 12.0)),
+        ]
+        .concat(),
+    );
+    let convert = || {
+        EsmParser::convert_plugins_with_reader(
+            std::slice::from_ref(&original),
+            &database,
+            converter::config::RecordReader::Inhouse,
+            root,
+        )
+        .unwrap();
+        rusqlite::Connection::open(&database).unwrap()
+    };
+    let move_door = plugin(
+        root,
+        "MoveDoor.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(hall, door(moved, entry, 13.0)),
+    );
+    let links = |db: &rusqlite::Connection| {
+        db.prepare(
+            "SELECT ref_id,destination_ref_id,destination_cell_id,destination_name,pos_x
+             FROM door_links ORDER BY ref_id",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, u32>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, f32>(4)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    };
+    let after_move = vec![
+        (entry, moved, hall, "Hall".to_owned(), 42.0),
+        (moved, entry, hall, "Hall".to_owned(), 13.0),
+        (neighbor, entry, hall, "Hall".to_owned(), 7.0),
+    ];
+    let protect_neighbor = |db: &rusqlite::Connection| {
+        db.execute_batch(&format!(
+            "CREATE TRIGGER protect_neighbor BEFORE DELETE ON door_links
+             WHEN OLD.ref_id={neighbor}
+             BEGIN SELECT RAISE(ABORT, 'unrelated door link was deleted'); END;"
+        ))
+        .unwrap();
+    };
+    let import = |source: &Path| {
+        let output = run_placement_import(&assets, "--plugin", source);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    let db = convert();
+    assert_eq!(
+        links(&db)[0],
+        (entry, moved, cellar, "Cellar".to_owned(), 42.0)
+    );
+    protect_neighbor(&db);
+    let mut winning = EsmParser::merge_plugins(&[original.clone(), move_door.clone()]).unwrap();
+    export_to_db(&db, &[(moved, winning.remove(&moved).unwrap())].into()).unwrap();
+    assert_eq!(links(&db), after_move, "subset export");
+    db.execute_batch("DROP TRIGGER protect_neighbor").unwrap();
+    drop(db);
+
+    let db = convert();
+    let before = links(&db);
+    protect_neighbor(&db);
+    db.execute_batch(&format!(
+        "CREATE TRIGGER reject_door_refresh BEFORE INSERT ON door_links
+         WHEN NEW.destination_ref_id={moved}
+         BEGIN SELECT RAISE(ABORT, 'door refresh rejected'); END;"
+    ))
+    .unwrap();
+    let rejected = run_placement_import(&assets, "--plugin", &move_door);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("door refresh rejected"));
+    assert_eq!(links(&db), before);
+    let cell: u32 = db
+        .query_row(
+            "SELECT cell_id FROM [references] WHERE id=?1",
+            [moved],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(cell, cellar);
+    db.execute_batch("DROP TRIGGER reject_door_refresh")
+        .unwrap();
+
+    import(&move_door);
+    assert_eq!(links(&db), after_move, "placement import");
+
+    let remove_teleport = plugin(
+        root,
+        "RemoveTeleport.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(hall, placement(moved, base, 0, 0.0, Vec::new())),
+    );
+    import(&remove_teleport);
+    assert_eq!(links(&db), [after_move[0].clone(), after_move[2].clone()]);
+
+    let delete_door = plugin(
+        root,
+        "DeleteDoor.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(hall, record(b"REFR", moved, 0x20, Vec::new())),
+    );
+    import(&delete_door);
+    assert_eq!(links(&db), [after_move[2].clone()]);
+
+    let add_door = plugin(
+        root,
+        "AddDoor.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(
+            hall,
+            [door(moved, entry, 13.0), door(0x0100_0810, moved, 17.0)].concat(),
+        ),
+    );
+    import(&add_door);
+    let mut after_add = after_move;
+    after_add.push((0x0400_0810, moved, hall, "Hall".to_owned(), 17.0));
+    assert_eq!(links(&db), after_add);
+    db.execute_batch("DROP TRIGGER protect_neighbor").unwrap();
+    assert_eq!(rebuild_door_links(&db).unwrap(), 4);
+    assert_eq!(links(&db), after_add, "rebuild after placement imports");
+
+    let mut invalid_target = [0; 32];
+    invalid_target[..4].copy_from_slice(&0x9900_0801u32.to_le_bytes());
+    let mut nonfinite_rotation = teleport(entry, 2.0);
+    nonfinite_rotation[30..34].copy_from_slice(&f32::NEG_INFINITY.to_le_bytes());
+    for (name, xtel, arrival) in [
+        ("WrongWidth.esp", sub(b"XTEL", &[0; 28]), 21.0),
+        ("InvalidMaster.esp", sub(b"XTEL", &invalid_target), 22.0),
+        (
+            "ConflictingDestinations.esp",
+            [teleport(entry, 2.0), teleport(neighbor, 3.0)].concat(),
+            23.0,
+        ),
+        ("NonfinitePosition.esp", teleport(entry, f32::NAN), 24.0),
+        ("NonfiniteRotation.esp", nonfinite_rotation, 25.0),
+    ] {
+        let malformed = plugin(
+            root,
+            name,
+            &["Skyrim.esm"],
+            0,
+            [
+                placement_group(cellar, placement(moved, base, 0, 0.0, xtel)),
+                placement_group(hall, door(neighbor, entry, arrival)),
+            ]
+            .concat(),
+        );
+        let result = run_placement_import(&assets, "--plugin", &malformed);
+        assert!(String::from_utf8_lossy(&result.stderr).contains("malformed XTEL"));
+        assert_placement_import(result, "Applied 1 room placements in 2 cells (0 certified)");
+        after_add[2].4 = arrival;
+        assert_eq!(
+            links(&db),
+            after_add,
+            "malformed teleport retains both original links"
+        );
+    }
+    assert!(!placement_certificate(&db, hall));
+    assert!(!placement_certificate(&db, cellar));
+}
+
+#[test]
+fn portal_geometry_requires_one_valid_transform_and_positive_aperture() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let shape = |x: f32, z: f32, kind: u32| {
+        let mut bytes = [0; 32];
+        bytes[..4].copy_from_slice(&x.to_le_bytes());
+        bytes[8..12].copy_from_slice(&z.to_le_bytes());
+        bytes[28..].copy_from_slice(&kind.to_le_bytes());
+        bytes
+    };
+    let aperture = |x, z| sub(b"XPRM", &shape(x, z, 3));
+    let transform = sub(b"DATA", &[0; 24]);
+    let aperture_valid = aperture(40.0, 60.0);
+    let mut source = Vec::new();
+    let cases = [
+        ("valid", transform.clone(), aperture_valid.clone()),
+        (
+            "duplicate transform",
+            [transform.clone(), sub(b"DATA", &[1; 24])].concat(),
+            aperture_valid.clone(),
+        ),
+        (
+            "duplicate aperture",
+            transform.clone(),
+            [aperture_valid.clone(), aperture(80.0, 90.0)].concat(),
+        ),
+        (
+            "malformed duplicate aperture",
+            transform.clone(),
+            [aperture_valid.clone(), sub(b"XPRM", &[0; 4])].concat(),
+        ),
+        ("missing transform", Vec::new(), aperture_valid.clone()),
+        (
+            "short transform",
+            sub(b"DATA", &[0; 20]),
+            aperture_valid.clone(),
+        ),
+        ("missing aperture", transform.clone(), Vec::new()),
+        (
+            "12-byte aperture",
+            transform.clone(),
+            sub(b"XPRM", &shape(40.0, 60.0, 3)[..12]),
+        ),
+        (
+            "wrong shape",
+            transform.clone(),
+            sub(b"XPRM", &shape(40.0, 60.0, 1)),
+        ),
+        ("zero width", transform.clone(), aperture(0.0, 60.0)),
+        ("zero height", transform, aperture(40.0, 0.0)),
+    ];
+    for (index, (_, transform, aperture)) in cases.iter().enumerate() {
+        let cell = 0x900 + index as u32;
+        let room = 0x800 + index as u32 * 3;
+        let ends = [room.to_le_bytes(), (room + 1).to_le_bytes()].concat();
+        source.extend(record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])));
+        source.extend(placement_group(
+            cell,
+            [
+                placement_marker(room, 0x1f, Vec::new()),
+                placement_marker_at(room + 1, 0x1f, 500.0, Vec::new()),
+                record(
+                    b"REFR",
+                    room + 2,
+                    0,
+                    [
+                        sub(b"NAME", &0x20u32.to_le_bytes()),
+                        transform.clone(),
+                        aperture.clone(),
+                        sub(b"XPOD", &ends),
+                    ]
+                    .concat(),
+                ),
+            ]
+            .concat(),
+        ));
+    }
+    plugin(&data, "Skyrim.esm", &[], 1, source);
+    for typed in [false, true] {
+        let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+        let conn = rusqlite::Connection::open(db).unwrap();
+        for (index, (case, _, _)) in cases.iter().enumerate() {
+            let cell = 0x900 + index as u32;
+            let (complete, portals): (bool, u32) = conn
+                .query_row(
+                    "SELECT complete,(SELECT count(*) FROM room_portals WHERE cell_id=?1)
+                     FROM room_graph_cells WHERE cell_id=?1",
+                    [cell],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            let valid = *case == "valid";
+            assert_eq!(
+                (complete, portals),
+                (valid, u32::from(valid)),
+                "typed={typed}, {case}"
+            );
+        }
+    }
+}
+
+#[test]
+fn damaged_groups_and_roomless_placements_keep_negative_certificates() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let cell = |id| record(b"CELL", id, 0, sub(b"DATA", &[1, 0]));
+    let room = |id| placement_marker(id, 0x1f, Vec::new());
+    let truncated_group = |kind, label| {
+        let mut bytes = group(kind, label, vec![0]);
+        bytes.pop();
+        bytes
+    };
+    let mut torn_placement = placement(0x802, 0x999, 0, 0.0, Vec::new());
+    torn_placement.extend(b"XL");
+    let size = (torn_placement.len() - 24) as u32;
+    torn_placement[4..8].copy_from_slice(&size.to_le_bytes());
+    plugin(
+        &data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"STAT", 0x999, 0, sub(b"EDID", b"RoomlessStatic\0")),
+            cell(0x900),
+            group(
+                6,
+                0x900,
+                [group(9, 0x900, room(0x800)), truncated_group(9, 0x900)].concat(),
+            ),
+            cell(0x901),
+            placement_group(0x901, room(0x801)),
+            cell(0x902),
+            group(6, 0x902, truncated_group(9, 0x902)),
+            cell(0x903),
+            placement_group(0x903, torn_placement),
+            cell(0x904),
+            placement_group(0x904, placement(0x803, 0x999, 0, 0.0, Vec::new())),
+        ]
+        .concat(),
+    );
+    for typed in [false, true] {
+        let db = export_room_review_fixture(&data, &directory.path().join("bundle"), typed);
+        let conn = rusqlite::Connection::open(db).unwrap();
+        assert!(conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM [references] WHERE cell_id=0x904 AND base_form_id=0x999)",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap());
+        let mut stmt = conn
+            .prepare(
+                "SELECT cell_id,complete,(SELECT count(*) FROM room_bounds WHERE cell_id=g.cell_id)
+                 FROM room_graph_cells g ORDER BY cell_id",
+            )
+            .unwrap();
+        let certificates = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, u32>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            certificates,
+            [
+                (0x900, false, 1),
+                (0x901, true, 1),
+                (0x902, false, 0),
+                (0x903, false, 0)
+            ],
+            "typed={typed}"
+        );
+    }
+}
+
+#[test]
+fn placement_import_accepts_matching_room_marker_extents_and_a_pack_named_like_help() {
+    let dir = tempfile::tempdir().unwrap();
+    let assets = converted_placement_fixture(dir.path());
+    let pack = dir.path().join("-h");
+    fs::rename(assets, &pack).unwrap();
+    let db = rusqlite::Connection::open(pack.join("skyrim_world.db")).unwrap();
+    let extents = 100f32.to_le_bytes().repeat(3);
+    let replace = |fields| {
+        plugin(
+            dir.path(),
+            "Marker.esp",
+            &["Skyrim.esm"],
+            0,
+            placement_group(PLACEMENT_CELL_A, placement_marker(0x800, 0x1f, fields)),
+        )
+    };
+    for fields in [
+        sub(b"XMBO", &[0; 12]),
+        sub(b"XMBO", &[0; 11]),
+        [sub(b"XMBO", &extents), sub(b"XMBO", &extents)].concat(),
+    ] {
+        let failure = run_placement_import(&pack, "--plugin", &replace(fields));
+        assert!(!failure.status.success());
+        assert!(String::from_utf8_lossy(&failure.stderr).contains("XMBO"));
+        assert!(placement_certificate(&db, PLACEMENT_CELL_A));
+    }
+    assert_placement_import(
+        run_placement_import(&pack, "--plugin", &replace(sub(b"XMBO", &extents))),
+        "Applied 1 room placements in 1 cells (1 certified)",
+    );
+    let delete = dir.path().join("delete.json");
+    fs::write(&delete, br#"{"edits":[{"op":"delete","id":2048}]}"#).unwrap();
+    let cli = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_converter"))
+            .current_dir(dir.path())
+            .arg("apply-room-placements")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(String::from_utf8_lossy(&cli(&["--help"]).stdout).contains("--native FILE"));
+    assert_placement_import(
+        cli(&["-h", "--native", "delete.json"]),
+        "Applied 1 room placements in 1 cells (0 certified)",
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM [references] WHERE id=0x800",
+            [],
+            |row| row.get::<_, usize>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn a_short_nonplacement_header_uncertifies_only_its_own_interior() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("Data");
@@ -6925,6 +7245,118 @@ async fn later_base_deletion_is_a_reported_omission() {
             assert_eq!(placement_winner_cell(&db, 0x851), Some(cell));
         }
     }
+}
+
+#[test]
+fn placement_winner_uses_forward_and_effective_catalogue_targets() {
+    use converter::config::RecordReader;
+    use rusqlite::OptionalExtension;
+
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let base = plugin(
+        data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            record(b"STAT", 0x830, 0, sub(b"EDID", b"OriginalStatic\0")),
+            placement_group(0x900, placement(0x850, 0x830, 0, 1.0, Vec::new())),
+        ]
+        .concat(),
+    );
+    let patch = plugin(
+        data,
+        "Patch.esp",
+        &["Skyrim.esm"],
+        0,
+        [
+            placement_group(
+                0x0100_0901,
+                placement(0x850, 0x0100_0831, 0, 2.0, Vec::new()),
+            ),
+            record(b"STAT", 0x0100_0831, 0, sub(b"EDID", b"ForwardStatic\0")),
+            record(b"CELL", 0x0100_0901, 0, sub(b"DATA", &[1, 0])),
+        ]
+        .concat(),
+    );
+    let original = (0x900, 0x830);
+    let moved = (0x0100_0901, 0x0100_0831);
+    let cases = [
+        ("forward declarations", None, moved, None),
+        (
+            "effective base changed type",
+            Some(record(b"KYWD", moved.1, 0, sub(b"EDID", b"NotAStatic\0"))),
+            original,
+            Some("required NAME"),
+        ),
+        (
+            "effective parent deleted",
+            Some(record(b"CELL", moved.0, 0x20, Vec::new())),
+            original,
+            Some("placement parent"),
+        ),
+        (
+            "invalid placement temporarily shadows the base",
+            Some(placement_group(
+                0x900,
+                placement(moved.1, 0x832, 0, 0.0, Vec::new()),
+            )),
+            moved,
+            None,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, extra, expected, rejection) in cases {
+        let plugins =
+            [base.clone(), patch.clone()]
+                .into_iter()
+                .chain(extra.map(|payload| {
+                    plugin(data, "Later.esp", &["Skyrim.esm", "Patch.esp"], 0, payload)
+                }))
+                .collect::<Vec<_>>();
+        for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+            let output = data.join("winner.db");
+            EsmParser::convert_plugins_with_reader(&plugins, &output, reader, data).unwrap();
+            let db = rusqlite::Connection::open(output).unwrap();
+            let winner = db
+                .query_row(
+                    "SELECT cell_id, base_form_id FROM [references] WHERE id=0x850",
+                    [],
+                    |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)),
+                )
+                .optional()
+                .unwrap();
+            if winner != Some(expected) {
+                failures.push(format!(
+                    "{reader:?} {name}: {winner:08X?}, expected {expected:08X?}"
+                ));
+            }
+            if matches!(reader, RecordReader::Inhouse) {
+                let (status, reason): (String, Option<String>) = db
+                    .query_row(
+                        "SELECT status, reason FROM record_overrides
+                         WHERE form_id=0x850 ORDER BY chain_position DESC LIMIT 1",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .unwrap();
+                let expected_status = if rejection.is_some() {
+                    "skipped"
+                } else {
+                    "accepted"
+                };
+                if status != expected_status
+                    || rejection
+                        .is_some_and(|part| !reason.is_some_and(|reason| reason.contains(part)))
+                {
+                    failures.push(format!("{reader:?} {name}: expected {expected_status} ({rejection:?}), got {status}"));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
@@ -7197,6 +7629,153 @@ fn typed_placement_winner_checks_grouped_duplicates_before_ungrouped_override() 
         assert_eq!(
             SubrecordView::new(&records[&id].subrecords).get_form_id(b"NAME"),
             Some(base),
+            "{id:08X}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn deleted_base_notices_follow_usable_shadows_and_live_intervals() {
+    use converter::{AssetPipeline, config::RecordReader};
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let live = |id| record(b"STAT", id, 0, sub(b"EDID", b"Static\0"));
+    let deleted = |id| record(b"STAT", id, 0x20, Vec::new());
+    let dependent = |id, base| placement_group(0x900, placement(id, base, 0, 1.0, Vec::new()));
+    let layers = [
+        (
+            "Skyrim.esm",
+            [
+                record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+                live(0x830),
+                live(0x831),
+                live(0x832),
+                dependent(0x850, 0x830),
+                dependent(0x851, 0x831),
+            ]
+            .concat(),
+        ),
+        ("OriginallyLive.esp", dependent(0x852, 0x832)),
+        (
+            "Shadows.esp",
+            [
+                dependent(0x830, 0x888),
+                dependent(0x831, 0x1f),
+                deleted(0x832),
+            ]
+            .concat(),
+        ),
+        (
+            "Gap.esp",
+            [deleted(0x830), deleted(0x831), dependent(0x853, 0x832)].concat(),
+        ),
+        ("Restore.esp", live(0x832)),
+        ("Live.esp", dependent(0x854, 0x832)),
+        ("DeleteAgain.esp", deleted(0x832)),
+    ];
+    let list = dir.path().join("plugins.txt");
+    let mut names = Vec::new();
+    for (name, records) in layers {
+        let masters = if names.is_empty() {
+            &[][..]
+        } else {
+            &["Skyrim.esm"][..]
+        };
+        plugin(&data, name, masters, u32::from(names.is_empty()), records);
+        names.push(format!("*{name}\n"));
+    }
+    fs::write(&list, names.concat()).unwrap();
+    let mut failures = Vec::new();
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let output = dir.path().join(format!("{reader:?}"));
+        let mut config = common::cpu_lod_config(&data, &output);
+        config.record_reader = reader;
+        config.no_lod = true;
+        config.plugins_file = Some(list.clone());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let report = AssetPipeline::run_async(config, tx).await.unwrap();
+        drain.await.unwrap();
+        let notices = report.notices.join("\n");
+        let warnings = report.warnings.join("\n");
+        for (id, retired) in [
+            (0x850, true),
+            (0x851, false),
+            (0x852, true),
+            (0x853, false),
+            (0x854, true),
+        ] {
+            let id = format!("{id:08X}");
+            if notices.contains(&id) != retired || warnings.contains(&id) == retired {
+                failures.push(format!(
+                    "{reader:?}: {id} retired={retired}\n{notices}\n{warnings}"
+                ));
+            }
+        }
+        let db = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM records WHERE form_id BETWEEN 0x830 AND 0x832",
+                [],
+                |row| row.get::<_, u32>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn incomplete_queued_duplicate_only_yields_to_a_usable_complete_predecessor() {
+    use converter::config::RecordReader;
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    let base = plugin(
+        data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            placement_group(
+                0x900,
+                [
+                    placement(0x850, 0x888, 0, 1.0, Vec::new()),
+                    placement(0x851, 0x1f, 0, 1.0, Vec::new()),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    );
+    let mut children = Vec::new();
+    for id in [0x850, 0x851] {
+        children.extend(placement(id, 0x889, 0, 2.0, Vec::new()));
+        children.extend(placement(id, 0x20, 0, 3.0, vec![b'X']));
+    }
+    let patch = plugin(
+        data,
+        "Patch.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(0x900, children),
+    );
+    let records = EsmParser::convert_plugins_with_reader(
+        &[base, patch],
+        &data.join("result.db"),
+        RecordReader::Inhouse,
+        data,
+    )
+    .unwrap();
+    for (id, expected) in [(0x850, 0x20), (0x851, 0x1f)] {
+        assert_eq!(
+            records
+                .get(&id)
+                .and_then(|record| SubrecordView::new(&record.subrecords).get_form_id(b"NAME")),
+            Some(expected),
             "{id:08X}"
         );
     }

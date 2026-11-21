@@ -33,18 +33,16 @@ async fn archive_winner_repair_and_incremental_conversion_refresh_model_bounds()
 
     let bounds = || {
         let connection = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
-        connection
-            .query_row(
-                "SELECT CASE WHEN bounds_valid=1 THEN bounds_min_x END
-             FROM statics WHERE model_path='meshes/generated.nif'",
-                [],
-                |row| row.get::<_, Option<f32>>(0),
-            )
-            .unwrap()
+        connection.query_row(
+            "SELECT CASE WHEN bounds_valid=1 THEN bounds_min_x END,center_x,radius
+             FROM statics LEFT JOIN room_model_bounds ON base_form_id=id WHERE model_path='meshes/generated.nif'",
+            [],
+            |row| Ok((row.get::<_, Option<f32>>(0)?, row.get::<_, Option<f32>>(1)?, row.get::<_, Option<f32>>(2)?)),
+        ).unwrap()
     };
     assert!(!run_fixture(&config).await.complete);
     let original = bounds();
-    assert!(original.is_some());
+    assert!(original.0.is_some() && original.1.is_some() && original.2.is_some());
 
     let replacement = dummy_content::nif::static_shape(&dummy_content::nif::StaticShape {
         name: "Replacement",
@@ -69,7 +67,15 @@ async fn archive_winner_repair_and_incremental_conversion_refresh_model_bounds()
     )
     .unwrap();
     assert!(repair_failed(&config, true).unwrap().published);
-    assert_eq!(bounds(), Some(256.0));
+    let repaired = bounds();
+    assert_eq!(repaired.0, Some(256.0));
+    assert!((repaired.1.unwrap() - 272.0).abs() < 1.0e-4);
+    assert!(
+        repaired
+            .2
+            .is_some_and(|radius| radius.is_finite() && radius > 0.0)
+    );
+    assert_ne!(repaired.2, original.2);
 
     fs::remove_file(winner).unwrap();
     let fallback = run_fixture(&config).await;
@@ -80,7 +86,7 @@ async fn archive_winner_repair_and_incremental_conversion_refresh_model_bounds()
     let removed = run_fixture(&config).await;
     assert!(removed.complete && removed.database_cache_hit);
     assert!(!output.join("meshes/generated.glb").exists());
-    assert_eq!(bounds(), None);
+    assert_eq!(bounds(), (None, None, None));
 }
 
 fn published_bytes(output: &Path) -> BTreeMap<String, Vec<u8>> {

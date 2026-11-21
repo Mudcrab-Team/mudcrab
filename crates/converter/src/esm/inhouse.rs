@@ -114,6 +114,8 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "room_bounds",
     "room_portals",
     "room_links",
+    "room_reference_rules",
+    "room_model_bounds",
     "room_graph_cells",
     "reference_rooms",
     "room_graph_stats",
@@ -1376,6 +1378,13 @@ fn convert_plugins_with_text_sources_report_impl(
         for cell in damage.affected_cells(&master) {
             incomplete.execute([cell])?;
         }
+        super::rooms::restore_rejected_room_fields(
+            &tx,
+            decoded
+                .records
+                .values()
+                .filter(|record| super::is_placed_record_type(&record.record_type)),
+        )?;
         tx.execute(
             "INSERT OR REPLACE INTO room_graph_stats(name,value) VALUES ('visibility_version',2)",
             [],

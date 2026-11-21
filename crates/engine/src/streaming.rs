@@ -1928,8 +1928,14 @@ fn spawn_cell(
                 entity.insert(bounds);
             }
             // Authored multibound policies and movable references override stored room membership.
-            if reference.has_multibound_override
-                || crate::room_culling::exempt_record_type(reference.base_record_type.as_deref())
+            let loose = crate::room_culling::assignment_follows_transform(
+                reference.base_record_type.as_deref(),
+            );
+            if reference.has_multibound_override || loose {
+                entity.insert(crate::room_culling::RoomCullLegacyExempt);
+            }
+            if !loose
+                && crate::room_culling::exempt_record_type(reference.base_record_type.as_deref())
             {
                 entity.insert(crate::room_culling::RoomCullExempt);
             }

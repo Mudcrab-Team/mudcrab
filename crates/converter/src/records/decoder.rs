@@ -82,12 +82,29 @@ fn record_decode_visit(field: &FieldSchema, diagnostics: &PluginDiagnostics) {
     });
 }
 
+/// Read winning signatures during initial admission and subsequent deferred recovery.
+pub(crate) trait RecordKinds {
+    fn kind(&self, id: u32) -> Option<[u8; 4]>;
+}
+
+impl RecordKinds for HashMap<u32, [u8; 4]> {
+    fn kind(&self, id: u32) -> Option<[u8; 4]> {
+        self.get(&id).copied()
+    }
+}
+
+impl RecordKinds for HashMap<u32, DecodedRecord> {
+    fn kind(&self, id: u32) -> Option<[u8; 4]> {
+        self.get(&id).map(|record| record.record_type)
+    }
+}
+
 /// Per-file interpretation supplied by the shared load-order authority.
 pub(crate) struct Context<'a> {
     pub order: &'a LoadOrder,
     pub plugin_index: usize,
     pub localized: bool,
-    pub winning_types: Option<&'a HashMap<u32, [u8; 4]>>,
+    pub winning_types: Option<&'a dyn RecordKinds>,
 }
 
 /// A first-pass link observation needed to preserve contextual replay event keys.
@@ -782,7 +799,7 @@ fn decode_with_identity_inner(
     }
     let link_kind = |source_id| {
         let id = remap(source_id, context, true, &mut PluginDiagnostics::default()).ok()?;
-        context.winning_types?.get(&id).copied()
+        context.winning_types?.kind(id)
     };
     for (position, &(signature, bytes)) in framed.fields.iter().enumerate() {
         if potential_deferred {
@@ -2412,7 +2429,7 @@ impl GrammarReplay<'_, '_> {
             )
             // silent-ok: An unmappable link has no winning type for field selection.
             .ok()?;
-            self.context.winning_types?.get(&id).copied()
+            self.context.winning_types?.kind(id)
         };
         let mut failure = None;
         for (position, &(signature, bytes)) in self.fields.iter().enumerate() {
@@ -2756,7 +2773,7 @@ fn replay_deferred(
     let framed = subrecords(&record.raw_payload, &mut framing, record.source_form_id);
     let link_kind = |source_id| {
         let id = remap(source_id, context, true, &mut PluginDiagnostics::default()).ok()?;
-        context.winning_types?.get(&id).copied()
+        context.winning_types?.kind(id)
     };
     let mut totals = first.baseline;
     let mut previous = Vec::new();
@@ -2978,9 +2995,21 @@ fn target_allowed(id: u32, kind: Option<[u8; 4]>, field: &FieldSchema) -> bool {
 
 /// An accepted tombstone may legitimately retire an older placement's required base.
 #[derive(Default)]
-pub(crate) struct DeletedBases(HashMap<u32, (u32, Option<[u8; 4]>)>);
+pub(crate) struct DeletedBases(HashMap<u32, Vec<BaseDeletion>>);
+
+struct BaseDeletion {
+    priority: u32,
+    prior_kind: Option<[u8; 4]>,
+    restored: Option<u32>,
+}
 
 impl DeletedBases {
+    pub(crate) fn restored(&mut self, id: u32, priority: u32) {
+        if let Some(previous) = self.0.get_mut(&id).and_then(|events| events.last_mut()) {
+            previous.restored.get_or_insert(priority);
+        }
+    }
+
     pub(crate) fn record(
         &mut self,
         id: u32,
@@ -2988,13 +3017,32 @@ impl DeletedBases {
         kind: [u8; 4],
         previous: Option<[u8; 4]>,
     ) {
-        if let Some(previous) = previous {
-            self.0
-                .insert(id, (priority, (previous == kind).then_some(kind)));
-        } else {
-            // A repeated deletion must not move the first deletion to a later layer.
-            self.0.entry(id).or_insert((priority, None));
+        let events = self.0.entry(id).or_default();
+        if let Some(last) = events.last_mut()
+            && previous.is_none()
+        {
+            // An unusable tentative restoration doesn't interrupt an existing deletion.
+            last.restored = None;
+            return;
         }
+        events.push(BaseDeletion {
+            priority,
+            prior_kind: previous.filter(|&prior| prior == kind),
+            restored: None,
+        });
+    }
+
+    fn retired_kind(&self, id: u32, authored: u32) -> Option<[u8; 4]> {
+        let events = self.0.get(&id)?;
+        let next = events.partition_point(|event| event.priority <= authored);
+        if next != 0
+            && events[next - 1]
+                .restored
+                .is_none_or(|restored| authored < restored)
+        {
+            return None;
+        }
+        events.get(next)?.prior_kind
     }
 }
 
@@ -3071,8 +3119,7 @@ pub(crate) fn validate_placement_targets(
         // independently usable and an accepted deletion removed a compatible live record.
         if let Some(base) = own[1]
             && winning_kind(base).is_none()
-            && let Some(&(deleted_at, Some(previous))) = deleted.0.get(&base)
-            && deleted_at > priority
+            && let Some(previous) = deleted.retired_kind(base, priority)
             && placement_base_field(schemas, kind)
                 .is_some_and(|field| target_allowed(base, Some(previous), field))
             && dependencies.own[0].is_none_or(|cell| winning_kind(cell) == Some(*b"CELL"))
@@ -3220,30 +3267,32 @@ impl RecoveryCandidates {
         dependencies
     }
 
-    fn resolve_grouped_ownership(
-        &self,
-        chain: &[DecodedRecord],
+    /// Replay earlier layers in order. Only their first usable physical occurrence
+    /// contributes a predecessor or a grouped owner for the next layer.
+    fn effective_predecessor<'a>(
+        &'a self,
+        chain: impl Iterator<Item = &'a DecodedRecord>,
         catalogue: &PlacementCatalogue<'_>,
         validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
-    ) -> Option<GroupedPlacement> {
+    ) -> (Option<&'a DecodedRecord>, Option<GroupedPlacement>) {
+        let mut previous = None;
         let mut grouped = None;
-        for (index, primary) in chain.iter().enumerate().skip(placement_chain_start(chain)) {
-            let previous = chain[..index].last();
-            let mut candidates = std::iter::once(primary)
-                .chain(self.duplicate_queue(primary).into_iter().flatten())
-                .enumerate();
-            let admitted = candidates.find_map(|(position, candidate)| {
+        for primary in chain {
+            for candidate in
+                std::iter::once(primary).chain(self.duplicate_queue(primary).into_iter().flatten())
+            {
                 if candidate.flags & 0x20 != 0 {
-                    return Some(std::borrow::Cow::Borrowed(candidate));
+                    previous = None;
+                    grouped = None;
+                    break;
                 }
-                if position != 0 && validate_live_duplicate(candidate, previous, validate).is_err()
-                {
-                    return None;
+                if validate_live_duplicate(candidate, previous, validate).is_err() {
+                    continue;
                 }
-                let mut candidate = std::borrow::Cow::Borrowed(candidate);
-                if record_contains_deferred(&candidate) {
+                let mut resolved = std::borrow::Cow::Borrowed(candidate);
+                let usable = if record_contains_deferred(candidate) {
                     catalogue.validate_superseded(
-                        candidate.to_mut(),
+                        resolved.to_mut(),
                         previous.is_some(),
                         grouped.as_slice(),
                         &self.deleted,
@@ -3251,25 +3300,59 @@ impl RecoveryCandidates {
                     )
                 } else {
                     catalogue.validate_superseded_targets(
-                        &candidate,
+                        candidate,
                         grouped.as_slice(),
                         &self.deleted,
                     )
+                };
+                if usable.is_err() {
+                    continue;
                 }
-                .ok()?;
-                Some(candidate)
-            });
-            if let Some(candidate) = admitted {
-                if candidate.flags & 0x20 != 0
-                    || !crate::esm::is_placed_record_type(&candidate.record_type)
-                {
-                    grouped = None
-                } else if candidate.cell_form_id.is_some() && candidate.has_placement_transform() {
-                    grouped = Some((candidate.record_type, placement_links(&candidate)));
+                previous = Some(candidate);
+                if !crate::esm::is_placed_record_type(&resolved.record_type) {
+                    grouped = None;
+                } else if resolved.cell_form_id.is_some() && resolved.has_placement_transform() {
+                    grouped = Some((resolved.record_type, placement_links(&resolved)));
                 }
+                break;
             }
         }
-        grouped
+        (previous, grouped)
+    }
+
+    pub(super) fn remove_for_deletion(
+        &mut self,
+        tombstone: &DecodedRecord,
+        records: &mut HashMap<u32, DecodedRecord>,
+        order: &LoadOrder,
+        schema: &Schema,
+        prepared: &PreparedSchemas,
+        validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+    ) {
+        let id = tombstone.form_id;
+        let previous = records.get(&id);
+        let chain = self.predecessor_chain(id);
+        let prior_kind = previous.and_then(|prior| {
+            if crate::esm::is_placed_record_type(&prior.record_type)
+                || record_contains_deferred(prior)
+            {
+                let catalogue = PlacementCatalogue {
+                    order,
+                    schema,
+                    prepared,
+                    kinds: records,
+                };
+                self.effective_predecessor(chain.iter().chain([prior]), &catalogue, validate)
+                    .0
+                    .map(|record| record.record_type)
+            } else {
+                Some(prior.record_type)
+            }
+        });
+        records.remove(&id);
+        self.deleted
+            .record(id, tombstone.load_order, tombstone.record_type, prior_kind);
+        self.predecessors.remove(&id);
     }
 
     pub(super) fn queue_duplicate(
@@ -3339,11 +3422,12 @@ impl RecoveryCandidates {
         &mut self,
         result: &mut ReadResult,
         history_index: &HashMap<(u32, u64), usize>,
-        order: &LoadOrder,
+        catalogue: &PlacementCatalogue<'_>,
         rejected: &DecodedRecord,
         validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
         require_complete: bool,
     ) -> Option<DecodedRecord> {
+        let order = catalogue.order;
         let id = rejected.form_id;
         let mut rejected_key = (rejected.load_order, rejected.source_record_offset);
         loop {
@@ -3351,7 +3435,13 @@ impl RecoveryCandidates {
                 while let Some(next) = duplicates.pop_front() {
                     let deleted = next.flags & 0x20 != 0;
                     if !deleted {
-                        let prior = self.predecessors.get(&id).and_then(|chain| chain.last());
+                        let chain = self.predecessor_chain(id);
+                        let prior = if next.payload_complete {
+                            chain.last()
+                        } else {
+                            self.effective_predecessor(chain.iter(), catalogue, validate)
+                                .0
+                        };
                         let failure = if require_complete
                             && next.load_order < rejected.load_order
                             && !next.payload_complete
@@ -3372,7 +3462,13 @@ impl RecoveryCandidates {
                     }
                     self.record_default_object(&next);
                     if deleted {
-                        let previous = self.predecessors.get(&id).and_then(|chain| chain.last());
+                        let previous = self
+                            .effective_predecessor(
+                                self.predecessor_chain(id).iter(),
+                                catalogue,
+                                validate,
+                            )
+                            .0;
                         self.deleted.record(
                             id,
                             next.load_order,
@@ -3485,7 +3581,7 @@ struct PlacementCatalogue<'a> {
     order: &'a LoadOrder,
     schema: &'a Schema,
     prepared: &'a PreparedSchemas,
-    kinds: &'a HashMap<u32, [u8; 4]>,
+    kinds: &'a dyn RecordKinds,
 }
 
 impl PlacementCatalogue<'_> {
@@ -3553,7 +3649,7 @@ impl PlacementCatalogue<'_> {
                 record.load_order,
                 &dependencies,
                 None,
-                |target| self.kinds.get(&target).copied(),
+                |target| self.kinds.kind(target),
                 deleted,
             )?;
         }
@@ -3665,6 +3761,12 @@ pub(crate) fn resolve_deferred(
             );
             replay_diagnostics.remove(&id);
             changed_chains.entry(id).or_default();
+            let catalogue = PlacementCatalogue {
+                order,
+                schema,
+                prepared,
+                kinds: &kinds,
+            };
             let source = pending.remove(&id).expect("selected deferred source");
             let replacement = if recovery
                 .predecessors
@@ -3672,7 +3774,7 @@ pub(crate) fn resolve_deferred(
                 .is_some_and(|chain| !chain.is_empty())
             {
                 reject_deferred_candidate(result, &history_index, &record, order, reason);
-                recovery.recover(result, &history_index, order, &record, validate, true)
+                recovery.recover(result, &history_index, &catalogue, &record, validate, true)
             } else {
                 let omitted = source.safe_prefix(&mut record);
                 for (position, signature) in omitted.iter().enumerate() {
@@ -3720,7 +3822,7 @@ pub(crate) fn resolve_deferred(
                         order,
                         format!("{reason}; recovered prefix unusable: {error}"),
                     );
-                    recovery.recover(result, &history_index, order, &record, validate, true)
+                    recovery.recover(result, &history_index, &catalogue, &record, validate, true)
                 } else {
                     set_deferred_history(result, &history_index, &record, true, Some(reason));
                     Some(record)
@@ -3792,11 +3894,12 @@ pub(crate) fn resolve_deferred(
                             Vec::new()
                         } else {
                             recovery
-                                .resolve_grouped_ownership(
-                                    chain,
+                                .effective_predecessor(
+                                    chain.iter(),
                                     &catalogue,
                                     &mut **validate_candidate.borrow_mut(),
                                 )
+                                .1
                                 .into_iter()
                                 .collect()
                         };
@@ -3835,8 +3938,19 @@ pub(crate) fn resolve_deferred(
             replay_diagnostics.remove(&id);
             pending.remove(&id);
             changed_chains.entry(id).or_default();
-            let previous =
-                recovery.recover(result, &history_index, order, &record, validate, false);
+            let previous = recovery.recover(
+                result,
+                &history_index,
+                &PlacementCatalogue {
+                    order,
+                    schema,
+                    prepared,
+                    kinds: &kinds,
+                },
+                &record,
+                validate,
+                false,
+            );
             placements.remove(&id);
             if let Some(mut previous) = previous {
                 let kind = previous.record_type;

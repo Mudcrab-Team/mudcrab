@@ -969,20 +969,30 @@
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "A subset update with unusable placement DATA removes stale links involving that reference. Field-level semantics remain deferred."
     },
+    "room_model_bounds": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; room culling #188)",
+      "reason": "Authored room-assignment projection. Field-level semantic tracing is deferred; prepared query dependencies remain separate."
+    },
     "room_placement_edits": {
       "classification": "provenance",
-      "owner": "Mudcrab maintainers (#744)",
+      "owner": "Mudcrab maintainers (#745)",
       "reason": "Post-conversion imports map created cells and edited placements to their supplying layer and source FormID, and record placement deletions."
     },
     "room_placement_layers": {
       "classification": "provenance",
-      "owner": "Mudcrab maintainers (#744)",
-      "reason": "Retains placement files and the plugin headers needed to preserve FormID slots across imports."
+      "owner": "Mudcrab maintainers (#745)",
+      "reason": "Post-conversion placement import retains exact source files and the plugin headers needed to preserve FormID slots across imports."
     },
     "room_portals": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Placements with missing or short DATA cannot become portals. A subset update removes a stale portal for the reference and clears links to its removed room bounds. Field-level semantics remain deferred."
+    },
+    "room_reference_rules": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; room culling #188)",
+      "reason": "Authored room-assignment projection. Field-level semantic tracing is deferred; prepared query dependencies remain separate."
     },
     "schema_info": {
       "classification": "provenance",
@@ -1008,6 +1018,11 @@
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "subset_nonplacement_deletions": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#744)",
+      "reason": "Subset updates retain deleted non-placement identities so later edits can validate incoming links. Restoring the record clears its entry. A full export replaces the subset history."
     },
     "texture_sets": {
       "classification": "deferred",

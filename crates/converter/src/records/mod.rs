@@ -805,8 +805,10 @@ fn read_plugins_with_prepared(
                 .borrow_mut()
                 .push(history::header_entry(header, order, index));
         };
+        let mut rejected_cells = HashSet::new();
         let receive = |scanned: scanner::ScannedRecord, diagnostics: &mut PluginDiagnostics| {
             let offset = scanned.source_record_offset;
+            let source_cell = (scanned.record_type == *b"CELL").then_some(scanned.source_form_id);
             let context = decoder::Context {
                 order,
                 plugin_index: index,
@@ -828,6 +830,7 @@ fn read_plugins_with_prepared(
             ) {
                 Ok(record) => record,
                 Err(error) => {
+                    rejected_cells.extend(source_cell);
                     if let Some(entry) = history.borrow_mut().last_mut() {
                         entry.reason = Some(error.clone());
                     }
@@ -842,6 +845,9 @@ fn read_plugins_with_prepared(
                     return;
                 }
             };
+            if !record.payload_complete {
+                rejected_cells.extend(source_cell);
+            }
             if record.record_type == *b"TES4" {
                 result.headers.push(record);
                 return;
@@ -885,6 +891,7 @@ fn read_plugins_with_prepared(
                     &mut validate,
                 )
             {
+                rejected_cells.extend(source_cell);
                 if let Some(entry) = history.borrow_mut().last_mut() {
                     entry.reason = Some(format!("unusable runtime candidate: {error}"));
                 }
@@ -1063,16 +1070,17 @@ fn read_plugins_with_prepared(
             }
             recovery.record_default_object(&record);
             if deleted {
-                let previous = result.records.remove(&record.form_id);
-                recovery.deleted.record(
-                    record.form_id,
-                    record.load_order,
-                    record.record_type,
-                    previous.map(|prior| prior.record_type),
+                recovery.remove_for_deletion(
+                    &record,
+                    &mut result.records,
+                    order,
+                    schema,
+                    prepared,
+                    &mut validate,
                 );
-                recovery.predecessors.remove(&record.form_id);
             } else {
                 let id = record.form_id;
+                recovery.deleted.restored(id, record.load_order);
                 let tentative = decoder::record_contains_deferred(&record) || placement;
                 let previous = result.records.insert(id, record);
                 if tentative {
@@ -1092,7 +1100,11 @@ fn read_plugins_with_prepared(
                 unknown_discarded_scope = true;
             }
         }
-        for scope in damage.frames {
+        for scope in damage
+            .frames
+            .into_iter()
+            .chain(rejected_cells.into_iter().map(DiscardedFrameScope::Cell))
+        {
             match scope.resolve(index, order) {
                 DiscardedFrameScope::Cell(cell) => {
                     result.damaged_cell_groups.insert(cell);

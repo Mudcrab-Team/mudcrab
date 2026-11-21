@@ -524,13 +524,16 @@ impl EsmParser {
                     room_link_layouts.insert(id, layout);
                 }
                 if record.is_deleted() {
-                    let previous = merged.remove(&id);
-                    deleted_ids.record(
-                        id,
-                        record.load_order,
-                        record.record_type,
-                        previous.map(|prior| prior.record_type),
-                    );
+                    let prior_kind = merged.get(&id).and_then(|prior| {
+                        legacy_prior_kind(
+                            prior,
+                            placement_candidates.get(&id),
+                            &merged,
+                            &deleted_ids,
+                        )
+                    });
+                    deleted_ids.record(id, record.load_order, record.record_type, prior_kind);
+                    merged.remove(&id);
                     placement_candidates.remove(&id);
                     damaged_placements.accepted(id);
                 } else {
@@ -539,6 +542,7 @@ impl EsmParser {
                     {
                         merge_default_objects(previous, &mut record);
                     }
+                    deleted_ids.restored(id, record.load_order);
                     let placed = is_placed_record_type(&record.record_type);
                     let previous = merged.insert(id, record);
                     if placed {
@@ -602,6 +606,45 @@ impl EsmParser {
     }
 }
 
+fn legacy_prior_kind<'a>(
+    mut record: &'a RawRecord,
+    mut candidate: Option<&'a LegacyPlacementCandidate>,
+    winners: &HashMap<u32, RawRecord>,
+    deleted: &crate::records::DeletedBases,
+) -> Option<[u8; 4]> {
+    while let Some(placement) = candidate {
+        if crate::records::validate_placement_targets(
+            None,
+            &record.record_type,
+            record.load_order,
+            &legacy_dependencies(record, placement),
+            None,
+            |target| winners.get(&target).map(|record| record.record_type),
+            deleted,
+        )
+        .is_ok()
+        {
+            break;
+        }
+        let predecessor = placement.predecessor.as_ref()?;
+        record = predecessor.previous.as_ref()?;
+        candidate = predecessor.previous_candidate.as_ref();
+    }
+    Some(record.record_type)
+}
+
+fn legacy_dependencies(
+    record: &RawRecord,
+    candidate: &LegacyPlacementCandidate,
+) -> PlacementDependencies {
+    PlacementDependencies {
+        own: legacy_placement_links(record),
+        grouped: legacy_grouped_predecessors(record.cell_form_id, candidate)
+            .map(|prior| (prior.record_type, legacy_placement_links(prior)))
+            .collect(),
+    }
+}
+
 /// Restore the record, link layout and damage together when late admission fails.
 fn resolve_legacy_placements(
     winners: &mut HashMap<u32, RawRecord>,
@@ -621,15 +664,9 @@ fn resolve_legacy_placements(
                     .any(|record| !is_placed_record_type(&record.record_type))
             },
             |id| {
-                candidates.contains_key(&id).then(|| {
-                    let record = &winners[&id];
-                    PlacementDependencies {
-                        own: legacy_placement_links(record),
-                        grouped: legacy_grouped_predecessors(record.cell_form_id, &candidates[&id])
-                            .map(|prior| (prior.record_type, legacy_placement_links(prior)))
-                            .collect(),
-                    }
-                })
+                candidates
+                    .get(&id)
+                    .map(|candidate| legacy_dependencies(&winners[&id], candidate))
             },
             |id, dependencies, cycle, absent| {
                 crate::records::validate_placement_targets(
@@ -1244,6 +1281,7 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
             form_ids: &[0],
         },
         b"XLRM" | b"LNAM" | b"INAM" if record_type == b"REFR" => Fixed(SINGLE),
+        b"XMBR" if is_placed_record_type(record_type) => Fixed(SINGLE),
         // Regions.
         b"XCLR" if record_type == b"CELL" => Array {
             stride: 4,
@@ -1529,14 +1567,17 @@ fn remap_record_form_ids(
         }
     }
     if !malformed_subrecords.is_empty() {
-        // Empty room links and portal endpoint fields keep the graph incomplete. Dropping
-        // them would erase a broken link or make conflicting endpoint fields appear unique.
+        // Keep empty authored room fields: absence would turn unusable assignments into
+        // automatic/NONE ownership or hide broken room links and conflicting portals.
         // Other optional fields retain their valid siblings and their relative order.
         let mut index = 0;
         record.subrecords.retain_mut(|(tag, data)| {
             let malformed = malformed_subrecords.binary_search(&index).is_ok();
             index += 1;
-            if malformed && record_type == *b"REFR" && matches!(tag.as_slice(), b"XPOD" | b"XLRM") {
+            if malformed
+                && ((record_type == *b"REFR" && matches!(tag.as_slice(), b"XPOD" | b"XLRM"))
+                    || (tag.as_slice() == b"XMBR" && is_placed_record_type(&record_type)))
+            {
                 data.clear();
                 true
             } else {

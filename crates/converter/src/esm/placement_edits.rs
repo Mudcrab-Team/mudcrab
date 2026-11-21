@@ -85,13 +85,16 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         current_schema,
         "placement edits require the current world database schema"
     );
-    let versioned: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='visibility_version' AND value=2)",
+    let (visibility_version, assignment_version): (Option<i64>, Option<i64>) = tx.query_row(
+        "SELECT (SELECT value FROM room_graph_stats WHERE name='visibility_version'),
+                (SELECT value FROM room_graph_stats WHERE name='assignment_version')",
         [],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    ensure!(versioned, "placement edits require a versioned room graph");
-
+    ensure!(
+        visibility_version == Some(2) && matches!(assignment_version, None | Some(1)),
+        "placement edits require a supported versioned room graph"
+    );
     let (path, is_plugin) = match source {
         PlacementSource::SkyrimPlugin(path) => (path, true),
         PlacementSource::NativeJson(path) => (path, false),
@@ -140,13 +143,19 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
              as a master for its forms."
         );
     }
+    if assignment_version.is_none() {
+        // Older packs keep geometric ownership. Migrate storage for the shared projector
+        // without publishing an authored-assignment certificate.
+        tx.execute_batch(super::rooms::ROOM_TABLES_SQL)?;
+        super::rooms::migrate_room_metadata(&tx)?;
+    }
     let (import, metadata) = if is_plugin {
         let metadata = plugin_metadata_from_bytes(&bytes)?;
         (plugin_edits(&tx, &name, &bytes, &metadata)?, Some(metadata))
     } else {
         let native = serde_json::from_slice::<NativePlacements>(&bytes)
             .wrap_err("invalid native placement JSON")?;
-        (native.into_import()?, None)
+        (native.into_import(assignment_version.is_none())?, None)
     };
     ensure!(
         !import.cells.is_empty() || !import.edits.is_empty() || !import.damage.is_empty(),
@@ -201,7 +210,6 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     let mut unavailable_link_targets = Vec::new();
     let mut available_link_targets = HashSet::new();
     let mut layouts = HashMap::new();
-    let mut records = HashMap::new();
     for mut edit in import.edits {
         let id = edit.record.form_id;
         let in_fresh_cell = edit
@@ -242,10 +250,15 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         if let Some(layout) = edit.room_links {
             layouts.insert(id, layout);
         }
-        records.insert(id, edit.record);
     }
-    let mut certified_cells =
-        refresh_placement_cells(&tx, &cells, &fresh_cells, &records, &layouts, &name)?;
+    let mut certified_cells = refresh_placement_cells(
+        &tx,
+        &cells,
+        &fresh_cells,
+        &changed,
+        &layouts,
+        std::slice::from_ref(&name),
+    )?;
     let incomplete = mark_incomplete(&tx, &import.damage)?;
     certified_cells.retain(|cell| !incomplete.contains(cell));
     cells.extend(incomplete);
@@ -281,6 +294,7 @@ struct Edit {
     record: RawRecord,
     owns_new_id: bool,
     room_links: Option<RoomLinkLayout>,
+    inherit_room_master: bool,
 }
 
 struct PreviousPlacement {
@@ -326,6 +340,7 @@ fn plugin_edits(
         });
     }
     let priority = order.names.len();
+    let load_order = u32::try_from(priority)?;
     order.names.push(name.to_owned());
     order.metadata.push(metadata.clone());
     let order = LoadOrder::from_metadata(order.names, order.metadata)?;
@@ -375,12 +390,20 @@ fn plugin_edits(
             }
         };
         let source_id = record.form_id;
-        let remapped =
+        let Some(remapped) =
             source_identity::header_runtime_id(&record.record_type, source_id, priority, &order)
                 .filter(|&id| id != 0)
-                .ok_or_else(|| {
-                    color_eyre::eyre::eyre!("{name}: invalid record FormID {source_id:08X}")
-                })?;
+        else {
+            ensure!(
+                record.record_type == REFR,
+                "{name}: invalid record FormID {source_id:08X}"
+            );
+            eprintln!(
+                "warning: {name}: skipped placement {source_id:08X} with invalid record FormID"
+            );
+            record_damage(&mut damage_after, &mut import, &record, priority, &order);
+            continue;
+        };
         let owns_new_id = (source_id >> 24) as usize == metadata.masters.len();
         ensure!(
             !owns_new_id || source_id & 0x00ff_ffff != 0,
@@ -410,6 +433,11 @@ fn plugin_edits(
                 .is_some_and(|id| damaged_new_cells.contains(&id));
             let rejection = if missing_parent {
                 Some("because its new CELL is damaged")
+            } else if record.cell_form_id.is_some_and(|cell| {
+                DiscardedFrameScope::Cell(cell).resolve(priority, &order)
+                    == DiscardedFrameScope::Unknown
+            }) {
+                Some("with invalid parent CELL")
             } else {
                 validate_room_field_tags(&record.subrecords)?;
                 if base
@@ -451,6 +479,7 @@ fn plugin_edits(
         let room_links = base
             .filter(|id| id & 0x00ff_ffff == ROOM_MARKER_BASE)
             .map(|_| RoomLinkLayout::from_raw(&record));
+        record.load_order = load_order;
         remap_record_form_ids(
             &mut record,
             name,
@@ -464,6 +493,7 @@ fn plugin_edits(
             record,
             room_links,
             owns_new_id,
+            inherit_room_master: false,
         });
     }
     warnings.report();
@@ -706,7 +736,13 @@ fn apply_edit(
         (Some((kind, _, _)), _) if kind != "REFR" => bail!("FormID belongs to a {kind} record"),
         (_, Some(previous)) => (Some(previous.cell), Some(previous.data.as_slice())),
         (Some((_, cell, data)), None) if !previously_edited => (*cell, Some(data.as_slice())),
-        (_, None) => (None, None),
+        (_, None) => {
+            ensure!(
+                is_plugin || !previously_edited || record.is_deleted(),
+                "native replacement requires an existing runtime enable state"
+            );
+            (None, None)
+        }
     };
     if let Some(cell) = old_cell {
         require_interior(tx, cell)?;
@@ -726,7 +762,8 @@ fn apply_edit(
                     "native replacement requires an existing runtime enable state"
                 )
             })?;
-            let parent = SubrecordView::new(&subrecords)
+            let old_view = SubrecordView::new(&subrecords);
+            let parent = old_view
                 .find(b"XESP")
                 .and_then(SubrecordXESP::parse)
                 .map(|parent| (parent.parent_ref, parent.flags))
@@ -736,6 +773,25 @@ fn apply_edit(
                 "native replacement cannot preserve existing enable-parent data"
             );
             record.flags |= previous.flags & INITIALLY_DISABLED;
+            if edit.inherit_room_master
+                && old_view.unique_form_id(b"NAME") == Some(ROOM_MARKER_BASE)
+            {
+                let mut headers = old_view.find_all(b"XRMR");
+                if let Some([_, _, master, _]) = headers.next()
+                    && headers.next().is_none()
+                {
+                    let master_byte = record
+                        .subrecords
+                        .iter_mut()
+                        .find(|(tag, _)| tag == b"XRMR")
+                        .and_then(|(_, header)| header.get_mut(2))
+                        .ok_or_else(|| {
+                            color_eyre::eyre::eyre!("native room edit has no XRMR master byte")
+                        })?;
+                    *master_byte = *master;
+                    edit.room_links = Some(RoomLinkLayout::from_raw(record));
+                }
+            }
             record
                 .subrecords
                 .extend(subrecords.into_iter().filter(|(tag, _)| tag == b"XESP"));
@@ -748,8 +804,13 @@ fn apply_edit(
     if !must_be_new && old_data.is_none() && !previously_edited {
         require_unused_id(tx, id, has_history)?;
     }
-    // Drop the old memberships even when the reference moves to another cell.
+    // Each supported reference has only room and transform semantics. Its old memberships
+    // and assignment rule are discarded even when it moves out of the old cell.
     tx.execute("DELETE FROM reference_rooms WHERE reference_id=?1", [id])?;
+    tx.execute(
+        "DELETE FROM room_reference_rules WHERE reference_id=?1",
+        [id],
+    )?;
     if record.is_deleted() {
         tx.execute("DELETE FROM [references] WHERE id=?1", [id])?;
         return Ok(());
@@ -881,7 +942,7 @@ struct NativePlacements {
 }
 
 impl NativePlacements {
-    fn into_import(self) -> Result<Import> {
+    fn into_import(self, geometric_ownership: bool) -> Result<Import> {
         Ok(Import {
             cells: self
                 .cells
@@ -891,7 +952,7 @@ impl NativePlacements {
             edits: self
                 .edits
                 .into_iter()
-                .map(NativeEdit::into_edit)
+                .map(|edit| edit.into_edit(geometric_ownership))
                 .collect::<Result<_>>()?,
             ..Import::default()
         })
@@ -963,6 +1024,7 @@ enum NativeEdit {
         #[serde(default)]
         rotation: [f32; 3],
         half_extents: [f32; 3],
+        master: Option<bool>,
         #[serde(default)]
         links: Vec<u32>,
     },
@@ -992,8 +1054,9 @@ enum NativeOwnership {
 }
 
 impl NativeEdit {
-    fn into_edit(self) -> Result<Edit> {
+    fn into_edit(self, geometric_ownership: bool) -> Result<Edit> {
         let mut room_links = None;
+        let mut inherit_room_master = false;
         let record = match self {
             Self::Put {
                 id,
@@ -1022,7 +1085,11 @@ impl NativeEdit {
                         record
                             .subrecords
                             .push((b"XMBR".to_vec(), room.to_le_bytes().to_vec()));
-                        MULTIBOUND_REFERENCE_FLAG
+                        if geometric_ownership {
+                            MULTIBOUND_REFERENCE_FLAG
+                        } else {
+                            0
+                        }
                     }
                 };
                 record
@@ -1033,6 +1100,7 @@ impl NativeEdit {
                 position,
                 rotation,
                 half_extents,
+                master,
                 links,
             } => {
                 ensure!(
@@ -1046,8 +1114,12 @@ impl NativeEdit {
                     .subrecords
                     .push(native_primitive(half_extents, SHAPE_BOX));
                 ensure!(links.len() <= 0x3fff, "room has too many links");
-                let count = (links.len() as u32).to_le_bytes();
-                record.subrecords.push((b"XRMR".to_vec(), count.to_vec()));
+                inherit_room_master = master.is_none();
+                let [low, high] = u16::try_from(links.len())?.to_le_bytes();
+                record.subrecords.push((
+                    b"XRMR".to_vec(),
+                    vec![low, high, u8::from(master.unwrap_or(false)), 0],
+                ));
                 record.subrecords.extend(
                     links
                         .into_iter()
@@ -1094,6 +1166,7 @@ impl NativeEdit {
             record,
             room_links,
             owns_new_id: id >= NATIVE_FORM_START,
+            inherit_room_master,
         })
     }
 }

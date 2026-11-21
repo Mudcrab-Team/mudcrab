@@ -4517,6 +4517,15 @@ pub(crate) fn non_mo2_archive_is_active(archive: &Path, owners: &BTreeMap<String
         .is_none_or(|(_, active)| *active)
 }
 
+/// Lists active BSAs from the same recursive Data discovery used by non-MO2 conversion.
+pub fn active_data_bsa_paths(data: &Path, plugins: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut files = discover(data)?;
+    let owners = installed_archive_owners(data, &files, plugins);
+    files.retain(|path| extension(path, &["bsa"]) && non_mo2_archive_is_active(path, &owners));
+    sort_archives_by_load_order(&mut files, plugins);
+    Ok(files)
+}
+
 /// Match an exact normalized stem or an owner followed by a space, dash or underscore.
 /// Ownership, MO2 activity and priority share this companion-name boundary.
 fn archive_stem_matches_plugin(stem: &str, plugin: &str) -> bool {
@@ -4551,6 +4560,7 @@ pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[P
             crate::esm::load_order::normalize_plugin_name(
                 &archive.file_stem().unwrap_or_default().to_string_lossy(),
             ),
+            archive.clone(),
         )
     });
 }
@@ -11410,7 +11420,8 @@ mod tests {
         let mut archives = vec![
             PathBuf::from("Example - Textures.bsa"),
             PathBuf::from("Skyrim - Textures.bsa"),
-            PathBuf::from("Update.bsa"),
+            PathBuf::from("b/update.bsa"),
+            PathBuf::from("A/Update.bsa"),
             PathBuf::from("Skyrim - Meshes.bsa"),
         ];
         sort_archives_by_load_order(&mut archives, &plugins);
@@ -11419,7 +11430,8 @@ mod tests {
             vec![
                 PathBuf::from("Skyrim - Meshes.bsa"),
                 PathBuf::from("Skyrim - Textures.bsa"),
-                PathBuf::from("Update.bsa"),
+                PathBuf::from("A/Update.bsa"),
+                PathBuf::from("b/update.bsa"),
                 PathBuf::from("Example - Textures.bsa"),
             ]
         );
