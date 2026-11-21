@@ -8232,6 +8232,7 @@ fn typed_placement_admission_uses_the_retained_transform() {
                 [
                     placement(0x850, 0x1f, 0, 2., sub(b"DATA", &ignored)),
                     placement(0x851, 0x1f, 0, 3., vec![]),
+                    placement(0x852, 0x1f, 0, 5., vec![]),
                 ]
                 .concat(),
             ),
@@ -8243,7 +8244,14 @@ fn typed_placement_admission_uses_the_retained_transform() {
         "Update.esp",
         &["Skyrim.esm"],
         0,
-        placement_group(0x900, placement(0x851, 0x1f, 0, 4., sub(b"DATA", &ignored))),
+        placement_group(
+            0x900,
+            [
+                placement(0x851, 0x1f, 0, 4., sub(b"DATA", &ignored)),
+                placement(0x852, 0x1f, 0, f32::NAN, sub(b"DATA", &[0; 24])),
+            ]
+            .concat(),
+        ),
     );
     let output = data.join("world.db");
     EsmParser::convert_plugins_with_reader(
@@ -8261,7 +8269,16 @@ fn typed_placement_admission_uses_the_retained_transform() {
         .unwrap()
     };
     assert_eq!(position(0x850), 2.);
-    assert_eq!(position(0x851), 4.);
+    assert_eq!(
+        position(0x851),
+        3.,
+        "trailing DATA preserves the predecessor"
+    );
+    assert_eq!(
+        position(0x852),
+        0.,
+        "a rejected prefix permits the valid override"
+    );
 }
 
 #[tokio::test]
