@@ -427,10 +427,9 @@ fn json_usize(value: &serde_json::Value, what: &str) -> Result<usize> {
 
 /// A JSON number as an index, or `None` when it is not a number or does not fit.
 fn json_index(value: &serde_json::Value) -> Option<usize> {
-    // silent-ok: a value that is not an index finds no element, and every caller reports that.
-    value
-        .as_u64()
-        .and_then(|number| usize::try_from(number).ok())
+    let number = value.as_u64()?;
+    // silent-ok: a value that does not fit finds no element, and every caller reports that.
+    usize::try_from(number).ok()
 }
 
 /// An optional JSON byte offset: absent is zero, present must be a number that fits.
