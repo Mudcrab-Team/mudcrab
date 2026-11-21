@@ -59,13 +59,12 @@ fn entries(
     for layer in quadrant.layers.iter() {
         let support = nine.map(|i| f32::from(layer.weights[i]));
         if !layer.is_base
-            // Retail value (RF-GRASS-015): at the default threshold 0, a layer needs one of the
-            // nine coverage bytes above 25/255. Retail also drops a layer when the mean of the
-            // nine is below fTexturePctThreshold, while MudCrab applies the threshold per sample;
-            // the two only differ with an edited INI.
-            // Retail value (RF-GRASS-016): T is clamped to max(T, 0) and a value above 1 becomes
-            // 0.9; MudCrab rejects it at launch validation (config.rs accepts 0..1 only; tracked
-            // in #823).
+            // MudCrab approximation: a layer is admitted when any of the nine samples has
+            // weight > 25/255 and weight >= fTexturePctThreshold. Retail (RF-GRASS-015,
+            // RF-GRASS-016) counts a sample only if pct > T and drops the layer when the mean of
+            // the nine is below T. At the default T = 0 both admit the same layers; they differ
+            // only with an edited INI threshold. Retail clamps T to max(T, 0) and turns T > 1
+            // into 0.9; MudCrab rejects T outside 0..1 at launch validation (tracked in #823).
             && !support
                 .iter()
                 .any(|weight| *weight > 25.0 / 255.0 && *weight >= config.grass_texture_threshold)
