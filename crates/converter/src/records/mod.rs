@@ -861,6 +861,7 @@ fn read_plugins_with_prepared(
     let mut gmst_aliases: HashMap<u32, u32> = HashMap::new();
     let scan_stage = profile::ProfileStage::start("scan_decode_merge");
     for (index, path) in plugin_paths.iter().enumerate() {
+        let plugin_index = u32::try_from(index)?;
         let name = &order.names[index];
         let mut diagnostics = PluginDiagnostics::default();
         let mut seen = HashMap::new();
@@ -903,7 +904,7 @@ fn read_plugins_with_prepared(
                     if let Some(entry) = history.borrow_mut().last_mut() {
                         if entry.record_type == *b"REFR" && entry.flags & 0x20 == 0 {
                             let id = entry.form_id.filter(|&id| id != 0);
-                            unreadable_refs.insert(id, (index as u32, offset));
+                            unreadable_refs.insert(id, (plugin_index, offset));
                         }
                         entry.reason = Some(error.clone());
                     }
@@ -922,7 +923,7 @@ fn read_plugins_with_prepared(
                 rejected_cells.extend(source_cell);
             }
             if record.record_type == *b"REFR" && record.flags & 0x20 == 0 {
-                let position = (index as u32, offset);
+                let position = (plugin_index, offset);
                 if !record.payload_complete {
                     let id = history.borrow().last().and_then(|entry| entry.form_id);
                     unreadable_refs.insert(id.filter(|&id| id != 0), position);
@@ -963,7 +964,7 @@ fn read_plugins_with_prepared(
                 && !gmst_aliases.contains_key(&record.form_id)
                 && let Some(&(_, Some(placement_offset))) = seen.get(&record.form_id)
             {
-                recovery.queue_duplicate((index as u32, placement_offset), record);
+                recovery.queue_duplicate((plugin_index, placement_offset), record);
                 return;
             }
             if record.flags & 0x20 == 0
@@ -1123,7 +1124,7 @@ fn read_plugins_with_prepared(
                 );
             }
             let source = RecordSource {
-                plugin_index: index as u32,
+                plugin_index,
                 source_form_id: source_id,
                 deleted,
             };
@@ -1197,7 +1198,7 @@ fn read_plugins_with_prepared(
                 .map(|(offset, placement)| (*offset, placement.runtime_id(index, order))),
         );
         for (offset, id) in unreadable_headers {
-            let position = (index as u32, offset);
+            let position = (plugin_index, offset);
             let latest = unreadable_refs
                 .entry(id.filter(|&id| id != 0))
                 .or_insert(position);
@@ -1211,8 +1212,8 @@ fn read_plugins_with_prepared(
             if let Some(id) = id {
                 let latest = truncated_placements
                     .entry(id)
-                    .or_insert((index as u32, offset));
-                *latest = (*latest).max((index as u32, offset));
+                    .or_insert((plugin_index, offset));
+                *latest = (*latest).max((plugin_index, offset));
             } else {
                 unknown_cell_scope = true;
             }

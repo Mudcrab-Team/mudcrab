@@ -5720,7 +5720,7 @@ mod tests {
                         |row| row.get(0),
                     )
                     .unwrap();
-                assert_eq!(other_radius, 8.0);
+                assert!((other_radius - 8.0).abs() < f32::EPSILON);
             }
         }
     }
@@ -5789,15 +5789,14 @@ mod tests {
             .unwrap();
         let updated = reference(0x2001, 0x100, 0x500, [12.0, 0.0, 0.0], [0.0; 3]);
         export_to_db(&conn, &HashMap::from([(updated.form_id, updated)])).unwrap();
-        assert_eq!(
-            conn.query_row(
+        let pos_x: f32 = conn
+            .query_row(
                 "SELECT pos_x FROM [references] WHERE id=0x2001",
                 [],
-                |row| { row.get::<_, f32>(0) }
+                |row| row.get(0),
             )
-            .unwrap(),
-            12.0
-        );
+            .unwrap();
+        assert!((pos_x - 12.0).abs() < f32::EPSILON);
     }
 
     #[test]
