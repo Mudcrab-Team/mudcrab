@@ -80,6 +80,10 @@ mod rv_b_tests;
 #[path = "pipeline/recovery_tests.rs"]
 mod recovery_tests;
 
+#[cfg(test)]
+#[path = "pipeline/decoded_plugin_hash_tests.rs"]
+mod decoded_plugin_hash_tests;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PipelineReport {
     pub complete: bool,
