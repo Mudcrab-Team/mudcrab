@@ -3326,6 +3326,7 @@ impl RecoveryCandidates {
                     previous,
                     grouped.as_slice(),
                     &self.deleted,
+                    deletions.is_some(),
                     validate,
                 ) else {
                     continue;
@@ -3673,6 +3674,7 @@ impl RecoveryCandidates {
                     previous,
                     grouped.as_slice(),
                     &self.deleted,
+                    false,
                     validate,
                 ) {
                     Ok(resolved) => {
@@ -3715,6 +3717,7 @@ impl PlacementCatalogue<'_> {
         previous: Option<&DecodedRecord>,
         grouped: &[GroupedPlacement],
         deleted: &DeletedBases,
+        settling_deletion_history: bool,
         validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
     ) -> Result<std::borrow::Cow<'a, DecodedRecord>, PlacementFailure> {
         let mut resolved = std::borrow::Cow::Borrowed(candidate);
@@ -3722,16 +3725,21 @@ impl PlacementCatalogue<'_> {
             return Ok(resolved);
         }
         validate_live_duplicate(candidate, previous, validate)?;
-        if record_contains_deferred(candidate) {
+        let targets = if record_contains_deferred(candidate) {
             self.validate_superseded(
                 resolved.to_mut(),
                 previous.is_some(),
                 grouped,
                 deleted,
                 validate,
-            )?;
+            )
         } else {
-            self.validate_superseded_targets(candidate, grouped, deleted)?;
+            self.validate_superseded_targets(candidate, grouped, deleted)
+        };
+        match targets {
+            // A later deletion omits the placement but preserves its earlier live interval.
+            Err(PlacementFailure::RetiredBase(_)) if settling_deletion_history => {}
+            result => result?,
         }
         Ok(resolved)
     }

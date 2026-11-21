@@ -639,7 +639,7 @@ fn settle_legacy_predecessor(
     });
     let mut accepted = versions.filter(|&(record, candidate)| {
         candidate.is_none_or(|placement| {
-            crate::records::validate_placement_targets(
+            let result = crate::records::validate_placement_targets(
                 None,
                 &record.record_type,
                 record.load_order,
@@ -647,8 +647,11 @@ fn settle_legacy_predecessor(
                 None,
                 |target| winners.get(&target).map(|record| record.record_type),
                 deleted,
+            );
+            matches!(
+                result,
+                Ok(()) | Err(crate::records::PlacementFailure::RetiredBase(_))
             )
-            .is_ok()
         })
     });
     let (latest, _) = accepted.next()?;

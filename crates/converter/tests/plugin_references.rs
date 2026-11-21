@@ -9632,6 +9632,9 @@ async fn deleted_base_notices_follow_usable_shadows_and_live_intervals() {
                 live(0x832),
                 live(0x833),
                 live(0x834),
+                live(0x835),
+                live(0x836),
+                live(0x837),
                 dependent(0x850, 0x830),
                 dependent(0x851, 0x831),
             ]
@@ -9648,6 +9651,8 @@ async fn deleted_base_notices_follow_usable_shadows_and_live_intervals() {
                 deleted(0x832),
                 deleted(0x833),
                 deleted(0x834),
+                deleted(0x835),
+                deleted(0x837),
             ]
             .concat(),
         ),
@@ -9657,18 +9662,41 @@ async fn deleted_base_notices_follow_usable_shadows_and_live_intervals() {
         ),
         (
             "EarlyRestores.esp",
-            [dependent(0x833, 0x888), dependent(0x834, 0x1f)].concat(),
+            [
+                dependent(0x833, 0x888),
+                dependent(0x834, 0x1f),
+                dependent(0x835, 0x836),
+            ]
+            .concat(),
         ),
         ("RejectedGap.esp", dependent(0x855, 0x833)),
         ("AcceptedGap.esp", dependent(0x856, 0x834)),
+        ("BeforeRetirement.esp", dependent(0x857, 0x835)),
+        ("RetireSupport.esp", deleted(0x836)),
+        ("AfterRetirement.esp", dependent(0x837, 0x836)),
+        ("StillAbsent.esp", dependent(0x858, 0x837)),
         (
             "Restore.esp",
-            [live(0x832), live(0x833), live(0x834)].concat(),
+            [
+                live(0x832),
+                live(0x833),
+                live(0x834),
+                live(0x835),
+                live(0x837),
+            ]
+            .concat(),
         ),
         ("Live.esp", dependent(0x854, 0x832)),
         (
             "DeleteAgain.esp",
-            [deleted(0x832), deleted(0x833), deleted(0x834)].concat(),
+            [
+                deleted(0x832),
+                deleted(0x833),
+                deleted(0x834),
+                deleted(0x835),
+                deleted(0x837),
+            ]
+            .concat(),
         ),
     ];
     let list = dir.path().join("plugins.txt");
@@ -9704,6 +9732,8 @@ async fn deleted_base_notices_follow_usable_shadows_and_live_intervals() {
             (0x854, true),
             (0x855, false),
             (0x856, true),
+            (0x857, true),
+            (0x858, false),
         ] {
             let id = format!("{id:08X}");
             if notices.contains(&id) != retired || warnings.contains(&id) == retired {
@@ -9715,7 +9745,7 @@ async fn deleted_base_notices_follow_usable_shadows_and_live_intervals() {
         let db = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
         assert_eq!(
             db.query_row(
-                "SELECT count(*) FROM records WHERE form_id BETWEEN 0x830 AND 0x834",
+                "SELECT count(*) FROM records WHERE form_id BETWEEN 0x830 AND 0x837",
                 [],
                 |row| row.get::<_, u32>(0)
             )
