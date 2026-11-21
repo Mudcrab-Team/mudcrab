@@ -908,6 +908,9 @@ fn selection_includes(selection: IngestionSelection, path: &Path) -> bool {
     if selection == IngestionSelection::All {
         return true;
     }
+    if is_authoring_source_name(&path.to_string_lossy()) {
+        return false;
+    }
     if is_animation_input(path) {
         return true;
     }
@@ -994,7 +997,7 @@ fn restore_cached_files_with_io_limit(
     let mut seen_paths = BTreeMap::new();
     let mut blobs = BTreeMap::<&str, CachedRestoreBlob<'_>>::new();
     for (index, file) in entry.files.iter().enumerate() {
-        let relative = safe_relative_path(&file.path)?;
+        let relative = ingestion_relative_path(&file.path)?;
         detect_archive_collision(&mut seen_paths, &relative, &file.path)?;
         let blob = match blobs.entry(file.hash.as_str()) {
             std::collections::btree_map::Entry::Occupied(blob) => blob.into_mut(),
@@ -1183,6 +1186,15 @@ fn replace_raw_payload(
 /// Converts an archive-relative path to a safe, relative path, ensuring it does not contain
 /// absolute paths or drive letters.
 pub(crate) fn safe_relative_path(name: &str) -> Result<PathBuf> {
+    normalize_archive_path(name, false)
+}
+
+/// Keep the original directory of authoring inputs in all-files inventories and caches.
+fn ingestion_relative_path(name: &str) -> Result<PathBuf> {
+    normalize_archive_path(name, is_authoring_source_name(name))
+}
+
+fn normalize_archive_path(name: &str, preserve_source_path: bool) -> Result<PathBuf> {
     let normalized = name.replace('\\', "/");
     let path = Path::new(&normalized);
     if path.is_absolute() || normalized.contains(':') {
@@ -1226,7 +1238,9 @@ pub(crate) fn safe_relative_path(name: &str) -> Result<PathBuf> {
             !path.iter().any(staging::reserved),
             "reserved archive staging path"
         );
-        return Ok(path);
+        if !preserve_source_path {
+            return Ok(path);
+        }
     }
     Ok(safe)
 }

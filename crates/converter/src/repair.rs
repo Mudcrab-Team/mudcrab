@@ -6,8 +6,8 @@ use crate::{
         resolve_asset_uri,
     },
     cache::{
-        CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, IngestionCacheEntry,
-        configuration_hash, hash_file, link_or_copy,
+        CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, IngestedFile,
+        IngestionCacheEntry, configuration_hash, hash_file, link_or_copy,
     },
     check::{CheckMode, CheckProblem, check_output},
     config::{PipelineConfig, TextureEncoder},
@@ -423,7 +423,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             );
         }
         unique_archive_asset_keys(entry, &archive)?;
-        for file in &entry.files {
+        for file in runtime_archive_files(entry) {
             let Some((asset_kind, ext, _)) = kind(&file.path) else {
                 continue;
             };
@@ -480,14 +480,14 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         });
         let unsupported_archive_member = active_archive_keys.iter().any(|archive_key| {
             manifest.archives.get(archive_key).is_some_and(|entry| {
-                entry.files.iter().any(|file| {
+                runtime_archive_files(entry).any(|file| {
                     key_matches_prefixes(&file.path, &prefixes) && kind(&file.path).is_none()
                 })
             })
         });
         let unavailable_archive_member = manifest.archives.iter().any(|(archive_key, entry)| {
             !active_archive_keys.contains(archive_key)
-                && entry.files.iter().any(|file| {
+                && runtime_archive_files(entry).any(|file| {
                     key_matches_prefixes(&file.path, &prefixes)
                         && !archive_file_has_current_winner(&file.path, &sources)
                 })
@@ -911,12 +911,19 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
     Ok(report)
 }
 
+fn runtime_archive_files(entry: &IngestionCacheEntry) -> impl Iterator<Item = &IngestedFile> {
+    entry
+        .files
+        .iter()
+        .filter(|file| !is_authoring_source_name(&file.path))
+}
+
 fn unique_archive_asset_keys(
     entry: &IngestionCacheEntry,
     archive: &Path,
 ) -> Result<BTreeSet<String>> {
     let mut keys = BTreeSet::new();
-    for file in &entry.files {
+    for file in runtime_archive_files(entry) {
         if let Some((asset_kind, ext, _)) = kind(&file.path)
             && let Ok(key) = canonical_asset_path(&file.path, asset_kind, ext)
         {
