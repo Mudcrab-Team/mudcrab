@@ -98,6 +98,7 @@ struct LegacyPlacementPredecessor {
 #[derive(Default)]
 struct PlacementDamage {
     cells_by_reference: HashMap<Option<u32>, HashSet<u32>>,
+    unknown_scope: bool,
 }
 
 impl PlacementDamage {
@@ -135,7 +136,9 @@ impl PlacementDamage {
         let cell = source_cell
             .and_then(|raw| header_runtime_id(b"CELL", raw, plugin, order))
             .filter(|&cell| cell != 0);
-        if id.is_some() || cell.is_some() {
+        if id.is_none() && cell.is_none() {
+            self.unknown_scope = true;
+        } else {
             self.cells_by_reference.entry(id).or_default().extend(cell);
         }
     }
@@ -145,6 +148,13 @@ impl PlacementDamage {
     }
 
     fn affected_cells(self, winners: &HashMap<u32, RawRecord>) -> HashSet<u32> {
+        if self.unknown_scope {
+            return winners
+                .values()
+                .filter(|record| record.record_type == *b"CELL")
+                .map(|record| record.form_id)
+                .collect();
+        }
         let mut cells = HashSet::new();
         for (id, rejected) in self.cells_by_reference {
             cells.extend(rejected);
@@ -427,12 +437,10 @@ impl EsmParser {
                             validate_placement_parent(&record_type, record.cell_form_id, || None)
                                 .map_err(color_eyre::eyre::Report::msg)?;
                             let view = extractors::SubrecordView::new(&record.subrecords);
-                            if merged.contains_key(&record.form_id) {
-                                color_eyre::eyre::ensure!(
-                                    valid_placement_transform(view.find_all(b"DATA")),
-                                    "invalid placement override transform"
-                                );
-                            }
+                            color_eyre::eyre::ensure!(
+                                valid_placement_transform(view.find_all(b"DATA")),
+                                "invalid placement transform"
+                            );
                             color_eyre::eyre::ensure!(
                                 view.unique_form_id(b"NAME").is_some_and(|id| id != 0),
                                 "placement requires exactly one nonzero NAME reference"
@@ -584,14 +592,7 @@ impl EsmParser {
         );
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
-        if unknown_discarded_scope {
-            damaged_cells.extend(
-                merged
-                    .values()
-                    .filter(|record| record.record_type == *b"CELL")
-                    .map(|record| record.form_id),
-            );
-        }
+        damaged_placements.unknown_scope |= unknown_discarded_scope;
         damaged_cells.extend(damaged_placements.affected_cells(&merged));
         Ok(LegacyPluginMerge {
             conversion: RecordConversion {
@@ -696,6 +697,10 @@ fn resolve_legacy_placements(
             let priority = record.load_order as usize;
             match reason {
                 crate::records::PlacementFailure::Invalid(reason) => {
+                    let source_slot = (candidate.source_id >> 24) as usize;
+                    let resolved =
+                        (source_slot <= order.metadata[priority].masters.len()).then_some(id);
+                    damage.reject_resolved(resolved, candidate.source_cell, priority, order);
                     warnings.skipped_record(
                         &order.names[priority],
                         record,
@@ -711,9 +716,6 @@ fn resolve_legacy_placements(
                     entry.0 += 1;
                 }
             }
-            let source_slot = (candidate.source_id >> 24) as usize;
-            let resolved = (source_slot <= order.metadata[priority].masters.len()).then_some(id);
-            damage.reject_resolved(resolved, candidate.source_cell, priority, order);
             winners.remove(&id);
             layouts.remove(&id);
             if let Some(predecessor) = candidate.predecessor {

@@ -208,7 +208,7 @@ impl DecodedRecord {
         Ok(())
     }
 
-    fn has_placement_transform(&self) -> bool {
+    pub(crate) fn has_placement_transform(&self) -> bool {
         !self.rejected_fields.contains(b"DATA")
             && crate::esm::valid_placement_transform(
                 self.fields
@@ -621,6 +621,17 @@ impl From<Option<u32>> for DiscardedFrameScope {
 }
 
 impl DiscardedFrameScope {
+    pub(crate) fn from_cell_prefix(bytes: &[u8]) -> Option<Self> {
+        let tag = &bytes[..bytes.len().min(4)];
+        if tag.is_empty() || !b"CELL".starts_with(tag) {
+            return None;
+        }
+        let id = bytes
+            .get(12..16)
+            .map(|word| u32::from_le_bytes(word.try_into().expect("four-byte FormID")));
+        Some(id.into())
+    }
+
     /// A partial kind can still identify a possible child cell. Without the whole
     /// label we cannot bound the damage to a particular cell.
     pub(crate) fn from_group_prefix(bytes: &[u8]) -> Option<Self> {
@@ -673,6 +684,8 @@ pub struct ReadResult {
     pub(crate) damaged_cell_groups: HashSet<u32>,
     /// An unread frame or REFR could hide outgoing PlaneMarker links into another cell.
     pub(crate) unverified_occluder_links: bool,
+    /// Physical placement omissions explained by the later deletion of a usable base.
+    pub(crate) retired_placements: HashSet<(u32, u64)>,
     /// Each winning `DOBJ` with its `DNAM` pairs merged key by key over every accepted
     /// earlier version, as the legacy reader does. A winning record alone would lose
     /// the keys that only an earlier plugin sets. The winners stay unmerged.
@@ -938,7 +951,7 @@ fn read_plugins_with_prepared(
                 && !gmst_aliases.contains_key(&record.form_id)
                 && let Some(&(_, Some(placement_offset))) = seen.get(&record.form_id)
             {
-                recovery.queue_duplicate((index as u32, placement_offset), record, &result.records);
+                recovery.queue_duplicate((index as u32, placement_offset), record);
                 return;
             }
             if record.flags & 0x20 == 0
@@ -1145,7 +1158,7 @@ fn read_plugins_with_prepared(
                         recovery.predecessors.entry(id).or_default().push(previous);
                     }
                 } else {
-                    recovery.predecessors.remove(&id);
+                    recovery.end_predecessor_chain(id, previous);
                 }
             }
         };

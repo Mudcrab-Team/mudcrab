@@ -1360,7 +1360,10 @@ fn convert_plugins_with_text_sources_report_impl(
                 if let Some(id) = entry.form_id {
                     damage.accepted(id);
                 }
-            } else {
+            } else if !decoded
+                .retired_placements
+                .contains(&(entry.plugin_index, entry.source_record_offset))
+            {
                 damage.reject(
                     &entry.record_type,
                     entry.source_form_id,
@@ -1505,6 +1508,9 @@ fn validate_candidate_with_string_sources(
 ) -> std::result::Result<(), String> {
     if super::is_placed_record_type(&record.record_type) {
         record.validate_placement_base()?;
+        if !record.has_placement_transform() {
+            return Err("invalid placement transform".into());
+        }
     }
     if !matches!(&record.record_type, b"LAND" | b"MOVT" | b"GMST" | b"RACE") {
         return Ok(());
