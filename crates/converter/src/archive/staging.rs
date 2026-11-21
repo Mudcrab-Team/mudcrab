@@ -513,7 +513,6 @@ mod tests {
             .unwrap();
     }
 
-
     #[cfg(unix)]
     #[test]
     fn creates_nested_output_with_private_staging() {
