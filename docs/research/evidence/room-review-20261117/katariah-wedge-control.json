@@ -1,0 +1,396 @@
+{
+  "source_commit": "d2a0b8e9b20e4e909e403d244bd464c90ca09530",
+  "hashes": {
+    "engine": "ad2829773d5b3e436e238117abe60a321ac1f27f2b5df28e838ffd2d0134099f",
+    "assets/skyrim_world.db": "371681156a1396cf2ccccc7754735ec6f5bc673e86d0e55c8e5562cac5c743bd",
+    "shots.json": "5723dd9c78f0b9345ee43bc3f35d560aafa8bb805714a8873bb0424ae997ab9f"
+  },
+  "renderer": "NVIDIA GeForce GTX 1660 / Vulkan",
+  "shots": {
+    "width": 1400,
+    "height": 1050,
+    "shots": [
+      {
+        "name": "Katariah-NONE-floor",
+        "worldspace_id": null,
+        "interior_cell_id": 768815,
+        "position": [
+          256,
+          2560,
+          748
+        ],
+        "yaw": 180,
+        "pitch": 60,
+        "hfov": 75
+      },
+      {
+        "name": "Katariah-named-floor",
+        "worldspace_id": null,
+        "interior_cell_id": 768815,
+        "position": [
+          -768,
+          1536,
+          748
+        ],
+        "yaw": 180,
+        "pitch": 60,
+        "hfov": 75
+      }
+    ]
+  },
+  "preparation": {
+    "cell": 768815,
+    "models": 236,
+    "converted": 236,
+    "complete": true,
+    "auto": 2536,
+    "none": 3,
+    "target": 32,
+    "unknown": 18
+  },
+  "patch_xyxy_half_open": [
+    1320,
+    50,
+    1360,
+    90
+  ],
+  "diagnostic_args": [
+    "--lights",
+    "--color-grade",
+    "off"
+  ],
+  "controls": {
+    "assets": "Rebuilt Katariah pack. Only the --shots-no-room-culling argument differs within the ordinary pair.",
+    "shell-removed": "Independent database with references.pos_z lowered by 50000 for 000BC19E only. Identical meshes.",
+    "admit-805456": "Same wall displacement. Set room_reference_rules.assignment to none for 000C4A50, originally auto.",
+    "admit-805477": "Same wall displacement. Set room_reference_rules.assignment to none for 000C4A65, originally auto."
+  },
+  "archived_retail": [
+    {
+      "image": "Katariah-NONE-floor-1.png",
+      "sha256": "8dcde76f0f748615622d0351fa335ad1be2b0287a604b316bdb0255e882d5e69"
+    },
+    {
+      "image": "Katariah-NONE-floor-2.png",
+      "sha256": "b377cbd553100c909b0b1a4652bfded7892590b12a616d88cf690e7150775a92"
+    },
+    {
+      "image": "Katariah-NONE-floor-3.png",
+      "sha256": "86dda2a3a17f1d5cc2d104f2131036eb30b03537350cca2c29fcea5014a156e2"
+    },
+    {
+      "image": "Katariah-named-floor-1.png",
+      "sha256": "eae9d18b6b2383c4f3b86f410de6972c7a8d4bac67500d1a56ee303bea5a571f"
+    },
+    {
+      "image": "Katariah-named-floor-2.png",
+      "sha256": "9bd36f64dfc0a00fa2168add6490b90a79384594f9f66d047808142cd29cff67"
+    },
+    {
+      "image": "Katariah-named-floor-3.png",
+      "sha256": "7df142eb8e1dde6c8fe6532fceb118b9e43a06740b8eb3b907525876fa2a5778"
+    }
+  ],
+  "captures": [
+    {
+      "run": "on-1",
+      "pack": "assets",
+      "pose": "Katariah-NONE-floor",
+      "mode": "on",
+      "drawn": 58,
+      "listed": 153,
+      "sha256": "8c8926aa8ca6aafd407fc5cfeae8dc9e9fd6e8492c96e9e4838ed5a1803da177"
+    },
+    {
+      "run": "on-1",
+      "pack": "assets",
+      "pose": "Katariah-named-floor",
+      "mode": "on",
+      "drawn": 39,
+      "listed": 255,
+      "sha256": "08c121f269be5159bd163e685591f32dd6395f3cc8f97c93e361011972b74cd0",
+      "black_pixels_in_patch": 1600,
+      "patch_pixels_different_from_exposed_off": 680
+    },
+    {
+      "run": "off-1",
+      "pack": "assets",
+      "pose": "Katariah-NONE-floor",
+      "mode": "off",
+      "drawn": 153,
+      "listed": 153,
+      "sha256": "8c8926aa8ca6aafd407fc5cfeae8dc9e9fd6e8492c96e9e4838ed5a1803da177"
+    },
+    {
+      "run": "off-1",
+      "pack": "assets",
+      "pose": "Katariah-named-floor",
+      "mode": "off",
+      "drawn": 255,
+      "listed": 255,
+      "sha256": "5031334fc1695aea626a2bf9f6dcfa91ff2270bb77e49ceae3c83e2381179728",
+      "black_pixels_in_patch": 1600,
+      "patch_pixels_different_from_exposed_off": 680
+    },
+    {
+      "run": "off-2",
+      "pack": "assets",
+      "pose": "Katariah-NONE-floor",
+      "mode": "off",
+      "drawn": 153,
+      "listed": 153,
+      "sha256": "8c8926aa8ca6aafd407fc5cfeae8dc9e9fd6e8492c96e9e4838ed5a1803da177"
+    },
+    {
+      "run": "off-2",
+      "pack": "assets",
+      "pose": "Katariah-named-floor",
+      "mode": "off",
+      "drawn": 255,
+      "listed": 255,
+      "sha256": "5031334fc1695aea626a2bf9f6dcfa91ff2270bb77e49ceae3c83e2381179728",
+      "black_pixels_in_patch": 1600,
+      "patch_pixels_different_from_exposed_off": 680
+    },
+    {
+      "run": "on-2",
+      "pack": "assets",
+      "pose": "Katariah-NONE-floor",
+      "mode": "on",
+      "drawn": 58,
+      "listed": 153,
+      "sha256": "8c8926aa8ca6aafd407fc5cfeae8dc9e9fd6e8492c96e9e4838ed5a1803da177"
+    },
+    {
+      "run": "on-2",
+      "pack": "assets",
+      "pose": "Katariah-named-floor",
+      "mode": "on",
+      "drawn": 39,
+      "listed": 255,
+      "sha256": "08c121f269be5159bd163e685591f32dd6395f3cc8f97c93e361011972b74cd0",
+      "black_pixels_in_patch": 1600,
+      "patch_pixels_different_from_exposed_off": 680
+    },
+    {
+      "run": "exposed-on",
+      "pack": "shell-removed",
+      "pose": "Katariah-NONE-floor",
+      "mode": "on",
+      "drawn": 58,
+      "listed": 154,
+      "sha256": "8c8926aa8ca6aafd407fc5cfeae8dc9e9fd6e8492c96e9e4838ed5a1803da177"
+    },
+    {
+      "run": "exposed-on",
+      "pack": "shell-removed",
+      "pose": "Katariah-named-floor",
+      "mode": "on",
+      "drawn": 39,
+      "listed": 255,
+      "sha256": "08c121f269be5159bd163e685591f32dd6395f3cc8f97c93e361011972b74cd0",
+      "black_pixels_in_patch": 1600,
+      "patch_pixels_different_from_exposed_off": 680
+    },
+    {
+      "run": "exposed-off",
+      "pack": "shell-removed",
+      "pose": "Katariah-NONE-floor",
+      "mode": "off",
+      "drawn": 154,
+      "listed": 154,
+      "sha256": "8c8926aa8ca6aafd407fc5cfeae8dc9e9fd6e8492c96e9e4838ed5a1803da177"
+    },
+    {
+      "run": "exposed-off",
+      "pack": "shell-removed",
+      "pose": "Katariah-named-floor",
+      "mode": "off",
+      "drawn": 255,
+      "listed": 255,
+      "sha256": "0ae27d249407fd2d1f68afd978232d8a9267458c4ab470ca0e23c478f09cb8fd",
+      "black_pixels_in_patch": 920,
+      "patch_pixels_different_from_exposed_off": 0
+    },
+    {
+      "run": "admit-805456-default",
+      "pack": "admit-805456",
+      "pose": "Katariah-NONE-floor",
+      "mode": "on",
+      "drawn": 58,
+      "listed": 154,
+      "sha256": "8c8926aa8ca6aafd407fc5cfeae8dc9e9fd6e8492c96e9e4838ed5a1803da177"
+    },
+    {
+      "run": "admit-805456-default",
+      "pack": "admit-805456",
+      "pose": "Katariah-named-floor",
+      "mode": "on",
+      "drawn": 40,
+      "listed": 255,
+      "sha256": "c4626900d6b4ad3273250eb43bc7f30c98986be15ce74d63b583362b5344c624",
+      "black_pixels_in_patch": 920,
+      "patch_pixels_different_from_exposed_off": 0
+    },
+    {
+      "run": "lit-assets-on",
+      "pack": "assets",
+      "pose": "Katariah-NONE-floor",
+      "mode": "on",
+      "drawn": 58,
+      "listed": 153,
+      "sha256": "5d6fdd91990eddaf8e45453ef74015f36bd1847483b3d305fa433b2a5bb5a7c4"
+    },
+    {
+      "run": "lit-assets-on",
+      "pack": "assets",
+      "pose": "Katariah-named-floor",
+      "mode": "on",
+      "drawn": 39,
+      "listed": 255,
+      "sha256": "6574a52a64fe5de1a25bf4870edbc6ebe6fae42ef679cbaad41958c54c47bbe1",
+      "black_pixels_in_patch": 36,
+      "patch_pixels_different_from_exposed_off": 1600
+    },
+    {
+      "run": "lit-assets-off",
+      "pack": "assets",
+      "pose": "Katariah-NONE-floor",
+      "mode": "off",
+      "drawn": 153,
+      "listed": 153,
+      "sha256": "5d6fdd91990eddaf8e45453ef74015f36bd1847483b3d305fa433b2a5bb5a7c4"
+    },
+    {
+      "run": "lit-assets-off",
+      "pack": "assets",
+      "pose": "Katariah-named-floor",
+      "mode": "off",
+      "drawn": 255,
+      "listed": 255,
+      "sha256": "c1e9710864132e4ca581e914e3c114affdd9e1c79a58fdb8834b38781fa62864",
+      "black_pixels_in_patch": 0,
+      "patch_pixels_different_from_exposed_off": 1540
+    },
+    {
+      "run": "lit-shell-removed-on",
+      "pack": "shell-removed",
+      "pose": "Katariah-NONE-floor",
+      "mode": "on",
+      "drawn": 58,
+      "listed": 154,
+      "sha256": "5d6fdd91990eddaf8e45453ef74015f36bd1847483b3d305fa433b2a5bb5a7c4"
+    },
+    {
+      "run": "lit-shell-removed-on",
+      "pack": "shell-removed",
+      "pose": "Katariah-named-floor",
+      "mode": "on",
+      "drawn": 39,
+      "listed": 255,
+      "sha256": "6574a52a64fe5de1a25bf4870edbc6ebe6fae42ef679cbaad41958c54c47bbe1",
+      "black_pixels_in_patch": 36,
+      "patch_pixels_different_from_exposed_off": 1600
+    },
+    {
+      "run": "lit-shell-removed-off",
+      "pack": "shell-removed",
+      "pose": "Katariah-NONE-floor",
+      "mode": "off",
+      "drawn": 154,
+      "listed": 154,
+      "sha256": "5d6fdd91990eddaf8e45453ef74015f36bd1847483b3d305fa433b2a5bb5a7c4"
+    },
+    {
+      "run": "lit-shell-removed-off",
+      "pack": "shell-removed",
+      "pose": "Katariah-named-floor",
+      "mode": "off",
+      "drawn": 255,
+      "listed": 255,
+      "sha256": "f2aa02168e2c415bc3b76387cdd84e46e43d42d8ddd4798f60205aa55eb8c695",
+      "black_pixels_in_patch": 0,
+      "patch_pixels_different_from_exposed_off": 0
+    },
+    {
+      "run": "lit-exposed-off-repeat",
+      "pack": "shell-removed",
+      "pose": "Katariah-NONE-floor",
+      "mode": "off",
+      "drawn": 154,
+      "listed": 154,
+      "sha256": "5d6fdd91990eddaf8e45453ef74015f36bd1847483b3d305fa433b2a5bb5a7c4"
+    },
+    {
+      "run": "lit-exposed-off-repeat",
+      "pack": "shell-removed",
+      "pose": "Katariah-named-floor",
+      "mode": "off",
+      "drawn": 255,
+      "listed": 255,
+      "sha256": "f2aa02168e2c415bc3b76387cdd84e46e43d42d8ddd4798f60205aa55eb8c695",
+      "black_pixels_in_patch": 0,
+      "patch_pixels_different_from_exposed_off": 0
+    },
+    {
+      "run": "lit-admit-805456",
+      "pack": "admit-805456",
+      "pose": "Katariah-NONE-floor",
+      "mode": "on",
+      "drawn": 58,
+      "listed": 154,
+      "sha256": "5d6fdd91990eddaf8e45453ef74015f36bd1847483b3d305fa433b2a5bb5a7c4"
+    },
+    {
+      "run": "lit-admit-805456",
+      "pack": "admit-805456",
+      "pose": "Katariah-named-floor",
+      "mode": "on",
+      "drawn": 40,
+      "listed": 255,
+      "sha256": "b4643cb8a71018f665e9ec87670f07fd92c8dc5dd85fd4848d7cdbee44c4609d",
+      "black_pixels_in_patch": 0,
+      "patch_pixels_different_from_exposed_off": 0
+    },
+    {
+      "run": "lit-admit-repeat",
+      "pack": "admit-805456",
+      "pose": "Katariah-NONE-floor",
+      "mode": "on",
+      "drawn": 58,
+      "listed": 154,
+      "sha256": "5d6fdd91990eddaf8e45453ef74015f36bd1847483b3d305fa433b2a5bb5a7c4"
+    },
+    {
+      "run": "lit-admit-repeat",
+      "pack": "admit-805456",
+      "pose": "Katariah-named-floor",
+      "mode": "on",
+      "drawn": 40,
+      "listed": 255,
+      "sha256": "b4643cb8a71018f665e9ec87670f07fd92c8dc5dd85fd4848d7cdbee44c4609d",
+      "black_pixels_in_patch": 0,
+      "patch_pixels_different_from_exposed_off": 0
+    },
+    {
+      "run": "lit-admit-805477",
+      "pack": "admit-805477",
+      "pose": "Katariah-NONE-floor",
+      "mode": "on",
+      "drawn": 58,
+      "listed": 154,
+      "sha256": "5d6fdd91990eddaf8e45453ef74015f36bd1847483b3d305fa433b2a5bb5a7c4"
+    },
+    {
+      "run": "lit-admit-805477",
+      "pack": "admit-805477",
+      "pose": "Katariah-named-floor",
+      "mode": "on",
+      "drawn": 40,
+      "listed": 255,
+      "sha256": "3977ddd69719ba9f647f21e210071745dcec6ae9b73c516f3a737d0b24a643b3",
+      "black_pixels_in_patch": 0,
+      "patch_pixels_different_from_exposed_off": 1571
+    }
+  ]
+}

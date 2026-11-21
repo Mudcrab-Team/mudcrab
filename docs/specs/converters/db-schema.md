@@ -1391,6 +1391,7 @@ CREATE INDEX IF NOT EXISTS idx_room_occluders_cell ON room_occluders(cell_id);
 CREATE TABLE IF NOT EXISTS room_occluder_links (
     ref_id INTEGER NOT NULL, link_index INTEGER NOT NULL,
     linked_ref INTEGER NOT NULL,
+    single_target_verified INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (ref_id, link_index)
 );
 
@@ -1453,6 +1454,9 @@ Columns and rules:
   runtime policy. `target_ref` is NULL only when `XMBR` is absent. Zero preserves an unresolved
   or malformed explicit override. `has_links` remains true for malformed `XORD`, including after
   remapping.
+  For a plane with one valid nonzero source target, the full converter also writes the
+  corroborating `target` assignment in `room_reference_rules`. The runtime requires both
+  facts to agree with the unique containing room before using a named plane.
 - **`room_occluder_links`** preserves nonzero linked FormIDs from complete 16-byte `XORD`
   occurrences. Each occurrence holds four 32-bit FormIDs that can name a `REFR` or be null.
   [xEdit 4.1.5f's TES5 `REFR.XORD` definition](https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsTES5.pas#L12272-L12278)
@@ -1472,11 +1476,17 @@ Columns and rules:
   the placement is new. A later usable replacement or deletion of the same FormID
   supersedes that evidence within the conversion or import.
   These markers let the loader keep unrelated occluders in a complete cell that contains an
-  all-null `XORD`. Subset exports invalidate cells that contain an old or new link target.
+  all-null `XORD`. Subset exports invalidate cells at the other end of cross-cell or unverified
+  links. A verified same-cell edge can be replaced or removed while the engine reloads its
+  endpoints and checks their shared owner.
   A plugin placement import also clears pack-wide link verification when remapping reports
   damage on an occlusion marker. It retains each outgoing link it can resolve.
   Occluder shadows require both markers because an unverified source in another cell can have a
   missing incoming link to a local occluder. Legacy exports omit both markers.
+  A single complete source `XORD` with exactly one nonzero slot sets `single_target_verified`
+  on its resolved edge. The pack editor checks the original Skyrim fields before remapping, or
+  reads all four runtime FormID slots directly from native JSON. Existing rows default to zero. Isolated one-way and reciprocal pairs of
+  eligible planes with a common owner may each cast independent shadows.
 - **`room_bounds`**: the box is centred on the marker's position and oriented by its rotation
   (the same Euler convention as any reference, `shared::coordinates`). Exactly one 24-byte `DATA`
   supplies the transform. An invalid transform omits the room and marks its cell incomplete.
@@ -1508,6 +1518,11 @@ Columns and rules:
   so malformed siblings cannot disappear and establish false uniqueness or authored nulls.
   The typed reader restores flags only from a unique source field containing whole eight-byte
   pairs; its canonical cleared links cannot establish outside connectivity.
+  Private comparison databases may add a nullable integer `retail_visit_index` to this table.
+  It records the portal registration order from one retail load. For a complete visibility-v2
+  cell the engine accepts the order only when there is one row per marker and the indices form
+  a permutation from zero through the portal count minus one. Otherwise it uses FormID order.
+  The ordinary converter has no load-specific order to export.
 - **`room_links`**: one row per distinct `XLRM` target, retaining the last occurrence's
   zero-based `link_index`, with no synthesized mirror rows. Migration adds the column with zero defaults; only a fresh export
   publishes the authored-assignment version. A missing target or a target in another cell marks
@@ -1656,6 +1671,8 @@ a valid named target stays drawn if the model lacks a source sphere. A mesh also
 or one of its ancestors below the reference root carries `AnimatedBy`. Automatic attachment and
 reassignment after movement keep meshes with unknown source bounds visible. Named-target
 neighboring-room priority and specialized/forced native assignment paths are not fully reproduced.
+
+The `switch-value-and-multibound-room-spheres` mesh contract includes the initially selected child of a switch with the active-child bound flag, empty value-node attachment points, and oriented boxes referenced by multibound nodes. The `initial-switch-scene` contract preserves the switch transform and links only the initially selected branch’s geometry into the exported scene. When the switch hides every mesh, the converter marks the GLB with `extras.mudcrabInactiveSwitch`. Pack repair and reuse accept the meshless scene. The static keeps `bounds_valid=0` and has no `room_model_bounds` row. The `skin-ancestor-room-spheres` contract withholds the bind-pose sphere when a transform controller moves a joint through a non-root ancestor. A missing or unsupported bound remains unknown. The [Gallows Rock comparison](../../research/skyrim-culling-rea-parity.md#gallows-rock-west-doorway) checks the resulting room assignments against retail.
 
 Legacy `reference_rooms` rows remain for compatibility. Multibound-flagged references are omitted
 from both pivot and overlap membership; integration removes stale rows. Legacy runtime exemptions
@@ -1812,7 +1829,7 @@ take precedence over the per-object rules. Other renderer visibility checks stil
 | Object in no room, legacy graph | no `contained = 1` row | always retained |
 | Object without geometric membership in a roomed cell | no `reference_rooms` rows | retain for ordinary view culling |
 | Known object overlapping rooms in a complete versioned graph | overlap rows only | retained when a visible candidate volume passes its mesh-bound test; candidates come from unbounded space, overlap rooms, and portal sharing |
-| Camera outside every room | n/a | retain the cell, including possible gaps between bounds |
+| Lookup point outside every room, geometric membership only | n/a | retain the cell |
 | Non-box room shape in a new conversion | skipped, counted; cell marked incomplete | retain the cell |
 | Exterior markers | not written | out of scope (#106) |
 
@@ -1832,7 +1849,7 @@ The authored-assignment path uses these rules:
 | Verified source NULL endpoint in a versioned graph | unbounded-space traversal |
 | Unknown portal endpoint | whole-cell fallback |
 | Incomplete authored cell or unresolved master | whole-cell fallback |
-| Camera outside every authored room union | whole-cell fallback, including possible gaps between bounds |
+| Lookup point outside every authored room union, complete graph with source-verified endpoints | start in unbounded space and traverse its portals |
 | Reference with no recoverable assignment | keep visible |
 | Exterior markers | outside this feature's scope |
 
