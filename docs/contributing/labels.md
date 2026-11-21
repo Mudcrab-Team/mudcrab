@@ -34,6 +34,14 @@ A PR that touches several areas gets each of them.
 | `needs reconversion` | merging changes the converted output (a converter or database schema bump); players must run a full conversion again (times in [requirements.md](../specs/meta/requirements.md)) |
 | `behaviour change` | something that used to work one way now works another way; the PR's "For reviewers" says what |
 
+## Milestone
+
+| Label | Use |
+|---|---|
+| `needs milestone` | an open issue or pull request with no milestone; a maintainer assigns one ([workflow.md](workflow.md#milestones)) |
+
+The [milestone workflow](../../.github/workflows/milestone.yml) adds this label, comments once with how to fix it, and removes the label when a milestone is set. It creates the label if it is missing.
+
 ## Size (PRs)
 
 | Label | Use |
