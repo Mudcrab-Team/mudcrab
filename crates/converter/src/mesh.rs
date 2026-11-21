@@ -2939,7 +2939,7 @@ impl SkeletonEntry {
         let snapshot = NifSnapshot::read(source).inspect_err(report);
         let nodes = snapshot
             .as_ref()
-            .ok()
+            .ok() // silent-ok: Read and parse failures are already reported and supply no node names.
             .and_then(|snapshot| snapshot.parse().inspect_err(report).ok())
             .map(|(nif, _, _)| {
                 nif.get_nodes()
@@ -3355,6 +3355,7 @@ pub fn resolve_skeleton(
                 .find(|(path, _)| normalize_path_key(path) == key_path.to_string_lossy())
                 .map(|(_, source)| source)
         });
+    // silent-ok: An unreadable mesh selects the skeleton search that requires no joint evidence.
     match mesh_source.and_then(|source| NifSnapshot::read(source).ok()) {
         Some(source) => resolve_skeleton_from_snapshot(relative, &source, &index),
         None => resolve_without_joints(&skeleton_candidates(&key_path), &index),

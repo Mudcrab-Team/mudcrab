@@ -537,6 +537,7 @@ fn read_glb_bounds(path: &Path, source: ModelBoundsSource) -> Result<ModelBounds
     let document: serde_json::Value = serde_json::from_slice(&prefix[20..])?;
     let metadata = &document["extras"]["mudcrabRoomSphere"];
     let mut sphere = (metadata["version"].as_u64() == Some(1))
+        // silent-ok: A malformed optional room sphere leaves only render bounds.
         .then(|| serde_json::from_value::<ModelSphere>(metadata.clone()).ok())
         .flatten()
         .filter(|sphere| sphere.valid() && sphere.radius > 0.0);

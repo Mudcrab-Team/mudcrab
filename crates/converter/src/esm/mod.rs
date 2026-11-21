@@ -1148,10 +1148,7 @@ fn is_required_form_id_subrecord(record_type: &[u8; 4], tag: &[u8]) -> bool {
 
 /// A publishable placement transform is exactly one position/rotation tuple.
 pub(crate) fn valid_placement_transform<'a>(mut fields: impl Iterator<Item = &'a [u8]>) -> bool {
-    let Some(data) = fields
-        .next()
-        .and_then(|bytes| <&[u8; 24]>::try_from(bytes).ok())
-    else {
+    let Some(data) = fields.next().filter(|bytes| bytes.len() == 24) else {
         return false;
     };
     fields.next().is_none()
@@ -1389,9 +1386,11 @@ fn remap_record_form_ids(
     let occluder = record_type == *b"REFR"
         && extractors::SubrecordView::new(&record.subrecords)
             .find_all(b"NAME")
+            // silent-ok: Only a complete NAME can identify the marker during this probe.
             .filter_map(|data| <[u8; 4]>::try_from(data).ok())
             .any(|word| {
-                remap_link(u32::from_le_bytes(word)).ok() == Some(rooms::OCCLUSION_MARKER_BASE)
+                remap_link(u32::from_le_bytes(word))
+                    .is_ok_and(|id| id == rooms::OCCLUSION_MARKER_BASE)
             });
     record.cell_form_id = record.cell_form_id.map(&remap_link).transpose()?;
     record.worldspace_form_id = record.worldspace_form_id.map(&remap_link).transpose()?;

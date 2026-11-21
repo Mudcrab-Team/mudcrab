@@ -1289,6 +1289,7 @@ pub fn cull_room_views(
     });
     // Direct children retain their exact cell-local transform across world-origin rebases.
     let placement = |reference, root, local_from_world: bevy::math::Affine3A| {
+        // silent-ok: Without a reference transform there is no placement for room assignment.
         let (world, local) = reference_transforms.get(reference).ok()?;
         Some(
             local
@@ -1427,6 +1428,7 @@ pub fn cull_room_views(
                 if ancestor != reference {
                     return true;
                 }
+                // silent-ok: A mesh without bounds supplies no geometric evidence for culling.
                 let bounds = mesh_bounds.get(entity).ok().and_then(|(aabb, transform)| {
                     MeshBounds::transformed(aabb, local_from_world * transform.affine())
                 });
@@ -1449,16 +1451,16 @@ pub fn cull_room_views(
                         bounds.as_ref(),
                     );
                 }
-                let owner_bounds =
-                    reference_bounds
-                        .get(reference)
-                        .ok()
-                        .and_then(|(bounds, transform)| {
-                            MeshBounds::transformed(
-                                &Aabb::from_min_max(bounds.min, bounds.max),
-                                local_from_world * transform.affine(),
-                            )
-                        });
+                let owner_bounds = reference_bounds
+                    .get(reference)
+                    // silent-ok: References without model bounds have no owner bounds to test.
+                    .ok()
+                    .and_then(|(bounds, transform)| {
+                        MeshBounds::transformed(
+                            &Aabb::from_min_max(bounds.min, bounds.max),
+                            local_from_world * transform.affine(),
+                        )
+                    });
                 loaded.graph.mesh_is_drawn(
                     form_id,
                     &volumes,
