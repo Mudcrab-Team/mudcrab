@@ -279,7 +279,10 @@ class SyncBranchTests(unittest.TestCase):
             done = repo.sync("--dry-run")
 
             self.assertEqual(done.returncode, 0, done.stdout)
+            self.assertIn("would conflict in 1 path(s)", done.stdout)
             self.assertIn("crates/engine/src/lib.rs: STOP: code changed on both sides", done.stdout)
+            self.assertNotIn("Auto-merging", done.stdout)
+            self.assertNotIn("CONFLICT", done.stdout)
             self.assertEqual(repo.run("rev-parse", "HEAD").stdout.strip(), before)
             self.assertNotEqual(repo.git("rev-parse", "--verify", "MERGE_HEAD", check=False).returncode, 0)
 

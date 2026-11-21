@@ -426,7 +426,7 @@ def describe_rule(root, path, base):
 
 def predicted_conflicts(root, base):
     """Use merge-tree to predict conflicts without touching the working tree."""
-    done = git(root, "merge-tree", "--write-tree", "--name-only", base, "HEAD", check=False)
+    done = git(root, "merge-tree", "--write-tree", "--no-messages", "--name-only", base, "HEAD", check=False)
     if done.returncode not in (0, 1):
         detail = (done.stderr or done.stdout or "").strip()
         raise SyncError(f"git merge-tree failed: {detail or 'no output'}")
