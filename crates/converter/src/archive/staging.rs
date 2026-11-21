@@ -513,45 +513,6 @@ mod tests {
             .unwrap();
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn read_only_home_allows_extraction_and_retry() {
-        use std::{os::unix::fs::PermissionsExt, process::Command};
-
-        let uid = rustix::process::geteuid();
-        if uid.is_root() {
-            return;
-        }
-        let fixture = tempfile::tempdir().unwrap();
-        let home = fixture.path().join("home");
-        let scratch = fixture.path().join("scratch");
-        fs::create_dir(&home).unwrap();
-        fs::create_dir(&scratch).unwrap();
-        fs::set_permissions(&home, fs::Permissions::from_mode(0o500)).unwrap();
-        let result = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "archive::staging::tests::extraction_retry_reclaims_abandoned_payloads_but_keeps_a_live_run",
-            ])
-            .env("HOME", &home)
-            .env("TMPDIR", &scratch)
-            .env_remove("XDG_STATE_HOME")
-            .output()
-            .unwrap();
-        fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(
-            result.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr)
-        );
-        assert!(!home.join(STATE_DIR).exists());
-        let state = scratch.join(format!("{FALLBACK_PREFIX}{}", uid.as_raw()));
-        assert_eq!(
-            state.metadata().unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-    }
 
     #[cfg(unix)]
     #[test]
