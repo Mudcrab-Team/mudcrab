@@ -148,7 +148,7 @@ fn scan_plugin_impl(
     scan_bytes_observed(
         &map,
         diagnostics,
-        |record, diagnostics| {
+        &mut |record, diagnostics| {
             delivered = true;
             receive(record, diagnostics);
         },
