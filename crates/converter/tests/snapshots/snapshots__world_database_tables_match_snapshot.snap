@@ -170,7 +170,8 @@ references|id=19|cell_id=16|worldspace_id=1|base_form_id=5|is_exterior=1|pos_x=2
 references|id=65537|cell_id=65536|worldspace_id=NULL|base_form_id=6|is_exterior=0|pos_x=128.000000000|pos_y=512.000000000|pos_z=0.000000000|local_x=NULL|local_y=NULL|rot_x=0.000000000|rot_y=0.000000000|rot_z=0.000000000|scale=1.000000000|radius_override=NULL|header_flags=0|enable_parent_id=NULL|enable_parent_flags=NULL|emittance_id=NULL|data=blob:ab774ad964fcaacc:104
 ## region_weathers (0 rows)
 ## room_bounds (0 rows)
-## room_graph_stats (12 rows)
+## room_graph_cells (0 rows)
+## room_graph_stats (13 rows)
 room_graph_stats|name="invalid_markers_skipped"|value=0
 room_graph_stats|name="links"|value=0
 room_graph_stats|name="non_box_rooms_skipped"|value=0
@@ -183,6 +184,8 @@ room_graph_stats|name="portals_with_missing_side"|value=0
 room_graph_stats|name="portals_with_trailing_xpod_bytes"|value=0
 room_graph_stats|name="portals_without_size_skipped"|value=0
 room_graph_stats|name="rooms"|value=0
+room_graph_stats|name="visibility_version"|value=2
+## room_link_anomalies (0 rows)
 ## room_links (0 rows)
 ## room_portals (0 rows)
 ## schema_info (1 rows)
