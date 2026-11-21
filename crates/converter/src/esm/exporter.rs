@@ -1167,7 +1167,7 @@ fn export_records(
                 write_static_model(
                     &tx,
                     form_id,
-                    record,
+                    canonical_record,
                     &view,
                     model.as_deref(),
                     order.is_none(),
@@ -1200,7 +1200,7 @@ fn export_records(
                 write_static_model(
                     &tx,
                     form_id,
-                    record,
+                    canonical_record,
                     &view,
                     model.as_deref(),
                     order.is_none(),
@@ -1414,12 +1414,13 @@ fn write_static_model(
             .optional()?
     {
         let previous = previous.as_deref();
-        let unchanged = previous == model
-            || previous.zip(model).is_some_and(|(old, new)| {
-                // silent-ok: Both paths need valid asset keys to reuse the stored model bounds.
-                let key = |path| canonical_asset_path(path, AssetKind::Mesh, "glb").ok();
-                key(old).is_some_and(|old_key| Some(old_key) == key(new))
-            });
+        let unchanged = !record.is_deleted()
+            && (previous == model
+                || previous.zip(model).is_some_and(|(old, new)| {
+                    // silent-ok: Both paths need valid asset keys to reuse the stored model bounds.
+                    let key = |path| canonical_asset_path(path, AssetKind::Mesh, "glb").ok();
+                    key(old).is_some_and(|old_key| Some(old_key) == key(new))
+                }));
         if unchanged && model.is_some() {
             // A different source spelling can identify the same converted GLB.
             // Keep its measured render bounds as well as its room evidence.
@@ -5641,11 +5642,12 @@ mod tests {
     #[test]
     fn subset_base_model_updates_invalidate_spheres_and_referencing_cells() {
         for kind in [b"STAT", b"LIGH"] {
-            for (replacement, unchanged) in [
-                (Some("A.nif"), true),
-                (Some(r"Meshes\%41.NIF"), true),
-                (Some("B.nif"), false),
-                (None, false),
+            for (replacement, deleted, unchanged) in [
+                (Some("A.nif"), false, true),
+                (Some(r"Meshes\%41.NIF"), false, true),
+                (Some("A.nif"), true, false),
+                (Some("B.nif"), false, false),
+                (None, false, false),
             ] {
                 let base = |model: Option<&str>| {
                     let mut fields = model
@@ -5674,7 +5676,11 @@ mod tests {
                      UPDATE statics SET bounds_valid=1,bounds_min_x=-12 WHERE id=1280",
                 )
                 .unwrap();
-                export_to_db(&conn, &HashMap::from([(0x500, base(replacement))])).unwrap();
+                let mut updated = base(replacement);
+                if deleted {
+                    updated.flags |= 0x20;
+                }
+                export_to_db(&conn, &HashMap::from([(0x500, updated)])).unwrap();
                 let measured: bool = conn.query_row(
                     "SELECT EXISTS(SELECT 1 FROM statics WHERE id=1280 AND bounds_valid=1 AND bounds_min_x=-12)",
                     [], |row| row.get(0)
