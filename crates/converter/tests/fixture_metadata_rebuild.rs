@@ -466,6 +466,43 @@ async fn metadata_rebuild_default_recovery_keeps_ordinary_sources_strict() {
     assert!(!output.exists());
 }
 
+#[tokio::test]
+async fn metadata_rebuild_matches_terrain_archive_precedence_used_by_conversion() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    let diffuse = layout::GENERATED_DIFFUSE_PATH;
+    let dds = fs::read(data.join(diffuse)).unwrap();
+    fs::remove_file(data.join(diffuse)).unwrap();
+    let archive = |name, member, bytes| {
+        fs::write(
+            data.join(name),
+            bsa::v105(&[Entry::new(member, bytes)], bsa::Compression::None).unwrap(),
+        )
+        .unwrap();
+    };
+    archive("Skyrim - A.bsa", diffuse, b"earlier runtime DDS");
+    archive("Skyrim - B.bsa", diffuse, &dds);
+    archive(
+        "Skyrim - C.bsa",
+        "CalienteTools/Textures/Generated_Color.DDS",
+        b"later authoring DDS",
+    );
+    convert(&data, &source).await;
+
+    let report = rebuild(&data, &source, &output).await.unwrap();
+    assert!(report.complete, "{report:?}");
+    let entry = &ConversionManifest::load(&source.join("conversion-manifest.json"))
+        .unwrap()
+        .entries[diffuse];
+    assert_eq!(
+        hash_file(&output.join(&entry.output)).unwrap(),
+        entry.output_hash
+    );
+}
+
 /// A capability dropped during final refresh must affect both published completeness flags.
 #[tokio::test]
 async fn metadata_rebuild_completeness_includes_late_extension_warnings() {
@@ -1901,6 +1938,21 @@ async fn metadata_rebuild_resolves_current_packed_settings_and_omits_stale_paylo
     let source = directory.path().join("source");
     let output = directory.path().join("derived");
     generate(&data);
+    let model = layout::GENERATED_MODEL_PATH;
+    let runtime = fs::read(data.join(model)).unwrap();
+    let authoring = format!("CalienteTools/{model}");
+    fs::write(
+        data.join("Skyrim - Meshes.bsa"),
+        bsa::v105(
+            &[
+                Entry::new(model, &runtime),
+                Entry::new(&authoring, b"authoring mesh"),
+            ],
+            bsa::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
     convert(&data, &source).await;
     fs::remove_file(data.join("lodsettings/GeneratedWorld.lod")).unwrap();
     fs::write(
@@ -1917,6 +1969,7 @@ async fn metadata_rebuild_resolves_current_packed_settings_and_omits_stale_paylo
     .unwrap();
     fs::write(source.join("lod/stale.glb"), b"obsolete generation").unwrap();
     let report = rebuild(&data, &source, &output).await.unwrap();
+    assert!(report.complete, "{:?}", report.warnings);
     assert!(report.lod_chunks > 0);
     assert!(
         report

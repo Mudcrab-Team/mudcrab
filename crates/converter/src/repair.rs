@@ -1,7 +1,10 @@
 //! Targeted repair of a published pack, including asset-aware database finalization.
 use crate::{
     archive::{ArchiveExtractor, archive_reader_version, safe_relative_path},
-    asset_path::{AssetKind, canonical_asset_path, is_authoring_resource, resolve_asset_uri},
+    asset_path::{
+        AssetKind, canonical_asset_path, is_authoring_resource, is_authoring_source_name,
+        resolve_asset_uri,
+    },
     cache::{
         CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, IngestionCacheEntry,
         configuration_hash, hash_file, link_or_copy,
@@ -446,10 +449,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
     }
     // Loose files override archives, just as in the main conversion pipeline.
     for (relative, path) in &resolved {
-        if let Some((asset_kind, ext, _)) = kind(relative) {
-            let Ok(key) = canonical_asset_path(relative, asset_kind, ext) else {
-                continue;
-            };
+        if let Some(key) = runtime_loose_asset_key(relative) {
             ensure!(
                 !sources
                     .get(&key)
@@ -1085,11 +1085,16 @@ fn recoverable_failure_asset_key(key: &str, data_root: &Path) -> Option<String> 
 fn resolved_loose_asset_keys(resolved: &BTreeMap<String, PathBuf>) -> BTreeSet<String> {
     resolved
         .keys()
-        .filter_map(|relative| {
-            let (asset_kind, ext, _) = kind(relative)?;
-            canonical_asset_path(relative, asset_kind, ext).ok()
-        })
+        .filter_map(|relative| runtime_loose_asset_key(relative))
         .collect()
+}
+
+fn runtime_loose_asset_key(relative: &str) -> Option<String> {
+    if is_authoring_source_name(relative) {
+        return None;
+    }
+    let (asset_kind, ext, _) = kind(relative)?;
+    canonical_asset_path(relative, asset_kind, ext).ok()
 }
 
 fn canonical_failure_asset_key(key: &str, data_root: &Path) -> Result<Option<String>> {

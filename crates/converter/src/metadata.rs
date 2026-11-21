@@ -614,7 +614,7 @@ fn stage_optional_default_source(
 ) -> Result<()> {
     let paths = BTreeSet::from([relative.to_owned()]);
     for archive in archives {
-        if let Err(error) = ArchiveExtractor::extract_paths(archive, vfs, &paths) {
+        if let Err(error) = ArchiveExtractor::extract_runtime_paths(archive, vfs, &paths) {
             discard_default_source(vfs, relative, &error, report)?;
         }
     }
@@ -871,7 +871,7 @@ async fn rebuild_into(
     // Both readers resolve localized names; decode only the selected plugin tables.
     let strings = crate::esm::inhouse::localized_string_paths(plugins, &config.language);
     for archive in &archives {
-        if let Err(error) = ArchiveExtractor::extract_paths(archive, &vfs, &strings) {
+        if let Err(error) = ArchiveExtractor::extract_runtime_paths(archive, &vfs, &strings) {
             eprintln!(
                 "warning: {}: unable to extract localized names: {error}",
                 archive.display()
@@ -943,7 +943,7 @@ async fn rebuild_into(
         BTreeSet::new()
     };
     for archive in &archives {
-        ArchiveExtractor::extract_paths(archive, &vfs, &diffuse_paths)?;
+        ArchiveExtractor::extract_runtime_paths(archive, &vfs, &diffuse_paths)?;
     }
     let loose_diffuse: Vec<_> = files
         .iter()
@@ -1603,20 +1603,18 @@ fn stage_script_archives(
                         // A fresh directory gives each retry only its own fully written payload.
                         fs::remove_dir_all(&scratch)?;
                         fs::create_dir(&scratch)?;
-                        let selected =
-                            ArchiveExtractor::list_paths(archive)?
-                                .into_iter()
-                                .filter(|path| {
-                                    path.extension().is_some_and(|extension| {
-                                        extension.eq_ignore_ascii_case("pex")
-                                    })
-                                });
+                        let selected = ArchiveExtractor::list_runtime_paths(archive)?
+                            .into_iter()
+                            .filter(|path| {
+                                path.extension()
+                                    .is_some_and(|extension| extension.eq_ignore_ascii_case("pex"))
+                            });
                         let mut extracted = Vec::new();
                         for path in selected {
                             let Some(key) = usable_key(&path)? else {
                                 continue;
                             };
-                            match ArchiveExtractor::extract_paths(
+                            match ArchiveExtractor::extract_runtime_paths(
                                 archive,
                                 &scratch,
                                 &BTreeSet::from([path.clone()]),

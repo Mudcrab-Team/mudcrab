@@ -8,7 +8,7 @@ mod staging;
 pub(crate) use batched::{prune_stale_reader_packs, sync_directory, sync_pack_file};
 
 use crate::{
-    asset_path::{AssetKind, canonical_asset_path},
+    asset_path::{AssetKind, canonical_asset_path, is_authoring_source_name},
     cache::{
         IngestedFile, IngestionCacheEntry, IngestionSelection, SpillCache, hash_bytes, hash_file,
         link_or_copy, link_or_copy_spilling, link_or_copy_spilling_with_copy_and_link,
@@ -529,8 +529,19 @@ impl ExtractOptions {
 impl ArchiveExtractor {
     /// Inventories canonical paths without decompressing any payload.
     pub fn list_paths(archive_path: &Path) -> Result<Vec<PathBuf>> {
+        Self::list_paths_with_name_filter(archive_path, |_| true)
+    }
+
+    pub(crate) fn list_runtime_paths(archive_path: &Path) -> Result<Vec<PathBuf>> {
+        Self::list_paths_with_name_filter(archive_path, |name| !is_authoring_source_name(name))
+    }
+
+    fn list_paths_with_name_filter(
+        archive_path: &Path,
+        include_name: impl Fn(&str) -> bool,
+    ) -> Result<Vec<PathBuf>> {
         let source = ArchiveSource::from_file(File::open(archive_path)?)?;
-        let mut paths = select_entries(&source, archive_path, |_| true)?
+        let mut paths = select_entries(&source, archive_path, include_name)?
             .into_iter()
             .map(|(path, _)| path)
             .collect::<Vec<_>>();
@@ -712,14 +723,14 @@ impl ArchiveExtractor {
         archive_path: &Path,
         output_root: &Path,
     ) -> Result<Vec<ExtractedFile>> {
-        Self::extract_matching(archive_path, output_root, is_script_input)
+        Self::extract_runtime_matching(archive_path, output_root, is_script_input)
     }
 
     pub(crate) fn extract_lod_settings(
         archive_path: &Path,
         output_root: &Path,
     ) -> Result<Vec<ExtractedFile>> {
-        Self::extract_matching(archive_path, output_root, is_lod_setting)
+        Self::extract_runtime_matching(archive_path, output_root, is_lod_setting)
     }
 
     /// Extracts only the archive entries named in `paths`, writing them under `output_root`
@@ -735,6 +746,27 @@ impl ArchiveExtractor {
         paths: &BTreeSet<PathBuf>,
     ) -> Result<Vec<ExtractedFile>> {
         Self::extract_matching(archive_path, output_root, |path| paths.contains(path))
+    }
+
+    pub(crate) fn extract_runtime_paths(
+        archive_path: &Path,
+        output_root: &Path,
+        paths: &BTreeSet<PathBuf>,
+    ) -> Result<Vec<ExtractedFile>> {
+        Self::extract_runtime_matching(archive_path, output_root, |path| paths.contains(path))
+    }
+
+    fn extract_runtime_matching(
+        archive_path: &Path,
+        output_root: &Path,
+        include: impl Fn(&Path) -> bool + Sync,
+    ) -> Result<Vec<ExtractedFile>> {
+        Self::extract_matching_with_name_filter(
+            archive_path,
+            output_root,
+            |name| !is_authoring_source_name(name),
+            include,
+        )
     }
 
     /// Selects canonical paths and extracts their payloads from the same open archive.
@@ -765,10 +797,10 @@ impl ArchiveExtractor {
             .into_iter()
             .filter(|(path, _)| include(path))
             .collect::<Vec<_>>();
+        staging::reclaim_abandoned(output_root)?;
         if selected.is_empty() {
             return Ok(Vec::new());
         }
-        staging::reclaim_abandoned(output_root)?;
         let parents = selected
             .iter()
             .map(|(path, _)| path.parent().wrap_err("missing extraction directory"))
@@ -2232,6 +2264,40 @@ mod tests {
                 b"runtime"
             );
         }
+    }
+
+    #[test]
+    fn lod_extraction_ignores_authoring_aliases_but_checks_runtime_collisions() {
+        use dummy_content::Entry;
+
+        let directory = tempfile::tempdir().unwrap();
+        let archive = directory.path().join("archive.bsa");
+        let output = directory.path().join("out");
+        write_archive(
+            &archive,
+            &[
+                Entry::new("meshes/test.nif", b"runtime"),
+                Entry::new("%43alienteTools/Meshes/Test.NIF", b"authoring"),
+                Entry::new("lodsettings/tamriel.lod", b"lod"),
+            ],
+        );
+        let files = ArchiveExtractor::extract_lod_settings(&archive, &output).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            fs::read(output.join("lodsettings/tamriel.lod")).unwrap(),
+            b"lod"
+        );
+        assert!(!output.join("meshes").exists());
+
+        write_archive(
+            &archive,
+            &[
+                Entry::new("meshes/test.nif", b"runtime"),
+                Entry::new("Data/Meshes/Test.NIF", b"duplicate runtime"),
+            ],
+        );
+        let error = ArchiveExtractor::extract_lod_settings(&archive, &output).unwrap_err();
+        assert!(error.to_string().contains("normalized path collision"));
     }
 
     #[test]
