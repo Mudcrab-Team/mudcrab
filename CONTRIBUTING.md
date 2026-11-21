@@ -180,9 +180,9 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
 
    The gate covers the lib and bin targets, because `--all-targets` compiles their test harnesses
    too, and the log must contain those test builds; integration tests, benches and examples are
-   excluded. The pass does not use `-D warnings`, because `-W` makes the four lints warnings and the
-   deny then turns them into errors; the gate fails on every other warning instead. An exception
-   needs a reason at the cast site, for example
+   excluded. The pass does not use `-D warnings`, because the later `-W` makes the four lints
+   warnings and the deny then turns them into errors; the gate fails on every other warning
+   instead. An exception needs a reason at the cast site, for example
    `#[allow(clippy::cast_possible_truncation, reason = "the form ID is below 2^24")]`.
    No lint checks the reason, so an allow without `reason =` is a review finding.
 

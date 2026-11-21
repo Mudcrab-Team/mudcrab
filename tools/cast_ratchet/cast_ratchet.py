@@ -28,8 +28,8 @@ changes that each add one cast could both pass alone and still leave the count
 on main wrong.
 
 The pass runs no `-D warnings`, because that deny still catches the four lints.
-The four lints are allow-by-default, but `-W` makes one a warning, and a
-`-D warnings` deny turns every warning into an error. Clippy says so in the
+The four lints are allow-by-default, but the later `-W` makes one a warning,
+and the `-D warnings` deny turns every warning into an error. Clippy says so in the
 diagnostic: `-D clippy::cast-possible-truncation` is implied by `-D warnings`.
 A probe confirms it: `cargo clippy -- -D warnings -W
 clippy::cast_possible_truncation` on `v as u8` exits 101 with the cast as an

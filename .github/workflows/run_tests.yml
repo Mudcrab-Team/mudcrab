@@ -473,8 +473,8 @@ jobs:
 
       - name: Clippy check and added-line cast gate
         # One pass, so the job keeps the cost of the plain `cargo clippy` run. The pass cannot
-        # use `-D warnings`: the four gate lints are allow-by-default, but `-W` makes one a
-        # warning and `-D warnings` turns every warning into an error. A probe on `v as u8`
+        # use `-D warnings`: the four gate lints are allow-by-default, but the later `-W` makes
+        # one a warning and `-D warnings` turns every warning into an error. A probe on `v as u8`
         # with `-- -D warnings -W clippy::cast_possible_truncation` exits 101, and its note
         # says the cast lint is implied by `-D warnings`. `--force-warn` also overrides
         # `#[allow(..., reason = ...)]` exceptions. So the gate fails on every warning outside
