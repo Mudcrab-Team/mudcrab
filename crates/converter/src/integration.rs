@@ -828,7 +828,8 @@ mod tests {
             glb.len() as u64,
             ModelBoundsSource::Converter,
         )
-        .unwrap().unwrap()
+        .unwrap()
+        .unwrap()
         .render;
         assert_eq!(bounds.min, [1.0, 1.0, 1.0]);
         assert_eq!(bounds.max, [8.0, 10.0, 12.0]);

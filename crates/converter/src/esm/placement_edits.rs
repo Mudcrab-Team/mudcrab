@@ -258,7 +258,8 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
         records.insert(id, edit.record);
     }
     let mut omissions = ProjectionOmissions::default();
-    let occluder_update = update_authored_subset(&tx, &records, &import.damaged_occluders,&mut omissions)?;
+    let occluder_update =
+        update_authored_subset(&tx, &records, &import.damaged_occluders, &mut omissions)?;
     for (category, details) in &omissions.categories {
         for sample in &details.samples {
             let message = format!(

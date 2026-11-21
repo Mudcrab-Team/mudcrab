@@ -1190,8 +1190,13 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
     )?;
     if advertised_assignments {
         if graph.supports_unbounded {
-            graph.authored =
-                assignment::load(connection, cell_id, &graph.rooms, &room_index, &mut graph.portals)?;
+            graph.authored = assignment::load(
+                connection,
+                cell_id,
+                &graph.rooms,
+                &room_index,
+                &mut graph.portals,
+            )?;
         }
         graph.incomplete |= graph.authored.is_none();
     }

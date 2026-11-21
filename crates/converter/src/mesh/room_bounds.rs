@@ -408,7 +408,11 @@ pub(crate) fn native_sphere_eligible(document: &serde_json::Value) -> bool {
         )
 }
 
-pub(crate) fn encloses_native_scene(glb: &[u8], document: &serde_json::Value, sphere: ModelSphere) -> bool {
+pub(crate) fn encloses_native_scene(
+    glb: &[u8],
+    document: &serde_json::Value,
+    sphere: ModelSphere,
+) -> bool {
     scene_fits(glb, document, sphere, Some(0)).unwrap_or(false)
 }
 
@@ -420,12 +424,20 @@ fn geometry_document(mut root: gltf::json::Root) -> Option<gltf::Document> {
     gltf::Document::from_json(root).ok()
 }
 
-fn scene_fits(glb: &[u8], document: &serde_json::Value, sphere: ModelSphere, scene_index: Option<usize>) -> Option<bool> {
+fn scene_fits(
+    glb: &[u8],
+    document: &serde_json::Value,
+    sphere: ModelSphere,
+    scene_index: Option<usize>,
+) -> Option<bool> {
     // silent-ok: A malformed GLB cannot certify sphere enclosure.
     let chunks = gltf::binary::Glb::from_slice(glb).ok()?;
     // silent-ok: A malformed scene description cannot certify sphere enclosure.
     let gltf = geometry_document(serde_json::from_value(document.clone()).ok()?)?;
-    let scene = match scene_index { Some(index) => gltf.scenes().nth(index), None => gltf.default_scene() }?;
+    let scene = match scene_index {
+        Some(index) => gltf.scenes().nth(index),
+        None => gltf.default_scene(),
+    }?;
     let blob = chunks.bin.as_deref()?;
     let buffer = |buffer: gltf::Buffer<'_>| (buffer.index() == 0).then_some(blob);
     let mut transforms = vec![None; gltf.nodes().len()];
