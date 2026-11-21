@@ -27,6 +27,7 @@ If someone is assigned to an issue, has claimed it in a comment, or has an open 
 
 - Branch from the latest `main`, one topic per branch.
 - Run what CI runs before you push (see "Run What CI Runs" in [CONTRIBUTING.md](../../CONTRIBUTING.md)).
+- If a run exits 0 but the system diagnostic reports show a GPU fault, use [Finding a Metal GPU fault](gpu-faults.md) to find the failing pass.
 - Keep a PR to one change a reviewer can hold in their head. Split a large feature into PRs that each work on their own.
 - **Inventory stores:** each external store has its own file under
   `tools/world_data_inventory/stores/` with its own `reviewed_at_commit`. Add or edit only
