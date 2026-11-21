@@ -190,6 +190,34 @@ impl DecodedRecord {
         decoder::framed_source_prefix(&self.raw_payload)
     }
 
+    pub(crate) fn validate_placement_base(&self) -> Result<(), String> {
+        if self.rejected_fields.contains(b"NAME") {
+            return Err("rejected placed base NAME".into());
+        }
+        let mut bases = self
+            .fields
+            .iter()
+            .filter(|field| field.signature == *b"NAME");
+        if !bases
+            .next()
+            .is_some_and(|field| matches!(field.value, Value::FormId(id) if id != 0))
+            || bases.next().is_some()
+        {
+            return Err("placement requires exactly one nonzero NAME reference".into());
+        }
+        Ok(())
+    }
+
+    fn has_placement_transform(&self) -> bool {
+        !self.rejected_fields.contains(b"DATA")
+            && crate::esm::valid_placement_transform(
+                self.fields
+                    .iter()
+                    .filter(|field| field.signature == *b"DATA")
+                    .map(|field| field.canonical_bytes.as_slice()),
+            )
+    }
+
     pub(crate) fn framed_source_subrecords(&self) -> Option<Vec<([u8; 4], &[u8])>> {
         decoder::framed_source_subrecords(&self.raw_payload)
     }
@@ -677,18 +705,11 @@ fn validate_live_candidate(
         return Err("rejected placed base NAME".into());
     }
     crate::esm::validate_placement_parent(&record.record_type, record.cell_form_id, || None)?;
-    if crate::esm::is_placed_record_type(&record.record_type)
-        && previous.is_some()
-        && (record.rejected_fields.contains(b"DATA")
-            || !crate::esm::valid_placement_transform(
-                record
-                    .fields
-                    .iter()
-                    .filter(|field| field.signature == *b"DATA")
-                    .map(|field| field.canonical_bytes.as_slice()),
-            ))
-    {
-        return Err("invalid placement override transform".into());
+    if crate::esm::is_placed_record_type(&record.record_type) && previous.is_some() {
+        if !record.has_placement_transform() {
+            return Err("invalid placement override transform".into());
+        }
+        record.validate_placement_base()?;
     }
     validate(record)
 }

@@ -2570,6 +2570,15 @@ mod tests {
 
     #[test]
     fn offscreen_movement_only_releases_the_named_target_in_its_own_cell() {
+        check_offscreen_movement(false);
+    }
+
+    #[test]
+    fn offscreen_movement_before_graph_load_releases_only_the_moved_target() {
+        check_offscreen_movement(true);
+    }
+
+    fn check_offscreen_movement(load_after_movement: bool) {
         let db = authored_database();
         db.execute("INSERT INTO room_graph_cells VALUES(8,1)", [])
             .unwrap();
@@ -2585,7 +2594,7 @@ mod tests {
                 VisibleEntities::default(),
             ))
             .id();
-        let [(moved, mesh_a), (_, mesh_b)] = [(7, 100), (8, 200)].map(|(cell, id)| {
+        let [(moved, mesh_a, a), (_, mesh_b, b)] = [(7, 100), (8, 200)].map(|(cell, id)| {
             insert_room(&db, id + 1, cell, [0.0; 3]);
             insert_room(&db, id + 2, cell, [0.0, 25.0, 0.0]);
             db.execute(
@@ -2603,9 +2612,6 @@ mod tests {
             let root = world
                 .spawn((StreamedCellRoot, CellRef(cell), GlobalTransform::IDENTITY))
                 .id();
-            world
-                .resource_mut::<RoomCullingState>()
-                .insert_graph(cell, root, graph);
             let reference = world
                 .spawn((
                     FormId(id),
@@ -2618,7 +2624,11 @@ mod tests {
                     },
                 ))
                 .id();
-            (reference, world.spawn(ChildOf(reference)).id())
+            (
+                reference,
+                world.spawn(ChildOf(reference)).id(),
+                (cell, root, graph),
+            )
         });
         let list_both = |app: &mut App| {
             app.world_mut()
@@ -2627,7 +2637,18 @@ mod tests {
                 .get_mut(TypeId::of::<Mesh3d>())
                 .extend([mesh_a, mesh_b]);
         };
-        list_both(&mut app);
+        let mut graphs = [a, b].into_iter();
+        let mut load_graphs = |app: &mut App| {
+            for (cell, root, graph) in graphs.by_ref() {
+                app.world_mut()
+                    .resource_mut::<RoomCullingState>()
+                    .insert_graph(cell, root, graph);
+            }
+        };
+        if !load_after_movement {
+            load_graphs(&mut app);
+            list_both(&mut app);
+        }
         app.world_mut().run_schedule(Update);
         assert!(mesh_list(&app, camera).is_empty());
 
@@ -2637,6 +2658,9 @@ mod tests {
                 .entity_mut(moved)
                 .insert((transform, GlobalTransform::from(transform)));
             app.world_mut().run_schedule(Update);
+        }
+        if load_after_movement {
+            load_graphs(&mut app);
         }
         list_both(&mut app);
         app.world_mut().run_schedule(Update);
