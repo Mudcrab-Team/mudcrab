@@ -86,7 +86,7 @@ TARGET_KINDS = {"lib", "bin"}
 # A log that lacks one of these under `lib` or `bin`, in the ordinary build or in
 # the unit-test build (`--all-targets`), undercounts the crate, so the run is an
 # error.
-REQUIRED_KINDS = {"converter": ("lib", "bin"), "shared": ("lib",)}
+REQUIRED_KINDS = {"converter": ("lib", "bin"), "shared": ("lib", "bin")}
 COUNTING_LEVELS = {"warning", "error"}
 HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 

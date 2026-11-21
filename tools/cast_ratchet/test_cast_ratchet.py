@@ -813,6 +813,19 @@ class GateTests(unittest.TestCase):
         self.assertIn("converter bin test", output)
         self.assertIn("--all-targets", output)
 
+    def test_a_log_without_a_shared_bin_is_an_error(self):
+        artifacts = [
+            artifact(crate, kind, test=test)
+            for crate in ratchet.CRATES
+            for kind in ratchet.REQUIRED_KINDS[crate]
+            for test in (False, True)
+            if (crate, kind) != ("shared", "bin")
+        ]
+        write_log(self.log, [], artifacts=artifacts)
+        code, output = self.run_gate()
+        self.assertEqual(code, 2)
+        self.assertIn("shared bin", output)
+
     def test_a_missing_base_is_a_usage_error(self):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
