@@ -257,14 +257,6 @@ pub(super) fn load(
     if !supported {
         return Ok(None);
     }
-    let version: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='assignment_version' AND value=1)",
-        [],
-        |row| row.get(0),
-    )?;
-    if !version {
-        return Ok(None);
-    }
     let complete: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM room_graph_cells WHERE cell_id=?1 AND complete=1)",
         [cell],

@@ -663,6 +663,7 @@ fn is_placed(record_type: &[u8; 4]) -> bool {
     super::is_placed_record_type(record_type)
 }
 
+#[derive(Clone, Copy)]
 pub(super) enum RoomLinkSources<'a> {
     Legacy(&'a HashMap<u32, RoomLinkLayout>),
     Typed(&'a ReadResult),
@@ -824,6 +825,15 @@ pub(super) fn export_room_graph_with_sources(
         occluders,
         None,
     )?;
+    if let Some(RoomLinkSources::Typed(decoded)) = sources {
+        restore_rejected_room_fields(
+            tx,
+            decoded
+                .records
+                .values()
+                .filter(|r| is_placed(&r.record_type)),
+        )?;
+    }
     report.write(tx)?;
     tx.execute(
         "INSERT INTO room_graph_stats(name,value) VALUES ('visibility_version',2),('assignment_version',1)",
@@ -996,7 +1006,8 @@ fn project_room_graph(
     let mut ordered: Vec<(&u32, &RawRecord)> = master
         .iter()
         .filter(|(_, record)| {
-            is_placed(&record.record_type)
+            !record.is_deleted()
+                && is_placed(&record.record_type)
                 && record
                     .cell_form_id
                     .is_some_and(|cell| interior_cells.contains(&cell))

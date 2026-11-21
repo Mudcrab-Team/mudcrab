@@ -1417,8 +1417,7 @@ fn write_static_model(
         let unchanged = !record.is_deleted()
             && (previous == model
                 || previous.zip(model).is_some_and(|(old, new)| {
-                    // silent-ok: Both paths need valid asset keys to reuse the stored model bounds.
-                    let key = |path| canonical_asset_path(path, AssetKind::Mesh, "glb").ok();
+                    let key = shared::world_assets::streamed_model_path;
                     key(old).is_some_and(|old_key| Some(old_key) == key(new))
                 }));
         if unchanged && model.is_some() {
@@ -5457,6 +5456,28 @@ mod tests {
     }
 
     #[test]
+    fn deleted_portal_does_not_connect_rooms() {
+        let live = portal(0x104, 7, Some((0x101, 0x102)));
+        let mut deleted = live.clone();
+        deleted.form_id = 0x105;
+        deleted.flags |= 0x20;
+        let (db, _) = export_rooms(vec![
+            interior_cell(7),
+            room(0x101, 7, [0.; 3], [0.; 3], [10.; 3], vec![]),
+            room(0x102, 7, [20.; 3], [0.; 3], [10.; 3], vec![]),
+            live,
+            deleted,
+        ]);
+        assert_eq!(
+            db.query_row("SELECT count(*),min(ref_id) FROM room_portals", [], |r| Ok(
+                (r.get::<_, u32>(0)?, r.get::<_, u32>(1)?)
+            ))
+            .unwrap(),
+            (1, 0x104)
+        );
+    }
+
+    #[test]
     fn skips_non_box_rooms_and_exterior_markers() {
         let mut sphere = room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]);
         sphere.subrecords.retain(|(tag, _)| tag != b"XPRM");
@@ -5644,7 +5665,8 @@ mod tests {
         for kind in [b"STAT", b"LIGH"] {
             for (replacement, deleted, unchanged) in [
                 (Some("A.nif"), false, true),
-                (Some(r"Meshes\%41.NIF"), false, true),
+                (Some(r"Meshes\A.NIF"), false, true),
+                (Some(r"Meshes\%41.NIF"), false, false),
                 (Some("A.nif"), true, false),
                 (Some("B.nif"), false, false),
                 (None, false, false),

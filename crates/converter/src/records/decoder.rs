@@ -3425,7 +3425,7 @@ impl RecoveryCandidates {
     }
 
     pub(super) fn record_default_object(&mut self, record: &DecodedRecord) {
-        if record.record_type == *b"DOBJ" {
+        if record.record_type == *b"DOBJ" || record.flags & 0x20 != 0 {
             self.default_object_layers.insert(
                 (record.load_order, record.source_record_offset),
                 record.to_raw_record(),

@@ -601,13 +601,20 @@ impl MeshConverter {
         glbs.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
         let mut pruned = Vec::new();
         for glb_path in glbs {
-            if let Some(report) =
-                prune_dangling_uris_in_glb(root, &glb_path, source_textures, false)?
-            {
+            if let Some(report) = Self::prune_glb_texture_uris(root, &glb_path, source_textures)? {
                 pruned.push(report);
             }
         }
         Ok(pruned)
+    }
+
+    /// Apply conversion texture repair and pruning to a single regenerated GLB.
+    pub fn prune_glb_texture_uris(
+        root: &Path,
+        glb: &Path,
+        sources: &BTreeSet<String>,
+    ) -> Result<Option<PrunedGlb>> {
+        prune_dangling_uris_in_glb(root, glb, sources, false)
     }
 
     /// Repairs the two shipped volcanic grass normals after DDS conversion, before publishing
