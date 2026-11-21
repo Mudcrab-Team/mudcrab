@@ -145,7 +145,7 @@ on the instance normal (the terrain normal with Fit to Slope, else straight up),
 `C = vertexColor * instance brightness`. The pixel output is
 `(NdotL * C * DirLightColor * albedo * lerp(0.3, 1, shadowMask) + C * AmbientColor * albedo) * outputScale`.
 The ambient term is not shadowed. 0.3 is `fShadowClampValue`. The output scale is the renderer-wide
-`1/FramebufferRange` (RF-SHADER-001, RF-SHADER-004, RF-GRASS-024): retail reads it from `cb2[16].w`,
+`1/FramebufferRange` (RF-SHADER-001, RF-SHADER-004, RF-GRASS-024): retail reads it from
 a mutable global whose initial value is 0.8333333, with a 1.0 fallback; the active runtime value is
 unverified. It is kept in `output_scale.rs`. The engine does not read the retail fog distances: a
 `DistanceFog` component on the camera (exterior, Fog setting on) stands in for them. This proxy is

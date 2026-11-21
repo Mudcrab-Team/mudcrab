@@ -308,7 +308,7 @@ Resolved model-less species retain their authored cap slots and decodable sampli
 fields, using zero for absent or non-finite scalar values. Per-spot selection consumes
 the reference random draws for those slots before skipping emission. Thus
 `[A, model-less, B]` with two admitted slots emits A only. G7's configured limit is
-checked after adding a nomination: setting 1 admits two slots, while default 2
+checked against the count already added, before insertion: setting 1 admits two slots, while default 2
 admits all three. Each admitted model-less slot counts toward that limit; the G7
 reference stream also preserves subsequent species' positions.
 

@@ -206,8 +206,10 @@ fn vertex(input: Vertex) -> Varyings {
 // discard avoids dynamic sample_mask exports, which crash AMD's Vulkan shader
 // compiler on the tested RX 9070 XT driver. The surviving sample prefix is
 // identical to the original (1 << count) - 1 mask; MSAA remains enabled.
-// Retail value (RF-GRASS-025): retail multiplies fade into the alpha test; MudCrab fades by
-// whole-instance prefix culling and tests texture/material alpha only.
+// Retail value (RF-GRASS-025): retail multiplies the per-vertex distance fade by a CPU-uploaded
+// fade-in factor per draw-group slot and tests texture alpha times that product; MudCrab fades by
+// whole-instance prefix culling and tests texture/material alpha only, so that grass needs no
+// per-slot upload.
 fn coverage(alpha:f32,sample_index:u32) -> u32 {
 #if SAMPLES == 1
     // A negative threshold encodes an authored opaque material.
@@ -306,7 +308,7 @@ fn fragment(vertex_input:Varyings,@builtin(sample_index) sample_index:u32) -> Fr
     // NdotL * DirLightColor from the vertex shader; the shadow floor 0.3 is grass.tuning_surface.z
     // (fShadowClampValue); the ambient term is not shadowed; grass.fade.z is the per-pass
     // output scale 1/FramebufferRange (RF-SHADER-001, RF-SHADER-004, RF-GRASS-024). Retail's
-    // scale is cb2[16].w, sourced from a mutable global whose initial value is 0.8333333, with a
+    // scale comes from a mutable global whose initial value is 0.8333333, with a
     // 1.0 fallback; the active runtime value is unverified. This engine passes 0.8333 when its
     // fog proxy is on and 1.0 otherwise. Only grass applies it today; terrain, sky and water do
     // not (open question: does retail apply it there too?).

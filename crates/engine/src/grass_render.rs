@@ -1427,7 +1427,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
         };
         // Retail value (RF-GRASS-023): retail uploads fade factors for at most 960 draw-group
         // slots; slots past that are still submitted with fade 0, so alpha-tested grass there
-        // discards. Whether vanilla scenes reach that cap is unverified. MudCrab draws every
+        // discards at its positive cutoff. Whether vanilla scenes reach that cap is unverified. MudCrab draws every
         // visible instance instead, so dense grass mods aren't cut off.
         let count = visible_instance_count(data, view.world_from_view.translation()) as u32;
         if count == 0 {
