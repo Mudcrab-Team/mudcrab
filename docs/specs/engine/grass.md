@@ -44,8 +44,9 @@ proven Skyrim placement parity.
 For each quadrant, the generator visits the odd vertices in X then Y order.
 Each spot covers a 256-unit square and a 3x3 vertex neighborhood. Base entries
 come first, followed by up to five painted layers in LAND layer order. The
-configured GNAM limit is tested after adding a type: default 2 admits 3, and
-0 admits 1. The first 16 entries survive, including zero-support base entries
+configured GNAM limit admits three records per texture list at the default 2,
+and one at 0; the collector checks the count already added before insertion.
+The first 16 entries survive, including zero-support base entries
 and repeated species nominated by different textures. Output batches are
 sorted by species FormID.
 
@@ -139,19 +140,19 @@ The color pass uses the camera's Bevy tone-mapping method, LUT and color grading
 for non-HDR targets, matching the color treatment of standard scene materials.
 HDR targets defer tone mapping to the later shared pass; depth remains colorless.
 This prevents exposed sunlight from clipping directly into an LDR target.
-Lighting follows the retail grass shader (RF-SHADER-003, RF-GRASS-004, RF-GRASS-005, from the
-retail bytecode). The vertex shader computes `NdotL = saturate(N_instance . L)`
+Lighting follows the retail grass shader (RF-GRASS-024). The vertex shader computes `NdotL = saturate(N_instance . L)`
 on the instance normal (the terrain normal with Fit to Slope, else straight up), and passes
 `C = vertexColor * instance brightness`. The pixel output is
-`(NdotL * C * DirLightColor * albedo * lerp(0.3, 1, shadowMask) + C * AmbientColor * albedo) * cb2[16].w`.
-The ambient term is not shadowed. 0.3 is `fShadowClampValue`. `cb2[16].w` is the renderer-wide
-output scale `1/FramebufferRange` (RF-SHADER-001; 0.8333333, or 1.0 when the retail fog
-distances are both 0, RF-SHADER-004), kept in `output_scale.rs`. The engine does not read the
-retail fog distances: a `DistanceFog` component on the camera (exterior, Fog setting on) stands
-in for them. This proxy is unverified. Turning the Fog setting off makes grass about 20 percent
-brighter (1.0 against 0.8333) while terrain does not change. Only grass applies the scale;
-terrain, sky and water do not. Whether retail applies it to those passes too is an open
-question, so grass may be 0.8333 of terrain strength relative to retail.
+`(NdotL * C * DirLightColor * albedo * lerp(0.3, 1, shadowMask) + C * AmbientColor * albedo) * outputScale`.
+The ambient term is not shadowed. 0.3 is `fShadowClampValue`. The output scale is the renderer-wide
+`1/FramebufferRange` (RF-SHADER-001, RF-SHADER-004, RF-GRASS-024): retail reads it from
+a mutable global whose initial value is 0.8333333, with a 1.0 fallback; the active runtime value is
+unverified. It is kept in `output_scale.rs`. The engine does not read the retail fog distances: a
+`DistanceFog` component on the camera (exterior, Fog setting on) stands in for them. This proxy is
+unverified. Turning the Fog setting off makes grass about 20 percent brighter (1.0 against 0.8333)
+while terrain does not change. Only grass applies the scale; terrain, sky and water do not.
+Whether retail applies it to those passes too is an open question, so grass may use the global's
+initial 0.8333 of terrain strength relative to retail.
 The engine adds exposure and 1/pi. The 1/pi is exact for the sun (it equals Bevy's Lambert for
 the sun illuminance). Bevy's own ambient has no 1/pi, so grass ambient is about pi times darker
 than a Bevy PBR surface with the same ambient input. Retail has no such factor. The sun:ambient
@@ -318,29 +319,29 @@ the player's files. The planned converter follow-up that copies those files
 into a pack will feed this same `--ini` path.
 
 These are the fifteen honoured grass keys. All retain their `[Grass]` section.
-Every default is retail data. `SkyrimSE.exe` 1.7.104 stores one static INI
-`Setting` per key. The table retains Taylor's verified retail defaults. `fGrassMinStartFadeDistance` is the exception: the compiled value is 400.0
+Every default is retail data. Retail stores one static INI
+`Setting` per key. The table lists the retail defaults. `fGrassMinStartFadeDistance` is the exception: the compiled value is 400.0
 and the shipped INI files override it with 0.0. A local `Skyrim.ini` with other values
-(`iMinGrassSize=40`, `fGrassFadeRange=1766`, `bEnableGrassFade=0`) differs from the exe
-defaults; the exe defaults are used.
+(`iMinGrassSize=40`, `fGrassFadeRange=1766`, `bEnableGrassFade=0`) differs from the retail
+defaults; the retail defaults are used.
 
 | Section | Key | Default | Default source | Engine use |
 | --- | --- | --- | --- | --- |
-| `[Grass]` | `iMinGrassSize` | `20` | `SkyrimSE.exe` default | Candidate spacing/density |
-| `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | `SkyrimSE.exe` default | Post-add limit (2 admits 3, 0 admits 1); INI spelling retained |
-| `[Grass]` | `fTexturePctThreshold` | `0.0` | `SkyrimSE.exe` default | Minimum blended texture weight |
-| `[Grass]` | `iGrassCellRadius` | `2` | `SkyrimSE.exe` default | Generated cell radius |
-| `[Grass]` | `fGrassStartFadeDistance` | `7000.0` | `SkyrimSE.exe` default; shipped `SkyrimPrefs.ini` | Start of distance thinning |
-| `[Grass]` | `fGrassFadeRange` | `1000.0` | `SkyrimSE.exe` default | Fade end is start plus range |
-| `[Grass]` | `bDrawShaderGrass` | `1` | `SkyrimSE.exe` default | Set the launch grass state unless a CLI switch overrides it |
-| `[Grass]` | `bEnableGrassFade` | `1` | `SkyrimSE.exe` default | Enable distance thinning |
+| `[Grass]` | `iMinGrassSize` | `20` | retail default | Candidate spacing/density |
+| `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | retail default | Checked before insertion (2 admits 3, 0 admits 1); INI spelling retained |
+| `[Grass]` | `fTexturePctThreshold` | `0.0` | retail default | Minimum blended texture weight |
+| `[Grass]` | `iGrassCellRadius` | `2` | retail default | Generated cell radius |
+| `[Grass]` | `fGrassStartFadeDistance` | `7000.0` | retail default; shipped `SkyrimPrefs.ini` | Start of distance thinning |
+| `[Grass]` | `fGrassFadeRange` | `1000.0` | retail default | Fade end is start plus range |
+| `[Grass]` | `bDrawShaderGrass` | `1` | retail default | Set the launch grass state unless a CLI switch overrides it |
+| `[Grass]` | `bEnableGrassFade` | `1` | retail default | Enable distance thinning |
 | `[Grass]` | `fGrassMinStartFadeDistance` | `0.0` | Shipped `Skyrim_Default.ini` and `SkyrimPrefs.ini` | Reported menu metadata |
-| `[Grass]` | `fGrassMaxStartFadeDistance` | `7000.0` | `SkyrimSE.exe` default; shipped `SkyrimPrefs.ini` | Reported menu metadata |
-| `[Grass]` | `fGrassWindMagnitudeMin` | `5.0` | `SkyrimSE.exe` default | Reported only |
-| `[Grass]` | `fGrassWindMagnitudeMax` | `125.0` | `SkyrimSE.exe` default | Reported only |
-| `[Grass]` | [`bAllowCreateGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `1` | `SkyrimSE.exe` default | Reported legacy cache switch |
-| `[Grass]` | [`bAllowLoadGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `0` | `SkyrimSE.exe` default | Reported legacy cache switch |
-| `[Grass]` | `bGenerateGrassDataFiles` | `0` | `SkyrimSE.exe` default | Reported legacy cache switch |
+| `[Grass]` | `fGrassMaxStartFadeDistance` | `7000.0` | retail default; shipped `SkyrimPrefs.ini` | Reported menu metadata |
+| `[Grass]` | `fGrassWindMagnitudeMin` | `5.0` | retail default | Reported only |
+| `[Grass]` | `fGrassWindMagnitudeMax` | `125.0` | retail default | Reported only |
+| `[Grass]` | [`bAllowCreateGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `1` | retail default | Reported legacy cache switch |
+| `[Grass]` | [`bAllowLoadGrass`](https://ck.uesp.net/wiki/Floating_Grass_Fix) | `0` | retail default | Reported legacy cache switch |
+| `[Grass]` | `bGenerateGrassDataFiles` | `0` | retail default | Reported legacy cache switch |
 
 The UESP links document the cache-control keys in a workaround; they do not
 establish defaults or file precedence. Menu min/max fade settings are metadata,
@@ -361,7 +362,7 @@ exact Skyrim placement, variation, animation or visual parity.
 
 ## Normal maps and authored wind weight
 
-Retail grass lighting does not sample a normal map (RF-SHADER-003), so this frame does not
+Retail grass lighting does not sample a normal map (unverified), so this frame does not
 enter the lighting sum; it is kept for the authored data and the shadow bias.
 
 Static grass keeps authored positions, normals and UVs. The renderer accepts
@@ -373,7 +374,7 @@ flip Y once, matching the native material contract. Node reflection/nonuniform
 scale, instance yaw, slope and authored UV transforms move the frame with the mesh.
 The fragment re-orthogonalizes it against the interpolated normal. Both raster
 sides retain authored orientation. Grass wind is not rendered. The retail amplitude and
-phase (RF-GRASS-001 to 003) are in `grass/wind.rs`, but they need the blended `WTHR` wind speed
+phase are in `grass/wind.rs`, but they need the blended `WTHR` wind speed
 and the wind direction, which the engine does not have yet; blades keep their placed positions.
 
 Vertex alpha is an authored wind weight, but nothing reads it while wind is absent;
@@ -401,14 +402,14 @@ finite values outside the ranges below clamp with warnings. Inputs over 64 KiB
 are rejected. Accepted file hash, effective values and revision are frozen with
 captured frames; callbacks never reread the file.
 
-The retail defaults are RF-GRASS-004 and RF-GRASS-005. Retail passes the sun direction, sun
+The retail defaults pass the sun direction, sun
 diffuse colour and sun ambient colour to the grass shader unscaled, so brightness,
 ambient strength, sun strength, shadow strength and saturation default to 1 and the sun
 angle weight to 1. The only retail number is the shadow floor `fShadowClampValue` 0.3.
 The optional `mode` is `flat` (default), `d` or `e`. D equals the default. E sets the sun
 angle weight to 0 for comparison. Scalar fields override the selected preset. Modes and scalars share the same hot-reload uniform path.
 
-For the normalized instance normal N (RF-SHADER-003: the terrain normal with Fit to Slope, else
+For the normalized instance normal N (the terrain normal with Fit to Slope, else
 straight up) and sun direction L, let c=dot(N,L). The vertex shader computes the direct
 response `mix(1,clamp((c+wrap)/(1+wrap),0,1),sun_angle_weight) + backlight*max(-c,0)` once
 per vertex and interpolates it; the pixel shader does not re-evaluate it, and the GRAS Vertex
@@ -428,7 +429,7 @@ terrain shadow filtering and display tone mapping retain the production paths.
 | sun_angle_weight | 1 | 0..1 | Interpolate between sun-facing and wrapped normal response |
 | wrap | 0 | 0..1 | Wrapped Lambert response above |
 | shadow_strength | 1 | 0..1 | Interpolate native visibility toward no shadow |
-| shadow_floor | .3 | 0..1 | Minimum visibility; retail `fShadowClampValue` (RF-GRASS-005) |
+| shadow_floor | .3 | 0..1 | Minimum visibility; retail `fShadowClampValue` |
 | backlight | 0 | 0..1 | Add response when the instance normal faces away from the sun |
 | specular_strength | 0 | 0..1 | Dielectric GGX sun sheen multiplier (D/E) |
 | specular_roughness | .5 | .089..1 | Perceptual roughness, squared to GGX alpha |
@@ -475,8 +476,8 @@ the retail values.
 
 ## Default appearance and tuning
 
-Without a file, grass uses the retail light: no multipliers (RF-GRASS-004) and a shadow
-floor of 0.3 (RF-GRASS-005).
+Without a file, grass uses the retail light: no multipliers and a shadow
+floor of 0.3.
 Authored vertex RGB, Color Range and terrain VCLR tint stay enabled. The appearance
 pipeline and packed tint metadata are active with or without a tuning file.
 `--grass-tuning <toml>` overrides `MUDCRAB_GRASS_TUNING`; edits hot reload at most

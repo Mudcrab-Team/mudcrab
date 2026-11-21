@@ -229,8 +229,7 @@ impl EngineConfig {
                 self.grass_min_spacing = value;
             } else {
                 self.grass_settings_diagnostics.push(
-                    "iMinGrassSize below generator minimum 8 ignored; retaining supported spacing"
-                        .into(),
+                    "iMinGrassSize below 8 ignored (MudCrab safety limit, not retail)".into(),
                 );
             }
         }

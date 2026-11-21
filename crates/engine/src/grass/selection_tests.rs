@@ -1,7 +1,7 @@
 use super::*;
 use shared::grass::{GRASS_CACHE_VERSION, GrassCell, GrassLayer, GrassQuadrant, GrassType};
 
-/// Per-spot selection counts the modelless middle nomination in its post-add admission limit.
+/// Per-spot selection counts the modelless middle nomination in its admission limit (checked before insertion).
 #[test]
 fn modelless_middle_species_keeps_authored_cap_slot() {
     let mut placeholder = rule(2, 128.0);

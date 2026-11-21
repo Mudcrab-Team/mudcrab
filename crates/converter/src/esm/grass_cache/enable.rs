@@ -164,7 +164,8 @@ impl<'conn> EnableStates<'conn> {
         }
         let mut enabled = false;
         let mut unresolved = true;
-        // PlayerRef is built in, including when its database row is malformed.
+        // Retail value: PlayerRef form ID 0x14 is built in, even when its database row is
+        // malformed.
         let inputs = if id == 0x14 {
             Some(InitialEnableInputs {
                 header_flags: 0,
