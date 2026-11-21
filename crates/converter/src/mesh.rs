@@ -5460,15 +5460,16 @@ mod tests {
         shape.av.translation.0.0.x += 1000.0;
         let mut second = first;
         second.center[0] += 1000.0;
-        let branch_index = nif.blocks.len() as u32;
+        let branch_index = u32::try_from(nif.blocks.len()).unwrap();
         let mut branch = root.clone();
         branch.children = vec![branch_index + 1];
         root.children.push(branch_index);
         nif.blocks.push(NifBlock::NiNode(branch));
         nif.blocks.push(child);
         let switch_index = nif.blocks.len();
+        let switch_block = u32::try_from(switch_index).unwrap();
         let mut scene = root.clone();
-        scene.children = vec![switch_index as u32];
+        scene.children = vec![switch_block];
         nif.blocks[0] = NifBlock::NiNode(scene);
         nif.blocks.push(NifBlock::Unhandled);
         root.av.translation.0.0.x = 17.0;
@@ -5486,10 +5487,10 @@ mod tests {
             });
             assert_eq!(room_bounds::source_sphere(&nif), expected);
             let model = nif_to_static_model(&nif).unwrap();
-            assert_eq!(model.static_nodes[0].children, [switch_index as u32]);
+            assert_eq!(model.static_nodes[0].children, [switch_block]);
             let switch = model.static_nodes.last().unwrap();
             assert_eq!(switch.children, root.children);
-            assert_eq!(switch.translation.x, 17.0);
+            assert!((switch.translation.x - 17.0).abs() < f32::EPSILON);
             let contract = build_nif_material_contract(&nif, &input).unwrap();
             let blocks = exported_shape_blocks(&nif, &model, &contract).unwrap();
             let glb = model.to_glb("switch".into()).unwrap();
@@ -5589,13 +5590,13 @@ mod tests {
         let mut root = nif.blocks[0].as_node().unwrap().clone();
         let mut empty = root.clone();
         empty.children.clear();
-        let value = nif.blocks.len() as u32;
+        let value = u32::try_from(nif.blocks.len()).unwrap();
         nif.blocks.push(NifBlock::BSValueNode(BSValueNode {
             node: empty,
             value: 49,
             value_node_flags: 1,
         }));
-        let container = nif.blocks.len() as u32;
+        let container = u32::try_from(nif.blocks.len()).unwrap();
         let mut bound_ref = root.av.collision_object;
         bound_ref.0 = Some(container + 1);
         let mut data_ref = bound_ref;

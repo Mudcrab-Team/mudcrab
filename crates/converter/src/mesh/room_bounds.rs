@@ -75,10 +75,10 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
                 // NiSwitchNode::UpdateWorldBound uses only the active child when bit 0 is set.
                 let contributing = if switch.flags & 1 == 0 {
                     children
-                } else if switch.active_child < 0 {
-                    &[]
+                } else if let Ok(active_child) = usize::try_from(switch.active_child) {
+                    std::slice::from_ref(children.get(active_child)?)
                 } else {
-                    std::slice::from_ref(children.get(switch.active_child as usize)?)
+                    &[]
                 };
                 (&switch.node.av, None, contributing)
             }
@@ -270,18 +270,20 @@ pub(super) fn select_switch_geometry(
     let mut pending: Vec<_> = (0..root.len()).filter(|&index| root[index]).collect();
     let mut visible = HashSet::new();
     while let Some(index) = pending.pop() {
-        if !visible.insert(index as u32) {
+        if !visible.insert(index) {
             continue;
         }
         let block = &nif.blocks[index];
         let mut draw = children(block);
         if let NifBlock::NiSwitchNode(switch) = block {
-            if switch.active_child < 0 {
+            if let Ok(active_child) = usize::try_from(switch.active_child) {
+                if let Some(child) = draw.get(active_child)
+                    && (*child == u32::MAX || (*child as usize) < nif.blocks.len())
+                {
+                    draw = std::slice::from_ref(child);
+                }
+            } else {
                 draw = &[];
-            } else if let Some(child) = draw.get(switch.active_child as usize)
-                && (*child == u32::MAX || (*child as usize) < nif.blocks.len())
-            {
-                draw = std::slice::from_ref(child);
             }
             // An out-of-range index leaves all branches available.
         }
@@ -307,7 +309,7 @@ pub(super) fn select_switch_geometry(
                 .ok_or_else(|| {
                     eyre!("exported switch node {index} has no source shape for mesh {mesh}")
                 })?;
-            if !visible.contains(block) {
+            if !visible.contains(&(*block as usize)) {
                 hidden.insert(index as u64);
             }
         }
