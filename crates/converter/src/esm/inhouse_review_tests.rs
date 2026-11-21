@@ -238,11 +238,25 @@ fn r10_sndr_fnam_flags_publish_without_localization() {
 #[test]
 fn r10_navm_onam_reference_remaps_and_preserves_source() {
     let mut fixture = Fixture::new();
-    fixture.add("Base.esm", &[], 1, &[]);
+    fixture.add(
+        "Base.esm",
+        &[],
+        1,
+        &native_record(b"STAT", 0x910, 0, &sub(b"EDID", b"ReferenceBase\0")),
+    );
     fixture.add("Gap.esm", &[], 1, &[]);
     let source_link = 0x0100_0920u32;
     let payload = sub(b"ONAM", &source_link.to_le_bytes());
-    let mut body = native_record(b"REFR", source_link, 0, &sub(b"EDID", b"LiveReference\0"));
+    let mut body = native_record(
+        b"REFR",
+        source_link,
+        0,
+        &[
+            sub(b"EDID", b"LiveReference\0"),
+            sub(b"NAME", &0x910u32.to_le_bytes()),
+        ]
+        .concat(),
+    );
     body.extend(native_record(b"NAVM", 0x0100_0930, 0, &payload));
     body.extend(native_record(
         b"NAVM",

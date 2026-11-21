@@ -1,5 +1,6 @@
 ---
 source: crates/converter/tests/snapshots.rs
+assertion_line: 217
 expression: manifest
 ---
 {
@@ -80,16 +81,22 @@ expression: manifest
   },
   "asset_configuration_hashes": {
     "dds": "1495cf3ec0f02a297c0bf31210e650b2c41df7f8b5e2bdda71f0a65f84b9db65",
-    "nif": "bb07b368d792b341b743e03954a56f4c2c7d69f8d1c9afbe27b6bc8073d2b349",
-    "pex": "36a71880028a9c1d6bcd8b3c1cf149805dbe384a48a765bab57df47a3cbea565"
+    "nif": "8d888a5b5be264794a0d7752d9cc4e8908adf95f2dec52e881e49eddffda9dfe",
+    "pex": "cf13370688eb7906eb315807a3ff9fff826e24c65351c5a229f96d2d2ea85a7f"
   },
   "complete": true,
-  "configuration_hash": "101deff2afbfbcd4112e9f85a46e67f3c48f40f45740f3d35761c2776b94d180",
+  "configuration_hash": "475839f918182ff477002529ad5a21c24da5e1f350a069a357f549850b5f05a6",
   "entries": {
+    "derived/grass-cache": {
+      "output": "grass_cache.rkyv",
+      "output_hash": "[output_hash]",
+      "output_size": 20,
+      "source_hash": "[source_hash]"
+    },
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",
       "output_hash": "[output_hash]",
-      "output_size": 2356,
+      "output_size": 2452,
       "source_hash": "[source_hash]"
     },
     "scripts/generated.pex": {

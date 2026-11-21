@@ -44,3 +44,12 @@
 - name: S-blocked
   color: b60205
   description: Waits on another PR or a decision
+- name: "size: L"
+  color: fbca04
+  description: More than 2,000 changed hand-written lines; consider splitting
+- name: "size: XL"
+  color: d93f0b
+  description: More than 5,000 changed hand-written lines; split before review
+- name: needs milestone
+  color: d4c5f9
+  description: Open issue or pull request with no milestone; a maintainer assigns one within one working day

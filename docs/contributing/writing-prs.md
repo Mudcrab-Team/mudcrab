@@ -8,6 +8,18 @@ A short guide for anyone sending work here, written by hand or with an AI assist
 2. **Explain, don't just state.** For each point, say what goes wrong first, then one concrete example, then what to do and who gains. Explain every Skyrim or engine term the first time it appears; assume the reader knows programming but not Creation Engine formats.
 3. **Be honest about evidence.** Tick only the commands you really ran, keep conditions next to the claims they limit ("on Windows", "not runtime-tested"), and give every number its source.
 
+## Claims about Skyrim behaviour
+
+An added comment or doc line that states retail behaviour needs a source in the same place. The source is a retail-facts ID such as `RF-TEX-004`, a link to any repository Markdown file, an external `http(s)` URL, a SHA-256 hash of the analysed file, or the word `unverified`.
+
+The check reads `//` comments in Rust and WGSL under `crates/`, and Markdown under `docs/` and `crates/`. It ignores code and unchanged lines. A moved or renamed line is not a new claim. In Markdown the source can be anywhere in the same section: from a heading to the next heading of the same or higher level. In Rust a `//!` module doc that cites an RF ID labels every comment in that file.
+
+A line that says `non-retail`, `not vanilla` or `Mudcrab-only` still needs a reason, or `unverified`. "Retail" used as an adjective or a label is not a claim: "the retail constant" and "retail value tables" pass, but "Retail profiles hold zero speeds" needs a source.
+
+The accepted reason words are `because`, `since`, `so that`, `to avoid`, `to keep`, `to prevent`, `to match` and `due to`. Naming what Mudcrab does instead also counts (`Mudcrab uses ...`).
+
+Run it locally with `python3 scripts/check_retail_claims.py --base origin/main`. CI runs it in the `scripts` job and prints the file and line for each finding. The gate is required: a finding fails the `scripts` job.
+
 ## Voice
 
 - Write concise, full sentences. Cut filler, pleasantries and empty hedges ("maybe", "I think"), but never cut the reason. Headings, field labels and exact commands can stay as shorthand.
@@ -19,7 +31,7 @@ A short guide for anyone sending work here, written by hand or with an AI assist
 
 PR titles must strictly adhere to the [Conventional Commits](https://www.conventionalcommits.org/) specification (`type(scope): description` or `type(scope)!: description`).
 
-With a squash merge, the PR title becomes the exact commit message on `main` (the repository's squash-merge setting uses the PR title as the commit title). These titles drive changelog generation via `git-cliff` and tell maintainers which SemVer bump a release needs. See [releasing.md](releasing.md). Non-conventional titles are blocked in CI.
+With a squash merge, the PR title becomes the exact commit message on `main` (the repository's squash-merge setting uses the PR title as the commit title). A stack layer lands with a merge commit, which also takes the PR title as its title. Its inner commits come into `main` too, so give them Conventional Commit titles as well. These titles drive changelog generation via `git-cliff` and tell maintainers which SemVer bump a release needs. See [releasing.md](releasing.md). Non-conventional titles are blocked in CI.
 
 - **Format:** `type(scope): plain effect`, at most 72 characters, lowercase after the colon unless the description starts with a listed acronym (for example `fix(engine): NIF parser panic`). Leave out PR numbers and notes like "part 2".
 - **Types:**
@@ -58,6 +70,12 @@ Fill in [the PR template](../../.github/PULL_REQUEST_TEMPLATE.md): a one-sentenc
 ## Draft PRs
 
 Open a draft for anything that isn't ready for review yet: work in progress, or code that works while something is still undecided or unmeasured (a design choice for the maintainers, or a measurement you couldn't do). End **For reviewers** with **Still open (why this is a draft):** what is missing, and what would make it ready. Mark it ready for review once that is done.
+
+## Milestones
+
+Every issue and pull request carries a milestone from [the milestone list](https://github.com/Mudcrab-Team/mudcrab/milestones), so nothing stays uncategorized. Contributors cannot set one: a maintainer assigns it within one working day, and you open the item as usual.
+
+A pull request inherits the milestone of the issues it links with `Closes #N`, `Part of #N` or `Related to #N`, but only when every linked issue that has a milestone agrees. Otherwise it gets the `needs milestone` label and one comment that says what to do. The rule and the daily check are in [workflow.md](workflow.md#milestones).
 
 ## Issues
 

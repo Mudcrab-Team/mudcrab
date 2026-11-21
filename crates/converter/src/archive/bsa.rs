@@ -3,12 +3,16 @@ use color_eyre::{
     eyre::{WrapErr, bail, ensure, eyre},
 };
 use flate2::read::ZlibDecoder;
-use std::io::Read;
+use std::{borrow::Cow, io::Read};
 
 use super::bsa_name::{decode_name, file_hash, folder_hash};
+use super::source::ArchiveSource;
 
 const HEADER_SIZE: usize = 36;
 const FILE_RECORD_SIZE: usize = 16;
+const FILENAME_BLOCK_SIZE: usize = 8 * 1024;
+// Match the maximum length encodable in a BA2 filename, including unusually long names.
+const MAX_FILENAME_BYTES: usize = u16::MAX as usize;
 const ARCHIVE_COMPRESSED: u32 = 0x0004;
 const ARCHIVE_EMBED_FILE_NAMES: u32 = 0x0100;
 const KNOWN_ARCHIVE_FLAGS: u32 = 0x03ff;
@@ -33,18 +37,106 @@ pub struct BsaRawEntry<'a> {
 
 impl<'a> BsaRawEntry<'a> {
     pub fn decompress(&self) -> Result<Vec<u8>> {
-        if self.is_compressed {
-            decompress(self.payload, self.version)
-                .wrap_err_with(|| format!("failed to decompress BSA entry {:?}", self.name))
-        } else {
-            Ok(self.payload.to_vec())
-        }
+        decode_payload(
+            Cow::Borrowed(self.payload),
+            self.version,
+            self.is_compressed,
+            &self.name,
+        )
     }
 }
 
-// Reads BSA metadata table only
-// Payloads remain lightweight slices into the mmap
 pub(crate) fn iter_raw_entries<'a>(bytes: &'a [u8]) -> Result<Vec<BsaRawEntry<'a>>> {
+    read_entries(&ArchiveSource::Slice(bytes))?
+        .into_iter()
+        .map(|entry| {
+            Ok(BsaRawEntry {
+                name: entry.name,
+                payload: slice_at(bytes, entry.offset, entry.stored_size, "file payload")?,
+                version: entry.version,
+                is_compressed: entry.is_compressed,
+            })
+        })
+        .collect()
+}
+
+pub(super) struct BsaEntry {
+    pub name: String,
+    offset: usize,
+    stored_size: usize,
+    version: u32,
+    is_compressed: bool,
+}
+
+impl BsaEntry {
+    pub(super) fn decoded_size(&self, source: &ArchiveSource<'_>) -> Result<usize> {
+        if !self.is_compressed {
+            return Ok(self.stored_size);
+        }
+        ensure!(
+            self.stored_size >= 4,
+            "compressed BSA payload is truncated: {}",
+            self.name
+        );
+        let header = source.read(self.offset, 4)?;
+        let bytes = u32_at(&header, 0)? as usize;
+        ensure!(
+            bytes <= expansion_limit(self.stored_size - 4),
+            "compressed BSA entry {} declares {bytes} decompressed bytes, over the safety limit",
+            self.name
+        );
+        Ok(bytes)
+    }
+
+    pub(super) fn staging_bytes(&self, source: &ArchiveSource<'_>) -> Result<usize> {
+        if !self.is_compressed || self.stored_size < 4 {
+            return Ok(self.stored_size);
+        }
+        let prefix = source
+            .read(self.offset, self.stored_size.min(10))
+            .wrap_err_with(|| format!("invalid BSA file payload: {}", self.name))?;
+        let expected = u32_at(&prefix, 0)? as usize;
+        if expected > expansion_limit(self.stored_size - 4) {
+            // Decoding rejects this size before allocating any output.
+            return Ok(self.stored_size);
+        }
+        let frame_buffers = if self.version >= 105 {
+            lz4_frame_buffer_bytes(&prefix[4..])
+        } else {
+            0
+        };
+        Ok(self
+            .stored_size
+            .saturating_add(super::growing_buffer_bytes(expected))
+            .saturating_add(frame_buffers))
+    }
+
+    pub(super) fn decompress(self, source: &ArchiveSource<'_>) -> Result<Vec<u8>> {
+        let payload = source
+            .read_payload(self.offset, self.stored_size)
+            .wrap_err_with(|| format!("invalid BSA file payload: {}", self.name))?;
+        decode_payload(payload, self.version, self.is_compressed, &self.name)
+    }
+}
+
+fn decode_payload(
+    payload: Cow<'_, [u8]>,
+    version: u32,
+    is_compressed: bool,
+    name: &str,
+) -> Result<Vec<u8>> {
+    if is_compressed {
+        decompress(&payload, version)
+            .wrap_err_with(|| format!("failed to decompress BSA entry {name:?}"))
+    } else {
+        Ok(payload.into_owned())
+    }
+}
+
+pub(super) fn read_entries(source: &ArchiveSource<'_>) -> Result<Vec<BsaEntry>> {
+    ensure!(source.len() >= HEADER_SIZE, "truncated BSA header");
+    let header = source.read(0, HEADER_SIZE)?;
+    let bytes = header.as_ref();
     ensure!(bytes.len() >= HEADER_SIZE, "truncated BSA header");
     ensure!(&bytes[..4] == b"BSA\0", "invalid BSA magic");
     let version = u32_at(bytes, 4)?;
@@ -87,35 +179,45 @@ pub(crate) fn iter_raw_entries<'a>(bytes: &'a [u8]) -> Result<Vec<BsaRawEntry<'a
         .and_then(|end| checked_end(end, file_records_size, "file records"))
         .and_then(|end| checked_end(end, total_file_name_length, "filename table"))?;
     ensure!(
-        minimum_metadata_end <= bytes.len(),
+        minimum_metadata_end <= source.len(),
         "BSA metadata exceeds archive size"
     );
-
-    let mut folder_records = Vec::with_capacity(folder_count);
+    let mut folder_records = Vec::new();
     for index in 0..folder_count {
         let base = folder_record_offset + index * folder_record_size;
-        folder_records.push((u64_at(bytes, base)?, u32_at(bytes, base + 8)? as usize));
+        let record = source.read(base, folder_record_size)?;
+        folder_records.push((u64_at(&record, 0)?, u32_at(&record, 8)? as usize));
     }
 
     let mut cursor = folder_table_end;
-    let mut records = Vec::with_capacity(file_count);
+    let mut records = Vec::new();
     let mut folder_names_length = 0usize;
     for (stored_folder_hash, count) in folder_records {
-        let name_len = slice_at(bytes, cursor, 1, "folder name length")?[0] as usize;
-        cursor = checked_end(cursor, 1, "folder name length")?;
-        let folder_bytes = slice_at(bytes, cursor, name_len, "folder name")?;
+        let name_len = read_metadata(
+            source,
+            &mut cursor,
+            1,
+            minimum_metadata_end,
+            "folder name length",
+        )?[0] as usize;
+        let folder_bytes = read_metadata(
+            source,
+            &mut cursor,
+            name_len,
+            minimum_metadata_end,
+            "folder name",
+        )?;
         ensure!(
             folder_bytes.is_empty() || folder_bytes.last() == Some(&0),
             "BSA folder name is not null-terminated"
         );
-        let folder_name = folder_bytes.strip_suffix(&[0]).unwrap_or(folder_bytes);
+        let folder_name = folder_bytes.strip_suffix(&[0]).unwrap_or(&folder_bytes);
         let folder = decode_name(folder_name);
         ensure!(
             folder_hash(folder_name) == stored_folder_hash,
             "BSA folder hash mismatch for {folder:?}: stored {stored_folder_hash:#018x}, calculated {:#018x}",
             folder_hash(folder_name)
         );
-        cursor = checked_end(cursor, name_len, "folder name")?;
         folder_names_length = folder_names_length
             .checked_add(name_len)
             .ok_or_else(|| eyre!("BSA folder name length overflow"))?;
@@ -127,14 +229,19 @@ pub(crate) fn iter_raw_entries<'a>(bytes: &'a [u8]) -> Result<Vec<BsaRawEntry<'a
             "BSA folder records exceed declared file count"
         );
         for _ in 0..count {
-            slice_at(bytes, cursor, FILE_RECORD_SIZE, "file record")?;
+            let record = read_metadata(
+                source,
+                &mut cursor,
+                FILE_RECORD_SIZE,
+                minimum_metadata_end,
+                "file record",
+            )?;
             records.push(FileRecord {
                 folder: folder.clone(),
-                size_flags: u32_at(bytes, cursor + 8)?,
-                offset: u32_at(bytes, cursor + 12)?,
-                hash: u64_at(bytes, cursor)?,
+                size_flags: u32_at(&record, 8)?,
+                offset: u32_at(&record, 12)?,
+                hash: u64_at(&record, 0)?,
             });
-            cursor = checked_end(cursor, FILE_RECORD_SIZE, "file record")?;
         }
     }
     ensure!(
@@ -148,83 +255,116 @@ pub(crate) fn iter_raw_entries<'a>(bytes: &'a [u8]) -> Result<Vec<BsaRawEntry<'a
     );
 
     let filename_table_end = checked_end(cursor, total_file_name_length, "filename table")?;
-    let filename_table = slice_at(bytes, cursor, total_file_name_length, "filename table")?;
-    let mut names = Vec::with_capacity(file_count);
-    let mut raw_names = Vec::with_capacity(file_count);
-    let mut name_cursor = 0usize;
-    for _ in 0..file_count {
-        let tail = filename_table
-            .get(name_cursor..)
-            .ok_or_else(|| eyre!("missing BSA filename table"))?;
-        let end = tail
-            .iter()
-            .position(|byte| *byte == 0)
-            .ok_or_else(|| eyre!("unterminated BSA filename"))?;
-        ensure!(end > 0, "BSA filename is empty");
-        raw_names.push(&tail[..end]);
-        names.push(decode_name(&tail[..end]));
-        name_cursor = checked_end(name_cursor, end + 1, "filename")?;
-    }
-    // Some distributed archives (e.g. MarketplaceTextures.bsa) pad the filename
-    // table with trailing zero bytes beyond the declared file names. The header
-    // length remains the table bound, so only all-zero slack is accepted here.
-    ensure!(
-        name_cursor <= filename_table.len(),
-        "BSA filename table length mismatch: header={}, records={name_cursor}",
-        filename_table.len()
-    );
-    ensure!(
-        filename_table[name_cursor..].iter().all(|byte| *byte == 0),
-        "BSA filename table has {} trailing bytes after {} file names",
-        filename_table.len() - name_cursor,
-        names.len()
-    );
+    let names = read_filenames(source, cursor, filename_table_end, file_count)?;
 
     records
         .into_iter()
-        .zip(names.into_iter().zip(raw_names))
-        .map(|(record, (file_name, raw_name))| {
+        .zip(names)
+        .map(|(record, (file_name, calculated))| {
             let full_name = if record.folder.is_empty() {
                 file_name
             } else {
                 format!("{}/{}", record.folder, file_name)
             };
-            let calculated = file_hash(raw_name);
             ensure!(
                 calculated == record.hash,
                 "BSA file hash mismatch for {full_name:?}: stored {:#018x}, calculated {calculated:#018x}",
                 record.hash
             );
-            let stored_size = (record.size_flags & FILE_SIZE_MASK) as usize;
-            let start = record.offset as usize;
+            let mut stored_size = (record.size_flags & FILE_SIZE_MASK) as usize;
+            let mut start = record.offset as usize;
             ensure!(
                 start >= filename_table_end,
                 "BSA file payload overlaps metadata: {full_name}"
             );
-            let mut payload = slice_at(bytes, start, stored_size, "file payload")
-                .wrap_err_with(|| format!("invalid BSA file payload: {full_name}"))?;
+            ensure!(
+                checked_end(start, stored_size, "file payload")? <= source.len(),
+                "invalid BSA file payload: {full_name}"
+            );
             if archive_flags & ARCHIVE_EMBED_FILE_NAMES != 0 {
-                let embedded_len = *payload
-                    .first()
-                    .ok_or_else(|| eyre!("missing embedded BSA filename"))?
-                    as usize;
-                let payload_start = checked_end(1, embedded_len, "embedded filename")?;
-                payload = payload
-                    .get(payload_start..)
+                ensure!(stored_size != 0, "missing embedded BSA filename");
+                let prefix_size = 1 + source.read(start, 1)?[0] as usize;
+                stored_size = stored_size.checked_sub(prefix_size)
                     .ok_or_else(|| eyre!("truncated embedded BSA filename"))?;
+                start += prefix_size;
             }
 
             let is_compressed = (archive_flags & ARCHIVE_COMPRESSED != 0)
                 ^ (record.size_flags & FILE_COMPRESSION_TOGGLE != 0);
 
-            Ok(BsaRawEntry {
+            Ok(BsaEntry {
                 name: full_name,
-                payload,
+                offset: start,
+                stored_size,
                 version,
                 is_compressed,
             })
         })
         .collect()
+}
+
+fn read_metadata<'a>(
+    source: &ArchiveSource<'a>,
+    cursor: &mut usize,
+    len: usize,
+    metadata_end: usize,
+    field: &str,
+) -> Result<Cow<'a, [u8]>> {
+    let end = checked_end(*cursor, len, field)?;
+    ensure!(
+        end <= metadata_end,
+        "truncated BSA {field} at offset {cursor}"
+    );
+    let bytes = source.read(*cursor, len)?;
+    *cursor = end;
+    Ok(bytes)
+}
+
+fn read_filenames(
+    source: &ArchiveSource<'_>,
+    mut cursor: usize,
+    end: usize,
+    file_count: usize,
+) -> Result<Vec<(String, u64)>> {
+    let mut names = Vec::new();
+    let mut name_start = cursor;
+    'blocks: while cursor < end {
+        let block_start = cursor;
+        let block_len = (end - cursor).min(FILENAME_BLOCK_SIZE);
+        let bytes = source.read(cursor, block_len)?;
+        cursor += block_len;
+        let mut block = bytes.as_ref();
+        while !block.is_empty() && names.len() < file_count {
+            let Some(terminator) = block.iter().position(|&byte| byte == 0) else {
+                ensure!(
+                    cursor - name_start <= MAX_FILENAME_BYTES,
+                    "BSA filename exceeds size limit"
+                );
+                continue 'blocks;
+            };
+            let name_end = cursor - block.len() + terminator;
+            ensure!(
+                name_end - name_start <= MAX_FILENAME_BYTES,
+                "BSA filename exceeds size limit"
+            );
+            let raw_name = if name_start < block_start {
+                source.read(name_start, name_end - name_start)?
+            } else {
+                Cow::Borrowed(&block[..terminator])
+            };
+            ensure!(!raw_name.is_empty(), "BSA filename is empty");
+            names.push((decode_name(&raw_name), file_hash(&raw_name)));
+            name_start = name_end + 1;
+            block = &block[terminator + 1..];
+        }
+        // Distributed archives can pad the filename table with trailing zeros.
+        ensure!(
+            block.iter().all(|&byte| byte == 0),
+            "BSA filename table has trailing bytes after {file_count} file names"
+        );
+    }
+    ensure!(names.len() == file_count, "unterminated BSA filename");
+    Ok(names)
 }
 
 /// The largest decompressed size any BSA entry may declare. Retail textures,
@@ -248,6 +388,28 @@ fn expansion_limit(packed_len: usize) -> usize {
         .min(MAX_ENTRY_SIZE)
 }
 
+const LZ4_FRAME_MAGIC: [u8; 4] = [0x04, 0x22, 0x4d, 0x18];
+
+fn lz4_frame_buffer_bytes(prefix: &[u8]) -> usize {
+    let Some([flags, descriptor]) = prefix.strip_prefix(&LZ4_FRAME_MAGIC) else {
+        return 0;
+    };
+    let block_size = match (descriptor >> 4) & 7 {
+        4 => 64 * 1024,
+        5 => 256 * 1024,
+        6 => 1024 * 1024,
+        7 => 4 * 1024 * 1024,
+        _ => return 0,
+    };
+    // Independent blocks need one input and one output block. Linked blocks need
+    // a second output block and a 64 KiB history window.
+    if flags & 0x20 != 0 {
+        2 * block_size
+    } else {
+        3 * block_size + 64 * 1024
+    }
+}
+
 fn decompress(payload: &[u8], version: u32) -> Result<Vec<u8>> {
     ensure!(payload.len() >= 4, "compressed BSA payload is truncated");
     let expected = u32_at(payload, 0)? as usize;
@@ -261,7 +423,7 @@ fn decompress(payload: &[u8], version: u32) -> Result<Vec<u8>> {
         compressed.len()
     );
     let decoded = if version >= 105 {
-        if compressed.starts_with(&[0x04, 0x22, 0x4d, 0x18]) {
+        if compressed.starts_with(&LZ4_FRAME_MAGIC) {
             read_bounded(lz4_flex::frame::FrameDecoder::new(compressed), expected)
                 .wrap_err("LZ4 frame decoding failed")?
         } else if expected <= max_lz4_block_output(compressed.len())
@@ -528,6 +690,125 @@ mod tests {
     }
 
     #[test]
+    fn file_backed_filename_table_handles_names_and_padding_across_blocks() {
+        let folder = b"scripts";
+        let name = vec![b'a'; FILENAME_BLOCK_SIZE + 1];
+        let mut bytes = raw_archive(folder, &name, folder_hash(folder), file_hash(&name));
+        let names_start = HEADER_SIZE + FILE_RECORD_SIZE + 1 + folder.len() + 1 + FILE_RECORD_SIZE;
+        let padding_start = names_start + name.len() + 1;
+        let padding_len = 2 * FILENAME_BLOCK_SIZE;
+        let payload_start = padding_start + padding_len;
+        bytes.splice(
+            padding_start..padding_start,
+            std::iter::repeat_n(0, padding_len),
+        );
+        bytes[28..32].copy_from_slice(
+            &u32::try_from(payload_start - names_start)
+                .unwrap()
+                .to_le_bytes(),
+        );
+        bytes[names_start - 4..names_start]
+            .copy_from_slice(&u32::try_from(payload_start).unwrap().to_le_bytes());
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(&bytes).unwrap();
+        let source = ArchiveSource::from_file(file.reopen().unwrap()).unwrap();
+        let mut entries = read_entries(&source).unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry = entries.pop().unwrap();
+        assert_eq!(entry.name, format!("scripts/{}", decode_name(&name)));
+        assert_eq!(entry.decompress(&source).unwrap(), b"PEX");
+
+        use std::io::{Seek, SeekFrom};
+        file.seek(SeekFrom::Start((payload_start - 1) as u64))
+            .unwrap();
+        file.write_all(b"x").unwrap();
+        let source = ArchiveSource::from_file(file.reopen().unwrap()).unwrap();
+        assert!(
+            matches!(read_entries(&source), Err(error) if error.to_string().contains("trailing bytes"))
+        );
+    }
+
+    #[test]
+    fn file_backed_embedded_filename_prefixes_keep_payload_and_range_checks() {
+        let folder = b"scripts";
+        let name = b"script.pex";
+        let mut bytes = raw_archive(folder, name, folder_hash(folder), file_hash(name));
+        let payload_start = bytes.len() - b"PEX".len();
+        let size_offset = payload_start - name.len() - 1 - 8;
+        let embedded = b"\x0ascript.pex";
+        bytes[12..16].copy_from_slice(&(3 | ARCHIVE_EMBED_FILE_NAMES).to_le_bytes());
+        bytes[size_offset..size_offset + 4]
+            .copy_from_slice(&u32::try_from(embedded.len() + 3).unwrap().to_le_bytes());
+        bytes.splice(payload_start..payload_start, embedded.iter().copied());
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(&bytes).unwrap();
+        let source = ArchiveSource::from_file(file.reopen().unwrap()).unwrap();
+        let mut entries = read_entries(&source).unwrap();
+        assert_eq!(entries.remove(0).decompress(&source).unwrap(), b"PEX");
+
+        bytes[payload_start] = u8::MAX;
+        std::fs::write(file.path(), bytes).unwrap();
+        let source = ArchiveSource::from_file(file.reopen().unwrap()).unwrap();
+        assert!(
+            matches!(read_entries(&source), Err(error) if error.to_string().contains("truncated embedded BSA filename"))
+        );
+    }
+
+    #[test]
+    fn filename_table_requires_a_terminator_within_its_bounds_across_blocks() {
+        let mut bytes = b"first.nif\0".to_vec();
+        bytes.resize(FILENAME_BLOCK_SIZE + 1, b'a');
+        let end = bytes.len();
+        bytes.push(0);
+        let source = ArchiveSource::Slice(&bytes);
+
+        let error = read_filenames(&source, 0, end, 2).unwrap_err();
+        assert_eq!(error.to_string(), "unterminated BSA filename");
+        let names = read_filenames(&source, 0, bytes.len(), 2).unwrap();
+        let second = &bytes[b"first.nif\0".len()..end];
+        assert_eq!(
+            names,
+            [
+                ("first.nif".to_owned(), file_hash(b"first.nif")),
+                (decode_name(second), file_hash(second))
+            ]
+        );
+    }
+
+    #[test]
+    fn file_backed_filename_table_rejects_oversized_names_before_hashing() {
+        let folder = b"scripts";
+        for size in [
+            MAX_FILENAME_BYTES,
+            MAX_FILENAME_BYTES + 1,
+            MAX_FILENAME_BYTES + 2,
+        ] {
+            let name = vec![b'a'; size];
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            file.write_all(&raw_archive(
+                folder,
+                &name,
+                folder_hash(folder),
+                file_hash(&name),
+            ))
+            .unwrap();
+            let source = ArchiveSource::from_file(file.reopen().unwrap()).unwrap();
+            if size == MAX_FILENAME_BYTES {
+                assert_eq!(
+                    read_entries(&source).unwrap()[0].name.len(),
+                    folder.len() + 1 + size
+                );
+            } else {
+                assert!(
+                    matches!(read_entries(&source), Err(error) if error.to_string().contains("filename exceeds size limit"))
+                );
+            }
+        }
+    }
+
+    #[test]
     fn every_truncated_fixture_returns_an_error_without_panicking() {
         let bytes = uncompressed_fixture();
         for length in 0..bytes.len() {
@@ -684,10 +965,14 @@ mod tests {
 
     #[test]
     fn decompresses_special_edition_lz4_frame() {
+        use lz4_flex::frame::{BlockMode, BlockSize, FrameEncoder, FrameInfo};
         let source = b"Gamebryo File Format, Version 20.2.0.7\n";
         let mut compressed = Vec::new();
         {
-            let mut encoder = lz4_flex::frame::FrameEncoder::new(&mut compressed);
+            let info = FrameInfo::new()
+                .block_size(BlockSize::Max64KB)
+                .block_mode(BlockMode::Linked);
+            let mut encoder = FrameEncoder::with_frame_info(info, &mut compressed);
             encoder.write_all(source).unwrap();
             encoder.finish().unwrap();
         }
@@ -698,6 +983,19 @@ mod tests {
         payload.extend_from_slice(&compressed);
 
         assert_eq!(decompress(&payload, 105).unwrap(), source);
+        let entry = BsaEntry {
+            name: "meshes/model.nif".to_owned(),
+            offset: 0,
+            stored_size: payload.len(),
+            version: 105,
+            is_compressed: true,
+        };
+        assert_eq!(
+            entry
+                .staging_bytes(&ArchiveSource::Slice(&payload))
+                .unwrap(),
+            payload.len() + super::super::growing_buffer_bytes(source.len()) + 256 * 1024
+        );
     }
 
     fn fixtures() -> Vec<Vec<u8>> {

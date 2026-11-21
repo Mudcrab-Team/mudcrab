@@ -394,6 +394,10 @@ pub struct ConversionManifest {
     /// Non-runtime inputs deliberately excluded, with an auditable reason.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub excluded_inputs: BTreeMap<String, String>,
+    /// Discovered input occurrences outside the selected input policy, grouped by
+    /// lowercase extension without a dot; `<none>` represents extensionless paths.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ignored_inputs_by_extension: BTreeMap<String, u64>,
     /// Texture references a published mesh omits because the game data does not
     /// contain that texture, keyed by the published `.glb` and holding the
     /// resolved texture paths it dropped. Kept out of `failures`: nothing failed
@@ -468,6 +472,20 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "skin-static-fallback",
     "object-texture-swap-geometry-index-v1",
     "object-texture-swap-geometry-index-v2",
+    "native-room-assignment-spheres",
+    "leaf-ordered-and-static-skin-room-spheres",
+    "complete-root-room-spheres",
+    "rigid-child-and-depth-room-spheres",
+    "export-leaf-scene-nodes",
+    "skin-auto-quality-room-spheres",
+    "ordered-node-loader-room-spheres",
+    "snapshot-and-keyframed-skin-room-spheres",
+    "animated-skin-bone-room-spheres",
+    "animated-skin-ancestor-and-character-room-spheres",
+    "renderer-verified-room-spheres",
+    "scene-ancestor-skin-motion",
+    "verified-fixed-ordered-descendants",
+    "non-finite-uv-repair-v1",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
@@ -582,12 +600,12 @@ pub(crate) fn current_configuration_hash_for_schema(
 }
 
 /// Reconstruct the exact adapter-10 reader proof for unchanged retained asset settings.
-/// These compatibility pairs are limited to metadata adapters 11 to 14; a future
+/// These compatibility pairs are limited to metadata adapters 11 to 15; a future
 /// adapter must establish its own retained-byte compatibility instead of inheriting it.
 pub(crate) fn inhouse_adapter10_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
 ) -> Option<serde_json::Value> {
-    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 11..=14) {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 11..=15) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
@@ -598,12 +616,12 @@ pub(crate) fn inhouse_adapter10_reader_identity(
     Some(identity)
 }
 
-/// Adapters 12 to 14 retain adapter-11 asset bytes. Adapter 14 rebuilds NIF output through its
+/// Adapters 12 to 15 retain adapter-11 asset bytes. Adapter 14 rebuilds NIF output through its
 /// own mesh contract, so retained DDS and PEX candidates stay reusable.
 pub(crate) fn inhouse_adapter11_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
 ) -> Option<serde_json::Value> {
-    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 12..=14) {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 12..=15) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
@@ -615,12 +633,12 @@ pub(crate) fn inhouse_adapter11_reader_identity(
 }
 
 /// Adapter 13 adds placed database rows without changing converted asset bytes. Adapter 14
-/// retains that proof for DDS and PEX candidates.
+/// retains that proof for DDS and PEX candidates, as does metadata-only adapter 15.
 pub(crate) fn inhouse_adapter12_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
     language: &str,
 ) -> Option<serde_json::Value> {
-    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 13 | 14) {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 13..=15) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas_in_language(
@@ -638,7 +656,7 @@ pub(crate) fn inhouse_adapter13_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
     language: &str,
 ) -> Option<serde_json::Value> {
-    if crate::esm::inhouse::ADAPTER_VERSION != 14 {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 14 | 15) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas_in_language(
@@ -647,6 +665,23 @@ pub(crate) fn inhouse_adapter13_reader_identity(
         language,
     );
     identity["adapter_version"] = serde_json::json!(13);
+    Some(identity)
+}
+
+/// Adapter 15 adds authored occlusion metadata without changing converted asset bytes.
+pub(crate) fn inhouse_adapter14_reader_identity(
+    schemas: &crate::records::addons::RuntimeSchemas,
+    language: &str,
+) -> Option<serde_json::Value> {
+    if crate::esm::inhouse::ADAPTER_VERSION != 15 {
+        return None;
+    }
+    let mut identity = crate::esm::inhouse::reader_identity_with_schemas_in_language(
+        crate::config::RecordReader::Inhouse,
+        schemas,
+        language,
+    );
+    identity["adapter_version"] = serde_json::json!(14);
     Some(identity)
 }
 
@@ -1348,6 +1383,7 @@ pub(crate) fn retained_configuration_matches_for_reader(
             inhouse_adapter11_reader_identity(config.schemas()?.as_ref()),
             inhouse_adapter12_reader_identity(config.schemas()?.as_ref(), &config.language),
             inhouse_adapter13_reader_identity(config.schemas()?.as_ref(), &config.language),
+            inhouse_adapter14_reader_identity(config.schemas()?.as_ref(), &config.language),
         ]
         .iter()
         .any(|prior| prior.as_ref() == Some(identity))
@@ -1402,6 +1438,7 @@ pub(crate) fn retained_configuration_matches_for_lineage_reader(
             inhouse_adapter10_reader_identity(schemas.as_ref()),
             inhouse_adapter11_reader_identity(schemas.as_ref()),
             inhouse_adapter12_reader_identity(schemas.as_ref(), &config.language),
+            inhouse_adapter14_reader_identity(schemas.as_ref(), &config.language),
         ]
         .iter()
         .any(|prior| prior.as_ref() == Some(&normalized));
@@ -1475,6 +1512,21 @@ fn hash_open_file(mut file: &fs::File) -> std::io::Result<String> {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect())
+}
+
+/// Record the derived grass archive so quick/full checks verify its presence and digest.
+pub(crate) fn record_grass_artifact(manifest: &mut ConversionManifest, root: &Path) -> Result<()> {
+    let path = root.join("grass_cache.rkyv");
+    manifest.entries.insert(
+        "derived/grass-cache".into(),
+        CacheEntry {
+            source_hash: format!("grass-producer:{}", shared::grass::GRASS_CACHE_VERSION),
+            output: "grass_cache.rkyv".into(),
+            output_size: fs::metadata(&path)?.len(),
+            output_hash: hash_file(&path)?,
+        },
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2270,6 +2322,80 @@ mod tests {
         assert_ne!(recorded, configuration_hash(&config).unwrap());
     }
 
+    /// Adapter 13 keeps exact language/settings proofs while adapter 14 invalidates metadata.
+    #[test]
+    fn adapter13_retained_assets_require_exact_language_and_settings() {
+        for language in ["english", "french"] {
+            let mut config = crate::config::PipelineConfig::new("Data", "output");
+            config.record_reader = crate::config::RecordReader::Inhouse;
+            config.language = language.into();
+            let mut original = crate::esm::inhouse::configured_reader_identity(&config).unwrap();
+            original["adapter_version"] = serde_json::json!(13);
+            let recorded = configuration_hash_with_identity(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                Some(&original),
+            )
+            .unwrap();
+            assert!(
+                retained_configuration_matches_for_reader(
+                    &config,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &original,
+                )
+                .unwrap()
+            );
+            assert_ne!(recorded, configuration_hash(&config).unwrap());
+            let mut changed = config.clone();
+            changed.texture_fallback_quality = 191;
+            assert!(
+                !retained_configuration_matches_for_reader(
+                    &changed,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &original,
+                )
+                .unwrap()
+            );
+            changed = config.clone();
+            changed.language = if language == "english" {
+                "french"
+            } else {
+                "english"
+            }
+            .into();
+            assert!(
+                !retained_configuration_matches_for_reader(
+                    &changed,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &original,
+                )
+                .unwrap()
+            );
+            for (field, value) in [
+                ("adapter_version", serde_json::json!(99)),
+                ("schema_sha256", serde_json::json!("different-schema")),
+                ("text_encoding", serde_json::json!("utf-8")),
+                ("string_table_encoding", serde_json::json!("unproven")),
+                ("extra", serde_json::json!(true)),
+            ] {
+                let mut altered = original.clone();
+                altered[field] = value;
+                assert!(
+                    !retained_configuration_matches_for_reader(
+                        &config,
+                        CONVERTER_SCHEMA_VERSION,
+                        &recorded,
+                        &altered,
+                    )
+                    .unwrap()
+                );
+            }
+        }
+    }
+
     #[test]
     fn adapter13_asset_proof_keeps_non_english_identity() {
         let mut config = crate::config::PipelineConfig::new("Data", "output");
@@ -2292,6 +2418,40 @@ mod tests {
         );
         assert_eq!(original["adapter_version"], 13);
         assert_ne!(recorded, configuration_hash(&config).unwrap());
+    }
+
+    #[test]
+    fn adapter14_asset_proof_survives_occlusion_metadata_update() {
+        let mut config = crate::config::PipelineConfig::new("Data", "output");
+        config.record_reader = crate::config::RecordReader::Inhouse;
+        config.language = "french".into();
+        let original =
+            inhouse_adapter14_reader_identity(config.schemas().unwrap().as_ref(), &config.language)
+                .unwrap();
+        let recorded =
+            configuration_hash_with_identity(&config, CONVERTER_SCHEMA_VERSION, Some(&original))
+                .unwrap();
+        assert!(
+            retained_configuration_matches_for_reader(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                &recorded,
+                &original
+            )
+            .unwrap()
+        );
+        assert_eq!(original["adapter_version"], 14);
+        assert_ne!(recorded, configuration_hash(&config).unwrap());
+        config.texture_fallback_quality += 1;
+        assert!(
+            !retained_configuration_matches_for_reader(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                &recorded,
+                &original
+            )
+            .unwrap()
+        );
     }
 
     /// Known prior adapter proofs retain asset bytes without accepting unknown readers.
@@ -2379,6 +2539,71 @@ mod tests {
                         .unwrap(),
                     asset_configuration_hash_for_schema(&legacy, CONVERTER_SCHEMA_VERSION, kind)
                         .unwrap()
+                );
+            }
+        }
+    }
+
+    /// LAND recovery accepts exact projection-four/five asset proofs in each language.
+    #[test]
+    fn legacy_projection_four_retained_assets_require_exact_settings_and_identity() {
+        for (projection, language) in [(4, "english"), (4, "french"), (5, "english"), (5, "french")]
+        {
+            let mut config = crate::config::PipelineConfig::new("Data", "output");
+            config.record_reader = crate::config::RecordReader::Legacy;
+            config.language = language.to_owned();
+            let mut identity = serde_json::json!({
+                "mode": "legacy", "projection_version": projection, "language": language,
+                "text_encoding": "windows-1252",
+            });
+            if language == "french" {
+                identity["string_table_encoding"] = serde_json::json!("utf-8-or-windows-1252");
+            }
+            let recorded = configuration_hash_with_identity(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                Some(&identity),
+            )
+            .unwrap();
+            assert!(
+                retained_configuration_matches_for_reader(
+                    &config,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &identity,
+                )
+                .unwrap()
+            );
+            assert_ne!(
+                recorded,
+                current_configuration_hash_for_schema(&config, CONVERTER_SCHEMA_VERSION).unwrap()
+            );
+            let mut changed = config.clone();
+            changed.texture_fallback_quality = 191;
+            assert!(
+                !retained_configuration_matches_for_reader(
+                    &changed,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &identity,
+                )
+                .unwrap()
+            );
+            for (field, value) in [
+                ("projection_version", serde_json::json!(99)),
+                ("text_encoding", serde_json::json!("utf-8")),
+                ("extra", serde_json::json!(true)),
+            ] {
+                let mut altered = identity.clone();
+                altered[field] = value;
+                assert!(
+                    !retained_configuration_matches_for_reader(
+                        &config,
+                        CONVERTER_SCHEMA_VERSION,
+                        &recorded,
+                        &altered,
+                    )
+                    .unwrap()
                 );
             }
         }

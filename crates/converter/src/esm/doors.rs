@@ -1,7 +1,8 @@
 //! Project winning door teleport records into the optional runtime door table.
 
 use super::types::ArchivedRecordData;
-use rusqlite::{Connection, Result, params};
+use rusqlite::{Connection, Result, Transaction, params};
+use std::collections::HashSet;
 
 /// Rebuild door links from this database's canonical winning records, atomically.
 /// Meshes, terrain, provenance and producer identities are unchanged.
@@ -46,12 +47,68 @@ pub(super) fn clear(conn: &Connection) -> Result<()> {
 pub(super) fn project_door_links(conn: &Connection) -> Result<usize> {
     ensure_table(conn)?;
     clear(conn)?;
-    let mut sources = conn.prepare(
-        "SELECT r.id, raw.data FROM \"references\" r
+    write_links(conn, None)
+}
+
+pub(super) fn refresh_placement_links(tx: &Transaction<'_>, edited: &HashSet<u32>) -> Result<()> {
+    if edited.is_empty() {
+        return Ok(());
+    }
+    ensure_table(tx)?;
+    let mut links = tx.prepare("SELECT ref_id,destination_ref_id FROM door_links")?;
+    let mut rows = links.query([])?;
+    let mut stale = Vec::new();
+    while let Some(row) = rows.next()? {
+        let source: u32 = row.get(0)?;
+        let target: u32 = row.get(1)?;
+        if edited.contains(&source) || edited.contains(&target) {
+            stale.push(source);
+        }
+    }
+    let mut delete = tx.prepare("DELETE FROM door_links WHERE ref_id=?1")?;
+    for source in stale {
+        delete.execute([source])?;
+    }
+
+    let mut is_door = tx.prepare(
+        "SELECT EXISTS(SELECT 1 FROM \"references\" r
          JOIN records base ON base.form_id=r.base_form_id AND base.record_type='DOOR'
-         JOIN records raw ON raw.form_id=r.id AND raw.record_type='REFR'
-         ORDER BY r.id",
+         WHERE r.id=?1)",
     )?;
+    let mut live_doors = HashSet::new();
+    for &id in edited {
+        if is_door.query_row([id], |row| row.get(0))? {
+            live_doors.insert(id);
+        }
+    }
+    if !live_doors.is_empty() {
+        write_links(tx, Some(&live_doors))?;
+    }
+    Ok(())
+}
+
+fn write_links(conn: &Connection, edited_doors: Option<&HashSet<u32>>) -> Result<usize> {
+    let has_placement_edits: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema
+         WHERE type='table' AND name='room_placement_edits')",
+        [],
+        |row| row.get(0),
+    )?;
+    // Placement layers keep the original records archive. Their effective fields live in references.
+    let source_data = if has_placement_edits {
+        "CASE WHEN EXISTS(SELECT 1 FROM room_placement_edits WHERE form_id=r.id)
+              THEN r.data ELSE raw.data END"
+    } else {
+        "raw.data"
+    };
+    // Sources whose rows were absent can gain a link when the edit places their target.
+    let mut sources = conn.prepare(&format!(
+        "SELECT r.id, {source_data} FROM \"references\" r
+         JOIN records base ON base.form_id=r.base_form_id AND base.record_type='DOOR'
+         LEFT JOIN records raw ON raw.form_id=r.id AND raw.record_type='REFR'
+         WHERE (?1 OR NOT EXISTS(SELECT 1 FROM door_links WHERE ref_id=r.id))
+         ORDER BY r.id",
+    ))?;
     let mut destination = conn.prepare(
         "SELECT c.id,c.worldspace_id,c.data,c.interior_name,w.editor_id FROM \"references\" r
          JOIN records base ON base.form_id=r.base_form_id AND base.record_type='DOOR'
@@ -65,11 +122,13 @@ pub(super) fn project_door_links(conn: &Connection) -> Result<usize> {
              destination_cell_id,destination_worldspace_id,destination_name)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
     )?;
-    let mut rows = sources.query([])?;
+    let mut rows = sources.query([edited_doors.is_none()])?;
     let mut count = 0;
     while let Some(row) = rows.next()? {
         let ref_id: u32 = row.get(0)?;
-        let blob: Vec<u8> = row.get(1)?;
+        let Some(blob): Option<Vec<u8>> = row.get(1)? else {
+            continue;
+        };
         let record = rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(&blob).map_err(
             |error| {
                 rusqlite::Error::FromSqlConversionFailure(
@@ -88,6 +147,9 @@ pub(super) fn project_door_links(conn: &Connection) -> Result<usize> {
             continue;
         }
         let target = u32::from_le_bytes(xtel.data[..4].try_into().unwrap());
+        if edited_doors.is_some_and(|ids| !ids.contains(&ref_id) && !ids.contains(&target)) {
+            continue;
+        }
         let mut arrival = [0.0f32; 6];
         for (value, bytes) in arrival.iter_mut().zip(xtel.data[4..28].as_chunks::<4>().0) {
             *value = f32::from_le_bytes(*bytes);
