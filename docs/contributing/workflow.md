@@ -23,10 +23,17 @@ If someone is assigned to an issue, has claimed it in a comment, or has an open 
 - **Large features** get one umbrella issue, with the phases as separate issues, each assigned to whoever builds it.
 - Work you have built but not sent yet can go in one issue listing those branches, so others can see it. Each item leaves the list once it has its own issue or PR.
 
+### Milestones
+
+Every issue and pull request carries a milestone. The [milestone list](https://github.com/Mudcrab-Team/mudcrab/milestones) is the roadmap, so nothing stays uncategorized.
+
+Contributors cannot set milestones. A maintainer assigns one within one working day after an item is opened; you open the issue or pull request as usual. A pull request with no milestone inherits the milestone of the issues it links with `Closes #N`, `Part of #N` or `Related to #N`, but only when every linked issue that has a milestone agrees. Anything else gets the `needs milestone` label and one comment that says what to do. The [milestone workflow](../../.github/workflows/milestone.yml) removes the label when a milestone is set, and its daily run fails while an open item has none. The workflow never checks out pull request code.
+
 ## 3. Build
 
 - Branch from the latest `main`, one topic per branch.
 - Run what CI runs before you push (see "Run What CI Runs" in [CONTRIBUTING.md](../../CONTRIBUTING.md)).
+- If a run exits 0 but the system diagnostic reports show a GPU fault, use [Finding a Metal GPU fault](gpu-faults.md) to find the failing pass.
 - Keep a PR to one change a reviewer can hold in their head. Split a large feature into PRs that each work on their own.
 - **Inventory stores:** each external store has its own file under
   `tools/world_data_inventory/stores/` with its own `reviewed_at_commit`. Add or edit only
@@ -49,6 +56,7 @@ One feature per pull request. A mixed pull request hides defects behind its desc
 - Fill in the PR template, and write the text as [writing-prs.md](writing-prs.md) describes: the result first, the problem with an example, honest evidence.
 - **Draft or ready:** open a draft for anything that isn't ready for review yet: work in progress, or code that works while something is still undecided or unmeasured. End "For reviewers" with **Still open (why this is a draft):** what is missing, and mark it ready for review once that is done.
 - **Link the issue:** `Closes #N` when the PR finishes it, `Part of #N` when it only helps.
+- **Milestone:** a pull request inherits the milestone of the issues it links when they agree; otherwise a maintainer assigns one within one working day (see [Milestones](#milestones)).
 - **Labels:** apply the labels in [labels.md](labels.md) that fit. If one doesn't exist on the repository yet, use the closest one that does; a maintainer creates the rest. Setting labels needs triage access: without it, name the labels you'd use in the PR and a maintainer adds them.
 - **Depending on another PR:** avoid it where you can. If you can't, put `**Merge after:** #N` at the top and tell reviewers which commits to read.
 - **How many at once:** keep about five PRs open at a time, so review keeps up.

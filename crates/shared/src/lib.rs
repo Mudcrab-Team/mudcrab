@@ -17,6 +17,7 @@ pub mod model_visibility;
 pub mod plugin_selection;
 pub mod plugin_table;
 pub mod records;
+pub mod room_assignment;
 pub mod source_form_id;
 pub mod streaming_costs;
 pub mod terrain_mesh;

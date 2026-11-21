@@ -1,0 +1,365 @@
+{
+  "scope": "Fresh native Wayland Vulkan visual and main-camera mesh-list control; not a frame-time benchmark or Skyrim parity proof.",
+  "base": "e36bba2a772646953624e11a9e93a065a6dc213e",
+  "engine_sha256": "00db7822a44fd78bd44b7a9526057f08faa63519836341239b74c2c5f69c5aad",
+  "build_profile": "test (opt-level 1, debug 0); no performance claim",
+  "build_command": [
+    "cargo",
+    "build",
+    "--profile",
+    "test",
+    "--locked",
+    "-p",
+    "engine",
+    "--bin",
+    "engine",
+    "--tests",
+    "-j4"
+  ],
+  "measurement_patch": false,
+  "source_hashes": {
+    "crates/converter/src/cache.rs": "ff7845993d6343735a089656bc54400707eee83f5e11b6e89590a7238c2789b8",
+    "crates/converter/src/esm/exporter.rs": "d5d4cab8bcdb23c1aa69116b2f30128b6456f1834e8b9bf5bfb5660c107fe357",
+    "crates/converter/src/esm/inhouse.rs": "7db85f354dac80ffda87ef936dfa3a4655048044d45618a058ab357a05a0feeb",
+    "crates/converter/src/esm/mod.rs": "42473b6e711eccdaeede880b458904314f1c5c155048f960ce090bdc05d445f1",
+    "crates/converter/src/esm/rooms.rs": "35dc91836afc699871319a6ada6d910e2fec805de5bd367c7848718f294e2633",
+    "crates/converter/src/esm/rooms/occluders.rs": "9191b5f102b905a1fc3d3591a1da3b697807f3861bed5274fd9bee7b2072f30b",
+    "crates/converter/src/extensions.rs": "2ad35c344810ddf5cc126dc474adba320a433177b83bd79225cf81e78843f020",
+    "crates/converter/src/metadata.rs": "7748a951baabf817e2e7b7457be8311ae78eb2e2d9e1e80e591bcf70ccc56f2d",
+    "crates/converter/src/pipeline.rs": "bdd092a07efbc07fb0097bd39d85643b80bdf03013c43d0345d630314a3503a2",
+    "crates/converter/tests/inhouse_master_index_compatibility.rs": "4751275eeae2a368b9c5a0f211f928e67f83f8c71b55c72d4be8a98fbb9fd0c6",
+    "crates/converter/tests/inhouse_schema_addons.rs": "a1c5a5e75e33cdefffe7ae80257e27da2b17a16f834557efa8c5290e287428ef",
+    "crates/converter/tests/plugin_references.rs": "f6360b0bd24d35fb809bf75b43bda9d804753a81f2ed5a7b92a794261e976244",
+    "crates/engine/src/room_culling.rs": "ee249f5d43e00475e212dd17c566ffd78b8b3802ea245e81859ee2cfb948be15",
+    "crates/engine/src/room_culling/occluder_data.rs": "09e6e1f1ce9358198f2da4b6add12f0067bff374670473ed5893b44edd6bc594",
+    "crates/engine/src/room_culling/occlusion.rs": "878a3caa91380665bbd3b94b0c761eacd2c6f37bd8438c26266e534b01f5ec59",
+    "crates/engine/src/room_culling/volume.rs": "3c1afc0e67b859e5f8cc6864f17db6fc84298d3da083bd87ee9df5cb4395e4e1"
+  },
+  "control": "Private input packs share converted assets; control deletes only room_graph_stats.occlusion_version. Input databases verified unchanged before and after each run.",
+  "capture_order": [
+    "on-1",
+    "no_occluders-1",
+    "no_occluders-2",
+    "on-2"
+  ],
+  "dimensions": [
+    1400,
+    900
+  ],
+  "runs": [
+    {
+      "mode": "on",
+      "repeat": 1,
+      "image_sha256": "57d403c57370cc91abe9b483d760cd822267e58fe8e18c47b1438c552e667e67",
+      "database_sha256": "e22ea6d2647ef4274c640db957889690a93e88b4cff99a6cafe92ba3823d0c8c",
+      "manifest_sha256": "75034899ec717f1656806da3ffa41210c56ae1248dcb43b55ffda769ce2dae69",
+      "shared_asset_directories_verified": true,
+      "camera_creation": [
+        -4.329109191894531,
+        652.6505126953125,
+        44.40137481689453
+      ],
+      "rotation_runtime_xyzw": [
+        0.0,
+        -0.8934621214866638,
+        0.0,
+        -0.4491385519504547
+      ],
+      "vertical_fov_radians": 0.916516900062561,
+      "room_culling": {
+        "drawn": 873,
+        "listed": 1196
+      },
+      "work": {
+        "active_requests": 0,
+        "arming_queue_depth": 0,
+        "asset_load_failures": 0,
+        "failed_cells": 0,
+        "failed_lod_work": 0,
+        "loading_cells": 0,
+        "outstanding_terrain_uploads": 0,
+        "pending_asset_instances": 0,
+        "pending_batch_cpu": 0,
+        "pending_batch_initial": 0,
+        "pending_batch_selection": 0,
+        "pending_lod_chunks": 0,
+        "pending_lod_queries": 0,
+        "pending_render_transfers": 0,
+        "pending_specializations": 0,
+        "pending_surface_instances": 0,
+        "quiet_frames": 0,
+        "renderer_ready": true,
+        "retiring_cells": 0,
+        "validation_failures": 0
+      }
+    },
+    {
+      "mode": "no_occluders",
+      "repeat": 1,
+      "image_sha256": "57d403c57370cc91abe9b483d760cd822267e58fe8e18c47b1438c552e667e67",
+      "database_sha256": "10df104d1a8319435208af54d47e4040251a6ac64406db879c3ddd018eeff42f",
+      "manifest_sha256": "45915e531b88078770063d4fd183d331c437d8e5b9c0324d8d0ec939653471e0",
+      "shared_asset_directories_verified": true,
+      "camera_creation": [
+        -4.329109191894531,
+        652.6505126953125,
+        44.40137481689453
+      ],
+      "rotation_runtime_xyzw": [
+        0.0,
+        -0.8934621214866638,
+        0.0,
+        -0.4491385519504547
+      ],
+      "vertical_fov_radians": 0.916516900062561,
+      "room_culling": {
+        "drawn": 1196,
+        "listed": 1196
+      },
+      "work": {
+        "active_requests": 0,
+        "arming_queue_depth": 0,
+        "asset_load_failures": 0,
+        "failed_cells": 0,
+        "failed_lod_work": 0,
+        "loading_cells": 0,
+        "outstanding_terrain_uploads": 0,
+        "pending_asset_instances": 0,
+        "pending_batch_cpu": 0,
+        "pending_batch_initial": 0,
+        "pending_batch_selection": 0,
+        "pending_lod_chunks": 0,
+        "pending_lod_queries": 0,
+        "pending_render_transfers": 0,
+        "pending_specializations": 0,
+        "pending_surface_instances": 0,
+        "quiet_frames": 0,
+        "renderer_ready": true,
+        "retiring_cells": 0,
+        "validation_failures": 0
+      }
+    },
+    {
+      "mode": "no_occluders",
+      "repeat": 2,
+      "image_sha256": "57d403c57370cc91abe9b483d760cd822267e58fe8e18c47b1438c552e667e67",
+      "database_sha256": "10df104d1a8319435208af54d47e4040251a6ac64406db879c3ddd018eeff42f",
+      "manifest_sha256": "45915e531b88078770063d4fd183d331c437d8e5b9c0324d8d0ec939653471e0",
+      "shared_asset_directories_verified": true,
+      "camera_creation": [
+        -4.329109191894531,
+        652.6505126953125,
+        44.40137481689453
+      ],
+      "rotation_runtime_xyzw": [
+        0.0,
+        -0.8934621214866638,
+        0.0,
+        -0.4491385519504547
+      ],
+      "vertical_fov_radians": 0.916516900062561,
+      "room_culling": {
+        "drawn": 1196,
+        "listed": 1196
+      },
+      "work": {
+        "active_requests": 0,
+        "arming_queue_depth": 0,
+        "asset_load_failures": 0,
+        "failed_cells": 0,
+        "failed_lod_work": 0,
+        "loading_cells": 0,
+        "outstanding_terrain_uploads": 0,
+        "pending_asset_instances": 0,
+        "pending_batch_cpu": 0,
+        "pending_batch_initial": 0,
+        "pending_batch_selection": 0,
+        "pending_lod_chunks": 0,
+        "pending_lod_queries": 0,
+        "pending_render_transfers": 0,
+        "pending_specializations": 0,
+        "pending_surface_instances": 0,
+        "quiet_frames": 0,
+        "renderer_ready": true,
+        "retiring_cells": 0,
+        "validation_failures": 0
+      }
+    },
+    {
+      "mode": "on",
+      "repeat": 2,
+      "image_sha256": "57d403c57370cc91abe9b483d760cd822267e58fe8e18c47b1438c552e667e67",
+      "database_sha256": "e22ea6d2647ef4274c640db957889690a93e88b4cff99a6cafe92ba3823d0c8c",
+      "manifest_sha256": "75034899ec717f1656806da3ffa41210c56ae1248dcb43b55ffda769ce2dae69",
+      "shared_asset_directories_verified": true,
+      "camera_creation": [
+        -4.329109191894531,
+        652.6505126953125,
+        44.40137481689453
+      ],
+      "rotation_runtime_xyzw": [
+        0.0,
+        -0.8934621214866638,
+        0.0,
+        -0.4491385519504547
+      ],
+      "vertical_fov_radians": 0.916516900062561,
+      "room_culling": {
+        "drawn": 873,
+        "listed": 1196
+      },
+      "work": {
+        "active_requests": 0,
+        "arming_queue_depth": 0,
+        "asset_load_failures": 0,
+        "failed_cells": 0,
+        "failed_lod_work": 0,
+        "loading_cells": 0,
+        "outstanding_terrain_uploads": 0,
+        "pending_asset_instances": 0,
+        "pending_batch_cpu": 0,
+        "pending_batch_initial": 0,
+        "pending_batch_selection": 0,
+        "pending_lod_chunks": 0,
+        "pending_lod_queries": 0,
+        "pending_render_transfers": 0,
+        "pending_specializations": 0,
+        "pending_surface_instances": 0,
+        "quiet_frames": 0,
+        "renderer_ready": true,
+        "retiring_cells": 0,
+        "validation_failures": 0
+      }
+    }
+  ],
+  "comparisons": {
+    "on_vs_off_1": {
+      "changed_pixels": 0,
+      "pixels_above_8": 0,
+      "max_channel_error": 0,
+      "mean_absolute_channel_error": 0.0
+    },
+    "on_vs_off_2": {
+      "changed_pixels": 0,
+      "pixels_above_8": 0,
+      "max_channel_error": 0,
+      "mean_absolute_channel_error": 0.0
+    },
+    "on_repeat_noise": {
+      "changed_pixels": 0,
+      "pixels_above_8": 0,
+      "max_channel_error": 0,
+      "mean_absolute_channel_error": 0.0
+    },
+    "no_occluders_repeat_noise": {
+      "changed_pixels": 0,
+      "pixels_above_8": 0,
+      "max_channel_error": 0,
+      "mean_absolute_channel_error": 0.0
+    }
+  },
+  "checks": [
+    {
+      "name": "fmt",
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "returncode": 0
+    },
+    {
+      "name": "clippy",
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "engine",
+        "-p",
+        "converter",
+        "--lib",
+        "--tests",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "returncode": 0
+    },
+    {
+      "name": "example-clippy",
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "converter",
+        "--example",
+        "room_assignment_validation",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "returncode": 0
+    },
+    {
+      "name": "engine",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "engine",
+        "--lib",
+        "--locked"
+      ],
+      "returncode": 0
+    },
+    {
+      "name": "converter",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "converter",
+        "--lib",
+        "--locked"
+      ],
+      "returncode": 0
+    },
+    {
+      "name": "integrations",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "converter",
+        "--test",
+        "plugin_references",
+        "--test",
+        "inhouse_master_index_compatibility",
+        "--test",
+        "inhouse_schema_addons",
+        "--test",
+        "recovered_metadata_archives",
+        "--test",
+        "snapshots",
+        "--locked"
+      ],
+      "returncode": 0
+    },
+    {
+      "name": "capture-utility",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "converter",
+        "--example",
+        "room_assignment_validation",
+        "--locked"
+      ],
+      "returncode": 0
+    }
+  ]
+}

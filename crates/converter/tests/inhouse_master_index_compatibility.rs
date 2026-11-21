@@ -65,8 +65,8 @@ fn export(data: &Path, names: &[&str], label: &str, signatures: &[[u8; 4]]) -> P
     converter::esm::inhouse::export_record_bundle_typed(data, &order, &output, signatures).unwrap();
     let identity: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("record-reader.json")).unwrap()).unwrap();
-    // Adapter 14 retains zero-ID GMST identities and master-index compatibility.
-    assert_eq!(identity["adapter_version"], 14);
+    // The current adapter retains zero-ID GMST identities and master-index compatibility.
+    assert_eq!(identity["adapter_version"], 15);
     output
 }
 

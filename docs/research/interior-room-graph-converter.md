@@ -1,8 +1,14 @@
 # Interior room graph: converter design (#188, converter half)
 
-Status: implemented in the converter (2026-10-06); this note is the design it follows. The engine
-reads these tables automatically. See [the runtime research](skyrim-room-culling.md) for evidence
-and conservative fallbacks.
+Status: historical converter design (2026-10-06). The original pivot/overlap projection below
+remains available for legacy readers. The 2026-11-15 native trace supersedes its assignment and
+`XLRM` interpretation: `XRMR[2]` is the master byte, linked slave bounds join a master room,
+and native static ownership uses the render bound's center and sphere/portal classification.
+The current converter preserves link order and explicit assignment rules, and emits source
+NIF spheres. See [the current schema](../specs/converters/db-schema.md#15-interior-room-graph-and-occlusion)
+and [native findings](skyrim-native-culling.md#authored-joins-and-object-assignment).
+The older counts and proposed behavior below describe the original investigation, not the
+current authored-assignment path.
 
 ## Summary
 

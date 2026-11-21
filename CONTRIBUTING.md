@@ -164,6 +164,34 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    `try_into()` can fail on a variable-length slice and `single()` fails when zero or several
    entities match. Keep such a drop with a marker that gives the reason.
 
+   CI also gates four Clippy lints that find lossy numeric casts and exact float comparisons
+   (`cast_possible_truncation`, `cast_sign_loss`, `cast_possible_wrap`, `float_cmp`) in the
+   `converter` and `shared` crates. The gate fails only when one of them fires on a line your pull
+   request adds; an existing site on unchanged lines is reported as one total and never fails. A
+   diagnostic counts when any line of its span is added. A macro site counts when any line of its
+   definition or of a call site is added, at every nesting level. The gate reads the JSON log of the
+   normal Clippy pass, so it adds no second build. It runs on Linux, so a cast under
+   `#[cfg(windows)]` is not checked.
+
+   A moved or renamed line is not new: an added line whose exact text is also deleted in the same
+   diff is skipped, even when the deletion is in a wholly deleted file or another crate. The gate
+   therefore proves "no net-new identical cast line", not "no new cast"; do not read a green gate
+   as proof that a change adds no cast.
+
+   The gate covers the lib and bin targets, because `--all-targets` compiles their test harnesses
+   too, and the log must contain those test builds; integration tests, benches and examples are
+   excluded. The pass does not use `-D warnings`, because the later `-W` makes the four lints
+   warnings and the deny then turns them into errors; the gate fails on every other warning
+   instead. An exception needs a reason at the cast site, for example
+   `#[allow(clippy::cast_possible_truncation, reason = "the form ID is below 2^24")]`.
+   No lint checks the reason, so an allow without `reason =` is a review finding.
+
+   To check locally, run the two commands separately:
+   `python3 tools/cast_ratchet/cast_ratchet.py --lint-flags` prints the Clippy flags, and
+   `python3 tools/cast_ratchet/cast_ratchet.py --clippy-json <log> --base origin/main` runs the
+   gate. `--lint-flags` prints the flags and runs nothing, so it rejects `--base` and
+   `--clippy-json`.
+
    The byte-level parsers (ESM subrecords and record framing) also have `cargo-fuzz`
    targets in `fuzz/`. They run on a schedule, not on pull requests.
    [`docs/contributing/fuzzing.md`](docs/contributing/fuzzing.md) shows how to run one
@@ -172,6 +200,12 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    The record readers also have a scheduled `cargo-mutants` run that lists tests which pass
    without testing a change. [`docs/contributing/mutants.md`](docs/contributing/mutants.md)
    explains the report and how to run one locally.
+
+   Every open issue and pull request also needs a milestone. A pull request inherits the
+   milestone of the issues it links when they agree; anything else gets the `needs milestone`
+   label, and the daily check fails while an open item has none. Contributors cannot set a
+   milestone, so a maintainer assigns one within one working day. See
+   [workflow.md](docs/contributing/workflow.md#milestones).
 5. **Submit a Pull Request:**
    - Target the `main` branch and fill in the PR template; [`docs/contributing/writing-prs.md`](docs/contributing/writing-prs.md) shows how to write it so it is quick to review.
    - Link the issue (`Closes #N`), apply the [labels](docs/contributing/labels.md) that fit (if a label there doesn't exist on the repository yet, use the closest one that does; without triage access, name them in the PR instead), and reference any relevant planning docs in `docs/specs/`.

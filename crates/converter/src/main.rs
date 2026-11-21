@@ -811,6 +811,7 @@ fn format_check_report(report: &converter::CheckReport) -> String {
     text
 }
 
+/// Parse conversion, check, or repair arguments with boxed pipeline commands.
 fn apply_room_placements(args: &[OsString]) -> Result<()> {
     use converter::esm::placement_edits::{PlacementSource, apply};
 
@@ -844,7 +845,6 @@ fn apply_room_placements(args: &[OsString]) -> Result<()> {
     Ok(())
 }
 
-/// Parse conversion, check, or repair arguments with boxed pipeline commands.
 fn parse_command(args: Vec<OsString>) -> Result<Command> {
     if args.first().and_then(|argument| argument.to_str()) == Some("check") {
         return parse_check(args.into_iter().skip(1)).map(Command::Check);

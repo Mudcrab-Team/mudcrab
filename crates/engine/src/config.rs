@@ -2180,6 +2180,16 @@ mod tests {
         // to its own CLI. Any other script passing them still fails the audit.
         ("pr_size.py", "--files"),
         ("pr_size.py", "--github-output"),
+        // assign_milestones.py is the GitHub issue and pull request milestone
+        // helper. It never launches the engine: it reads and writes the tracker
+        // through `gh api`, so its own CLI and the gh flags belong to it alone.
+        ("assign_milestones.py", "--repository"),
+        ("assign_milestones.py", "--default-branch"),
+        ("assign_milestones.py", "--dry-run"),
+        ("assign_milestones.py", "--item"),
+        ("assign_milestones.py", "--paginate"),
+        ("assign_milestones.py", "--slurp"),
+        ("assign_milestones.py", "--method"),
         // workspace.py owns its storage CLI and forwards Cargo and Git options. It
         // never launches the engine, so its flags are not engine options.
         ("workspace.py", "--apply"),

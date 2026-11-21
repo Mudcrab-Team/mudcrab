@@ -1,0 +1,583 @@
+{
+  "date": "2026-11-15",
+  "scope": "Authored joined room bounds and supported static/loose-reference ownership. Correctness and mesh-list checks only; no timing claim and no original-game parity claim.",
+  "baseline_commit": "7df90f39edd5ae33a70c382bb4e90e55c23b6d89",
+  "runtime_binary_sha256": "9389279b68c209afc6ff5ab592d660a58a5a7a1899e67653f0f696ea7ebf75cf",
+  "private_runtime_copy_sha256": "d5085f777fc5944c939fc3538dafea0687854a44a0731631a336c52eadf704af",
+  "runtime_copy_adjustment": "Only PT_INTERP changed in the private ELF copy to use the Nix runtime glibc 2.44 interpreter.",
+  "render_sources_sha256": {
+    "crates/engine/src/room_culling.rs": "9f322cbe0c272a7084c458cddd4c6be9ad2025bbd7e0342079af922330c57c44",
+    "crates/engine/src/room_culling/assignment.rs": "abc29a562f2a206bee086322de5dca6167fa2d28c80c2f8ea7c51e84e6df7897",
+    "crates/engine/src/streaming.rs": "29ad7bbbb08c545605bb4723fdc06f432704bf299cd5afb2e6cc5562ab28d594",
+    "crates/shared/src/room_assignment.rs": "6eb163efaedf8077ea313a49c16c200d57a3d1f9e691894e05054d6ae6741b42"
+  },
+  "tests": {
+    "engine_passed": 1436,
+    "engine_ignored": 7,
+    "converter_passed": 1177,
+    "converter_ignored": 30,
+    "shared_passed": 91,
+    "plugin_reference_passed": 32,
+    "plugin_reference_ignored": 1,
+    "workspace_clippy_warnings_denied": true,
+    "format_check": true
+  },
+  "native_instruction_probe": {
+    "executable_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "function_rva": "0xfe9860",
+    "sampled_cases": 1617,
+    "mismatches": 0,
+    "rust_fixture_boundary_cases": 36,
+    "fixture": "crates/engine/tests/fixtures/portal-sphere-native-1.7.104.json",
+    "script": "scripts/research/skyrim_portal_sphere_probe.py",
+    "limitation": "Local instructions with host cosf bridge, not a running-game experiment."
+  },
+  "preparation": {
+    "helper": "crates/converter/examples/room_assignment_validation.rs",
+    "cells": [
+      {
+        "cell_id": 86643,
+        "room_boxes": 24,
+        "explicit_masters": 5,
+        "complete": true
+      },
+      {
+        "cell_id": 136596,
+        "room_boxes": 10,
+        "explicit_masters": 0,
+        "complete": true
+      },
+      {
+        "cell_id": 225758,
+        "room_boxes": 34,
+        "explicit_masters": 9,
+        "complete": true
+      },
+      {
+        "cell_id": 633418,
+        "room_boxes": 42,
+        "explicit_masters": 5,
+        "complete": true
+      }
+    ],
+    "requested_models": 989,
+    "converted_models": 989,
+    "base_records_with_source_bounds": 2799,
+    "assignment_rules": {
+      "auto": 8586,
+      "unknown": 96
+    },
+    "control": "Independent reflinked database with room_bounds, room_portals, room_links, reference_rooms dropped; identical geometry and other assets. Original installed assets remained unchanged.",
+    "models_with_source_sphere": 860,
+    "models_without_source_sphere": 129
+  },
+  "captures": {
+    "count": 72,
+    "dimensions": [
+      1400,
+      1050
+    ],
+    "repeats_per_mode": 3,
+    "cross_mode_pairings_per_pose": 9,
+    "threshold_per_channel": 8,
+    "settled": true,
+    "timeouts": 0,
+    "pending_room_reads": 0,
+    "failed_room_reads": 0,
+    "all_images_match_at_threshold": false,
+    "pose_fixtures": [
+      "crates/engine/tests/fixtures/room-volume-shots.json",
+      "crates/engine/tests/fixtures/room-assignment-shots.json"
+    ],
+    "images": [
+      {
+        "pose": "BleakFallsBarrow01-room0-c",
+        "strict_changed_pixels": 0,
+        "size": [
+          1400,
+          1050
+        ],
+        "mesh_lists": {
+          "off": [
+            {
+              "drawn": 2754,
+              "listed": 2754
+            },
+            {
+              "drawn": 2754,
+              "listed": 2754
+            },
+            {
+              "drawn": 2754,
+              "listed": 2754
+            }
+          ],
+          "on": [
+            {
+              "drawn": 561,
+              "listed": 2754
+            },
+            {
+              "drawn": 561,
+              "listed": 2754
+            },
+            {
+              "drawn": 561,
+              "listed": 2754
+            }
+          ]
+        },
+        "interpretation": "All nine cross-mode pairings have no persistent differing pixel above the threshold."
+      },
+      {
+        "pose": "BleakFallsBarrow01-room1-c",
+        "strict_changed_pixels": 320661,
+        "size": [
+          1400,
+          1050
+        ],
+        "mesh_lists": {
+          "off": [
+            {
+              "drawn": 2542,
+              "listed": 2542
+            },
+            {
+              "drawn": 2542,
+              "listed": 2542
+            },
+            {
+              "drawn": 2542,
+              "listed": 2542
+            }
+          ],
+          "on": [
+            {
+              "drawn": 578,
+              "listed": 2542
+            },
+            {
+              "drawn": 578,
+              "listed": 2542
+            },
+            {
+              "drawn": 578,
+              "listed": 2542
+            }
+          ]
+        },
+        "interpretation": "Fails full-render equality at the original tall room-box-center pose. Images expose level shells across space without an aperture on this view. No original-game oracle; do not count as a passing image comparison."
+      },
+      {
+        "pose": "BleakFallsBarrow01-portal0-c",
+        "strict_changed_pixels": 0,
+        "size": [
+          1400,
+          1050
+        ],
+        "mesh_lists": {
+          "off": [
+            {
+              "drawn": 132,
+              "listed": 132
+            },
+            {
+              "drawn": 132,
+              "listed": 132
+            },
+            {
+              "drawn": 132,
+              "listed": 132
+            }
+          ],
+          "on": [
+            {
+              "drawn": 124,
+              "listed": 132
+            },
+            {
+              "drawn": 124,
+              "listed": 132
+            },
+            {
+              "drawn": 124,
+              "listed": 132
+            }
+          ]
+        },
+        "interpretation": "All nine cross-mode pairings have no persistent differing pixel above the threshold."
+      },
+      {
+        "pose": "NightcallerTemple01-room0-c",
+        "strict_changed_pixels": 0,
+        "size": [
+          1400,
+          1050
+        ],
+        "mesh_lists": {
+          "off": [
+            {
+              "drawn": 1664,
+              "listed": 1664
+            },
+            {
+              "drawn": 1664,
+              "listed": 1664
+            },
+            {
+              "drawn": 1664,
+              "listed": 1664
+            }
+          ],
+          "on": [
+            {
+              "drawn": 689,
+              "listed": 1664
+            },
+            {
+              "drawn": 689,
+              "listed": 1664
+            },
+            {
+              "drawn": 689,
+              "listed": 1664
+            }
+          ]
+        },
+        "interpretation": "All nine cross-mode pairings have no persistent differing pixel above the threshold."
+      },
+      {
+        "pose": "AbandonedPrison01-room0-portal",
+        "strict_changed_pixels": 1,
+        "size": [
+          1400,
+          1050
+        ],
+        "mesh_lists": {
+          "off": [
+            {
+              "drawn": 1412,
+              "listed": 1412
+            },
+            {
+              "drawn": 1412,
+              "listed": 1412
+            },
+            {
+              "drawn": 1412,
+              "listed": 1412
+            }
+          ],
+          "on": [
+            {
+              "drawn": 242,
+              "listed": 1412
+            },
+            {
+              "drawn": 242,
+              "listed": 1412
+            },
+            {
+              "drawn": 242,
+              "listed": 1412
+            }
+          ]
+        },
+        "interpretation": "One persistent pixel at (332,773), retained as a sequence difference; isolated replay recorded separately."
+      },
+      {
+        "pose": "riverwood-return",
+        "strict_changed_pixels": 0,
+        "size": [
+          1400,
+          1050
+        ],
+        "mesh_lists": {
+          "off": [
+            {
+              "drawn": 1044,
+              "listed": 1044
+            },
+            {
+              "drawn": 1044,
+              "listed": 1044
+            },
+            {
+              "drawn": 1044,
+              "listed": 1044
+            }
+          ],
+          "on": [
+            {
+              "drawn": 1044,
+              "listed": 1044
+            },
+            {
+              "drawn": 1044,
+              "listed": 1044
+            },
+            {
+              "drawn": 1044,
+              "listed": 1044
+            }
+          ]
+        },
+        "interpretation": "All nine cross-mode pairings have no persistent differing pixel above the threshold."
+      },
+      {
+        "pose": "BleakFallsBarrow01-joined-master-walk",
+        "strict_changed_pixels": 0,
+        "size": [
+          1400,
+          1050
+        ],
+        "mesh_lists": {
+          "off": [
+            {
+              "drawn": 326,
+              "listed": 326
+            },
+            {
+              "drawn": 326,
+              "listed": 326
+            },
+            {
+              "drawn": 326,
+              "listed": 326
+            }
+          ],
+          "on": [
+            {
+              "drawn": 35,
+              "listed": 326
+            },
+            {
+              "drawn": 35,
+              "listed": 326
+            },
+            {
+              "drawn": 35,
+              "listed": 326
+            }
+          ]
+        },
+        "interpretation": "All nine cross-mode pairings have no persistent differing pixel above the threshold."
+      },
+      {
+        "pose": "BleakFallsBarrow01-joined-slave-walk",
+        "strict_changed_pixels": 0,
+        "size": [
+          1400,
+          1050
+        ],
+        "mesh_lists": {
+          "off": [
+            {
+              "drawn": 1952,
+              "listed": 1952
+            },
+            {
+              "drawn": 1952,
+              "listed": 1952
+            },
+            {
+              "drawn": 1952,
+              "listed": 1952
+            }
+          ],
+          "on": [
+            {
+              "drawn": 571,
+              "listed": 1952
+            },
+            {
+              "drawn": 571,
+              "listed": 1952
+            },
+            {
+              "drawn": 571,
+              "listed": 1952
+            }
+          ]
+        },
+        "interpretation": "All nine cross-mode pairings have no persistent differing pixel above the threshold."
+      },
+      {
+        "pose": "GallowsRock01-outside-in",
+        "strict_changed_pixels": 0,
+        "size": [
+          1400,
+          1050
+        ],
+        "mesh_lists": {
+          "off": [
+            {
+              "drawn": 710,
+              "listed": 710
+            },
+            {
+              "drawn": 710,
+              "listed": 710
+            },
+            {
+              "drawn": 710,
+              "listed": 710
+            }
+          ],
+          "on": [
+            {
+              "drawn": 426,
+              "listed": 710
+            },
+            {
+              "drawn": 426,
+              "listed": 710
+            },
+            {
+              "drawn": 426,
+              "listed": 710
+            }
+          ]
+        },
+        "interpretation": "All nine cross-mode pairings have no persistent differing pixel above the threshold."
+      },
+      {
+        "pose": "GallowsRock01-outside-away",
+        "strict_changed_pixels": 366348,
+        "size": [
+          1400,
+          1050
+        ],
+        "mesh_lists": {
+          "off": [
+            {
+              "drawn": 149,
+              "listed": 149
+            },
+            {
+              "drawn": 149,
+              "listed": 149
+            },
+            {
+              "drawn": 149,
+              "listed": 149
+            }
+          ],
+          "on": [
+            {
+              "drawn": 30,
+              "listed": 149
+            },
+            {
+              "drawn": 30,
+              "listed": 149
+            },
+            {
+              "drawn": 30,
+              "listed": 149
+            }
+          ]
+        },
+        "interpretation": "Faces exposed back sides of the level shell. Native sphere ownership retains fewer objects than the old conservative overlap policy. No original-game oracle; do not count as a passing image comparison."
+      },
+      {
+        "pose": "GallowsRock01-inside-out",
+        "strict_changed_pixels": 207106,
+        "size": [
+          1400,
+          1050
+        ],
+        "mesh_lists": {
+          "off": [
+            {
+              "drawn": 162,
+              "listed": 162
+            },
+            {
+              "drawn": 162,
+              "listed": 162
+            },
+            {
+              "drawn": 162,
+              "listed": 162
+            }
+          ],
+          "on": [
+            {
+              "drawn": 58,
+              "listed": 162
+            },
+            {
+              "drawn": 58,
+              "listed": 162
+            },
+            {
+              "drawn": 58,
+              "listed": 162
+            }
+          ]
+        },
+        "interpretation": "Faces exposed back sides of the level shell. Native sphere ownership retains fewer objects than the old conservative overlap policy. No original-game oracle; do not count as a passing image comparison."
+      },
+      {
+        "pose": "GallowsRock01-inside-in",
+        "strict_changed_pixels": 0,
+        "size": [
+          1400,
+          1050
+        ],
+        "mesh_lists": {
+          "off": [
+            {
+              "drawn": 693,
+              "listed": 693
+            },
+            {
+              "drawn": 693,
+              "listed": 693
+            },
+            {
+              "drawn": 693,
+              "listed": 693
+            }
+          ],
+          "on": [
+            {
+              "drawn": 409,
+              "listed": 693
+            },
+            {
+              "drawn": 409,
+              "listed": 693
+            },
+            {
+              "drawn": 409,
+              "listed": 693
+            }
+          ]
+        },
+        "interpretation": "All nine cross-mode pairings have no persistent differing pixel above the threshold."
+      }
+    ]
+  },
+  "remaining_limits": [
+    "Ambiguous native room-hash/construction order retains possible owners or full-cell fallback.",
+    "Named-target neighbor precedence and forced/actor assignment paths remain conservative.",
+    "Unsupported source trees, primitive overrides, and animated categories are not exact native assignment.",
+    "Occluders, native portal boundary tolerances/revisits, lights and shadow ownership remain outside this update.",
+    "Shell-facing image differences require original-runtime comparison."
+  ],
+  "isolated_replay": {
+    "reason": "Investigate the single persistent differing pixel in the sequence capture.",
+    "pose": "AbandonedPrison01-room0-portal",
+    "captures": 6,
+    "repeats_per_mode": 3,
+    "cross_mode_pairings": 9,
+    "strict_changed_pixels": 0,
+    "settled": true,
+    "timeouts": 0,
+    "pending_room_reads": 0,
+    "failed_room_reads": 0,
+    "interpretation": "Fresh-process images match. This supports a sequence/capture-history explanation; the one sequence pixel remains reported separately."
+  }
+}
