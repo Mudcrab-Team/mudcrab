@@ -1290,6 +1290,8 @@ fn read_plugins_with_prepared(
                     .entry(id)
                     .or_insert((plugin_index, offset));
                 *latest = (*latest).max((plugin_index, offset));
+            } else {
+                unknown_cell_scope = true;
             }
         }
         for scope in damage
