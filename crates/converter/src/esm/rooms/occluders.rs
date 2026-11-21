@@ -264,13 +264,12 @@ fn project(
                 ),
                 None => Some(target),
             };
-            let Some(linked) = linked else {
+            let Some(linked) = linked.filter(|&id| id != 0) else {
                 link_omission.get_or_insert("PlaneMarker XORD contains an unresolved FormID");
                 continue;
             };
-            if linked == 0 || source.is_some() && !target_exists(linked)? {
-                link_omission.get_or_insert("PlaneMarker XORD contains an unresolved FormID");
-                continue;
+            if source.is_some() && !target_exists(linked)? {
+                link_omission.get_or_insert("PlaneMarker XORD target is absent or not a live REFR");
             }
             tx.prepare_cached(
                 "INSERT INTO room_occluder_links(ref_id,link_index,linked_ref) VALUES(?1,?2,?3)",

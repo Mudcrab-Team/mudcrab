@@ -105,7 +105,28 @@ pub fn refresh_native_model_bounds(
 ) -> Result<NativeModelBoundsRefresh> {
     ensure!(!changed_paths.is_empty(), "no changed GLB paths provided");
     let root = assets_root.canonicalize()?;
-    let _lock = AssetLock::acquire_exclusive(&root)?;
+    let lock = AssetLock::acquire_exclusive(&root)?;
+    refresh_model_bounds(&lock, changed_paths, ModelBoundsSource::NativeReplacement)
+}
+
+/// Updates only the models regenerated in this exclusive capture session.
+pub fn refresh_converted_model_bounds(
+    lock: &AssetLock,
+    changed_paths: &[String],
+) -> Result<NativeModelBoundsRefresh> {
+    ensure!(
+        lock.mode() == shared::asset_lock::AssetLockMode::Exclusive,
+        "exclusive pack lock required"
+    );
+    refresh_model_bounds(lock, changed_paths, ModelBoundsSource::Converter)
+}
+
+fn refresh_model_bounds(
+    lock: &AssetLock,
+    changed_paths: &[String],
+    source: ModelBoundsSource,
+) -> Result<NativeModelBoundsRefresh> {
+    let root = lock.asset_dir();
     let mut report = NativeModelBoundsRefresh::default();
     let mut models = BTreeMap::new();
     for path in changed_paths {
@@ -116,13 +137,13 @@ pub fn refresh_native_model_bounds(
         );
         models.entry(key).or_insert(None);
     }
-    let paths = installed_glb_paths(&root, models.keys().map(String::as_str))?;
+    let paths = installed_glb_paths(root, models.keys().map(String::as_str))?;
     for (key, bounds) in &mut models {
         let Some(resolved) = paths.get(key) else {
             continue;
         };
         ensure!(resolved.is_file(), "not a GLB file: {key}");
-        match read_glb_bounds(resolved, ModelBoundsSource::NativeReplacement) {
+        match read_glb_bounds(resolved, source) {
             Ok(projected) => *bounds = Some(projected),
             Err(error) if error.downcast_ref::<std::io::Error>().is_some() => return Err(error),
             Err(error) => {
@@ -133,7 +154,7 @@ pub fn refresh_native_model_bounds(
         }
     }
 
-    let mut connection = open_private_world_database(&root)?;
+    let mut connection = open_private_world_database(root)?;
     let transaction = connection.transaction()?;
     let affected = {
         let mut statement =
@@ -468,7 +489,9 @@ fn visit_asset_entries(
     Ok(())
 }
 
-fn installed_glb_paths<'a>(
+/// Resolves existing regular GLBs for canonical mesh keys and rejects ambiguous winners.
+/// The root must be the canonical pack directory.
+pub fn installed_glb_paths<'a>(
     root: &Path,
     keys: impl Iterator<Item = &'a str>,
 ) -> Result<BTreeMap<String, PathBuf>> {
@@ -523,6 +546,7 @@ fn write_model_bounds(tx: &Transaction<'_>, id: u32, bounds: ModelBounds) -> rus
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 enum ModelBoundsSource {
     Converter,
     NativeReplacement,
@@ -545,8 +569,12 @@ fn read_glb_bounds(path: &Path, source: ModelBoundsSource) -> Result<ModelBounds
         file.read_to_end(&mut prefix)?;
         sphere = encloses_native_scene(&prefix, &document, candidate).then_some(candidate);
     }
+    let render = match source {
+        ModelBoundsSource::Converter => glb_bounds_from_document(&document)?,
+        ModelBoundsSource::NativeReplacement => crate::mesh::glb_scene_bounds(&document, Some(0))?,
+    };
     Ok(ModelBounds {
-        render: glb_bounds_from_document(&document)?,
+        render,
         room: sphere,
     })
 }
