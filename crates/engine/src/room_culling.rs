@@ -438,6 +438,9 @@ impl Portal {
     }
 
     // WithinFrustumDistFirst also admits the projection of the eye onto the portal plane.
+    // The static trace supports this eye test. Entrance/exit polarity, culling stamp cadence,
+    // authored always-open behavior, and handling of rooms with a null bound remain unverified.
+    // See docs/research/room-assignment-review-20261117.md, “Retail wall identification”.
     fn admits_projected_eye(&self, view: &PortalView) -> bool {
         let eye = view.eye;
         let view_normal = view.near_plane.truncate();

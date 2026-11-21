@@ -184,7 +184,7 @@ luminance standard deviation fell from 13.78 after the ordinary round trip to 0.
 A subsequent enable command and purge left the doorway absent. A fresh launch without loading a
 save restored the fifth doorway, the mapped room and the carved wall at the same eye. The doorway
 receipt contains the full endpoint lists from the later live doorway readbacks. This identifies
-the route for the captured wall. The branch within the admission routine remains untraced.
+the route for the captured wall. The captures do not record which admission branch ran at this pose.
 [Camera, room maps, doorway endpoints and patch measurements](evidence/room-review-20261117/katariah-doorway-controls.json)
 
 ![Top row, left to right, shows the matched free camera, matched first person, and first person deeper in the room. Bottom row shows disable and re-entry, disable with a cell purge, and the fresh launch.](evidence/room-review-20261117/katariah-camera-controls.jpg)
@@ -195,6 +195,12 @@ Its projected-eye extent check (RVA `0xfe94e0`) instead dots the projected displ
 with rotation rows Y and Z (three floats each at portal offsets `+0x28` and `+0x34`). At this
 doorway’s 180° yaw those absolute components are approximately 0 and 64, within the half-extents
 of 56 and 84. The Skyrim decompilation project maps this RVA in the same executable build and lists its implementation as unreconstructed. [Pinned reconstruction index](https://github.com/Mudcrab-Team/skyrim_decomp/blob/3eba0ceef22e7d7d2bc57962fe28f4aad772b79d/reconstruction/INDEX.md#L23707)
+
+A separate static trace supports the stored-row extent test, the near-plane window, and the
+strict projected-eye comparison in `admits_projected_eye`. A binary match remains unverified.
+Entrance and exit polarity, the culling stamp cadence, authored always-open behavior, and the
+handling of rooms with a null bound also remain unverified.
+[Static trace and review limits](https://github.com/Mudcrab-Team/skyrim_decomp/pull/667) · [Maintainer’s formula review](https://github.com/Mudcrab-Team/mudcrab/pull/813#issuecomment-7062781647)
 
 Substituting the geometric width and height axes in the Mudcrab replay removed
 `000C4A65` from the camera draw list even with its verified sphere.
