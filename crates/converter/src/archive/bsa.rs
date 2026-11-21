@@ -391,7 +391,7 @@ fn expansion_limit(packed_len: usize) -> usize {
 const LZ4_FRAME_MAGIC: [u8; 4] = [0x04, 0x22, 0x4d, 0x18];
 
 fn lz4_frame_buffer_bytes(prefix: &[u8]) -> usize {
-    let [flags, descriptor] = prefix.strip_prefix(&LZ4_FRAME_MAGIC).unwrap_or_default() else {
+    let Some([flags, descriptor]) = prefix.strip_prefix(&LZ4_FRAME_MAGIC) else {
         return 0;
     };
     let block_size = match (descriptor >> 4) & 7 {
