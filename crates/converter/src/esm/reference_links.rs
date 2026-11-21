@@ -225,11 +225,14 @@ pub(super) fn has_live_target(tx: &Transaction<'_>, id: u32) -> Result<bool> {
 
 // Subset exports preserve the original conversion's provenance. A row marks a
 // replacement, with recovered runtime link words when it came from a typed source.
-pub(super) const SUBSET_SOURCES_SQL: &str = "
-    CREATE TABLE IF NOT EXISTS reference_link_subset_sources (
-        form_id INTEGER PRIMARY KEY, data BLOB
-    );
-";
+pub(super) fn ensure_subset_sources(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS reference_link_subset_sources (
+            form_id INTEGER PRIMARY KEY, data BLOB
+        )",
+    )?;
+    super::exporter::add_missing_columns(tx, "reference_link_subset_sources", &[("data", "BLOB")])
+}
 
 pub(super) fn forget_subset_source(tx: &Transaction<'_>, id: u32) -> Result<()> {
     tx.prepare_cached("DELETE FROM reference_link_subset_sources WHERE form_id=?1")?

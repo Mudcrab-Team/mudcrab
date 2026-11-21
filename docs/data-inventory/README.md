@@ -112,11 +112,12 @@ python3 "$inventory_workspace/bin/workspace.py" cargo --isolated issue298 test -
 ```
 
 The test executes `create_tables`, a small synthetic legacy publication, and a small
-synthetic in-house record-bundle publication. It captures `sqlite_master`, real
-`pragma_table_info`, schema/producer/cache versions and reader identities. The bundle
-path also creates provenance/script/terrain tables absent from `create_tables`; neither
-path converts meshes/textures nor launches an engine. This is not a full install campaign.
-No row counts are used as population claims.
+synthetic in-house record-bundle publication. It also captures the legacy database after
+an empty subset export, which creates `reference_link_subset_sources`. It records
+`sqlite_master`, `pragma_table_info`, schema/producer/cache versions and reader identities.
+The bundle creates provenance, script and terrain tables absent from `create_tables`.
+The test runs without mesh or texture conversion or an engine launch. No row counts are
+used as population claims.
 
 The test composes exterior, interior, parent and exterior-cell lookup SQL through the
 same production builder as `load_cell`. It prepares all 64 independent selector masks

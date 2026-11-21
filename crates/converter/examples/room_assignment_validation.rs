@@ -210,22 +210,22 @@ fn convert_capture_models(
         .par_iter()
         .map(|(model, output)| {
             let source = sources.join(model);
-            let converted = source.is_file().then(|| {
+            let converted = if source.is_file() {
                 MeshConverter::convert_nif_to_glb_from_index(model, &source, output, &skeletons)
                     .map_err(|error| format!("{error:#}"))
-            });
+            } else {
+                Err(format!("missing staged model {}", source.display()))
+            };
             CaptureResult {
                 model: (*model).clone(),
-                converted: matches!(converted, Some(Ok(()))),
-                error: converted.and_then(|result| {
-                    result
-                        .and_then(|()| {
-                            MeshConverter::prune_glb_texture_uris(&root, output, textures)
-                                .map(|_| ())
-                                .map_err(|error| format!("{error:#}"))
-                        })
-                        .err()
-                }),
+                converted: converted.is_ok(),
+                error: converted
+                    .and_then(|()| {
+                        MeshConverter::prune_glb_texture_uris(&root, output, textures)
+                            .map(|_| ())
+                            .map_err(|error| format!("{error:#}"))
+                    })
+                    .err(),
             }
         })
         .collect();
@@ -470,9 +470,9 @@ mod tests {
         conn.execute_batch("INSERT INTO cells(id,flags) VALUES(7,0);
             INSERT INTO room_graph_stats VALUES('visibility_version',2),('assignment_version',1);
             INSERT INTO statics(id,flags,model_path,bounds_valid,bounds_min_x) VALUES
-                (91,0,'good.nif',1,-17),(92,0,'bad.nif',1,-17);
+                (91,0,'good.nif',1,-17),(92,0,'bad.nif',1,-17),(93,0,'missing.nif',1,-17);
             INSERT INTO [references](id,cell_id,base_form_id,is_exterior,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z)
-                VALUES (11,7,91,0,0,0,0,0,0,0),(12,7,92,0,0,0,0,0,0,0);").unwrap();
+                VALUES (11,7,91,0,0,0,0,0,0,0),(12,7,92,0,0,0,0,0,0,0),(13,7,93,0,0,0,0,0,0,0);").unwrap();
         let args = [
             data.display().to_string(),
             assets.display().to_string(),
@@ -485,6 +485,19 @@ mod tests {
                 .contains("requested source conversions failed"),
             "{error:#}"
         );
+        let detail = error.to_string();
+        let (_, results) = detail
+            .split_once("requested source conversions failed: ")
+            .unwrap();
+        let results: Vec<serde_json::Value> = serde_json::from_str(results).unwrap();
+        let missing = results
+            .iter()
+            .find(|result| result["model"] == "meshes/missing.nif")
+            .unwrap();
+        assert_eq!(missing["converted"], false);
+        let diagnostic = missing["error"].as_str().unwrap();
+        assert!(diagnostic.starts_with("missing staged model "));
+        assert!(diagnostic.ends_with("/meshes/missing.nif"));
         let bound = |id| {
             conn.query_row(
                 "SELECT bounds_min_x FROM statics WHERE id=?1 AND bounds_valid=1",
@@ -501,6 +514,7 @@ mod tests {
         assert!(images[0]["uri"].as_str().unwrap().contains("/d."));
         assert_eq!(bound(91), 0.);
         assert_eq!(bound(92), -17.);
+        assert_eq!(bound(93), -17.);
         assert_eq!(
             fs::read(assets.join("meshes/bad.glb")).unwrap(),
             b"previous output"

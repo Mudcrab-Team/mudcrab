@@ -112,7 +112,7 @@ pub fn apply(assets: &Path, source: PlacementSource<'_>) -> Result<PlacementEdit
     let bytes = fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
     let checksum = hash_bytes(&bytes);
     tx.execute_batch(LAYER_TABLES)?;
-    tx.execute_batch(reference_links::SUBSET_SOURCES_SQL)?;
+    reference_links::ensure_subset_sources(&tx)?;
     tx.execute_batch(reference_links::SUBSET_NONPLACEMENT_DELETIONS_SQL)?;
     tx.execute_batch(reference_links::REFERENCE_LINK_TABLES_SQL)?;
 

@@ -363,7 +363,11 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
 }
 
 /// Adds each `(name, declaration)` column `table` lacks.
-fn add_missing_columns(conn: &Connection, table: &str, columns: &[(&str, &str)]) -> Result<()> {
+pub(super) fn add_missing_columns(
+    conn: &Connection,
+    table: &str,
+    columns: &[(&str, &str)],
+) -> Result<()> {
     for (name, declaration) in columns {
         let present: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)",
@@ -797,7 +801,7 @@ fn export_records(
         tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS subset_placement_deletions (form_id INTEGER PRIMARY KEY)",
         )?;
-        tx.execute_batch(super::reference_links::SUBSET_SOURCES_SQL)?;
+        super::reference_links::ensure_subset_sources(&tx)?;
     }
     tx.execute_batch(super::reference_links::SUBSET_NONPLACEMENT_DELETIONS_SQL)?;
     if let Some(ids) = deleted_ids {
