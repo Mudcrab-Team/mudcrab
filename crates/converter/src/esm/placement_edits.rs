@@ -448,6 +448,8 @@ fn plugin_edits(
                     Some("with malformed NAME")
                 } else if let Some(reason) = malformed_placement_geometry(&view) {
                     Some(reason)
+                } else if view.find_all(b"XESP").any(|bytes| bytes.len() != 8) {
+                    Some("with malformed XESP")
                 } else if view.find_all(b"XTEL").enumerate().any(|(index, data)| {
                     let Some((target, arrival_and_flags)) = data.split_first_chunk::<4>() else {
                         return true;

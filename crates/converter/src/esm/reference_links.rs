@@ -276,8 +276,8 @@ pub(super) fn refresh_incoming(
     } else {
         "coalesce(raw.data,r.data)"
     };
-    // A NULL projection carries no target ID. Scan only sources with nullable link slots
-    // once per restoring batch. Materialize their IDs before updating the link tables.
+    // A source with only an unresolved detail can have no detail row.
+    // Materialize the candidate IDs before updating the link tables.
     let mut sources = tx.prepare(&format!(
         "WITH candidates(id) AS MATERIALIZED (
              SELECT reference_id FROM reference_linked_refs WHERE ?1 AND linked_ref_id IS NULL
@@ -285,6 +285,8 @@ pub(super) fn refresh_incoming(
              UNION SELECT reference_id FROM reference_activate_parents WHERE ?1 AND parent_ref_id IS NULL
              UNION SELECT reference_id FROM reference_details
                    WHERE (?3 AND attached_ref_id IS NULL) OR (?4 AND owner_id IS NULL)
+             UNION SELECT id FROM [references] r WHERE (?3 OR ?4)
+                   AND NOT EXISTS(SELECT 1 FROM reference_details WHERE reference_id=r.id)
          )
          SELECT r.id, {data} FROM candidates
          JOIN [references] r ON r.id=candidates.id
@@ -303,10 +305,14 @@ pub(super) fn refresh_incoming(
          WHERE reference_id=?1 AND position=?2 AND parent_ref_id IS NULL",
     )?;
     let mut attached = tx.prepare_cached(
-        "UPDATE reference_details SET attached_ref_id=?2 WHERE reference_id=?1 AND attached_ref_id IS NULL",
+        "INSERT INTO reference_details(reference_id,attached_ref_id) VALUES(?1,?2)
+         ON CONFLICT(reference_id) DO UPDATE SET attached_ref_id=excluded.attached_ref_id
+         WHERE reference_details.attached_ref_id IS NULL",
     )?;
     let mut owner = tx.prepare_cached(
-        "UPDATE reference_details SET owner_id=?2 WHERE reference_id=?1 AND owner_id IS NULL",
+        "INSERT INTO reference_details(reference_id,owner_id) VALUES(?1,?2)
+         ON CONFLICT(reference_id) DO UPDATE SET owner_id=excluded.owner_id
+         WHERE reference_details.owner_id IS NULL",
     )?;
     let can_restore = |allowed: &[&[u8; 4]]| kinds.values().any(|kind| allowed.contains(&kind));
     let mut sources = sources.query(params![

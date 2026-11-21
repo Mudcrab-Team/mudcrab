@@ -244,40 +244,15 @@ pub(super) enum ParsedRecord {
     TruncatedPlacement(TruncatedPlacement),
 }
 
-/// A CELL's flags and source FormID are complete after 16 header bytes.
-pub(crate) fn cell_header_prefix(bytes: &[u8]) -> Option<(u32, u32)> {
-    let (flags, rest) = bytes
-        .strip_prefix(b"CELL")?
-        .get(4..)?
-        .split_first_chunk::<4>()?;
-    Some((
-        u32::from_le_bytes(*flags),
-        u32::from_le_bytes(*rest.first_chunk()?),
-    ))
-}
-
 /// Recover identity only from the start of a discarded record or child frame.
-fn discarded_prefix(
-    bytes: &[u8],
-    cell_form_id: Option<u32>,
-    worldspace_form_id: Option<u32>,
-) -> Option<ParsedRecord> {
+fn discarded_prefix(bytes: &[u8]) -> Option<ParsedRecord> {
     if let Some(scope) = DiscardedFrameScope::from_group_prefix(bytes) {
         return Some(ParsedRecord::DiscardedFrame(scope));
     }
     if let Some(placement) = TruncatedPlacement::from_prefix(bytes) {
         return Some(ParsedRecord::TruncatedPlacement(placement));
     }
-    let (flags, form_id) = cell_header_prefix(bytes)?;
-    Some(ParsedRecord::DamagedRecord(RawRecord {
-        record_type: *b"CELL",
-        flags,
-        form_id,
-        cell_form_id,
-        worldspace_form_id,
-        subrecords: Vec::new(),
-        load_order: 0,
-    }))
+    DiscardedFrameScope::from_cell_prefix(bytes).map(ParsedRecord::DiscardedFrame)
 }
 
 fn parse_group_inner(
@@ -307,7 +282,7 @@ fn parse_group_inner(
                 "trailing {} bytes in bounded record frame",
                 curr.len(),
             ));
-            if let Some(candidate) = discarded_prefix(curr, current_cell, current_worldspace) {
+            if let Some(candidate) = discarded_prefix(curr) {
                 visit(candidate);
             }
             visit(ParsedRecord::DiscardedFrame(current_cell.into()));
@@ -336,7 +311,7 @@ fn parse_group_inner(
                     ),
                     None => format!("invalid GRUP size {}", group.data_size),
                 });
-                if let Some(candidate) = discarded_prefix(rest, current_cell, current_worldspace) {
+                if let Some(candidate) = discarded_prefix(rest) {
                     visit(candidate);
                 }
                 visit(ParsedRecord::DiscardedFrame(
@@ -381,9 +356,6 @@ fn parse_group_inner(
                 curr = next;
                 decode_record_subrecords(&header, payload)
             } else {
-                if let Some(candidate) = discarded_prefix(rest, current_cell, current_worldspace) {
-                    visit(candidate);
-                }
                 visit(ParsedRecord::DiscardedFrame(
                     DiscardedFrameScope::unread_tail(current_cell, rest.len()),
                 ));
