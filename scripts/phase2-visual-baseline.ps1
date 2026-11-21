@@ -122,6 +122,7 @@ try {
     $stdout = Join-Path $output "engine.stdout.log"
     $stderr = Join-Path $output "engine.stderr.log"
     $arguments = @(
+        "--no-grass",
         "--assets", $resolvedAssets,
         "--worldspace", $Worldspace,
         "--grid-x", "$GridX",

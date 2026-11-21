@@ -392,6 +392,7 @@ impl PapyrusHost {
                     .push((name, "no converted script with this name".into()));
                 continue;
             };
+            // silent-ok: a script without __name fails the inherits check below, which reports it.
             let class_name: String = object.get("__name").unwrap_or_default();
             // A script of another base type (a quest script in a reference's VMAD) must not
             // attach (#577): it would run events against the wrong kind of form.
@@ -413,7 +414,7 @@ impl PapyrusHost {
             let props = properties
                 .get(&name.to_lowercase())
                 .cloned()
-                .unwrap_or_default();
+                .unwrap_or_default(); // silent-ok: no rows means the script declares no properties.
             self.seed_properties(&object, form_id, &name, &props);
             report.attached.push(name);
         }
@@ -656,9 +657,11 @@ impl PapyrusHost {
 
     /// The script object for a form's first attached script, if any.
     pub fn object(&self, form_id: u32) -> Option<Table> {
+        // silent-ok: a missing script object is the expected "no script attached" answer.
         let objects = self.runtime.get::<Table>("objects").ok()?;
+        // silent-ok: a missing script object is the expected "no script attached" answer.
         let list = objects.get::<Table>(form_id).ok()?;
-        list.get::<Table>(1).ok()
+        list.get::<Table>(1).ok() // silent-ok: an absent entry means no script attached.
     }
 
     pub fn is_attached(&self, reference: u32) -> bool {
@@ -727,7 +730,7 @@ fn form_of(target: &Table) -> mlua::Result<u32> {
 
 fn form_arg(value: Option<&Value>) -> Option<u32> {
     match value {
-        Some(Value::Table(table)) => table.get::<Option<u32>>("__form_id").ok().flatten(),
+        Some(Value::Table(table)) => table.get::<Option<u32>>("__form_id").ok().flatten(), // silent-ok: a non-form table argument has no form id.
         _ => None,
     }
 }
@@ -1015,7 +1018,7 @@ fn bind_natives(
         move |lua, target, _| {
             let quest = form_of(target)?;
             let alias = target.get::<Option<i64>>("__alias_id")?.unwrap_or(-1);
-            let bound = u16::try_from(alias)
+            let bound = u16::try_from(alias) // silent-ok: the -1 default and out-of-range ids match no alias.
                 .ok()
                 .and_then(|alias| state.borrow().aliases.get(&(quest, alias)).copied());
             match bound {
@@ -1146,9 +1149,9 @@ impl SqliteForms {
 
     fn one_u32(&self, sql: &str, id: u32) -> Option<u32> {
         self.connection
-            .prepare_cached(sql)
+            .prepare_cached(sql) // silent-ok: the schema is checked at open; an error means no value.
             .ok()?
-            .query_row([id], |row| row.get::<_, Option<u32>>(0))
+            .query_row([id], |row| row.get::<_, Option<u32>>(0)) // silent-ok: an absent row means no value.
             .ok()
             .flatten()
     }
@@ -1167,7 +1170,7 @@ impl FormSource for SqliteForms {
         statement
             .query_map([form_id], |row| row.get::<_, String>(0))
             .map(|rows| rows.flatten().collect())
-            .unwrap_or_default()
+            .unwrap_or_default() // silent-ok: a row that fails to decode is dropped from the list.
     }
 
     fn script_properties(&self, form_id: u32, script_name: &str) -> Vec<ScriptProperty> {
@@ -1189,7 +1192,7 @@ impl FormSource for SqliteForms {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })
             .map(|rows| rows.flatten().collect())
-            .unwrap_or_default();
+            .unwrap_or_default(); // silent-ok: a row that fails to decode is dropped from the list.
         let mut output = Vec::new();
         for (index, name, kind) in rows {
             let scalar_kind = if (VMAD_ARRAY_FIRST..=VMAD_ARRAY_LAST).contains(&kind) {
@@ -1208,9 +1211,9 @@ impl FormSource for SqliteForms {
                     Ok(match scalar_kind {
                         VMAD_OBJECT => PropertyValue::Object {
                             form_id: object.unwrap_or(0),
-                            alias: alias.and_then(|alias| u16::try_from(alias & 0xFFFF).ok()),
+                            alias: alias.and_then(|alias| u16::try_from(alias & 0xFFFF).ok()), // silent-ok: the 16-bit mask makes this infallible.
                         },
-                        VMAD_STRING => PropertyValue::Str(string.unwrap_or_default()),
+                        VMAD_STRING => PropertyValue::Str(string.unwrap_or_default()), // silent-ok: an empty string is the default for an unfilled column.
                         VMAD_INT => PropertyValue::Int(integer.unwrap_or(0)),
                         VMAD_FLOAT => PropertyValue::Float(f64::from(f32::from_bits(
                             float_bits.unwrap_or(0) as u32,
@@ -1220,7 +1223,7 @@ impl FormSource for SqliteForms {
                     })
                 })
                 .map(|rows| rows.flatten().collect())
-                .unwrap_or_default();
+                .unwrap_or_default(); // silent-ok: a row that fails to decode is dropped from the array.
             let value = if (VMAD_ARRAY_FIRST..=VMAD_ARRAY_LAST).contains(&kind) {
                 PropertyValue::Array(elements)
             } else {
@@ -1240,9 +1243,9 @@ impl FormSource for SqliteForms {
 
     fn record_type(&self, form_id: u32) -> Option<String> {
         self.connection
-            .prepare_cached("SELECT record_type FROM records WHERE form_id = ?1")
+            .prepare_cached("SELECT record_type FROM records WHERE form_id = ?1") // silent-ok: an error means no record type.
             .ok()?
-            .query_row([form_id], |row| row.get::<_, String>(0))
+            .query_row([form_id], |row| row.get::<_, String>(0)) // silent-ok: an absent row means no record type.
             .ok()
     }
 
@@ -1251,11 +1254,11 @@ impl FormSource for SqliteForms {
             .prepare_cached(
                 "SELECT linked_ref_id FROM reference_linked_refs \
                  WHERE reference_id = ?1 AND keyword_id IS ?2 ORDER BY position LIMIT 1",
-            )
+            ) // silent-ok: an error means no linked reference.
             .ok()?
             .query_row(rusqlite::params![reference, keyword], |row| {
                 row.get::<_, Option<u32>>(0)
-            })
+            }) // silent-ok: an absent row means no linked reference.
             .ok()
             .flatten()
     }
@@ -1285,7 +1288,7 @@ impl FormSource for MemoryForms {
     fn script_names(&self, form_id: u32) -> Vec<String> {
         self.scripts
             .get(&form_id)
-            .map(|list| list.iter().map(|(name, _)| name.clone()).collect())
+            .map(|list| list.iter().map(|(name, _)| name.clone()).collect()) // silent-ok: an unlisted form has no scripts.
             .unwrap_or_default()
     }
 
@@ -1293,7 +1296,7 @@ impl FormSource for MemoryForms {
         self.scripts
             .get(&form_id)
             .and_then(|list| list.iter().find(|(name, _)| name == script_name))
-            .map(|(_, props)| props.clone())
+            .map(|(_, props)| props.clone()) // silent-ok: an unlisted form has no properties.
             .unwrap_or_default()
     }
 

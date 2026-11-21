@@ -187,8 +187,9 @@ impl Pex {
 fn pex_parent_dispatch_preserves_receiver_and_defining_class() {
     let lua = Lua::new();
     runtime(&lua);
-    let mut grand = Pex::class("Grand", "", "", 1);
+    let mut grand = Pex::class("Grand", "", "", 2);
     grand.state("", vec![returns("Chain", 73), returns("OnlyGrand", 79)]);
+    grand.state("Ready", vec![returns("GrandStateOverParentDefault", 83)]);
     let mut parent_call = returns("Chain", 0);
     parent_call.locals = vec![TypedName {
         name: "result".into(),
@@ -223,6 +224,7 @@ fn pex_parent_dispatch_preserves_receiver_and_defining_class() {
             returns("Value", 41),
             returns("InheritedState", 59),
             returns("Fallback", 57),
+            returns("GrandStateOverParentDefault", 81),
         ],
     );
     parent.state(
@@ -249,7 +251,8 @@ fn pex_parent_dispatch_preserves_receiver_and_defining_class() {
         local function call(name) return rt:call_method(a, name, {}) end
         assert(call('iNhErItEdStAtE') == 61, 'parent named state')
         assert(call('OnlyParent') == 67 and call('OnlyGrand') == 79, 'ancestor fallback')
-        assert(call('Fallback') == 17, 'child empty state precedes parent per dispatch contract')
+        assert(call('Fallback') == 63, 'retail: active-state ancestry precedes child empty-state fallback')
+        assert(call('GrandStateOverParentDefault') == 83, 'retail: grandparent active state precedes parent default')
         assert(call('Chain') == 73, 'nested Parent calls use the defining class')
         assert(call('vIrTuAl') == 31, 'inherited code keeps the original receiver')
     "#,
@@ -381,7 +384,7 @@ async fn old_script_abi_rebuilds_only_scripts_even_with_legacy_configuration() {
     rebuild_old_script_abi(1).await;
 }
 
-/// The immediately preceding emitter ABI also rebuilds with saved legacy settings.
+/// ABI-2 scripts rebuild with saved legacy settings.
 #[tokio::test]
 async fn abi_two_scripts_regenerate_case_insensitive_helpers() {
     rebuild_old_script_abi(2).await;
@@ -463,7 +466,15 @@ async fn rebuild_old_script_abi(abi: u32) {
     // Old saved configuration must not opt the current emitter back into prior-ABI reuse.
     let report = convert(legacy).await;
     assert_eq!(report.converted, scripts);
-    assert_eq!(report.cache_hits, manifest.entries.len() as u64 - scripts);
+    assert_eq!(
+        report.cache_hits,
+        manifest
+            .entries
+            .values()
+            .filter(|entry| entry.output != "grass_cache.rkyv")
+            .count() as u64
+            - scripts
+    );
     for entry in manifest
         .entries
         .values()
