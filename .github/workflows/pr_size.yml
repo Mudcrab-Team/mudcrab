@@ -19,7 +19,7 @@ name: pr_size
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
@@ -36,6 +36,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Check out the trusted size script
+        # Advisory job: a checkout failure warns in the last step instead of a red check.
+        continue-on-error: true
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.repository.default_branch }}
@@ -157,7 +159,7 @@ jobs:
           guidance_url="https://github.com/${REPOSITORY}/blob/${DEFAULT_BRANCH}/docs/contributing/workflow.md#splitting-a-large-pull-request"
           body="$(printf '%s\n' \
             "$marker" \
-            "This pull request changes **${LINES}** hand-written lines. Test and generated files are excluded, so it is labelled \`${DESIRED_LABEL}\`." \
+            "When this comment was posted, this pull request changed **${LINES}** hand-written lines. Test and generated files are excluded, so it was labelled \`${DESIRED_LABEL}\`. The label follows later pushes; this comment does not." \
             "" \
             "Large pull requests are slow to review, and a mixed one can hide a defect. Keep one feature per pull request. If the parts depend on each other, open a stack with \`stack:\` labels and land it bottom-up with merge commits. See [Splitting a large pull request](${guidance_url})." \
             "" \

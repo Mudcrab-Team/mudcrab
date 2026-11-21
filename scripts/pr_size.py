@@ -40,12 +40,15 @@ EXCLUDED_PATTERNS = (
     "**/test_*.py",
     "snapshots/**",
     "**/snapshots/**",
+    "**/fixtures/**",
     # Generated, vendored or recorded files that a reviewer does not read line by line.
     "Cargo.lock",
+    "devenv.lock",
     "vendor/**",
     "fuzz/seeds/**",
     "docs/data-inventory/**",
     "docs/research/evidence/**",
+    "docs/evidence/**",
     "tools/skyrim-recorder/reference/**",
 )
 

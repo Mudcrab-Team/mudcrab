@@ -62,6 +62,13 @@ class SummarizeTests(unittest.TestCase):
             "docs/data-inventory/inventory.json",
             "docs/research/evidence/metal-20261008/report.html",
             "tools/skyrim-recorder/reference/jump-v3/manifest.json",
+            # Each nested pattern alone, outside any tests/ directory.
+            "crates/engine/snapshots/world.snap",
+            "scripts/test_tool.py",
+            "tools/skyrim-recorder/fixtures/jump.json",
+            "scripts/profiling/fixtures/sample.json",
+            "docs/evidence/lighting-l1-20261003.json",
+            "devenv.lock",
         )
         for filename in excluded:
             with self.subTest(filename=filename):
