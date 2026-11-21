@@ -14,6 +14,81 @@ async fn run_fixture(config: &PipelineConfig) -> converter::pipeline::PipelineRe
     report
 }
 
+#[tokio::test]
+async fn archive_winner_repair_and_incremental_conversion_refresh_model_bounds() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("Data");
+    dummy_content::layout::prepare_directory(&data, false).unwrap();
+    dummy_content::layout::generate(
+        &data,
+        dummy_content::layout::DEFAULT_SEED,
+        dummy_content::layout::Formats::parse("dds,bsa,esm").unwrap(),
+    )
+    .unwrap();
+    let winner = data.join("Skyrim - Z Bounds.bsa");
+    fs::write(&winner, b"broken winner before repair").unwrap();
+    let output = root.path().join("pack");
+    let mut config = common::cpu_lod_config(&data, &output);
+    config.no_lod = true;
+
+    let bounds = || {
+        let connection = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+        connection.query_row(
+            "SELECT CASE WHEN bounds_valid=1 THEN bounds_min_x END,center_x,radius
+             FROM statics LEFT JOIN room_model_bounds ON base_form_id=id WHERE model_path='meshes/generated.nif'",
+            [],
+            |row| Ok((row.get::<_, Option<f32>>(0)?, row.get::<_, Option<f32>>(1)?, row.get::<_, Option<f32>>(2)?)),
+        ).unwrap()
+    };
+    assert!(!run_fixture(&config).await.complete);
+    let original = bounds();
+    assert!(original.0.is_some() && original.1.is_some() && original.2.is_some());
+
+    let replacement = dummy_content::nif::static_shape(&dummy_content::nif::StaticShape {
+        name: "Replacement",
+        positions: &[[256.0, 0.0, 0.0], [288.0, 0.0, 0.0], [272.0, 32.0, 0.0]],
+        normals: &[[0.0, 0.0, 1.0]; 3],
+        uvs: &[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+        indices: &[[0, 1, 2]],
+        diffuse: "textures/generated_color.dds",
+        normal_texture: "textures/generated_normal.dds",
+    })
+    .unwrap();
+    fs::write(
+        &winner,
+        dummy_content::bsa::v105(
+            &[dummy_content::Entry::new(
+                "meshes/generated.nif",
+                &replacement,
+            )],
+            dummy_content::bsa::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(repair_failed(&config, true).unwrap().published);
+    let repaired = bounds();
+    assert_eq!(repaired.0, Some(256.0));
+    assert!((repaired.1.unwrap() - 272.0).abs() < 1.0e-4);
+    assert!(
+        repaired
+            .2
+            .is_some_and(|radius| radius.is_finite() && radius > 0.0)
+    );
+    assert_ne!(repaired.2, original.2);
+
+    fs::remove_file(winner).unwrap();
+    let fallback = run_fixture(&config).await;
+    assert!(fallback.complete && fallback.database_cache_hit);
+    assert_eq!(bounds(), original);
+
+    fs::remove_file(data.join("Skyrim - Meshes.bsa")).unwrap();
+    let removed = run_fixture(&config).await;
+    assert!(removed.complete && removed.database_cache_hit);
+    assert!(!output.join("meshes/generated.glb").exists());
+    assert_eq!(bounds(), (None, None, None));
+}
+
 fn published_bytes(output: &Path) -> BTreeMap<String, Vec<u8>> {
     let manifest_bytes = fs::read(output.join("conversion-manifest.json")).unwrap();
     let manifest: ConversionManifest = serde_json::from_slice(&manifest_bytes).unwrap();

@@ -286,8 +286,9 @@ attribute for such a shape. Bevy 0.19 skips the base-colour sample of a mesh wit
 surface drew its flat base colour.
 It now replaces each non-finite component with zero, keeps the attribute and logs the count.
 This is an engineering guard, not a retail rule: the retail look of the triangles around such a vertex
-was not traced (no row in the retail registry), and zero is only the neutral value. Those triangles can
-show a stretched strip of texture; the rest of the mapping is intact.
+was not traced (no row in the retail registry), and zero is only the neutral value. Whether retail
+treats such a vertex as a rule is unverified. Those triangles can show a stretched strip of texture;
+the rest of the mapping is intact.
 Mesh contract `non-finite-uv-repair-v1` records this change; it changes the `nif` proof only, so a
 normal conversion rebuilds meshes an earlier converter wrote. 21 meshes of the retail game change.
 

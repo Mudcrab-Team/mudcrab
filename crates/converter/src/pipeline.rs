@@ -20,8 +20,9 @@ use crate::{
     config::{PipelineConfig, TextureEncoder},
     esm::{
         EsmParser,
-        cell_cache::write_cell_cache,
+        cell_cache::{write_cell_cache, write_preserved_cell_cache},
         exporter::validate_database,
+        grass_cache::write_grass_cache_with_cancel,
         lodsettings::{LodSettings, sidecar_path},
         plugins_txt::read_with_selection_diagnostics,
     },
@@ -180,7 +181,7 @@ pub(crate) fn conversion_is_complete(report: &PipelineReport) -> bool {
     report.skipped == 0 && report.warnings.is_empty()
 }
 
-/// One line per projection omission category (#297): a lost light row warns, so the run is
+/// One line per projection omission category (#297): a lost runtime row or field warns, so the run is
 /// incomplete; an unresolved emittance target keeps the model's emission and is only noted.
 pub(crate) fn report_projection_omissions(
     report: &mut PipelineReport,
@@ -581,6 +582,7 @@ impl AssetPipeline {
     /// Rebuilds MO2 input selection on resume and records conversion results in the staging manifest.
     /// Preserves usable outputs through texture repair, alias publication, pruning, and artifact
     /// verification, and returns the report for pack publication.
+    /// Optional grass-mask omissions are recorded as notices.
     async fn run_into(
         config: &PipelineConfig,
         staging: &Path,
@@ -639,6 +641,7 @@ impl AssetPipeline {
             inputs_by_kind: Default::default(),
             failures: Default::default(),
             excluded_inputs: Default::default(),
+            ignored_inputs_by_extension: Default::default(),
             pruned_texture_references: Default::default(),
             archives: Default::default(),
             entries: Default::default(),
@@ -701,6 +704,25 @@ impl AssetPipeline {
             })?
         };
         refuse_to_replace_complete_pack(&config.output_dir, &config.data_dir, &undiscovered)?;
+        // Discovery inventories loose paths once (MO2 contributes only overlay winners).
+        // Plugins, containers and authority files are handled by their own pipeline stages.
+        if config.mo2.is_some() {
+            for relative in resolved_files.keys() {
+                crate::input_inventory::count_loose(
+                    &mut manifest.ignored_inputs_by_extension,
+                    Path::new(relative),
+                );
+            }
+        } else {
+            for path in &files {
+                let relative = path.strip_prefix(&config.data_dir).unwrap_or(path);
+                crate::input_inventory::count_loose(
+                    &mut manifest.ignored_inputs_by_extension,
+                    relative,
+                );
+            }
+        }
+
         let archive_keys: BTreeMap<_, _> = resolved_files
             .iter()
             .filter(|(_, source)| extension(source, &["bsa", "ba2"]))
@@ -833,6 +855,10 @@ impl AssetPipeline {
         fs::remove_dir_all(&vfs_dir)?;
         fs::create_dir_all(&vfs_dir)?;
 
+        let mut control_sources = BTreeMap::new();
+        // Optional controls are additive: existing v4 packs keep their exact coverage and identity.
+        let control_scratch = tempfile::tempdir_in(staging.parent().unwrap_or(staging))?;
+
         // Bytes already extracted, so each archive reports progress against the whole run instead
         // of restarting at zero.
         let mut extracted_bytes = 0u64;
@@ -939,7 +965,8 @@ impl AssetPipeline {
             };
 
             let result = spawn_blocking(move || {
-                ArchiveExtractor::extract_batched_with_session(
+                let mut ignored_inputs_by_extension = BTreeMap::new();
+                let result = ArchiveExtractor::extract_batched_with_session(
                     &archive_for_worker,
                     &vfs_for_worker,
                     &previous_cache_root,
@@ -950,10 +977,13 @@ impl AssetPipeline {
                     Some(&progress),
                     Some(&stop),
                     &ingestion_session_for_worker,
-                )
+                    &mut ignored_inputs_by_extension,
+                );
+                (result, ignored_inputs_by_extension)
             })
             .await
             .wrap_err("archive worker panicked")?;
+            let (result, ignored_inputs_by_extension) = result;
             // An archive abandoned by a stop ends the run as an interrupt, the same as a stop
             // between archives, rather than being counted as a skipped archive. Its cache entry
             // was never recorded; a resume recovers its sealed partial batches.
@@ -975,8 +1005,24 @@ impl AssetPipeline {
             )
             .await;
 
+            // Controls have independent payloads and survive unrelated asset extraction failures.
+            let control_warning = match crate::controls::extract_archive(
+                &mut control_sources,
+                archive,
+                &archive_key,
+                &control_scratch.path().join(index.to_string()),
+            ) {
+                Ok(warnings) => {
+                    report.warnings.extend(warnings);
+                    None
+                }
+                Err(warning) => Some(warning),
+            };
             match result {
                 Ok(outcome) => {
+                    if let Some(warning) = control_warning {
+                        report.warnings.push(warning);
+                    }
                     report
                         .archive_timings
                         .insert(archive_key.clone(), outcome.timings);
@@ -1003,6 +1049,25 @@ impl AssetPipeline {
                 }
                 Err(error) => return Err(error),
             }
+            // A completed directory scan keeps its inventory counts even when the archive
+            // fails, and every outcome merges them exactly once.
+            for (extension, count) in ignored_inputs_by_extension {
+                *manifest
+                    .ignored_inputs_by_extension
+                    .entry(extension)
+                    .or_default() += count;
+            }
+        }
+
+        if !manifest.ignored_inputs_by_extension.is_empty() {
+            let ignored: u64 = manifest.ignored_inputs_by_extension.values().sum();
+            let message = format!(
+                "ignored {ignored} inputs in {} extension groups outside the selected input policy (counts in conversion-manifest.json)",
+                manifest.ignored_inputs_by_extension.len()
+            );
+            // The CLI prints report notices in its final summary; do not also emit a live
+            // notice, which would print the same inventory twice.
+            report.notices.push(message);
         }
 
         if config.mo2.is_none() {
@@ -1021,6 +1086,29 @@ impl AssetPipeline {
                 },
             )?;
         }
+        if config.mo2.is_some() {
+            for (relative, source) in &resolved_files {
+                crate::controls::record_loose(&mut control_sources, Path::new(relative), source);
+            }
+        } else {
+            for source in &files {
+                if let Ok(relative) = source.strip_prefix(&config.data_dir) {
+                    crate::controls::record_loose(&mut control_sources, relative, source);
+                }
+            }
+        }
+        // Scratch-backed controls need the same unknown-loose-winner masking as the VFS.
+        let blocked_control_prefixes: BTreeSet<_> = undiscovered
+            .iter()
+            .filter_map(|path| path.strip_prefix(&config.data_dir).ok())
+            .map(|relative| PathBuf::from(normalize_separators(relative).to_ascii_lowercase()))
+            .collect();
+        control_sources.retain(|key, _| {
+            !blocked_control_prefixes
+                .iter()
+                .any(|prefix| Path::new(key).starts_with(prefix))
+        });
+        crate::controls::publish(staging, control_sources, &mut report)?;
         report.phase_elapsed_ms.insert(
             "archive_ingestion_and_loose_overlay".into(),
             extraction_started.elapsed().as_millis(),
@@ -1187,6 +1275,10 @@ impl AssetPipeline {
                     crate::esm::inhouse::write_terrain_caches(&merged, &db_path, staging)?;
                 } else {
                     write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+                    write_preserved_cell_cache(
+                        &merged,
+                        &staging.join("cell_cache_preserved.rkyv"),
+                    )?;
                 }
                 report.phase_elapsed_ms.insert(
                     "terrain_caches".into(),
@@ -1256,13 +1348,11 @@ impl AssetPipeline {
                 report
                     .artifacts
                     .push(PathBuf::from("inhouse-reader-diagnostics.json"));
-                report
-                    .artifacts
-                    .push(PathBuf::from("cell_cache_preserved.rkyv"));
             }
             report.artifacts.extend([
                 PathBuf::from("skyrim_world.db"),
                 PathBuf::from("cell_cache.rkyv"),
+                PathBuf::from("cell_cache_preserved.rkyv"),
                 PathBuf::from("record-reader.json"),
             ]);
         }
@@ -1736,6 +1826,27 @@ impl AssetPipeline {
             }
             report_projection_omissions(&mut report, &integration.projection_omissions);
             report.integration = Some(integration);
+            // Explicit invalidation also bypasses otherwise matching published grass masks.
+            let previous_grass = config.output_dir.join("grass_cache.rkyv");
+            let grass = write_grass_cache_with_cancel(
+                &Connection::open(staging.join("skyrim_world.db"))?,
+                staging,
+                &staging.join("cell_cache_preserved.rkyv"),
+                (!config.invalidate_cache).then_some(previous_grass.as_path()),
+                &staging.join("grass_cache.rkyv"),
+                cancellation,
+            )?;
+            // Integration already reports failed model conversion. Missing bounds or geometry the
+            // optional sampler cannot inspect only limit the mask; they do not fail this conversion.
+            crate::cache::record_grass_artifact(&mut manifest, staging)?;
+            report.notices.extend(grass.notices());
+            let grass_warnings = grass.warnings();
+            if !grass_warnings.is_empty() {
+                // Asset repair cannot restore rules or terrain omitted by the grass bake.
+                manifest.record_data_complete = Some(false);
+            }
+            report.warnings.extend(grass_warnings);
+            report.artifacts.push(PathBuf::from("grass_cache.rkyv"));
             report
                 .artifacts
                 .push(PathBuf::from("integration-report.json"));
@@ -1939,7 +2050,7 @@ fn reusable_manifest(
                     }
                 }
             }
-            // Combined metadata proofs cannot name fixed-producer mesh contracts.
+            // Combined metadata proofs retain DDS/PEX provenance and require named mesh contracts.
             matched && (kind != "nif" || !crate::cache::mesh_output_contracts_apply(producer))
         };
         compatible.insert(
@@ -1990,9 +2101,9 @@ struct ConversionBatch<'a> {
 /// Converts every `.pex` under `staging/vfs` again, with the normal conversion's script stage.
 ///
 /// A metadata rebuild uses it when the source pack's scripts were produced under an older
-/// script ABI. Nothing is reused: no previous manifest, no staged output and no cache entry
-/// can satisfy a script here. The caller owns the manifest's other kinds and later checks the
-/// recorded script source hashes against the new ones.
+/// script ABI. Every script is regenerated with empty reuse state. The caller authenticates
+/// winning staged source keys and hashes before invoking this stage and owns the manifest's
+/// other asset kinds.
 pub(crate) async fn convert_staged_scripts(
     config: &PipelineConfig,
     staging: &Path,
@@ -3654,7 +3765,10 @@ fn discover_inputs(
     mut failed: impl FnMut(&Path, color_eyre::Report) -> Result<()>,
 ) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    for entry in WalkDir::new(root).follow_links(false) {
+    let mut walker = WalkDir::new(root).follow_links(false).into_iter();
+    // The test denial hook needs the iterator to skip an inaccessible directory's descendants.
+    #[allow(clippy::while_let_on_iterator)]
+    while let Some(entry) = walker.next() {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
@@ -3669,12 +3783,61 @@ fn discover_inputs(
                 continue;
             }
         };
+        #[cfg(test)]
+        if discovery_failure_hook::is_blocked(entry.path()) {
+            walker.skip_current_dir();
+            failed(
+                entry.path(),
+                color_eyre::Report::from(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "synthetic directory traversal denial",
+                ))
+                .wrap_err(format!("failed to discover inputs in {}", root.display())),
+            )?;
+            continue;
+        }
         if entry.file_type().is_file() {
             files.push(entry.into_path());
         }
     }
     files.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
     Ok(files)
+}
+
+/// Inject a path-scoped traversal denial without depending on Windows ACLs or Unix privilege.
+#[cfg(test)]
+mod discovery_failure_hook {
+    use std::{
+        cell::RefCell,
+        path::{Path, PathBuf},
+    };
+
+    thread_local! {
+        static BLOCKED: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    pub(super) struct Guard;
+
+    impl Drop for Guard {
+        /// Restore discovery even if the regression panics.
+        fn drop(&mut self) {
+            BLOCKED.with(|blocked| *blocked.borrow_mut() = None);
+        }
+    }
+
+    /// Deny one directory on the current test's single-threaded Tokio runtime.
+    pub(super) fn block(path: &Path) -> Guard {
+        BLOCKED.with(|blocked| {
+            assert!(blocked.borrow().is_none());
+            *blocked.borrow_mut() = Some(path.to_owned());
+        });
+        Guard
+    }
+
+    /// Match only the selected directory; the iterator skips its descendants.
+    pub(super) fn is_blocked(path: &Path) -> bool {
+        BLOCKED.with(|blocked| blocked.borrow().as_deref() == Some(path))
+    }
 }
 
 /// Fails closed when unreadable source paths would make a run publish an incomplete pack over a
@@ -3976,6 +4139,9 @@ pub(crate) fn validate_artifact(
                 .map_err(|error| {
                     color_eyre::eyre::eyre!("invalid Luau artifact {}: {error}", path.display())
                 })?;
+        }
+        Some("rkyv") if relative == Path::new("grass_cache.rkyv") => {
+            crate::esm::grass_cache::validate_grass_cache(&path)?;
         }
         _ => {}
     }
@@ -4351,6 +4517,15 @@ pub(crate) fn non_mo2_archive_is_active(archive: &Path, owners: &BTreeMap<String
         .is_none_or(|(_, active)| *active)
 }
 
+/// Lists active BSAs from the same recursive Data discovery used by non-MO2 conversion.
+pub fn active_data_bsa_paths(data: &Path, plugins: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut files = discover(data)?;
+    let owners = installed_archive_owners(data, &files, plugins);
+    files.retain(|path| extension(path, &["bsa"]) && non_mo2_archive_is_active(path, &owners));
+    sort_archives_by_load_order(&mut files, plugins);
+    Ok(files)
+}
+
 /// Match an exact normalized stem or an owner followed by a space, dash or underscore.
 /// Ownership, MO2 activity and priority share this companion-name boundary.
 fn archive_stem_matches_plugin(stem: &str, plugin: &str) -> bool {
@@ -4385,6 +4560,7 @@ pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[P
             crate::esm::load_order::normalize_plugin_name(
                 &archive.file_stem().unwrap_or_default().to_string_lossy(),
             ),
+            archive.clone(),
         )
     });
 }
@@ -6942,9 +7118,20 @@ mod tests {
         );
     }
 
-    /// An adapter-10 combined proof preserves DDS/PEX candidates but cannot prove NIF contracts.
+    /// Known combined settings retain DDS candidates and scripts without relabeling mesh contracts.
     #[test]
-    fn adapter10_combined_asset_proof_reuses_dds_and_pex_but_excludes_nif_without_relabeling() {
+    fn adapter10_combined_asset_proof_retains_dds_candidates_and_pex() {
+        assert_historical_combined_asset_proof(10);
+    }
+
+    /// Adapter 11 retains the same selective asset candidates without upgrading their producer.
+    #[test]
+    fn adapter11_combined_asset_proof_retains_dds_candidates_and_pex() {
+        assert_historical_combined_asset_proof(11);
+    }
+
+    /// Check exact historical settings while preserving source proofs and excluding unproven meshes.
+    fn assert_historical_combined_asset_proof(adapter: u32) {
         let directory = tempfile::tempdir().unwrap();
         let mut config = PipelineConfig::new(
             directory.path().join("Data"),
@@ -6952,7 +7139,7 @@ mod tests {
         );
         config.record_reader = crate::config::RecordReader::Inhouse;
         let mut identity = crate::esm::inhouse::reader_identity(config.record_reader);
-        identity["adapter_version"] = serde_json::json!(10);
+        identity["adapter_version"] = serde_json::json!(adapter);
         let historical = serde_json::json!({
             "schema": CONVERTER_SCHEMA_VERSION,
             "texture_etc1s_quality": config.texture_fallback_quality,
@@ -7023,7 +7210,7 @@ mod tests {
                 ),
             ]
             .into(),
-            "combined metadata proof must retain DDS/PEX provenance and exclude unproven NIF"
+            "known combined settings retain DDS candidates for per-source checks and PEX, excluding unproven NIF"
         );
         assert_eq!(reused.schema_version, CONVERTER_SCHEMA_VERSION);
         assert_eq!(reused.configuration_hash, recorded);
@@ -11233,7 +11420,8 @@ mod tests {
         let mut archives = vec![
             PathBuf::from("Example - Textures.bsa"),
             PathBuf::from("Skyrim - Textures.bsa"),
-            PathBuf::from("Update.bsa"),
+            PathBuf::from("b/update.bsa"),
+            PathBuf::from("A/Update.bsa"),
             PathBuf::from("Skyrim - Meshes.bsa"),
         ];
         sort_archives_by_load_order(&mut archives, &plugins);
@@ -11242,7 +11430,8 @@ mod tests {
             vec![
                 PathBuf::from("Skyrim - Meshes.bsa"),
                 PathBuf::from("Skyrim - Textures.bsa"),
-                PathBuf::from("Update.bsa"),
+                PathBuf::from("A/Update.bsa"),
+                PathBuf::from("b/update.bsa"),
                 PathBuf::from("Example - Textures.bsa"),
             ]
         );
@@ -12376,6 +12565,826 @@ mod tests {
         }
     }
 
+    /// Encodes a top-level synthetic record with ordinary subrecord framing.
+    fn grass_policy_record(tag: &[u8; 4], id: u32, fields: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut payload = Vec::new();
+        for (tag, bytes) in fields {
+            payload.extend_from_slice(*tag);
+            payload.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+            payload.extend_from_slice(bytes);
+        }
+        [
+            tag.as_slice(),
+            &(payload.len() as u32).to_le_bytes(),
+            &[0; 4],
+            &id.to_le_bytes(),
+            &[0; 8],
+            &payload,
+        ]
+        .concat()
+    }
+
+    /// A converted bounded model beyond the sampler's depth limit only loses its optional mask.
+    #[tokio::test]
+    async fn unsampleable_grass_obstructions_publish_complete_cache_with_notices() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(data.join("meshes/architecture")).unwrap();
+        let plugin = dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+            author: "Grass cache regression",
+            worldspace: "DeepModelWorld",
+            cells: &[dummy_content::esm::PRESET_EXTERIOR_CELL],
+            model_path: "architecture/deep.nif",
+            diffuse: "textures/unavailable.dds",
+            normal_texture: "textures/unavailable_n.dds",
+        })
+        .unwrap();
+        fs::write(data.join("Skyrim.esm"), plugin).unwrap();
+        let mut patch = grass_policy_record(
+            b"TES4",
+            0,
+            &[(b"MAST", b"Skyrim.esm\0".to_vec()), (b"DATA", vec![0; 8])],
+        );
+        let mut grass_data = vec![40, 0, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        for value in [0.0f32, 0.0, 0.0, 1.0] {
+            grass_data.extend(value.to_le_bytes());
+        }
+        grass_data.extend([0; 4]);
+        patch.extend(grass_policy_record(
+            b"GRAS",
+            0x0100_0801,
+            &[
+                (b"MODL", b"grass/optional.nif\0".to_vec()),
+                (b"DATA", grass_data),
+            ],
+        ));
+        patch.extend(grass_policy_record(
+            b"LTEX",
+            4,
+            &[
+                (b"TNAM", 2u32.to_le_bytes().to_vec()),
+                (b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec()),
+            ],
+        ));
+        fs::write(data.join("Grass.esp"), patch).unwrap();
+        let shape = dummy_content::nif::StaticShape {
+            name: "DeepBlocker",
+            positions: &[[0.0, 0.0, 32.0], [64.0, 0.0, 32.0], [0.0, 64.0, 32.0]],
+            normals: &[[0.0, 0.0, 1.0]; 3],
+            uvs: &[[0.0, 0.0]; 3],
+            indices: &[[0, 1, 2]],
+            diffuse: "textures/unavailable.dds",
+            normal_texture: "textures/unavailable_n.dds",
+        };
+        fs::write(
+            data.join("meshes/architecture/deep.nif"),
+            dummy_content::nif::static_shape(&shape).unwrap(),
+        )
+        .unwrap();
+        let first = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(first.complete, "{:?}", first.warnings);
+        assert!(first.integration.as_ref().unwrap().passed);
+        let mesh = output.join("meshes/architecture/deep.glb");
+        let original_bounds = MeshConverter::glb_bounds(&mesh).unwrap();
+        let bytes = fs::read(&mesh).unwrap();
+        let json_length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&bytes[20..20 + json_length]).unwrap();
+        let roots = document["scenes"][0]["nodes"].clone();
+        let nodes = document["nodes"].as_array_mut().unwrap();
+        let first_wrapper = nodes.len();
+        for index in 0..129 {
+            let children = if index == 128 {
+                roots.clone()
+            } else {
+                serde_json::json!([first_wrapper + index + 1])
+            };
+            nodes.push(serde_json::json!({"children": children}));
+        }
+        document["scenes"][0]["nodes"] = serde_json::json!([first_wrapper]);
+        let mut json = serde_json::to_vec(&document).unwrap();
+        while !json.len().is_multiple_of(4) {
+            json.push(b' ');
+        }
+        let suffix = &bytes[20 + json_length..];
+        let mut deep = bytes[..8].to_vec();
+        deep.extend(((20 + json.len() + suffix.len()) as u32).to_le_bytes());
+        deep.extend((json.len() as u32).to_le_bytes());
+        deep.extend_from_slice(b"JSON");
+        deep.extend(json);
+        deep.extend_from_slice(suffix);
+        fs::remove_file(&mesh).unwrap();
+        fs::write(&mesh, deep).unwrap();
+        assert_eq!(MeshConverter::glb_bounds(&mesh).unwrap(), original_bounds);
+        let mut manifest =
+            ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+        let entry = manifest
+            .entries
+            .get_mut("meshes/architecture/deep.nif")
+            .unwrap();
+        entry.output_size = fs::metadata(&mesh).unwrap().len();
+        entry.output_hash = hash_file(&mesh).unwrap();
+        manifest
+            .save(&output.join("conversion-manifest.json"))
+            .unwrap();
+        fs::remove_file(output.join("grass_cache.rkyv")).unwrap();
+
+        let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(
+            report.cache_hits > 0,
+            "the converted obstruction must be reused"
+        );
+        assert!(report.integration.as_ref().unwrap().passed);
+        let cache = crate::esm::grass_cache::validate_grass_cache(&output.join("grass_cache.rkyv"))
+            .unwrap();
+        let archived =
+            rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&cache).unwrap();
+        assert_eq!(archived.cells.len(), 1);
+        assert_eq!(archived.types.len(), 1);
+        drop(cache);
+        let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT count(*) FROM grass_types WHERE id=?1",
+                    [0x0100_0801u32],
+                    |row| row.get::<_, u32>(0)
+                )
+                .unwrap(),
+            1
+        );
+        assert!(report.complete, "{:?}", report.warnings);
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|message| message.contains("1 missing or invalid obstruction models"))
+        );
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|message| message.contains("hierarchy exceeds inspection depth"))
+        );
+        assert!(
+            ConversionManifest::load(&output.join("conversion-manifest.json"))
+                .unwrap()
+                .complete
+        );
+    }
+
+    /// Skin fallback and an unreadable static fallback preserve publication and healthy neighbors.
+    #[tokio::test]
+    async fn malformed_skin_obstructions_publish_complete_cache_with_healthy_neighbors() {
+        /// Frame synthetic exterior reference groups without involving production writers.
+        fn group(kind: u32, label: u32, payload: Vec<u8>) -> Vec<u8> {
+            let mut bytes = b"GRUP".to_vec();
+            bytes.extend((24 + payload.len() as u32).to_le_bytes());
+            bytes.extend(label.to_le_bytes());
+            bytes.extend(kind.to_le_bytes());
+            bytes.extend([0; 8]);
+            bytes.extend(payload);
+            bytes
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(data.join("meshes/architecture")).unwrap();
+        let plugin = dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+            author: "Skin obstruction recovery",
+            worldspace: "SkinRecoveryWorld",
+            cells: &[
+                dummy_content::esm::Cell {
+                    grid_x: 0,
+                    grid_y: 0,
+                },
+                dummy_content::esm::Cell {
+                    grid_x: 1,
+                    grid_y: 0,
+                },
+            ],
+            model_path: "architecture/healthy.nif",
+            diffuse: "textures/unavailable.dds",
+            normal_texture: "textures/unavailable_n.dds",
+        })
+        .unwrap();
+        fs::write(data.join("Skyrim.esm"), plugin).unwrap();
+        let mut patch = grass_policy_record(
+            b"TES4",
+            0,
+            &[(b"MAST", b"Skyrim.esm\0".to_vec()), (b"DATA", vec![0; 8])],
+        );
+        let mut rule = vec![40, 0, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        for value in [0.0f32, 0.0, 0.0, 1.0] {
+            rule.extend(value.to_le_bytes());
+        }
+        rule.extend([0; 4]);
+        patch.extend(grass_policy_record(
+            b"GRAS",
+            0x0100_0801,
+            &[(b"MODL", b"grass/optional.nif\0".to_vec()), (b"DATA", rule)],
+        ));
+        patch.extend(grass_policy_record(
+            b"LTEX",
+            4,
+            &[
+                (b"TNAM", 2u32.to_le_bytes().to_vec()),
+                (b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec()),
+            ],
+        ));
+        let mut references = Vec::new();
+        for (id, name) in [(0x0100_0802u32, "fallback"), (0x0100_0803, "broken")] {
+            patch.extend(grass_policy_record(
+                b"STAT",
+                id,
+                &[(b"MODL", format!("architecture/{name}.nif\0").into_bytes())],
+            ));
+            let position = [2048.0f32, 2048.0, 0.0, 0.0, 0.0, 0.0]
+                .into_iter()
+                .flat_map(f32::to_le_bytes)
+                .collect();
+            references.extend(grass_policy_record(
+                b"REFR",
+                id + 16,
+                &[(b"NAME", id.to_le_bytes().to_vec()), (b"DATA", position)],
+            ));
+        }
+        // Dummy content's first CELL is 0x10 in worldspace 1.
+        patch.extend(group(1, 1, group(8, 0x10, references)));
+        fs::write(data.join("Grass.esp"), patch).unwrap();
+        let shape = dummy_content::nif::StaticShape {
+            name: "RecoveryRoof",
+            positions: &[
+                [-256.0, -256.0, 32.0],
+                [256.0, -256.0, 32.0],
+                [256.0, 256.0, 32.0],
+                [-256.0, 256.0, 32.0],
+            ],
+            normals: &[[0.0, 0.0, 1.0]; 4],
+            uvs: &[[0.0, 0.0]; 4],
+            indices: &[[0, 1, 2], [0, 2, 3]],
+            diffuse: "textures/unavailable.dds",
+            normal_texture: "textures/unavailable_n.dds",
+        };
+        let nif = dummy_content::nif::static_shape(&shape).unwrap();
+        for name in ["healthy", "fallback", "broken"] {
+            fs::write(data.join(format!("meshes/architecture/{name}.nif")), &nif).unwrap();
+        }
+        let first = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(first.complete, "{:?}", first.warnings);
+        assert!(first.integration.as_ref().unwrap().passed);
+        let baseline = {
+            let map =
+                crate::esm::grass_cache::validate_grass_cache(&output.join("grass_cache.rkyv"))
+                    .unwrap();
+            rkyv::deserialize::<shared::grass::GrassCache, rkyv::rancor::Error>(
+                rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&map)
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        assert_eq!(baseline.cells.len(), 2);
+        for cell in &baseline.cells {
+            assert_ne!(
+                cell.quadrants[3].exclusion[0] & 1,
+                0,
+                "roof covers the first tile beyond cell center"
+            );
+        }
+        let mut manifest =
+            ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+        assert_eq!(manifest.record_data_complete, Some(true));
+        for name in ["fallback", "broken"] {
+            let mesh = output.join(format!("meshes/architecture/{name}.glb"));
+            let original_bounds = MeshConverter::glb_bounds(&mesh).unwrap();
+            let bytes = fs::read(&mesh).unwrap();
+            let json_length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+            let mut document: serde_json::Value =
+                serde_json::from_slice(&bytes[20..20 + json_length]).unwrap();
+            // Skin-only corruption must recover through ordinary static decoding.
+            document["nodes"][0]["skin"] = 0.into();
+            document["skins"] = serde_json::json!([{"joints":[999]}]);
+            if name == "broken" {
+                // Valid bounds remain readable, but static traversal cannot safely sample this model.
+                let roots = document["scenes"][0]["nodes"].clone();
+                let nodes = document["nodes"].as_array_mut().unwrap();
+                let start = nodes.len();
+                for index in 0..129 {
+                    let children = if index == 128 {
+                        roots.clone()
+                    } else {
+                        serde_json::json!([start + index + 1])
+                    };
+                    nodes.push(serde_json::json!({"children":children}));
+                }
+                document["scenes"][0]["nodes"] = serde_json::json!([start]);
+            }
+            let mut json = serde_json::to_vec(&document).unwrap();
+            while !json.len().is_multiple_of(4) {
+                json.push(b' ');
+            }
+            let suffix = &bytes[20 + json_length..];
+            let mut edited = bytes[..8].to_vec();
+            edited.extend(((20 + json.len() + suffix.len()) as u32).to_le_bytes());
+            edited.extend((json.len() as u32).to_le_bytes());
+            edited.extend_from_slice(b"JSON");
+            edited.extend(json);
+            edited.extend_from_slice(suffix);
+            // Published outputs may be hard links to retained cache entries.
+            fs::remove_file(&mesh).unwrap();
+            fs::write(&mesh, edited).unwrap();
+            assert_eq!(MeshConverter::glb_bounds(&mesh).unwrap(), original_bounds);
+            let entry = manifest
+                .entries
+                .get_mut(&format!("meshes/architecture/{name}.nif"))
+                .unwrap();
+            entry.output_size = fs::metadata(&mesh).unwrap().len();
+            entry.output_hash = hash_file(&mesh).unwrap();
+        }
+        manifest
+            .save(&output.join("conversion-manifest.json"))
+            .unwrap();
+        fs::remove_file(output.join("grass_cache.rkyv")).unwrap();
+
+        let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(
+            report.cache_hits >= 3,
+            "all three obstruction assets must be reused"
+        );
+        assert!(report.integration.as_ref().unwrap().passed);
+        assert!(report.complete, "{:?}", report.warnings);
+        assert_eq!(report.warnings, first.warnings);
+        let map = crate::esm::grass_cache::validate_grass_cache(&output.join("grass_cache.rkyv"))
+            .unwrap();
+        let actual = rkyv::deserialize::<shared::grass::GrassCache, rkyv::rancor::Error>(
+            rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&map).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(actual.types, baseline.types);
+        assert_eq!(actual.cells.len(), 2);
+        for (actual, expected) in actual.cells.iter().zip(&baseline.cells) {
+            assert_eq!(actual.cell_id, expected.cell_id);
+            assert_eq!(actual.quadrants, expected.quadrants);
+        }
+        let notices: Vec<_> = report
+            .notices
+            .iter()
+            .filter(|message| {
+                message.contains("grass exclusion") || message.starts_with("obstruction ")
+            })
+            .collect();
+        assert_eq!(
+            notices.len(),
+            2,
+            "one summary and one model diagnostic: {notices:?}"
+        );
+        assert!(
+            notices
+                .iter()
+                .any(|message| message.contains("1 missing or invalid obstruction models"))
+        );
+        assert!(
+            notices
+                .iter()
+                .any(|message| message.contains("meshes/architecture/broken.glb"))
+        );
+        let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT count(*) FROM grass_types WHERE id=?1",
+                    [0x0100_0801u32],
+                    |row| row.get::<_, u32>(0)
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT count(*) FROM statics WHERE id IN (?1,?2,?3)",
+                    [3u32, 0x0100_0802, 0x0100_0803],
+                    |row| row.get::<_, u32>(0)
+                )
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT count(*) FROM \"references\" WHERE base_form_id IN (?1,?2,?3)",
+                    [3u32, 0x0100_0802, 0x0100_0803],
+                    |row| row.get::<_, u32>(0),
+                )
+                .unwrap(),
+            4,
+        );
+        let published = ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+        assert!(published.complete);
+        assert_eq!(published.record_data_complete, Some(true));
+    }
+
+    /// Broken grass definitions warn without preventing publication of neighboring grass cells.
+    #[tokio::test]
+    async fn broken_grass_rules_publish_healthy_neighbor_cells_with_warnings() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        let plugin = dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+            author: "Broken grass regression",
+            worldspace: "GrassRecoveryWorld",
+            cells: &[
+                dummy_content::esm::Cell {
+                    grid_x: 3,
+                    grid_y: -2,
+                },
+                dummy_content::esm::Cell {
+                    grid_x: 4,
+                    grid_y: -2,
+                },
+            ],
+            model_path: "architecture/unavailable.nif",
+            diffuse: "textures/unavailable.dds",
+            normal_texture: "textures/unavailable_n.dds",
+        })
+        .unwrap();
+        fs::write(data.join("Skyrim.esm"), plugin).unwrap();
+        let mut patch = grass_policy_record(
+            b"TES4",
+            0,
+            &[(b"MAST", b"Skyrim.esm\0".to_vec()), (b"DATA", vec![0; 8])],
+        );
+        let mut rule = vec![40, 0, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        for value in [0.0f32, 0.0, 0.0, 1.0] {
+            rule.extend(value.to_le_bytes());
+        }
+        rule.extend([0; 4]);
+        patch.extend(grass_policy_record(
+            b"GRAS",
+            0x0100_0801,
+            &[(b"MODL", b"grass/healthy.nif\0".to_vec()), (b"DATA", rule)],
+        ));
+        patch.extend(grass_policy_record(
+            b"GRAS",
+            0x0100_0802,
+            &[
+                (b"MODL", b"grass/broken.nif\0".to_vec()),
+                (b"DATA", vec![1, 2, 3]),
+            ],
+        ));
+        patch.extend(grass_policy_record(
+            b"LTEX",
+            4,
+            &[
+                (b"TNAM", 2u32.to_le_bytes().to_vec()),
+                (b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec()),
+                (b"GNAM", 0x0100_0802u32.to_le_bytes().to_vec()),
+            ],
+        ));
+        fs::write(data.join("Grass.esp"), patch).unwrap();
+        let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(!report.complete);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|message| message.contains("1 incomplete or invalid grass rules")),
+            "{:?}",
+            report.warnings
+        );
+        let cache = crate::esm::grass_cache::validate_grass_cache(&output.join("grass_cache.rkyv"))
+            .unwrap();
+        let archived =
+            rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&cache).unwrap();
+        assert_eq!(archived.types.len(), 2);
+        assert_eq!(archived.types[0].form_id.to_native(), 0x0100_0801);
+        assert_eq!(archived.types[1].form_id.to_native(), 0x0100_0802);
+        assert!(
+            archived.types[1].model_path.is_empty(),
+            "bad rules retain a non-emitting slot"
+        );
+        assert_eq!(archived.cells.len(), 2);
+        assert!(
+            !ConversionManifest::load(&output.join("conversion-manifest.json"))
+                .unwrap()
+                .complete
+        );
+    }
+
+    /// Metadata rebuilds retain optional-model notices even when every grass cell is reused.
+    #[tokio::test]
+    async fn metadata_rebuild_preserves_obstruction_notices_on_full_grass_reuse() {
+        /// Frame exterior references for the first synthetic cell.
+        fn group(kind: u32, label: u32, payload: Vec<u8>) -> Vec<u8> {
+            let mut bytes = b"GRUP".to_vec();
+            bytes.extend((24 + payload.len() as u32).to_le_bytes());
+            bytes.extend(label.to_le_bytes());
+            bytes.extend(kind.to_le_bytes());
+            bytes.extend([0; 8]);
+            bytes.extend(payload);
+            bytes
+        }
+
+        /// Rebuild metadata while draining the bounded progress channel.
+        async fn rebuild(data: &Path, source: &Path, output: &Path) -> PipelineReport {
+            let (tx, mut rx) = mpsc::channel(64);
+            let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+            let report = AssetPipeline::rebuild_metadata_async(
+                PipelineConfig::new(data, output),
+                source,
+                tx,
+            )
+            .await
+            .unwrap();
+            drain.await.unwrap();
+            report
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let source = temp.path().join("source");
+        let cold = temp.path().join("cold");
+        let warm = temp.path().join("warm");
+        fs::create_dir_all(data.join("meshes/architecture")).unwrap();
+        fs::write(
+            data.join("Skyrim.esm"),
+            dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+                author: "Metadata obstruction notices",
+                worldspace: "MetadataNoticeWorld",
+                cells: &[
+                    dummy_content::esm::Cell {
+                        grid_x: 0,
+                        grid_y: 0,
+                    },
+                    dummy_content::esm::Cell {
+                        grid_x: 1,
+                        grid_y: 0,
+                    },
+                ],
+                model_path: "architecture/healthy.nif",
+                diffuse: "textures/unavailable.dds",
+                normal_texture: "textures/unavailable_n.dds",
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let mut patch = grass_policy_record(
+            b"TES4",
+            0,
+            &[(b"MAST", b"Skyrim.esm\0".to_vec()), (b"DATA", vec![0; 8])],
+        );
+        let mut rule = vec![40, 0, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        for value in [0.0f32, 0.0, 0.0, 1.0] {
+            rule.extend(value.to_le_bytes());
+        }
+        rule.extend([0; 4]);
+        patch.extend(grass_policy_record(
+            b"GRAS",
+            0x0100_0801,
+            &[(b"MODL", b"grass/optional.nif\0".to_vec()), (b"DATA", rule)],
+        ));
+        patch.extend(grass_policy_record(
+            b"LTEX",
+            4,
+            &[
+                (b"TNAM", 2u32.to_le_bytes().to_vec()),
+                (b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec()),
+            ],
+        ));
+        let mut references = Vec::new();
+        for (id, name) in [(0x0100_0802u32, "missing"), (0x0100_0803, "malformed")] {
+            patch.extend(grass_policy_record(
+                b"STAT",
+                id,
+                &[(b"MODL", format!("architecture/{name}.nif\0").into_bytes())],
+            ));
+            references.extend(grass_policy_record(
+                b"REFR",
+                id + 16,
+                &[
+                    (b"NAME", id.to_le_bytes().to_vec()),
+                    (
+                        b"DATA",
+                        [2048.0f32, 2048.0, 0.0, 0.0, 0.0, 0.0]
+                            .into_iter()
+                            .flat_map(f32::to_le_bytes)
+                            .collect(),
+                    ),
+                ],
+            ));
+        }
+        patch.extend(group(1, 1, group(8, 0x10, references)));
+        fs::write(data.join("Grass.esp"), patch).unwrap();
+        let nif = dummy_content::nif::static_shape(&dummy_content::nif::StaticShape {
+            name: "HealthyMetadataRoof",
+            positions: &[
+                [-256.0, -256.0, 32.0],
+                [256.0, -256.0, 32.0],
+                [256.0, 256.0, 32.0],
+                [-256.0, 256.0, 32.0],
+            ],
+            normals: &[[0.0, 0.0, 1.0]; 4],
+            uvs: &[[0.0, 0.0]; 4],
+            indices: &[[0, 1, 2], [0, 2, 3]],
+            diffuse: "textures/unavailable.dds",
+            normal_texture: "textures/unavailable_n.dds",
+        })
+        .unwrap();
+        for name in ["healthy", "malformed"] {
+            fs::write(data.join(format!("meshes/architecture/{name}.nif")), &nif).unwrap();
+        }
+        let initial = run_without_progress(PipelineConfig::new(&data, &source)).await;
+        assert!(initial.complete, "{:?}", initial.warnings);
+
+        // Keep readable bounds and a valid GLB container, but exceed the static sampler's depth.
+        // This exercises a readable malformed model without failing retained-asset verification.
+        let mesh = source.join("meshes/architecture/malformed.glb");
+        let bounds = MeshConverter::glb_bounds(&mesh).unwrap();
+        let bytes = fs::read(&mesh).unwrap();
+        let json_length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&bytes[20..20 + json_length]).unwrap();
+        let roots = document["scenes"][0]["nodes"].clone();
+        let nodes = document["nodes"].as_array_mut().unwrap();
+        let start = nodes.len();
+        for index in 0..129 {
+            let children = if index == 128 {
+                roots.clone()
+            } else {
+                serde_json::json!([start + index + 1])
+            };
+            nodes.push(serde_json::json!({"children": children}));
+        }
+        document["scenes"][0]["nodes"] = serde_json::json!([start]);
+        let mut json = serde_json::to_vec(&document).unwrap();
+        while !json.len().is_multiple_of(4) {
+            json.push(b' ');
+        }
+        let suffix = &bytes[20 + json_length..];
+        let mut edited = bytes[..8].to_vec();
+        edited.extend(((20 + json.len() + suffix.len()) as u32).to_le_bytes());
+        edited.extend((json.len() as u32).to_le_bytes());
+        edited.extend_from_slice(b"JSON");
+        edited.extend(json);
+        edited.extend_from_slice(suffix);
+        fs::remove_file(&mesh).unwrap();
+        fs::write(&mesh, edited).unwrap();
+        assert_eq!(MeshConverter::glb_bounds(&mesh).unwrap(), bounds);
+        let mut manifest =
+            ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
+        let entry = manifest
+            .entries
+            .get_mut("meshes/architecture/malformed.nif")
+            .unwrap();
+        entry.output_size = fs::metadata(&mesh).unwrap().len();
+        entry.output_hash = hash_file(&mesh).unwrap();
+        manifest
+            .save(&source.join("conversion-manifest.json"))
+            .unwrap();
+        fs::remove_file(source.join("grass_cache.rkyv")).unwrap();
+
+        let cold_report = rebuild(&data, &source, &cold).await;
+        let warm_report = rebuild(&data, &cold, &warm).await;
+        for (output, report, baked, reused) in
+            [(&cold, &cold_report, 2, 0), (&warm, &warm_report, 0, 2)]
+        {
+            let provenance: serde_json::Value =
+                serde_json::from_slice(&fs::read(output.join("metadata-rebuild.json")).unwrap())
+                    .unwrap();
+            assert_eq!(provenance["grass_baked_cells"], baked);
+            assert_eq!(provenance["grass_reused_cells"], reused);
+            assert!(report.complete, "{:?}", report.warnings);
+            assert!(report.integration.as_ref().unwrap().passed);
+            assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+            let published =
+                ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+            assert!(published.complete);
+            assert_eq!(published.record_data_complete, Some(true));
+            let map =
+                crate::esm::grass_cache::validate_grass_cache(&output.join("grass_cache.rkyv"))
+                    .unwrap();
+            let cache =
+                rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&map)
+                    .unwrap();
+            assert_eq!(cache.types.len(), 1);
+            assert_eq!(cache.types[0].form_id.to_native(), 0x0100_0801);
+            assert_eq!(cache.cells.len(), 2);
+            for cell in cache.cells.iter() {
+                assert_ne!(
+                    cell.quadrants[3].exclusion[0] & 1,
+                    0,
+                    "healthy roof must still obstruct its neighboring grass cell"
+                );
+            }
+        }
+        assert_eq!(
+            fs::read(cold.join("grass_cache.rkyv")).unwrap(),
+            fs::read(warm.join("grass_cache.rkyv")).unwrap()
+        );
+        let cold_notices: Vec<_> = cold_report
+            .notices
+            .iter()
+            .filter(|message| {
+                message.contains("grass exclusion") || message.starts_with("obstruction ")
+            })
+            .collect();
+        let warm_notices: Vec<_> = warm_report
+            .notices
+            .iter()
+            .filter(|message| {
+                message.contains("grass exclusion") || message.starts_with("obstruction ")
+            })
+            .collect();
+        assert_eq!(cold_notices.len(), 3, "{cold_notices:?}");
+        assert!(cold_notices.iter().any(|message| {
+            message.contains("1 exterior references without validated model bounds")
+        }));
+        assert!(
+            cold_notices
+                .iter()
+                .any(|message| message.contains("1 missing or invalid obstruction models"))
+        );
+        assert!(cold_notices.iter().any(|message| {
+            message.starts_with("obstruction meshes/architecture/malformed.glb:")
+                && message.contains("hierarchy exceeds inspection depth")
+        }));
+        assert_eq!(
+            warm_notices, cold_notices,
+            "fully reused metadata rebuild must preserve counts and the first model diagnostic"
+        );
+    }
+
+    /// Missing optional obstruction geometry leaves a complete, valid published grass cache.
+    #[tokio::test]
+    async fn unavailable_grass_obstructions_do_not_make_conversion_incomplete() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        let plugin = dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+            author: "Grass cache regression",
+            worldspace: "MissingModelWorld",
+            cells: &[dummy_content::esm::PRESET_EXTERIOR_CELL],
+            model_path: "architecture/unavailable.nif",
+            diffuse: "textures/unavailable.dds",
+            normal_texture: "textures/unavailable_n.dds",
+        })
+        .unwrap();
+        fs::write(data.join("Skyrim.esm"), plugin).unwrap();
+        // Link the generated terrain to valid grass so optional obstruction masks are relevant.
+        let mut patch = grass_policy_record(
+            b"TES4",
+            0,
+            &[(b"MAST", b"Skyrim.esm\0".to_vec()), (b"DATA", vec![0; 8])],
+        );
+        let mut grass_data = vec![40, 0, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        for value in [0.0f32, 0.0, 0.0, 1.0] {
+            grass_data.extend(value.to_le_bytes());
+        }
+        grass_data.extend([0; 4]);
+        patch.extend(grass_policy_record(
+            b"GRAS",
+            0x0100_0801,
+            &[
+                (b"MODL", b"grass/optional.nif\0".to_vec()),
+                (b"DATA", grass_data),
+            ],
+        ));
+        patch.extend(grass_policy_record(
+            b"LTEX",
+            4,
+            &[
+                (b"TNAM", 2u32.to_le_bytes().to_vec()),
+                (b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec()),
+            ],
+        ));
+        fs::write(data.join("Grass.esp"), patch).unwrap();
+        let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(report.integration.as_ref().unwrap().passed);
+        assert!(report.complete, "{:?}", report.warnings);
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|message| message.contains("1 exterior references"))
+        );
+        assert!(
+            ConversionManifest::load(&output.join("conversion-manifest.json"))
+                .unwrap()
+                .complete
+        );
+        let cache = crate::esm::grass_cache::validate_grass_cache(&output.join("grass_cache.rkyv"))
+            .unwrap();
+        let archived =
+            rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&cache).unwrap();
+        assert_eq!(archived.types.len(), 1);
+        assert_eq!(archived.types[0].form_id.to_native(), 0x0100_0801);
+        assert_eq!(archived.cells.len(), 1);
+    }
+
     #[tokio::test]
     async fn failed_archives_still_skip_and_warn() {
         let temp = tempfile::tempdir().unwrap();
@@ -13438,6 +14447,219 @@ mod tests {
         (report, collect.await.unwrap())
     }
 
+    /// Metadata rebuild rejects invalidation before reading or reusing the source grass cache.
+    #[tokio::test]
+    async fn metadata_rebuild_rejects_invalidate_cache_before_package_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("modern");
+        let source = directory.path().join("absent-source");
+        fs::create_dir(&data).unwrap();
+        let mut config = PipelineConfig::new(&data, &output);
+        config.invalidate_cache = true;
+        let (tx, mut rx) = mpsc::channel(1);
+        let error = AssetPipeline::rebuild_metadata_async(config, &source, tx)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot resume, invalidate, or bypass asset verification"),
+            "wrong invalidation boundary: {error}",
+        );
+        assert!(!source.exists());
+        assert!(!output.exists());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// Repair rejects invalidation for previews and publication before inspecting the old cache.
+    #[test]
+    fn repair_rejects_invalidate_cache_before_package_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("modern");
+        fs::create_dir(&data).unwrap();
+        let mut config = PipelineConfig::new(&data, &output);
+        config.invalidate_cache = true;
+        for apply in [false, true] {
+            let error = crate::repair::repair_failed(&config, apply).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("repair cannot resume staging or invalidate the pack"),
+                "wrong invalidation boundary: {error}",
+            );
+            assert!(!output.exists());
+            assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        }
+    }
+
+    /// Explicit invalidation regenerates every mask even when previous cell keys still match.
+    #[tokio::test]
+    async fn invalidate_cache_rebakes_all_matching_previous_grass_cells() {
+        /// Read a validated archive into owned data so tests can seed distinct cached masks.
+        fn read_cache(output: &Path) -> shared::grass::GrassCache {
+            let map =
+                crate::esm::grass_cache::validate_grass_cache(&output.join("grass_cache.rkyv"))
+                    .unwrap();
+            rkyv::deserialize::<shared::grass::GrassCache, rkyv::rancor::Error>(
+                rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&map)
+                    .unwrap(),
+            )
+            .unwrap()
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("modern");
+        fs::create_dir(&data).unwrap();
+        fs::write(
+            data.join("Skyrim.esm"),
+            dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+                author: "Grass invalidation regression",
+                worldspace: "GrassInvalidateWorld",
+                cells: &[
+                    dummy_content::esm::Cell {
+                        grid_x: 0,
+                        grid_y: 0,
+                    },
+                    dummy_content::esm::Cell {
+                        grid_x: 2,
+                        grid_y: -1,
+                    },
+                ],
+                model_path: "test/unavailable.nif",
+                diffuse: "test/unavailable.dds",
+                normal_texture: "test/unavailable_n.dds",
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let mut patch = grass_policy_record(
+            b"TES4",
+            0,
+            &[(b"MAST", b"Skyrim.esm\0".to_vec()), (b"DATA", vec![0; 8])],
+        );
+        let mut rule = vec![40, 0, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        for value in [0.0f32, 0.0, 0.0, 1.0] {
+            rule.extend(value.to_le_bytes());
+        }
+        rule.extend([0; 4]);
+        patch.extend(grass_policy_record(
+            b"GRAS",
+            0x0100_0801,
+            &[(b"MODL", b"grass/optional.nif\0".to_vec()), (b"DATA", rule)],
+        ));
+        patch.extend(grass_policy_record(
+            b"LTEX",
+            4,
+            &[
+                (b"TNAM", 2u32.to_le_bytes().to_vec()),
+                (b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec()),
+            ],
+        ));
+        fs::write(data.join("Grass.esp"), patch).unwrap();
+        let mut config = cpu_lod_config(&data, &output);
+        config.no_lod = true;
+        let cold = run_without_progress(config.clone()).await;
+        assert!(cold.complete, "{:?}", cold.warnings);
+        let expected = read_cache(&output);
+        assert_eq!(
+            expected.cells.len(),
+            2,
+            "both exterior cells must carry grass"
+        );
+        let mut seeded = expected.clone();
+        for (index, cell) in seeded.cells.iter_mut().enumerate() {
+            for quadrant in &mut cell.quadrants {
+                assert!(quadrant.exclusion.iter().all(|byte| *byte == 0));
+                quadrant.exclusion.fill(0x51 + index as u8);
+            }
+        }
+        // Keep every input hash intact: these valid masks expose reuse rather than corruption recovery.
+        fs::write(
+            output.join("grass_cache.rkyv"),
+            rkyv::to_bytes::<rkyv::rancor::Error>(&seeded).unwrap(),
+        )
+        .unwrap();
+        let warm = run_without_progress(config.clone()).await;
+        assert!(warm.complete, "{:?}", warm.warnings);
+        assert_eq!(
+            read_cache(&output),
+            seeded,
+            "warm control must reuse all matching cells"
+        );
+
+        config.invalidate_cache = true;
+        let invalidated = run_without_progress(config).await;
+        assert!(invalidated.complete, "{:?}", invalidated.warnings);
+        let actual = read_cache(&output);
+        assert_eq!(actual.cells.len(), 2);
+        for (actual, expected) in actual.cells.iter().zip(&expected.cells) {
+            assert_eq!(
+                actual.input_hash, expected.input_hash,
+                "inputs must still match"
+            );
+            for (quadrant, expected) in actual.quadrants.iter().zip(&expected.quadrants) {
+                assert_eq!(
+                    quadrant.exclusion, expected.exclusion,
+                    "invalidate_cache must rebake matching previous grass cell {:08X}",
+                    actual.cell_id,
+                );
+            }
+        }
+    }
+
+    /// Legacy database reuse retains the full terrain input needed to publish grass again.
+    #[tokio::test]
+    async fn legacy_database_cache_republishes_identical_grass_from_preserved_terrain() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("modern");
+        fs::create_dir(&data).unwrap();
+        fs::write(
+            data.join("Skyrim.esm"),
+            dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+                author: "Legacy grass database cache",
+                worldspace: "GrassCacheWorld",
+                cells: &[dummy_content::esm::Cell {
+                    grid_x: 3,
+                    grid_y: -2,
+                }],
+                model_path: "test/cache.nif",
+                diffuse: "test/cache.dds",
+                normal_texture: "test/cache_n.dds",
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let mut config = cpu_lod_config(&data, &output);
+        config.record_reader = crate::config::RecordReader::Legacy;
+        config.no_lod = true;
+        let cold = run_without_progress(config.clone()).await;
+        assert!(cold.complete && !cold.database_cache_hit);
+        let grass = fs::read(output.join("grass_cache.rkyv")).unwrap();
+        let terrain = fs::read(output.join("cell_cache_preserved.rkyv")).unwrap();
+        let (tx, mut rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let warm = AssetPipeline::run_async(config, tx).await;
+        drain.await.unwrap();
+        assert!(
+            warm.is_ok(),
+            "warm legacy grass publication failed: {warm:?}"
+        );
+        let warm = warm.unwrap();
+        assert!(warm.complete && warm.database_cache_hit);
+        assert_eq!(warm.database_cache_files, 5);
+        assert_eq!(fs::read(output.join("grass_cache.rkyv")).unwrap(), grass);
+        assert_eq!(
+            fs::read(output.join("cell_cache_preserved.rkyv")).unwrap(),
+            terrain
+        );
+        crate::esm::grass_cache::validate_grass_cache(&output.join("grass_cache.rkyv")).unwrap();
+    }
+
     #[tokio::test]
     async fn database_cache_cold_warm_invalidation_and_corrupt_receipt_recovery() {
         let directory = tempfile::tempdir().unwrap();
@@ -14345,6 +15567,343 @@ mod tests {
         assert!(time_artifact_validation(output, &[], &semantics, 2).is_err());
     }
 
+    /// Reuse pre-existing v4 packs while publishing additive controls, provider winners and valid rows.
+    #[tokio::test]
+    async fn control_files_publish_winners_and_recover_malformed_lines() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        let control = b"Forward\t0x11\t0xff\t0x0001\t1\t1\t1\t0x1\r\nBack\t0x1f\t0xff\t0x0002\t1\t1\t1\r\nbroken row\r\n\r\nAccept\t0x1c\t0x00\t0x1000\t1\t0\t1\r\nTween Menu\t0x0f\t0xff\t!0,Pause\t1\t1\t1\r\n";
+        let path = "interface/controls/pc/controlmap.txt";
+        for (name, entries) in [
+            ("a.bsa", vec![dummy_content::Entry::new(path, b"earlier")]),
+            (
+                "z.bsa",
+                vec![
+                    dummy_content::Entry::new("Interface/Controls/PC/ControlMap.TXT", control),
+                    dummy_content::Entry::new(
+                        "interface/controls/pc/keyboard_english.txt",
+                        b"Synth\xa5\t0x11\r\n",
+                    ),
+                    dummy_content::Entry::new(
+                        "interface/controls/pc/gamepad.txt",
+                        b"SYNTH_A\t0x1000\r\n",
+                    ),
+                    dummy_content::Entry::new("interface/controls/pc/notes.txt", b"not runtime"),
+                    dummy_content::Entry::new("strings/review_english.strings", b"cached input"),
+                ],
+            ),
+        ] {
+            fs::write(
+                data.join(name),
+                dummy_content::bsa::v105(&entries, dummy_content::bsa::Compression::None).unwrap(),
+            )
+            .unwrap();
+        }
+        let config = cpu_lod_config(&data, &output);
+        // Seed exactly the pre-feature v4 coverage: controls are absent from its inventory.
+        let cache = config.ingestion_cache_dir().join(".ingestion-cache");
+        let mut options = ExtractOptions::converter(1, 1, None);
+        options.selection = IngestionSelection::RuntimeEnglishV1;
+        for name in ["a.bsa", "z.bsa"] {
+            let seeded = ArchiveExtractor::extract_batched(
+                &data.join(name),
+                &temp.path().join("legacy-vfs"),
+                &temp.path().join("unused-cache"),
+                &cache,
+                None,
+                true,
+                &options,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(seeded.cache_entry.recipe, "runtime-english-v4");
+            assert!(
+                seeded
+                    .files
+                    .iter()
+                    .all(|file| crate::controls::input_key(&file.path).is_none())
+            );
+        }
+        let pack_inventory = || -> BTreeMap<PathBuf, String> {
+            WalkDir::new(cache.join("batches"))
+                .into_iter()
+                .map(Result::unwrap)
+                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "pack"))
+                .map(|entry| {
+                    (
+                        entry.path().strip_prefix(&cache).unwrap().to_owned(),
+                        hash_bytes(&fs::read(entry.path()).unwrap()),
+                    )
+                })
+                .collect()
+        };
+        let original_packs = pack_inventory();
+        assert!(!original_packs.is_empty());
+        let report = run_without_progress(config.clone()).await;
+        assert!(report.cache_hits > 0, "pre-existing v4 pack must be reused");
+        assert_eq!(
+            report.converted, 0,
+            "controls must not force archive reingestion"
+        );
+        assert_eq!(
+            pack_inventory(),
+            original_packs,
+            "no second pack generation"
+        );
+        assert!(
+            output.join(path).is_file(),
+            "controlmap must reach published pack"
+        );
+        let sanitized = fs::read(output.join(path)).unwrap();
+        assert_eq!(sanitized, b"Forward\t0x11\t0xff\t0x0001\t1\t1\t1\t0x1\r\nBack\t0x1f\t0xff\t0x0002\t1\t1\t1\r\n\r\nAccept\t0x1c\t0x00\t0x1000\t1\t0\t1\r\nTween Menu\t0x0f\t0xff\t!0,Pause\t1\t1\t1\r\n");
+        assert_eq!(
+            sanitized
+                .split(|byte| *byte == b'\n')
+                .filter(|line| line.contains(&b'\t'))
+                .count(),
+            4
+        );
+        assert!(sanitized.windows(4).any(|bytes| bytes == b"\r\n\r\n"));
+        assert_eq!(
+            fs::read(output.join("interface/controls/pc/keyboard_english.txt")).unwrap(),
+            b"Synth\xa5\t0x11\r\n"
+        );
+        assert!(!output.join("interface/controls/pc/notes.txt").exists());
+        assert_eq!(
+            report
+                .warnings
+                .iter()
+                .filter(|warning| warning.contains("controlmap.txt:3"))
+                .count(),
+            1
+        );
+        let provenance: serde_json::Value = serde_json::from_slice(
+            &fs::read(output.join("interface/controls/pc/provenance.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(provenance[path]["provider"], "archive:z.bsa");
+        assert_eq!(provenance[path]["source_sha256"], hash_bytes(control));
+        assert_eq!(provenance[path]["output_sha256"], hash_bytes(&sanitized));
+        assert_eq!(provenance[path]["skipped_lines"], serde_json::json!([3]));
+        assert!(!conversion_is_complete(&report));
+        let warm = run_without_progress(config.clone()).await;
+        assert_eq!(fs::read(output.join(path)).unwrap(), sanitized);
+        assert!(warm.cache_hits > 0);
+        assert_eq!(pack_inventory(), original_packs);
+        let loose = data.join("Interface/Controls/PC/ControlMap.TXT");
+        fs::create_dir_all(loose.parent().unwrap()).unwrap();
+        let replacement = b"Mod Event\t0x12\t0xff\t0x2000\t1\t0\t1\r\n";
+        fs::write(&loose, replacement).unwrap();
+        let overridden = run_without_progress(config).await;
+        assert_eq!(fs::read(output.join(path)).unwrap(), replacement);
+        assert!(overridden.warnings.is_empty(), "{:?}", overridden.warnings);
+        let provenance: serde_json::Value = serde_json::from_slice(
+            &fs::read(output.join("interface/controls/pc/provenance.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            provenance[path]["provider"],
+            "loose:interface/controls/pc/controlmap.txt"
+        );
+    }
+
+    /// Valid controls survive a corrupt compressed texture in the same enabled archive.
+    #[tokio::test]
+    async fn review_741_controls_survive_unrelated_archive_decompression_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        let path = "interface/controls/pc/controlmap.txt";
+        let controls = b"Forward\t0x11\t0xff\t0x1000\t1\t0\t1\n";
+        let gamepad = b"Button\t0x1000\n";
+        let mut archive = dummy_content::ba2::general(
+            &[
+                dummy_content::Entry::new("textures/broken.dds", b"synthetic texture payload"),
+                dummy_content::Entry::new(path, controls),
+                dummy_content::Entry::new("interface/controls/pc/gamepad.txt", gamepad),
+            ],
+            dummy_content::ba2::Compression::Zlib,
+        )
+        .unwrap();
+        // GNRL record zero: offset at 24+16 and compressed length at 24+24.
+        let offset = u64::from_le_bytes(archive[40..48].try_into().unwrap()) as usize;
+        let length = u32::from_le_bytes(archive[48..52].try_into().unwrap()) as usize;
+        archive[offset..offset + length].fill(0xff);
+        fs::write(data.join("controls.ba2"), archive).unwrap();
+        let mut config = cpu_lod_config(&data, &output);
+        config.enable_ba2 = true;
+        let report = run_without_progress(config).await;
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning
+                    .contains("failed to decompress BA2 payload: textures/broken.dds")),
+            "{:?}",
+            report.warnings
+        );
+        assert!(!report.complete);
+        assert!(
+            output.join(path).is_file(),
+            "readable controls must survive unrelated archive decompression failure"
+        );
+        assert_eq!(fs::read(output.join(path)).unwrap(), controls);
+        assert_eq!(
+            fs::read(output.join("interface/controls/pc/gamepad.txt")).unwrap(),
+            gamepad
+        );
+        let provenance: serde_json::Value = serde_json::from_slice(
+            &fs::read(output.join("interface/controls/pc/provenance.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(provenance[path]["provider"], "archive:controls.ba2");
+        assert_eq!(provenance[path]["source_sha256"], hash_bytes(controls));
+        assert!(!output.join("textures/broken.ktx2").exists());
+    }
+
+    /// A broken optional file preserves readable siblings and only its own earlier provider.
+    #[tokio::test]
+    async fn greptile_741_bad_gamepad_preserves_other_controls() {
+        let temp = tempfile::tempdir().unwrap();
+        for earlier_gamepad in [true, false] {
+            let case = temp.path().join(if earlier_gamepad {
+                "fallback"
+            } else {
+                "absent"
+            });
+            let data = case.join("Data");
+            let output = case.join("modern");
+            fs::create_dir_all(&data).unwrap();
+            let controlmap = "interface/controls/pc/controlmap.txt";
+            let gamepad = "interface/controls/pc/gamepad.txt";
+            let keyboard = "interface/controls/pc/keyboard_english.txt";
+            let old_controlmap = b"Old\t0x10\t0xff\t0x1000\t1\t0\t1\n";
+            let new_controlmap = b"New\t0x11\t0xff\t0x1000\t1\t0\t1\n";
+            let old_gamepad = b"Earlier\t0x1000\n";
+            let new_keyboard = b"New Key\t0x11\n";
+            let mut earlier = vec![dummy_content::Entry::new(controlmap, old_controlmap)];
+            if earlier_gamepad {
+                earlier.push(dummy_content::Entry::new(gamepad, old_gamepad));
+            }
+            fs::write(
+                data.join("a.bsa"),
+                dummy_content::bsa::v105(&earlier, dummy_content::bsa::Compression::None).unwrap(),
+            )
+            .unwrap();
+            let mut archive = dummy_content::ba2::general(
+                &[
+                    dummy_content::Entry::new(gamepad, b"Later\t0x2000\n"),
+                    dummy_content::Entry::new(controlmap, new_controlmap),
+                    dummy_content::Entry::new(keyboard, new_keyboard),
+                ],
+                dummy_content::ba2::Compression::Zlib,
+            )
+            .unwrap();
+            // Corrupt only GNRL record zero's compressed gamepad payload.
+            let offset = u64::from_le_bytes(archive[40..48].try_into().unwrap()) as usize;
+            let length = u32::from_le_bytes(archive[48..52].try_into().unwrap()) as usize;
+            archive[offset..offset + length].fill(0xff);
+            fs::write(data.join("z.ba2"), archive).unwrap();
+            let mut config = cpu_lod_config(&data, &output);
+            config.enable_ba2 = true;
+            let report = run_without_progress(config).await;
+            assert!(!report.complete);
+            assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+            assert!(
+                report.warnings[0].contains("z.ba2") && report.warnings[0].contains("gamepad.txt")
+            );
+            assert_eq!(
+                fs::read(output.join(controlmap)).unwrap(),
+                new_controlmap,
+                "a corrupt gamepad must not discard the later archive's readable controlmap"
+            );
+            assert_eq!(fs::read(output.join(keyboard)).unwrap(), new_keyboard);
+            let provenance: serde_json::Value = serde_json::from_slice(
+                &fs::read(output.join("interface/controls/pc/provenance.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(provenance[controlmap]["provider"], "archive:z.ba2");
+            assert_eq!(
+                provenance[controlmap]["source_sha256"],
+                hash_bytes(new_controlmap)
+            );
+            assert_eq!(provenance[keyboard]["provider"], "archive:z.ba2");
+            if earlier_gamepad {
+                assert_eq!(fs::read(output.join(gamepad)).unwrap(), old_gamepad);
+                assert_eq!(provenance[gamepad]["provider"], "archive:a.bsa");
+                assert_eq!(
+                    provenance[gamepad]["source_sha256"],
+                    hash_bytes(old_gamepad)
+                );
+            } else {
+                assert!(!output.join(gamepad).exists());
+                assert!(provenance.get(gamepad).is_none());
+            }
+        }
+    }
+
+    /// Unknown loose winners mask archived controls while a readable neighboring subtree publishes.
+    #[tokio::test]
+    async fn review_741_undiscovered_loose_prefix_masks_archive_controls() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        let blocked = data.join("Interface/Controls/PC");
+        fs::create_dir_all(&blocked).unwrap();
+        fs::write(blocked.join("ControlMap.TXT"), b"unknown loose override").unwrap();
+        fs::create_dir_all(data.join("scripts")).unwrap();
+        fs::write(
+            data.join("scripts/neighbor.pex"),
+            dummy_content::pex::minimal("Neighbor").unwrap(),
+        )
+        .unwrap();
+        let entries = [
+            dummy_content::Entry::new(
+                "interface/controls/pc/controlmap.txt",
+                b"Forward\t0x11\t0xff\t0x1000\t1\t0\t1\n",
+            ),
+            dummy_content::Entry::new("interface/controls/pc/keyboard_english.txt", b"Key\t0x11\n"),
+            dummy_content::Entry::new("interface/controls/pc/gamepad.txt", b"Button\t0x1000\n"),
+        ];
+        fs::write(
+            data.join("controls.bsa"),
+            dummy_content::bsa::v105(&entries, dummy_content::bsa::Compression::None).unwrap(),
+        )
+        .unwrap();
+        let _deny = discovery_failure_hook::block(&blocked);
+        let report = run_without_progress(cpu_lod_config(&data, &output)).await;
+        assert!(!report.complete);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("interface/controls/pc")
+                    && warning.contains("failed to discover inputs")),
+            "{:?}",
+            report.warnings
+        );
+        assert!(output.join("scripts/neighbor.luau").is_file());
+        let manifest = ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+        assert!(!manifest.complete);
+        assert!(manifest.failures.contains_key("interface/controls/pc"));
+        assert!(
+            crate::controls::PATHS
+                .iter()
+                .all(|path| !output.join(path).exists()),
+            "undiscovered loose controls must mask archived control sources"
+        );
+        assert!(
+            !output
+                .join("interface/controls/pc/provenance.json")
+                .exists()
+        );
+    }
+
+    /// Classifies a validation fixture by its output extension.
     fn artifact_kind(relative: &Path) -> String {
         relative
             .extension()

@@ -559,8 +559,8 @@ mod tests {
     }
 
     /// Exercise the public records-only publisher with a malformed packed float between
-    /// usable records. Direct decoding drops VTXT; publication rejects the unusable LAND
-    /// while authenticated physical history retains its exact source payload.
+    /// usable records. Direct decoding drops VTXT; publication recovers its valid
+    /// weight while authenticated physical history retains the exact source payload.
     #[test]
     fn broken_compact_float_publishes_neighbors_and_retains_original_payload() {
         use super::super::read_plugins;
@@ -672,7 +672,7 @@ mod tests {
                 1
             );
         }
-        // RV-A rejects a LAND with authored VTXT failure; R5 retains skipped physical provenance.
+        // Texture corruption is item-local: keep the source LAND and its valid weight.
         let source_count: u32 = db
             .query_row(
                 "SELECT COUNT(*) FROM inhouse_source_records WHERE form_id=?1",
@@ -680,7 +680,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(source_count, 0);
+        assert_eq!(source_count, 1);
         assert_eq!(
             db.query_row(
                 "SELECT COUNT(*) FROM records WHERE form_id=?1 AND record_type='LAND'",
@@ -688,21 +688,16 @@ mod tests {
                 |row| row.get::<_, u32>(0),
             )
             .unwrap(),
-            0,
+            1
         );
-        let (status, reason): (String, String) = db
+        let status: String = db
             .query_row(
-                "SELECT status,reason FROM record_overrides WHERE form_id=?1",
+                "SELECT status FROM record_overrides WHERE form_id=?1",
                 [land.form_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(status, "skipped");
-        assert!(reason.contains("rejected authored terrain field VTXT"));
-        assert_eq!(db.query_row(
-            "SELECT COUNT(*) FROM record_diagnostics WHERE source_form_id=?1 AND category='record' AND reason LIKE '%rejected authored terrain field VTXT%'",
-            [land.source_form_id], |row| row.get::<_, u32>(0),
-        ).unwrap(), 1);
+        assert_eq!(status, "accepted");
         let mut raw_versions = Vec::new();
         let summary = super::super::history_source::visit_source_history(
             &output,
@@ -720,9 +715,9 @@ mod tests {
         assert_eq!(summary.versions, 1);
         assert!(summary.fully_raw_available);
         assert!(!summary.typed_runtime_decoding_attempted);
-        assert_eq!(raw_versions[0].status, "skipped");
-        assert!(!raw_versions[0].runtime_record_present);
-        assert!(!raw_versions[0].accepted_source_winner);
+        assert_eq!(raw_versions[0].status, "accepted");
+        assert!(raw_versions[0].runtime_record_present);
+        assert!(raw_versions[0].accepted_source_winner);
         let raw = raw_versions[0].raw.as_ref().unwrap();
         assert!(raw.frame_complete);
         assert_eq!(raw.stored_payload.as_deref(), Some(payload.as_slice()));
@@ -733,24 +728,37 @@ mod tests {
                 &fs::read(path).unwrap(),
             )
             .unwrap();
-            assert!(cache.cells.is_empty(), "unusable LAND entered {name}");
+            assert_eq!(
+                cache.cells.len(),
+                1,
+                "valid LAND neighbors must survive in {name}"
+            );
+            let paint = cache.cells[0]
+                .layers
+                .iter()
+                .find(|layer| !layer.is_base)
+                .unwrap();
+            assert_eq!(paint.weights.len(), 1);
+            assert_eq!(paint.weights[0].opacity, 0.25);
         }
         let typed: Vec<serde_json::Value> = fs::read_to_string(output.join("typed-records.jsonl"))
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        assert_eq!(typed.len(), 2);
+        assert_eq!(typed.len(), 3);
         let mut typed_ids = typed
             .iter()
             .map(|record| record["form_id"].as_u64().unwrap())
             .collect::<Vec<_>>();
         typed_ids.sort_unstable();
-        assert_eq!(typed_ids, [0x810, 0x811]);
-        assert!(
+        assert_eq!(typed_ids, [0x810, 0x811, 0x821]);
+        assert_eq!(
             typed
                 .iter()
-                .all(|record| record["record_type"] == serde_json::json!(*b"STAT"))
+                .filter(|record| record["record_type"] == serde_json::json!(*b"STAT"))
+                .count(),
+            2
         );
         assert!(
             !serde_json::to_string(land)

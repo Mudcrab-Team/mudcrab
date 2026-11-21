@@ -1,0 +1,15 @@
+running 1 test
+
+thread 'physics::jump_replay_tests::native_first_launch_step' (755695) panicked at crates/engine/src/physics/jump_replay_tests.rs:131:5:
+first resolved free-flight rise 5.666667 differs from native 5.2069583
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test physics::jump_replay_tests::native_first_launch_step ... FAILED
+
+failures:
+
+failures:
+    physics::jump_replay_tests::native_first_launch_step
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1280 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p engine --lib`

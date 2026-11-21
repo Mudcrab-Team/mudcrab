@@ -761,22 +761,7 @@ fn record_texture_path(path: String) -> Option<String> {
 /// `..` or `.` segment, an absolute or drive-prefixed path, an empty segment, or a `:` (a Windows
 /// drive or stream, or an asset source such as `embedded://`) - is refused rather than loaded.
 pub(crate) fn converted_texture_path(path: String) -> Option<String> {
-    // Converted assets are published with lowercase canonical paths, so the
-    // lookup must lowercase too (matching world-inspect's resolver).
-    let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    let without_prefix = normalized.strip_prefix("textures/").unwrap_or(&normalized);
-    if without_prefix.is_empty()
-        || !is_safe_relative_asset_path(without_prefix)
-        || without_prefix.contains(':')
-        || without_prefix
-            .split('/')
-            .any(|segment| matches!(segment, "" | "." | ".."))
-    {
-        return None;
-    }
-    let mut converted = std::path::PathBuf::from("textures").join(without_prefix);
-    converted.set_extension("ktx2");
-    Some(converted.to_string_lossy().replace('\\', "/"))
+    shared::texture_aliases::converted_record_texture_path(&path)
 }
 
 /// Rejects a database-supplied relative path that could escape the assets
@@ -1570,6 +1555,21 @@ struct ReferenceQuery {
 }
 
 impl ReferenceQuery {
+    fn exterior_sql(&self) -> String {
+        let columns = &self.columns;
+        let joins = &self.joins;
+        format!(
+            "SELECT {columns} FROM exterior_spatial x JOIN \"references\" r ON r.id=x.id{joins} \
+             WHERE x.worldspace_id=?1 AND x.minX>=?2 AND x.minX<?3 AND x.minY>=?4 AND x.minY<?5"
+        )
+    }
+
+    fn interior_sql(&self) -> String {
+        let columns = &self.columns;
+        let joins = &self.joins;
+        format!("SELECT {columns} FROM \"references\" r{joins} WHERE r.cell_id=?1")
+    }
+
     fn for_connection(connection: &Connection, features: WorldDatabaseFeatures) -> Result<Self> {
         let has_records = has_records(connection)?;
         let record_column = if has_records { "b.record_type" } else { "NULL" };
@@ -1665,18 +1665,13 @@ fn load_cell(
         )?,
         CellKey::Interior(cell_id) => cell_id,
     };
-    let columns = &query.columns;
-    let joins = &query.joins;
     let rows = match key {
         CellKey::Exterior {
             worldspace_id,
             grid_x,
             grid_y,
         } => {
-            let sql = format!(
-                "SELECT {columns} FROM exterior_spatial x JOIN \"references\" r ON r.id=x.id{joins} \
-                 WHERE x.worldspace_id=?1 AND x.minX>=?2 AND x.minX<?3 AND x.minY>=?4 AND x.minY<?5"
-            );
+            let sql = query.exterior_sql();
             let min_x = grid_x as f32 * 4096.0;
             let min_y = grid_y as f32 * 4096.0;
             connection
@@ -1688,7 +1683,7 @@ fn load_cell(
                 .collect::<rusqlite::Result<Vec<_>>>()?
         }
         CellKey::Interior(_) => {
-            let sql = format!("SELECT {columns} FROM \"references\" r{joins} WHERE r.cell_id=?1");
+            let sql = query.interior_sql();
             connection
                 .prepare_cached(&sql)?
                 .query_map([cell_id], map_reference)?
@@ -1928,6 +1923,10 @@ pub(crate) mod water_fixtures {
             .to_vec()
     }
 }
+
+#[cfg(test)]
+#[path = "inventory_tests.rs"]
+mod inventory_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2217,6 +2216,85 @@ mod tests {
                 assert_eq!(query.enable_errors.len(), 1);
             }
         }
+    }
+
+    #[test]
+    /// Pin the shared resolver's literal initial-state rules through real database loading.
+    fn shared_initial_enable_rules_preserve_database_loading_states() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        enable_columns(&connection);
+        type FixtureRow = (u32, u32, Option<u32>, Option<u32>, bool);
+        let rows: &[FixtureRow] = &[
+            (100, 2048, None, None, false),
+            (101, 0, None, None, true),
+            (102, 16384, None, None, true),
+            (103, 2048, Some(0), Some(1), false),
+            (104, 0, Some(0), None, true),
+            (110, 2048, Some(101), Some(0), true),
+            (111, 0, Some(100), Some(0), false),
+            (112, 0, Some(100), Some(1), true),
+            (113, 0, Some(100), Some(952044802), false),
+            (114, 2048, Some(112), Some(1), false),
+            (115, 0, Some(999), Some(1), false),
+            (116, 0, Some(117), Some(1), false),
+            (117, 0, Some(116), Some(0), false),
+            (118, 0, Some(118), Some(1), false),
+            (119, 2048, Some(20), Some(0), true),
+            (120, 0, Some(20), Some(1), false),
+        ];
+        for &(id, flags, parent, parent_flags, _) in rows {
+            connection.execute(
+                "INSERT INTO \"references\"(id,cell_id,base_form_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale,header_flags,enable_parent_id,enable_parent_flags)
+                 VALUES(?1,600,20,0,0,0,0,0,0,1,?2,?3,?4)",
+                params![id, flags, parent, parent_flags],
+            ).unwrap();
+        }
+        let mut query =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
+        for _ in 0..2 {
+            let payload =
+                super::load_cell(&connection, &mut query, 1, CellKey::Interior(600)).unwrap();
+            assert_eq!(payload.references.len(), 16);
+            for &(id, _, _, _, enabled) in rows {
+                let reference = payload
+                    .references
+                    .iter()
+                    .find(|row| row.form_id == id)
+                    .unwrap();
+                assert_eq!(reference.initially_enabled, enabled, "reference {id}");
+            }
+            assert_eq!(query.enable_errors.len(), 3);
+        }
+        assert_eq!(
+            query.enable_states.decision_inputs(114),
+            Some(vec![
+                shared::initial_enable::EnableDecisionInput::Reference {
+                    form_id: 114,
+                    inputs: InitialEnableInputs {
+                        header_flags: 2048,
+                        parent_id: Some(112),
+                        parent_flags: 1
+                    },
+                },
+                shared::initial_enable::EnableDecisionInput::Reference {
+                    form_id: 112,
+                    inputs: InitialEnableInputs {
+                        header_flags: 0,
+                        parent_id: Some(100),
+                        parent_flags: 1
+                    },
+                },
+                shared::initial_enable::EnableDecisionInput::Reference {
+                    form_id: 100,
+                    inputs: InitialEnableInputs {
+                        header_flags: 2048,
+                        parent_id: None,
+                        parent_flags: 0
+                    },
+                },
+            ])
+        );
     }
 
     #[test]

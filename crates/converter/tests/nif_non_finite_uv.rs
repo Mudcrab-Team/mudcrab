@@ -2,7 +2,8 @@
 //!
 //! Retail `WRGuardHouse01` stores one NaN half-float in its 1,095-vertex wall shape. The converter
 //! used to drop the whole UV attribute for such a shape, so every vertex sampled one texel and the
-//! wall rendered as a flat colour. Only the bad component is zeroed now.
+//! wall rendered as a flat colour. Only the bad component is zeroed now. See
+//! [the NIF spec](../../../docs/specs/converters/nif-to-gltf.md#61-non-finite-uvs).
 
 use converter::mesh::MeshConverter;
 use dummy_content::nif::{StaticShape, static_shape};
