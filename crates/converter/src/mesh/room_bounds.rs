@@ -119,7 +119,7 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
                 | NifBlock::BSSubIndexTriShape(_)
                 | NifBlock::BSLODTriShape(_)
                 | NifBlock::NiTriShape(_)
-        ) && !reachable.contains(&(index as u32))
+        ) && !u32::try_from(index).is_ok_and(|index| reachable.contains(&index))
     }) {
         return None;
     }

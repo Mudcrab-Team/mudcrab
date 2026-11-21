@@ -5085,7 +5085,7 @@ mod tests {
                         |row| row.get(0),
                     )
                     .unwrap();
-                assert_eq!(other_radius, 8.0);
+                assert!((other_radius - 8.0).abs() < f32::EPSILON);
             }
         }
     }

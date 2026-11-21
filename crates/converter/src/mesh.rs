@@ -4242,8 +4242,12 @@ mod tests {
             "accessors": [{"min": [-1, -1, -1], "max": [1, 1, 1]}]
         });
         let bounds = glb_bounds_from_document(&document).unwrap();
-        assert_eq!(bounds.min, [-5.0, -1.0, -1.0]);
-        assert_eq!(bounds.max, [4.0, 1.0, 1.0]);
+        for (actual, expected) in bounds.min.into_iter().zip([-5.0, -1.0, -1.0]) {
+            assert!((actual - expected).abs() < f32::EPSILON);
+        }
+        for (actual, expected) in bounds.max.into_iter().zip([4.0, 1.0, 1.0]) {
+            assert!((actual - expected).abs() < f32::EPSILON);
+        }
 
         document["nodes"][1]["children"][0] = 2.into();
         document["nodes"].as_array_mut().unwrap().pop();
@@ -5038,7 +5042,7 @@ mod tests {
             shape.av.rotation.0.0 = rotation;
             shape.av.scale.0 = scale;
             let sphere = room_bounds::source_sphere(&nif).unwrap();
-            assert_eq!(sphere.radius, 4.0);
+            assert!((sphere.radius - 4.0).abs() < f32::EPSILON);
             for (actual, expected) in sphere.center.into_iter().zip(center) {
                 assert!((actual - expected).abs() < 1.0e-4);
             }
@@ -5158,7 +5162,8 @@ mod tests {
         let sphere = &doc["extras"]["mudcrabRoomSphere"];
         assert_eq!(sphere["center"], serde_json::json!([1000.0, 0.0, 0.0]));
         assert_eq!(sphere["radius"], 1.0);
-        assert_eq!(glb_bounds_from_bytes(&bytes).unwrap().max[0], 1001.0);
+        let bounds = glb_bounds_from_bytes(&bytes).unwrap();
+        assert!((bounds.max[0] - 1001.0).abs() < f32::EPSILON);
     }
 
     #[test]
