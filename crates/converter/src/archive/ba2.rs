@@ -12,6 +12,7 @@ const DX10_RECORD_SIZE: usize = 24;
 const DX10_CHUNK_SIZE: usize = 24;
 const MAX_FILES: usize = 1_000_000;
 const MAX_ENTRY_SIZE: usize = 1024 * 1024 * 1024;
+const DDS_HEADER_SIZE: usize = 148;
 /// Deflate cannot expand a stream by more than 1032:1.
 const MAX_ZLIB_EXPANSION: usize = 1032;
 /// LZ4 cannot expand a block by more than 255:1.
@@ -102,11 +103,48 @@ pub(super) struct Ba2Entry {
 }
 
 impl Ba2Entry {
+    pub(super) fn staging_bytes(&self) -> usize {
+        match &self.record {
+            Record::General(record) => {
+                self.chunk_staging_bytes(record.packed_size, record.unpacked_size)
+            }
+            Record::Dx10(record) => {
+                let total = record.chunks.iter().fold(0usize, |total, chunk| {
+                    total.saturating_add(chunk.unpacked_size as usize)
+                });
+                if total > MAX_ENTRY_SIZE {
+                    return 0; // extract_dx10 rejects this size before allocating payloads.
+                }
+                let largest_chunk = record
+                    .chunks
+                    .iter()
+                    .map(|chunk| self.chunk_staging_bytes(chunk.packed_size, chunk.unpacked_size))
+                    .max()
+                    .unwrap_or(0);
+                // The pixel buffer coexists with either a chunk being decoded or the final DDS.
+                let dds_bytes = (DDS_HEADER_SIZE + total).max(2 * DDS_HEADER_SIZE);
+                super::growing_buffer_bytes(total).saturating_add(largest_chunk.max(dds_bytes))
+            }
+        }
+    }
+
+    fn chunk_staging_bytes(&self, packed_size: u32, unpacked_size: u32) -> usize {
+        let packed = packed_size as usize;
+        let unpacked = unpacked_size as usize;
+        if packed == 0 {
+            unpacked
+        } else if unpacked > expansion_limit(packed, self.compression) {
+            packed
+        } else {
+            packed.saturating_add(super::growing_buffer_bytes(unpacked))
+        }
+    }
+
     pub fn decoded_size(&self) -> usize {
         match &self.record {
             Record::General(record) => record.unpacked_size as usize,
             Record::Dx10(record) => {
-                build_dds_header(record).len()
+                DDS_HEADER_SIZE
                     + record
                         .chunks
                         .iter()
@@ -517,7 +555,7 @@ fn build_dds_header(record: &Dx10Record) -> Vec<u8> {
     const DDSCAPS_MIPMAP: u32 = 0x40_0000;
     const DDSCAPS2_CUBEMAP_ALL_FACES: u32 = 0xFE00;
     let has_mips = record.mip_count > 1;
-    let mut header = Vec::with_capacity(148);
+    let mut header = Vec::with_capacity(DDS_HEADER_SIZE);
     push_u32(&mut header, u32::from_le_bytes(*b"DDS "));
     push_u32(&mut header, 124);
     push_u32(
@@ -564,7 +602,7 @@ fn build_dds_header(record: &Dx10Record) -> Vec<u8> {
     push_u32(&mut header, if record.is_cubemap { 0x4 } else { 0 });
     push_u32(&mut header, 1);
     push_u32(&mut header, 0);
-    debug_assert_eq!(header.len(), 148);
+    debug_assert_eq!(header.len(), DDS_HEADER_SIZE);
     header
 }
 
@@ -784,6 +822,20 @@ mod tests {
         assert_eq!(parsed.get_width(), 4);
         assert_eq!(parsed.get_height(), 4);
         assert_eq!(parsed.data, pixels);
+
+        let directory = tempfile::tempdir().unwrap();
+        let archive = directory.path().join("test.ba2");
+        let output = directory.path().join("out");
+        std::fs::write(&archive, &bytes).unwrap();
+        let files = super::super::ArchiveExtractor::extract(&archive, &output).unwrap();
+        assert_eq!(
+            files[0].bytes_written,
+            (DDS_HEADER_SIZE + pixels.len()) as u64
+        );
+        assert_eq!(
+            std::fs::read(output.join(&files[0].path)).unwrap(),
+            entries[0].1
+        );
     }
 
     /// A v1 GNRL archive holding one entry whose stored payload is `payload`

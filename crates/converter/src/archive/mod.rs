@@ -3,11 +3,12 @@ mod batched;
 mod bsa;
 mod bsa_name;
 mod source;
+mod staging;
 
 pub(crate) use batched::{prune_stale_reader_packs, sync_directory, sync_pack_file};
 
 use crate::{
-    asset_path::{AssetKind, canonical_asset_path},
+    asset_path::{AssetKind, canonical_asset_path, is_authoring_source_name},
     cache::{
         IngestedFile, IngestionCacheEntry, IngestionSelection, SpillCache, hash_bytes, hash_file,
         link_or_copy, link_or_copy_spilling, link_or_copy_spilling_with_copy_and_link,
@@ -16,7 +17,7 @@ use crate::{
 };
 use color_eyre::{
     Result,
-    eyre::{ContextCompat, WrapErr, bail},
+    eyre::{ContextCompat, WrapErr, bail, ensure},
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -27,7 +28,7 @@ use std::{
     io::Write,
     path::{Component, Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, LazyLock, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::Instant,
@@ -457,6 +458,15 @@ pub(super) fn archive_reader_version(archive: &[u8]) -> u32 {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct StagingUnavailable;
+
+impl std::fmt::Display for StagingUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("archive staging is unavailable")
+    }
+}
+
 pub struct ArchiveExtractor;
 
 /// One versioned coverage contract for both cache manifests and sealed packs.
@@ -466,7 +476,7 @@ impl IngestionSelection {
     /// Versioned archive coverage; additive controls do not change these cache identities.
     pub fn recipe(self) -> &'static str {
         match self {
-            Self::All => "all-v1",
+            Self::All => "all-v2",
             Self::ConverterInputsV1 => "converter-inputs-v4",
             Self::RuntimeEnglishV1 => "runtime-english-v4",
         }
@@ -480,7 +490,7 @@ impl IngestionSelection {
     /// Accept coverage from current filtered recipes or an all-files inventory.
     fn accepts_recipe(self, recipe: &str) -> bool {
         let proven = match recipe {
-            "" | "all-v1" => Self::All,
+            "" | "all-v1" | "all-v2" => Self::All,
             "converter-inputs-v4" => Self::ConverterInputsV1,
             "runtime-english-v4" => Self::RuntimeEnglishV1,
             _ => return false,
@@ -526,10 +536,26 @@ impl ExtractOptions {
 }
 
 impl ArchiveExtractor {
+    /// Recover interrupted extraction for an owned scratch root before removing it.
+    pub fn reclaim_abandoned(root: &Path) -> Result<()> {
+        staging::reclaim_abandoned(root)
+    }
+
     /// Inventories canonical paths without decompressing any payload.
     pub fn list_paths(archive_path: &Path) -> Result<Vec<PathBuf>> {
+        Self::list_paths_with_name_filter(archive_path, |_| true)
+    }
+
+    pub(crate) fn list_runtime_paths(archive_path: &Path) -> Result<Vec<PathBuf>> {
+        Self::list_paths_with_name_filter(archive_path, |name| !is_authoring_source_name(name))
+    }
+
+    fn list_paths_with_name_filter(
+        archive_path: &Path,
+        include_name: impl Fn(&str) -> bool,
+    ) -> Result<Vec<PathBuf>> {
         let source = ArchiveSource::from_file(File::open(archive_path)?)?;
-        let mut paths = select_entries(&source, archive_path, |_| true)?
+        let mut paths = select_entries(&source, archive_path, include_name)?
             .into_iter()
             .map(|(path, _)| path)
             .collect::<Vec<_>>();
@@ -711,14 +737,14 @@ impl ArchiveExtractor {
         archive_path: &Path,
         output_root: &Path,
     ) -> Result<Vec<ExtractedFile>> {
-        Self::extract_matching(archive_path, output_root, is_script_input)
+        Self::extract_runtime_matching(archive_path, output_root, is_script_input)
     }
 
     pub(crate) fn extract_lod_settings(
         archive_path: &Path,
         output_root: &Path,
     ) -> Result<Vec<ExtractedFile>> {
-        Self::extract_matching(archive_path, output_root, is_lod_setting)
+        Self::extract_runtime_matching(archive_path, output_root, is_lod_setting)
     }
 
     /// Extracts only the archive entries named in `paths`, writing them under `output_root`
@@ -734,6 +760,27 @@ impl ArchiveExtractor {
         paths: &BTreeSet<PathBuf>,
     ) -> Result<Vec<ExtractedFile>> {
         Self::extract_matching(archive_path, output_root, |path| paths.contains(path))
+    }
+
+    pub(crate) fn extract_runtime_paths(
+        archive_path: &Path,
+        output_root: &Path,
+        paths: &BTreeSet<PathBuf>,
+    ) -> Result<Vec<ExtractedFile>> {
+        Self::extract_runtime_matching(archive_path, output_root, |path| paths.contains(path))
+    }
+
+    fn extract_runtime_matching(
+        archive_path: &Path,
+        output_root: &Path,
+        include: impl Fn(&Path) -> bool + Sync,
+    ) -> Result<Vec<ExtractedFile>> {
+        Self::extract_matching_with_name_filter(
+            archive_path,
+            output_root,
+            |name| !is_authoring_source_name(name),
+            include,
+        )
     }
 
     /// Selects canonical paths and extracts their payloads from the same open archive.
@@ -755,7 +802,7 @@ impl ArchiveExtractor {
         archive_path: &Path,
         output_root: &Path,
         include_name: impl Fn(&str) -> bool,
-        include: impl Fn(&Path) -> bool + Sync,
+        mut include: impl FnMut(&Path) -> bool,
     ) -> Result<Vec<ExtractedFile>> {
         let file = File::open(archive_path)
             .wrap_err_with(|| format!("failed to open archive {}", archive_path.display()))?;
@@ -764,27 +811,45 @@ impl ArchiveExtractor {
             .into_iter()
             .filter(|(path, _)| include(path))
             .collect::<Vec<_>>();
+        staging::reclaim_abandoned(output_root).wrap_err(StagingUnavailable)?;
+        if selected.is_empty() {
+            return Ok(Vec::new());
+        }
+        let parents = selected
+            .iter()
+            .map(|(path, _)| path.parent().wrap_err("missing extraction directory"))
+            .collect::<Result<BTreeSet<_>>>()?;
+        let staging = staging::Run::new(output_root, parents).wrap_err(StagingUnavailable)?;
+        let mut required = BTreeMap::<&Path, u64>::new();
+        for (path, entry) in &selected {
+            let bytes = match entry {
+                ArchiveEntry::Bsa(entry) => entry.decoded_size(&source)?,
+                ArchiveEntry::Ba2(entry) => entry.decoded_size(),
+            };
+            let parent = path.parent().wrap_err("missing extraction directory")?;
+            let total = required.entry(parent).or_default();
+            *total = total
+                .checked_add(u64::try_from(bytes)?)
+                .wrap_err("archive staging size overflow")?;
+        }
+        staging
+            .check_space(&required)
+            .wrap_err(StagingUnavailable)?;
         let sync = SyncMeasurements::default();
         let staged = selected
             .into_par_iter()
             .map(|(path, entry)| {
+                let bytes = match &entry {
+                    ArchiveEntry::Bsa(entry) => entry.staging_bytes(&source)?,
+                    ArchiveEntry::Ba2(entry) => entry.staging_bytes(),
+                };
+                let _permit = STAGING_MEMORY.reserve(bytes)?;
                 let data = match entry {
                     ArchiveEntry::Bsa(entry) => entry.decompress(&source)?,
                     ArchiveEntry::Ba2(entry) => entry.decompress(&source)?,
                 };
-                let destination = output_root.join(&path);
-                let parent = destination
-                    .parent()
-                    .wrap_err("missing extraction directory")?;
-                fs::create_dir_all(parent)?;
-                let mut builder = tempfile::Builder::new();
-                builder.prefix(".mudcrab-extract-");
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    builder.permissions(fs::Permissions::from_mode(0o666));
-                }
-                let mut temporary = builder.tempfile_in(parent)?;
+                let parent = path.parent().wrap_err("missing extraction directory")?;
+                let mut temporary = staging.new_file(parent)?;
                 temporary.write_all(&data)?;
                 sync.flush(temporary.as_file())?;
                 let extracted = ExtractedFile {
@@ -807,6 +872,16 @@ impl ArchiveExtractor {
             })
             .collect()
     }
+}
+
+const STAGING_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
+// An oversize entry takes the entire permit. Work in other extractions uses the same pool.
+static STAGING_MEMORY: LazyLock<Arc<batched::ByteBudget>> =
+    LazyLock::new(|| Arc::new(batched::ByteBudget::new(STAGING_MEMORY_LIMIT)));
+
+// A growing Vec can hold its old and doubled allocations during reallocation.
+fn growing_buffer_bytes(len: usize) -> usize {
+    len.saturating_add(1).saturating_mul(3).max(8)
 }
 
 enum ArchiveEntry {
@@ -861,6 +936,9 @@ pub(crate) fn is_animation_input(path: &Path) -> bool {
 fn selection_includes(selection: IngestionSelection, path: &Path) -> bool {
     if selection == IngestionSelection::All {
         return true;
+    }
+    if is_authoring_source_name(&path.to_string_lossy()) {
+        return false;
     }
     if is_animation_input(path) {
         return true;
@@ -948,7 +1026,7 @@ fn restore_cached_files_with_io_limit(
     let mut seen_paths = BTreeMap::new();
     let mut blobs = BTreeMap::<&str, CachedRestoreBlob<'_>>::new();
     for (index, file) in entry.files.iter().enumerate() {
-        let relative = safe_relative_path(&file.path)?;
+        let relative = ingestion_relative_path(&file.path)?;
         detect_archive_collision(&mut seen_paths, &relative, &file.path)?;
         let blob = match blobs.entry(file.hash.as_str()) {
             std::collections::btree_map::Entry::Occupied(blob) => blob.into_mut(),
@@ -1137,6 +1215,15 @@ fn replace_raw_payload(
 /// Converts an archive-relative path to a safe, relative path, ensuring it does not contain
 /// absolute paths or drive letters.
 pub(crate) fn safe_relative_path(name: &str) -> Result<PathBuf> {
+    normalize_archive_path(name, false)
+}
+
+/// Keep the original directory of authoring inputs in all-files inventories and caches.
+fn ingestion_relative_path(name: &str) -> Result<PathBuf> {
+    normalize_archive_path(name, is_authoring_source_name(name))
+}
+
+fn normalize_archive_path(name: &str, preserve_source_path: bool) -> Result<PathBuf> {
     let normalized = name.replace('\\', "/");
     let path = Path::new(&normalized);
     if path.is_absolute() || normalized.contains(':') {
@@ -1145,7 +1232,9 @@ pub(crate) fn safe_relative_path(name: &str) -> Result<PathBuf> {
     let mut safe = PathBuf::new();
     for component in path.components() {
         match component {
-            Component::Normal(part) if !part.is_empty() => safe.push(part),
+            Component::Normal(part) if !part.is_empty() && !staging::reserved(part) => {
+                safe.push(part)
+            }
             Component::CurDir => {}
             _ => bail!("archive contains unsafe path: {name}"),
         }
@@ -1173,7 +1262,14 @@ pub(crate) fn safe_relative_path(name: &str) -> Result<PathBuf> {
         }
     });
     if let (Some(kind), Some(extension)) = (kind, extension) {
-        return canonical_asset_path(name, kind, extension).map(PathBuf::from);
+        let path = PathBuf::from(canonical_asset_path(name, kind, extension)?);
+        ensure!(
+            !path.iter().any(staging::reserved),
+            "reserved archive staging path"
+        );
+        if !preserve_source_path {
+            return Ok(path);
+        }
     }
     Ok(safe)
 }
@@ -2154,6 +2250,7 @@ mod tests {
         assert!(error.to_string().contains("strings/b.strings"), "{error:#}");
         assert_eq!(fs::read(old).unwrap(), b"old");
         assert_eq!(fs::read_dir(root.join("strings")).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(root).unwrap().count(), 1);
     }
 
     #[test]
@@ -2210,6 +2307,40 @@ mod tests {
                 b"runtime"
             );
         }
+    }
+
+    #[test]
+    fn lod_extraction_ignores_authoring_aliases_but_checks_runtime_collisions() {
+        use dummy_content::Entry;
+
+        let directory = tempfile::tempdir().unwrap();
+        let archive = directory.path().join("archive.bsa");
+        let output = directory.path().join("out");
+        write_archive(
+            &archive,
+            &[
+                Entry::new("meshes/test.nif", b"runtime"),
+                Entry::new("%43alienteTools/Meshes/Test.NIF", b"authoring"),
+                Entry::new("lodsettings/tamriel.lod", b"lod"),
+            ],
+        );
+        let files = ArchiveExtractor::extract_lod_settings(&archive, &output).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            fs::read(output.join("lodsettings/tamriel.lod")).unwrap(),
+            b"lod"
+        );
+        assert!(!output.join("meshes").exists());
+
+        write_archive(
+            &archive,
+            &[
+                Entry::new("meshes/test.nif", b"runtime"),
+                Entry::new("Data/Meshes/Test.NIF", b"duplicate runtime"),
+            ],
+        );
+        let error = ArchiveExtractor::extract_lod_settings(&archive, &output).unwrap_err();
+        assert!(error.to_string().contains("normalized path collision"));
     }
 
     #[test]

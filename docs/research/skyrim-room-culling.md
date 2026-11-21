@@ -57,7 +57,8 @@ Research checked on 2026-11-15:
   connects it. It also warns about disappearing dropped objects, misplaced object pivots, and
   overlapping or separated room bounds. Its performance section attributes overhead to many
   visible portals and their frustum operations. The page recommends `MBC` to toggle multibound
-  culling and `TCL` to inspect geometry, but those commands were not exercised in Skyrim here.
+  culling and `TCL` to inspect geometry. The later 1.7.104.0 runtime experiment used `TCL`, but
+  found that this executable's `MBC` callback returns success without changing multibound state.
 - Bethesda's [optimization tutorial for Fallout](https://geckwiki.com/index.php/Bethsoft_Tutorial_Optimization)
   additionally names a separate unbounded space connected through portals. That terminology and
   its exact traversal rules are not established by the supplied Skyrim pages. Skyrim's outside-
@@ -68,11 +69,14 @@ Skyrim's native compound-frustum interpreter evaluates unions and intersections 
 including occluder exclusions. Our runtime now retains unions of convex portal volumes and tests
 individual transformed mesh bounds against them. Separate paths retain their apertures rather
 than filling the screen rectangle between them. Versioned graphs also traverse unbounded space
-and test portal-shared geometry against both endpoint volumes. Occluder exclusions remain absent;
+and test portal-shared geometry against both endpoint volumes. Source-verified independent plane
+and box occluders now contribute path-local exclusions, tested with conservative enclosing spheres;
 unresolved connections still draw the whole cell.
 
-No reconstruction source was copied into the engine. No original Skyrim runtime comparison was
-performed. The native trace now establishes how room volumes reach object culling and how
+No reconstruction source was copied into the engine. A later
+[four-pose original-game comparison](skyrim-original-comparison.md) supports the broad visibility
+decisions in three disputed shell views and retains the joined-room cave. It does not establish
+object-by-object or whole-engine parity. The native trace establishes how room volumes reach object culling and how
 unbounded space enters traversal. Exact clipping tolerances, path merging and revisits, full
 specialized assignment paths, actor updates, lights, and shadows still need further tracing
 or controlled Skyrim experiments.
@@ -122,11 +126,22 @@ The tutorial recommends measuring performance and limiting long chains of visibl
 
 ## Runtime choices
 
-Each view starts from all containing authored room unions with the camera frustum. Portal polygons
+A perspective view starts from all containing authored room unions with the camera frustum. Portal polygons
 are clipped against incoming convex volumes; aperture edges and the doorway plane narrow the next
-volume. Separate paths remain a union. Perspective views use converging rays and orthographic views
-use parallel rays. The work limits remain 16 contributions per space and 64 planes per volume;
+volume. Separate paths remain a union. Orthographic views retain full rendering in interiors with rooms
+because their near plane can span multiple disconnected rooms. The work limits remain 16 contributions per space and 64 planes per volume;
 exceeding either widens that space conservatively. These limits differ from the native operator budget.
+
+Full source conversions publish `occlusion_version = 1` with authored plane and box geometry.
+Supported independent occluders add exclusions to their containing joined room or unbounded space.
+Exclusions propagate with each path; an alternative clear path retains the mesh. Rejection requires
+full containment of the mesh AABB's enclosing sphere. Budget widening retains local exclusions.
+Linked, stateful, overridden, and ambiguously assigned primitives remain inactive. Older exports
+retain their previous behavior until reconverted. See the [occluder implementation contract](skyrim-culling-rea-parity.md#independent-occluder-implementation).
+
+An interior with no authored rooms can apply verified independent occluders directly to the full
+camera volume. In an interior with rooms, occluders do not establish portal coverage: a camera
+outside every room still retains full rendering.
 
 Graphs with `visibility_version = 2` have explicit unbounded space. Only endpoints verified as zero
 in source `XPOD` name it. Missing, invalid, or foreign-cell links remain unknown and trigger full
@@ -148,7 +163,10 @@ from render AABBs. A reference's current cell-local transform places that sphere
 containing master rooms. Initial named targets override geometric containment without requiring
 a source sphere. Later transform changes
 recompute ownership, including after a moving object returns to its spawn pose. Missing bounds remain visible during automatic assignment and updates. `NONE`, unknown
-targets, nonuniform or sheared assignment transforms, actors, doors, and activators stay visible.
+targets, nonuniform or sheared assignment transforms, actors, and doors stay visible.
+Activators with supported source bounds now use authored assignment. The
+[geometry-mismatch investigation](skyrim-culling-mismatches.md) verifies the web and foliage fixes
+against live native bounds and matched camera captures.
 Native overlapping-room hash order cannot be reconstructed from persistent IDs, so possible owners
 are combined. Named-target neighbor priority and specialized native paths remain conservative limits.
 

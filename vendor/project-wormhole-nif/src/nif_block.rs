@@ -21,7 +21,7 @@ pub enum NifBlock {
     BSFrustumFOVController(BSFrustumFOVController),
     BSFurnitureMarkerNode(BSFurnitureMarkerNode),
     BSLagBoneController(BSLagBoneController),
-    BSLeafAnimNode(BSLeafAnimNode),
+    BSLeafAnimNode(NiNode),
     BSLODTriShape(BSLODTriShape),
     BSLightingShaderProperty(BSLightingShaderProperty),
     BSLightingShaderPropertyColorController(BSLightingShaderPropertyColorController),
@@ -322,6 +322,27 @@ impl NifBlock {
                     warn!("{} bytes left over after parsing BSFadeNode", i.len());
                 }
                 Ok((i, NifBlock::BSFadeNode(result)))
+            }
+
+            "BSLeafAnimNode" => {
+                let (i, result) = NiNode::parse(i)?;
+                Ok((i, NifBlock::BSLeafAnimNode(result)))
+            }
+
+            "BSBlastNode" => {
+                let (i, node) = NiNode::parse(i)?;
+                let (i, minimum) = le_u8(i)?;
+                let (i, maximum) = le_u8(i)?;
+                let (i, current) = le_u8(i)?;
+                Ok((
+                    i,
+                    NifBlock::BSBlastNode(BSBlastNode {
+                        node,
+                        minimum,
+                        maximum,
+                        current,
+                    }),
+                ))
             }
 
             "BSTriShape" => {
@@ -640,7 +661,9 @@ impl NifBlock {
 
     pub fn as_node(&self) -> Result<&NiNode, String> {
         match self {
-            NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => Ok(node),
+            NifBlock::NiNode(node)
+            | NifBlock::BSFadeNode(node)
+            | NifBlock::BSLeafAnimNode(node) => Ok(node),
             NifBlock::BSMultiBoundNode(block) => Ok(&block.node),
             NifBlock::BSOrderedNode(block) => Ok(&block.node),
             NifBlock::NiBillboardNode(block) => Ok(&block.node),
@@ -658,7 +681,10 @@ pub struct BSBehaviorGraphExtraData {
 }
 #[derive(Debug)]
 pub struct BSBlastNode {
-    // TODO
+    pub node: NiNode,
+    pub minimum: u8,
+    pub maximum: u8,
+    pub current: u8,
 }
 #[derive(Debug)]
 pub struct BSBoneLODExtraData {
@@ -784,10 +810,6 @@ pub struct BSFurnitureMarkerNode {
 }
 #[derive(Debug)]
 pub struct BSLagBoneController {
-    // TODO
-}
-#[derive(Debug)]
-pub struct BSLeafAnimNode {
     // TODO
 }
 #[derive(Debug, NomLE)]
@@ -1996,6 +2018,10 @@ pub struct NiAVObjectFlags(u32);
 impl NiAVObjectFlags {
     pub fn hidden(&self) -> bool {
         self.0 & 0x0001 != 0
+    }
+
+    pub fn fixed_bound(&self) -> bool {
+        self.0 & 0x2000 != 0
     }
 
     pub fn mesh_collision(&self) -> bool {

@@ -75,6 +75,7 @@ pub(crate) struct RecordConversion {
 }
 
 struct LegacyPluginMerge {
+    deleted_ids: HashSet<u32>,
     conversion: RecordConversion,
     damaged_cells: HashSet<u32>,
     room_link_layouts: HashMap<u32, rooms::RoomLinkLayout>,
@@ -89,7 +90,7 @@ struct LegacyPlacementCandidate {
 struct LegacyPlacementPredecessor {
     previous: Option<RawRecord>,
     previous_layout: Option<rooms::RoomLinkLayout>,
-    previous_damage: Option<HashSet<u32>>,
+    previous_damage: Option<HashSet<Option<u32>>>,
     previous_candidate: Option<LegacyPlacementCandidate>,
 }
 
@@ -97,7 +98,8 @@ struct LegacyPlacementPredecessor {
 /// A later usable record or deletion supersedes damage with a proven identity.
 #[derive(Default)]
 struct PlacementDamage {
-    cells_by_reference: HashMap<Option<u32>, HashSet<u32>>,
+    cells_by_reference: HashMap<Option<u32>, HashSet<Option<u32>>>,
+    unknown_scope: bool,
 }
 
 impl PlacementDamage {
@@ -135,8 +137,13 @@ impl PlacementDamage {
         let cell = source_cell
             .and_then(|raw| header_runtime_id(b"CELL", raw, plugin, order))
             .filter(|&cell| cell != 0);
-        if id.is_some() || cell.is_some() {
-            self.cells_by_reference.entry(id).or_default().extend(cell);
+        if id.is_none() && cell.is_none() {
+            self.unknown_scope = true;
+        } else {
+            let cells = self.cells_by_reference.entry(id).or_default();
+            if source_cell.is_some() {
+                cells.insert(cell);
+            }
         }
     }
 
@@ -145,14 +152,27 @@ impl PlacementDamage {
     }
 
     fn affected_cells(self, winners: &HashMap<u32, RawRecord>) -> HashSet<u32> {
+        let all_cells = || {
+            winners
+                .values()
+                .filter(|record| record.record_type == *b"CELL")
+                .map(|record| record.form_id)
+                .collect()
+        };
+        if self.unknown_scope {
+            return all_cells();
+        }
         let mut cells = HashSet::new();
         for (id, rejected) in self.cells_by_reference {
-            cells.extend(rejected);
-            if let Some(earlier) = id.and_then(|id| winners.get(&id))
-                && is_placed_record_type(&earlier.record_type)
-            {
-                cells.extend(earlier.cell_form_id);
+            let earlier_cell = id
+                .and_then(|id| winners.get(&id))
+                .filter(|record| is_placed_record_type(&record.record_type))
+                .and_then(|record| record.cell_form_id);
+            if earlier_cell.is_none() && rejected.contains(&None) {
+                return all_cells();
             }
+            cells.extend(rejected.into_iter().flatten());
+            cells.extend(earlier_cell);
         }
         cells
     }
@@ -298,33 +318,22 @@ impl EsmParser {
         string_sources: inhouse::StringSources<'_>,
     ) -> Result<RecordConversion> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
-        let LegacyPluginMerge {
-            conversion: mut master,
-            damaged_cells,
-            room_link_layouts,
-        } = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
+        let mut merged = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
         let (unresolved, localization_warnings, localization_notices) =
             legacy_text::resolve_localized_fields(
-                &mut master.records,
+                &mut merged.conversion.records,
                 plugin_paths,
                 &order,
                 string_sources,
             );
         let conn = Connection::open(db_path)?;
         create_tables(&conn)?;
-        exporter::export_plugins_to_db(
-            &conn,
-            &master.records,
-            &order,
-            plugin_paths,
-            &unresolved,
-            &damaged_cells,
-            &room_link_layouts,
-        )?;
+        exporter::export_plugins_to_db(&conn, &merged, &order, plugin_paths, &unresolved)?;
 
         for diagnostic in localization_warnings.iter().chain(&localization_notices) {
             eprintln!("{diagnostic}");
         }
+        let mut master = merged.conversion;
         master.warnings.extend(localization_warnings);
         master.notices.extend(localization_notices);
         Ok(master)
@@ -427,12 +436,15 @@ impl EsmParser {
                             validate_placement_parent(&record_type, record.cell_form_id, || None)
                                 .map_err(color_eyre::eyre::Report::msg)?;
                             let view = extractors::SubrecordView::new(&record.subrecords);
-                            if merged.contains_key(&record.form_id) {
-                                color_eyre::eyre::ensure!(
-                                    valid_placement_transform(view.find_all(b"DATA")),
-                                    "invalid placement override transform"
-                                );
-                            }
+                            let valid_transform = if merged.contains_key(&record.form_id) {
+                                valid_placement_transform(view.find_all(b"DATA"))
+                            } else {
+                                valid_initial_placement_transform(view.find(b"DATA"))
+                            };
+                            color_eyre::eyre::ensure!(
+                                valid_transform,
+                                "invalid placement transform"
+                            );
                             color_eyre::eyre::ensure!(
                                 view.unique_form_id(b"NAME").is_some_and(|id| id != 0),
                                 "placement requires exactly one nonzero NAME reference"
@@ -524,14 +536,12 @@ impl EsmParser {
                     room_link_layouts.insert(id, layout);
                 }
                 if record.is_deleted() {
-                    let prior_kind = merged.get(&id).and_then(|prior| {
-                        legacy_prior_kind(
-                            prior,
-                            placement_candidates.get(&id),
-                            &merged,
-                            &deleted_ids,
-                        )
-                    });
+                    let prior_kind = settle_legacy_predecessor(
+                        id,
+                        placement_candidates.get(&id),
+                        &merged,
+                        &mut deleted_ids,
+                    );
                     deleted_ids.record(id, record.load_order, record.record_type, prior_kind);
                     merged.remove(&id);
                     placement_candidates.remove(&id);
@@ -542,8 +552,21 @@ impl EsmParser {
                     {
                         merge_default_objects(previous, &mut record);
                     }
-                    deleted_ids.restored(id, record.load_order);
                     let placed = is_placed_record_type(&record.record_type);
+                    if !placed {
+                        // An earlier placement can close the interval once its targets are valid.
+                        if deleted_ids.needs_restoration(id)
+                            && placement_candidates.contains_key(&id)
+                        {
+                            settle_legacy_predecessor(
+                                id,
+                                placement_candidates.get(&id),
+                                &merged,
+                                &mut deleted_ids,
+                            );
+                        }
+                        deleted_ids.restored(id, record.load_order);
+                    }
                     let previous = merged.insert(id, record);
                     if placed {
                         let previous_candidate = placement_candidates.remove(&id);
@@ -584,16 +607,10 @@ impl EsmParser {
         );
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
-        if unknown_discarded_scope {
-            damaged_cells.extend(
-                merged
-                    .values()
-                    .filter(|record| record.record_type == *b"CELL")
-                    .map(|record| record.form_id),
-            );
-        }
+        damaged_placements.unknown_scope |= unknown_discarded_scope;
         damaged_cells.extend(damaged_placements.affected_cells(&merged));
         Ok(LegacyPluginMerge {
+            deleted_ids: deleted_ids.absent_from(&merged),
             conversion: RecordConversion {
                 records: merged,
                 warnings: summaries,
@@ -606,31 +623,43 @@ impl EsmParser {
     }
 }
 
-fn legacy_prior_kind<'a>(
-    mut record: &'a RawRecord,
-    mut candidate: Option<&'a LegacyPlacementCandidate>,
+fn settle_legacy_predecessor(
+    id: u32,
+    candidate: Option<&LegacyPlacementCandidate>,
     winners: &HashMap<u32, RawRecord>,
-    deleted: &crate::records::DeletedBases,
+    deleted: &mut crate::records::DeletedBases,
 ) -> Option<[u8; 4]> {
-    while let Some(placement) = candidate {
-        if crate::records::validate_placement_targets(
-            None,
-            &record.record_type,
-            record.load_order,
-            &legacy_dependencies(record, placement),
-            None,
-            |target| winners.get(&target).map(|record| record.record_type),
-            deleted,
-        )
-        .is_ok()
-        {
-            break;
-        }
-        let predecessor = placement.predecessor.as_ref()?;
-        record = predecessor.previous.as_ref()?;
-        candidate = predecessor.previous_candidate.as_ref();
+    let latest = winners.get(&id)?;
+    let versions = std::iter::successors(Some((latest, candidate)), |&(_, candidate)| {
+        let predecessor = candidate?.predecessor.as_ref()?;
+        Some((
+            predecessor.previous.as_ref()?,
+            predecessor.previous_candidate.as_ref(),
+        ))
+    });
+    let mut accepted = versions.filter(|&(record, candidate)| {
+        candidate.is_none_or(|placement| {
+            let result = crate::records::validate_placement_targets(
+                None,
+                &record.record_type,
+                record.load_order,
+                &legacy_dependencies(record, placement),
+                None,
+                |target| winners.get(&target).map(|record| record.record_type),
+                deleted,
+            );
+            matches!(
+                result,
+                Ok(()) | Err(crate::records::PlacementFailure::RetiredBase(_))
+            )
+        })
+    });
+    let (latest, _) = accepted.next()?;
+    if deleted.needs_restoration(id) {
+        let earliest = accepted.last().map_or(latest, |(record, _)| record);
+        deleted.restored(id, earliest.load_order);
     }
-    Some(record.record_type)
+    Some(latest.record_type)
 }
 
 fn legacy_dependencies(
@@ -696,6 +725,10 @@ fn resolve_legacy_placements(
             let priority = record.load_order as usize;
             match reason {
                 crate::records::PlacementFailure::Invalid(reason) => {
+                    let source_slot = (candidate.source_id >> 24) as usize;
+                    let resolved =
+                        (source_slot <= order.metadata[priority].masters.len()).then_some(id);
+                    damage.reject_resolved(resolved, candidate.source_cell, priority, order);
                     warnings.skipped_record(
                         &order.names[priority],
                         record,
@@ -711,9 +744,6 @@ fn resolve_legacy_placements(
                     entry.0 += 1;
                 }
             }
-            let source_slot = (candidate.source_id >> 24) as usize;
-            let resolved = (source_slot <= order.metadata[priority].masters.len()).then_some(id);
-            damage.reject_resolved(resolved, candidate.source_cell, priority, order);
             winners.remove(&id);
             layouts.remove(&id);
             if let Some(predecessor) = candidate.predecessor {
@@ -1146,17 +1176,24 @@ fn is_required_form_id_subrecord(record_type: &[u8; 4], tag: &[u8]) -> bool {
     tag == b"NAME" && is_placed_record_type(record_type)
 }
 
-/// A publishable placement transform is exactly one position/rotation tuple.
+/// A first definition with no projectable DATA retains its canonical identity.
+fn valid_initial_placement_transform(data: Option<&[u8]>) -> bool {
+    data.and_then(|bytes| bytes.first_chunk::<24>())
+        .is_none_or(|transform| {
+            transform
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|word| f32::from_le_bytes(*word).is_finite())
+        })
+}
+
+/// Replacing a placement requires exactly one position/rotation tuple.
 pub(crate) fn valid_placement_transform<'a>(mut fields: impl Iterator<Item = &'a [u8]>) -> bool {
     let Some(data) = fields.next().filter(|bytes| bytes.len() == 24) else {
         return false;
     };
-    fields.next().is_none()
-        && data
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .all(|word| f32::from_le_bytes(*word).is_finite())
+    fields.next().is_none() && valid_initial_placement_transform(Some(data))
 }
 
 /// A missing parent disqualifies an override only if a usable predecessor owns a cell.
@@ -1282,6 +1319,10 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         },
         b"XLRM" | b"LNAM" | b"INAM" if record_type == b"REFR" => Fixed(SINGLE),
         b"XMBR" if is_placed_record_type(record_type) => Fixed(SINGLE),
+        // xEdit 4.1.5f defines four nullable REFR FormIDs, each an itU32 via wbFormIDCk.
+        // https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsTES5.pas#L12272-L12278
+        // https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbInterface.pas#L9585-L9595
+        b"XORD" if record_type == b"REFR" => Fixed(&[(16, &[0, 4, 8, 12])]),
         // Regions.
         b"XCLR" if record_type == b"CELL" => Array {
             stride: 4,
@@ -1379,6 +1420,15 @@ fn remap_record_form_ids(
         record.worldspace_form_id = None;
         return Ok(());
     }
+    let occluder = record_type == *b"REFR"
+        && extractors::SubrecordView::new(&record.subrecords)
+            .find_all(b"NAME")
+            // silent-ok: Only a complete NAME can identify the marker during this probe.
+            .filter_map(|data| <[u8; 4]>::try_from(data).ok())
+            .any(|word| {
+                remap_link(u32::from_le_bytes(word))
+                    .is_ok_and(|id| id == rooms::OCCLUSION_MARKER_BASE)
+            });
     record.cell_form_id = record.cell_form_id.map(&remap_link).transpose()?;
     record.worldspace_form_id = record.worldspace_form_id.map(&remap_link).transpose()?;
     if record.record_type == *b"LAND" {
@@ -1509,7 +1559,15 @@ fn remap_record_form_ids(
                             record.form_id
                         ),
                     );
-                    malformed_subrecords.push(index);
+                    if (record_type == *b"REFR" && tag.as_slice() == b"XORD")
+                        || (occluder && matches!(tag.as_slice(), b"XESP" | b"XMBR"))
+                    {
+                        // Presence marks uncertain occlusion state. Dropping it could
+                        // promote this marker to an independently usable occluder.
+                        data.clear();
+                    } else {
+                        malformed_subrecords.push(index);
+                    }
                     continue;
                 }
             };
@@ -1591,6 +1649,83 @@ fn remap_record_form_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn occlusion_links_remap_all_four_slots_and_keep_malformed_presence() {
+        let indices = HashMap::from([("base.esm".into(), 0), ("patch.esp".into(), 2)]);
+        let warnings = RemapWarnings::default();
+        let mut record = RawRecord {
+            form_id: 0x0100_0800,
+            record_type: *b"REFR",
+            flags: 0,
+            subrecords: vec![
+                (
+                    b"XORD".to_vec(),
+                    [0x0100_0900u32, 0x0000_0901, 0x0100_0902, 0x0300_0903]
+                        .into_iter()
+                        .flat_map(u32::to_le_bytes)
+                        .collect(),
+                ),
+                (b"XORD".to_vec(), vec![1; 12]),
+            ],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        };
+        remap_record_form_ids(
+            &mut record,
+            "patch.esp",
+            &["base.esm".into()],
+            &indices,
+            &HashMap::new(),
+            &warnings,
+        )
+        .unwrap();
+        assert_eq!(
+            record.subrecords[0].1,
+            [0x0200_0900u32, 0x0000_0901, 0x0200_0902, 0]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(record.subrecords[1], (b"XORD".to_vec(), Vec::new()));
+    }
+
+    #[test]
+    fn malformed_occlusion_state_preserves_enable_parent_and_override_presence() {
+        let indices = HashMap::from([
+            ("other.esm".into(), 1),
+            ("skyrim.esm".into(), 0),
+            ("patch.esp".into(), 2),
+        ]);
+        for (raw_base, retained) in [(0x0100_0017u32, true), (0x17, false)] {
+            let mut record = RawRecord {
+                form_id: 0x0200_0800,
+                record_type: *b"REFR",
+                flags: 0,
+                subrecords: vec![
+                    (b"NAME".to_vec(), raw_base.to_le_bytes().to_vec()),
+                    (b"XESP".to_vec(), vec![0; 3]),
+                    (b"XMBR".to_vec(), vec![0; 3]),
+                ],
+                cell_form_id: None,
+                worldspace_form_id: None,
+                load_order: 0,
+            };
+            remap_record_form_ids(
+                &mut record,
+                "patch.esp",
+                &["other.esm".into(), "skyrim.esm".into()],
+                &indices,
+                &HashMap::new(),
+                &RemapWarnings::default(),
+            )
+            .unwrap();
+            let view = extractors::SubrecordView::new(&record.subrecords);
+            assert_eq!(view.find(b"XMBR"), Some([].as_slice()));
+            assert_eq!(view.find(b"XESP"), retained.then_some([].as_slice()));
+        }
+    }
 
     #[test]
     fn invalid_optional_links_are_cleared_and_warnings_are_aggregated() {

@@ -1,9 +1,12 @@
-//! Convex inclusion volumes in cell-local space. Separate portal paths form a union.
+//! Path-local inclusion and exclusion volumes. Separate portal paths form a union.
 
 use bevy::{camera::primitives::Aabb, math::Affine3A, prelude::*};
+use std::{collections::BTreeMap, sync::Arc};
+
+use super::occlusion::OcclusionVolume;
 
 // These are conservative work limits, not Skyrim's operator budget. Overflow widens the room
-// to the camera frustum and propagates that wider volume through the remaining graph.
+// to the camera frustum with local exclusions and propagates that wider volume.
 const MAX_ROOM_CONTRIBUTIONS: usize = 16;
 const MAX_VOLUME_PLANES: usize = 64;
 const PLANE_EPSILON: f32 = 1.0e-3;
@@ -15,6 +18,28 @@ pub(super) struct MeshBounds {
 }
 
 impl MeshBounds {
+    /// Enclose all affine-transformed AABB corners, including shear. Exclusions need full
+    /// containment, so a conservative sphere can only retain extra geometry.
+    fn sphere_radius(&self) -> Option<f32> {
+        let radius = (0..8)
+            .map(|corner| {
+                self.half_axes
+                    .iter()
+                    .enumerate()
+                    .map(|(axis, half)| {
+                        if corner & (1 << axis) == 0 {
+                            -*half
+                        } else {
+                            *half
+                        }
+                    })
+                    .sum::<Vec3>()
+                    .length()
+            })
+            .fold(0.0_f32, f32::max);
+        (radius.is_finite() && radius > 0.0).then_some(radius)
+    }
+
     fn radius(&self, axis: Vec3) -> f32 {
         self.half_axes
             .iter()
@@ -53,12 +78,23 @@ impl MeshBounds {
 #[derive(Clone, Debug)]
 pub(super) struct VisibilityVolume {
     planes: Vec<Vec4>,
+    exclusions: BTreeMap<u32, Arc<OcclusionVolume>>,
 }
 
 fn normalized(plane: Vec4) -> Option<Vec4> {
     let length = plane.truncate().length();
     let result = plane / length;
     (length > 0.0 && result.is_finite()).then_some(result)
+}
+
+/// Decreasing orthographic clip depth follows the viewing rays. An affine cell root can make
+/// this direction differ from the near-plane normal, which transforms as a covector.
+pub(super) fn orthographic_forward(clip: Mat4) -> Option<Vec3> {
+    let determinant = clip.determinant();
+    if !determinant.is_finite() || determinant == 0.0 {
+        return None;
+    }
+    (-clip.inverse().z_axis.truncate()).try_normalize()
 }
 
 impl VisibilityVolume {
@@ -74,21 +110,51 @@ impl VisibilityVolume {
             .into_iter()
             .map(normalized)
             .collect();
-        planes.map(|planes| Self { planes })
+        planes.map(|planes| Self {
+            planes,
+            exclusions: BTreeMap::new(),
+        })
+    }
+
+    pub(super) fn add_occluder(&mut self, id: u32, shadow: OcclusionVolume) {
+        self.exclusions
+            .entry(id)
+            .or_insert_with(|| Arc::new(shadow));
+    }
+
+    /// Occluders belong to this contributing path, not to the union of every room path.
+    pub(super) fn extend_occluders(&mut self, local: &Self) {
+        for (&id, shadow) in &local.exclusions {
+            self.exclusions
+                .entry(id)
+                .or_insert_with(|| Arc::clone(shadow));
+        }
     }
 
     pub(super) fn intersects(&self, bounds: &MeshBounds) -> bool {
-        self.planes.iter().all(|plane| {
+        let included = self.planes.iter().all(|plane| {
             let normal = plane.truncate();
             let distance = normal.dot(bounds.center) + plane.w;
             let radius = bounds.radius(normal);
             !distance.is_finite() || !radius.is_finite() || distance + radius >= -PLANE_EPSILON
-        })
+        });
+        included
+            && (self.exclusions.is_empty()
+                || bounds.sphere_radius().is_none_or(|radius| {
+                    !self
+                        .exclusions
+                        .values()
+                        .any(|shadow| shadow.contains_sphere(bounds.center, radius))
+                }))
     }
 
     /// A sufficient containment test. Retaining the incoming planes makes cycles redundant.
     fn contains(&self, other: &Self) -> bool {
         self.planes.iter().all(|plane| other.planes.contains(plane))
+            && self
+                .exclusions
+                .keys()
+                .all(|id| other.exclusions.contains_key(id))
     }
 
     pub(super) fn through_portal(
@@ -148,7 +214,10 @@ impl VisibilityVolume {
             .cross(corners[3] - corners[0])
             .normalize_or_zero();
         let forward = if clip.row(3).truncate() == Vec3::ZERO {
-            (clip.row(3) - clip.row(2)).truncate()
+            let Some(forward) = orthographic_forward(clip) else {
+                return Some(self.clone());
+            };
+            forward
         } else {
             center - camera
         };
@@ -174,14 +243,14 @@ impl RoomVisibility {
     pub(super) fn insert(
         &mut self,
         mut arriving: VisibilityVolume,
-        camera: &VisibilityVolume,
+        fallback: &VisibilityVolume,
     ) -> Option<VisibilityVolume> {
         if self.volumes.iter().any(|old| old.contains(&arriving)) {
             return None;
         }
         if self.contributions >= MAX_ROOM_CONTRIBUTIONS || arriving.planes.len() > MAX_VOLUME_PLANES
         {
-            arriving = camera.clone();
+            arriving = fallback.clone();
         }
         self.contributions += 1;
         self.volumes.retain(|old| !arriving.contains(old));
@@ -191,6 +260,12 @@ impl RoomVisibility {
 
     pub(super) fn is_reached(&self) -> bool {
         !self.volumes.is_empty()
+    }
+
+    pub(super) fn clear_occluders(&mut self) {
+        for volume in &mut self.volumes {
+            volume.exclusions.clear();
+        }
     }
 
     pub(super) fn intersects(&self, bounds: Option<&MeshBounds>) -> bool {
@@ -250,6 +325,48 @@ mod tests {
                 "mesh testing still applies the near plane"
             );
         }
+    }
+
+    #[test]
+    fn alternative_paths_do_not_share_their_occluders() {
+        let full = camera();
+        let shape = super::super::occlusion::Occluder::from_creation(
+            10,
+            3,
+            [0.0, 10.0, 0.0],
+            [0.0; 3],
+            [4.0, 0.0, 4.0],
+            1.0,
+            super::super::PortalSide::Unbounded,
+        )
+        .unwrap();
+        let mut occluded = full.clone();
+        let view = super::super::occlusion::View::new(Vec3::ZERO, clip()).unwrap();
+        occluded.add_occluder(10, shape.shadow_in(&view).unwrap());
+        let mesh = bounds(Vec3::new(0.0, 0.0, -30.0), Vec3::splat(0.5));
+        assert!(!occluded.intersects(&mesh));
+        let mut visible = RoomVisibility::default();
+        visible.insert(occluded.clone(), &occluded);
+        assert!(!visible.intersects(Some(&mesh)));
+        assert!(visible.intersects(None), "missing mesh bounds fail open");
+        visible.insert(full.clone(), &full);
+        assert!(
+            visible.intersects(Some(&mesh)),
+            "an independent clear path retains the mesh"
+        );
+        assert!(visible.insert(occluded.clone(), &occluded).is_none());
+
+        let mut limited = RoomVisibility {
+            contributions: MAX_ROOM_CONTRIBUTIONS,
+            ..Default::default()
+        };
+        limited.insert(occluded.clone(), &occluded);
+        assert!(
+            !limited.intersects(Some(&mesh)),
+            "budget widening retains local exclusions"
+        );
+        let zero = bounds(Vec3::new(0.0, 0.0, -30.0), Vec3::ZERO);
+        assert!(occluded.intersects(&zero), "degenerate bounds fail open");
     }
 
     #[test]
@@ -318,6 +435,26 @@ mod tests {
             !volume.intersects(&bounds(Vec3::new(3.0, 0.0, -50.0), Vec3::splat(0.1))),
             "an orthographic aperture does not widen with distance"
         );
+    }
+
+    #[test]
+    fn an_orthographic_portal_cap_follows_rays_through_an_affine_cell_root() {
+        let clip = Mat4::orthographic_rh(-100.0, 100.0, -100.0, 100.0, 1000.0, 0.1)
+            * Mat4::look_at_rh(Vec3::ZERO, Vec3::new(1.0, 0.0, -1.0), Vec3::Y)
+            * Mat4::from_scale(Vec3::new(2.0, 1.0, 1.0));
+        let volume = VisibilityVolume::camera(clip)
+            .unwrap()
+            .through_portal(
+                &portal(
+                    Vec3::new(10.0, 0.0, -20.0),
+                    Quat::from_rotation_y(std::f32::consts::FRAC_PI_4),
+                ),
+                Vec3::ZERO,
+                clip,
+            )
+            .unwrap();
+        assert!(volume.intersects(&bounds(Vec3::new(15.0, 0.0, -30.0), Vec3::splat(0.1))));
+        assert!(!volume.intersects(&bounds(Vec3::new(5.0, 0.0, -10.0), Vec3::splat(0.1))));
     }
 
     #[test]

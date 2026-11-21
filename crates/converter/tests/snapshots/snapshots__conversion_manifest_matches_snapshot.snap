@@ -81,11 +81,11 @@ expression: manifest
   },
   "asset_configuration_hashes": {
     "dds": "1495cf3ec0f02a297c0bf31210e650b2c41df7f8b5e2bdda71f0a65f84b9db65",
-    "nif": "7d88fe467ac592c292f7862ca8a3d34918dc2bacdf208722defb2135134ae087",
+    "nif": "8d888a5b5be264794a0d7752d9cc4e8908adf95f2dec52e881e49eddffda9dfe",
     "pex": "cf13370688eb7906eb315807a3ff9fff826e24c65351c5a229f96d2d2ea85a7f"
   },
   "complete": true,
-  "configuration_hash": "39c027ffccf48bca6a178e96174d86476daca7e47a76c82945575de5adb2f5ac",
+  "configuration_hash": "475839f918182ff477002529ad5a21c24da5e1f350a069a357f549850b5f05a6",
   "entries": {
     "derived/grass-cache": {
       "output": "grass_cache.rkyv",

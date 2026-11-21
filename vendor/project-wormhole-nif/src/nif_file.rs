@@ -1668,7 +1668,9 @@ fn populate_static_scene_excluding(
             continue;
         }
         match block {
-            NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => {
+            NifBlock::NiNode(node)
+            | NifBlock::BSFadeNode(node)
+            | NifBlock::BSLeafAnimNode(node) => {
                 model.static_nodes.push(static_node_from_av(
                     nif,
                     block_index,
