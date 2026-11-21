@@ -198,11 +198,14 @@ fn geometry_document(mut root: gltf::json::Root) -> Option<gltf::Document> {
     // gltf validates required renderer features too. Only geometry is consumed here.
     root.extensions_required
         .retain(|name| !material_or_uv_extension(name));
+    // silent-ok: An invalid geometry document cannot certify sphere enclosure.
     gltf::Document::from_json(root).ok()
 }
 
 fn scene_fits(glb: &[u8], sphere: ModelSphere) -> Option<bool> {
+    // silent-ok: A malformed GLB cannot certify sphere enclosure.
     let chunks = gltf::binary::Glb::from_slice(glb).ok()?;
+    // silent-ok: A malformed scene description cannot certify sphere enclosure.
     let root = serde_json::from_slice(&chunks.json).ok()?;
     let gltf = geometry_document(root)?;
     let scene = gltf.default_scene()?;
