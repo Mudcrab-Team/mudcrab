@@ -3453,6 +3453,7 @@ impl RecoveryCandidates {
     }
 
     pub(super) fn end_predecessor_chain(&mut self, id: u32, previous: Option<DecodedRecord>) {
+        // silent-ok: A record with no saved predecessors starts with an empty chain.
         let mut chain = self.predecessors.remove(&id).unwrap_or_default();
         if !self.duplicates.is_empty()
             && chain
@@ -3646,6 +3647,7 @@ impl RecoveryCandidates {
             .iter()
             .map(|primary| {
                 let key = (primary.load_order, primary.source_record_offset);
+                // silent-ok: A primary with no queued duplicates is the only candidate in its layer.
                 (primary, self.duplicates.remove(&key).unwrap_or_default())
             })
             .collect();
