@@ -1898,9 +1898,12 @@ fn open_nif_resilient_bytes(
         let NifBlock::NiSwitchNode(switch) = block else {
             return None;
         };
-        let selector = usize::try_from(switch.active_child).ok()?;
+        let selector = switch.active_child;
         let child_count = switch.node.children.len();
-        (selector >= child_count).then_some((index, selector, child_count))
+        // Negative selectors mean no active child.
+        usize::try_from(selector)
+            .is_ok_and(|slot| slot >= child_count)
+            .then_some((index, selector, child_count))
     });
     if let Some((index, selector, child_count)) = invalid_switches.next() {
         let count = 1 + invalid_switches.count();
