@@ -11427,7 +11427,10 @@ mod tests {
                     Vec3::new(1.0, 1.0, 10.0),
                     Vec3::new(-1.0, 1.0, 10.0),
                 ],
-                rooms: [Some(0), Some(1)],
+                rooms: [
+                    crate::room_culling::PortalSide::Room(0),
+                    crate::room_culling::PortalSide::Room(1),
+                ],
             }],
             membership: [1, 2, 3]
                 .into_iter()

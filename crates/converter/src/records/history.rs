@@ -357,7 +357,7 @@ pub(crate) fn stored_order(conn: &Connection) -> Result<(LoadOrder, Vec<PluginSo
     for row in rows {
         let (plugin_id, name, flags, source, checksum, legacy_masters) = row?;
         ensure!(
-            usize::try_from(plugin_id).ok() == Some(sources.len()),
+            usize::try_from(plugin_id).is_ok_and(|index| index == sources.len()),
             "stored plugin index {plugin_id} is not contiguous; expected {}",
             sources.len()
         );

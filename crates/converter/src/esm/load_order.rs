@@ -502,11 +502,13 @@ pub(crate) fn after_load_order_read_for_test() {
 }
 
 #[cfg(debug_assertions)]
+type LoadOrderReadEditHooks = (Box<dyn FnOnce()>, Box<dyn FnOnce()>);
+
+#[cfg(debug_assertions)]
 thread_local! {
     /// A deterministic temporary source edit spanning one header read, in debug builds.
-    static LOAD_ORDER_READ_EDIT: std::cell::RefCell<
-        Option<(Box<dyn FnOnce()>, Box<dyn FnOnce()>)>,
-    > = const { std::cell::RefCell::new(None) };
+    static LOAD_ORDER_READ_EDIT: std::cell::RefCell<Option<LoadOrderReadEditHooks>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Clears [`load_order_read_edit_for_test`] if the read never ran (debug builds only).

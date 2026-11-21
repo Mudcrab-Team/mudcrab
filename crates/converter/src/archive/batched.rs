@@ -113,10 +113,13 @@ struct Pending<'a> {
 }
 
 /// Validate the entire namespace and collect selected payloads from the current view.
+/// The completed directory inventory is published before payloads are decoded, so a
+/// recoverable payload error keeps its counts.
 fn selected_entries<'a>(
     bytes: &'a [u8],
     archive_path: &Path,
     options: &ExtractOptions,
+    ignored_inputs_by_extension: &mut BTreeMap<String, u64>,
 ) -> Result<Vec<Pending<'a>>> {
     let raw: Vec<(String, Payload<'a>)> = match bytes.get(..4) {
         Some(b"BSA\0") => bsa::iter_raw_entries(bytes)?
@@ -130,18 +133,30 @@ fn selected_entries<'a>(
         _ => bail!("unsupported archive magic in {}", archive_path.display()),
     };
     let mut seen = BTreeMap::new();
-    let mut selected = Vec::new();
+    let mut chosen = Vec::new();
+    let mut inventory = BTreeMap::new();
     for (name, payload) in raw {
         let path = safe_relative_path(&name)?;
         // Filtering never conceals traversal or case-folded collisions.
         detect_archive_collision(&mut seen, &path, &name)?;
         if options.selection.includes(&path) {
-            selected.push(Pending {
-                path,
-                bytes: payload.decoded_size()?,
-                payload,
-            });
+            chosen.push((path, payload));
+        } else if !crate::controls::owns_input(&path) {
+            crate::input_inventory::record_ignored(&mut inventory, &path);
         }
+    }
+    // Hand the completed directory inventory to the caller before payloads are
+    // decoded, so a recoverable payload error keeps these counts. A directory
+    // validation error returns without publishing partial counts.
+    *ignored_inputs_by_extension = inventory;
+    let mut selected = Vec::new();
+    for (path, payload) in chosen {
+        let bytes = payload.decoded_size()?;
+        selected.push(Pending {
+            path,
+            bytes,
+            payload,
+        });
     }
     Ok(selected)
 }
@@ -289,11 +304,13 @@ pub(super) fn extract(
         stop,
         observer,
         &session,
+        &mut BTreeMap::new(),
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Extract one checked archive view while preserving batch checkpoints and warm reuse.
+/// Inventory source paths once, count recipe exclusions and recover durable selected batches.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn extract_with_session(
     archive_path: &Path,
     output: &Path,
@@ -305,6 +322,7 @@ pub(super) fn extract_with_session(
     stop: Option<StopCheck<'_>>,
     observer: WriterObserver<'_>,
     session: &RawIngestionSession,
+    ignored_inputs_by_extension: &mut BTreeMap<String, u64>,
 ) -> Result<ExtractionOutcome> {
     ensure!(
         options.cpu_jobs > 0 && options.io_jobs > 0,
@@ -321,7 +339,7 @@ pub(super) fn extract_with_session(
         source_hash_seconds: hash_started.elapsed().as_secs_f64(),
         ..ExtractionTimings::default()
     };
-    let selected = selected_entries(&bytes, archive_path, options)?;
+    let selected = selected_entries(&bytes, archive_path, options, ignored_inputs_by_extension)?;
     let total_bytes = selected.iter().map(|entry| entry.bytes as u64).sum();
     let reporter = progress
         .map(|callback| ProgressReporter::new(callback, selected.len() as u64, total_bytes));
@@ -432,7 +450,8 @@ pub(super) fn extract_with_session(
             "archive inputs changed before extraction"
         );
     }
-    let selected = selected_entries(&bytes, archive_path, options)?;
+    // The inventory already published above covers this identical view.
+    let selected = selected_entries(&bytes, archive_path, options, &mut BTreeMap::new())?;
     if let Some(reporter) = &reporter {
         reporter.announce();
     }

@@ -557,7 +557,7 @@ fn matched_plugins(
         // Authenticate the TES4 header and the package checksum from one checked view. The
         // rebuild's slot read must not admit a replacement these bytes never contained.
         let reader = crate::esm::mmap_reader::EsmReader::open(&path)?;
-        let header = crate::esm::binary::parse_plugin_metadata_bytes(reader.as_slice())
+        let header = crate::esm::binary::plugin_metadata_from_bytes(reader.as_slice())
             .wrap_err_with(|| format!("failed to read plugin header {name}"))?;
         ensure!(
             hash_bytes(reader.as_slice()) == expected,
@@ -1952,7 +1952,7 @@ mod tests {
         }
         let order = crate::esm::load_order::LoadOrder::read(&paths).unwrap();
         let digest = |bytes: &[u8]| Sha256::digest(bytes).to_vec();
-        let raw = |bytes: &[u8]| <[u8; 32]>::try_from(Sha256::digest(bytes)).unwrap();
+        let raw = |bytes: &[u8]| <[u8; 32]>::from(Sha256::digest(bytes));
         let expected = vec![hash_bytes(b"source A"), hash_bytes(b"source B")];
         let mut conversion = crate::esm::RecordConversion {
             load_order: order,

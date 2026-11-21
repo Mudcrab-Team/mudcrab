@@ -1,8 +1,9 @@
 use crate::esm::{
-    binary::parse_admitted_plugin_file_with_warnings,
+    binary::{ParsedRecord, parse_admitted_plugin_file_with_warnings},
     exporter::{create_tables, validate_inhouse_record},
     records::RawRecord,
 };
+use crate::records::DiscardedFrameScope;
 use color_eyre::{Result, eyre::WrapErr};
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
@@ -10,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io::Read,
     path::{Path, PathBuf},
 };
@@ -30,6 +31,7 @@ pub mod load_order;
 pub mod lodsettings;
 pub mod mmap_reader;
 mod object_materials;
+pub mod placement_edits;
 pub mod plugins_txt;
 pub mod projection_omissions;
 pub mod records;
@@ -200,7 +202,92 @@ fn prepare_plugin_checksum_rows(
     }).collect()
 }
 
-/// Empty BLOB means unavailable source proof; id/name/priority retain admission order.
+struct LegacyPluginMerge {
+    conversion: RecordConversion,
+    damaged_cells: HashSet<u32>,
+    room_link_layouts: HashMap<u32, rooms::RoomLinkLayout>,
+}
+
+struct LegacyPlacementCandidate {
+    source_id: u32,
+    source_cell: Option<u32>,
+    predecessor: Option<Box<LegacyPlacementPredecessor>>,
+}
+
+struct LegacyPlacementPredecessor {
+    previous: Option<RawRecord>,
+    previous_layout: Option<rooms::RoomLinkLayout>,
+    previous_damage: Option<HashSet<u32>>,
+    previous_candidate: Option<LegacyPlacementCandidate>,
+}
+
+/// A rejected override may name a different cell from its retained predecessor.
+/// A later usable record or deletion supersedes damage with a proven identity.
+#[derive(Default)]
+struct PlacementDamage {
+    cells_by_reference: HashMap<Option<u32>, HashSet<u32>>,
+}
+
+impl PlacementDamage {
+    fn reject(
+        &mut self,
+        record_type: &[u8; 4],
+        source_id: u32,
+        source_cell: Option<u32>,
+        plugin: usize,
+        order: &load_order::LoadOrder,
+    ) {
+        use crate::records::source_identity::header_runtime_id;
+
+        if !is_placed_record_type(record_type) {
+            return;
+        }
+        self.reject_resolved(
+            header_runtime_id(record_type, source_id, plugin, order),
+            source_cell,
+            plugin,
+            order,
+        );
+    }
+
+    fn reject_resolved(
+        &mut self,
+        id: Option<u32>,
+        source_cell: Option<u32>,
+        plugin: usize,
+        order: &load_order::LoadOrder,
+    ) {
+        use crate::records::source_identity::header_runtime_id;
+
+        let id = id.filter(|&id| id != 0);
+        let cell = source_cell
+            .and_then(|raw| header_runtime_id(b"CELL", raw, plugin, order))
+            .filter(|&cell| cell != 0);
+        if id.is_some() || cell.is_some() {
+            self.cells_by_reference.entry(id).or_default().extend(cell);
+        }
+    }
+
+    fn accepted(&mut self, id: u32) {
+        self.cells_by_reference.remove(&Some(id));
+    }
+
+    fn affected_cells(self, winners: &HashMap<u32, RawRecord>) -> HashSet<u32> {
+        let mut cells = HashSet::new();
+        for (id, rejected) in self.cells_by_reference {
+            cells.extend(rejected);
+            if let Some(earlier) = id.and_then(|id| winners.get(&id))
+                && is_placed_record_type(&earlier.record_type)
+            {
+                cells.extend(earlier.cell_form_id);
+            }
+        }
+        cells
+    }
+}
+
+/// Populate the common plugin metadata contract without allocating each complete input;
+/// an empty BLOB means unavailable source proof, and id/name/priority retain admission order.
 fn insert_plugins(conn: &Connection, plugins: PluginRows<'_>) -> rusqlite::Result<()> {
     if plugins.paths.len() != plugins.checksums.len() {
         return Err(rusqlite::Error::InvalidParameterCount(
@@ -386,7 +473,11 @@ impl EsmParser {
     ) -> Result<RecordConversion> {
         #[cfg(test)]
         after_plugin_admission_for_test();
-        let mut master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
+        let LegacyPluginMerge {
+            conversion: mut master,
+            damaged_cells,
+            room_link_layouts,
+        } = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
         #[cfg(test)]
         after_plugin_decode_for_test();
         let (unresolved, localization_warnings, localization_notices) =
@@ -407,6 +498,8 @@ impl EsmParser {
                 checksums: &master.plugin_checksums,
             },
             &unresolved,
+            &damaged_cells,
+            &room_link_layouts,
         )?;
 
         for diagnostic in localization_warnings.iter().chain(&localization_notices) {
@@ -421,7 +514,7 @@ impl EsmParser {
     pub fn merge_plugins(plugin_paths: &[PathBuf]) -> Result<HashMap<u32, RawRecord>> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
         Self::merge_plugins_with_load_order(plugin_paths, &order)
-            .map(|conversion| conversion.records)
+            .map(|merged| merged.conversion.records)
     }
 
     /// Use one load-order mapping for merge/export and retain all printed reader summaries.
@@ -429,8 +522,14 @@ impl EsmParser {
     fn merge_plugins_with_load_order(
         plugin_paths: &[PathBuf],
         order: &load_order::LoadOrder,
-    ) -> Result<RecordConversion> {
+    ) -> Result<LegacyPluginMerge> {
         let mut merged = HashMap::new();
+        let mut damaged_placements = PlacementDamage::default();
+        let mut damaged_cells = HashSet::new();
+        let mut unknown_discarded_scope = false;
+        let mut room_link_layouts = HashMap::new();
+        let mut placement_candidates = BTreeMap::new();
+        let mut deleted_ids = crate::records::DeletedBases::default();
         let mut summaries = Vec::new();
         let mut skipped_inputs = BTreeSet::new();
         // The checksum is the digest of the exact view each plugin's records were decoded from.
@@ -463,10 +562,57 @@ impl EsmParser {
                     }
                 };
             summaries.extend(parser_summaries);
-            for mut record in records {
+            for candidate in records {
+                let candidate = match candidate {
+                    ParsedRecord::DamagedRecord(record) if record.record_type == *b"CELL" => {
+                        ParsedRecord::DiscardedFrame(DiscardedFrameScope::Cell(record.form_id))
+                    }
+                    candidate => candidate,
+                };
+                let (mut record, damaged) = match candidate {
+                    ParsedRecord::Usable(record) => (record, false),
+                    ParsedRecord::DamagedRecord(record)
+                        if is_placed_record_type(&record.record_type) =>
+                    {
+                        (record, true)
+                    }
+                    ParsedRecord::DamagedRecord(_) => continue,
+                    ParsedRecord::TruncatedPlacement(placement) => {
+                        if let Some(id) = placement.runtime_id(priority, order) {
+                            damaged_placements
+                                .cells_by_reference
+                                .entry(Some(id))
+                                .or_default();
+                        } else {
+                            unknown_discarded_scope = true;
+                        }
+                        continue;
+                    }
+                    ParsedRecord::DiscardedFrame(scope) => {
+                        match scope.resolve(priority, order) {
+                            DiscardedFrameScope::Cell(cell) => {
+                                damaged_cells.insert(cell);
+                            }
+                            DiscardedFrameScope::Unknown => unknown_discarded_scope = true,
+                        }
+                        continue;
+                    }
+                };
                 record.load_order = priority as u32;
                 let source_id = record.form_id;
                 let out_of_range = (source_id >> 24) as usize > masters.len();
+                // Optional-field remapping can remove a field between XLRMs. Capture the
+                // source positions before that can make a noncontiguous run look contiguous.
+                let room_link_layout = (!damaged
+                    && !record.is_deleted()
+                    && record.record_type == *b"REFR"
+                    && record.cell_form_id.is_some()
+                    && extractors::SubrecordView::new(&record.subrecords)
+                        .unique_form_id(b"NAME")
+                        .is_some_and(|base| base & 0x00ff_ffff == rooms::ROOM_MARKER_BASE))
+                .then(|| rooms::RoomLinkLayout::from_raw(&record));
+                let source_cell = record.cell_form_id;
+                let record_type = record.record_type;
                 let admission = remap_record_form_ids(
                     &mut record,
                     &order.names[priority],
@@ -476,7 +622,22 @@ impl EsmParser {
                     &warnings,
                 )
                 .and_then(|()| {
-                    if !record.is_deleted() {
+                    if !damaged && !record.is_deleted() {
+                        if is_placed_record_type(&record_type) {
+                            validate_placement_parent(&record_type, record.cell_form_id, || None)
+                                .map_err(color_eyre::eyre::Report::msg)?;
+                            let view = extractors::SubrecordView::new(&record.subrecords);
+                            if merged.contains_key(&record.form_id) {
+                                color_eyre::eyre::ensure!(
+                                    valid_placement_transform(view.find_all(b"DATA")),
+                                    "invalid placement override transform"
+                                );
+                            }
+                            color_eyre::eyre::ensure!(
+                                view.unique_form_id(b"NAME").is_some_and(|id| id != 0),
+                                "placement requires exactly one nonzero NAME reference"
+                            );
+                        }
                         validate_inhouse_record(&record)?;
                         if record.record_type == *b"LAND" {
                             cell_cache::validate_inhouse_land(&record)?;
@@ -484,7 +645,14 @@ impl EsmParser {
                     }
                     Ok(())
                 });
+                let resolved = (!out_of_range).then_some(record.form_id);
+                let reject_placement = |damage: &mut PlacementDamage| {
+                    if is_placed_record_type(&record_type) {
+                        damage.reject_resolved(resolved, source_cell, priority, order);
+                    }
+                };
                 if let Err(error) = admission {
+                    reject_placement(&mut damaged_placements);
                     warnings.skipped_record(
                         &order.names[priority],
                         &record,
@@ -498,6 +666,7 @@ impl EsmParser {
                     // Light-ID truncation keeps its documented last-record-wins behaviour; only
                     // an out-of-range master index is rejected when it lands on another record.
                     if *earlier != source_id && (out_of_range || *earlier_out_of_range) {
+                        reject_placement(&mut damaged_placements);
                         warnings.skipped_record(
                             &order.names[priority],
                             &record,
@@ -506,6 +675,10 @@ impl EsmParser {
                         );
                         continue;
                     }
+                }
+                if damaged {
+                    reject_placement(&mut damaged_placements);
+                    continue;
                 }
                 if record.record_type == *b"GMST" {
                     let canonical =
@@ -532,6 +705,7 @@ impl EsmParser {
                         };
                     record.form_id = canonical;
                 } else if game_settings.aliases.contains_key(&record.form_id) {
+                    reject_placement(&mut damaged_placements);
                     warnings.skipped_record(
                         &order.names[priority],
                         &record,
@@ -544,31 +718,385 @@ impl EsmParser {
                     continue;
                 }
                 sources.insert(remapped_source_id, (source_id, out_of_range));
+                let id = record.form_id;
+                let previous_layout = room_link_layouts.remove(&id);
+                if let Some(layout) = room_link_layout {
+                    room_link_layouts.insert(id, layout);
+                }
                 if record.is_deleted() {
-                    merged.remove(&record.form_id);
+                    let previous = merged.remove(&id);
+                    deleted_ids.record(
+                        id,
+                        record.load_order,
+                        record.record_type,
+                        previous.map(|prior| prior.record_type),
+                    );
+                    placement_candidates.remove(&id);
+                    damaged_placements.accepted(id);
                 } else {
                     if record.record_type == *b"DOBJ"
-                        && let Some(previous) = merged.get(&record.form_id)
+                        && let Some(previous) = merged.get(&id)
                     {
                         merge_default_objects(previous, &mut record);
                     }
-                    merged.insert(record.form_id, record);
+                    let placed = is_placed_record_type(&record.record_type);
+                    let previous = merged.insert(id, record);
+                    if placed {
+                        let previous_candidate = placement_candidates.remove(&id);
+                        let previous_damage =
+                            damaged_placements.cells_by_reference.remove(&Some(id));
+                        let predecessor =
+                            (previous.is_some() || previous_damage.is_some()).then(|| {
+                                Box::new(LegacyPlacementPredecessor {
+                                    previous,
+                                    previous_layout,
+                                    previous_damage,
+                                    previous_candidate,
+                                })
+                            });
+                        placement_candidates.insert(
+                            id,
+                            LegacyPlacementCandidate {
+                                source_id,
+                                source_cell,
+                                predecessor,
+                            },
+                        );
+                    } else {
+                        placement_candidates.remove(&id);
+                        damaged_placements.accepted(id);
+                    }
                 }
             }
         }
+        resolve_legacy_placements(
+            &mut merged,
+            &mut placement_candidates,
+            &mut room_link_layouts,
+            &mut damaged_placements,
+            &deleted_ids,
+            order,
+            &warnings,
+        );
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
-        Ok(RecordConversion {
-            load_order: order.clone(),
-            skipped_inputs,
-            unverified_inputs: BTreeMap::new(),
-            records: merged,
-            warnings: summaries,
-            notices,
-            plugin_checksums,
-            phases: std::collections::BTreeMap::new(),
+        if unknown_discarded_scope {
+            damaged_cells.extend(
+                merged
+                    .values()
+                    .filter(|record| record.record_type == *b"CELL")
+                    .map(|record| record.form_id),
+            );
+        }
+        damaged_cells.extend(damaged_placements.affected_cells(&merged));
+        Ok(LegacyPluginMerge {
+            conversion: RecordConversion {
+                load_order: order.clone(),
+                skipped_inputs,
+                unverified_inputs: BTreeMap::new(),
+                records: merged,
+                warnings: summaries,
+                notices,
+                plugin_checksums,
+                phases: BTreeMap::new(),
+            },
+            damaged_cells,
+            room_link_layouts,
         })
     }
+}
+
+/// Restore the record, link layout and damage together when late admission fails.
+fn resolve_legacy_placements(
+    winners: &mut HashMap<u32, RawRecord>,
+    candidates: &mut BTreeMap<u32, LegacyPlacementCandidate>,
+    layouts: &mut HashMap<u32, rooms::RoomLinkLayout>,
+    damage: &mut PlacementDamage,
+    deleted_ids: &crate::records::DeletedBases,
+    order: &load_order::LoadOrder,
+    warnings: &RemapWarnings,
+) {
+    loop {
+        let rejected = invalid_placement_candidates(
+            candidates.keys().copied(),
+            |id| candidates[&id].predecessor.is_some(),
+            |id| {
+                legacy_predecessors(&candidates[&id])
+                    .any(|record| !is_placed_record_type(&record.record_type))
+            },
+            |id| {
+                candidates.contains_key(&id).then(|| {
+                    let record = &winners[&id];
+                    PlacementDependencies {
+                        own: legacy_placement_links(record),
+                        grouped: legacy_grouped_predecessors(record.cell_form_id, &candidates[&id])
+                            .map(|prior| (prior.record_type, legacy_placement_links(prior)))
+                            .collect(),
+                    }
+                })
+            },
+            |id, dependencies, cycle, absent| {
+                crate::records::validate_placement_targets(
+                    None,
+                    &winners[&id].record_type,
+                    winners[&id].load_order,
+                    dependencies,
+                    cycle,
+                    |target| {
+                        winners
+                            .get(&target)
+                            .filter(|_| !absent.contains(&target))
+                            .map(|record| record.record_type)
+                    },
+                    deleted_ids,
+                )
+            },
+        );
+        if rejected.is_empty() {
+            break;
+        }
+        for (id, reason) in rejected {
+            let Some(candidate) = candidates.remove(&id) else {
+                continue;
+            };
+            let record = &winners[&id];
+            let priority = record.load_order as usize;
+            match reason {
+                crate::records::PlacementFailure::Invalid(reason) => {
+                    warnings.skipped_record(
+                        &order.names[priority],
+                        record,
+                        candidate.source_id,
+                        reason,
+                    );
+                }
+                crate::records::PlacementFailure::RetiredBase(base) => {
+                    let mut counts = warnings.retired_base_placements.borrow_mut();
+                    let entry = counts
+                        .entry(order.names[priority].clone())
+                        .or_insert((0, id, base));
+                    entry.0 += 1;
+                }
+            }
+            let source_slot = (candidate.source_id >> 24) as usize;
+            let resolved = (source_slot <= order.metadata[priority].masters.len()).then_some(id);
+            damage.reject_resolved(resolved, candidate.source_cell, priority, order);
+            winners.remove(&id);
+            layouts.remove(&id);
+            if let Some(predecessor) = candidate.predecessor {
+                if let Some(prior_damage) = predecessor.previous_damage {
+                    damage
+                        .cells_by_reference
+                        .entry(Some(id))
+                        .or_default()
+                        .extend(prior_damage);
+                }
+                if let Some(layout) = predecessor.previous_layout {
+                    layouts.insert(id, layout);
+                }
+                if let Some(prior_candidate) = predecessor.previous_candidate {
+                    candidates.insert(id, prior_candidate);
+                }
+                if let Some(previous) = predecessor.previous {
+                    winners.insert(id, previous);
+                }
+            }
+        }
+    }
+}
+
+fn legacy_placement_links(record: &RawRecord) -> [Option<u32>; 2] {
+    [
+        record.cell_form_id,
+        extractors::SubrecordView::new(&record.subrecords).unique_form_id(b"NAME"),
+    ]
+}
+
+fn legacy_predecessors(candidate: &LegacyPlacementCandidate) -> impl Iterator<Item = &RawRecord> {
+    std::iter::successors(candidate.predecessor.as_deref(), |predecessor| {
+        predecessor
+            .previous_candidate
+            .as_ref()?
+            .predecessor
+            .as_deref()
+    })
+    .filter_map(|predecessor| predecessor.previous.as_ref())
+}
+
+fn legacy_grouped_predecessors(
+    cell: Option<u32>,
+    candidate: &LegacyPlacementCandidate,
+) -> impl Iterator<Item = &RawRecord> {
+    cell.is_none()
+        .then_some(candidate)
+        .into_iter()
+        .flat_map(legacy_predecessors)
+        .take_while(|previous| is_placed_record_type(&previous.record_type))
+        .filter(|previous| {
+            previous.cell_form_id.is_some()
+                && valid_placement_transform(
+                    extractors::SubrecordView::new(&previous.subrecords).find_all(b"DATA"),
+                )
+        })
+}
+
+/// Select failures against the current catalogue in dependency order. A caller
+/// restores predecessors and starts another round before checking their dependents.
+pub(crate) fn invalid_placement_candidates(
+    placements: impl IntoIterator<Item = u32>,
+    has_recovery: impl Fn(u32) -> bool,
+    restores_nonplacement: impl Fn(u32) -> bool,
+    links: impl Fn(u32) -> Option<PlacementDependencies>,
+    validate: impl Fn(
+        u32,
+        &PlacementDependencies,
+        Option<&HashSet<u32>>,
+        &HashSet<u32>,
+    ) -> std::result::Result<(), crate::records::PlacementFailure>,
+) -> Vec<(u32, crate::records::PlacementFailure)> {
+    // Gabow's path-based strongly connected components algorithm. Discovery indices
+    // are retained while a placement is active. Edges to active nodes merge roots.
+    let mut visited = HashMap::new();
+    let mut traversal = Vec::new();
+    let mut active: Vec<(u32, PlacementDependencies)> = Vec::new();
+    let mut roots: Vec<(u32, usize, usize)> = Vec::new();
+    let mut absent = HashSet::new();
+    let mut unresolved = HashSet::new();
+    let mut rejected = Vec::new();
+    for id in placements {
+        traversal.push((id, false));
+        while let Some((id, explored)) = traversal.pop() {
+            if explored {
+                let Some(&(root, _, start)) = roots.last() else {
+                    continue;
+                };
+                if root != id {
+                    continue;
+                }
+                roots.pop();
+                let component = &active[start..];
+                if component.iter().any(|(id, targets)| {
+                    targets.all().any(|target| {
+                        unresolved.contains(&target)
+                            || (absent.contains(&target)
+                                && (component.len() > 1 || has_recovery(*id)))
+                    })
+                }) {
+                    unresolved.extend(component.iter().map(|&(member, _)| member));
+                } else if let Some(failure) = placement_component_failure(
+                    component,
+                    &restores_nonplacement,
+                    &|id, deps, cycle| validate(id, deps, cycle, &absent),
+                ) {
+                    if component.len() == 1 && !has_recovery(failure.0) {
+                        // Dependents can validate against this final removal during the same walk.
+                        absent.insert(failure.0);
+                    } else {
+                        unresolved.extend(component.iter().map(|&(member, _)| member));
+                    }
+                    rejected.push(failure);
+                }
+                for &(member, _) in component {
+                    visited.insert(member, None);
+                }
+                active.truncate(start);
+            } else if let Some(&index) = visited.get(&id) {
+                if let Some(index) = index {
+                    while roots
+                        .last()
+                        .is_some_and(|&(_, root_index, _)| root_index > index)
+                    {
+                        roots.pop();
+                    }
+                }
+            } else if let Some(targets) = links(id) {
+                let index = visited.len();
+                visited.insert(id, Some(index));
+                roots.push((id, index, active.len()));
+                traversal.push((id, true));
+                traversal.extend(targets.all().map(|target| (target, false)));
+                active.push((id, targets));
+            }
+        }
+    }
+    rejected
+}
+
+#[test]
+fn terminal_placement_chain_is_rejected_in_one_walk() {
+    let rejected = invalid_placement_candidates(
+        1..=128,
+        |_| false,
+        |_| false,
+        |id| {
+            (id <= 128).then(|| PlacementDependencies {
+                own: [None, Some(id + 1)],
+                grouped: Vec::new(),
+            })
+        },
+        |_, dependencies, _, absent| {
+            let target = dependencies.own[1].unwrap();
+            if target > 128 || absent.contains(&target) {
+                return Err("missing base".to_owned().into());
+            }
+            Ok(())
+        },
+    );
+    assert_eq!(
+        rejected.into_iter().map(|(id, _)| id).collect::<Vec<_>>(),
+        (1..=128).rev().collect::<Vec<_>>()
+    );
+}
+
+type PlacementLinks = [Option<u32>; 2];
+
+pub(crate) struct PlacementDependencies {
+    pub(crate) own: PlacementLinks,
+    pub(crate) grouped: Vec<([u8; 4], PlacementLinks)>,
+}
+
+impl PlacementDependencies {
+    fn all(&self) -> impl Iterator<Item = u32> + '_ {
+        self.own
+            .into_iter()
+            .chain(self.grouped.iter().flat_map(|(_, links)| *links))
+            .flatten()
+    }
+}
+
+fn placement_component_failure(
+    component: &[(u32, PlacementDependencies)],
+    restores_nonplacement: &impl Fn(u32) -> bool,
+    validate: &impl Fn(
+        u32,
+        &PlacementDependencies,
+        Option<&HashSet<u32>>,
+    ) -> std::result::Result<(), crate::records::PlacementFailure>,
+) -> Option<(u32, crate::records::PlacementFailure)> {
+    if component.len() > 1
+        || component
+            .first()
+            .is_some_and(|(id, targets)| targets.all().any(|target| target == *id))
+    {
+        let members: HashSet<_> = component.iter().map(|&(id, _)| id).collect();
+        // A failure outside the cycle can restore a usable target for another member.
+        for (id, targets) in component.iter().rev() {
+            if let Err(reason) = validate(*id, targets, Some(&members)) {
+                return Some((*id, reason));
+            }
+        }
+    }
+    // When only internal links fail, restore a shadowed catalogue entry first. A dependent
+    // placement may become usable as soon as its base or CELL reappears.
+    component
+        .iter()
+        .rev()
+        .filter_map(|(id, targets)| {
+            validate(*id, targets, None)
+                .err()
+                .map(|reason| (*id, reason))
+        })
+        .min_by_key(|(id, _)| !restores_nonplacement(*id))
 }
 
 /// The `(use code, FormID)` pairs of a `DOBJ`'s `DNAM` subrecords, in stored order.
@@ -639,6 +1167,7 @@ struct RemapWarnings {
     out_of_range: RefCell<OutOfRangeCounts>,
     /// Invalid optional links, counted per containing plugin with the first diagnostic.
     skipped_optional: RefCell<BTreeMap<String, (u64, String)>>,
+    retired_base_placements: RefCell<BTreeMap<String, (u64, u32, u32)>>,
     /// Unusable candidates never replace an earlier complete record.
     skipped_records: RefCell<BTreeMap<String, (u64, String)>>,
 }
@@ -715,6 +1244,13 @@ impl RemapWarnings {
             eprintln!("{summary}");
             warning_lines.push(summary);
         }
+        for (plugin, (count, id, base)) in self.retired_base_placements.borrow().iter() {
+            let summary = format!(
+                "notice: {plugin}: omitted {count} placement candidate(s) whose base was deleted by a later plugin (first: {id:08X}, required NAME {base:08X})"
+            );
+            eprintln!("{summary}");
+            notice_lines.push(summary);
+        }
         (warning_lines, notice_lines)
     }
 }
@@ -777,23 +1313,47 @@ fn is_required_form_id_subrecord(record_type: &[u8; 4], tag: &[u8]) -> bool {
     tag == b"NAME" && is_placed_record_type(record_type)
 }
 
+/// A publishable placement transform is exactly one position/rotation tuple.
+pub(crate) fn valid_placement_transform<'a>(mut fields: impl Iterator<Item = &'a [u8]>) -> bool {
+    let Some(data) = fields.next().filter(|bytes| bytes.len() == 24) else {
+        return false;
+    };
+    fields.next().is_none()
+        && data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|word| f32::from_le_bytes(*word).is_finite())
+}
+
+/// A missing parent disqualifies an override only if a usable predecessor owns a cell.
+/// Callers defer that lookup until the placement targets can be checked.
+pub(crate) fn validate_placement_parent(
+    kind: &[u8; 4],
+    cell: Option<u32>,
+    previous_cell: impl FnOnce() -> Option<u32>,
+) -> std::result::Result<(), String> {
+    if is_placed_record_type(kind) {
+        match cell {
+            Some(0) => return Err("invalid placement parent cell".into()),
+            None if previous_cell().is_some() => {
+                return Err("missing parent cell on placement override".into());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Native records with a placed base and transform. Keep publication, required-link
 /// validation and room membership on the same set; schema coverage is checked in tests.
+pub(crate) const PLACED_RECORD_TYPES: &[[u8; 4]] = &[
+    *b"REFR", *b"ACHR", *b"ACRE", *b"PGRE", *b"PMIS", *b"PHZD", *b"PARW", *b"PBAR", *b"PBEA",
+    *b"PCON", *b"PFLA",
+];
+
 pub(crate) fn is_placed_record_type(record_type: &[u8; 4]) -> bool {
-    matches!(
-        record_type,
-        b"REFR"
-            | b"ACHR"
-            | b"ACRE"
-            | b"PGRE"
-            | b"PMIS"
-            | b"PHZD"
-            | b"PARW"
-            | b"PBAR"
-            | b"PBEA"
-            | b"PCON"
-            | b"PFLA"
-    )
+    PLACED_RECORD_TYPES.contains(record_type)
 }
 
 /// Explicit offsets for optional scalar, structure and array FormID fields.
@@ -975,8 +1535,9 @@ fn remap_record_form_ids(
     };
     let remap = |form_id| remap_with_validation(form_id, strict);
     let remap_link = |form_id| remap_with_validation(form_id, true);
-    let source_id = record.form_id;
-    record.form_id = remap(record.form_id)?;
+    // An error before header remapping leaves no runtime identity for damage tracking.
+    let source_id = std::mem::take(&mut record.form_id);
+    record.form_id = remap(source_id)?;
     if record.is_deleted() {
         // Only the resolved header identity (and a complete GMST EDID) is needed
         // for deletion. Unused parent/body links cannot invalidate a tombstone.
@@ -1122,7 +1683,16 @@ fn remap_record_form_ids(
                 let value = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
                 // Keep valid payload bytes, but publish null for an invalid FormID rather
                 // than retaining a plugin-local value or guessing its owner.
-                let resolved = match remap_with_validation(value, true) {
+                let resolved = match remap_with_validation(value, true).and_then(|resolved| {
+                    color_eyre::eyre::ensure!(
+                        resolved != 0
+                            || value == 0
+                            || record_type != *b"REFR"
+                            || tag.as_slice() != b"XPOD",
+                        "non-null portal endpoint resolved to zero"
+                    );
+                    Ok(resolved)
+                }) {
                     Ok(resolved) => resolved,
                     Err(error) => {
                         warnings.skipped_optional(
@@ -1133,6 +1703,14 @@ fn remap_record_form_ids(
                                 record.form_id
                             ),
                         );
+                        // A null portal endpoint means unbounded space. An invalid link must
+                        // remain unknown, so empty this occurrence rather than inventing one.
+                        if record_type == *b"REFR"
+                            && tag.as_slice() == b"XPOD"
+                            && malformed_subrecords.last() != Some(&index)
+                        {
+                            malformed_subrecords.push(index);
+                        }
                         0
                     }
                 };
@@ -1155,13 +1733,19 @@ fn remap_record_form_ids(
         }
     }
     if !malformed_subrecords.is_empty() {
-        // Indices are sorted by traversal order. Remove only those occurrences, so a
-        // repeated field such as XAPR keeps its valid siblings and their relative order.
+        // Empty room links and portal endpoint fields keep the graph incomplete. Dropping
+        // them would erase a broken link or make conflicting endpoint fields appear unique.
+        // Other optional fields retain their valid siblings and their relative order.
         let mut index = 0;
-        record.subrecords.retain(|_| {
-            let keep = malformed_subrecords.binary_search(&index).is_err();
+        record.subrecords.retain_mut(|(tag, data)| {
+            let malformed = malformed_subrecords.binary_search(&index).is_ok();
             index += 1;
-            keep
+            if malformed && record_type == *b"REFR" && matches!(tag.as_slice(), b"XPOD" | b"XLRM") {
+                data.clear();
+                true
+            } else {
+                !malformed
+            }
         });
     }
     Ok(())

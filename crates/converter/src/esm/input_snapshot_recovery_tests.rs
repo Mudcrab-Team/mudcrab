@@ -152,11 +152,12 @@ fn legacy_snapshot_input_failure_keeps_neighbor_plugins() {
     // No live map exists here: truncation between admission and reading is safe on both OSes.
     std::fs::write(&paths[1], b"TES4").unwrap();
     let result = EsmParser::merge_plugins_with_load_order(&paths, &order);
-    assert!(
-        result.is_ok(),
-        "unusable plugin input must not abort neighboring plugins: {result:?}"
-    );
-    let conversion = result.unwrap();
+    let conversion = match result {
+        Ok(merge) => merge.conversion,
+        Err(error) => {
+            panic!("unusable plugin input must not abort neighboring plugins: {error:#}")
+        }
+    };
     assert!(conversion.records.contains_key(&0x0000_0811));
     assert!(conversion.records.contains_key(&0x0200_0933));
     assert!(!conversion.records.contains_key(&0x0100_0822));

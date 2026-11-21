@@ -2,8 +2,9 @@ use crate::esm::{
     extractors::extract_subrecords,
     mmap_reader::EsmReader,
     records::RawRecord,
-    types::{GroupHeader, RecordHeader, WorldReference},
+    types::{CELL_CHILD_GROUP_KINDS, GroupHeader, RecordHeader, WorldReference},
 };
+use crate::records::{DiscardedFrameScope, TruncatedPlacement};
 use color_eyre::{
     Result,
     eyre::{WrapErr, ensure, eyre},
@@ -21,7 +22,7 @@ use std::{
     path::Path,
 };
 
-const FLAG_COMPRESSED: u32 = 0x00040000;
+pub(super) const FLAG_COMPRESSED: u32 = 0x00040000;
 
 #[derive(Debug, Clone, Default)]
 pub struct PluginMetadata {
@@ -38,13 +39,13 @@ pub fn parse_plugin_metadata(path: &Path) -> Result<PluginMetadata> {
 /// Bound TES4 decoding before extracting the master dependency list.
 fn parse_plugin_metadata_inner(path: &Path) -> Result<PluginMetadata> {
     let reader = EsmReader::open(path)?;
-    let metadata = parse_plugin_metadata_bytes(reader.as_slice())?;
+    let metadata = plugin_metadata_from_bytes(reader.as_slice())?;
     reader.verify_source()?;
     Ok(metadata)
 }
 
 /// Decode admission facts from the same checked view the caller will scan or hash.
-pub(crate) fn parse_plugin_metadata_bytes(data: &[u8]) -> Result<PluginMetadata> {
+pub(crate) fn plugin_metadata_from_bytes(data: &[u8]) -> Result<PluginMetadata> {
     let (rest, header) =
         parse_record_header(data).map_err(|error| eyre!("failed to parse TES4 header: {error}"))?;
     if &header.type_tag != b"TES4" || header.data_size as usize > rest.len() {
@@ -83,7 +84,7 @@ pub(crate) fn parse_plugin_metadata_bytes(data: &[u8]) -> Result<PluginMetadata>
 /// Require the original master order and flags used for slot assignment/localized decoding.
 /// Compression is a physical encoding detail, not an admission fact; names are case-insensitive.
 pub(crate) fn verify_admitted_metadata(data: &[u8], admitted: &PluginMetadata) -> Result<()> {
-    let current = parse_plugin_metadata_bytes(data)
+    let current = plugin_metadata_from_bytes(data)
         .wrap_err("changed after load order was read: unreadable TES4 metadata")?;
     const ADMISSION_FLAGS: u32 = 0x1 | 0x80 | 0x200;
     let flags_match = (current.flags ^ admitted.flags) & ADMISSION_FLAGS == 0;
@@ -367,19 +368,59 @@ pub fn parse_group(
         input,
         current_cell,
         current_worldspace,
-        records,
         &mut warnings,
+        |candidate| {
+            if let ParsedRecord::Usable(record) = candidate {
+                records.push(record);
+            }
+        },
     );
     let _ = warnings.report("plugin record stream");
     Ok(())
+}
+
+pub(crate) enum ParsedRecord {
+    Usable(RawRecord),
+    /// A known header with no usable payload.
+    DamagedRecord(RawRecord),
+    DiscardedFrame(DiscardedFrameScope),
+    TruncatedPlacement(TruncatedPlacement),
+}
+
+/// Recover identity only from the start of a discarded record or child frame.
+fn discarded_prefix(
+    bytes: &[u8],
+    cell_form_id: Option<u32>,
+    worldspace_form_id: Option<u32>,
+) -> Option<ParsedRecord> {
+    if let Some(scope) = DiscardedFrameScope::from_group_prefix(bytes) {
+        return Some(ParsedRecord::DiscardedFrame(scope));
+    }
+    if let Some(placement) = TruncatedPlacement::from_prefix(bytes) {
+        return Some(ParsedRecord::TruncatedPlacement(placement));
+    }
+    // A CELL's flags and source FormID are complete after 16 header bytes.
+    let (flags, rest) = bytes
+        .strip_prefix(b"CELL")?
+        .get(4..)?
+        .split_first_chunk::<4>()?;
+    Some(ParsedRecord::DamagedRecord(RawRecord {
+        record_type: *b"CELL",
+        flags: u32::from_le_bytes(*flags),
+        form_id: u32::from_le_bytes(*rest.first_chunk()?),
+        cell_form_id,
+        worldspace_form_id,
+        subrecords: Vec::new(),
+        load_order: 0,
+    }))
 }
 
 fn parse_group_inner(
     input: &[u8],
     current_cell: Option<u32>,
     current_worldspace: Option<u32>,
-    records: &mut Vec<RawRecord>,
     warnings: &mut ParseWarnings,
+    mut visit: impl FnMut(ParsedRecord),
 ) {
     let mut curr = input;
     let mut current_cell = current_cell;
@@ -401,6 +442,10 @@ fn parse_group_inner(
                 "trailing {} bytes in bounded record frame",
                 curr.len(),
             ));
+            if let Some(candidate) = discarded_prefix(curr, current_cell, current_worldspace) {
+                visit(candidate);
+            }
+            visit(ParsedRecord::DiscardedFrame(current_cell.into()));
             curr = &[];
             continue;
         }
@@ -408,79 +453,99 @@ fn parse_group_inner(
         if peek_tag == b"GRUP" {
             let Ok((rest, group)) = parse_group_header(curr) else {
                 warnings.skipped("invalid GRUP header".into());
+                visit(ParsedRecord::DiscardedFrame(DiscardedFrameScope::Unknown));
                 curr = &[];
                 continue;
             };
-            let group_data_size = group.data_size as usize;
-            if group_data_size < 24 {
-                warnings.skipped(format!("invalid GRUP size {}", group.data_size));
-                curr = &[];
-                continue;
-            }
-            let content_size = group_data_size - 24;
-            if content_size > rest.len() {
-                warnings.skipped(format!(
-                    "truncated GRUP payload: expected {content_size}, got {}",
-                    rest.len()
+            let cell_child = CELL_CHILD_GROUP_KINDS
+                .contains(&group.group_type)
+                .then_some(group.label);
+            let content_size = (group.data_size as usize).checked_sub(24);
+            let Some((group_content, siblings)) =
+                content_size.and_then(|size| rest.split_at_checked(size))
+            else {
+                warnings.skipped(match content_size {
+                    Some(size) => format!(
+                        "truncated GRUP payload: expected {size}, got {}",
+                        rest.len()
+                    ),
+                    None => format!("invalid GRUP size {}", group.data_size),
+                });
+                if let Some(candidate) = discarded_prefix(rest, current_cell, current_worldspace) {
+                    visit(candidate);
+                }
+                visit(ParsedRecord::DiscardedFrame(
+                    DiscardedFrameScope::unread_tail(current_cell, rest.len()),
                 ));
+                if let Some(child) = cell_child {
+                    visit(ParsedRecord::DiscardedFrame(DiscardedFrameScope::Cell(
+                        child,
+                    )));
+                }
                 curr = &[];
                 continue;
-            }
-            let group_content = &rest[..content_size];
-
-            let next_cell = match group.group_type {
-                6 | 8 | 9 | 10 => Some(group.label),
-                _ => current_cell,
             };
+
             let next_worldspace = match group.group_type {
                 1 => Some(group.label),
                 _ => current_worldspace,
             };
 
-            parents.push((&rest[content_size..], current_cell, current_worldspace));
+            parents.push((siblings, current_cell, current_worldspace));
             curr = group_content;
-            current_cell = next_cell;
+            current_cell = cell_child.or(current_cell);
             current_worldspace = next_worldspace;
         } else {
             let Ok((rest, header)) = parse_record_header(curr) else {
                 warnings.skipped("invalid record header".into());
+                visit(ParsedRecord::DiscardedFrame(DiscardedFrameScope::Unknown));
                 curr = &[];
                 continue;
             };
+            let mut record = RawRecord {
+                form_id: header.form_id,
+                record_type: header.type_tag,
+                flags: header.flags,
+                subrecords: Vec::new(),
+                cell_form_id: current_cell,
+                worldspace_form_id: current_worldspace,
+                load_order: 0,
+            };
             let record_len = header.data_size as usize;
-            if record_len > rest.len() {
-                warnings.skipped(format!(
-                    "truncated {:?} record {:08x}: expected {record_len}, got {}",
-                    header.type_tag,
-                    header.form_id,
-                    rest.len()
+            let decoded = if let Some((payload, next)) = rest.split_at_checked(record_len) {
+                curr = next;
+                decode_record_subrecords(&header, payload)
+            } else {
+                if let Some(candidate) = discarded_prefix(rest, current_cell, current_worldspace) {
+                    visit(candidate);
+                }
+                visit(ParsedRecord::DiscardedFrame(
+                    DiscardedFrameScope::unread_tail(current_cell, rest.len()),
                 ));
                 curr = &[];
-                continue;
-            }
-            let raw_payload = &rest[..record_len];
-            curr = &rest[record_len..];
-            let subrecords = match decode_record_subrecords(&header, raw_payload) {
-                Ok(subrecords) => subrecords,
+                Err(eyre!(
+                    "truncated record payload: expected {record_len}, got {}",
+                    rest.len()
+                ))
+            };
+            match decoded {
+                Ok(subrecords) => {
+                    record.subrecords = subrecords;
+                    visit(ParsedRecord::Usable(record));
+                }
                 Err(error) => {
                     warnings.skipped(format!(
                         "{} {:08X}: {error}",
                         String::from_utf8_lossy(&header.type_tag),
                         header.form_id
                     ));
-                    continue;
+                    if record.is_deleted() {
+                        visit(ParsedRecord::Usable(record));
+                    } else {
+                        visit(ParsedRecord::DamagedRecord(record));
+                    }
                 }
-            };
-
-            records.push(RawRecord {
-                form_id: header.form_id,
-                record_type: header.type_tag,
-                flags: header.flags,
-                subrecords,
-                cell_form_id: current_cell,
-                worldspace_form_id: current_worldspace,
-                load_order: 0,
-            });
+            }
         }
     }
 }
@@ -490,7 +555,7 @@ fn decode_record_subrecords(
     raw_payload: &[u8],
 ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let subrecords = decode_record_subrecords_inner(header, raw_payload);
-    // A deletion's header remains authoritative when its discarded body is torn.
+    // The deletion flag is authoritative once the complete header is available.
     // Preserve a complete body: legacy named GMST deletions can resolve by EDID.
     if header.flags & 0x20 != 0 {
         return Ok(subrecords.unwrap_or_default());
@@ -513,16 +578,26 @@ fn decode_record_subrecords_inner(
 
 /// Parse usable records once, retaining the existing terminal skip summaries.
 pub fn parse_plugin_file(path: &Path) -> Result<Vec<RawRecord>> {
-    parse_plugin_file_with_warnings(path).map(|(records, _)| records)
+    let (records, _) = parse_plugin_file_with_warnings(path)?;
+    Ok(records
+        .into_iter()
+        .filter_map(|candidate| match candidate {
+            ParsedRecord::Usable(record) => Some(record),
+            ParsedRecord::DamagedRecord(_)
+            | ParsedRecord::DiscardedFrame(_)
+            | ParsedRecord::TruncatedPlacement(_) => None,
+        })
+        .collect())
 }
 
-/// Return the same per-plugin skip line printed while retaining usable neighboring records.
-pub(crate) fn parse_plugin_file_with_warnings(
+/// Keep usable records, damaged headers, and discarded frames in source order.
+pub(super) fn parse_plugin_file_with_warnings(
     path: &Path,
-) -> Result<(Vec<RawRecord>, Vec<String>)> {
-    parse_plugin_file_inner(path, None)
-        .map(|(records, warnings, _)| (records, warnings))
-        .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))
+) -> Result<(Vec<ParsedRecord>, Vec<String>)> {
+    let mut records = Vec::new();
+    let (warnings, _) = parse_plugin_file_inner(path, None, |record| records.push(record))
+        .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))?;
+    Ok((records, warnings))
 }
 
 /// Parse only bytes whose master/flag interpretation still matches the captured admission.
@@ -530,24 +605,46 @@ pub(crate) fn parse_plugin_file_with_warnings(
 pub(crate) fn parse_admitted_plugin_file_with_warnings(
     path: &Path,
     admitted: &PluginMetadata,
-) -> Result<(Vec<RawRecord>, Vec<String>, [u8; 32])> {
-    parse_plugin_file_inner(path, Some(admitted))
-        .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))
+) -> Result<(Vec<ParsedRecord>, Vec<String>, [u8; 32])> {
+    let mut records = Vec::new();
+    let (warnings, checksum) =
+        parse_plugin_file_inner(path, Some(admitted), |record| records.push(record))
+            .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))?;
+    Ok((records, warnings, checksum))
 }
 
 /// Keep corruption local after checking any supplied admission authority on this view.
 fn parse_plugin_file_inner(
     path: &Path,
     admitted: Option<&PluginMetadata>,
-) -> Result<(Vec<RawRecord>, Vec<String>, [u8; 32])> {
+    visit: impl FnMut(ParsedRecord),
+) -> Result<(Vec<String>, [u8; 32])> {
     let reader = EsmReader::open(path)?;
     let data = reader.as_slice();
     if let Some(admitted) = admitted {
         verify_admitted_metadata(data, admitted)?;
     }
+    let warnings = parse_plugin_bytes(
+        data,
+        &path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy(),
+        visit,
+    )?;
+    // Digest the same view the records were decoded from, never a later reopen, and check
+    // the source stamp last so a change made while the digest streams makes the stamp fail
+    // (the order `admitted_plugin_proof` uses).
+    let checksum = decode_view_checksum(data)?;
+    reader.verify_source()?;
+    Ok((warnings, checksum))
+}
 
-    let mut records = Vec::new();
-
+pub(super) fn parse_plugin_bytes(
+    data: &[u8],
+    name: &str,
+    visit: impl FnMut(ParsedRecord),
+) -> Result<Vec<String>> {
     let (after_header, header) =
         parse_record_header(data).map_err(|e| eyre!("Failed to parse record header: {e}"))?;
     if &header.type_tag != b"TES4" {
@@ -576,17 +673,10 @@ fn parse_plugin_file_inner(
         &after_header[header_payload..],
         None,
         None,
-        &mut records,
         &mut warnings,
+        visit,
     );
-    let summaries = warnings.report(&path.file_name().unwrap_or_default().to_string_lossy());
-
-    // Digest the same view the records were decoded from, never a later reopen, and check
-    // the source stamp last so a change made while the digest streams makes the stamp fail
-    // (the order `admitted_plugin_proof` uses).
-    let checksum = decode_view_checksum(data)?;
-    reader.verify_source()?;
-    Ok((records, summaries, checksum))
+    Ok(warnings.report(name))
 }
 
 /// Parses REFR payload for Position and Base Form ID pointers

@@ -1,10 +1,11 @@
 //! Checked input framing with recoverable record errors and bounded inflation.
-use super::PluginDiagnostics;
+use super::{DiscardedFrameScope, PluginDiagnostics, TruncatedPlacement};
 use crate::esm::binary::PluginMetadata;
+use crate::esm::types::CELL_CHILD_GROUP_KINDS;
 use color_eyre::{Result, eyre::WrapErr};
 use flate2::{Decompress, FlushDecompress, Status};
 use sha2::{Digest, Sha256};
-use std::{fs::File, path::Path};
+use std::{collections::HashSet, fs::File, path::Path};
 
 /// A framed, inflated record before any schema interpretation or ID resolution.
 pub(crate) struct ScannedRecord {
@@ -82,6 +83,23 @@ pub(crate) enum ScanOutcome {
     Skipped,
 }
 
+/// Structural recovery facts from one scan, independent of its decoded-view proof.
+#[derive(Default)]
+pub(crate) struct ScanDamage {
+    pub frames: HashSet<DiscardedFrameScope>,
+    pub truncated_placements: Vec<(u64, TruncatedPlacement)>,
+}
+
+impl ScanDamage {
+    fn note_prefix(&mut self, bytes: &[u8], offset: usize) {
+        if let Some(scope) = DiscardedFrameScope::from_group_prefix(bytes) {
+            self.frames.insert(scope);
+        } else if let Some(placement) = TruncatedPlacement::from_prefix(bytes) {
+            self.truncated_placements.push((offset as u64, placement));
+        }
+    }
+}
+
 /// Read source inputs only; ownership and slot assignment remain with LoadOrder.
 /// A non-`Verified` outcome means later proof stages must not reopen this changed source;
 /// already decoded records can still be retained. A digest covers the bytes that were decoded.
@@ -92,7 +110,7 @@ pub(crate) fn scan_admitted_plugin(
     diagnostics: &mut PluginDiagnostics,
     observe: impl FnMut(ObservedHeader),
     receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
-) -> Result<ScanOutcome> {
+) -> Result<(ScanDamage, ScanOutcome)> {
     scan_plugin_impl(path, Some(admitted), diagnostics, observe, receive)
 }
 
@@ -104,7 +122,7 @@ pub(crate) fn scan_plugin(
     observe: impl FnMut(ObservedHeader),
     receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
 ) -> Result<ScanOutcome> {
-    scan_plugin_impl(path, None, diagnostics, observe, receive)
+    scan_plugin_impl(path, None, diagnostics, observe, receive).map(|(_, outcome)| outcome)
 }
 
 /// Check an optional admission authority before exposing framed records to callbacks.
@@ -114,7 +132,7 @@ fn scan_plugin_impl(
     diagnostics: &mut PluginDiagnostics,
     mut observe: impl FnMut(ObservedHeader),
     mut receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
-) -> Result<ScanOutcome> {
+) -> Result<(ScanDamage, ScanOutcome)> {
     diagnostics.set_record(0, None, None, None, "framing");
     let input = (|| -> Result<_> {
         let file = File::open(path).wrap_err_with(|| format!("open {}", path.display()))?;
@@ -127,12 +145,12 @@ fn scan_plugin_impl(
             diagnostics.note("record", || {
                 format!("unusable input {}: {error:#}", path.display())
             });
-            return Ok(ScanOutcome::Skipped);
+            return Ok((ScanDamage::default(), ScanOutcome::Skipped));
         }
     };
     if map.len() < 24 || &map[..4] != b"TES4" {
         diagnostics.note("record", || "input has no complete TES4 header".into());
-        return Ok(ScanOutcome::Skipped);
+        return Ok((ScanDamage::default(), ScanOutcome::Skipped));
     }
     if let Some(admitted) = admitted
         && let Err(error) = crate::esm::binary::verify_admitted_metadata(&map, admitted)
@@ -142,10 +160,10 @@ fn scan_plugin_impl(
         diagnostics.note("record", || {
             format!("unusable input {}: {error:#}", path.display())
         });
-        return Ok(ScanOutcome::Skipped);
+        return Ok((ScanDamage::default(), ScanOutcome::Skipped));
     }
     let mut delivered = false;
-    scan_bytes_observed(
+    let damage = scan_bytes_observed(
         &map,
         diagnostics,
         &mut |record, diagnostics| {
@@ -167,23 +185,25 @@ fn scan_plugin_impl(
             diagnostics.note("input", || {
                 format!("{error:#}; retained the stable captured snapshot")
             });
-            return Ok(if delivered {
+            let outcome = if delivered {
                 ScanOutcome::RetainedSnapshot(digest)
             } else {
                 ScanOutcome::Skipped
-            });
+            };
+            return Ok((damage, outcome));
         }
         diagnostics.event_context.action = Some("kept_decoded_records");
         diagnostics.note("input", || {
             format!("{error:#}; retained decoded records may mix versions of the large input and be inconsistent")
         });
-        return Ok(if delivered {
+        let outcome = if delivered {
             ScanOutcome::MixedRecords
         } else {
             ScanOutcome::Skipped
-        });
+        };
+        return Ok((damage, outcome));
     }
-    Ok(ScanOutcome::Verified(digest))
+    Ok((damage, ScanOutcome::Verified(digest)))
 }
 
 /// Traverse groups iteratively, retaining siblings when an inner boundary is corrupt.
@@ -202,13 +222,14 @@ fn scan_bytes_observed(
     diagnostics: &mut PluginDiagnostics,
     receive: &mut impl FnMut(ScannedRecord, &mut PluginDiagnostics),
     observe: &mut impl FnMut(ObservedHeader),
-) {
+) -> ScanDamage {
     let mut position = 0;
     let mut end = bytes.len();
     let mut cell = None;
     let mut world = None;
     let mut topic = None;
     let mut parents = Vec::new();
+    let mut damage = ScanDamage::default();
     loop {
         if position == end {
             let Some((parent_end, parent_cell, parent_world, parent_topic)) = parents.pop() else {
@@ -225,6 +246,9 @@ fn scan_bytes_observed(
             diagnostics.note("record", || {
                 format!("incomplete frame at byte {position}; skipping containing group remainder")
             });
+            let prefix = &bytes[position..end];
+            damage.note_prefix(prefix, position);
+            damage.frames.insert(cell.into());
             position = end;
             continue;
         }
@@ -239,23 +263,33 @@ fn scan_bytes_observed(
             "framing",
         );
         if signature == *b"GRUP" {
+            let label = u32_at(header, 8);
+            let kind = u32_at(header, 12) as i32;
+            let cell_child = CELL_CHILD_GROUP_KINDS.contains(&kind).then_some(label);
             if size < 24 || size > end - position || parents.len() >= 4096 {
                 diagnostics.note("record", || {
                     format!("invalid group boundary/nesting at byte {position}")
                 });
+                let child_offset = position + 24;
+                let child_prefix = &bytes[child_offset..end];
+                damage.note_prefix(child_prefix, child_offset);
+                damage
+                    .frames
+                    .insert(DiscardedFrameScope::unread_tail(cell, child_prefix.len()));
+                damage
+                    .frames
+                    .extend(cell_child.map(DiscardedFrameScope::Cell));
                 position = end;
                 continue;
             }
             parents.push((end, cell, world, topic));
             end = position + size;
-            let label = u32_at(header, 8);
-            let kind = u32_at(header, 12) as i32;
             if kind == 1 {
                 world = Some(label);
                 cell = None;
             }
-            if matches!(kind, 6 | 8 | 9 | 10) {
-                cell = Some(label);
+            if cell_child.is_some() {
+                cell = cell_child;
             }
             if kind == 7 {
                 topic = Some((label, position as u64));
@@ -283,10 +317,18 @@ fn scan_bytes_observed(
                 .map(|(_, offset)| offset),
             failure: None,
         };
-        if size > end - position - 24 {
-            observed.failure =
-                Some("truncated record payload; containing group remainder skipped".into());
-            observe(observed);
+        let source_record_offset = position as u64;
+        let flags = u32_at(header, 8);
+        let payload = if observed.frame_complete {
+            let start = position + 24;
+            position = start + size;
+            &bytes[start..position]
+        } else {
+            let start = position + 24;
+            damage.note_prefix(&bytes[start..end], start);
+            damage
+                .frames
+                .insert(DiscardedFrameScope::unread_tail(cell, end - start));
             diagnostics.note("record", || {
                 format!(
                     "truncated {} {:08X} at byte {position}; skipping containing group remainder",
@@ -295,17 +337,19 @@ fn scan_bytes_observed(
                 )
             });
             position = end;
-            continue;
-        }
-        let source_record_offset = position as u64;
-        let payload = &bytes[position + 24..position + 24 + size];
-        position += 24 + size;
-        let flags = u32_at(header, 8);
+            if flags & 0x20 == 0 {
+                observed.failure =
+                    Some("truncated record payload; containing group remainder skipped".into());
+                observe(observed);
+                continue;
+            }
+            &[]
+        };
         let source_form_id = u32_at(header, 12);
         let inflated = if flags & 0x0004_0000 != 0 {
             match inflate(payload) {
                 Ok(bytes) => bytes,
-                // A bounded native deletion is authoritative even without a decodable body.
+                // A native deletion is authoritative even without a decodable body.
                 // Keep usable bytes above so a GMST tombstone can still name its alias.
                 Err(_) if flags & 0x20 != 0 => Vec::new(),
                 Err(error) => {
@@ -352,6 +396,7 @@ fn scan_bytes_observed(
             diagnostics,
         );
     }
+    damage
 }
 
 /// Fuzz entry point for a compressed record payload.
@@ -433,14 +478,14 @@ mod tests {
             let mut diagnostics = PluginDiagnostics::default();
             let mut observed = 0;
             let mut received = 0;
-            let digest = scan_admitted_plugin(
+            let (_, outcome) = scan_admitted_plugin(
                 (&path, &admitted),
                 &mut diagnostics,
                 |_| observed += 1,
                 |_, _| received += 1,
             )
             .unwrap();
-            assert!(matches!(digest, ScanOutcome::Skipped));
+            assert!(matches!(outcome, ScanOutcome::Skipped));
             assert_eq!((observed, received), (0, 0));
             assert_eq!(diagnostics.skipped_records, 1);
             assert_eq!(diagnostics.event_context.action, Some("skipped"));
@@ -469,14 +514,14 @@ mod tests {
         let mut diagnostics = PluginDiagnostics::default();
         let mut observed = Vec::new();
         let mut received = Vec::new();
-        let digest = scan_admitted_plugin(
+        let (_, outcome) = scan_admitted_plugin(
             (&path, &admitted),
             &mut diagnostics,
             |header| observed.push(header.source_form_id),
             |record, _| received.push(record.source_form_id),
         )
         .unwrap();
-        assert!(matches!(digest, ScanOutcome::Verified(_)));
+        assert!(matches!(outcome, ScanOutcome::Verified(_)));
         assert_eq!(observed, [0, 0x101, 0x102]);
         assert_eq!(received, [0, 0x102]);
         assert_eq!(diagnostics.skipped_records, 1);

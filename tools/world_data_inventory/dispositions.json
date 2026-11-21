@@ -990,15 +990,35 @@
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Placements with missing or short DATA cannot become room bounds. A subset update clears stale bounds for that reference. Field-level semantics remain deferred."
     },
+    "room_graph_cells": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; room culling #188)",
+      "reason": "Room-graph coverage projection. Field-level semantic tracing is deferred; prepared query dependencies remain separate."
+    },
     "room_graph_stats": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
     },
+    "room_link_anomalies": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#745)",
+      "reason": "Records each supplying plugin's room-link anomaly count and identifies its lowest affected room marker and that marker's cell for conversion diagnostics."
+    },
     "room_links": {
       "classification": "deferred",
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "A subset update with unusable placement DATA removes stale links involving that reference. Field-level semantics remain deferred."
+    },
+    "room_placement_edits": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#744)",
+      "reason": "Post-conversion imports map created cells and edited placements to their supplying layer and source FormID, and record placement deletions."
+    },
+    "room_placement_layers": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#744)",
+      "reason": "Retains placement files and the plugin headers needed to preserve FormID slots across imports."
     },
     "room_portals": {
       "classification": "deferred",

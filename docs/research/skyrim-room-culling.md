@@ -3,6 +3,8 @@
 The engine uses the converted room graph automatically, without an enable flag. Room culling
 is on by default; the Graphics settings panel can disable it immediately and save that preference.
 Missing tables, unread graphs and incomplete traversal data leave extra geometry drawn.
+Room culling requires a positive completeness row for the current cell. Until a full export
+verifies its portal graph, the engine keeps the cell's entire main-camera mesh list.
 This policy uses Skyrim's authored room and portal records, but does not claim exact replication
 of Skyrim's traversal.
 
@@ -14,6 +16,11 @@ Research checked on 2026-11-15:
   `PortalMarker`, `XPOD` room pairs and `XLRM` links measured in the game data. Portals identify
   apertures between rooms. Links connect rooms that must be seen together without an aperture.
   Membership in our conversion uses the reference pivot, with additional bounds-overlap rows.
+- [Native SkyrimSE culling research](skyrim-native-culling.md) now traces the installed
+  1.7.104.0 executable. It establishes portal traversal with per-node compound frusta,
+  object-bound tests within reached rooms, explicit unbounded-space traversal, shared-node
+  volume unions, joined bounds, and occluder exclusions. That report records exact-build RVAs,
+  local evidence, the parity priorities, and remaining uncertainty.
 - [awarebayes/skyrim-research at `3c83806`](https://github.com/awarebayes/skyrim-research/tree/3c83806196a71329248edd7c00060461dff91a80)
   contains room/portal declarations and reconstructed leaf functions. Its
   [BSPortalGraph implementation](https://github.com/awarebayes/skyrim-research/blob/3c83806196a71329248edd7c00060461dff91a80/reconstruction/bsengine/BSPortalGraph.cpp)
@@ -54,19 +61,21 @@ Research checked on 2026-11-15:
 - Bethesda's [optimization tutorial for Fallout](https://geckwiki.com/index.php/Bethsoft_Tutorial_Optimization)
   additionally names a separate unbounded space connected through portals. That terminology and
   its exact traversal rules are not established by the supplied Skyrim pages. Skyrim's outside-
-  bounds portal rule is now documented directly above; the explicit unbounded-space state remains
-  supported by the community declarations.
+  bounds portal rule is documented directly above. The later native trace independently
+  establishes explicit unbounded-space traversal in this SkyrimSE build.
 
-The structural comparison is useful: Skyrim's declared compound frusta can represent unions and
-intersections of plane sets. Our screen rectangles approximate those visible regions and merge
-multiple paths conservatively. We do not implement the original visibility map or unbounded-space
-traversal, which is why unresolved connections draw the whole cell instead of being ignored.
+Skyrim's native compound-frustum interpreter evaluates unions and intersections of plane sets,
+including occluder exclusions. Our runtime now retains unions of convex portal volumes and tests
+individual transformed mesh bounds against them. Separate paths retain their apertures rather
+than filling the screen rectangle between them. Versioned graphs also traverse unbounded space
+and test portal-shared geometry against both endpoint volumes. Occluder exclusions remain absent;
+unresolved connections still draw the whole cell.
 
 No reconstruction source was copied into the engine. No original Skyrim runtime comparison was
-performed. The evidence supports using authored apertures and explicit room links; the exact
-clipping at overlapping bounds, construction of unbounded-space visibility, dynamic membership
-updates, lights and shadows still needs controlled Skyrim experiments or reconstructed traversal
-functions.
+performed. The native trace now establishes how room volumes reach object culling and how
+unbounded space enters traversal. Exact clipping tolerances, path merging and revisits, full
+assignment policy, dynamic membership updates, lights, and shadows still need further tracing
+or controlled Skyrim experiments.
 
 ## Differences established by the Skyrim tutorial
 
@@ -101,11 +110,12 @@ converter. The other two are water activators, already protected by the activato
 The flag/target distribution supports the `NONE` interpretation; it is not a controlled CK edit
 or a reconstruction of Skyrim's assignment code.
 
-The room-basics page establishes that Skyrim restricts views from outside room bounds to portals.
-Our camera-outside-all-rooms fallback instead draws the whole cell. Likewise, drawing references
-with no geometric membership is deliberately more permissive than the documented pivot rule.
-These choices preserve geometry when our graph lacks the original renderer's connectivity and
-assignment information; they are not replicas of the documented visibility policy.
+The room-basics page describes Skyrim restricting views from outside room bounds to portals.
+Mudcrab keeps whole-cell rendering when the camera is outside every room, including in versioned
+graphs, because gaps between bounds are not verified outside space. From a containing room,
+versioned graphs can traverse an authored outside endpoint through its portal aperture. Legacy
+NULL endpoints cannot distinguish authored outside from invalid links. Unknown references remain
+drawn. This conservative camera-start policy differs from the traced native null-room traversal.
 
 Its dropped-object warning also shows why a reference's original placement is insufficient for
 moving objects. Our actor and movable-object exemptions deliberately avoid culling by stale
@@ -116,10 +126,40 @@ The tutorial recommends measuring performance and limiting long chains of visibl
 
 ## Runtime choices
 
-The camera's containing rooms start a portal walk. Projected doorway rectangles narrow the view
-region along each path. Explicit room links pass the region through unchanged. Static references
-with one containing room are hidden only if none of their containing or overlapping rooms is
-reached. Flagged multibound references, actors, doors, activators and movable objects remain exempt. Shadows and
+The camera's containing rooms start with the camera frustum. Each portal polygon is clipped
+against its incoming volume. The aperture edges and the plane behind the doorway constrain the
+next volume. Each room retains a union of these convex volumes. Explicit room links pass the
+incoming volume unchanged. Perspective views use converging rays and orthographic views use
+parallel rays.
+
+Graphs marked `visibility_version = 2` have an explicit unbounded node. Room-to-outside traversal
+narrows its volume through the same aperture tests. A camera outside every room keeps full
+rendering: room boxes can have seams, so their complement is not verified outside-space coverage.
+This conservative start policy deliberately differs from the traced native null-room traversal. Only an endpoint verified as zero in the source `XPOD` names this node.
+Missing or invalid links remain unknown. The converter adds provenance columns with zero defaults
+and publishes verified flags atomically, so older or interrupted conversions retain safe behavior.
+
+For static references with one containing room, each mesh's current AABB is transformed into
+cell-local space using its full affine transform. It stays drawn if it intersects any volume of
+its containing or overlapping rooms. The plane support test handles rotation, nonuniform and
+negative scale, and shear. A touching or straddling bound stays visible even if its center is
+outside the aperture. Missing or invalid bounds and `NoFrustumCulling` skip aperture filtering
+while retaining the prior unreached-room rule.
+
+In a roomed cell, a reference with no geometric membership stays eligible for ordinary view
+culling. A reference with overlap rows alone can use their volumes and the unbounded volume.
+If the aggregate model bounds intersect a doorway attached to a containing or overlapping room,
+each child mesh can use either endpoint's visible volume. A pivot outside all rooms can also
+share a doorway attached to the unbounded space.
+This adds visibility candidates without discarding existing overlap memberships. It filters each
+mesh once and does not duplicate render submissions. Missing aggregate bounds use the mesh bounds.
+The affine-box overlap test is conservative; it does not reproduce native sphere assignment,
+multi-portal ownership, or authored named overrides exactly.
+
+The walk accepts up to 16 independent contributions per room and 64 planes per volume. Exceeding
+either budget widens that room to the camera frustum and propagates the wider result. These are
+conservative engine work limits, not Skyrim's native operator budget. Flagged multibound
+references, actors, doors, activators, and movable objects retain their exemptions. Shadows and
 lights retain their independent visibility.
 
 Some shipped open halls have room boxes without any valid portal. Their geometry can expose a
@@ -127,18 +167,18 @@ far room across space outside all the boxes. The earlier implementation drew the
 when the camera started in such a room. That is insufficient: a portal-bearing start can reach an
 open corridor later, and then incorrectly hide a visible backdrop behind an off-screen portal.
 The default policy therefore draws the whole cell if **any reached room** lacks a valid portal
-between two distinct rooms of that cell. It also draws the whole cell when a reached room has a
-portal with an unresolved side: that side may open into unbounded space, whose connectivity we do
-not model. Regression fixtures cover both cases.
+between distinct known spaces. Any unknown portal endpoint also triggers the whole-cell fallback:
+it may conceal connectivity that conversion could not recover. Authored unbounded endpoints are
+known spaces and do not trigger this fallback. Regression fixtures cover these cases.
 
-Touching or overlapping boxes still add conservative connectivity. Between rooms with portals the
-walk clips to the destination box's projected rectangle. This is an engine heuristic, not verified
+Touching or overlapping boxes still add conservative connectivity. Across an overlap edge, the walk carries
+the incoming visibility volume into the destination unchanged so overhanging meshes remain visible. This is an engine heuristic, not verified
 Skyrim behavior. A graph made entirely of portal-bearing rooms can still have coverage gaps;
-synthetic tests and sampled image comparisons do not prove all interiors safe. A complete
-unbounded-space model and original-engine comparisons remain research work.
+synthetic tests and sampled image comparisons do not prove all interiors safe. Authored joined
+bounds, exact assignment, and original-engine comparisons remain research work.
 
-Databases without room tables draw the cell normally. A camera outside every room also draws the
-cell normally. Graph reads run asynchronously, and captures wait for them before measuring.
+Databases without room tables draw the cell normally. Legacy graphs also draw the whole cell when
+the camera is outside every room. Graph reads run asynchronously, and captures wait for them.
 
 ## Verification
 
@@ -152,8 +192,48 @@ identical. Compare repeated, settled captures at the same poses, including a por
 an exterior return. This exercises the actual missing-table fallback without adding a product
 flag. Mesh-list reduction alone does not establish image parity or an FPS improvement.
 
+[The focused volume poses](../../crates/engine/tests/fixtures/room-volume-shots.json) cover the
+portal apertures, open-hall fallbacks, a fully portal-bearing cell, and the exterior return used
+to verify the retained volumes and mesh-bound filter. Capture three alternating repetitions of
+each mode. Reject timed-out captures and frames with pending or failed room-graph reads.
+
+The volume update passed 1,421 engine library tests, with seven ignored. Its new system regression
+first failed because a reached room retained a mesh outside the aperture. The passing test also
+covers transformed cell roots, separate camera volumes, and explicit frustum opt-outs. The real
+visibility-schedule fixture now verifies transform propagation before testing mesh bounds.
+
+[The native validation record](room-visibility-volumes-20261115.json) records 36 sequence captures
+and six additional fresh-process fallback captures at 1400x1050 on Vulkan. Across all nine
+cross-mode image pairings, the four portal-culling poses and exterior return have zero persistent
+differing pixels at RGB threshold 8. The unculled open hall has six differing pixels in the
+sequence, with identical mesh lists in every run. Replaying that pose alone in fresh processes
+has zero persistent differing pixels. This supports a capture-history explanation for the small
+sequence difference rather than an aperture rejection. No capture timed out or retained pending
+or failed room-graph reads. The record retains this distinction rather than reporting every
+sequence image as identical.
+
+The unbounded-space update passed 1,427 engine library tests, 1,176 converter library tests,
+and 32 plugin-reference integration tests; seven, 30, and one were ignored respectively.
+The shared-geometry system regression first failed with a child mesh hidden on the near side
+of its owner's portal. It now passes using the combined endpoint volumes. Tests also cover
+outside starts, room-to-outside aperture rejection, legacy migration, and source null provenance
+through the complete typed conversion path.
+
+[The unbounded validation record](room-unbounded-visibility-20261115.json) retains 78 native
+captures. All 36 captures at the six existing poses have zero persistent differing pixels at
+threshold 8. The [four boundary poses](../../crates/engine/tests/fixtures/room-unbounded-shots.json)
+step across an authored outside portal in Gallows Rock, 16 units from its plane. Three views
+match full rendering. Looking away from the portal into the back side of the level shell changes
+384,120 pixels and reduces the mesh list from 149 to 15. That view exercises the new restriction
+but is not an image-equality pass or an original-game oracle. An earlier Shimmermist probe also
+looked through backfaces outside the cave shell; its differing image and two blank views remain
+recorded as exploratory results. No capture timed out or retained pending or failed graph reads.
+
 ## Default-on review validation
 
 [The 2026-11-17 core review record](room-culling-review-20261117.md) contains the graphics toggle,
 three real-interior on/off pairs with counts, repeated release frame times, executable identities,
 and their limits. The core remains a room-reachability foundation, not a complete Skyrim parity claim.
+
+[The boundary review record](room-gap-review-20261117.md) covers conservative camera starts,
+negative extents, legacy-pack handling, and the sampled out-and-back room-boundary sequence.

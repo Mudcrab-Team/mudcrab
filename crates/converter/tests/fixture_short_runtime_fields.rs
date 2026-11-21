@@ -440,6 +440,17 @@ fn short_room_marker_is_not_recreated_by_the_room_projection() {
     let tx = db.unchecked_transaction().unwrap();
     let report = rooms::export_room_graph(&tx, &master, &HashSet::from([0x20])).unwrap();
     assert_eq!(report.rooms, 1);
+    let complete: bool = tx
+        .query_row(
+            "SELECT complete FROM room_graph_cells WHERE cell_id=0x20",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        !complete,
+        "omitted room markers leave the surviving graph incomplete"
+    );
     let rows: Vec<(u32, f32, f32, f32)> = tx
         .prepare("SELECT ref_id,pos_x,pos_y,pos_z FROM room_bounds ORDER BY ref_id")
         .unwrap()
