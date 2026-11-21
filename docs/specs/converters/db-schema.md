@@ -797,6 +797,11 @@ Rules:
   which source a subset replaced and retains recoverable link fields for typed subsets.
   Typed subset edits also resolve these recovered fields against targets already present in the pack.
   A later placement-layer edit removes that entry and supplies the effective source.
+- A subset export stores the FormID of each deleted non-placement record in
+  `subset_nonplacement_deletions(form_id INTEGER PRIMARY KEY)`. The table persists across
+  exports so a later link edit can recognize a deleted target even if its canonical record
+  still exists. Exporting a live record with the same FormID clears its deletion entry.
+  A full load-order export drops the table when it replaces the snapshot.
 - A field whose length the in-house schema rejects is skipped for both readers: `XLKR` must be 4
   or 8 bytes, `XAPR` 8, `XAPD` 1, `XOWN`/`XRNK`/`XLCN`/`XLRL`/`XEZN`/`XATR` 4, `FNAM` 1 and `TNAM`
   2.
@@ -1772,6 +1777,8 @@ The original conversion's canonical `records`, `formid_map`, source history, and
 available for inspection. `room_placement_layers` retains the exact imported file and checksum.
 `room_placement_edits` maps each created cell and edited placement to its source FormID and
 records placement deletions.
+A native `put` fails if its base FormID is in `subset_nonplacement_deletions`. The import
+rolls back. A `delete` can still remove an existing placement that uses that base.
 Reapplying the same source is a no-op. Plugins match existing imports by case-insensitive filename
 and checksum. Different contents under an imported filename are rejected, including after a
 successful import that skipped damaged records.
