@@ -30,6 +30,7 @@ RUST_LOG=info,wgpu_hal=warn,wgpu_core=warn,naga=warn \
   --assets <pack with actors> --worldspace 60 --grid-x 6 --grid-y -12 --stream-radius 2 \
   --always-active --hidden-window --no-render-diagnostics --route <closed-loop route.json> \
   --benchmark-duration 300 --benchmark-vsync --benchmark-output <bench.json> > <run.log> 2>&1
+echo "engine exit: $?"
 grep -c "Invalid Metal usage" <run.log>
 ```
 
@@ -45,8 +46,9 @@ of this method. In the engine, the label is the name that Bevy or Mudcrab gives 
 
 ## Pitfalls
 
-- A run with no error lines is evidence, not proof. A hidden run without validation did not fault
-  even before the fix.
+- A run with no error lines is evidence, not proof. Read the engine exit status first. A zero
+  count from a run that failed to start proves nothing. A hidden run without validation did not
+  fault even before the fix.
 - Do not set `MTL_DEBUG_LAYER=1`. It writes about 700 MB of warnings per minute.
 - The recipe uses `MTL_SHADER_VALIDATION_FAIL_MODE=allow`. `zerofill` also printed the encoder
   label in the probe test. Record the mode with the result.
