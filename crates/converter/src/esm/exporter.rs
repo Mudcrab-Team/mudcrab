@@ -1381,6 +1381,7 @@ fn write_static_model(
         let previous = previous.as_deref();
         let unchanged = previous == model
             || previous.zip(model).is_some_and(|(old, new)| {
+                // silent-ok: Both paths need valid asset keys to reuse the stored model bounds.
                 let key = |path| canonical_asset_path(path, AssetKind::Mesh, "glb").ok();
                 key(old).is_some_and(|old_key| Some(old_key) == key(new))
             });

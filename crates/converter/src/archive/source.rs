@@ -17,9 +17,8 @@ pub(super) enum ArchiveSource<'a> {
 impl<'a> ArchiveSource<'a> {
     pub(super) fn from_file(file: File) -> io::Result<Self> {
         let len = i64::try_from(file.metadata()?.len())
-            .ok()
-            .and_then(|len| usize::try_from(len).ok())
-            .ok_or_else(|| io::Error::other("archive length does not fit file offsets"))?;
+            .and_then(usize::try_from)
+            .map_err(|_| io::Error::other("archive length does not fit file offsets"))?;
         Ok(Self::File {
             reader: Mutex::new((BufReader::new(file), Some(0))),
             len,

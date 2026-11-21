@@ -42,6 +42,7 @@ fn placement(data: &[u8]) -> Option<([f32; 3], [f32; 3])> {
     let (words, []) = data.as_chunks::<4>() else {
         return None;
     };
+    // silent-ok: geometry reports invalid DATA unless there are six transform words.
     let words: &[[u8; 4]; 6] = words.try_into().ok()?;
     let values = words.map(f32::from_le_bytes);
     let [x, y, z, rx, ry, rz] = values;
@@ -55,6 +56,7 @@ fn link_targets(data: &[u8]) -> Option<[u32; 4]> {
     let (words, []) = data.as_chunks::<4>() else {
         return None;
     };
+    // silent-ok: A malformed XORD leaves link targets unverified.
     let words: &[[u8; 4]; 4] = words.try_into().ok()?;
     Some(words.map(u32::from_le_bytes))
 }
@@ -99,6 +101,7 @@ fn geometry<'a>(
         .ok_or("missing or invalid PlaneMarker DATA placement")?;
     let scale = if has_scale {
         field(b"XSCL")
+            // silent-ok: A width mismatch returns the XSCL error below.
             .and_then(|data| <[u8; 4]>::try_from(data).ok())
             .map(f32::from_le_bytes)
             .filter(|value| value.is_finite() && *value > 0.0)

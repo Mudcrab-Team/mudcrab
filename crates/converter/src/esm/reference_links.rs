@@ -559,6 +559,7 @@ pub(crate) fn insert(
     let view = SubrecordView::new(&record.subrecords);
     let recovered = source.map(|(source, order)| {
         let fields = record.subrecords.iter().filter_map(|(tag, bytes)| {
+            // silent-ok: Only four-byte tags can identify authored link fields.
             Some((<[u8; 4]>::try_from(tag.as_slice()).ok()?, bytes.as_slice()))
         });
         authored_link_fields(

@@ -3115,6 +3115,7 @@ pub(crate) fn validate_placement_targets(
             .grouped
             .iter()
             .filter(|(_, links)| !links.iter().flatten().any(internal))
+            // silent-ok: Only a predecessor with usable targets can establish the parent cell.
             .find_map(|(kind, links)| check_targets(kind, *links).ok().and(links[0]))
     });
     if let Err(reason) = check_targets(kind, own) {

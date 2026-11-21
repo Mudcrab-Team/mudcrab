@@ -1051,16 +1051,19 @@ fn project_room_graph(
         let view = SubrecordView::new(&record.subrecords);
         let layout = match &sources {
             Some(RoomLinkSources::Legacy(layouts)) => {
+                // silent-ok: An absent legacy entry supplies no room-link slots or flags.
                 layouts.get(&form_id).cloned().unwrap_or_default()
             }
             Some(RoomLinkSources::Typed(decoded)) => decoded
                 .records
                 .get(&form_id)
                 .map(RoomLinkLayout::from_decoded)
+                // silent-ok: An absent decoded record supplies no room-link slots or flags.
                 .unwrap_or_default(),
             None => RoomLinkLayout::from_raw(record),
         };
         let links = record.subrecords.iter().filter_map(|(tag, data)| {
+            // silent-ok: Only four-byte XLRMs occupy slots in the source layout.
             let bytes: [u8; 4] = data.as_slice().try_into().ok()?;
             (tag == b"XLRM").then(|| u32::from_le_bytes(bytes))
         });
@@ -1278,7 +1281,7 @@ fn project_room_graph(
                     .previous_outside
                     .get(&(form_id, pair as i64))
                     .copied()
-                    .unwrap_or_default(),
+                    .unwrap_or([false; 2]),
                 _ => [true; 2],
             };
             let outside = [0, 4].map(|offset| {
@@ -1328,6 +1331,7 @@ fn project_room_graph(
         let mut targets = view.find_all(b"XMBR");
         let authored_target = targets.next();
         let target = authored_target
+            // silent-ok: A malformed authored XMBR selects the unknown assignment below.
             .and_then(|data| <[u8; 4]>::try_from(data).ok())
             .map(u32::from_le_bytes)
             .filter(|&id| id != 0 && targets.next().is_none());
@@ -1368,14 +1372,12 @@ fn project_room_graph(
             else {
                 continue;
             };
-            let data = SubrecordView::new(&record.subrecords)
-                .get_f32_slice(b"DATA")
-                .unwrap_or_default();
-            let position = [
-                *data.first().unwrap_or(&0.0),
-                *data.get(1).unwrap_or(&0.0),
-                *data.get(2).unwrap_or(&0.0),
-            ];
+            let Some((position, _)) = SubrecordView::new(&record.subrecords)
+                .find(b"DATA")
+                .and_then(transform_of)
+            else {
+                continue;
+            };
             let pivot = position.map(f64::from);
             let mut inside = 0u32;
             for room in rooms.iter().filter(|room| room.shape.contains(pivot)) {

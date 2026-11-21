@@ -883,6 +883,7 @@ impl RoomGraph {
                     if visits[index] == PortalVisit::Crossed {
                         continue;
                     }
+                    // silent-ok: An invalid or self-linked doorway makes visibility indeterminate.
                     let [source, destination] = visibility.get_disjoint_mut([room, other]).ok()?;
                     let portal = &self.portals[index];
                     let incoming = programs[room];
@@ -1403,12 +1404,14 @@ fn read_drawable_spheres(
         }
     }
     for (entity, extras) in &changed {
+        // silent-ok: Invalid extras invalidate any previously cached drawable sphere.
         let sphere = serde_json::from_str::<serde_json::Value>(&extras.value)
             .ok()
             .and_then(|mut value| {
                 serde_json::from_value::<ModelSphere>(
                     value.as_object_mut()?.remove(DRAWABLE_SPHERE_EXTRA)?,
                 )
+                // silent-ok: A malformed sphere invalidates the cached drawable bound.
                 .ok()
             })
             .filter(|sphere| sphere.valid() && sphere.radius > 0.0);
@@ -1715,21 +1718,21 @@ pub fn cull_room_views(
                 if ancestor != reference {
                     return true;
                 }
-                let bounds =
-                    mesh_bounds
-                        .get(entity)
-                        .ok()
-                        .and_then(|(aabb, transform, sphere, skinned)| {
-                            let local_from_mesh = local_from_world * transform.affine();
-                            let mut bounds = MeshBounds::transformed(aabb, local_from_mesh)?;
-                            if let Some(sphere) = sphere
-                                && loaded.graph.authored.is_some()
-                                && !skinned
-                            {
-                                bounds.set_portal_sphere(sphere.0, local_from_mesh);
-                            }
-                            Some(bounds)
-                        });
+                let bounds = mesh_bounds
+                    .get(entity)
+                    // silent-ok: A mesh without bounds supplies no geometric evidence for culling.
+                    .ok()
+                    .and_then(|(aabb, transform, sphere, skinned)| {
+                        let local_from_mesh = local_from_world * transform.affine();
+                        let mut bounds = MeshBounds::transformed(aabb, local_from_mesh)?;
+                        if let Some(sphere) = sphere
+                            && loaded.graph.authored.is_some()
+                            && !skinned
+                        {
+                            bounds.set_portal_sphere(sphere.0, local_from_mesh);
+                        }
+                        Some(bounds)
+                    });
                 if let Some(authored) = &loaded.graph.authored {
                     let Some(transform) =
                         reference_placement(reference, loaded.root, root, &placements, &parents)
@@ -1778,16 +1781,16 @@ pub fn cull_room_views(
                         bounds.as_ref(),
                     );
                 }
-                let owner_bounds =
-                    reference_bounds
-                        .get(reference)
-                        .ok()
-                        .and_then(|(bounds, transform)| {
-                            MeshBounds::transformed(
-                                &Aabb::from_min_max(bounds.min, bounds.max),
-                                local_from_world * transform.affine(),
-                            )
-                        });
+                let owner_bounds = reference_bounds
+                    .get(reference)
+                    // silent-ok: References without model bounds have no owner bounds to test.
+                    .ok()
+                    .and_then(|(bounds, transform)| {
+                        MeshBounds::transformed(
+                            &Aabb::from_min_max(bounds.min, bounds.max),
+                            local_from_world * transform.affine(),
+                        )
+                    });
                 loaded.graph.mesh_is_drawn(
                     form_id,
                     &volumes,
@@ -1820,7 +1823,9 @@ fn reference_placement(
     placements: &Query<(&GlobalTransform, Option<&Transform>)>,
     parents: &Query<&ChildOf>,
 ) -> Option<Affine3A> {
+    // silent-ok: Without a reference transform there is no placement for room assignment.
     let (global, local) = placements.get(reference).ok()?;
+    // silent-ok: A detached reference has no placement relative to the cell root.
     let parent = parents.get(reference).ok()?.parent();
     // Streamed references are direct children. Their local placement survives rebases.
     if parent == root {

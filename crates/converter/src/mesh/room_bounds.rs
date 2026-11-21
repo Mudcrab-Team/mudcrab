@@ -104,9 +104,10 @@ pub(super) fn source_sphere(nif: &NifFile) -> Option<ModelSphere> {
             NifBlock::BSOrderedNode(node)
                 if node.static_bound != 0 && node.alpha_sort_bound[3].abs() > 0.0 =>
             {
+                let [x, y, z, radius] = node.alpha_sort_bound;
                 let bound = ModelSphere {
-                    center: node.alpha_sort_bound[..3].try_into().ok()?,
-                    radius: node.alpha_sort_bound[3],
+                    center: [x, y, z],
+                    radius,
                 };
                 (&node.node.av, Some(bound), node.node.children.as_slice())
             }
@@ -300,6 +301,7 @@ pub(super) fn select_switch_geometry(
             mesh_nodes += 1;
             let block = mesh
                 .as_u64()
+                // silent-ok: An unrepresentable mesh index returns the missing-source-shape error below.
                 .and_then(|id| usize::try_from(id).ok())
                 .and_then(|id| shape_blocks.get(id))
                 .ok_or_else(|| {
@@ -415,11 +417,14 @@ fn geometry_document(mut root: gltf::json::Root) -> Option<gltf::Document> {
     // gltf validates required renderer features too. Only geometry is consumed here.
     root.extensions_required
         .retain(|name| !material_or_uv_extension(name));
+    // silent-ok: An invalid geometry document cannot certify sphere enclosure.
     gltf::Document::from_json(root).ok()
 }
 
 fn scene_fits(glb: &[u8], document: &serde_json::Value, sphere: ModelSphere) -> Option<bool> {
+    // silent-ok: A malformed GLB cannot certify sphere enclosure.
     let chunks = gltf::binary::Glb::from_slice(glb).ok()?;
+    // silent-ok: A malformed scene description cannot certify sphere enclosure.
     let gltf = geometry_document(serde_json::from_value(document.clone()).ok()?)?;
     let scene = gltf.default_scene()?;
     let blob = chunks.bin.as_deref()?;
