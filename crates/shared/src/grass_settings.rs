@@ -22,8 +22,9 @@ pub struct GrassSettings {
     /// as a safety guard.
     #[serde(rename = "iMinGrassSize")]
     pub min_grass_size: i32,
-    /// Checked after adding a species: the default 2 admits up to 3 species.
-    /// `iMaxGrassTypesPerTexure`: Retail value (RF-GRASS-007): post-add limit 2 per texture.
+    /// `iMaxGrassTypesPerTexure`: Retail value (RF-GRASS-007, RF-GRASS-026): the collector checks
+    /// the count already added before insertion, so the default 2 admits up to 3 records per
+    /// texture list under the 16-per-tile cap.
     #[serde(rename = "iMaxGrassTypesPerTexure")]
     pub max_grass_types_per_texture: i32,
     /// `fTexturePctThreshold`: Retail value (RF-GRASS-016): default 0.0, the minimum blended

@@ -44,8 +44,9 @@ proven Skyrim placement parity.
 For each quadrant, the generator visits the odd vertices in X then Y order.
 Each spot covers a 256-unit square and a 3x3 vertex neighborhood. Base entries
 come first, followed by up to five painted layers in LAND layer order. The
-configured GNAM limit is tested after adding a type: default 2 admits 3, and
-0 admits 1. The first 16 entries survive, including zero-support base entries
+configured GNAM limit admits three records per texture list at the default 2,
+and one at 0; the collector checks the count already added before insertion.
+The first 16 entries survive, including zero-support base entries
 and repeated species nominated by different textures. Output batches are
 sorted by species FormID.
 
@@ -144,13 +145,14 @@ on the instance normal (the terrain normal with Fit to Slope, else straight up),
 `C = vertexColor * instance brightness`. The pixel output is
 `(NdotL * C * DirLightColor * albedo * lerp(0.3, 1, shadowMask) + C * AmbientColor * albedo) * outputScale`.
 The ambient term is not shadowed. 0.3 is `fShadowClampValue`. The output scale is the renderer-wide
-`1/FramebufferRange` (RF-SHADER-001; 0.8333333, or 1.0 when the retail fog
-distances are both 0, RF-SHADER-004), kept in `output_scale.rs`. The engine does not read the
-retail fog distances: a `DistanceFog` component on the camera (exterior, Fog setting on) stands
-in for them. This proxy is unverified. Turning the Fog setting off makes grass about 20 percent
-brighter (1.0 against 0.8333) while terrain does not change. Only grass applies the scale;
-terrain, sky and water do not. Whether retail applies it to those passes too is an open
-question, so grass may be 0.8333 of terrain strength relative to retail.
+`1/FramebufferRange` (RF-SHADER-001, RF-SHADER-004, RF-GRASS-024): retail reads it from `cb2[16].w`,
+a mutable global whose initial value is 0.8333333, with a 1.0 fallback; the active runtime value is
+unverified. It is kept in `output_scale.rs`. The engine does not read the retail fog distances: a
+`DistanceFog` component on the camera (exterior, Fog setting on) stands in for them. This proxy is
+unverified. Turning the Fog setting off makes grass about 20 percent brighter (1.0 against 0.8333)
+while terrain does not change. Only grass applies the scale; terrain, sky and water do not.
+Whether retail applies it to those passes too is an open question, so grass may use the global's
+initial 0.8333 of terrain strength relative to retail.
 The engine adds exposure and 1/pi. The 1/pi is exact for the sun (it equals Bevy's Lambert for
 the sun illuminance). Bevy's own ambient has no 1/pi, so grass ambient is about pi times darker
 than a Bevy PBR surface with the same ambient input. Retail has no such factor. The sun:ambient
@@ -326,7 +328,7 @@ defaults; the retail defaults are used.
 | Section | Key | Default | Default source | Engine use |
 | --- | --- | --- | --- | --- |
 | `[Grass]` | `iMinGrassSize` | `20` | retail default | Candidate spacing/density |
-| `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | retail default | Post-add limit (2 admits 3, 0 admits 1); INI spelling retained |
+| `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | retail default | Checked before insertion (2 admits 3, 0 admits 1); INI spelling retained |
 | `[Grass]` | `fTexturePctThreshold` | `0.0` | retail default | Minimum blended texture weight |
 | `[Grass]` | `iGrassCellRadius` | `2` | retail default | Generated cell radius |
 | `[Grass]` | `fGrassStartFadeDistance` | `7000.0` | retail default; shipped `SkyrimPrefs.ini` | Start of distance thinning |

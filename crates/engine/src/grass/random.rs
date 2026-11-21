@@ -10,8 +10,8 @@ pub(super) struct CellRandom {
 }
 
 impl CellRandom {
-    /// Retail value (RF-GRASS-013): init multiplier 1812433253, with the first draw taken from
-    /// word 623 (agent-reported parts of the row).
+    /// Retail value (RF-GRASS-013): init multiplier 1812433253; after an explicit reseed the
+    /// first nonzero-bound draw takes word 623.
     pub(super) fn new(seed: u32) -> Self {
         let mut words = [0u32; 625];
         words[0] = seed;
@@ -23,8 +23,9 @@ impl CellRandom {
         Self { words, index: 623 }
     }
 
-    /// Retail value (RF-GRASS-013): the ascending in-place twist uses `% 624`, constant
-    /// 0x9908B0DF, and these tempering masks.
+    /// Retail value (RF-GRASS-013): the ascending in-place twist reduces the next state word
+    /// modulo 624 and wraps the index offset by 397; constant 0x9908B0DF and these tempering
+    /// masks; the draw cursor also wraps modulo 624.
     pub(super) fn next(&mut self) -> u32 {
         if self.index == 0 {
             // Reproduce the reference generator's exact twist, pinned by the literal test vectors below.

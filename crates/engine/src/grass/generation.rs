@@ -43,7 +43,8 @@ fn entries(
     config: &EngineConfig,
 ) -> Vec<Entry> {
     let mut result = Vec::with_capacity(16);
-    // Retail value (RF-GRASS-015): nine-sample support at ±1, ±16, ±17 and ±18 around the centre.
+    // Retail value (RF-GRASS-015): nine-sample support at the centre and ±1, ±16, ±17 and ±18;
+    // a weighted layer proceeds only when one sample exceeds 25 of 255.
     let center = y * 17 + x;
     let nine = [
         center - 18,
@@ -61,10 +62,11 @@ fn entries(
         if !layer.is_base
             // MudCrab approximation: a layer is admitted when any of the nine samples has
             // weight > 25/255 and weight >= fTexturePctThreshold. Retail (RF-GRASS-015,
-            // RF-GRASS-016) counts a sample only if pct > T and drops the layer when the mean of
-            // the nine is below T. At the default T = 0 both admit the same layers; they differ
-            // only with an edited INI threshold. Retail clamps T to max(T, 0) and turns T > 1
-            // into 0.9; MudCrab rejects T outside 0..1 at launch validation (tracked in #823).
+            // RF-GRASS-016) counts a sample only if pct > T, then compares the mean of the nine
+            // weights with T and clears all nine (keeping the record) when the mean is below.
+            // At the default T = 0 both admit the same layers; they differ only with an edited INI
+            // threshold. Retail floors T at 0 and turns T > 1 into 0.9; MudCrab rejects T outside
+            // 0..1 at launch validation (tracked in #823).
             && !support
                 .iter()
                 .any(|weight| *weight > 25.0 / 255.0 && *weight >= config.grass_texture_threshold)
@@ -77,7 +79,8 @@ fn entries(
             .take(config.effective_grass_species_cap())
         {
             if result.len() == 16 {
-                // Retail value (RF-GRASS-014): at most 16 entries per spot.
+                // Retail value (RF-GRASS-014): each tile collector call takes a capacity of 16
+                // entries; the same array is reused across tiles and quadrants.
                 return result;
             }
             result.push(Entry {
@@ -101,7 +104,8 @@ fn support(weights: &[f32; 9], x: f32, y: f32) -> f32 {
         + ((1.0 - fx) * weights[i + 3] + weights[i + 4] * fx) * fy
 }
 
-/// Retail value (RF-GRASS-022): modes above 5 skip the water test.
+/// Retail value (RF-GRASS-022): modes above 5, and negative signed modes through the unsigned
+/// guard, skip the water test.
 pub fn water_allowed(height: f32, water: Option<f32>, distance: u16, mode: u32) -> bool {
     let w = water.unwrap_or(-f32::MAX);
     let u = f32::from(distance);
@@ -116,10 +120,11 @@ pub fn water_allowed(height: f32, water: Option<f32>, distance: u16, mode: u32) 
     }
 }
 
-/// Retail value (RF-GRASS-011): the 256-unit tile caps candidates per axis at
-/// `min(256 / posRange, 256 / spacing)` for posRange > 0.
-/// Retail value (RF-GRASS-012): posRange = 0 places nothing and posRange < 0 uses the spacing
-/// cap. MudCrab uses the spacing cap at 0 but rejects layers below 0 (tracked in #823).
+/// Retail value (RF-GRASS-011): the 256-unit tile caps candidates per axis at the lesser of
+/// `256 / posRange` and `256 / spacing`, truncated to integers, for posRange > 0.
+/// Retail value (RF-GRASS-012): posRange = 0 places nothing; a negative quotient truncates to 0
+/// between -1 and 0, and its converted low word selects the spacing cap when it exceeds the cap.
+/// MudCrab uses the spacing cap at 0 but rejects layers below 0 (tracked in #823).
 fn grid_side(position_range: f32, minimum: f32) -> usize {
     if position_range < 0.0 {
         return 0;
@@ -367,7 +372,8 @@ fn generate_field<const OBSERVE: bool>(
     let cx = i32::from(cell.grid_x);
     let cy = i32::from(cell.grid_y);
     let cell_origin = [cx as f32 * 4096.0, cy as f32 * 4096.0];
-    // Retail value (RF-GRASS-026): 4096-unit cell, 2048-unit quadrant, 256-unit spots.
+    // Retail value (RF-GRASS-026): 4096-unit cell, four 2048-unit quadrants, each 8 by 8
+    // 256-unit spots.
     let block_origin = [
         (cx / 12 * 12) as f32 * 4096.0,
         (cy / 12 * 12) as f32 * 4096.0,
@@ -403,10 +409,13 @@ fn generate_field<const OBSERVE: bool>(
                             let identity = ordinal;
                             ordinal = ordinal.wrapping_add(1);
                             let if_ = i as f32 + 0.5;
-                            // Retail value (RF-GRASS-017): density byte times 0.01.
+                            // Retail value (RF-GRASS-017): density byte times 0.01; a weighted
+                            // sample keeps it only when its coverage byte exceeds trunc(T x 255),
+                            // a base sample only when its residual coverage exceeds T.
                             let density = f32::from(rule.density) * 0.01;
-                            // Retail value (RF-GRASS-018): acceptance weights scale by 32768 and
-                            // the draw keeps 15 bits.
+                            // Retail value (RF-GRASS-018): the 1.0 multiplier times 32768, then
+                            // truncated; a zero low word rejects without drawing, else accept
+                            // when the 15-bit draw is less than the signed low word.
                             let chance = (support(
                                 &entry.weights.map(|weight| weight * density),
                                 two * jf,
@@ -417,8 +426,9 @@ fn generate_field<const OBSERVE: bool>(
                             if chance == 0 || (rng.next() & 0x7fff) as i32 >= chance {
                                 continue;
                             }
-                            // Retail value (RF-GRASS-019): jitter is rand(-1, 1) times half the
-                            // spacing.
+                            // Retail value (RF-GRASS-019): X then Y jitter is rand(-1, 1) times
+                            // half the spacing; the coordinates pass through half-float
+                            // conversion before the surface query.
                             let u1 = rng.next();
                             let u2 = rng.next();
                             let (world_x, px) = root_coordinates(

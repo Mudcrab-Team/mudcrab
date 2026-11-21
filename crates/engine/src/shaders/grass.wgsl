@@ -305,9 +305,11 @@ fn fragment(vertex_input:Varyings,@builtin(sample_index) sample_index:u32) -> Fr
     // `base` is albedo * C (vertex colour times the per-instance brightness); input.light is
     // NdotL * DirLightColor from the vertex shader; the shadow floor 0.3 is grass.tuning_surface.z
     // (fShadowClampValue); the ambient term is not shadowed; grass.fade.z is the per-pass
-    // output scale 1/FramebufferRange (0.8333333 with fog active, else 1.0; RF-SHADER-001,
-    // RF-SHADER-004). Only grass applies it today; terrain, sky and water do not (open question:
-    // does retail apply it there too?).
+    // output scale 1/FramebufferRange (RF-SHADER-001, RF-SHADER-004, RF-GRASS-024). Retail's
+    // scale is cb2[16].w, sourced from a mutable global whose initial value is 0.8333333, with a
+    // 1.0 fallback; the active runtime value is unverified. This engine passes 0.8333 when its
+    // fog proxy is on and 1.0 otherwise. Only grass applies it today; terrain, sky and water do
+    // not (open question: does retail apply it there too?).
     // Not retail: 1/pi is exact for the sun (it equals Bevy's Lambert for the sun
     // illuminance). Bevy's own ambient has no 1/pi, so this ambient is about pi times darker
     // than a Bevy PBR surface with the same ambient input. Retail has no such factor. The

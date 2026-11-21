@@ -1309,7 +1309,8 @@ fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize, usize, Option
             wave_period: field!(10, 0.0f32),
             flags: field!(11, 0u8),
         };
-        // Retail value (RF-GRASS-022): modes above 5 skip the water test.
+        // Retail value (RF-GRASS-022): modes above 5, and negative signed modes through the
+        // unsigned guard, skip the water test.
         let valid = complete
             && id != 0
             && rule.position_range >= 0.0
@@ -1625,8 +1626,9 @@ fn selection_layers(
             weights,
         });
     }
-    // Retail value (RF-GRASS-026): five weighted layers plus the base layer (6 total); coverage bytes
-    // convert with exactly 1/255.
+    // Retail value (RF-GRASS-026): six weighted slots plus a separate base; the base residual uses
+    // weighted slots 0-4 and compaction clears slot 5. This loop keeps the first five weighted
+    // slots; coverage bytes convert with exactly 1/255.
     for (slot, texture) in bound.into_iter().take(5).enumerate() {
         let texture = if has_texture_set(texture) { texture } else { 0 };
         layers.push(GrassLayer {
