@@ -2175,6 +2175,11 @@ mod tests {
         ("footprint_guard.py", "--log"),
         ("test_footprint_guard.py", "--limit-gib"),
         ("test_footprint_guard.py", "--log"),
+        // pr_size.py is the advisory GitHub pull request size labeler. It reads
+        // an API file list and never launches the engine, so both options belong
+        // to its own CLI. Any other script passing them still fails the audit.
+        ("pr_size.py", "--files"),
+        ("pr_size.py", "--github-output"),
         // workspace.py owns its storage CLI and forwards Cargo and Git options. It
         // never launches the engine, so its flags are not engine options.
         ("workspace.py", "--apply"),
