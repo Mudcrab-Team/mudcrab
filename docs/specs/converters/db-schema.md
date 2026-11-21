@@ -799,6 +799,9 @@ Rules:
   which source a subset replaced and retains recoverable link fields for typed subsets.
   Typed subset edits also resolve these recovered fields against targets already present in the pack.
   A later placement-layer edit removes that entry and supplies the effective source.
+  The provenance table has columns `form_id INTEGER PRIMARY KEY` and `data BLOB`. A subset or
+  placement edit upgrades older FormID-only tables in the edit transaction. Existing rows keep
+  their source markers and have NULL link data. A full export drops this edit history.
 - The exporter stores the FormID of each deleted non-placement record it receives in
   `subset_nonplacement_deletions(form_id INTEGER PRIMARY KEY)`. A later subset uses the table
   to recognize deleted targets whose canonical records still exist. A live subset replacement
@@ -1561,6 +1564,7 @@ Columns and rules:
   and `invalid_occluders_skipped` (unsupported or malformed occlusion primitives).
   `assignment_version = 1` enables authored master/slave resolution and reference ownership,
   together with the three assignment tables, `link_index`, and `visibility_version = 2`.
+  If the pack declares an unsupported assignment version, the engine draws the full cell.
   `visibility_version = 2` additionally marks graphs whose outside endpoints have verified
   source provenance. The typed reader publishes this marker and the flags in the source-data
   transaction. Until that transaction commits, the runtime uses legacy fallback behavior.
@@ -1630,6 +1634,8 @@ Authored assignment metadata:
   retain no assignment sphere. Supported fixed, self-contained skins
   also receive source bounds. External or unresolved rigs, physics-deformed skins, and unsupported
   trees have no row. Render AABBs are not substituted for missing native assignment bounds.
+  The converter rejects a NIF that ends inside a declared block during parsing, before the skin
+  pose check runs.
   Incremental Skyrim conversion and failed-asset repair project both bounds from the final
   staged GLB winner. Missing or unreadable winners clear the validity flag and prior sphere.
   After a mod update replaces or removes native GLBs in a private runtime copy, the pack maintainer

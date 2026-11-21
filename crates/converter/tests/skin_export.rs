@@ -494,6 +494,22 @@ fn legacy_bsdismember_skin_exports_skin() {
 }
 
 #[test]
+fn truncated_skin_block_is_rejected_during_parsing() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("truncated.nif");
+    let output = input.with_extension("glb");
+    let mut bytes = legacy_skinned_shape(&fixed_pose_skin()).unwrap();
+    let header = parse_header(&bytes).unwrap();
+    let last = header.block_sizes.len() - 1;
+    bytes.truncate(header.block_start(last) + header.block_sizes[last] as usize - 1);
+    fs::write(&input, bytes).unwrap();
+
+    let error = MeshConverter::convert_nif_to_glb_with_skeleton(&input, &output, None).unwrap_err();
+    assert!(format!("{error:#}").contains(&format!("NIF block {last} is truncated")));
+    assert!(!output.exists());
+}
+
+#[test]
 fn transform_track_on_a_skin_bone_or_its_ancestor_omits_the_room_sphere() {
     use dummy_content::nif::SkinTrackTarget;
     let directory = tempfile::tempdir().unwrap();

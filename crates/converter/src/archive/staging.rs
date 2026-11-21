@@ -341,17 +341,39 @@ pub(super) fn reclaim_abandoned(root: &Path) -> Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
+    if let Some(entries) = staging_entries(&root)? {
+        for entry in entries {
+            let entry = entry?;
+            if entry
+                .file_name()
+                .as_encoded_bytes()
+                .starts_with(RUN_PREFIX.as_bytes())
+            {
+                // Names under the output root are not proof of ownership.
+                report_skip(&entry.path(), "matches the legacy run registry prefix");
+            }
+        }
+    }
     let prefix = run_prefix(&root);
     for path in state_paths() {
         // A retry can use a different state location if home becomes writable again.
-        let Ok(state) =
-            check_state_path(&root, &path).and_then(|()| check_state_directory(&root, &path))
-        else {
-            continue;
-        };
-        reclaim_state(&root, &state, &prefix)?;
+        match check_state_path(&root, &path).and_then(|()| check_state_directory(&root, &path)) {
+            Ok(state) => reclaim_state(&root, &state, &prefix)?,
+            Err(error)
+                if error
+                    .downcast_ref::<io::Error>()
+                    .is_some_and(|e| e.kind() == io::ErrorKind::NotFound) => {}
+            Err(error) => report_skip(&path, format_args!("{error:#}")),
+        }
     }
     Ok(())
+}
+
+fn report_skip(path: &Path, reason: impl std::fmt::Display) {
+    eprintln!(
+        "warning: archive staging cleanup skipped {} ({reason})",
+        path.display()
+    );
 }
 
 fn state_unavailable(error: &io::Error) -> bool {
@@ -363,11 +385,20 @@ fn state_unavailable(error: &io::Error) -> bool {
     )
 }
 
+fn staging_entries(path: &Path) -> io::Result<Option<fs::ReadDir>> {
+    match fs::read_dir(path) {
+        Ok(entries) => Ok(Some(entries)),
+        Err(error) if state_unavailable(&error) => {
+            report_skip(path, error);
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn reclaim_state(root: &Path, state: &Path, prefix: &str) -> Result<()> {
-    let entries = match fs::read_dir(state) {
-        Ok(entries) => entries,
-        Err(error) if state_unavailable(&error) => return Ok(()),
-        Err(error) => return Err(error.into()),
+    let Some(entries) = staging_entries(state)? else {
+        return Ok(());
     };
     for entry in entries {
         let entry = entry?;
@@ -378,8 +409,10 @@ fn reclaim_state(root: &Path, state: &Path, prefix: &str) -> Result<()> {
         }
         match entry.file_type() {
             Ok(kind) if kind.is_dir() => reclaim(root, &entry.path(), &name)?,
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Ok(_) => report_skip(&entry.path(), "run registry is not a directory"),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                report_skip(&entry.path(), error)
+            }
             Err(error) => return Err(error.into()),
         }
     }
@@ -390,21 +423,33 @@ fn reclaim(root: &Path, registry: &Path, run_name: &str) -> Result<()> {
     let marker = registry.join(OWNER);
     let mut owner = match open_marker(&marker) {
         Ok(Some(owner)) => owner,
-        Ok(None) => return Ok(()),
-        Err(error) if state_unavailable(&error) => return Ok(()),
+        Ok(None) => {
+            report_skip(&marker, "owner marker is not a regular file");
+            return Ok(());
+        }
+        Err(error) if state_unavailable(&error) => {
+            report_skip(&marker, format_args!("owner marker unavailable: {error}"));
+            return Ok(());
+        }
         Err(error) => return Err(error.into()),
     };
     match owner.try_lock() {
         Ok(()) => {}
-        Err(TryLockError::WouldBlock) => return Ok(()),
+        Err(TryLockError::WouldBlock) => {
+            report_skip(registry, "run is active");
+            return Ok(());
+        }
         Err(TryLockError::Error(error)) => return Err(error.into()),
     }
     let mut signature = [0; SIGNATURE.len()];
-    match owner.read_exact(&mut signature) {
-        Ok(()) if signature == SIGNATURE => {}
-        Ok(()) => return Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
+    let recognized = match owner.read_exact(&mut signature) {
+        Ok(()) => signature == SIGNATURE,
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => false,
         Err(error) => return Err(error.into()),
+    };
+    if !recognized {
+        report_skip(&marker, "unrecognized owner signature");
+        return Ok(());
     }
 
     let (witness, directories): (String, Vec<PathBuf>) = match serde_json::from_reader(&owner) {
@@ -436,34 +481,22 @@ fn reclaim(root: &Path, registry: &Path, run_name: &str) -> Result<()> {
         );
     }
     for directory in directories {
-        let directory = root.join(directory);
-        match fs::symlink_metadata(directory.join(&witness)) {
-            Ok(marker)
-                if marker.is_file()
-                    && directory.symlink_metadata()?.is_dir()
-                    && directory.canonicalize()? == directory =>
-            {
-                remove_payload(&directory, &witness)?
-            }
-            Ok(_) => {}
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-                ) => {}
-            Err(error) => return Err(error.into()),
-        }
+        reclaim_payload(&root.join(directory), &witness)?;
     }
     // Only the marker belongs to the registry. Preserve files added after a crash.
-    match fs::remove_file(marker) {
+    match fs::remove_file(&marker) {
         Ok(()) => {}
-        Err(error) if state_unavailable(&error) => return Ok(()),
+        Err(error) if state_unavailable(&error) => {
+            report_skip(&marker, error);
+            return Ok(());
+        }
         Err(error) => return Err(error.into()),
     }
     match fs::remove_dir(registry) {
         Err(error)
             if state_unavailable(&error) || error.kind() == io::ErrorKind::DirectoryNotEmpty =>
         {
+            report_skip(registry, error);
             Ok(())
         }
         result => Ok(result?),
@@ -477,6 +510,41 @@ fn open_marker(path: &Path) -> io::Result<Option<File>> {
     File::options().read(true).write(true).open(path).map(Some)
 }
 
+fn reclaim_payload(path: &Path, witness: &str) -> io::Result<()> {
+    let verified = (|| -> io::Result<bool> {
+        Ok(path.symlink_metadata()?.is_dir() && path.canonicalize()? == path)
+    })();
+    match verified {
+        Ok(true) => {}
+        Ok(false) => {
+            report_skip(path, "payload is a symlink or has been replaced");
+            return Ok(());
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            report_skip(path, error);
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    }
+    match path.join(witness).symlink_metadata() {
+        Ok(metadata) if metadata.is_file() => remove_payload(path, witness),
+        Ok(_) => {
+            report_skip(path, "payload witness is not a regular file");
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            report_skip(path, "payload witness is missing");
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn remove_payload(path: &Path, witness: &str) -> io::Result<()> {
     for entry in fs::read_dir(path)? {
         let entry = entry?;
@@ -488,7 +556,10 @@ fn remove_payload(path: &Path, witness: &str) -> io::Result<()> {
     }
     fs::remove_file(path.join(witness))?;
     match fs::remove_dir(path) {
-        Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => {
+            report_skip(path, error);
+            Ok(())
+        }
         result => result,
     }
 }
@@ -644,6 +715,42 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn recovery_preserves_legacy_registries_and_symlink_payloads() {
+        use std::os::unix::fs::symlink;
+
+        let output = tempfile::tempdir().unwrap();
+        let legacy = output.path().join(format!("{RUN_PREFIX}legacy"));
+        let v1 = b"Mudcrab archive staging v1\n";
+        fs::create_dir(&legacy).unwrap();
+        fs::write(legacy.join(OWNER), v1).unwrap();
+
+        let Run {
+            directories,
+            _registry,
+            _owner,
+        } = Run::new(output.path(), BTreeSet::from([Path::new("")])).unwrap();
+        let registry = _registry.keep();
+        let payload = directories.into_values().next().unwrap().keep();
+        let unrelated = tempfile::tempdir().unwrap();
+        let preserved = unrelated.path().join(format!("{FILE_PREFIX}independent"));
+        fs::write(&preserved, b"preserve").unwrap();
+        let witness = fs::read_dir(&payload).unwrap().next().unwrap().unwrap();
+        fs::write(unrelated.path().join(witness.file_name()), b"").unwrap();
+        fs::remove_file(witness.path()).unwrap();
+        fs::remove_dir(&payload).unwrap();
+        symlink(unrelated.path(), &payload).unwrap();
+        drop(_owner);
+
+        reclaim_abandoned(output.path()).unwrap();
+
+        assert!(!registry.exists());
+        assert!(payload.is_symlink());
+        assert_eq!(fs::read(&preserved).unwrap(), b"preserve");
+        assert_eq!(fs::read(legacy.join(OWNER)).unwrap(), v1);
+    }
+
     #[test]
     fn extraction_retry_reclaims_abandoned_payloads_but_keeps_a_live_run() {
         let directory = tempfile::tempdir().unwrap();
@@ -681,6 +788,13 @@ mod tests {
         let unrelated = state.path().join(format!("{prefix}unrelated"));
         fs::create_dir(&unrelated).unwrap();
         fs::write(unrelated.join(OWNER), b"unrelated data").unwrap();
+        let v1 = state.path().join(format!("{prefix}v1"));
+        fs::create_dir(&v1).unwrap();
+        let v1_signature = b"Mudcrab archive staging v1\n";
+        fs::write(v1.join(OWNER), v1_signature).unwrap();
+        let unmarked = state.path().join(format!("{prefix}unmarked"));
+        fs::create_dir(&unmarked).unwrap();
+        fs::write(unmarked.join("retained"), b"independent file").unwrap();
         let interrupted = state.path().join(format!("{prefix}interrupted"));
         fs::create_dir(&interrupted).unwrap();
         fs::write(interrupted.join(OWNER), SIGNATURE).unwrap();
@@ -721,6 +835,11 @@ mod tests {
         );
         assert_eq!(fs::read(live_file.path()).unwrap(), b"staged by live run");
         assert_eq!(fs::read(unrelated.join(OWNER)).unwrap(), b"unrelated data");
+        assert_eq!(fs::read(v1.join(OWNER)).unwrap(), v1_signature);
+        assert_eq!(
+            fs::read(unmarked.join("retained")).unwrap(),
+            b"independent file"
+        );
         assert!(!interrupted.join(OWNER).exists());
         assert_eq!(
             fs::read(interrupted.join("retained")).unwrap(),

@@ -583,6 +583,8 @@
     "reference_details.owner_id",
     "reference_details.owner_rank",
     "reference_details.reference_id",
+    "reference_link_subset_sources.data",
+    "reference_link_subset_sources.form_id",
     "reference_linked_refs.keyword_id",
     "reference_linked_refs.linked_ref_id",
     "reference_linked_refs.position",
