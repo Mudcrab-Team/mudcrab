@@ -774,6 +774,7 @@ impl ArchiveExtractor {
                     .wrap_err("missing extraction directory")?;
                 fs::create_dir_all(parent)?;
                 let mut builder = tempfile::Builder::new();
+                builder.prefix(".mudcrab-extract-");
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
@@ -2145,7 +2146,8 @@ mod tests {
         fs::create_dir_all(root.join("strings")).unwrap();
         let old = root.join("strings/a.strings");
         fs::write(&old, b"old").unwrap();
-        ArchiveExtractor::extract_matching(&path, &root, |_| true).unwrap_err();
+        let error = ArchiveExtractor::extract_matching(&path, &root, |_| true).unwrap_err();
+        assert!(error.to_string().contains("strings/b.strings"), "{error:#}");
         assert_eq!(fs::read(old).unwrap(), b"old");
         assert_eq!(fs::read_dir(root.join("strings")).unwrap().count(), 1);
     }
