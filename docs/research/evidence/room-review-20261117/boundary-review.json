@@ -1,0 +1,562 @@
+{
+  "source": "4de561bef462ec1e956fad9c1a4c67387ae47ace",
+  "binary_sha256": "1b845509a6b83186f88477b2db25032304a71d7fc157481ce1a233c9f7d7c775",
+  "backend": "Vulkan",
+  "dimensions": [
+    1400,
+    1050
+  ],
+  "scope": "17 settled camera positions out and back across GallowsRock01 room 369486 west bound; not continuous flight and not an exhaustive doorway-seam sweep.",
+  "poses": {
+    "width": 1400,
+    "height": 1050,
+    "shots": [
+      {
+        "name": "Gallows-boundary-00",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4592,
+          -4000,
+          160
+        ],
+        "yaw": 270,
+        "pitch": 0,
+        "hfov": 75,
+        "note": "Out-and-back sample across room 369486 west boundary, x approximately 4608. Adjacent frames are settled poses, not continuous flight."
+      },
+      {
+        "name": "Gallows-boundary-01",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4600,
+          -4000,
+          160
+        ],
+        "yaw": 270,
+        "pitch": 0,
+        "hfov": 75,
+        "note": "Out-and-back sample across room 369486 west boundary, x approximately 4608. Adjacent frames are settled poses, not continuous flight."
+      },
+      {
+        "name": "Gallows-boundary-02",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4606,
+          -4000,
+          160
+        ],
+        "yaw": 270,
+        "pitch": 0,
+        "hfov": 75,
+        "note": "Out-and-back sample across room 369486 west boundary, x approximately 4608. Adjacent frames are settled poses, not continuous flight."
+      },
+      {
+        "name": "Gallows-boundary-03",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4607,
+          -4000,
+          160
+        ],
+        "yaw": 270,
+        "pitch": 0,
+        "hfov": 75,
+        "note": "Out-and-back sample across room 369486 west boundary, x approximately 4608. Adjacent frames are settled poses, not continuous flight."
+      },
+      {
+        "name": "Gallows-boundary-04",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4608,
+          -4000,
+          160
+        ],
+        "yaw": 270,
+        "pitch": 0,
+        "hfov": 75,
+        "note": "Out-and-back sample across room 369486 west boundary, x approximately 4608. Adjacent frames are settled poses, not continuous flight."
+      },
+      {
+        "name": "Gallows-boundary-05",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4609,
+          -4000,
+          160
+        ],
+        "yaw": 270,
+        "pitch": 0,
+        "hfov": 75,
+        "note": "Out-and-back sample across room 369486 west boundary, x approximately 4608. Adjacent frames are settled poses, not continuous flight."
+      },
+      {
+        "name": "Gallows-boundary-06",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4610,
+          -4000,
+          160
+        ],
+        "yaw": 270,
+        "pitch": 0,
+        "hfov": 75,
+        "note": "Out-and-back sample across room 369486 west boundary, x approximately 4608. Adjacent frames are settled poses, not continuous flight."
+      },
+      {
+        "name": "Gallows-boundary-07",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4616,
+          -4000,
+          160
+        ],
+        "yaw": 270,
+        "pitch": 0,
+        "hfov": 75,
+        "note": "Out-and-back sample across room 369486 west boundary, x approximately 4608. Adjacent frames are settled poses, not continuous flight."
+      },
+      {
+        "name": "Gallows-boundary-08",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4624,
+          -4000,
+          160
+        ],
+        "yaw": 270,
+        "pitch": 0,
+        "hfov": 75,
+        "note": "Out-and-back sample across room 369486 west boundary, x approximately 4608. Adjacent frames are settled poses, not continuous flight."
+      },
+      {
+        "name": "Gallows-boundary-09",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4616,
+          -4000,
+          160
+        ],
+        "yaw": 270,
+        "pitch": 0,
+        "hfov": 75,
+        "note": "Out-and-back sample across room 369486 west boundary, x approximately 4608. Adjacent frames are settled poses, not continuous flight."
+      },
+      {
+        "name": "Gallows-boundary-10",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4610,
+          -4000,
+          160
+        ],
+        "yaw": 270,
+        "pitch": 0,
+        "hfov": 75,
+        "note": "Out-and-back sample across room 369486 west boundary, x approximately 4608. Adjacent frames are settled poses, not continuous flight."
+      },
+      {
+        "name": "Gallows-boundary-11",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4609,
+          -4000,
+          160
+        ],
+        "yaw": 270,
+        "pitch": 0,
+        "hfov": 75,
+        "note": "Out-and-back sample across room 369486 west boundary, x approximately 4608. Adjacent frames are settled poses, not continuous flight."
+      },
+      {
+        "name": "Gallows-boundary-12",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4608,
+          -4000,
+          160
+        ],
+        "yaw": 270,
+        "pitch": 0,
+        "hfov": 75,
+        "note": "Out-and-back sample across room 369486 west boundary, x approximately 4608. Adjacent frames are settled poses, not continuous flight."
+      },
+      {
+        "name": "Gallows-boundary-13",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4607,
+          -4000,
+          160
+        ],
+        "yaw": 270,
+        "pitch": 0,
+        "hfov": 75,
+        "note": "Out-and-back sample across room 369486 west boundary, x approximately 4608. Adjacent frames are settled poses, not continuous flight."
+      },
+      {
+        "name": "Gallows-boundary-14",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4606,
+          -4000,
+          160
+        ],
+        "yaw": 270,
+        "pitch": 0,
+        "hfov": 75,
+        "note": "Out-and-back sample across room 369486 west boundary, x approximately 4608. Adjacent frames are settled poses, not continuous flight."
+      },
+      {
+        "name": "Gallows-boundary-15",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4600,
+          -4000,
+          160
+        ],
+        "yaw": 270,
+        "pitch": 0,
+        "hfov": 75,
+        "note": "Out-and-back sample across room 369486 west boundary, x approximately 4608. Adjacent frames are settled poses, not continuous flight."
+      },
+      {
+        "name": "Gallows-boundary-16",
+        "worldspace_id": null,
+        "interior_cell_id": 86643,
+        "position": [
+          4592,
+          -4000,
+          160
+        ],
+        "yaw": 270,
+        "pitch": 0,
+        "hfov": 75,
+        "note": "Out-and-back sample across room 369486 west boundary, x approximately 4608. Adjacent frames are settled poses, not continuous flight."
+      }
+    ]
+  },
+  "captures": [
+    {
+      "pose": "Gallows-boundary-00",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 149,
+      "listed": 149,
+      "image": "Gallows-boundary-00.png",
+      "sha256": "8f997d6bb233e8b5ed4159dc49642749cd4c421e48e3eda16711797f9552f9e4"
+    },
+    {
+      "pose": "Gallows-boundary-01",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-01.png",
+      "sha256": "37e49ccbab0a75ada586797db62f0687dd1b6ed8811e2745c0928ed7f2fe9c93"
+    },
+    {
+      "pose": "Gallows-boundary-02",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-02.png",
+      "sha256": "b303189e9e1b5a75e84fb91b89e1b011eb9376a46e522a4d4723f8d2d6d28942"
+    },
+    {
+      "pose": "Gallows-boundary-03",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-03.png",
+      "sha256": "d292ac42bb17c0f684d61e7bf10fd2168a96b6d4b357244b3de00492d5a523a7"
+    },
+    {
+      "pose": "Gallows-boundary-04",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 49,
+      "listed": 156,
+      "image": "Gallows-boundary-04.png",
+      "sha256": "5119910ecded982ba6b137a32f25b9f15b22c195d9c2536eafcf0097e149634a"
+    },
+    {
+      "pose": "Gallows-boundary-05",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 49,
+      "listed": 156,
+      "image": "Gallows-boundary-05.png",
+      "sha256": "69425eba9c7c91a896052888b1fb05592c1de67be4c1bd41a5911f6230b0dc5e"
+    },
+    {
+      "pose": "Gallows-boundary-06",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 49,
+      "listed": 156,
+      "image": "Gallows-boundary-06.png",
+      "sha256": "7529e38f20801df9017254750b563c62f528bac6dfa97be0c65cd04534c4a5c5"
+    },
+    {
+      "pose": "Gallows-boundary-07",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 55,
+      "listed": 162,
+      "image": "Gallows-boundary-07.png",
+      "sha256": "30baee680a279087aa554d9e824a4e62c4a9f03facfbbc8ce0beab141fa8ec67"
+    },
+    {
+      "pose": "Gallows-boundary-08",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 55,
+      "listed": 162,
+      "image": "Gallows-boundary-08.png",
+      "sha256": "5405c67d17121234fcf3eeceb7c87ad6fe21b8d676a61fde40ad14a6f7241c19"
+    },
+    {
+      "pose": "Gallows-boundary-09",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 55,
+      "listed": 162,
+      "image": "Gallows-boundary-09.png",
+      "sha256": "30baee680a279087aa554d9e824a4e62c4a9f03facfbbc8ce0beab141fa8ec67"
+    },
+    {
+      "pose": "Gallows-boundary-10",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 49,
+      "listed": 156,
+      "image": "Gallows-boundary-10.png",
+      "sha256": "7529e38f20801df9017254750b563c62f528bac6dfa97be0c65cd04534c4a5c5"
+    },
+    {
+      "pose": "Gallows-boundary-11",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 49,
+      "listed": 156,
+      "image": "Gallows-boundary-11.png",
+      "sha256": "69425eba9c7c91a896052888b1fb05592c1de67be4c1bd41a5911f6230b0dc5e"
+    },
+    {
+      "pose": "Gallows-boundary-12",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 49,
+      "listed": 156,
+      "image": "Gallows-boundary-12.png",
+      "sha256": "5119910ecded982ba6b137a32f25b9f15b22c195d9c2536eafcf0097e149634a"
+    },
+    {
+      "pose": "Gallows-boundary-13",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-13.png",
+      "sha256": "d292ac42bb17c0f684d61e7bf10fd2168a96b6d4b357244b3de00492d5a523a7"
+    },
+    {
+      "pose": "Gallows-boundary-14",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-14.png",
+      "sha256": "b303189e9e1b5a75e84fb91b89e1b011eb9376a46e522a4d4723f8d2d6d28942"
+    },
+    {
+      "pose": "Gallows-boundary-15",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-15.png",
+      "sha256": "37e49ccbab0a75ada586797db62f0687dd1b6ed8811e2745c0928ed7f2fe9c93"
+    },
+    {
+      "pose": "Gallows-boundary-16",
+      "mode": "on",
+      "repeat": 1,
+      "drawn": 149,
+      "listed": 149,
+      "image": "Gallows-boundary-16.png",
+      "sha256": "8f997d6bb233e8b5ed4159dc49642749cd4c421e48e3eda16711797f9552f9e4"
+    },
+    {
+      "pose": "Gallows-boundary-00",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 149,
+      "listed": 149,
+      "image": "Gallows-boundary-00.png",
+      "sha256": "408eb44fd9c7f846fc7e5042929d072157f446571e7eb35c1264d8f0dfdd29f6"
+    },
+    {
+      "pose": "Gallows-boundary-01",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-01.png",
+      "sha256": "a4842436f27daa42f48a46b74a6ba977ba931105c4c2942de2306d9451d9e052"
+    },
+    {
+      "pose": "Gallows-boundary-02",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-02.png",
+      "sha256": "f1aa81f7e90053ef2ed2e2ac826d6860c976d62e32fa1788638d6c27972409ca"
+    },
+    {
+      "pose": "Gallows-boundary-03",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-03.png",
+      "sha256": "01cd30d8e7e8edc2806e7e86389b704940ec62204783c8683afb4f152d19b528"
+    },
+    {
+      "pose": "Gallows-boundary-04",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-04.png",
+      "sha256": "c6f846b42bdd4fd80060d406ba862573fec24edfd73be1dcfabc8094be839c63"
+    },
+    {
+      "pose": "Gallows-boundary-05",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-05.png",
+      "sha256": "ff99769bb1880532de09e0963b8681c07ae5bda72bf6b7b94a6f012598a0b050"
+    },
+    {
+      "pose": "Gallows-boundary-06",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-06.png",
+      "sha256": "0313934316b57a0d054263d0d667f7c0b655ea3623ee8c0c4cd31ea402711a99"
+    },
+    {
+      "pose": "Gallows-boundary-07",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 162,
+      "listed": 162,
+      "image": "Gallows-boundary-07.png",
+      "sha256": "f4653b71bd02875b2cd38d3d9e16f651c69f4d708b94507c80bbd60775569c9e"
+    },
+    {
+      "pose": "Gallows-boundary-08",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 162,
+      "listed": 162,
+      "image": "Gallows-boundary-08.png",
+      "sha256": "e7dc6de13b6c3cd824b23b4fdf3d5534fbe5708ca2a220b1542828701e70f59b"
+    },
+    {
+      "pose": "Gallows-boundary-09",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 162,
+      "listed": 162,
+      "image": "Gallows-boundary-09.png",
+      "sha256": "f4653b71bd02875b2cd38d3d9e16f651c69f4d708b94507c80bbd60775569c9e"
+    },
+    {
+      "pose": "Gallows-boundary-10",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-10.png",
+      "sha256": "0313934316b57a0d054263d0d667f7c0b655ea3623ee8c0c4cd31ea402711a99"
+    },
+    {
+      "pose": "Gallows-boundary-11",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-11.png",
+      "sha256": "ff99769bb1880532de09e0963b8681c07ae5bda72bf6b7b94a6f012598a0b050"
+    },
+    {
+      "pose": "Gallows-boundary-12",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-12.png",
+      "sha256": "c6f846b42bdd4fd80060d406ba862573fec24edfd73be1dcfabc8094be839c63"
+    },
+    {
+      "pose": "Gallows-boundary-13",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-13.png",
+      "sha256": "01cd30d8e7e8edc2806e7e86389b704940ec62204783c8683afb4f152d19b528"
+    },
+    {
+      "pose": "Gallows-boundary-14",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-14.png",
+      "sha256": "f1aa81f7e90053ef2ed2e2ac826d6860c976d62e32fa1788638d6c27972409ca"
+    },
+    {
+      "pose": "Gallows-boundary-15",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 156,
+      "listed": 156,
+      "image": "Gallows-boundary-15.png",
+      "sha256": "a4842436f27daa42f48a46b74a6ba977ba931105c4c2942de2306d9451d9e052"
+    },
+    {
+      "pose": "Gallows-boundary-16",
+      "mode": "off",
+      "repeat": 1,
+      "drawn": 149,
+      "listed": 149,
+      "image": "Gallows-boundary-16.png",
+      "sha256": "408eb44fd9c7f846fc7e5042929d072157f446571e7eb35c1264d8f0dfdd29f6"
+    }
+  ]
+}

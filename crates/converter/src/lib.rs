@@ -14,6 +14,7 @@ mod controls;
 pub mod derive_outfits;
 pub mod esm;
 pub mod extensions;
+mod input_inventory;
 pub mod integration;
 pub mod lip;
 pub mod lod;

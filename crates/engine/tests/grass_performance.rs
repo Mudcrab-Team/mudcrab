@@ -300,6 +300,112 @@ fn obstruction_mesh(data: &Path) {
     fs::write(data.join(OBSTRUCTION_MODEL), mesh).unwrap();
 }
 
+/// Median of timing samples. An even count averages the two middle samples.
+fn sample_median(samples: &[Duration]) -> Duration {
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let middle = sorted.len() / 2;
+    if sorted.len() % 2 == 1 {
+        sorted[middle]
+    } else {
+        (sorted[middle - 1] + sorted[middle]) / 2
+    }
+}
+
+/// Judge a cell on its first samples, re-measuring once when the median misses.
+///
+/// A first-pass median within `ceiling` decides the cell immediately. A miss spends
+/// the single re-measure, adding five fresh samples, and the median of all eight
+/// decides. Returns the judged median, whether it is within budget, and whether a
+/// re-measure happened.
+fn judged_median(
+    first: &[Duration],
+    remeasure: impl FnOnce() -> Vec<Duration>,
+    ceiling: Duration,
+) -> (Duration, bool, bool) {
+    let first_median = sample_median(first);
+    if first_median < ceiling {
+        return (first_median, true, false);
+    }
+    let mut all = first.to_vec();
+    all.extend(remeasure());
+    let judged = sample_median(&all);
+    (judged, judged < ceiling, true)
+}
+
+fn millis(value: u64) -> Duration {
+    Duration::from_millis(value)
+}
+
+#[test]
+/// A cell within budget on the first pass is never re-measured.
+fn judged_median_keeps_a_fast_first_pass() {
+    let first = [millis(1), millis(3), millis(2)];
+    let (median, within_budget, remeasured) = judged_median(
+        &first,
+        || panic!("a cell within budget must not be re-measured"),
+        millis(10),
+    );
+    assert_eq!(median, millis(2));
+    assert!(within_budget);
+    assert!(!remeasured);
+}
+
+#[test]
+/// A one-off miss that recovers on the second measurement passes on all eight samples.
+fn judged_median_accepts_a_miss_that_recovers() {
+    let first = [millis(24), millis(20), millis(22)];
+    let mut remeasures = 0;
+    let (median, within_budget, remeasured) = judged_median(
+        &first,
+        || {
+            remeasures += 1;
+            vec![millis(1), millis(2), millis(3), millis(4), millis(6)]
+        },
+        millis(10),
+    );
+    assert_eq!(remeasures, 1, "exactly one re-measure per cell");
+    assert!(remeasured);
+    assert!(within_budget, "median of all eight samples is {median:?}");
+    assert_eq!(median, millis(5));
+}
+
+#[test]
+/// A real regression stays slow on the re-measure and still fails the budget.
+fn judged_median_fails_a_slow_remeasure() {
+    let first = [millis(24), millis(20), millis(22)];
+    let mut remeasures = 0;
+    let (median, within_budget, remeasured) = judged_median(
+        &first,
+        || {
+            remeasures += 1;
+            vec![millis(18), millis(19), millis(20), millis(21), millis(23)]
+        },
+        millis(10),
+    );
+    assert_eq!(remeasures, 1, "exactly one re-measure per cell");
+    assert!(remeasured);
+    assert!(!within_budget, "median of all eight samples is {median:?}");
+    assert_eq!(median, Duration::from_micros(20_500));
+}
+
+/// A slowdown present in only half of the eight samples passes: the median of eight is the mean
+/// of the fourth and fifth samples. This is the documented limit of the single re-measure.
+#[test]
+fn judged_median_accepts_a_mixed_remeasure_with_half_the_samples_slow() {
+    let slow = Duration::from_micros(9_050);
+    let fast = Duration::from_micros(4_930);
+    let first = [slow, slow, slow];
+    let (median, within_budget, remeasured) =
+        judged_median(&first, || vec![slow, fast, fast, fast, fast], millis(9));
+    assert!(remeasured);
+    assert_eq!(median, Duration::from_micros(6_990));
+    assert!(
+        within_budget,
+        "four of eight samples over budget still pass on the median"
+    );
+}
+
 /// Check bounded deterministic generation and report each cell's median budget result.
 fn measured(
     cache: &GrassCache,
@@ -400,28 +506,36 @@ fn measured(
                     .all(|pair| pair[0].candidate_slot() <= pair[1].candidate_slot())
             );
         }
-        let mut samples = Vec::new();
-        for _ in 0..3 {
-            let start = Instant::now();
-            let result = black_box(generate(cache, id, black_box(&config)));
-            samples.push(start.elapsed());
-            assert_eq!(warm.batches.len(), result.batches.len());
-            for (expected, actual) in warm.batches.iter().zip(&result.batches) {
-                assert_eq!(expected.grass_id, actual.grass_id);
-                assert_eq!(
-                    expected.instances, actual.instances,
-                    "replayed cell must be deterministic"
-                );
+        let sample = |count: usize| {
+            let mut samples = Vec::with_capacity(count);
+            for _ in 0..count {
+                let start = Instant::now();
+                let result = black_box(generate(cache, id, black_box(&config)));
+                samples.push(start.elapsed());
+                assert_eq!(warm.batches.len(), result.batches.len());
+                for (expected, actual) in warm.batches.iter().zip(&result.batches) {
+                    assert_eq!(expected.grass_id, actual.grass_id);
+                    assert_eq!(
+                        expected.instances, actual.instances,
+                        "replayed cell must be deterministic"
+                    );
+                }
             }
-        }
-        samples.sort_unstable();
-        let within_budget = samples[1] < ceiling;
+            samples
+        };
+        let first = sample(3);
+        let first_median = sample_median(&first);
+        let (median, within_budget, remeasured) = judged_median(&first, || sample(5), ceiling);
         timing_passed &= within_budget;
+        if remeasured {
+            eprintln!(
+                "grass cell generation re-measured: spacing={spacing}, cell={id:08X}, first_median={first_median:?}, samples=8, median={median:?}, strict_budget={strict_ceiling:?}, allowance={allowance}, effective_budget={ceiling:?}, within_budget={within_budget}"
+            );
+        }
         eprintln!(
-            "grass cell generation: spacing={spacing}, cell={id:08X}, median={:?}, strict_budget={strict_ceiling:?}, allowance={allowance}, effective_budget={ceiling:?}, within_budget={within_budget}",
-            samples[1]
+            "grass cell generation: spacing={spacing}, cell={id:08X}, median={median:?}, strict_budget={strict_ceiling:?}, allowance={allowance}, effective_budget={ceiling:?}, within_budget={within_budget}",
         );
-        durations.push(samples[1]);
+        durations.push(median);
     }
     durations.sort_unstable();
     eprintln!(

@@ -24,6 +24,7 @@ const PLATE_VALID: u32 = 0x0A07;
 const ACTOR: u32 = 0x0807;
 const CREATURE: u32 = 0x0808;
 const DELETED_REFERENCE: u32 = 0x0809;
+const ACTOR_BASE: u32 = 0x080A;
 const LOW_WRONG_TYPE: u32 = 0x15;
 /// The mod's own key and door, authored with its master count (1) as the file index, and their
 /// load-order numbers: the mod is the third plugin.
@@ -218,8 +219,15 @@ fn master_plugin() -> Vec<u8> {
             ),
         ),
         named(b"DOOR", DOOR_BASE),
-        named(b"ACHR", ACTOR),
-        named(b"ACRE", CREATURE),
+        named(b"NPC_", ACTOR_BASE),
+        top(
+            b"ACHR",
+            &record(b"ACHR", ACTOR, &sub(b"NAME", &le(ACTOR_BASE))),
+        ),
+        top(
+            b"ACRE",
+            &record(b"ACRE", CREATURE, &sub(b"NAME", &le(ACTOR_BASE))),
+        ),
         interior(
             &[
                 chest,
