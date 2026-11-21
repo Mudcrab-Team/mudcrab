@@ -1425,10 +1425,10 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
         let Some(vertices) = allocator.mesh_vertex_slice(&data.mesh.id()) else {
             return RenderCommandResult::Skip;
         };
-        // Retail value (RF-GRASS-023): retail's 960 cap bounds each per-instance fade-factor
-        // upload (240 vec4), not the draw. The traced draw uses the full geometry count; the
-        // visible result beyond the uploaded prefix is unverified. MudCrab draws every visible
-        // instance, so dense grass mods aren't cut off.
+        // Retail value (RF-GRASS-023): retail uploads fade factors for at most 960 draw-group
+        // slots; slots past that are still submitted with fade 0, so alpha-tested grass there
+        // discards. Whether vanilla scenes reach that cap is unverified. MudCrab draws every
+        // visible instance instead, so dense grass mods aren't cut off.
         let count = visible_instance_count(data, view.world_from_view.translation()) as u32;
         if count == 0 {
             return RenderCommandResult::Skip;
