@@ -1082,6 +1082,8 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "reference_linked_refs",
             "reference_activate_parents",
             "reference_details",
+            "reference_authored_targets",
+            "reference_authored_changes",
             "door_links",
             "emittance",
         ];
@@ -1206,6 +1208,11 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             .map(|value| value.as_str().unwrap())
             .collect::<std::collections::BTreeSet<_>>();
         assert!(preserved.is_disjoint(&deferred_manifest));
+        assert!(preserved.contains("subset_nonplacement_deletions"));
+        assert_eq!(
+            archive_tables["subset_nonplacement_deletions"],
+            vec![vec![MoveSqlCell::Integer(4)]],
+        );
         // R6 creates add-on provenance even when empty; archive scope must classify it.
         assert!(preserved.contains("inhouse_schema_addons"));
         assert!(archive_tables["inhouse_schema_addons"].is_empty());

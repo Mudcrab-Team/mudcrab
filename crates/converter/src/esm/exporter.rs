@@ -695,6 +695,7 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
         tx.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))?;
     }
     create_tables(tx)?;
+    super::reference_links::create_authored_index(tx)?;
     // Every complete snapshot owns these derived rows, including archive-only exports
     // that deliberately defer all runtime projections.
     crate::esm::rooms::clear(tx)?;
@@ -783,9 +784,6 @@ fn export_records(
     let mut omissions = ProjectionOmissions::default();
     if order.is_some() {
         replace_complete_snapshot(&tx)?;
-        if runtime_views {
-            super::reference_links::create_authored_index(&tx)?;
-        }
         if let Some(paths) = plugin_paths {
             tx.execute("DELETE FROM plugins", [])?;
             super::insert_plugins(&tx, paths).map_err(|error| {
@@ -1915,6 +1913,10 @@ fn delete_reference_scripts(
 /// Incoming authored links may still name the canonical record; usable neighbors stay intact.
 /// Extend the table list when adding a placement table keyed on `reference_id`.
 fn clear_reference_placement(tx: &Transaction<'_>, form_id: u32) -> Result<()> {
+    if super::rooms::table_exists(tx, "room_reference_rules")? {
+        tx.prepare_cached("DELETE FROM room_reference_rules WHERE reference_id=?1")?
+            .execute([form_id])?;
+    }
     for table in super::reference_links::REFERENCE_LINK_TABLES {
         tx.prepare_cached(&format!("DELETE FROM {table} WHERE reference_id=?1"))?
             .execute([form_id])?;
@@ -1922,7 +1924,6 @@ fn clear_reference_placement(tx: &Transaction<'_>, form_id: u32) -> Result<()> {
     for sql in [
         "DELETE FROM door_links WHERE ref_id=?1 OR destination_ref_id=?1",
         "DELETE FROM reference_rooms WHERE reference_id=?1 OR room_ref=?1",
-        "DELETE FROM room_reference_rules WHERE reference_id=?1",
         "DELETE FROM room_links WHERE room_ref=?1 OR linked_ref=?1",
         "DELETE FROM room_portals WHERE ref_id=?1",
         "UPDATE room_portals SET room_a=NULL WHERE room_a=?1",
@@ -3758,7 +3759,14 @@ mod tests {
             interior_cell(0x100),
             room(0x1001, 0x100, [0.0; 3], [0.0; 3], [100.0; 3], vec![]),
             portal(0x3001, 0x100, Some((0x1001, 0))),
-            reference(0x2001, 0x100, 0x500, [20.0, 0.0, 0.0], [0.0; 3]),
+            marker(
+                0x2001,
+                0x100,
+                0x500,
+                [20.0, 0.0, 0.0],
+                [0.0; 3],
+                vec![(b"XLKR", word(0x1001))],
+            ),
             occluder,
         ];
         let master: HashMap<u32, RawRecord> = records
@@ -3781,6 +3789,15 @@ mod tests {
         assert_eq!((expected.rooms, expected.portals), (1, 1));
         assert_eq!(expected.occluders, 1);
         assert_eq!(rooms_of(&conn, 0x2001), vec![(0x1001, 1)]);
+        assert_eq!(
+            conn.query_row(
+                "SELECT target_id FROM reference_authored_targets WHERE reference_id=0x2001",
+                [],
+                |row| row.get::<_, u32>(0)
+            )
+            .unwrap(),
+            0x1001
+        );
         assert!(
             !conn
                 .query_row(
@@ -3833,6 +3850,8 @@ mod tests {
             "projection_omission_samples",
             "cells",
             "references",
+            "reference_authored_targets",
+            "reference_authored_changes",
         ] {
             let count: u64 = conn
                 .query_row(&format!("SELECT count(*) FROM \"{table}\""), [], |row| {
@@ -5780,13 +5799,69 @@ mod tests {
     }
 
     #[test]
+    fn raw_load_order_ignores_deleted_room_markers() {
+        let mut deleted = room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]);
+        deleted.flags = 0x20;
+        let mut missing_transform = room(0x1004, 0x200, [0.0; 3], [0.0; 3], [10.0; 3], vec![]);
+        missing_transform
+            .subrecords
+            .retain(|(tag, _)| tag != b"DATA");
+        let records = [
+            interior_cell(0x100),
+            interior_cell(0x200),
+            deleted,
+            room(0x1002, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            room(0x1003, 0x200, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            missing_transform,
+        ]
+        .into_iter()
+        .map(|record| (record.form_id, record))
+        .collect();
+        let order = LoadOrder::from_metadata(
+            vec!["Skyrim.esm".into()],
+            vec![crate::esm::binary::PluginMetadata::default()],
+        )
+        .unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        export_to_db_with_load_order(&conn, &records, &order).unwrap();
+        let projected = conn
+            .prepare(
+                "SELECT b.ref_id,g.complete FROM room_bounds b
+                 JOIN room_graph_cells g USING (cell_id) ORDER BY b.ref_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, u32>(0)?, row.get::<_, bool>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(projected, [(0x1002, true), (0x1003, false)]);
+    }
+
+    #[test]
     fn subset_placed_update_accepts_the_previous_room_schema() {
         let (conn, _) = export_rooms(vec![
             interior_cell(0x100),
             reference(0x2001, 0x100, 0x500, [0.0; 3], [0.0; 3]),
+            reference(0x2002, 0x100, 0x500, [0.0; 3], [0.0; 3]),
         ]);
-        conn.execute_batch("DROP TABLE room_occluder_links; DROP TABLE room_occluders;")
-            .unwrap();
+        let mut deleted = reference(0x2002, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        deleted.flags = 0x20;
+        export_to_db(&conn, &HashMap::from([(deleted.form_id, deleted.clone())])).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM room_reference_rules WHERE reference_id=0x2002",
+                [],
+                |row| row.get::<_, u32>(0)
+            )
+            .unwrap(),
+            0
+        );
+        conn.execute_batch(
+            "DROP TABLE room_occluder_links; DROP TABLE room_occluders; DROP TABLE room_reference_rules;",
+        )
+        .unwrap();
         let updated = reference(0x2001, 0x100, 0x500, [12.0, 0.0, 0.0], [0.0; 3]);
         export_to_db(&conn, &HashMap::from([(updated.form_id, updated)])).unwrap();
         assert_eq!(
@@ -5797,6 +5872,17 @@ mod tests {
             )
             .unwrap(),
             12.0
+        );
+        deleted.form_id = 0x2001;
+        export_to_db(&conn, &HashMap::from([(deleted.form_id, deleted)])).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM [references] WHERE id=0x2001",
+                [],
+                |row| { row.get::<_, u32>(0) }
+            )
+            .unwrap(),
+            0
         );
     }
 
