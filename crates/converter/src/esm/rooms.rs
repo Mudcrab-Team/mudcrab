@@ -1304,7 +1304,7 @@ fn project_room_graph(
 // Integration stage
 // ---------------------------------------------------------------------------------------------
 
-fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
+pub(super) fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
     Ok(conn
         .query_row(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
