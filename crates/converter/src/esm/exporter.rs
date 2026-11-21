@@ -702,9 +702,8 @@ fn export_records(
                 )))
             })?;
         }
-    } else {
-        tx.execute_batch(super::reference_links::SUBSET_NONPLACEMENT_DELETIONS_SQL)?;
     }
+    tx.execute_batch(super::reference_links::SUBSET_NONPLACEMENT_DELETIONS_SQL)?;
     if scalar_scripts {
         // In-house exports own the complete script snapshot; legacy partial APIs retain theirs.
         super::inhouse_script_properties::replace_snapshot_tables(&tx)?;
@@ -806,25 +805,25 @@ fn export_records(
             record.load_order,
             &blob,
         )?;
-        if order.is_none() {
-            if !record.is_deleted() {
-                tx.prepare_cached("DELETE FROM subset_nonplacement_deletions WHERE form_id=?1")?
-                    .execute([form_id])?;
-                if target_changed && !super::is_placed_record_type(&record.record_type) {
-                    if link_target {
-                        available_link_targets.insert(form_id);
-                    } else {
-                        unavailable_link_targets.push(form_id);
-                    }
-                }
-            } else if !super::is_placed_record_type(&record.record_type) {
-                if runtime_views {
+        if record.is_deleted() {
+            if !super::is_placed_record_type(&record.record_type) {
+                if order.is_none() && runtime_views {
                     unavailable_link_targets.push(form_id);
                 }
                 tx.prepare_cached(
                     "INSERT OR IGNORE INTO subset_nonplacement_deletions(form_id) VALUES (?1)",
                 )?
                 .execute([form_id])?;
+            }
+        } else if order.is_none() {
+            tx.prepare_cached("DELETE FROM subset_nonplacement_deletions WHERE form_id=?1")?
+                .execute([form_id])?;
+            if target_changed && !super::is_placed_record_type(&record.record_type) {
+                if link_target {
+                    available_link_targets.insert(form_id);
+                } else {
+                    unavailable_link_targets.push(form_id);
+                }
             }
         }
         if let Some(order) = order {
@@ -3747,6 +3746,48 @@ mod tests {
     }
 
     #[test]
+    fn subset_links_respect_nonplacement_deletions_in_full_snapshot() {
+        let db = Connection::open_in_memory().unwrap();
+        create_tables(&db).unwrap();
+        let order = LoadOrder::from_metadata(
+            vec!["Skyrim.esm".to_owned()],
+            vec![crate::esm::binary::PluginMetadata::default()],
+        )
+        .unwrap();
+        let owner = 0x910;
+        let source = |id| {
+            let mut source = reference(id, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+            source
+                .subrecords
+                .extend([(b"XOWN".to_vec(), word(owner)), (b"XRNK".to_vec(), word(7))]);
+            (id, source)
+        };
+        let faction = record(owner, b"FACT", None, None, Vec::new());
+        let mut deleted = faction.clone();
+        deleted.flags = 0x20;
+        export_to_db_with_load_order(&db, &[(owner, deleted), source(0x880)].into(), &order)
+            .unwrap();
+
+        let details = |id| {
+            db.query_row(
+                "SELECT owner_id,owner_rank FROM reference_details WHERE reference_id=?1",
+                [id],
+                |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, u32>(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(details(0x880), (None, 7));
+        export_to_db(&db, &[source(0x881)].into()).unwrap();
+        let owner_before_restore = details(0x881);
+
+        export_to_db(&db, &[(owner, faction)].into()).unwrap();
+        assert_eq!(
+            (owner_before_restore, details(0x880), details(0x881)),
+            ((None, 7), (Some(owner), 7), (Some(owner), 7)),
+        );
+    }
+
+    #[test]
     fn subset_reference_links_keep_deleted_keywords_unavailable() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("world.db");
@@ -3927,6 +3968,74 @@ mod tests {
             export_to_db(&db, &[(target, replacement)].into()).unwrap();
             check(Some(target), Some(target), attached);
         }
+    }
+
+    #[test]
+    fn subset_target_only_additions_create_sparse_link_details() {
+        let db = Connection::open_in_memory().unwrap();
+        create_tables(&db).unwrap();
+        let order = LoadOrder::from_metadata(
+            vec!["Skyrim.esm".to_owned()],
+            vec![crate::esm::binary::PluginMetadata {
+                flags: 0,
+                masters: Vec::new(),
+            }],
+        )
+        .unwrap();
+        let placed = |id| reference(id, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        let source = |id, tag: &[u8; 4], target| {
+            let mut source = placed(id);
+            source.subrecords.push((tag.to_vec(), word(target)));
+            (id, source)
+        };
+        let attachment = 0x910;
+        let owner = 0x911;
+        export_to_db_with_load_order(
+            &db,
+            &[
+                source(0x880, b"XATR", attachment),
+                source(0x881, b"XOWN", owner),
+                (0x882, placed(0x882)),
+            ]
+            .into(),
+            &order,
+        )
+        .unwrap();
+        let details = || {
+            db.prepare(
+                "SELECT reference_id,attached_ref_id,owner_id,open_by_default,map_marker
+                 FROM reference_details ORDER BY reference_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, Option<u32>>(1)?,
+                    row.get::<_, Option<u32>>(2)?,
+                    row.get::<_, bool>(3)?,
+                    row.get::<_, bool>(4)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap()
+        };
+        assert!(details().is_empty());
+
+        export_to_db(&db, &[(attachment, placed(attachment))].into()).unwrap();
+        assert_eq!(details(), [(0x880, Some(attachment), None, false, false)]);
+        export_to_db(
+            &db,
+            &[(owner, record(owner, b"FACT", None, None, Vec::new()))].into(),
+        )
+        .unwrap();
+        assert_eq!(
+            details(),
+            [
+                (0x880, Some(attachment), None, false, false),
+                (0x881, None, Some(owner), false, false),
+            ]
+        );
     }
 
     #[test]

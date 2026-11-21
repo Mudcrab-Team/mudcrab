@@ -148,6 +148,71 @@ fn interior(references: &[u8]) -> Vec<u8> {
     )
 }
 
+#[test]
+fn malformed_placement_enable_parent_keeps_predecessor() {
+    use super::placement_edits::{PlacementSource, apply};
+
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("Skyrim.esm");
+    let db_path = dir.path().join("skyrim_world.db");
+    let xesp = |id, flags| sub(b"XESP", &[le(id), [flags, 0, 0, 0]].concat());
+    fs::write(
+        &base,
+        [
+            header(1, &[]),
+            named(b"STAT", CRATE),
+            interior(
+                &[
+                    reference(CHEST, &[xesp(LEVER, 1)]),
+                    reference(LEVER, &[]),
+                    reference(TRAP, &[]),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    EsmParser::convert_plugins_with_reader(&[base], &db_path, RecordReader::Inhouse, dir.path())
+        .unwrap();
+    let db = Connection::open(db_path).unwrap();
+    let parent = || {
+        db.query_row(
+            "SELECT enable_parent_id,enable_parent_flags FROM [references] WHERE id=?1",
+            [CHEST],
+            |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, Option<u32>>(1)?)),
+        )
+        .unwrap()
+    };
+    let apply_patch = |name: &str, fields: &[Vec<u8>]| {
+        let path = dir.path().join(name);
+        fs::write(
+            &path,
+            [
+                header(0, &["Skyrim.esm"]),
+                group(6, CELL, &group(9, CELL, &reference(CHEST, fields))),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        apply(dir.path(), PlacementSource::SkyrimPlugin(&path)).unwrap()
+    };
+
+    assert_eq!(parent(), (Some(LEVER), Some(1)));
+    assert_eq!(
+        apply_patch("Malformed.esp", &[sub(b"XESP", &le(TRAP))]).changed_references,
+        0
+    );
+    assert_eq!(parent(), (Some(LEVER), Some(1)));
+    assert_eq!(
+        apply_patch("Changed.esp", &[xesp(TRAP, 2)]).changed_references,
+        1
+    );
+    assert_eq!(parent(), (Some(TRAP), Some(2)));
+    assert_eq!(apply_patch("Cleared.esp", &[]).changed_references, 1);
+    assert_eq!(parent(), (None, None));
+}
+
 fn master_plugin() -> Vec<u8> {
     let chest = reference(
         CHEST,

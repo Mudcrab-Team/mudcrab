@@ -789,11 +789,10 @@ Rules:
 - Subset exports refresh incoming `XLKR`, `XAPR`, `XATR` and `XOWN` links when a target is
   added, deleted, restored or changes record type. The exporter reads each surviving source's
   effective payload to refill compatible links and preserves unrelated columns, including owner rank.
-- A subset export stores the FormID of each deleted non-placement record in
-  `subset_nonplacement_deletions(form_id INTEGER PRIMARY KEY)`. The table persists across
-  exports so a later link edit can recognize a deleted target even if its canonical record
-  still exists. Exporting a live record with the same FormID clears its deletion entry.
-  A full load-order export drops the table when it replaces the snapshot.
+- The exporter stores the FormID of each deleted non-placement record it receives in
+  `subset_nonplacement_deletions(form_id INTEGER PRIMARY KEY)`. A later subset uses the table
+  to recognize deleted targets whose canonical records still exist. A live subset replacement
+  clears the FormID's deletion entry. A full load-order export rebuilds the table from its snapshot.
 - A field whose length the in-house schema rejects is skipped for both readers: `XLKR` must be 4
   or 8 bytes, `XAPR` 8, `XAPD` 1, `XOWN`/`XRNK`/`XLCN`/`XLRL`/`XEZN`/`XATR` 4, `FNAM` 1 and `TNAM`
   2.
