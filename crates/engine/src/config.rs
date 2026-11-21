@@ -2176,8 +2176,6 @@ mod tests {
         ("install.sh", "--progress-bar"), // curl
         ("stage-release.sh", "--dest"),
         ("stage-release.sh", "--target"),
-        ("prepare_portal_comparison.py", "--native"),
-        ("prepare_portal_comparison.py", "--model"),
         // footprint_guard.py owns its own CLI and its test drives that CLI. The
         // guard watches a process the caller started and is not an engine
         // launcher. `--pid` is already in NON_ENGINE_FLAGS.
@@ -4639,6 +4637,15 @@ mod tests {
                     "--video-format",
                 ]
                 .contains(&flag);
+            let portal_comparison_declaration = path
+                .ends_with("scripts/research/prepare_portal_comparison.py")
+                && matches!(flag, "--native" | "--model")
+                && {
+                    let offset = flag.as_ptr() as usize - scanned.as_ptr() as usize;
+                    scanned[..offset]
+                        .strip_suffix(['\'', '"'])
+                        .is_some_and(|prefix| prefix.trim_end().ends_with(".add_argument("))
+                };
             let release_option = path.file_name().is_some_and(|name| {
                 SCRIPT_SCOPED_FLAGS
                     .iter()
@@ -4728,6 +4735,7 @@ mod tests {
                     });
             if NON_ENGINE_FLAGS.contains(&flag)
                 || observation_option
+                || portal_comparison_declaration
                 || material_oracle_option
                 || harness_option
                 || inspector_option
@@ -4883,6 +4891,19 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn portal_comparison_parser_options_are_rejected_in_engine_commands() {
+        let path = std::path::Path::new("scripts/research/prepare_portal_comparison.py");
+        for flag in ["--native", "--model"] {
+            let declaration = format!("parser.add_argument(\"{flag}\", type=Path)");
+            assert_eq!(checked_script_engine_flags(&declaration, path), 0);
+            let command = format!("{declaration}\ncmd = [\"engine\", \"{flag}\", path]");
+            assert!(
+                std::panic::catch_unwind(|| checked_script_engine_flags(&command, path)).is_err()
+            );
+        }
     }
 
     #[test]

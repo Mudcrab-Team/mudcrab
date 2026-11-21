@@ -692,6 +692,15 @@ enum PortalVisit {
 }
 
 impl RoomGraph {
+    fn uses_authored_walk(&self) -> bool {
+        // Multi-row markers have no unique endpoint pair. The loader orders them by ref_id.
+        self.authored.is_some()
+            && !self
+                .portals
+                .windows(2)
+                .any(|pair| pair[0].ref_id == pair[1].ref_id)
+    }
+
     fn add_occluder(&mut self, occluder: occlusion::Occluder) {
         self.occluders
             .entry(occluder.owner)
@@ -757,12 +766,7 @@ impl RoomGraph {
             doorways[a].push((index, b));
             doorways[b].push((index, a));
         }
-        // Multiple rows per physical marker have no unique endpoint pair.
-        let authored_walk = self.authored.is_some()
-            && !self
-                .portals
-                .windows(2)
-                .any(|pair| pair[0].ref_id == pair[1].ref_id);
+        let authored_walk = self.uses_authored_walk();
         let lookup = if authored_walk { room_point } else { camera };
         let view = PortalView::new(camera, lookup, clip_from_local);
         let mut starts = self.rooms_containing(lookup);
@@ -879,6 +883,7 @@ impl RoomGraph {
             .collect();
         let mut programs = vec![PortalProgramSize::default(); doorways.len()];
         let mut visits = vec![PortalVisit::Unseen; self.portals.len()];
+        let mut needs_scan = vec![false; doorways.len()];
         let mut pending = VecDeque::new();
         // Retail drains each start before seeding the next one, sharing portal visits across walks.
         for &start in starts {
@@ -888,8 +893,14 @@ impl RoomGraph {
             if programs[start].records != 0 {
                 programs[start].append(2, 0);
             }
+            needs_scan[start] = true;
             pending.push_back(start);
             while let Some(room) = pending.pop_front() {
+                // Keep FIFO slots: an interleaved arrival can open a missed exit before a
+                // competing room crosses it. Skip stale slots once all exits crossed or missed.
+                if !std::mem::take(&mut needs_scan[room]) {
+                    continue;
+                }
                 for &(index, other) in &doorways[room] {
                     if visits[index] == PortalVisit::Crossed {
                         continue;
@@ -924,6 +935,8 @@ impl RoomGraph {
                             changed |= destination.insert(through, &local.volume).is_some();
                         }
                     }
+                    // A speculative exit stays eligible as the destination program evolves.
+                    needs_scan[room] |= visits[index] == PortalVisit::Speculative;
                     if other != start {
                         if drop_inherited
                             && let Some((mut through, _)) = full.cross_portal(portal, view, true)
@@ -941,6 +954,7 @@ impl RoomGraph {
                         }
                     }
                     if (visits[index] == PortalVisit::Crossed || changed) && other != start {
+                        needs_scan[other] = true;
                         pending.push_back(other);
                     }
                 }
@@ -1220,11 +1234,23 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
         graph.links.clear();
         graph.unresolved_link_rooms.clear();
     }
-    let implicit: Vec<(usize, usize)> = if graph.authored.is_some() {
+    let implicit: Vec<(usize, usize)> = if graph.uses_authored_walk() {
         Vec::new()
     } else {
-        overlap_links(&graph.rooms)
-        .into_iter()
+        let mut pairs = overlap_links(&graph.rooms);
+        if let Some(authored) = &graph.authored {
+            // The legacy walk still sees the redirected portal endpoints of joined rooms.
+            pairs = pairs
+                .into_iter()
+                .filter_map(|(a, b)| {
+                    let (a, b) = (authored.masters[a]?, authored.masters[b]?);
+                    (a != b).then_some((a.min(b), a.max(b)))
+                })
+                .collect();
+            pairs.sort_unstable();
+            pairs.dedup();
+        }
+        pairs.into_iter()
         .filter(|&(a, b)| {
             let joined = |&(x, y): &(usize, usize)| (x, y) == (a, b) || (x, y) == (b, a);
             !graph.links.iter().any(joined)
@@ -3586,6 +3612,47 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_marker_fallback_restores_overlap_visibility() {
+        let db = authored_database();
+        insert_room(&db, 1, 7, [0.0; 3]);
+        insert_room(&db, 2, 7, [18.0, 0.0, 0.0]);
+        insert_room(&db, 3, 7, [100.0, 0.0, 0.0]);
+        db.execute_batch(
+            "INSERT INTO room_portals VALUES
+             (10,7,1000,-200,0,0,0,0,4,6,1,3,0,0),
+             (20,7,1000,-200,0,0,0,0,4,6,2,3,0,0);",
+        )
+        .unwrap();
+        let reach = || {
+            reached_rooms(
+                &load_room_graph(&db, 7).unwrap(),
+                Vec3::ZERO,
+                clip_from_local(),
+            )
+            .unwrap()
+        };
+        assert_eq!(reach(), [true, false, false]);
+
+        // A second endpoint pair belongs to the same physical marker.
+        db.execute_batch(
+            "ALTER TABLE room_portals RENAME TO single_pairs;
+             CREATE VIEW room_portals AS SELECT * FROM single_pairs UNION ALL
+             SELECT 10,7,1000,-200,0,0,0,0,4,6,2,3,0,0;",
+        )
+        .unwrap();
+        assert_eq!(reach(), [true, true, false]);
+
+        // Put the touching box on a joined child. Its master still owns the doorway.
+        insert_room(&db, 4, 7, [0.0; 3]);
+        db.execute_batch(
+            "UPDATE room_bounds SET pos_x=-100,flags=256 WHERE ref_id=1;
+             INSERT INTO room_links VALUES(1,4,0),(4,1,0);",
+        )
+        .unwrap();
+        assert_eq!(reach(), [true, true, false, false]);
+    }
+
+    #[test]
     fn close_portal_only_counts_shadows_in_the_camera_aperture() {
         let clip = Mat4::perspective_infinite_reverse_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1);
         let view = PortalView::new(Vec3::ZERO, Vec3::ZERO, clip);
@@ -4875,6 +4942,42 @@ mod tests {
     }
 
     #[test]
+    fn interleaved_arrival_uses_the_rooms_existing_fifo_slot() {
+        let db = authored_database();
+        for id in 1..=5_u16 {
+            insert_room(&db, u32::from(id), 7, [0.0, f32::from(id - 1) * 40.0, 0.0]);
+        }
+        let mut graph = load_room_graph(&db, 7).unwrap();
+        // A queues B, C, B in that order. B sends its left path to D on the first
+        // visit. C then sends a right path to B before B's second slot is served.
+        graph.portals = vec![
+            doorway(10, Vec3::new(-5.0, 0.0, -20.0), 1.0, [0, 1]),
+            doorway(11, Vec3::new(5.0, 0.0, -20.0), 1.0, [0, 2]),
+            doorway(12, Vec3::new(-5.0, 0.0, -20.0), 1.0, [0, 1]),
+            doorway(13, Vec3::new(-10.0, 0.0, -40.0), 3.0, [1, 3]),
+            doorway(14, Vec3::new(10.0, 0.0, -40.0), 3.0, [2, 1]),
+            doorway(15, Vec3::new(15.0, 0.0, -60.0), 3.0, [1, 3]),
+            doorway(16, Vec3::new(0.0, 0.0, -70.0), 24.0, [3, 4]),
+        ];
+        let visible = graph
+            .visibility_volumes(Vec3::ZERO, Vec3::ZERO, clip_from_local())
+            .unwrap();
+        let markers = [-20.0, 20.0].map(|x| {
+            let bounds = MeshBounds::transformed(
+                &Aabb::from_min_max(-Vec3::splat(0.1), Vec3::splat(0.1)),
+                Affine3A::from_translation(Vec3::new(x, 0.0, -80.0)),
+            )
+            .unwrap();
+            visible.rooms[4].intersects(Some(&bounds))
+        });
+        assert_eq!(
+            markers,
+            [true, true],
+            "D must carry both paths through its exit to E"
+        );
+    }
+
+    #[test]
     fn authored_exit_carries_all_paths_available_at_its_first_successful_crossing() {
         let connection = authored_database();
         for id in 1..=5 {
@@ -5580,20 +5683,22 @@ mod tests {
             pending_render_transfers: Some(0),
             ..default()
         };
-        assert!(quiet.with_room_graphs(None).is_quiet());
+        assert!(quiet.with_room_graphs(None, false).is_quiet());
         let mut state = RoomCullingState::new(PathBuf::new());
-        assert!(quiet.with_room_graphs(Some(&state)).is_quiet());
+        assert!(quiet.with_room_graphs(Some(&state), false).is_quiet());
         AsyncComputeTaskPool::get_or_init(Default::default);
         state.pending.insert(
             7,
             AsyncComputeTaskPool::get().spawn(future::pending::<LoadResult>()),
         );
-        let pending = quiet.with_room_graphs(Some(&state));
+        let pending = quiet.with_room_graphs(Some(&state), false);
+        assert!(quiet.with_room_graphs(Some(&state), true).is_quiet());
         assert_eq!(pending.pending_room_graphs, 1);
         assert!(!pending.is_quiet(), "a pending read must hold the capture");
         state.pending.clear();
         state.failed.insert(7);
-        let failed = quiet.with_room_graphs(Some(&state));
+        let failed = quiet.with_room_graphs(Some(&state), false);
+        assert!(quiet.with_room_graphs(Some(&state), true).is_quiet());
         assert_eq!(failed.failed_room_graphs, 1);
         assert!(
             !failed.is_quiet(),

@@ -790,12 +790,17 @@ mod tests {
         let mesh = legacy_skinned_shape(&skin).unwrap();
         use nom_derive::Parse;
         use project_wormhole_nif::nif_header::NifHeader;
-        let mut rig = mesh.clone();
+        let mut rig = legacy_skinned_shape(&LegacySkin {
+            with_geometry: false,
+            ..skin
+        })
+        .unwrap();
         let (blocks, _) = NifHeader::parse(&rig).unwrap();
         let root_node = rig.len() - blocks.len();
-        // Give the skeleton root a name and just its two bone children.
+        // Name the skeleton root with the first entry in the fixture’s string table.
         rig[root_node..root_node + 4].copy_from_slice(&0u32.to_le_bytes());
-        rig[root_node + 72..root_node + 76].copy_from_slice(&2u32.to_le_bytes());
+        let (_, parsed) = project_wormhole_nif::nif_file::NifFile::parse(&rig).unwrap();
+        assert_eq!(parsed.blocks[0].as_node().unwrap().children, [1, 2]);
         let archive = data.join("Skyrim - Meshes.bsa");
         fs::write(
             &archive,
