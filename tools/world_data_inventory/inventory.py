@@ -18,6 +18,7 @@ STORE_FIELDS = ("format_version", "store", "reviewed_at_commit", "owner", "reaso
 STORE_DISPOSITIONS = ("reviewed_at_commit", "owner", "reason", "states", "evidence")
 TABLE_DIR = "tables"
 TABLE_FIELDS = ("format_version", "table", "classification", "owner", "reason")
+TABLE_DISPOSITIONS = ("classification", "owner", "reason")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 # Derived files. Never commit them: they hold fingerprints of source files, so every unrelated source edit
 # changes them and every open pull request then conflicts. CI and this tool regenerate them. The list matches
@@ -400,7 +401,7 @@ def load_tables(here):
             raise ValueError(f"missing table name: {name}")
         if key in tables:
             raise ValueError(f"duplicate table {key}: {sources[key]} and {name}")
-        tables[key] = {field: value[field] for field in TABLE_FIELDS if field != "format_version"}
+        tables[key] = {field: value[field] for field in TABLE_DISPOSITIONS}
         tables[key]["source"] = name
         sources[key] = name
     return dict(sorted(tables.items()))
@@ -508,7 +509,8 @@ def build(root, manual, extraction=None, queries=None):
                 for cid, column, kind, required, default, pk in table_info:
                     disposition = manual["fields"].get(f"{table}.{column}")
                     if disposition is None:
-                        disposition = manual["blob_default"] if "BLOB" in kind.upper() else manual["tables"][table]
+                        disposition = (manual["blob_default"] if "BLOB" in kind.upper()
+                                       else {field: manual["tables"][table][field] for field in TABLE_DISPOSITIONS})
                     columns.append({"ordinal": cid, "name": column, "type": kind, "not_null": bool(required),
                                     "default": default, "primary_key": pk,
                                     "disposition": disposition,

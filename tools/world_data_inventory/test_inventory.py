@@ -472,6 +472,19 @@ class TableFiles(unittest.TestCase):
                                         "unexpected file in table directory: tables/table.JSON"):
                 run_tool(root, here, "--check")
 
+    def test_emitted_payload_uses_only_the_old_table_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = make_tree(directory)
+            manual = inv.load_manual(here)
+            extraction = {"format_version": 1, "source_commit": "fixture",
+                          "schemas": {"fixture": fixture()}, "variants": []}
+            loaded = inv.build(root, manual, copy.deepcopy(extraction))
+            stripped = copy.deepcopy(manual)
+            stripped["tables"] = {name: {field: value[field] for field in inv.TABLE_DISPOSITIONS}
+                                  for name, value in stripped["tables"].items()}
+            old = inv.build(root, stripped, copy.deepcopy(extraction))
+            self.assertEqual(inv.canonical(loaded), inv.canonical(old))
+
     def test_a_legacy_tables_block_fails_with_the_migration_path(self):
         with tempfile.TemporaryDirectory() as directory:
             root, here, _ = make_tree(directory)
