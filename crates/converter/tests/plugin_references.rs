@@ -3735,7 +3735,7 @@ fn placement_cycle_recovers_queued_static_before_checking_its_dependent() {
 }
 
 #[test]
-fn bounded_damaged_legacy_cell_preserves_the_winner_and_invalidates_its_graph() {
+fn bounded_damaged_cell_preserves_the_winner_and_invalidates_its_graph() {
     use converter::config::RecordReader;
 
     let directory = tempfile::tempdir().unwrap();
@@ -3764,23 +3764,25 @@ fn bounded_damaged_legacy_cell_preserves_the_winner_and_invalidates_its_graph() 
             0,
             record(b"CELL", id, 0, vec![0]),
         );
-        let output = data.join("graph.db");
-        EsmParser::convert_plugins_with_reader(
-            &[base.clone(), patch],
-            &output,
-            RecordReader::Legacy,
-            data,
-        )
-        .unwrap();
-        let db = rusqlite::Connection::open(output).unwrap();
-        assert!(!placement_certificate(&db, 0x900));
-        assert_eq!(placement_certificate(&db, 0x901), other_certified);
-        let count: usize = db
-            .query_row("SELECT count(*) FROM cells WHERE id=0x900", [], |r| {
-                r.get(0)
-            })
+        for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+            let output = data.join(format!("graph-{reader:?}-{id}.db"));
+            EsmParser::convert_plugins_with_reader(
+                &[base.clone(), patch.clone()],
+                &output,
+                reader,
+                data,
+            )
             .unwrap();
-        assert_eq!(count, 1);
+            let db = rusqlite::Connection::open(output).unwrap();
+            assert!(!placement_certificate(&db, 0x900));
+            assert_eq!(placement_certificate(&db, 0x901), other_certified);
+            let count: usize = db
+                .query_row("SELECT count(*) FROM cells WHERE id=0x900", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 1);
+        }
     }
 }
 
@@ -4457,6 +4459,18 @@ fn discarded_frames_and_bounded_records_preserve_room_graph_scope() {
             [false, false, true],
         ),
         (
+            "short-cell-record",
+            placement_group(a, record(b"CELL", b, 0, Vec::new())[..16].to_vec()),
+            [false, false, true],
+            [false, false, true],
+        ),
+        (
+            "unreadable-cell-override",
+            record(b"CELL", b, 0x40000, vec![4, 0, 0, 0, 0xff]),
+            [true, false, true],
+            [false, false, true],
+        ),
+        (
             "partial-cell-group",
             placement_group(a, group(9, b, Vec::new())[..16].to_vec()),
             [false, false, true],
@@ -4917,6 +4931,32 @@ fn plugin_placement_import_keeps_neighbors_of_damaged_records_and_frames() {
     bad_group[4..8].copy_from_slice(&0xffffu32.to_le_bytes());
     let cases = [
         (
+            "bad-reference-header-id",
+            placement_group(
+                a,
+                [
+                    placement(0x9900_0842, PLACEMENT_STAT, 0, 5.0, Vec::new()),
+                    good_neighbor(),
+                ]
+                .concat(),
+            ),
+            [false, true, true],
+            2,
+        ),
+        (
+            "bad-reference-parent-id",
+            [
+                placement_group(
+                    0x9900_0800,
+                    placement(0x842, PLACEMENT_STAT, 0, 5.0, Vec::new()),
+                ),
+                placement_group(a, good_neighbor()),
+            ]
+            .concat(),
+            [false; 3],
+            5,
+        ),
+        (
             "bad-base-master-index",
             placement_group(
                 a,
@@ -5118,10 +5158,11 @@ fn plugin_placement_import_keeps_neighbors_of_damaged_records_and_frames() {
             contents,
         );
         let result = run_placement_import(&assets, "--plugin", &source);
-        let warning = if name == "bad-base-master-index" {
-            "malformed NAME"
-        } else {
-            "skipped 1 malformed"
+        let warning = match name {
+            "bad-reference-header-id" => "99000842 with invalid record FormID",
+            "bad-reference-parent-id" => "00000842 with invalid parent CELL",
+            "bad-base-master-index" => "malformed NAME",
+            _ => "skipped 1 malformed",
         };
         assert!(
             String::from_utf8_lossy(&result.stderr).contains(warning),
@@ -5864,6 +5905,26 @@ fn native_placement_import_preserves_runtime_enable_state_across_puts() {
         }
         assert_eq!(load_state(0x804).unwrap().unwrap().parent_id, None);
     }
+
+    fs::write(
+        &native,
+        serde_json::json!({"edits":[{"op":"delete","id":parent}]}).to_string(),
+    )
+    .unwrap();
+    assert_placement_import(
+        run_placement_import(&assets, "--native", &native),
+        "Applied 1 room placements in 1 cells (1 certified)",
+    );
+    fs::write(&native, serde_json::json!({"edits":[{
+        "op":"put", "id":parent, "cell":PLACEMENT_CELL_A, "base":PLACEMENT_STAT,"position":[0,0,0]
+    }]}).to_string()).unwrap();
+    let result = run_placement_import(&assets, "--native", &native);
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("native replacement requires an existing runtime enable state")
+    );
+    assert!(load_state(parent).unwrap().is_none());
 }
 
 #[test]
@@ -6620,9 +6681,10 @@ fn native_placement_import_creates_and_certifies_rooms_and_a_portal() {
              "ownership":{"kind":"target","room":a}},
             {"op":"put_portal","id":portal,"cell":cell,"position":[0,0,0],
              "half_extents":[30,60],"endpoints":[a,b]},
-            {"op":"put_room","id":b,"cell":cell,"position":[100,0,0],"half_extents":[100,100,100]},
+            {"op":"put_room","id":b,"cell":cell,"position":[100,0,0],"half_extents":[100,100,100],
+             "links":[a]},
             {"op":"put_room","id":a,"cell":cell,"position":[-100,0,0],"half_extents":[100,100,100],
-             "links":[b]},
+             "links":[b],"master":true},
         ],
     });
     fs::write(&source, serde_json::to_vec(&native).unwrap()).unwrap();
@@ -6649,6 +6711,32 @@ fn native_placement_import_creates_and_certifies_rooms_and_a_portal() {
         run_placement_import(&assets, "--native", &source),
         "Applied 0 room placements in 0 cells (0 certified)",
     );
+    let master_byte = || {
+        db.query_row(
+            "SELECT (flags >> 8) & 255 FROM room_bounds WHERE ref_id=?1",
+            [a],
+            |row| row.get::<_, u8>(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(master_byte(), 1);
+    let mut edit = serde_json::json!({"op":"put_room","id":a,"cell":cell,"position":[-99,0,0],
+        "half_extents":[101,100,100],"links":[b]});
+    for expected_master in [1, 0] {
+        if expected_master == 0 {
+            edit["master"] = false.into();
+        }
+        fs::write(&source, serde_json::json!({"edits":[edit]}).to_string()).unwrap();
+        assert_placement_import(
+            run_placement_import(&assets, "--native", &source),
+            "Applied 1 room placements in 1 cells (1 certified)",
+        );
+        assert_eq!(master_byte(), expected_master);
+        assert_eq!(
+            database_field(&db, "references", a, b"XRMR"),
+            [1, 0, expected_master, 0]
+        );
+    }
 }
 
 #[test]
@@ -8995,6 +9083,153 @@ fn typed_placement_winner_checks_grouped_duplicates_before_ungrouped_override() 
         assert_eq!(
             SubrecordView::new(&records[&id].subrecords).get_form_id(b"NAME"),
             Some(base),
+            "{id:08X}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn deleted_base_notices_follow_usable_shadows_and_live_intervals() {
+    use converter::{AssetPipeline, config::RecordReader};
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let live = |id| record(b"STAT", id, 0, sub(b"EDID", b"Static\0"));
+    let deleted = |id| record(b"STAT", id, 0x20, Vec::new());
+    let dependent = |id, base| placement_group(0x900, placement(id, base, 0, 1.0, Vec::new()));
+    let layers = [
+        (
+            "Skyrim.esm",
+            [
+                record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+                live(0x830),
+                live(0x831),
+                live(0x832),
+                dependent(0x850, 0x830),
+                dependent(0x851, 0x831),
+            ]
+            .concat(),
+        ),
+        ("OriginallyLive.esp", dependent(0x852, 0x832)),
+        (
+            "Shadows.esp",
+            [
+                dependent(0x830, 0x888),
+                dependent(0x831, 0x1f),
+                deleted(0x832),
+            ]
+            .concat(),
+        ),
+        (
+            "Gap.esp",
+            [deleted(0x830), deleted(0x831), dependent(0x853, 0x832)].concat(),
+        ),
+        ("Restore.esp", live(0x832)),
+        ("Live.esp", dependent(0x854, 0x832)),
+        ("DeleteAgain.esp", deleted(0x832)),
+    ];
+    let list = dir.path().join("plugins.txt");
+    let mut names = Vec::new();
+    for (name, records) in layers {
+        let masters = if names.is_empty() {
+            &[][..]
+        } else {
+            &["Skyrim.esm"][..]
+        };
+        plugin(&data, name, masters, u32::from(names.is_empty()), records);
+        names.push(format!("*{name}\n"));
+    }
+    fs::write(&list, names.concat()).unwrap();
+    let mut failures = Vec::new();
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let output = dir.path().join(format!("{reader:?}"));
+        let mut config = common::cpu_lod_config(&data, &output);
+        config.record_reader = reader;
+        config.no_lod = true;
+        config.plugins_file = Some(list.clone());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let report = AssetPipeline::run_async(config, tx).await.unwrap();
+        drain.await.unwrap();
+        let notices = report.notices.join("\n");
+        let warnings = report.warnings.join("\n");
+        for (id, retired) in [
+            (0x850, true),
+            (0x851, false),
+            (0x852, true),
+            (0x853, false),
+            (0x854, true),
+        ] {
+            let id = format!("{id:08X}");
+            if notices.contains(&id) != retired || warnings.contains(&id) == retired {
+                failures.push(format!(
+                    "{reader:?}: {id} retired={retired}\n{notices}\n{warnings}"
+                ));
+            }
+        }
+        let db = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM records WHERE form_id BETWEEN 0x830 AND 0x832",
+                [],
+                |row| row.get::<_, u32>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn incomplete_queued_duplicate_only_yields_to_a_usable_complete_predecessor() {
+    use converter::config::RecordReader;
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    let base = plugin(
+        data,
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"CELL", 0x900, 0, sub(b"DATA", &[1, 0])),
+            placement_group(
+                0x900,
+                [
+                    placement(0x850, 0x888, 0, 1.0, Vec::new()),
+                    placement(0x851, 0x1f, 0, 1.0, Vec::new()),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    );
+    let mut children = Vec::new();
+    for id in [0x850, 0x851] {
+        children.extend(placement(id, 0x889, 0, 2.0, Vec::new()));
+        children.extend(placement(id, 0x20, 0, 3.0, vec![b'X']));
+    }
+    let patch = plugin(
+        data,
+        "Patch.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(0x900, children),
+    );
+    let records = EsmParser::convert_plugins_with_reader(
+        &[base, patch],
+        &data.join("result.db"),
+        RecordReader::Inhouse,
+        data,
+    )
+    .unwrap();
+    for (id, expected) in [(0x850, 0x20), (0x851, 0x1f)] {
+        assert_eq!(
+            records
+                .get(&id)
+                .and_then(|record| SubrecordView::new(&record.subrecords).get_form_id(b"NAME")),
+            Some(expected),
             "{id:08X}"
         );
     }

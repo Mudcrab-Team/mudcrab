@@ -181,19 +181,22 @@ fn owner_for_space(space: PortalSide, sphere: ModelSphere, portals: &[Portal]) -
 /// Exact-build RVA fe9860, including its cosf refinement and final normal-axis comparison.
 /// This deliberately preserves the native test rather than substituting sphere/rectangle distance.
 fn sphere_intersects_portal(sphere: ModelSphere, portal: &Portal) -> bool {
-    let u = (portal.corners[1] - portal.corners[0]) * 0.5;
-    let v = (portal.corners[3] - portal.corners[0]) * 0.5;
-    let center = portal.corners.iter().copied().sum::<Vec3>() * 0.25;
+    let [a, b, c, d] = portal.corners.map(|corner| corner.as_dvec3());
+    let u = (b - a) * 0.5;
+    let v = (d - a) * 0.5;
+    let center = ((a + b + c + d) * 0.25).as_vec3();
     let delta = Vec3::from_array(sphere.center) - center;
-    let x = delta.dot(u.normalize_or_zero()).abs();
-    let y = delta.dot(u.cross(v).normalize_or_zero()).abs();
-    let z = delta.dot(v.normalize_or_zero()).abs();
+    let x = delta.dot(u.normalize_or_zero().as_vec3()).abs();
+    let y = delta.dot(u.cross(v).normalize_or_zero().as_vec3()).abs();
+    let z = delta.dot(v.normalize_or_zero().as_vec3()).abs();
+    let half_width = u.length() as f32;
+    let half_height = v.length() as f32;
     let radius = sphere.radius;
-    if x - radius > u.length() || z - radius > v.length() || y - radius > 0.0 {
+    if x - radius > half_width || z - radius > half_height || y - radius > 0.0 {
         return false;
     }
     let inset = ((y - radius).abs() / radius).cos() * radius;
-    x - inset <= u.length() && y - inset <= v.length()
+    x - inset <= half_width && y - inset <= half_height
 }
 
 pub(super) fn draws(
@@ -457,6 +460,27 @@ mod tests {
             assignment.owners(100, Some(Affine3A::IDENTITY), &rooms, &[]),
             [Owner::Room(0)]
         );
+    }
+
+    #[test]
+    fn large_portal_keeps_its_plane_normal_for_ownership() {
+        let portals = [Portal::from_creation(
+            11,
+            [0.0; 3],
+            [0.0; 3],
+            [1.0e10; 2],
+            [PortalSide::Room(0), PortalSide::Unbounded],
+        )];
+        for (z, expected) in [(20.0, Owner::Unbounded), (0.0, Owner::Portal(11))] {
+            let sphere = ModelSphere {
+                center: [0.0, 0.0, z],
+                radius: 1.0,
+            };
+            assert_eq!(
+                owner_for_space(PortalSide::Unbounded, sphere, &portals),
+                expected
+            );
+        }
     }
 
     #[test]
