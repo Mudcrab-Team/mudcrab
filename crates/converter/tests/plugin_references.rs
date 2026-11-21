@@ -2828,6 +2828,76 @@ fn export_room_review_fixture(data: &Path, output: &Path, typed: bool) -> PathBu
 }
 
 #[test]
+fn first_placement_without_name_is_a_reader_link_target_but_has_no_runtime_row() {
+    use converter::{config::RecordReader, records::read_plugins};
+
+    let dir = tempfile::tempdir().unwrap();
+    let reference = 0x802u32;
+    let control = 0x803u32;
+    let package = 0x804u32;
+    let cell = 0x900u32;
+    let location = [0u32.to_le_bytes(), reference.to_le_bytes(), [0; 4]].concat();
+    let paths = [plugin(
+        dir.path(),
+        "Skyrim.esm",
+        &[],
+        1,
+        [
+            record(b"STAT", PLACEMENT_STAT, 0, Vec::new()),
+            record(b"CELL", cell, 0, sub(b"XCLC", &[0; 8])),
+            placement_group(
+                cell,
+                [
+                    record(b"REFR", reference, 0, sub(b"DATA", &[0; 24])),
+                    placement(control, PLACEMENT_STAT, 0, 0.0, Vec::new()),
+                ]
+                .concat(),
+            ),
+            record(
+                b"PACK",
+                package,
+                0,
+                [sub(b"ANAM", b"Location\0"), sub(b"PLDT", &location)].concat(),
+            ),
+        ]
+        .concat(),
+    )];
+
+    let order = LoadOrder::read(&paths).unwrap();
+    let read = read_plugins(&paths, &order).unwrap();
+    let placed = &read.records[&reference];
+    assert_eq!(placed.record_type, *b"REFR");
+    assert_eq!(placed.cell_form_id, Some(cell));
+    assert!(
+        !placed
+            .fields
+            .iter()
+            .any(|field| field.signature == *b"NAME")
+    );
+    let raw_package = read.records[&package].to_raw_record();
+    let view = SubrecordView::new(&raw_package.subrecords);
+    assert_eq!(view.find(b"PLDT"), Some(location.as_slice()));
+
+    let db_path = dir.path().join("world.db");
+    EsmParser::convert_plugins_with_reader(&paths, &db_path, RecordReader::Inhouse, dir.path())
+        .unwrap();
+    let db = rusqlite::Connection::open(db_path).unwrap();
+    let rows: (bool, bool, bool, bool) = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM records WHERE form_id=?1),
+                    EXISTS(SELECT 1 FROM [references] WHERE id=?1),
+                    EXISTS(SELECT 1 FROM exterior_spatial WHERE id=?1),
+                    EXISTS(SELECT 1 FROM [references] r JOIN exterior_spatial s USING(id)
+                           WHERE r.id=?2 AND r.base_form_id=?3 AND s.cell_id=?4)",
+            [reference, control, PLACEMENT_STAT, cell],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(rows, (false, false, false, true));
+    assert_eq!(database_field(&db, "records", package, b"PLDT"), [0; 12]);
+}
+
+#[test]
 fn conflicting_portal_occurrences_keep_both_readers_conservative() {
     for typed in [false, true] {
         for second in [

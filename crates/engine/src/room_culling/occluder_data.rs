@@ -53,7 +53,7 @@ pub(super) fn load(conn: &Connection, cell: u32, graph: &RoomGraph) -> Result<Ve
     let mut statement = conn.prepare_cached(
         "SELECT ref_id,shape,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_y,half_z,scale,\
          header_flags,has_enable_parent,has_links,target_ref \
-         FROM room_occluders WHERE cell_id=?1 AND typeof(scale) IN ('real','integer') ORDER BY ref_id",
+         FROM room_occluders WHERE cell_id=?1 ORDER BY ref_id",
     )?;
     let rows = statement.query_map([cell], |row| {
         Ok((
@@ -70,10 +70,14 @@ pub(super) fn load(conn: &Connection, cell: u32, graph: &RoomGraph) -> Result<Ve
         ))
     })?;
     let mut occluders = Vec::new();
+    let mut unusable_rows = 0usize;
     for row in rows {
         let (id, shape, position, rotation, half, scale, flags, parent, links, target) = match row {
             Ok(values) => values,
-            Err(Error::InvalidColumnType(..) | Error::IntegralValueOutOfRange(..)) => continue,
+            Err(Error::InvalidColumnType(..) | Error::IntegralValueOutOfRange(..)) => {
+                unusable_rows += 1;
+                continue;
+            }
             Err(error) => return Err(error),
         };
         // Initially disabled, deleted, NONE, enable-parent, linked, and explicit override paths
@@ -95,6 +99,7 @@ pub(super) fn load(conn: &Connection, cell: u32, graph: &RoomGraph) -> Result<Ve
             scale,
             PortalSide::Unknown,
         ) else {
+            unusable_rows += 1;
             continue;
         };
         // Native occlusion-shape assignment tests its translation before portal sharing. More
@@ -105,6 +110,9 @@ pub(super) fn load(conn: &Connection, cell: u32, graph: &RoomGraph) -> Result<Ve
             _ => continue,
         };
         occluders.push(occluder);
+    }
+    if unusable_rows > 0 {
+        tracing::warn!(cell_id = %format_args!("{cell:08X}"), unusable_rows, "skipped unusable occluder rows");
     }
     Ok(occluders)
 }
