@@ -144,11 +144,22 @@ Luminance standard deviation in the 40 × 40 patch went from
 13.83 to 0.20 in both target trials, then returned to 13.68 and 13.80. The negative control
 measured 13.63. [Capture hashes and measurements](evidence/room-review-20261117/katariah-retail-wall-control.json)
 
-The scale controls identify the visible wall as `000C4A65`. In separate main-view readbacks
-from two Skyrim launches at this pose, the root was `0006EE50` and the map contained the wall’s
-room, `0006EE1E`. The control wall `000C4A50` belonged to `0006EE4F`, absent from both maps.
-The owner receipt preserves the room maps in source order, the live room parents, and the main
-camera fields from `owners1.json` and `owners-active.json`. Three samples of the wall room’s
+The scale controls identify the visible wall as `000C4A65`. Two Skyrim launches at this pose
+recorded the following room maps, in the order returned by each main-view readback.
+[Owner readback receipt](evidence/room-review-20261117/katariah-retail-wall-control.json)
+
+| Source | Root room | Mapped rooms in source order |
+| --- | --- | --- |
+| `owners1.json` | `0006EE50` | `0006EE1E`, `0006EDCA`, `0006EE50` |
+| `owners-active.json` | `0006EE50` | `0006EE50`, `0006EDCA`, `0006EE1E` |
+
+Both launches mapped the visible wall’s parent room, `0006EE1E`. The control wall `000C4A50`
+belonged to `0006EE4F`, which was absent from both maps. In the separate `fresh-start.json`
+readback, doorway `0006EF37` at (−508, 1408, 684) connected `0006EE50` and `0006EE1E`.
+Of the root’s four other doorways, two connected to `0006EDCA`, one to `0006EE4F` and one to
+`000D4F9E`. [Live doorway endpoints](evidence/room-review-20261117/katariah-doorway-controls.json)
+
+Three samples of the wall room’s
 inclusion volume contained the plane at Creation y = 1408 and four side planes through the eye
 and the edges of portal `0006EF37`. These identify the doorway in the resulting volume. The
 readbacks did not trace individual branch decisions.
