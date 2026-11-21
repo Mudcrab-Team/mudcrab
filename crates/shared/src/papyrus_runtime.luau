@@ -189,7 +189,7 @@ function Runtime:find_method(class, state, name)
             seen[current] = true
             local callback = self:get_field(current, key)
             if callback ~= nil then return callback end
-            current = self.classes[string.lower(current.__parent or "")]
+            current = self:class_named(current.__parent)
         end
     end
     assert(not cyclic, "cyclic Papyrus parent hierarchy")
