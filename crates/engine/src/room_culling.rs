@@ -2307,15 +2307,49 @@ mod tests {
 
     #[test]
     fn malformed_occluder_values_preserve_portals_and_valid_occluders() {
+        use bevy::log::tracing_subscriber::{Layer, Registry, layer::Context, prelude::*};
+        use std::{
+            fmt::Debug,
+            sync::{Arc, Mutex},
+        };
+        use tracing::{Event, Level, Subscriber, field::Field};
+
+        #[derive(Clone, Default)]
+        struct OccluderWarnings(Arc<Mutex<Vec<String>>>);
+
+        impl<S: Subscriber> Layer<S> for OccluderWarnings {
+            fn on_event(&self, event: &Event<'_>, _: Context<'_, S>) {
+                let metadata = event.metadata();
+                if *metadata.level() == Level::WARN
+                    && metadata.target() == "engine::room_culling::occluder_data"
+                {
+                    event.record(&mut |field: &Field, value: &dyn Debug| {
+                        if field.name() == "unusable_rows" {
+                            self.0.lock().unwrap().push(format!("{value:?}"));
+                        }
+                    });
+                }
+            }
+        }
+
         let connection = occluder_database();
         insert_room(&connection, 1, 7, [0.0; 3]);
         connection
             .execute_batch(
                 "INSERT INTO room_portals VALUES(10,7,0,0,0,0,0,0,4,6,1,NULL,0,1);
-                 INSERT INTO room_occluders VALUES(501,7,3,0,40,0,0,0,0,'invalid',0,8,1,0,0,0,NULL);",
+                 INSERT INTO room_occluders VALUES
+                    (501,7,3,0,40,0,0,0,0,'invalid',0,8,1,0,0,0,NULL),
+                    (502,7,3,0,40,0,0,0,0,8,0,8,'invalid',0,0,0,NULL),
+                    (503,7,3,0,40,0,0,0,0,8,0,8,0,0,0,0,NULL),
+                    (504,7,3,0,40,0,0,0,0,8,0,8,1,2048,0,0,NULL);",
             )
             .unwrap();
-        let graph = load_room_graph(&connection, 7).unwrap();
+        let warnings = OccluderWarnings::default();
+        let subscriber = Registry::default().with(warnings.clone());
+        let graph = tracing::subscriber::with_default(subscriber, || {
+            load_room_graph(&connection, 7).unwrap()
+        });
+        assert_eq!(*warnings.0.lock().unwrap(), ["3"]);
         assert_eq!(
             graph.portals[0].rooms,
             [PortalSide::Room(0), PortalSide::Unbounded]
