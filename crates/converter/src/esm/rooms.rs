@@ -1202,7 +1202,8 @@ fn project_room_graph(
         report.portals += 1;
     }
 
-    // Marker validation above needs to see missing transforms to flag incomplete cells.
+    // Marker validation above needs missing transforms to flag incomplete cells. The placement
+    // exporter reports missing or short DATA once as reference_unusable_data.
     ordered.retain(|(_, record)| {
         SubrecordView::new(&record.subrecords)
             .find(b"DATA")
@@ -1268,13 +1269,7 @@ fn project_room_graph(
             else {
                 continue;
             };
-            let pivot = position.map(f64::from);
-            let mut inside = 0u32;
-            for room in rooms.iter().filter(|room| room.shape.contains(pivot)) {
-                insert.execute(params![form_id, room.ref_id])?;
-                inside += 1;
-            }
-            match inside {
+            match write_pivot_rows(&mut insert, rooms, form_id, position)? {
                 0 => report.objects_in_no_room += 1,
                 1 => {}
                 _ => report.objects_in_several_rooms += 1,
@@ -1298,6 +1293,21 @@ fn project_room_graph(
         )?;
     }
     Ok(report)
+}
+
+fn write_pivot_rows(
+    insert: &mut rusqlite::Statement<'_>,
+    rooms: &[Room],
+    id: u32,
+    position: [f32; 3],
+) -> Result<usize> {
+    let pivot = position.map(f64::from);
+    let mut containing_rooms = 0;
+    for room in rooms.iter().filter(|room| room.shape.contains(pivot)) {
+        insert.execute(params![id, room.ref_id])?;
+        containing_rooms += 1;
+    }
+    Ok(containing_rooms)
 }
 
 // ---------------------------------------------------------------------------------------------

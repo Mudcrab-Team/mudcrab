@@ -141,6 +141,8 @@ fn transformed(sphere: ModelSphere, matrix: Affine3A) -> Option<ModelSphere> {
         matrix.matrix3.y_axis,
         matrix.matrix3.z_axis,
     ];
+    // Allow f32 roundoff in a uniform transform. Axis lengths scale linearly, while their
+    // dot products scale quadratically, so both tests use the same relative tolerance.
     let scale = axes[0].length();
     if !scale.is_finite()
         || scale <= 0.0

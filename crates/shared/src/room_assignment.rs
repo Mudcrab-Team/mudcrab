@@ -30,6 +30,8 @@ impl ModelSphere {
             return if difference < 0.0 { self } else { other };
         }
         let distance = distance_squared.sqrt();
+        // The NiBound merge keeps the original center for nearly coincident spheres.
+        // See the 1e-6 center-update threshold in docs/research/skyrim-native-culling.md.
         let center = if distance > 1.0e-6 {
             let fraction = (distance - difference) * (0.5 / distance);
             [0, 1, 2].map(|i| fraction * delta[i] + other.center[i])
