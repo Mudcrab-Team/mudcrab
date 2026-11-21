@@ -66,7 +66,11 @@ REFERENCE_TOKEN = (
 # A closing keyword links only the references that follow it, not any later
 # reference on the same line.
 REFERENCE_LIST_RE = re.compile(
-    r"^\s*" + REFERENCE_TOKEN + r"(?:\s*(?:,\s*|\band\b\s*)" + REFERENCE_TOKEN + r")*",
+    r"^\s*"
+    + REFERENCE_TOKEN
+    + r"(?:\s*(?:,\s*(?:and\s+)?|\band\b\s*)"
+    + REFERENCE_TOKEN
+    + r")*",
     re.IGNORECASE,
 )
 FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")

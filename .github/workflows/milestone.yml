@@ -38,9 +38,11 @@ permissions:
 
 concurrency:
   # The daily scan and an item event can touch the same item. One writer at a
-  # time keeps the comment check and its post together.
+  # time keeps the comment check and its post together. Queue up to 100 pending
+  # runs, so a burst of events does not cancel the daily scan.
   group: milestone
   cancel-in-progress: false
+  queue: max
 
 jobs:
   milestone:

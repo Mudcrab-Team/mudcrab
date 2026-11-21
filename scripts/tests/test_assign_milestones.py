@@ -225,6 +225,7 @@ class LinkedItemNumberTests(unittest.TestCase):
 
     def test_a_closing_keyword_links_only_its_reference_list(self):
         self.assertEqual([5, 6], self.numbers("Closes #5 and #6\n"))
+        self.assertEqual([5, 6, 7], self.numbers("Closes #5, #6, and #7\n"))
         self.assertEqual(
             [],
             self.numbers(
@@ -291,6 +292,15 @@ class InheritanceTests(ManagerTestCase):
         self.assertIn(ASSIGN.LABEL, self.github.label_names(20))
         self.assertEqual(1, len(self.github.comments[20]))
         self.assertEqual("", stderr)
+
+    def test_a_comma_and_list_checks_every_milestone(self):
+        self.github.add(5, milestone=G5)
+        self.github.add(6, milestone=G5)
+        self.github.add(7, milestone=G4)
+        self.github.add(20, body="Closes #5, #6, and #7", pull_request=True)
+        self.run_main("--item", "20")
+        self.assertIsNone(self.github.milestone_number(20))
+        self.assertIn(ASSIGN.LABEL, self.github.label_names(20))
 
     def test_no_linked_issue_labels_only(self):
         self.github.add(20, body="A pull request with no link.", pull_request=True)
