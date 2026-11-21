@@ -26,6 +26,8 @@ use std::{
 };
 use walkdir::WalkDir;
 
+pub(crate) mod room_bounds;
+
 pub struct MeshConverter;
 
 /// Distinguishes rigid unresolved-skin output from a self-contained rig's skins.
@@ -134,13 +136,33 @@ impl MeshConverter {
     /// Converts a NIF into a GLB with collision and material metadata, using static geometry as a fallback.
     pub fn convert_nif_to_glb<P: AsRef<Path>>(nif_path: P, glb_output_path: P) -> Result<()> {
         let nif_path = nif_path.as_ref();
-        let skeleton = match find_skeleton(nif_path) {
+        Self::convert_with_resolution(nif_path, glb_output_path.as_ref(), find_skeleton(nif_path))
+    }
+
+    /// Converts a staged model using the batch resolver's logical directory and winning rig set.
+    pub fn convert_nif_to_glb_from_index(
+        relative: &Path,
+        nif_path: &Path,
+        glb_output_path: &Path,
+        index: &SkeletonIndex,
+    ) -> Result<()> {
+        let key = normalize_path_key(relative);
+        let resolution = resolve_indexed_source(&key, Some(nif_path), index, skeleton_source);
+        Self::convert_with_resolution(nif_path, glb_output_path, resolution)
+    }
+
+    fn convert_with_resolution(
+        nif_path: &Path,
+        glb_output_path: &Path,
+        resolution: SkeletonResolution,
+    ) -> Result<()> {
+        let skeleton = match resolution {
             SkeletonResolution::Skeleton(path) => Some(path),
             SkeletonResolution::SelfContained => None,
             SkeletonResolution::Unresolved { best_coverage } => {
                 return Self::convert_nif_to_glb_with_skin_resolution(
                     nif_path,
-                    glb_output_path.as_ref(),
+                    glb_output_path,
                     None,
                     Some(&unresolved_skeleton_diagnostic(
                         format_args!("skinned NIF {}", nif_path.display()),
@@ -149,11 +171,7 @@ impl MeshConverter {
                 );
             }
         };
-        Self::convert_nif_to_glb_with_skeleton(
-            nif_path,
-            glb_output_path.as_ref(),
-            skeleton.as_deref(),
-        )
+        Self::convert_nif_to_glb_with_skeleton(nif_path, glb_output_path, skeleton.as_deref())
     }
 
     /// Converts using an explicitly resolved winning skeleton, without physical-neighbor fallback.
@@ -270,7 +288,7 @@ impl MeshConverter {
             retain_bodies_with_nodes(&mut collision, &[], false);
             return write_glb_atomic(
                 output,
-                &embed_collision(empty_scene_glb(&name), &collision)?,
+                &embed_scene_metadata(empty_scene_glb(&name), &collision, None)?,
             );
         }
         let output = glb_output_path;
@@ -359,7 +377,13 @@ impl MeshConverter {
             .map(|node| node.name.clone().unwrap_or_default())
             .collect();
         retain_bodies_for_written_glb(&mut collision, &glb, Some(&source_order))?;
-        let glb = embed_collision(glb, &collision)?;
+        let sphere = if declares_skin {
+            None
+        } else {
+            room_bounds::source_sphere(&nif)
+                .filter(|sphere| room_bounds::encloses_scene(&glb, *sphere))
+        };
+        let glb = embed_scene_metadata(glb, &collision, sphere)?;
         if !model.skeletal_meshes.is_empty() {
             validate_declared_skin_glb(&glb, nif_path)?;
         }
@@ -377,7 +401,7 @@ impl MeshConverter {
                 .wrap_err_with(|| format!("cannot annotate {}", glb_path.display()))?;
         }
         retain_bodies_for_written_glb(&mut collision, &glb, None)?;
-        write_glb_atomic(glb_path, &embed_collision(glb, &collision)?)?;
+        write_glb_atomic(glb_path, &embed_scene_metadata(glb, &collision, None)?)?;
         Ok(collision)
     }
 
@@ -983,7 +1007,11 @@ fn retain_bodies_with_nodes(
     }
 }
 
-fn embed_collision(glb: Vec<u8>, collision: &CollisionAsset) -> Result<Vec<u8>> {
+fn embed_scene_metadata(
+    glb: Vec<u8>,
+    collision: &CollisionAsset,
+    sphere: Option<shared::room_assignment::ModelSphere>,
+) -> Result<Vec<u8>> {
     let mut document = glb_json_from_bytes(&glb)?;
     let scene = document
         .get_mut("scenes")
@@ -991,6 +1019,11 @@ fn embed_collision(glb: Vec<u8>, collision: &CollisionAsset) -> Result<Vec<u8>> 
         .and_then(|scenes| scenes.first_mut())
         .ok_or_else(|| color_eyre::eyre::eyre!("GLB has no scene for collision metadata"))?;
     scene["extras"]["mudcrabCollision"] = serde_json::to_value(collision)?;
+    if let Some(sphere) = sphere {
+        document["extras"]["mudcrabRoomSphere"] = serde_json::json!({
+            "version": 1, "center": sphere.center, "radius": sphere.radius
+        });
+    }
     rebuild_glb_with_document(&glb, &document)
 }
 
@@ -2182,15 +2215,28 @@ pub(crate) fn glb_bounds_from_bytes(glb: &[u8]) -> Result<shared::Bounds3> {
         glb.get(20..20 + json_length)
             .ok_or_else(|| color_eyre::eyre::eyre!("truncated GLB JSON chunk"))?,
     )?;
+    glb_bounds_from_document(&document)
+}
+
+pub(crate) fn glb_bounds_from_document(document: &serde_json::Value) -> Result<shared::Bounds3> {
     let nodes = document
         .get("nodes")
         .and_then(serde_json::Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or_default();
-    let roots = scene_roots(&document, nodes);
+    let roots = scene_roots(document, nodes);
     let mut bounds = BoundsAccumulator::default();
+    let mut remaining_visits = nodes.len();
     for root in roots {
-        visit_node(&document, nodes, root, Mat4::IDENTITY, 0, &mut bounds)?;
+        visit_node(
+            document,
+            nodes,
+            root,
+            Mat4::IDENTITY,
+            0,
+            &mut remaining_visits,
+            &mut bounds,
+        )?;
     }
     bounds.finish()
 }
@@ -2236,12 +2282,18 @@ fn visit_node(
     index: usize,
     parent: Mat4,
     depth: usize,
+    remaining_visits: &mut usize,
     bounds: &mut BoundsAccumulator,
 ) -> Result<()> {
     ensure!(depth <= nodes.len(), "cyclic glTF node hierarchy");
     let node = nodes
         .get(index)
         .ok_or_else(|| color_eyre::eyre::eyre!("glTF node {index} is out of range"))?;
+    ensure!(
+        *remaining_visits > 0,
+        "glTF node traversal exceeds the node count"
+    );
+    *remaining_visits -= 1;
     let transform = parent.mul(Mat4::from_node(node));
     if let Some(mesh_index) = node.get("mesh").and_then(serde_json::Value::as_u64) {
         accumulate_mesh(document, mesh_index as usize, transform, bounds)?;
@@ -2254,6 +2306,7 @@ fn visit_node(
                 child as usize,
                 transform,
                 depth + 1,
+                remaining_visits,
                 bounds,
             )?;
         }
@@ -2868,7 +2921,8 @@ impl SkeletonIndex {
         }
     }
 
-    pub(crate) fn from_sources(sources: &BTreeMap<PathBuf, PathBuf>) -> Self {
+    /// Indexes candidate skeletons and directory meshes by their winning logical paths.
+    pub fn from_sources(sources: &BTreeMap<PathBuf, PathBuf>) -> Self {
         let mut entries = Vec::new();
         let mut dir_meshes: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
         for (path, source) in sources {
@@ -3001,6 +3055,11 @@ fn is_skeleton_key(key: &str) -> bool {
     name.starts_with("skeleton") && name.ends_with(".nif")
 }
 
+/// Whether this logical file is a skeleton candidate in the winning source set.
+pub fn is_skeleton_path(path: &Path) -> bool {
+    is_skeleton_key(&normalize_path_key(path))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct PathLocation {
     /// `dragon` or `dlc01/dragon`, without the leading `actors/`.
@@ -3046,9 +3105,9 @@ fn coverage(joints: &BTreeSet<String>, nodes: &BTreeSet<String>) -> f32 {
 type RankKey<'a> = (bool, bool, bool, bool, i64, bool, bool, &'a str);
 
 /// The reference ranking: same directory, same actor, mirrored base actor, base
-/// package, then the smallest overlap with the directory's joints beyond the
-/// rig's own, a plain `skeleton.nif` name, no first-person variant, and path
-/// order. Each field is ascending, so `false` and smaller overlaps win.
+/// package, then the largest overlap with the directory's joints, a plain
+/// `skeleton.nif` name, no first-person variant, and path
+/// order. The sort is ascending, with overlap negated.
 fn rank_key<'a>(
     entry: &'a SkeletonEntry,
     mesh_dir: &str,
@@ -3231,6 +3290,15 @@ pub(crate) fn resolve_skeleton_with_index(
                 .map(|(_, source)| source)
         })
         .map(PathBuf::as_path);
+    resolve_indexed_source(&key, mesh_source, index, skeleton_key)
+}
+
+fn resolve_indexed_source(
+    key: &str,
+    mesh_source: Option<&Path>,
+    index: &SkeletonIndex,
+    name: SkeletonName,
+) -> SkeletonResolution {
     let (declares_skin, joints) =
         match mesh_source.and_then(|source| open_nif_for_conversion(source).ok()) {
             Some((nif, diagnostics, _)) => (
@@ -3239,11 +3307,11 @@ pub(crate) fn resolve_skeleton_with_index(
             ),
             None => (false, BTreeSet::new()),
         };
-    let candidates = skeleton_candidates(&key_path);
+    let candidates = skeleton_candidates(Path::new(key));
     if !declares_skin || joints.is_empty() {
-        return resolve_without_joints(&candidates, index, skeleton_key);
+        return resolve_without_joints(&candidates, index, name);
     }
-    resolve_against(&key, mesh_source, &candidates, index, &joints, skeleton_key)
+    resolve_against(key, mesh_source, &candidates, index, &joints, name)
 }
 
 fn skeleton_candidates(nif_path: &Path) -> Vec<PathBuf> {
@@ -4161,6 +4229,36 @@ mod tests {
     }
 
     #[test]
+    fn glb_bounds_share_visit_budget_across_scene_roots() {
+        let mut document = serde_json::json!({
+            "scenes": [{"nodes": [0, 1]}],
+            "nodes": [
+                {"children": [2], "translation": [3, 0, 0]},
+                {"children": [3], "translation": [-4, 0, 0]},
+                {"mesh": 0},
+                {"mesh": 0}
+            ],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "accessors": [{"min": [-1, -1, -1], "max": [1, 1, 1]}]
+        });
+        let bounds = glb_bounds_from_document(&document).unwrap();
+        for (actual, expected) in bounds.min.into_iter().zip([-5.0, -1.0, -1.0]) {
+            assert!((actual - expected).abs() < f32::EPSILON);
+        }
+        for (actual, expected) in bounds.max.into_iter().zip([4.0, 1.0, 1.0]) {
+            assert!((actual - expected).abs() < f32::EPSILON);
+        }
+
+        document["nodes"][1]["children"][0] = 2.into();
+        document["nodes"].as_array_mut().unwrap().pop();
+        let error = glb_bounds_from_document(&document).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "glTF node traversal exceeds the node count"
+        );
+    }
+
+    #[test]
     fn lists_external_glb_textures_deterministically() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("mesh.glb");
@@ -4865,15 +4963,249 @@ mod tests {
         );
     }
 
+    #[test]
+    fn assignment_sphere_limits_repeated_child_expansion() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("shared-children.nif");
+        fs::write(&input, static_scene_chain_nif(12)).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let NifBlock::BSTriShape(shape) = &mut nif.blocks[1] else {
+            unreachable!()
+        };
+        shape.bounding_sphere.radius = 2.0;
+        assert!(room_bounds::source_sphere(&nif).is_some());
+        for block in &mut nif.blocks {
+            if let NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) = block {
+                node.children.extend_from_within(..);
+            }
+        }
+        assert!(room_bounds::source_sphere(&nif).is_none());
+    }
+
+    #[test]
+    fn assignment_sphere_declines_disconnected_exported_geometry() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("disconnected.nif");
+        fs::write(&input, static_nif()).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let (mut second, _, _) = open_nif_resilient(&input).unwrap();
+        let mut orphan = second.blocks.remove(1);
+        let NifBlock::BSTriShape(shape) = &mut orphan else {
+            unreachable!()
+        };
+        shape.av.translation.0.0.x = 1000.0;
+        nif.blocks.push(orphan);
+        let model = project_wormhole_nif::nif_file::nif_to_static_model(&nif).unwrap();
+        assert_eq!(model.static_meshes.len(), 2);
+        assert!(room_bounds::source_sphere(&nif).is_none());
+    }
+
+    #[test]
+    fn assignment_sphere_keeps_source_bounds_and_ignores_the_reference_root_transform() {
+        use project_wormhole_shared::glam::{Mat3, Vec3};
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("source.nif");
+        fs::write(&input, static_nif()).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let (NifBlock::NiNode(root) | NifBlock::BSFadeNode(root)) = &mut nif.blocks[0] else {
+            unreachable!()
+        };
+        root.av.translation.0.0 = Vec3::splat(1000.0);
+        root.av.scale.0 = 10.0;
+        root.av.rotation.0.0 = Mat3::from_diagonal(Vec3::new(-1.0, 1.0, 1.0));
+        let NifBlock::BSTriShape(shape) = &mut nif.blocks[1] else {
+            unreachable!()
+        };
+        shape.bounding_sphere.center = [10.0, 20.0, 30.0];
+        shape.bounding_sphere.radius = 2.0;
+        shape.av.translation.0.0 = Vec3::new(3.0, 4.0, 5.0);
+        shape.av.rotation.0.0 = Mat3::IDENTITY;
+        shape.av.scale.0 = 2.0;
+        assert_eq!(
+            room_bounds::source_sphere(&nif),
+            Some(shared::room_assignment::ModelSphere {
+                center: [23.0, 65.0, -44.0],
+                radius: 4.0,
+            })
+        );
+        for (rotation, scale, center) in [
+            (Mat3::IDENTITY, -2.0, [-17.0, -55.0, 36.0]),
+            (
+                Mat3::from_rotation_z(std::f32::consts::FRAC_PI_2),
+                2.0,
+                [-37.0, 65.0, -24.0],
+            ),
+        ] {
+            let NifBlock::BSTriShape(shape) = &mut nif.blocks[1] else {
+                unreachable!()
+            };
+            shape.av.rotation.0.0 = rotation;
+            shape.av.scale.0 = scale;
+            let sphere = room_bounds::source_sphere(&nif).unwrap();
+            assert!((sphere.radius - 4.0).abs() < f32::EPSILON);
+            for (actual, expected) in sphere.center.into_iter().zip(center) {
+                assert!((actual - expected).abs() < 1.0e-4);
+            }
+        }
+        nif.blocks[1] = NifBlock::Unhandled;
+        assert!(room_bounds::source_sphere(&nif).is_none());
+    }
+
+    #[test]
+    fn assignment_sphere_declines_reflected_or_sheared_child_rotations() {
+        use project_wormhole_shared::glam::{Mat3, Vec3};
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("rotation.nif");
+        fs::write(&input, static_nif()).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let root = nif.blocks[0].as_node().unwrap().clone();
+        for rotation in [
+            Mat3::from_diagonal(Vec3::new(-1.0, 1.0, 1.0)),
+            Mat3::from_cols(Vec3::X, Vec3::new(0.25, 1.0, 0.0), Vec3::Z),
+        ] {
+            nif.blocks[0] = NifBlock::BSFadeNode(root.clone());
+            let NifBlock::BSTriShape(shape) = &mut nif.blocks[1] else {
+                unreachable!()
+            };
+            shape.av.rotation.0.0 = rotation;
+            let model = project_wormhole_nif::nif_file::nif_to_static_model(&nif).unwrap();
+            assert_eq!(model.static_meshes.len(), 1);
+            assert!(model.to_glb("rotation".into()).is_ok());
+            assert!(room_bounds::source_sphere(&nif).is_none());
+            nif.blocks[0] =
+                NifBlock::BSOrderedNode(project_wormhole_nif::nif_block::BSOrderedNode {
+                    node: root.clone(),
+                    alpha_sort_bound: [0.0, 0.0, 0.0, 100.0],
+                    static_bound: 1,
+                });
+            assert!(room_bounds::source_sphere(&nif).is_none());
+        }
+    }
+
+    #[test]
+    fn assignment_sphere_composes_normalized_child_rotations() {
+        use project_wormhole_shared::glam::{Mat3, Vec3};
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("composed-shear.nif");
+        fs::write(&input, static_scene_chain_nif(4)).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let NifBlock::BSTriShape(shape) = &mut nif.blocks[1] else {
+            unreachable!()
+        };
+        shape.bounding_sphere.radius = 1.0;
+        assert!(room_bounds::source_sphere(&nif).is_some());
+        let shear = Mat3::from_cols(Vec3::X, Vec3::new(8e-5, 1.0, 0.0), Vec3::Z);
+        let NifBlock::BSTriShape(shape) = &mut nif.blocks[1] else {
+            unreachable!()
+        };
+        shape.av.rotation.0.0 = shear;
+        assert!(room_bounds::source_sphere(&nif).is_some());
+        for block in nif.blocks.iter_mut().skip(1) {
+            if let NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) = block {
+                node.av.rotation.0.0 = shear;
+            }
+        }
+        assert!(room_bounds::source_sphere(&nif).is_some());
+    }
+
+    #[test]
+    fn authored_shape_sphere_must_enclose_the_exported_quad() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("quad.nif");
+        let output = input.with_extension("glb");
+        let mut bytes = static_nif();
+        let (data, header) = parse_skyrim_header(&bytes, &input).unwrap();
+        // BSTriShape's authored radius follows its 72-byte AV object and sphere center.
+        let radius_offset = bytes.len() - data.len() + header.block_size_index[0] as usize + 84;
+        let [enclosing, undersized] = [2.0f32, 0.25].map(|radius| {
+            bytes[radius_offset..radius_offset + 4].copy_from_slice(&radius.to_le_bytes());
+            fs::write(&input, &bytes).unwrap();
+            MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+            fs::read(&output).unwrap()
+        });
+        let mut enclosing_json = glb_json_from_bytes(&enclosing).unwrap();
+        let undersized_json = glb_json_from_bytes(&undersized).unwrap();
+        let sphere = enclosing_json["extras"]
+            .as_object_mut()
+            .unwrap()
+            .remove("mudcrabRoomSphere")
+            .unwrap();
+        assert_eq!(sphere["radius"], 2.0);
+        assert!(undersized_json["extras"]["mudcrabRoomSphere"].is_null());
+        for key in ["nodes", "meshes", "accessors", "scenes"] {
+            assert_eq!(enclosing_json[key], undersized_json[key]);
+        }
+        assert_eq!(
+            gltf::binary::Glb::from_slice(&enclosing).unwrap().bin,
+            gltf::binary::Glb::from_slice(&undersized).unwrap().bin
+        );
+    }
+
+    #[test]
+    fn room_sphere_uses_the_rigid_writers_normalized_child_rotation() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("near-rigid.nif");
+        let output = input.with_extension("glb");
+        let mut bytes = static_nif_with_positions(&[
+            [999.0, 0.0, 0.0],
+            [1001.0, 0.0, 0.0],
+            [1000.0, 1.0, 0.0],
+            [1000.0, -1.0, 0.0],
+        ]);
+        let (data, header) = parse_skyrim_header(&bytes, &input).unwrap();
+        let shape = bytes.len() - data.len() + header.block_size_index[0] as usize;
+        bytes[shape + 28..shape + 32].copy_from_slice(&0.99996f32.to_le_bytes());
+        fs::write(&input, bytes).unwrap();
+        MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+        let bytes = fs::read(&output).unwrap();
+        let doc = glb_json_from_bytes(&bytes).unwrap();
+        let sphere = &doc["extras"]["mudcrabRoomSphere"];
+        assert_eq!(sphere["center"], serde_json::json!([1000.0, 0.0, 0.0]));
+        assert_eq!(sphere["radius"], 1.0);
+        let bounds = glb_bounds_from_bytes(&bytes).unwrap();
+        assert!((bounds.max[0] - 1001.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn room_sphere_rejects_a_vertex_just_outside_the_surface() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("boundary.nif");
+        let output = input.with_extension("glb");
+        for (offset, enclosed) in [(0.0, true), (1.0 / 4096.0, false)] {
+            let mut bytes = static_nif_with_positions(&[
+                [1.0, offset, 0.0],
+                [-1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, -1.0, 0.0],
+            ]);
+            let (data, header) = parse_skyrim_header(&bytes, &input).unwrap();
+            let shape = bytes.len() - data.len() + header.block_size_index[0] as usize;
+            bytes[shape + 72..shape + 84].fill(0);
+            bytes[shape + 84..shape + 88].copy_from_slice(&1.0f32.to_le_bytes());
+            fs::write(&input, &bytes).unwrap();
+            MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+            let glb = fs::read(&output).unwrap();
+            let document = glb_json_from_bytes(&glb).unwrap();
+            assert_eq!(
+                document["extras"]["mudcrabRoomSphere"].is_object(),
+                enclosed
+            );
+        }
+    }
+
     fn static_nif() -> Vec<u8> {
+        static_nif_with_positions(&[
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ])
+    }
+
+    fn static_nif_with_positions(positions: &[[f32; 3]; 4]) -> Vec<u8> {
         dummy_content::nif::static_shape(&dummy_content::nif::StaticShape {
             name: "PropertyQuad",
-            positions: &[
-                [-1.0, -1.0, 0.0],
-                [1.0, -1.0, 0.0],
-                [1.0, 1.0, 0.0],
-                [-1.0, 1.0, 0.0],
-            ],
+            positions,
             normals: &[[0.0, 0.0, 1.0]; 4],
             uvs: &[[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
             indices: &[[0, 1, 2], [0, 2, 3]],
@@ -4956,8 +5288,11 @@ mod tests {
 
     /// Extend the static fixture's root-to-shape path while retaining all material references.
     fn static_scene_chain_nif(depth: usize) -> Vec<u8> {
+        scene_chain_from_shape(depth, static_nif())
+    }
+
+    fn scene_chain_from_shape(depth: usize, source: Vec<u8>) -> Vec<u8> {
         assert!(depth > 0);
-        let source = static_nif();
         let (data, header) = parse_skyrim_header(&source, Path::new("fixture.nif")).unwrap();
         let data_start = source.len() - data.len();
         let mut remaining = data;
@@ -5024,10 +5359,17 @@ mod tests {
     fn scene_chains_through_256_export_geometry_and_walk_bounds() {
         std::thread::spawn(|| {
             let directory = tempfile::tempdir().unwrap();
+            // Each corner is exactly five units from the center in both f32 and f64.
+            let shape = static_nif_with_positions(&[
+                [-3.0, -4.0, 0.0],
+                [3.0, -4.0, 0.0],
+                [3.0, 4.0, 0.0],
+                [-3.0, 4.0, 0.0],
+            ]);
             for (depth, exported_nodes) in [(64, 66), (65, 67), (256, 258)] {
                 let input = directory.path().join(format!("chain-{depth}.nif"));
                 let output = input.with_extension("glb");
-                fs::write(&input, static_scene_chain_nif(depth)).unwrap();
+                fs::write(&input, scene_chain_from_shape(depth, shape.clone())).unwrap();
                 let diagnostics = MeshConverter::inspect_nif(&input).unwrap();
                 assert_eq!(diagnostics.max_scene_depth, depth);
                 assert!(
@@ -5043,7 +5385,18 @@ mod tests {
                     serde_json::from_slice(&glb[20..20 + json_len]).unwrap();
                 assert_eq!(json["nodes"].as_array().unwrap().len(), exported_nodes);
                 assert_eq!(json["meshes"].as_array().unwrap().len(), 1);
+                assert!(
+                    json["extras"]["mudcrabRoomSphere"]["radius"]
+                        .as_f64()
+                        .is_some_and(|radius| radius > 0.0),
+                    "{depth} supported scene nodes must retain the assignment sphere"
+                );
             }
+            let input = directory.path().join("chain-257.nif");
+            fs::write(&input, scene_chain_from_shape(257, shape)).unwrap();
+            let (nif, diagnostics, _) = open_nif_resilient(&input).unwrap();
+            assert_eq!(diagnostics.max_scene_depth, 257);
+            assert!(room_bounds::source_sphere(&nif).is_none());
         })
         .join()
         .unwrap();
@@ -5053,6 +5406,7 @@ mod tests {
     /// the shared 256-node bound. The pinned hashes come from the converter before that bound,
     /// except that both single-shape cases also carry the `mudcrabGeometryIndex` primitive tag
     /// that `object-texture-swap-geometry-index-v1` adds; each case asserts that tag below.
+    /// Additive room-assignment metadata is excluded from this render-output comparison.
     #[test]
     fn shallow_scene_glb_bytes_are_unchanged_by_the_depth_bound() {
         let directory = tempfile::tempdir().unwrap();
@@ -5073,14 +5427,20 @@ mod tests {
             let output = input.with_extension("glb");
             fs::write(&input, source).unwrap();
             MeshConverter::convert_nif_to_glb_with_skeleton(&input, &output, None).unwrap();
-            let bytes = fs::read(&output).unwrap();
-            let document = glb_json_from_bytes(&bytes).unwrap();
+            let glb = fs::read(&output).unwrap();
+            let mut document = glb_json_from_bytes(&glb).unwrap();
             assert_eq!(
                 document["meshes"][0]["primitives"][0]["extras"]["mudcrabGeometryIndex"], 0,
                 "{name}: the single shape carries its geometry index"
             );
+            if let Some(extras) = document["extras"].as_object_mut() {
+                extras.remove("mudcrabRoomSphere");
+                if extras.is_empty() {
+                    document.as_object_mut().unwrap().remove("extras");
+                }
+            }
             assert_eq!(
-                crate::cache::hash_bytes(&bytes),
+                crate::cache::hash_bytes(&rebuild_glb_with_document(&glb, &document).unwrap()),
                 expected,
                 "{name}: GLB bytes changed"
             );

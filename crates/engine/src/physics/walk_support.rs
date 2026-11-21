@@ -22,12 +22,12 @@
 //! Mudcrab runs the controller on a fixed 60 Hz tick, retail runs it once per rendered frame
 //! (RF-PHYS-003). The rule is the same. Rapier's grounded flag stands in for kSupport.
 //!
-//! Not retail, kept as Mudcrab tuning: the step-up probe (`walk_step_rise`, RF-CC-019), the 28 unit
-//! capsule radius (retail: about 18 units, RF-CC-020) and the air gravity of 900 units per second
-//! squared (retail: 686.6, RF-CC-002). Not read in the binary, so not guessed: whether the vertical
-//! velocity persists from one step to the next (the rule above assumes it does, RF-CC-014), the
-//! Havok proxy's support tolerance and keep distance (RF-CC-001), and the normal threshold at
-//! `0x141829400` (RF-CC-017).
+//! Mudcrab tunes the step-up probe (`walk_step_rise`, RF-CC-019) and uses a 28-unit capsule
+//! radius (retail uses about 18 units, RF-CC-020). The 900 units/s² gravity setting applies only
+//! to rigid bodies. The player controller uses retail world gravity (686.6 units/s², RF-CC-002).
+//! The glide rule assumes vertical velocity persists between steps (RF-CC-014). That persistence,
+//! the Havok proxy's support tolerance and keep distance (RF-CC-001), and the normal threshold
+//! at `0x141829400` (RF-CC-017) remain unverified in the binary.
 
 use super::{MovementTuning, PLAYER_CONTROLLER_OFFSET, carry::UNITS_PER_METRE};
 use bevy::prelude::*;

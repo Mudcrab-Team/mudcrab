@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "evidence": {
+      "items": {
+        "$ref": "dispositions.schema.json#/$defs/reference"
+      },
+      "type": "array"
+    },
+    "format_version": {
+      "const": 1
+    },
+    "owner": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "reason": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "reviewed_at_commit": {
+      "$ref": "dispositions.schema.json#/$defs/commit"
+    },
+    "states": {
+      "$ref": "dispositions.schema.json#/$defs/states"
+    },
+    "store": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "format_version",
+    "store",
+    "reviewed_at_commit",
+    "owner",
+    "reason",
+    "states",
+    "evidence"
+  ],
+  "title": "World-data external store disposition v1",
+  "type": "object"
+}
