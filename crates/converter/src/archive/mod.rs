@@ -554,12 +554,16 @@ impl ArchiveExtractor {
         archive_path: &Path,
         include_name: impl Fn(&str) -> bool,
     ) -> Result<Vec<PathBuf>> {
-        let source = ArchiveSource::from_file(File::open(archive_path)?)?;
+        let file = File::open(archive_path)?;
+        // An archive edited while it is read gives a mixed inventory; refuse it.
+        let stamp = crate::source_input::SourceStamp::capture(&file)?;
+        let source = ArchiveSource::from_file(file.try_clone()?)?;
         let mut paths = select_entries(&source, archive_path, include_name)?
             .into_iter()
             .map(|(path, _)| path)
             .collect::<Vec<_>>();
         paths.sort();
+        stamp.verify(&file, archive_path)?;
         Ok(paths)
     }
 
@@ -807,7 +811,10 @@ impl ArchiveExtractor {
     ) -> Result<Vec<ExtractedFile>> {
         let file = File::open(archive_path)
             .wrap_err_with(|| format!("failed to open archive {}", archive_path.display()))?;
-        let source = ArchiveSource::from_file(file)?;
+        // An archive edited during extraction could mix old and new payloads; the stamp is
+        // checked again before anything is published.
+        let stamp = crate::source_input::SourceStamp::capture(&file)?;
+        let source = ArchiveSource::from_file(file.try_clone()?)?;
         let selected = select_entries(&source, archive_path, include_name)?
             .into_iter()
             .filter(|(path, _)| include(path))
@@ -861,6 +868,7 @@ impl ArchiveExtractor {
                 Ok((temporary.into_temp_path(), extracted))
             })
             .collect::<Result<Vec<_>>>()?;
+        stamp.verify(&file, archive_path)?;
 
         staged
             .into_iter()
