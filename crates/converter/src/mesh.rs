@@ -5587,7 +5587,7 @@ mod tests {
         let output = directory.path().join("switch.glb");
         let first = ModelSphere {
             center: [0.0; 3],
-            radius: 2.0_f32.sqrt(),
+            radius: std::f32::consts::SQRT_2.next_up(),
         };
         let second = ModelSphere {
             center: [1000.0, 0.0, 0.0],
