@@ -41,7 +41,7 @@ use super::{
 use crate::esm::load_order::LoadOrder;
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     sync::OnceLock,
 };
 
@@ -436,6 +436,23 @@ struct FramedSubrecords<'a> {
     complete: bool,
 }
 
+/// Provenance cannot select an occurrence when several source fields share a signature.
+pub(crate) fn unique_source_subrecord<'a>(
+    payload: &'a [u8],
+    signature: &[u8; 4],
+) -> Option<&'a [u8]> {
+    let mut matching = framed_source_subrecords(payload)?
+        .into_iter()
+        .filter(|(tag, _)| tag == signature);
+    let (_, bytes) = matching.next()?;
+    matching.next().is_none().then_some(bytes)
+}
+
+pub(crate) fn framed_source_subrecords(payload: &[u8]) -> Option<Vec<([u8; 4], &[u8])>> {
+    let framed = subrecords(payload, &mut PluginDiagnostics::default(), 0);
+    framed.complete.then_some(framed.fields)
+}
+
 /// Frame subrecords with XXXX lengths; an unrecoverable boundary drops only this remainder.
 fn subrecords<'a>(
     payload: &'a [u8],
@@ -683,6 +700,13 @@ fn decode_with_identity_inner(
         })
         .transpose()?
         .filter(|&id| id != 0);
+    if scanned.flags & 0x20 == 0
+        && crate::esm::is_placed_record_type(&scanned.record_type)
+        && let Some(source_cell) = scanned.cell_form_id
+        && cell.is_none()
+    {
+        return Err(format!("invalid placement parent cell {source_cell:08X}"));
+    }
     let world = scanned
         .worldspace_form_id
         .map(|id| {
@@ -744,6 +768,18 @@ fn decode_with_identity_inner(
     let mut rejected_land_layer: Option<(usize, usize)> = None;
     diagnostics.set_field("payload_framing".into());
     let framed = subrecords(&scanned.payload, diagnostics, scanned.source_form_id);
+    if scanned.flags & 0x20 == 0
+        && crate::esm::is_placed_record_type(&scanned.record_type)
+        && framed
+            .fields
+            .iter()
+            .filter(|(tag, _)| tag == b"NAME")
+            .nth(1)
+            .is_some()
+    {
+        diagnostics.set_field("NAME".into());
+        return Err("placement contains multiple NAME fields".into());
+    }
     let link_kind = |source_id| {
         let id = remap(source_id, context, true, &mut PluginDiagnostics::default()).ok()?;
         context.winning_types?.get(&id).copied()
@@ -841,7 +877,12 @@ fn decode_with_identity_inner(
                         fields.push(DecodedField {
                             signature,
                             localized_bank: selected_localized_bank(
-                                &common, bytes, schema, &selection, &value,
+                                &common,
+                                bytes,
+                                schema,
+                                &selection,
+                                &value,
+                                diagnostics,
                             ),
                             name: common.name,
                             value,
@@ -933,8 +974,14 @@ fn decode_with_identity_inner(
                         schema,
                         diagnostics,
                     )?;
-                    let localized_bank =
-                        selected_localized_bank(field_schema, bytes, schema, &selection, &value);
+                    let localized_bank = selected_localized_bank(
+                        field_schema,
+                        bytes,
+                        schema,
+                        &selection,
+                        &value,
+                        diagnostics,
+                    );
                     if signature == *b"EDID"
                         && let Value::String(name) = &value
                     {
@@ -1083,8 +1130,14 @@ fn decode_with_identity_inner(
                     schema,
                     diagnostics,
                 )?;
-                let localized_bank =
-                    selected_localized_bank(field_schema, bytes, schema, &selection, &value);
+                let localized_bank = selected_localized_bank(
+                    field_schema,
+                    bytes,
+                    schema,
+                    &selection,
+                    &value,
+                    diagnostics,
+                );
                 if signature == *b"EDID"
                     && let Value::String(name) = &value
                 {
@@ -1288,31 +1341,70 @@ fn array_stride(field: &FieldSchema, schema: &Schema) -> Result<usize, String> {
     Ok(stride)
 }
 
-/// Retain the most-specific selected bank without changing the serialized value contract.
+/// Keep the existing default-bank fallback while reporting a failed schema walk.
 fn selected_localized_bank(
     field: &FieldSchema,
     bytes: &[u8],
     schema: &Schema,
     selection: &super::deciders::Context<'_>,
     decoded: &Value,
+    diagnostics: &mut PluginDiagnostics,
 ) -> Option<String> {
+    match try_selected_localized_bank(field, bytes, schema, selection, decoded) {
+        Ok(bank) => bank,
+        Err(error) => {
+            let previous = diagnostics.push_field(&field.name);
+            let action = diagnostics.event_context.action.replace("defaulted");
+            let form_id = diagnostics.event_context.form_id.unwrap_or(0);
+            // For compatibility, the localization bucket counts this fallback in skipped_fields.
+            // The value is retained with the default bank, as the "defaulted" action records.
+            diagnostics.note("localization", || {
+                format!(
+                    "{} {:08X} {}: localized bank selection failed ({error}); using signature default bank",
+                    String::from_utf8_lossy(&selection.record_type),
+                    form_id,
+                    field.name
+                )
+            });
+            diagnostics.event_context.action = action;
+            diagnostics.pop_field(previous);
+            None
+        }
+    }
+}
+
+/// Retain the most-specific selected bank and preserve resolve/decide failures.
+fn try_selected_localized_bank(
+    field: &FieldSchema,
+    bytes: &[u8],
+    schema: &Schema,
+    selection: &super::deciders::Context<'_>,
+    decoded: &Value,
+) -> Result<Option<String>, String> {
     if !matches!(decoded, Value::LocalizedString(_)) {
-        return None;
+        return Ok(None);
     }
     let mut field = field.clone();
     let mut bank = None;
-    for _ in 0..32 {
-        field = schema.resolve(&field).ok()?;
+    for depth in 0..32 {
+        field = schema
+            .resolve(&field)
+            .map_err(|error| format!("resolve step {depth}: {error}"))?;
         if field.string_table.is_some() {
             bank.clone_from(&field.string_table);
         }
         if field.kind == "union" {
-            field = decide(&field, bytes, schema, selection).ok()??.into_owned();
+            let Some(selected) = decide(&field, bytes, schema, selection)
+                .map_err(|error| format!("decide step {depth}: {error}"))?
+            else {
+                return Ok(None);
+            };
+            field = selected.into_owned();
         } else {
-            return (field.kind == "lstring").then(|| bank.unwrap_or_else(|| "strings".into()));
+            return Ok((field.kind == "lstring").then(|| bank.unwrap_or_else(|| "strings".into())));
         }
     }
-    None
+    Err("localized bank selection exceeds 32 steps".into())
 }
 
 /// Choose a schema alternative using a small named Rust policy, never external tool code.
@@ -2233,6 +2325,7 @@ impl GrammarReplay<'_, '_> {
                         self.schema,
                         field.selection,
                         &decoded.value,
+                        local,
                     );
                 } else {
                     field.occurrence.counts.write(local);
@@ -2276,6 +2369,7 @@ impl GrammarReplay<'_, '_> {
                     self.schema,
                     field.selection,
                     &value,
+                    local,
                 ),
                 value,
                 canonical_bytes,
@@ -2316,6 +2410,7 @@ impl GrammarReplay<'_, '_> {
                 true,
                 &mut PluginDiagnostics::default(),
             )
+            // silent-ok: An unmappable link has no winning type for field selection.
             .ok()?;
             self.context.winning_types?.get(&id).copied()
         };
@@ -2738,8 +2833,14 @@ fn replay_deferred(
             rejections.push((deferred.source_position, signature));
             previous.push((original_counts, DiagnosticCounts::read(&local)));
         } else {
-            field.localized_bank =
-                selected_localized_bank(&deferred.field, bytes, schema, &selection, &field.value);
+            field.localized_bank = selected_localized_bank(
+                &deferred.field,
+                bytes,
+                schema,
+                &selection,
+                &field.value,
+                &mut local,
+            );
             previous.push((original_counts, DiagnosticCounts::read(&local)));
         }
         replay.event_log.merge_from(&local.event_log);
@@ -2811,13 +2912,13 @@ fn set_deferred_history(
     history_index: &HashMap<(u32, u64), usize>,
     record: &DecodedRecord,
     accepted: bool,
-    reason: String,
+    reason: Option<String>,
 ) {
     if let Some(&position) = history_index.get(&(record.load_order, record.source_record_offset))
         && let Some(entry) = result.history.get_mut(position)
     {
         entry.accepted = accepted;
-        entry.reason = Some(reason);
+        entry.reason = reason;
     }
 }
 
@@ -2827,9 +2928,11 @@ fn reject_deferred_candidate(
     history_index: &HashMap<(u32, u64), usize>,
     record: &DecodedRecord,
     order: &LoadOrder,
-    reason: String,
+    failure: impl Into<PlacementFailure>,
 ) {
-    set_deferred_history(result, history_index, record, false, reason.clone());
+    let failure = failure.into();
+    let reason = failure.reason();
+    set_deferred_history(result, history_index, record, false, Some(reason.clone()));
     let diagnostics = result
         .diagnostics
         .entry(order.names[record.load_order as usize].clone())
@@ -2841,17 +2944,621 @@ fn reject_deferred_candidate(
         Some(record.form_id),
         "admission",
     );
-    result
-        .diagnostics
-        .entry(order.names[record.load_order as usize].clone())
-        .or_default()
-        .note("record", || {
-            format!(
-                "{} {:08X}: {reason}",
-                String::from_utf8_lossy(&record.record_type),
-                record.form_id
-            )
+    let category = match failure {
+        PlacementFailure::Invalid(_) => "record",
+        PlacementFailure::RetiredBase(_) => "retired_base",
+    };
+    diagnostics.note(category, || {
+        format!(
+            "{} {:08X}: {reason}",
+            String::from_utf8_lossy(&record.record_type),
+            record.form_id
+        )
+    });
+}
+
+fn placement_base_field<'a>(
+    prepared: &'a PreparedSchemas,
+    kind: &[u8; 4],
+) -> Option<&'a FieldSchema> {
+    prepared.get(kind)?.entries.iter().find_map(|entry| {
+        (entry.field.signature.as_deref() == Some("NAME")).then_some(&entry.field)
+    })
+}
+
+fn target_allowed(id: u32, kind: Option<[u8; 4]>, field: &FieldSchema) -> bool {
+    // Hardcoded IDs (including room markers and the player) can be absent from plugins.
+    kind.map_or(id < 0x800, |kind| {
+        field
+            .targets
+            .iter()
+            .any(|target| target == "*" || target == "ANY_" || target.as_bytes() == kind)
+    })
+}
+
+/// An accepted tombstone may legitimately retire an older placement's required base.
+#[derive(Default)]
+pub(crate) struct DeletedBases(HashMap<u32, (u32, Option<[u8; 4]>)>);
+
+impl DeletedBases {
+    pub(crate) fn record(
+        &mut self,
+        id: u32,
+        priority: u32,
+        kind: [u8; 4],
+        previous: Option<[u8; 4]>,
+    ) {
+        if let Some(previous) = previous {
+            self.0
+                .insert(id, (priority, (previous == kind).then_some(kind)));
+        } else {
+            // A repeated deletion must not move the first deletion to a later layer.
+            self.0.entry(id).or_insert((priority, None));
+        }
+    }
+}
+
+pub(crate) enum PlacementFailure {
+    Invalid(String),
+    RetiredBase(u32),
+}
+
+impl From<String> for PlacementFailure {
+    fn from(reason: String) -> Self {
+        Self::Invalid(reason)
+    }
+}
+
+impl PlacementFailure {
+    pub(crate) fn reason(&self) -> String {
+        match self {
+            Self::Invalid(reason) => reason.clone(),
+            Self::RetiredBase(base) => {
+                format!("required NAME {base:08X} was deleted by a later plugin")
+            }
+        }
+    }
+}
+
+/// Check required placement links and resolve parent ownership against the same catalogue.
+pub(crate) fn validate_placement_targets(
+    prepared: Option<&PreparedSchemas>,
+    kind: &[u8; 4],
+    priority: u32,
+    dependencies: &crate::esm::PlacementDependencies,
+    cycle: Option<&std::collections::HashSet<u32>>,
+    winning_kind: impl Fn(u32) -> Option<[u8; 4]>,
+    deleted: &DeletedBases,
+) -> Result<(), PlacementFailure> {
+    let schemas = match prepared {
+        Some(prepared) => prepared,
+        None => self::prepared(),
+    };
+    let check_targets = |kind: &[u8; 4], [cell, base]: [Option<u32>; 2]| {
+        if let Some(cell) = cell
+            && winning_kind(cell) != Some(*b"CELL")
+        {
+            return Err(format!(
+                "placement parent {cell:08X} is absent or is not CELL"
+            ));
+        }
+        if let Some(base) = base
+            && let Some(field) = placement_base_field(schemas, kind)
+            && {
+                let kind = winning_kind(base);
+                !target_allowed(base, kind, field)
+                    || (kind.is_none() && deleted.0.contains_key(&base))
+            }
+        {
+            return Err(format!(
+                "required NAME {base:08X} is absent or has a disallowed target type"
+            ));
+        }
+        Ok(())
+    };
+    let internal = |id: &u32| cycle.is_some_and(|members| members.contains(id));
+    let own = dependencies.own.map(|link| link.filter(|id| !internal(id)));
+    let parent = crate::esm::validate_placement_parent(kind, dependencies.own[0], || {
+        dependencies
+            .grouped
+            .iter()
+            .filter(|(_, links)| !links.iter().flatten().any(internal))
+            // silent-ok: Only a predecessor with usable targets can establish the parent cell.
+            .find_map(|(kind, links)| check_targets(kind, *links).ok().and(links[0]))
+    });
+    if let Err(reason) = check_targets(kind, own) {
+        // A missing base is a faithful omission only if the placement's parent is
+        // independently usable and an accepted deletion removed a compatible live record.
+        if let Some(base) = own[1]
+            && winning_kind(base).is_none()
+            && let Some(&(deleted_at, Some(previous))) = deleted.0.get(&base)
+            && deleted_at > priority
+            && placement_base_field(schemas, kind)
+                .is_some_and(|field| target_allowed(base, Some(previous), field))
+            && dependencies.own[0].is_none_or(|cell| winning_kind(cell) == Some(*b"CELL"))
+            && parent.is_ok()
+        {
+            return Err(PlacementFailure::RetiredBase(base));
+        }
+        return Err(reason.into());
+    }
+    parent.map_err(Into::into)
+}
+
+fn placement_links(record: &DecodedRecord) -> [Option<u32>; 2] {
+    let base = record
+        .fields
+        .iter()
+        .find(|field| field.signature == *b"NAME")
+        .and_then(|field| match field.value {
+            Value::FormId(id) if id != 0 => Some(id),
+            _ => None,
         });
+    [record.cell_form_id, base]
+}
+
+fn placement_chain_start(chain: &[DecodedRecord]) -> usize {
+    // A non-placement replacement ends the earlier placement's ownership.
+    chain
+        .iter()
+        .rposition(|prior| !crate::esm::is_placed_record_type(&prior.record_type))
+        .map_or(0, |index| index + 1)
+}
+
+fn grouped_predecessors(chain: &[DecodedRecord]) -> impl Iterator<Item = &DecodedRecord> {
+    chain[placement_chain_start(chain)..]
+        .iter()
+        .rev()
+        .filter(|prior| prior.cell_form_id.is_some() && prior.has_placement_transform())
+}
+
+fn validate_live_duplicate(
+    record: &DecodedRecord,
+    previous: Option<&DecodedRecord>,
+    validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+) -> Result<(), String> {
+    super::validate_live_candidate(record, previous, validate)
+        .map_err(|error| format!("unusable runtime candidate: {error}"))?;
+    if super::incomplete_override(record, previous) {
+        return Err(super::INCOMPLETE_OVERRIDE.to_owned());
+    }
+    Ok(())
+}
+
+type GroupedPlacement = ([u8; 4], [Option<u32>; 2]);
+
+struct PlacementClaimant {
+    record: DecodedRecord,
+    grouped: Vec<GroupedPlacement>,
+    previous: Option<DecodedRecord>,
+}
+
+#[derive(Default)]
+pub(super) struct RecoveryCandidates {
+    pub(super) deleted: DeletedBases,
+    pub(super) predecessors: HashMap<u32, Vec<DecodedRecord>>,
+    // A tentative placement owns this queue until it fails or keeps its slot.
+    // Key by physical occurrence so a later plugin can have its own queue.
+    duplicates: BTreeMap<(u32, u64), VecDeque<DecodedRecord>>,
+    // Keep only the placement context needed by queues with possible DOBJ contributions.
+    default_object_claimants: HashMap<(u32, u64), PlacementClaimant>,
+    default_object_layers: BTreeMap<(u32, u64), crate::esm::records::RawRecord>,
+}
+
+impl RecoveryCandidates {
+    fn predecessor_chain(&self, id: u32) -> &[DecodedRecord] {
+        self.predecessors.get(&id).map_or(&[], Vec::as_slice)
+    }
+
+    fn duplicate_queue(&self, record: &DecodedRecord) -> Option<&VecDeque<DecodedRecord>> {
+        self.duplicates
+            .get(&(record.load_order, record.source_record_offset))
+    }
+
+    fn can_recover_nonplacement(
+        &self,
+        rejected: &DecodedRecord,
+        validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+    ) -> bool {
+        let mut earlier = self.predecessor_chain(rejected.form_id);
+        let mut claimant = rejected;
+        loop {
+            for next in self.duplicate_queue(claimant).into_iter().flatten() {
+                if next.flags & 0x20 != 0 {
+                    return false;
+                }
+                if !crate::esm::is_placed_record_type(&next.record_type)
+                    && validate_live_duplicate(next, earlier.last(), validate).is_ok()
+                {
+                    return true;
+                }
+            }
+            let Some((previous, rest)) = earlier.split_last() else {
+                return false;
+            };
+            if !crate::esm::is_placed_record_type(&previous.record_type)
+                && (record_contains_deferred(previous) || validate(previous).is_ok())
+            {
+                return true;
+            }
+            earlier = rest;
+            claimant = previous;
+        }
+    }
+
+    fn has_queued_predecessor(&self, chain: &[DecodedRecord]) -> bool {
+        !self.duplicates.is_empty()
+            && chain[placement_chain_start(chain)..]
+                .iter()
+                .any(|record| self.duplicate_queue(record).is_some())
+    }
+
+    fn placement_dependencies(&self, record: &DecodedRecord) -> crate::esm::PlacementDependencies {
+        let mut dependencies = crate::esm::PlacementDependencies {
+            own: placement_links(record),
+            grouped: Vec::new(),
+        };
+        if record.cell_form_id.is_none() {
+            let chain = self.predecessor_chain(record.form_id);
+            dependencies.grouped = if self.has_queued_predecessor(chain) {
+                chain[placement_chain_start(chain)..]
+                    .iter()
+                    .flat_map(|prior| {
+                        std::iter::once(prior)
+                            .chain(self.duplicate_queue(prior).into_iter().flatten())
+                            .take_while(|record| record.flags & 0x20 == 0)
+                    })
+                    .filter(|record| crate::esm::is_placed_record_type(&record.record_type))
+                    .map(|record| (record.record_type, placement_links(record)))
+                    .collect()
+            } else {
+                grouped_predecessors(chain)
+                    .map(|prior| (prior.record_type, placement_links(prior)))
+                    .collect()
+            };
+        }
+        dependencies
+    }
+
+    fn resolve_grouped_ownership(
+        &self,
+        chain: &[DecodedRecord],
+        catalogue: &PlacementCatalogue<'_>,
+        validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+    ) -> Option<GroupedPlacement> {
+        let mut grouped = None;
+        for (index, primary) in chain.iter().enumerate().skip(placement_chain_start(chain)) {
+            let previous = chain[..index].last();
+            let mut candidates = std::iter::once(primary)
+                .chain(self.duplicate_queue(primary).into_iter().flatten())
+                .enumerate();
+            let admitted = candidates.find_map(|(position, candidate)| {
+                if candidate.flags & 0x20 != 0 {
+                    return Some(std::borrow::Cow::Borrowed(candidate));
+                }
+                if position != 0 && validate_live_duplicate(candidate, previous, validate).is_err()
+                {
+                    return None;
+                }
+                let mut candidate = std::borrow::Cow::Borrowed(candidate);
+                if record_contains_deferred(&candidate) {
+                    catalogue.validate_superseded(
+                        candidate.to_mut(),
+                        previous.is_some(),
+                        grouped.as_slice(),
+                        &self.deleted,
+                        validate,
+                    )
+                } else {
+                    catalogue.validate_superseded_targets(
+                        &candidate,
+                        grouped.as_slice(),
+                        &self.deleted,
+                    )
+                }
+                .ok()?;
+                Some(candidate)
+            });
+            if let Some(candidate) = admitted {
+                if candidate.flags & 0x20 != 0
+                    || !crate::esm::is_placed_record_type(&candidate.record_type)
+                {
+                    grouped = None
+                } else if candidate.cell_form_id.is_some() && candidate.has_placement_transform() {
+                    grouped = Some((candidate.record_type, placement_links(&candidate)));
+                }
+            }
+        }
+        grouped
+    }
+
+    pub(super) fn queue_duplicate(
+        &mut self,
+        claimant: (u32, u64),
+        record: DecodedRecord,
+        winners: &HashMap<u32, DecodedRecord>,
+    ) {
+        if record.record_type == *b"DOBJ" {
+            self.default_object_claimants
+                .entry(claimant)
+                .or_insert_with(|| {
+                    let first = &winners[&record.form_id];
+                    let predecessors = self
+                        .predecessors
+                        .get(&record.form_id)
+                        .map_or(&[][..], Vec::as_slice);
+                    PlacementClaimant {
+                        record: first.clone(),
+                        grouped: grouped_predecessors(predecessors)
+                            .map(|prior| (prior.record_type, placement_links(prior)))
+                            .collect(),
+                        previous: predecessors.last().cloned(),
+                    }
+                });
+        }
+        self.duplicates
+            .entry(claimant)
+            .or_default()
+            .push_back(record);
+    }
+
+    pub(super) fn record_default_object(&mut self, record: &DecodedRecord) {
+        if record.record_type == *b"DOBJ" {
+            self.default_object_layers.insert(
+                (record.load_order, record.source_record_offset),
+                record.to_raw_record(),
+            );
+        }
+    }
+
+    fn merge_default_objects(
+        &mut self,
+        result: &mut ReadResult,
+        history_index: &HashMap<(u32, u64), usize>,
+    ) {
+        // A recovered layer belongs before its superseding records and tombstones.
+        for (key, mut layer) in std::mem::take(&mut self.default_object_layers) {
+            if history_index
+                .get(&key)
+                .is_some_and(|&index| !result.history[index].accepted)
+            {
+                continue;
+            }
+            if layer.is_deleted() {
+                result.default_objects.remove(&layer.form_id);
+            } else {
+                if let Some(previous) = result.default_objects.get(&layer.form_id) {
+                    crate::esm::merge_default_objects(previous, &mut layer);
+                }
+                result.default_objects.insert(layer.form_id, layer);
+            }
+        }
+    }
+
+    fn recover(
+        &mut self,
+        result: &mut ReadResult,
+        history_index: &HashMap<(u32, u64), usize>,
+        order: &LoadOrder,
+        rejected: &DecodedRecord,
+        validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+        require_complete: bool,
+    ) -> Option<DecodedRecord> {
+        let id = rejected.form_id;
+        let mut rejected_key = (rejected.load_order, rejected.source_record_offset);
+        loop {
+            if let Some(mut duplicates) = self.duplicates.remove(&rejected_key) {
+                while let Some(next) = duplicates.pop_front() {
+                    let deleted = next.flags & 0x20 != 0;
+                    if !deleted {
+                        let prior = self.predecessors.get(&id).and_then(|chain| chain.last());
+                        let failure = if require_complete
+                            && next.load_order < rejected.load_order
+                            && !next.payload_complete
+                        {
+                            Some("recovery predecessor has incomplete payload".to_owned())
+                        } else {
+                            validate_live_duplicate(&next, prior, validate).err()
+                        };
+                        if let Some(reason) = failure {
+                            reject_deferred_candidate(result, history_index, &next, order, reason);
+                            continue;
+                        }
+                    }
+                    set_deferred_history(result, history_index, &next, true, None);
+                    if !duplicates.is_empty() {
+                        self.duplicates
+                            .insert((next.load_order, next.source_record_offset), duplicates);
+                    }
+                    self.record_default_object(&next);
+                    if deleted {
+                        let previous = self.predecessors.get(&id).and_then(|chain| chain.last());
+                        self.deleted.record(
+                            id,
+                            next.load_order,
+                            next.record_type,
+                            previous.map(|record| record.record_type),
+                        );
+                        self.predecessors.remove(&id);
+                        return None;
+                    }
+                    return Some(next);
+                }
+            }
+            let previous = self.predecessors.get_mut(&id).and_then(Vec::pop)?;
+            let failure = if require_complete && !previous.payload_complete {
+                Some("recovery predecessor has incomplete payload".to_owned())
+            } else if record_contains_deferred(&previous) {
+                None
+            } else {
+                validate(&previous)
+                    .err()
+                    .map(|error| format!("recovery predecessor unusable: {error}"))
+            };
+            if let Some(reason) = failure {
+                reject_deferred_candidate(result, history_index, &previous, order, reason);
+                rejected_key = (previous.load_order, previous.source_record_offset);
+            } else {
+                return Some(previous);
+            }
+        }
+    }
+
+    fn finish_duplicates(
+        &mut self,
+        result: &mut ReadResult,
+        history_index: &HashMap<(u32, u64), usize>,
+        catalogue: &PlacementCatalogue<'_>,
+        changed_chains: &mut HashMap<u32, Vec<super::RecordSource>>,
+        validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+    ) {
+        let order = catalogue.order;
+        for (key, mut duplicates) in std::mem::take(&mut self.duplicates) {
+            let Some(&position) = history_index.get(&key) else {
+                continue;
+            };
+            let mut source_id = result.history[position].source_form_id;
+            if let Some(mut claimant) = self.default_object_claimants.remove(&key) {
+                let id = claimant.record.form_id;
+                let is_winner = result
+                    .records
+                    .get(&id)
+                    .is_some_and(|winner| (winner.load_order, winner.source_record_offset) == key);
+                // A later winner or tombstone ends fallback for this ID. The first usable
+                // occurrence in the earlier plugin still determines its DOBJ contribution.
+                if !is_winner
+                    && let Err(reason) = catalogue.validate_superseded(
+                        &mut claimant.record,
+                        claimant.previous.is_some(),
+                        &claimant.grouped,
+                        &self.deleted,
+                        validate,
+                    )
+                {
+                    reject_deferred_candidate(
+                        result,
+                        history_index,
+                        &claimant.record,
+                        order,
+                        reason,
+                    );
+                    changed_chains.entry(id).or_default();
+                    while let Some(mut next) = duplicates.pop_front() {
+                        let failure = if next.flags & 0x20 != 0 {
+                            None
+                        } else {
+                            let previous = claimant.previous.as_ref();
+                            validate_live_duplicate(&next, previous, validate)
+                                .map_err(PlacementFailure::Invalid)
+                                .and_then(|()| {
+                                    catalogue.validate_superseded(
+                                        &mut next,
+                                        previous.is_some(),
+                                        &claimant.grouped,
+                                        &self.deleted,
+                                        validate,
+                                    )
+                                })
+                                .err()
+                        };
+                        if let Some(reason) = failure {
+                            reject_deferred_candidate(result, history_index, &next, order, reason);
+                            continue;
+                        }
+                        set_deferred_history(result, history_index, &next, true, None);
+                        self.record_default_object(&next);
+                        source_id = next.source_form_id;
+                        break;
+                    }
+                }
+            }
+            for duplicate in duplicates {
+                let reason =
+                    super::duplicate_reason(duplicate.form_id, source_id, duplicate.source_form_id);
+                reject_deferred_candidate(result, history_index, &duplicate, order, reason);
+            }
+        }
+    }
+}
+
+struct PlacementCatalogue<'a> {
+    order: &'a LoadOrder,
+    schema: &'a Schema,
+    prepared: &'a PreparedSchemas,
+    kinds: &'a HashMap<u32, [u8; 4]>,
+}
+
+impl PlacementCatalogue<'_> {
+    fn validate_superseded(
+        &self,
+        record: &mut DecodedRecord,
+        has_previous: bool,
+        grouped: &[GroupedPlacement],
+        deleted: &DeletedBases,
+        validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+    ) -> Result<(), PlacementFailure> {
+        if record_contains_deferred(record) {
+            let mut source = DeferredSource::take(record);
+            let priority = record.load_order as usize;
+            let context = Context {
+                order: self.order,
+                plugin_index: priority,
+                localized: self.order.metadata[priority].flags & 0x80 != 0,
+                winning_types: Some(self.kinds),
+            };
+            let resolved = replay_deferred(
+                record,
+                &mut source,
+                self.schema,
+                &context,
+                &mut PluginDiagnostics::default(),
+                &mut PluginDiagnostics::default(),
+                self.prepared,
+            )
+            .and_then(|()| validate(record));
+            if let Err(reason) = resolved {
+                if has_previous {
+                    return Err(reason.into());
+                }
+                for signature in source.safe_prefix(record) {
+                    if !record.rejected_fields.contains(&signature) {
+                        record.rejected_fields.push(signature);
+                    }
+                }
+                validate(record)?;
+            }
+        }
+
+        self.validate_superseded_targets(record, grouped, deleted)
+    }
+
+    fn validate_superseded_targets(
+        &self,
+        record: &DecodedRecord,
+        grouped: &[GroupedPlacement],
+        deleted: &DeletedBases,
+    ) -> Result<(), PlacementFailure> {
+        if crate::esm::is_placed_record_type(&record.record_type) {
+            let dependencies = crate::esm::PlacementDependencies {
+                own: placement_links(record),
+                grouped: if record.cell_form_id.is_none() {
+                    grouped.to_vec()
+                } else {
+                    Vec::new()
+                },
+            };
+            validate_placement_targets(
+                Some(self.prepared),
+                &record.record_type,
+                record.load_order,
+                &dependencies,
+                None,
+                |target| self.kinds.get(&target).copied(),
+                deleted,
+            )?;
+        }
+        Ok(())
+    }
 }
 
 /// Finalize tentative winners against a stable catalogue, preserving only selective fallback chains.
@@ -2860,22 +3567,19 @@ pub(crate) fn resolve_deferred(
     schema: &Schema,
     prepared: &PreparedSchemas,
     order: &LoadOrder,
-    predecessors: &mut HashMap<u32, Vec<DecodedRecord>>,
+    recovery: &mut RecoveryCandidates,
     validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
 ) {
     let mut pending = BTreeMap::new();
+    let mut placements = std::collections::BTreeSet::new();
     for (&id, record) in &mut result.records {
         if record_contains_deferred(record) {
             pending.insert(id, DeferredSource::take(record));
         }
+        if crate::esm::is_placed_record_type(&record.record_type) {
+            placements.insert(id);
+        }
     }
-    let affected: Vec<_> = pending.keys().copied().collect();
-    let candidate_count = pending.len()
-        + affected
-            .iter()
-            .filter_map(|id| predecessors.get(id))
-            .map(Vec::len)
-            .sum::<usize>();
     let mut replay_diagnostics = HashMap::new();
     let mut changed_chains: HashMap<u32, Vec<super::RecordSource>> = HashMap::new();
     // Only a fallback replaces a record, so the winning-kind map follows each
@@ -2884,21 +3588,27 @@ pub(crate) fn resolve_deferred(
     // History is complete before resolution and only its entries change here, so
     // one key index serves every acceptance and rejection without rescanning it.
     let mut history_index: HashMap<(u32, u64), usize> = HashMap::new();
-    // A conversion with nothing deferred pays neither pass over its records.
-    if !pending.is_empty() {
+    if !pending.is_empty()
+        || !placements.is_empty()
+        || !recovery.default_object_claimants.is_empty()
+    {
         kinds.extend(
             result
                 .records
                 .iter()
                 .map(|(&id, record)| (id, record.record_type)),
         );
+        #[cfg(test)]
+        if !pending.is_empty() {
+            record_deferred_catalogue_build();
+        }
+    }
+    if !kinds.is_empty() || !recovery.duplicates.is_empty() {
         for (index, entry) in result.history.iter().enumerate() {
             history_index
                 .entry((entry.plugin_index, entry.source_record_offset))
                 .or_insert(index);
         }
-        #[cfg(test)]
-        record_deferred_catalogue_build();
     }
     // Every failure consumes a candidate or finishes its safe prefix. Stable
     // winners visit only their originally deferred leaves once more. A changed
@@ -2906,10 +3616,7 @@ pub(crate) fn resolve_deferred(
     // stable normal fields and siblings are not decoded again. A failed deferred
     // ownership anchor can change a later grammar binding or EDID selector
     // context; only those dependent occurrences require reinterpretation.
-    for _ in 0..=candidate_count {
-        if pending.is_empty() {
-            break;
-        }
+    loop {
         let ids: Vec<_> = pending.keys().copied().collect();
         let mut recovered = false;
         for id in ids {
@@ -2959,36 +3666,13 @@ pub(crate) fn resolve_deferred(
             replay_diagnostics.remove(&id);
             changed_chains.entry(id).or_default();
             let source = pending.remove(&id).expect("selected deferred source");
-            if let Some(mut previous) = predecessors.get_mut(&id).and_then(|chain| chain.pop()) {
+            let replacement = if recovery
+                .predecessors
+                .get(&id)
+                .is_some_and(|chain| !chain.is_empty())
+            {
                 reject_deferred_candidate(result, &history_index, &record, order, reason);
-                loop {
-                    let failure = if !previous.payload_complete {
-                        Some("deferred recovery predecessor has incomplete payload".to_owned())
-                    } else if record_contains_deferred(&previous) {
-                        None
-                    } else {
-                        validate(&previous)
-                            .err()
-                            .map(|error| format!("deferred recovery predecessor unusable: {error}"))
-                    };
-                    if let Some(reason) = failure {
-                        reject_deferred_candidate(result, &history_index, &previous, order, reason);
-                        if let Some(earlier) =
-                            predecessors.get_mut(&id).and_then(|chain| chain.pop())
-                        {
-                            previous = earlier;
-                            continue;
-                        }
-                    } else {
-                        if record_contains_deferred(&previous) {
-                            pending.insert(id, DeferredSource::take(&mut previous));
-                        }
-                        let record_type = previous.record_type;
-                        result.records.insert(id, previous);
-                        kinds.insert(id, record_type);
-                    }
-                    break;
-                }
+                recovery.recover(result, &history_index, order, &record, validate, true)
             } else {
                 let omitted = source.safe_prefix(&mut record);
                 for (position, signature) in omitted.iter().enumerate() {
@@ -3036,15 +3720,24 @@ pub(crate) fn resolve_deferred(
                         order,
                         format!("{reason}; recovered prefix unusable: {error}"),
                     );
+                    recovery.recover(result, &history_index, order, &record, validate, true)
                 } else {
-                    set_deferred_history(result, &history_index, &record, true, reason);
-                    let record_type = record.record_type;
-                    result.records.insert(id, record);
-                    kinds.insert(id, record_type);
+                    set_deferred_history(result, &history_index, &record, true, Some(reason));
+                    Some(record)
                 }
-            }
-            // A record rejected without a successor leaves the winning catalogue.
-            if !result.records.contains_key(&id) {
+            };
+            placements.remove(&id);
+            if let Some(mut replacement) = replacement {
+                if record_contains_deferred(&replacement) {
+                    pending.insert(id, DeferredSource::take(&mut replacement));
+                }
+                let kind = replacement.record_type;
+                if crate::esm::is_placed_record_type(&kind) {
+                    placements.insert(id);
+                }
+                kinds.insert(id, kind);
+                result.records.insert(id, replacement);
+            } else {
                 kinds.remove(&id);
             }
             recovered = true;
@@ -3052,15 +3745,131 @@ pub(crate) fn resolve_deferred(
             // before rejecting any other candidate against the superseded catalogue.
             break;
         }
-        if !recovered {
-            pending.clear();
+        if recovered {
+            continue;
+        }
+
+        // Wait for deferred candidates to settle before checking placement targets.
+        let catalogue = PlacementCatalogue {
+            order,
+            schema,
+            prepared,
+            kinds: &kinds,
+        };
+        let validate_candidate = std::cell::RefCell::new(&mut *validate);
+        let rejected = crate::esm::invalid_placement_candidates(
+            placements.iter().copied(),
+            |id| {
+                !recovery.predecessor_chain(id).is_empty()
+                    || recovery.duplicate_queue(&result.records[&id]).is_some()
+            },
+            |id| {
+                recovery.can_recover_nonplacement(
+                    &result.records[&id],
+                    &mut **validate_candidate.borrow_mut(),
+                )
+            },
+            |id| {
+                placements
+                    .contains(&id)
+                    .then(|| recovery.placement_dependencies(&result.records[&id]))
+            },
+            |id, dependencies, cycle, absent| {
+                let record = &result.records[&id];
+                let chain = recovery.predecessor_chain(id);
+                let resolved;
+                let dependencies =
+                    if record.cell_form_id.is_none() && recovery.has_queued_predecessor(chain) {
+                        let depends_on_cycle = cycle.is_some_and(|members| {
+                            dependencies.grouped.iter().any(|(_, links)| {
+                                links
+                                    .iter()
+                                    .flatten()
+                                    .any(|target| members.contains(target))
+                            })
+                        });
+                        let grouped = if depends_on_cycle {
+                            Vec::new()
+                        } else {
+                            recovery
+                                .resolve_grouped_ownership(
+                                    chain,
+                                    &catalogue,
+                                    &mut **validate_candidate.borrow_mut(),
+                                )
+                                .into_iter()
+                                .collect()
+                        };
+                        resolved = crate::esm::PlacementDependencies {
+                            own: dependencies.own,
+                            grouped,
+                        };
+                        &resolved
+                    } else {
+                        dependencies
+                    };
+                validate_placement_targets(
+                    Some(prepared),
+                    &record.record_type,
+                    record.load_order,
+                    dependencies,
+                    cycle,
+                    |target| {
+                        kinds
+                            .get(&target)
+                            .filter(|_| !absent.contains(&target))
+                            .copied()
+                    },
+                    &recovery.deleted,
+                )
+            },
+        );
+        if rejected.is_empty() {
             break;
         }
+        for (id, reason) in rejected {
+            let Some(record) = result.records.remove(&id) else {
+                continue;
+            };
+            reject_deferred_candidate(result, &history_index, &record, order, reason);
+            replay_diagnostics.remove(&id);
+            pending.remove(&id);
+            changed_chains.entry(id).or_default();
+            let previous =
+                recovery.recover(result, &history_index, order, &record, validate, false);
+            placements.remove(&id);
+            if let Some(mut previous) = previous {
+                let kind = previous.record_type;
+                if crate::esm::is_placed_record_type(&kind) {
+                    placements.insert(id);
+                }
+                let deferred = record_contains_deferred(&previous);
+                if deferred {
+                    pending.insert(id, DeferredSource::take(&mut previous));
+                }
+                kinds.insert(id, kind);
+                result.records.insert(id, previous);
+                if deferred {
+                    break;
+                }
+            } else {
+                kinds.remove(&id);
+            }
+        }
     }
-    debug_assert!(
-        pending.is_empty(),
-        "finite deferred candidate population exhausted"
+    recovery.finish_duplicates(
+        result,
+        &history_index,
+        &PlacementCatalogue {
+            order,
+            schema,
+            prepared,
+            kinds: &kinds,
+        },
+        &mut changed_chains,
+        validate,
     );
+    recovery.merge_default_objects(result, &history_index);
     for (id, (baseline, replay)) in replay_diagnostics {
         if let Some(record) = result.records.get(&id) {
             merge_new_diagnostics(
@@ -3428,13 +4237,7 @@ impl TargetValidation<'_> {
         match decoded {
             Value::FormId(id) if *id != 0 => {
                 self.diagnostics.link(*id);
-                // Hardcoded IDs (including the player) need not have a plugin record.
-                let allowed = self.kinds.get(id).map_or(*id < 0x800, |kind| {
-                    field.targets.iter().any(|target| {
-                        target == "*" || target == "ANY_" || target.as_bytes() == kind
-                    })
-                });
-                if !allowed {
+                if !target_allowed(*id, self.kinds.get(id).copied(), &field) {
                     self.diagnostics.note("link", || {
                         format!(
                             "{} link {:08X} is absent or has a disallowed target type",
@@ -5398,3 +6201,7 @@ mod tests {
         assert!(!record_contains_deferred(record));
     }
 }
+
+#[cfg(test)]
+#[path = "localized_bank_diagnostic_tests.rs"]
+mod localized_bank_diagnostic_tests;

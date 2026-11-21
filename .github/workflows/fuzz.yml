@@ -1,0 +1,92 @@
+name: fuzz
+
+# Byte-level parsers get a long, time-boxed run on a schedule, never on a pull
+# request. A crash leaves an input in the uploaded artifact; turn it into a
+# regression test before fixing the parser.
+on:
+  schedule:
+    # Weekly, Monday 03:17 UTC.
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      seconds_per_target:
+        description: Seconds to fuzz each target
+        default: "300"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    # Cold AddressSanitizer builds of the converter and its C dependencies, then
+    # three targets at five minutes each.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
+      - name: Install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz --version 0.13.2 --locked
+
+      - name: Fuzz each byte-level target
+        working-directory: fuzz
+        env:
+          SECONDS_PER_TARGET: ${{ inputs.seconds_per_target || '300' }}
+        run: |
+          set -euo pipefail
+
+          case "$SECONDS_PER_TARGET" in
+            ''|*[!0-9]*)
+              echo "::error::seconds_per_target must be a whole number of seconds"
+              exit 1
+              ;;
+          esac
+          # libFuzzer reads -max_total_time=0 as "no limit"; refuse it.
+          if [ "$SECONDS_PER_TARGET" -lt 1 ]; then
+            echo "::error::seconds_per_target must be at least 1"
+            exit 1
+          fi
+
+          status=0
+          for target in esm_subrecords record_inflate record_scan; do
+            echo "::group::fuzz $target"
+            corpus="$RUNNER_TEMP/corpus/$target"
+            artifacts="$RUNNER_TEMP/artifacts/$target"
+            mkdir -p "$corpus" "$artifacts"
+            cp "seeds/$target/"*.seed "$corpus/"
+            if ! cargo +nightly fuzz run "$target" "$corpus" -- \
+              -max_total_time="$SECONDS_PER_TARGET" \
+              -rss_limit_mb=2048 \
+              -timeout=10 \
+              -max_len=65536 \
+              -artifact_prefix="$artifacts/"; then
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$status"
+
+      - name: Upload crashes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-${{ github.run_id }}
+          path: ${{ runner.temp }}/artifacts
+          if-no-files-found: ignore
+          retention-days: 90

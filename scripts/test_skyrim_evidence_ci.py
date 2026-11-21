@@ -52,9 +52,11 @@ class EvidenceJobSelectionTests(unittest.TestCase):
                                             GITHUB_SHA=git('rev-parse', 'HEAD'), RUNNER_TEMP=directory,
                                             GITHUB_OUTPUT=str(output)))
                     flags = dict(line.split('=', 1) for line in output.read_text().splitlines())
-                    expected = 'false' if changed == 'docs/unrelated.md' else 'true'
-                    self.assertEqual(flags['check_scripts'], expected)
-                    self.assertEqual(flags['check_rust'], expected)
+                    expected_rust = 'false' if changed == 'docs/unrelated.md' else 'true'
+                    # Markdown under docs/ now feeds the retail-claim gate in the scripts job.
+                    expected_scripts = 'true'
+                    self.assertEqual(flags['check_scripts'], expected_scripts)
+                    self.assertEqual(flags['check_rust'], expected_rust)
 
             git('branch', 'available-base', 'HEAD')
             git('remote', 'add', 'origin', str(repo))

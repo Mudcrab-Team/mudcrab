@@ -462,6 +462,7 @@ pub struct ArchiveExtractor;
 pub type ArchiveSelection = IngestionSelection;
 
 impl IngestionSelection {
+    /// Versioned archive coverage; additive controls do not change these cache identities.
     pub fn recipe(self) -> &'static str {
         match self {
             Self::All => "all-v1",
@@ -470,10 +471,12 @@ impl IngestionSelection {
         }
     }
 
-    fn includes(self, path: &Path) -> bool {
+    /// Apply the extraction policy without changing which input paths it selects.
+    pub(crate) fn includes(self, path: &Path) -> bool {
         selection_includes(self, path)
     }
 
+    /// Accept coverage from current filtered recipes or an all-files inventory.
     fn accepts_recipe(self, recipe: &str) -> bool {
         let proven = match recipe {
             "" | "all-v1" => Self::All,
@@ -600,6 +603,7 @@ impl ArchiveExtractor {
         progress: Option<ExtractionProgressCallback<'_>>,
         stop: Option<StopCheck<'_>>,
         session: &RawIngestionSession,
+        ignored_inputs_by_extension: &mut BTreeMap<String, u64>,
     ) -> Result<ExtractionOutcome> {
         color_eyre::eyre::ensure!(
             options.sync != IngestionSync::None || verify_integrity,
@@ -620,6 +624,7 @@ impl ArchiveExtractor {
             stop,
             None,
             session,
+            ignored_inputs_by_extension,
         )
     }
 
@@ -709,6 +714,7 @@ impl ArchiveExtractor {
             stop,
             None,
             session,
+            &mut BTreeMap::new(),
         )
     }
 
@@ -958,6 +964,7 @@ pub(crate) fn is_animation_input(path: &Path) -> bool {
     lower.starts_with("meshes/") && lower.ends_with(".hkx")
 }
 
+/// Select cached converter inputs; the three optional control paths are extracted separately.
 fn selection_includes(selection: IngestionSelection, path: &Path) -> bool {
     if selection == IngestionSelection::All {
         return true;
@@ -1292,6 +1299,9 @@ pub(crate) fn safe_relative_path(name: &str) -> Result<PathBuf> {
     }
     if safe.as_os_str().is_empty() {
         bail!("archive contains an empty path");
+    }
+    if let Some(key) = crate::controls::input_key(&safe) {
+        return Ok(PathBuf::from(key));
     }
     let extension = safe.extension().and_then(|value| value.to_str());
     let kind = extension.and_then(|extension| {
@@ -2206,6 +2216,28 @@ mod tests {
         assert_eq!(timings.extraction_seconds, 1.5);
         assert_eq!(timings.cache_link_seconds, 0.0);
         assert_eq!(timings.sync_calls, 0);
+    }
+
+    #[test]
+    /// Additive controls leave the established v4 archive coverage and cache keys intact.
+    fn control_files_preserve_filtered_archive_recipes() {
+        for (selection, recipe) in [
+            (IngestionSelection::ConverterInputsV1, "converter-inputs-v4"),
+            (IngestionSelection::RuntimeEnglishV1, "runtime-english-v4"),
+        ] {
+            for name in ["controlmap.txt", "keyboard_english.txt", "gamepad.txt"] {
+                let path = format!("Interface/Controls/PC/{name}");
+                assert!(!selection.includes(Path::new(&path)), "{path}");
+                assert!(
+                    crate::controls::input_key(Path::new(&path)).is_some(),
+                    "{path}"
+                );
+            }
+            assert!(!selection.includes(Path::new("interface/controls/pc/notes.txt")));
+            assert_eq!(selection.recipe(), recipe);
+            assert!(selection.accepts_recipe(recipe));
+            assert!(selection.accepts_recipe("all-v1"));
+        }
     }
 
     #[test]

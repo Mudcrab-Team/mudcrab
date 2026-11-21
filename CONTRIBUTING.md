@@ -123,6 +123,12 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    tests separately. CI also runs `cargo audit` and a release-mode
    performance check; see `.github/workflows/run_tests.yml` for the exact commands.
 
+   Every WGSL file under `crates/engine/src/shaders` and `vendor/` is composed with `naga_oil`
+   and validated by Naga in the `engine` tests (`crates/engine/src/shader_validation.rs`). It
+   needs no GPU and runs with the normal test suite. Add a variant there when a pipeline uses new
+   shader defs; a shader that cannot be composed outside the app goes in its `KNOWN_EXCEPTIONS`
+   with a reason.
+
    CI also counts `.unwrap()`, `.expect(` and `panic!(` in production code (not in `#[cfg(test)]`
    code, and not in `#[test]` functions). It fails when a crate's count is higher in your pull request
    than at its base commit, so it judges only the sites you add and needs no upkeep. Prefer returning an
@@ -132,6 +138,40 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
    `tools/unwrap_ratchet/baseline.json` (it also raises `revision`, so the approval shows in the diff even
    when a number does not change), and explain the reason in the pull request. A baseline that your pull
    request did not change never raises the limit.
+
+   CI also counts silent error drops in the same production code. The counted patterns are a
+   propagated error whose value is dropped (`let _ = ...?;`), a `Result` error turned into `None`
+   (`.ok()`, including `.ok()?`), an error or absence replaced by a default or empty value
+   (`.unwrap_or_default()`, `.unwrap_or("")`, `.unwrap_or_else(|_| String::new())`,
+   `.unwrap_or_else(|_| String::default())`), failed items dropped from an iterator
+   (`filter_map(Result::ok)`), and an error message replaced by an empty string
+   (`map_err(|_| "")`, `map_err(|_| String::new())`, `map_err(|_| String::default())`). It fails
+   when a crate's count is higher than at its base commit, so it judges only the sites you add.
+   To keep an intended drop, put a comment with a reason:
+   `// silent-ok: an absent tag means this record has no tag`. Put it on the line of the site, the
+   line above it, or the line of the `let` that starts a multi-line statement (or the line above
+   that `let`). A marker with no reason is not an exception, and the closing `*/` of a block
+   comment is not a reason. Check locally with
+   `python3 tools/silent_failure_ratchet/silent_failure_ratchet.py --base-root <a worktree of main>`.
+   To accept a justified rise that has no marker, run `--update` (it raises that crate's entry and
+   the file's `revision`) and explain the reason in the pull request. The walk ignores
+   `#[cfg(test)]` code and test files exactly as the unwrap ratchet does.
+
+   Three limits: a bare `let _ = call();` is not counted, because syntax cannot tell a call that
+   returns `Result` from any other call; `.flatten()` is not counted, on `Result<Option<_>>` or on
+   `Option<Option<_>>`; and an error replaced by a non-empty invented value is not counted.
+   Idiomatic `try_into().ok()` on a fixed-size slice and Bevy's `single().ok()` are counted, because
+   `try_into()` can fail on a variable-length slice and `single()` fails when zero or several
+   entities match. Keep such a drop with a marker that gives the reason.
+
+   The byte-level parsers (ESM subrecords and record framing) also have `cargo-fuzz`
+   targets in `fuzz/`. They run on a schedule, not on pull requests.
+   [`docs/contributing/fuzzing.md`](docs/contributing/fuzzing.md) shows how to run one
+   for a fixed time and what to do with a crash.
+
+   The record readers also have a scheduled `cargo-mutants` run that lists tests which pass
+   without testing a change. [`docs/contributing/mutants.md`](docs/contributing/mutants.md)
+   explains the report and how to run one locally.
 5. **Submit a Pull Request:**
    - Target the `main` branch and fill in the PR template; [`docs/contributing/writing-prs.md`](docs/contributing/writing-prs.md) shows how to write it so it is quick to review.
    - Link the issue (`Closes #N`), apply the [labels](docs/contributing/labels.md) that fit (if a label there doesn't exist on the repository yet, use the closest one that does; without triage access, name them in the PR instead), and reference any relevant planning docs in `docs/specs/`.
