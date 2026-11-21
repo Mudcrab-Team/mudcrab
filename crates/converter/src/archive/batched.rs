@@ -852,7 +852,7 @@ fn pack_directory(cache: &Path, source_hash: &str, recipe: &str) -> Result<PathB
     ensure!(
         matches!(
             recipe,
-            "all-v1" | "converter-inputs-v4" | "runtime-english-v4"
+            "all-v1" | "all-v2" | "converter-inputs-v4" | "runtime-english-v4"
         ),
         "unknown ingestion recipe"
     );
@@ -1187,6 +1187,7 @@ pub(crate) fn prune_stale_reader_packs(
             "converter-inputs-v2",
             "runtime-english-v1",
             "converter-inputs-v1",
+            "all-v1",
             ArchiveSelection::All.recipe(),
         ] {
             let recipe_dir = source_dir.join(recipe);
@@ -1275,6 +1276,7 @@ fn restore_pack_inventory(
             selection.recipe(),
             ArchiveSelection::ConverterInputsV1.recipe(),
             ArchiveSelection::All.recipe(),
+            "all-v1",
         ]) {
             if !selection.accepts_recipe(recipe) {
                 continue;
@@ -3095,7 +3097,7 @@ mod tests {
             "sample_entries": sample.len(),
             "sample_decoded_bytes": sample.iter().map(|(_, data)| data.len()).sum::<usize>(),
             "cpu_jobs": options.cpu_jobs, "io_jobs": options.io_jobs,
-            "selection": "all-v1", "checkpoint_markers": false,
+            "selection": ArchiveSelection::All.recipe(), "checkpoint_markers": false,
             "wall_seconds": { "legacy_per_file_sync": legacy_seconds,
                 "durable_batches_cold": batch_seconds, "durable_batches_warm": warm_seconds,
                 "corrupted_blob_restore": repair_seconds },
