@@ -839,8 +839,11 @@ mod tests {
         let mut json = crate::mesh::glb_json_from_bytes(&rigid).unwrap();
         json["extras"] =
             serde_json::json!({"mudcrabRoomSphere":{"version":1,"center":[0,0,0],"radius":2}});
+        let binary = [0; 4096];
+        json["buffers"] = serde_json::json!([{"byteLength": binary.len()}]);
+        assert!(native_sphere_eligible(&json));
         json["animations"] = serde_json::json!([{}]);
-        let glb = glb_with_json(serde_json::to_vec(&json).unwrap(), &[0; 4096]);
+        let glb = glb_with_json(serde_json::to_vec(&json).unwrap(), &binary);
         let mut reader = std::io::Cursor::new(&glb);
         let bounds = read_glb_bounds_from_reader(
             &mut reader,
