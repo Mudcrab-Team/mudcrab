@@ -929,12 +929,17 @@ pub fn load_room_graph(connection: &Connection, cell_id: u32) -> rusqlite::Resul
             }
         }
     }
-    let advertised_assignments = stats_present && connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM room_graph_stats WHERE name='assignment_version' AND value=1)",
-        [], |row| row.get::<_, bool>(0),
-    )?;
-    if advertised_assignments {
-        if graph.supports_unbounded {
+    let assignment_version: Option<i64> = if stats_present {
+        connection.query_row(
+            "SELECT (SELECT value FROM room_graph_stats WHERE name='assignment_version')",
+            [],
+            |row| row.get(0),
+        )?
+    } else {
+        None
+    };
+    if let Some(version) = assignment_version {
+        if version == 1 && graph.supports_unbounded {
             graph.authored =
                 assignment::load(connection, cell_id, &graph.rooms, &mut graph.portals)?;
         }
@@ -1880,6 +1885,20 @@ mod tests {
                 .occluders
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn unsupported_assignment_version_draws_the_full_cell() {
+        let db = authored_database();
+        insert_room(&db, 1, 7, [0.0; 3]);
+        db.execute(
+            "UPDATE room_graph_stats SET value=2 WHERE name='assignment_version'",
+            [],
+        )
+        .unwrap();
+        let graph = load_room_graph(&db, 7).unwrap();
+        assert!(graph.incomplete);
+        assert!(reached_rooms(&graph, Vec3::ZERO, clip_from_local()).is_none());
     }
 
     #[test]

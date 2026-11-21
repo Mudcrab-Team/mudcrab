@@ -327,10 +327,8 @@ fn prepare_model_sources(
                 if path
                     .extension()
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("dds"))
-                    && let Ok(key) =
-                        canonical_asset_path(&path.to_string_lossy(), AssetKind::Texture, "dds")
                 {
-                    textures.insert(key);
+                    textures.insert(path.to_string_lossy().into_owned());
                 }
                 needed(path) && !staged.contains(path)
             },
@@ -711,6 +709,36 @@ mod tests {
         )
         .unwrap();
         path
+    }
+
+    #[test]
+    fn archive_texture_inventory_decodes_each_name_once() {
+        use dummy_content::{Entry, bsa};
+
+        let data = tempfile::tempdir().unwrap();
+        let sources = tempfile::tempdir().unwrap();
+        let archive = data.path().join("Skyrim - Textures.bsa");
+        let models = BTreeSet::from([PathBuf::from("meshes/test.nif")]);
+        let entries = [
+            Entry::new("textures/a%2520b.dds", b"dds"),
+            Entry::new("textures/a%20b.dds", b"dds"),
+        ];
+        for count in 1..=entries.len() {
+            fs::write(
+                &archive,
+                bsa::v105(&entries[..count], bsa::Compression::None).unwrap(),
+            )
+            .unwrap();
+            let (_, _, textures) = super::prepare_model_sources(
+                data.path(),
+                sources.path(),
+                &models,
+                &["Skyrim.esm".into()],
+            )
+            .unwrap();
+            assert!(textures.contains("textures/a%20b.dds"));
+            assert_eq!(textures.contains("textures/a b.dds"), count == 2);
+        }
     }
 
     #[test]
