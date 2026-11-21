@@ -1781,7 +1781,7 @@ fn verify_legacy_prune(
     ensure!(
         hash_file(&target)? == entry.output_hash
             && fs::metadata(&target)?.len() == entry.output_size,
-        "cannot reproduce original pruned GLB checksum: {glb}"
+        "cannot reproduce original pruned GLB checksum: {glb}. Run a normal conversion into a new package, then reuse that package instead"
     );
     let original = fs::read(&target)?;
     let source_document = source.join(glb);

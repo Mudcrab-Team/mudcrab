@@ -2325,6 +2325,26 @@ async fn metadata_rebuild_v87_accepts_old_prune_hashes_only_after_exact_source_r
         let entry = manifest.entries.get_mut(key).unwrap();
         entry.output_hash = hash_file(&candidate).unwrap();
         entry.output_size = fs::metadata(&candidate).unwrap().len();
+        if !corrupt && !with_skeleton && with_vfs {
+            let mut historical = manifest.clone();
+            historical.entries.get_mut(key).unwrap().output_size += 1;
+            historical
+                .save(&source.join("conversion-manifest.json"))
+                .unwrap();
+            let error = rebuild(&data, &source, &output)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("cannot reproduce original pruned GLB checksum"),
+                "{error}"
+            );
+            assert!(
+                error.contains("Run a normal conversion into a new package"),
+                "{error}"
+            );
+            assert!(!output.exists());
+        }
         manifest
             .save(&source.join("conversion-manifest.json"))
             .unwrap();

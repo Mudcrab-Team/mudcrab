@@ -213,6 +213,23 @@ impl DecodedRecord {
         )
     }
 
+    fn valid_override_transform(&self) -> bool {
+        if !self.has_placement_transform() {
+            return false;
+        }
+        if !self.rejected_fields.contains(b"DATA") {
+            return true;
+        }
+        // A rejected prefix can precede the retained tuple. Any DATA after it
+        // makes the override ambiguous, including a field omitted by the decoder.
+        let Some(source) = self.framed_source_subrecords() else {
+            return false;
+        };
+        let mut transforms = source.into_iter().filter(|(tag, _)| tag == b"DATA");
+        transforms.any(|(_, bytes)| crate::esm::valid_placement_transform(std::iter::once(bytes)))
+            && transforms.next().is_none()
+    }
+
     pub(crate) fn framed_source_subrecords(&self) -> Option<Vec<([u8; 4], &[u8])>> {
         decoder::framed_source_subrecords(&self.raw_payload)
     }
@@ -707,7 +724,7 @@ fn validate_live_candidate(
 ) -> std::result::Result<(), String> {
     crate::esm::validate_placement_parent(&record.record_type, record.cell_form_id, || None)?;
     if crate::esm::is_placed_record_type(&record.record_type) && previous.is_some() {
-        if !record.has_placement_transform() {
+        if !record.valid_override_transform() {
             return Err("invalid placement override transform".into());
         }
         record.validate_placement_base()?;
