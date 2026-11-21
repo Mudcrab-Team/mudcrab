@@ -467,7 +467,7 @@ fn index_slots<'a>(
     let index = |slot: &str, position: usize, target: Option<u32>| -> Result<()> {
         if let Some(target) = target.filter(|&target| target != 0) {
             tx.prepare_cached("INSERT INTO reference_authored_targets(reference_id,slot,position,target_id) VALUES(?1,?2,?3,?4)")?
-                .execute(params![id, slot, position as i64, target])?;
+                .execute(params![id, slot, position, target])?;
         }
         Ok(())
     };

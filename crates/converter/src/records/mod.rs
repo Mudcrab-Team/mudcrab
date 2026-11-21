@@ -904,7 +904,7 @@ fn read_plugins_with_prepared(
                     if let Some(entry) = history.borrow_mut().last_mut() {
                         if entry.record_type == *b"REFR" && entry.flags & 0x20 == 0 {
                             let id = entry.form_id.filter(|&id| id != 0);
-                            unreadable_refs.insert(id, (index as u32, offset));
+                            unreadable_refs.insert(id, (plugin_index, offset));
                         }
                         entry.reason = Some(error.clone());
                     }
@@ -923,7 +923,7 @@ fn read_plugins_with_prepared(
                 rejected_cells.extend(source_cell);
             }
             if record.record_type == *b"REFR" && record.flags & 0x20 == 0 {
-                let position = (index as u32, offset);
+                let position = (plugin_index, offset);
                 if !record.payload_complete {
                     let id = history.borrow().last().and_then(|entry| entry.form_id);
                     unreadable_refs.insert(id.filter(|&id| id != 0), position);
