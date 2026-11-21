@@ -4081,10 +4081,13 @@ pub(crate) fn validate_artifacts(
             },
         );
     });
-    match first_failure.into_inner().unwrap() {
-        Some((_, error)) => Err(error),
-        None => Ok(()),
+    if let Some((_, error)) = first_failure.into_inner().unwrap() {
+        return Err(error);
     }
+    // A listed object LOD chunk that is missing or damaged fails the package, as a damaged
+    // terrain chunk does. A pack without object LOD reads nothing here beyond the database table
+    // list.
+    crate::lod::objects::validate_object_lod_package(staging)
 }
 
 /// Checks one generated artifact. `lua` is the compiler for Luau scripts, created on first use so
@@ -4153,6 +4156,17 @@ pub(crate) fn validate_artifact(
                 "KTX2 metadata validation failed for {}",
                 path.display()
             );
+        }
+        // An object LOD chunk is checked in full: its file is small and a damaged one must not pass.
+        Some("glb")
+            if relative.starts_with("lod")
+                && relative
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("objects_")) =>
+        {
+            crate::lod::objects::validate_object_glb(&fs::read(&path)?)
+                .wrap_err_with(|| format!("invalid object LOD chunk {}", path.display()))?;
         }
         Some("glb") => {
             // Only the 12-byte GLB header is checked, so only the header is read.
@@ -5751,6 +5765,9 @@ async fn compile_lod_chunks_inline(
             terrain_sources,
             compiler_version: crate::lod::TERRAIN_COMPILER_VERSION,
             chunk_inputs,
+            object_chunks: 0,
+            objects_compiler_version: 0,
+            object_chunk_inputs: BTreeMap::new(),
         };
         let bytes = serde_json::to_vec_pretty(&manifest)?;
         fs::write(staging.join("lod-manifest.json"), &bytes)?;
@@ -7634,6 +7651,9 @@ mod tests {
                 terrain_sources,
                 compiler_version: crate::lod::TERRAIN_COMPILER_VERSION,
                 chunk_inputs,
+                object_chunks: 0,
+                objects_compiler_version: 0,
+                object_chunk_inputs: BTreeMap::new(),
             };
             Proof {
                 identity,

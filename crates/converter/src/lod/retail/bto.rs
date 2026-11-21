@@ -50,6 +50,9 @@ pub struct ObjectLodSegment {
 pub struct ObjectLodShape {
     /// Index of the block in the file.
     pub block_index: usize,
+    /// `NiAVObject` flags of the shape node, as stored. Retail culls back faces unless `flags & 0x108 != 0`
+    /// (RF-LOD, reviewed research; medium confidence, the live draw state is unverified).
+    pub flags: u32,
     /// Shape translation as stored (not applied to the vertices).
     pub translation: [f32; 3],
     /// Shape rotation as three columns (not applied).
@@ -138,6 +141,7 @@ pub fn read_object_lod(bytes: &[u8], label: &Path) -> Result<ObjectLodFile> {
         );
         shapes.push(ObjectLodShape {
             block_index: 0,
+            flags: base.av.flags.bits(),
             translation: base.av.translation.0.0.to_array(),
             rotation_columns: base.av.rotation.0.0.to_cols_array_2d(),
             scale: base.av.scale.0,
@@ -432,5 +436,18 @@ mod tests {
     #[test]
     fn a_file_that_is_not_a_nif_is_an_error() {
         assert!(read_object_lod(b"not a nif", label()).is_err());
+    }
+
+    #[test]
+    fn the_shape_node_flags_are_read_from_the_node() {
+        let verts = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let mut block = shape_block([0.0; 3], 16.0, &verts, &[[0, 1, 2]], &[(0, 0, 1)], true);
+        let file = |block: &[u8]| {
+            read_object_lod(&nif_bytes(&[(SHAPE, block.to_vec())]), label()).unwrap()
+        };
+        assert_eq!(file(&block).shapes[0].flags, 0);
+        // The flags word follows name, extra data and controller: offset 12.
+        block[12..16].copy_from_slice(&0x108u32.to_le_bytes());
+        assert_eq!(file(&block).shapes[0].flags, 0x108);
     }
 }

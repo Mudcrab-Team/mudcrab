@@ -16,8 +16,14 @@
 //! blocks); this applies the stored transform and subtracts the block origin, so a payload is
 //! correct wherever its chunk is placed.
 //!
-//! Unverified, and therefore conservative: the material is opaque and double-sided (the retail
-//! object LOD shader's alpha handling is not decoded), and triangle winding is kept as stored.
+//! Material, from the reviewed retail research (skyrim_decomp#675, static reading, not match
+//! evidence): the `.bto` carries no alpha property, retail attaches one with alpha test on,
+//! blending off and reference 128, and discards pixels strictly below it. The chunk material is
+//! therefore alpha mask at 128/255 with no blending (high confidence). Retail culls back faces
+//! unless the shape node's flags set mask 0x108, so a shape is single-sided unless
+//! `flags & 0x108 != 0` and then it uses the double-sided material (medium confidence: the live
+//! draw state is unverified). Triangle winding is kept as stored, and the vertex colour stream is
+//! written as stored (whether retail multiplies vertex alpha into the cutout is unverified).
 
 use super::{
     retail::bto::{ObjectLodFile, ObjectLodShape},
@@ -34,6 +40,11 @@ use std::path::Path;
 /// Explicit producer revision of the object chunk compiler. Terrain chunk reuse is unaffected.
 pub const OBJECT_COMPILER_VERSION: u32 = 1;
 
+/// Alpha-test reference of the retail object LOD material: 128 of 255, discard strictly below.
+pub const ALPHA_CUTOFF: f64 = 128.0 / 255.0;
+/// Node flag mask that turns back-face culling off (medium confidence, see the module docs).
+pub const DOUBLE_SIDED_FLAG_MASK: u32 = 0x108;
+
 /// Exterior cells of 4096 Creation units.
 const CELL_SIZE: f64 = 4096.0;
 
@@ -46,6 +57,7 @@ pub struct ObjectChunk {
     pub bounds_max: [f32; 3],
     pub glb: Vec<u8>,
     pub triangles: usize,
+    pub vertices: usize,
 }
 
 /// The south-west cell of the chunk's block: the cell a retail `.bto` file name carries.
@@ -218,6 +230,7 @@ pub fn compile_object_chunk(
         bounds_max: max,
         glb,
         triangles,
+        vertices: streams.positions.len() / 3,
     })
 }
 
@@ -321,7 +334,7 @@ fn emit_object_glb(
                     "COLOR_0": base + 3,
                 },
                 "indices": base + 4,
-                "material": 0,
+                "material": usize::from(shape.flags & DOUBLE_SIDED_FLAG_MASK != 0),
             }],
         }));
     }
@@ -345,13 +358,23 @@ fn emit_object_glb(
         "images": [{ "bufferView": 5, "mimeType": "image/ktx2" }],
         "samplers": [{ "magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071 }],
         "textures": [{ "source": 0, "sampler": 0, "extensions": { "KHR_texture_basisu": { "source": 0 } } }],
-        "materials": [{
-            "name": "lod_objects",
-            "pbrMetallicRoughness": { "baseColorFactor": [1.0, 1.0, 1.0, 1.0], "baseColorTexture": { "index": 0 }, "metallicFactor": 0.0, "roughnessFactor": 1.0 },
-            "doubleSided": true,
-        }],
+        "materials": [
+            object_material("lod_objects", false),
+            object_material("lod_objects_double_sided", true),
+        ],
     });
     assemble_glb(&json, &binary)
+}
+
+/// The retail object LOD material: alpha test at [`ALPHA_CUTOFF`], no blending.
+fn object_material(name: &str, double_sided: bool) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "pbrMetallicRoughness": { "baseColorFactor": [1.0, 1.0, 1.0, 1.0], "baseColorTexture": { "index": 0 }, "metallicFactor": 0.0, "roughnessFactor": 1.0 },
+        "alphaMode": "MASK",
+        "alphaCutoff": ALPHA_CUTOFF,
+        "doubleSided": double_sided,
+    })
 }
 
 fn bounds(positions: &[f32]) -> ([f32; 3], [f32; 3]) {
@@ -389,11 +412,114 @@ pub fn create_object_chunk_tables(connection: &Connection) -> Result<()> {
         .wrap_err("failed to create the object LOD tables")
 }
 
-/// Checks the structure of a written object chunk GLB: the `objects` group exists, every mesh
-/// node under it names a mesh with a position, normal, texture-coordinate and colour stream and
-/// an index stream whose accessors stay inside the buffer, and the single atlas image is present.
+/// Reads a JSON number as `usize`, naming `what` in the error.
+fn json_usize(value: &serde_json::Value, what: &str) -> Result<usize> {
+    value
+        .as_u64()
+        .and_then(|number| usize::try_from(number).ok())
+        .ok_or_else(|| color_eyre::eyre::eyre!("{what} is missing or not a number"))
+}
+
+fn le_u32(bytes: &[u8], offset: usize) -> Result<u32> {
+    let word = offset
+        .checked_add(4)
+        .and_then(|end| bytes.get(offset..end))
+        .ok_or_else(|| color_eyre::eyre::eyre!("GLB is truncated"))?;
+    Ok(u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+}
+
+/// Checks a written object chunk GLB end to end, so a damaged file never passes for a chunk:
+/// the GLB container lengths, every buffer view and accessor range, the vertex formats, finite
+/// vertex data, every triangle index, the single material and the embedded KTX2 atlas (read back
+/// with the texture stage's own inspector). The `objects` group must list exactly the meshes.
 pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
     let document = crate::mesh::glb_json_from_bytes(bytes)?;
+    let json_length = le_u32(bytes, 12)? as usize;
+    ensure!(
+        json_length.is_multiple_of(4),
+        "the GLB JSON chunk is misaligned"
+    );
+    let json_end = 20usize
+        .checked_add(json_length)
+        .ok_or_else(|| color_eyre::eyre::eyre!("GLB JSON range overflow"))?;
+    let binary_length = le_u32(bytes, json_end)? as usize;
+    ensure!(
+        bytes.get(json_end + 4..json_end + 8) == Some(b"BIN\0".as_slice()),
+        "the second GLB chunk is not BIN"
+    );
+    let binary_start = json_end + 8;
+    ensure!(
+        binary_start.checked_add(binary_length) == Some(bytes.len()),
+        "the GLB binary chunk length is inconsistent"
+    );
+    let binary = &bytes[binary_start..];
+
+    let buffers = document["buffers"]
+        .as_array()
+        .filter(|buffers| buffers.len() == 1)
+        .ok_or_else(|| color_eyre::eyre::eyre!("an object chunk uses one embedded buffer"))?;
+    let buffer_length = json_usize(&buffers[0]["byteLength"], "buffer byteLength")?;
+    ensure!(
+        buffer_length > 0 && buffer_length <= binary.len(),
+        "the buffer length is zero or exceeds the BIN chunk"
+    );
+    let mut views = Vec::new();
+    for (index, view) in document["bufferViews"]
+        .as_array()
+        .ok_or_else(|| color_eyre::eyre::eyre!("no bufferViews"))?
+        .iter()
+        .enumerate()
+    {
+        let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let length = json_usize(&view["byteLength"], "bufferView byteLength")?;
+        ensure!(
+            json_usize(&view["buffer"], "bufferView buffer")? == 0
+                && offset
+                    .checked_add(length)
+                    .is_some_and(|end| end <= buffer_length),
+            "bufferView {index} leaves the buffer"
+        );
+        views.push((offset, length));
+    }
+    let accessors = document["accessors"]
+        .as_array()
+        .ok_or_else(|| color_eyre::eyre::eyre!("no accessors"))?;
+    // Per accessor: (start in the BIN chunk, count, component type, components per element).
+    let mut spans = Vec::with_capacity(accessors.len());
+    for (index, accessor) in accessors.iter().enumerate() {
+        let (view_offset, view_length) = *views
+            .get(json_usize(&accessor["bufferView"], "accessor bufferView")?)
+            .ok_or_else(|| color_eyre::eyre::eyre!("accessor {index} has no bufferView"))?;
+        let component_type = json_usize(&accessor["componentType"], "accessor componentType")?;
+        ensure!(
+            matches!(component_type, 5125 | 5126),
+            "accessor {index} has an unsupported component type"
+        );
+        let components = match accessor["type"].as_str() {
+            Some("SCALAR") => 1,
+            Some("VEC2") => 2,
+            Some("VEC3") => 3,
+            Some("VEC4") => 4,
+            _ => color_eyre::eyre::bail!("accessor {index} has an invalid type"),
+        };
+        let count = json_usize(&accessor["count"], "accessor count")?;
+        ensure!(count > 0, "accessor {index} is empty");
+        let offset = accessor["byteOffset"].as_u64().unwrap_or(0) as usize;
+        ensure!(
+            offset.is_multiple_of(4)
+                && count
+                    .checked_mul(components * 4)
+                    .and_then(|length| offset.checked_add(length))
+                    .is_some_and(|end| end <= view_length),
+            "accessor {index} is misaligned or exceeds its bufferView"
+        );
+        spans.push((view_offset + offset, count, component_type, components));
+    }
+    let read_f32 = |start: usize, index: usize| -> f32 {
+        let at = start + index * 4;
+        f32::from_le_bytes([binary[at], binary[at + 1], binary[at + 2], binary[at + 3]])
+    };
+
     let nodes_json = document["nodes"]
         .as_array()
         .ok_or_else(|| color_eyre::eyre::eyre!("no nodes"))?;
@@ -401,16 +527,19 @@ pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
         .iter()
         .find(|node| node["name"] == nodes::objects_group())
         .ok_or_else(|| color_eyre::eyre::eyre!("object chunk has no `objects` group"))?;
-    let children = group["children"].as_array().filter(|c| !c.is_empty());
-    let children =
-        children.ok_or_else(|| color_eyre::eyre::eyre!("the `objects` group is empty"))?;
-    let accessors = document["accessors"]
+    let children = group["children"]
         .as_array()
-        .ok_or_else(|| color_eyre::eyre::eyre!("no accessors"))?;
+        .filter(|children| !children.is_empty())
+        .ok_or_else(|| color_eyre::eyre::eyre!("the `objects` group is empty"))?;
     let meshes = document["meshes"]
         .as_array()
         .ok_or_else(|| color_eyre::eyre::eyre!("no meshes"))?;
-    let buffer_length = document["buffers"][0]["byteLength"].as_u64().unwrap_or(0);
+    ensure!(
+        meshes.len() == children.len(),
+        "the `objects` group lists {} batches for {} meshes",
+        children.len(),
+        meshes.len()
+    );
     for child in children {
         let node = child
             .as_u64()
@@ -426,36 +555,254 @@ pub fn validate_object_glb(bytes: &[u8]) -> Result<()> {
             .as_u64()
             .and_then(|index| meshes.get(index as usize))
             .ok_or_else(|| color_eyre::eyre::eyre!("an object batch has no mesh"))?;
-        let primitive = &mesh["primitives"][0];
-        for attribute in ["POSITION", "NORMAL", "TEXCOORD_0", "COLOR_0"] {
-            ensure!(
-                primitive["attributes"][attribute].is_u64(),
-                "an object batch lacks {attribute}"
-            );
-        }
-        for accessor in primitive["attributes"]
+        let primitives = mesh["primitives"]
+            .as_array()
+            .filter(|primitives| primitives.len() == 1)
+            .ok_or_else(|| color_eyre::eyre::eyre!("an object batch has one primitive"))?;
+        let primitive = &primitives[0];
+        ensure!(
+            primitive["mode"].as_u64().unwrap_or(4) == 4
+                && primitive["material"]
+                    .as_u64()
+                    .is_some_and(|material| material < 2),
+            "an object batch is not a triangle list on an object material"
+        );
+        let attributes = primitive["attributes"]
             .as_object()
-            .into_iter()
-            .flat_map(|attributes| attributes.values())
-            .chain(std::iter::once(&primitive["indices"]))
-        {
-            let accessor = accessor
-                .as_u64()
-                .and_then(|index| accessors.get(index as usize))
-                .ok_or_else(|| color_eyre::eyre::eyre!("an accessor index is out of range"))?;
+            .filter(|attributes| attributes.len() == 4)
+            .ok_or_else(|| color_eyre::eyre::eyre!("an object batch has unexpected attributes"))?;
+        let mut vertex_count = None;
+        for (semantic, components) in [
+            ("POSITION", 3),
+            ("NORMAL", 3),
+            ("TEXCOORD_0", 2),
+            ("COLOR_0", 4),
+        ] {
+            let (start, count, component_type, found) = attributes
+                .get(semantic)
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|index| spans.get(index as usize))
+                .copied()
+                .ok_or_else(|| color_eyre::eyre::eyre!("an object batch lacks {semantic}"))?;
             ensure!(
-                accessor["count"].as_u64().is_some_and(|count| count > 0),
-                "an accessor is empty"
+                component_type == 5126 && found == components,
+                "an object batch has a wrong {semantic} format"
+            );
+            ensure!(
+                *vertex_count.get_or_insert(count) == count,
+                "an object batch has streams of different lengths"
+            );
+            for value in 0..count * components {
+                ensure!(
+                    read_f32(start, value).is_finite(),
+                    "an object batch has a non-finite {semantic} value"
+                );
+            }
+        }
+        let (start, count, component_type, components) = primitive["indices"]
+            .as_u64()
+            .and_then(|index| spans.get(index as usize))
+            .copied()
+            .ok_or_else(|| color_eyre::eyre::eyre!("an object batch has no indices"))?;
+        ensure!(
+            component_type == 5125 && components == 1 && count.is_multiple_of(3),
+            "an object batch has indices that are not whole u32 triangles"
+        );
+        let vertices = vertex_count.unwrap_or(0);
+        for index in 0..count {
+            let at = start + index * 4;
+            let value =
+                u32::from_le_bytes([binary[at], binary[at + 1], binary[at + 2], binary[at + 3]])
+                    as usize;
+            ensure!(
+                value < vertices,
+                "an object batch index {value} exceeds its {vertices} vertices"
             );
         }
     }
+
+    let materials = document["materials"].as_array();
     ensure!(
-        document["images"]
-            .as_array()
-            .is_some_and(|images| images.len() == 1),
-        "an object chunk carries exactly one atlas image"
+        materials.is_some_and(|materials| materials.len() == 2
+            && [("lod_objects", false), ("lod_objects_double_sided", true)]
+                .iter()
+                .zip(materials)
+                .all(|((name, double_sided), material)| {
+                    material["name"] == *name
+                        && material["alphaMode"] == "MASK"
+                        && material["alphaCutoff"].as_f64() == Some(ALPHA_CUTOFF)
+                        && material["doubleSided"] == *double_sided
+                        && material["pbrMetallicRoughness"]["baseColorTexture"]["index"] == 0
+                })),
+        "an object chunk has the two alpha-mask `lod_objects` materials with the atlas as base colour"
     );
-    ensure!(buffer_length > 0, "the object chunk has no binary data");
+    let images = document["images"]
+        .as_array()
+        .filter(|images| images.len() == 1)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!("an object chunk carries exactly one atlas image")
+        })?;
+    ensure!(
+        images[0]["mimeType"] == "image/ktx2",
+        "the atlas image is not KTX2"
+    );
+    let (atlas_offset, atlas_length) = *views
+        .get(json_usize(&images[0]["bufferView"], "image bufferView")?)
+        .ok_or_else(|| color_eyre::eyre::eyre!("the atlas image has no bufferView"))?;
+    let atlas = &binary[atlas_offset..atlas_offset + atlas_length];
+    let metadata = crate::texture::inspect_ktx2(atlas, crate::texture::TextureEncoding::ColorSrgb)
+        .wrap_err("the embedded atlas is not a valid sRGB KTX2")?;
+    ensure!(
+        metadata.layers <= 1 && metadata.faces == 1 && metadata.depth <= 1,
+        "the embedded atlas is not a 2D texture"
+    );
+    Ok(())
+}
+
+/// Identity of the inputs of one object chunk, recorded as `object_chunk_inputs` in
+/// `lod-manifest.json`: the compiler revision, the chunk key and LOD origin, the retail `.bto`
+/// bytes and the retail atlas bytes. Equal inputs and compiler give the same payload.
+pub fn object_chunk_input_hash(
+    key: ChunkKey,
+    origin: LodOrigin,
+    block_sha256: &str,
+    atlas_sha256: &str,
+) -> Result<String> {
+    Ok(crate::cache::hash_bytes(&serde_json::to_vec(
+        &serde_json::json!({
+            "compiler": OBJECT_COMPILER_VERSION,
+            "worldspace": key.worldspace_id,
+            "tier": key.tier.side_cells(),
+            "anchor": [key.anchor.x, key.anchor.y],
+            "origin": [origin.grid_x, origin.grid_y],
+            "block": block_sha256,
+            "atlas": atlas_sha256,
+        }),
+    )?))
+}
+
+/// Checks the object LOD of a pack against what `lod-manifest.json` lists, and fails when a
+/// listed object chunk is missing, damaged or unlisted.
+///
+/// A pack without object LOD (no object rows, no `object_chunks` in the manifest) passes without
+/// reading anything else. Otherwise the manifest count, the row count, the spatial index count and
+/// the input proofs must agree, and every row must name the canonical payload path of its key, a
+/// file that exists, matches its recorded SHA-256 and passes [`validate_object_glb`].
+pub(crate) fn validate_object_lod_package(root: &Path) -> Result<()> {
+    let database_path = root.join("skyrim_world.db");
+    let manifest_path = root.join("lod-manifest.json");
+    let manifest: Option<serde_json::Value> = if manifest_path.is_file() {
+        Some(
+            serde_json::from_slice(&std::fs::read(&manifest_path)?)
+                .wrap_err("lod-manifest.json is not valid JSON")?,
+        )
+    } else {
+        None
+    };
+    let listed = manifest
+        .as_ref()
+        .and_then(|manifest| manifest["object_chunks"].as_u64())
+        .unwrap_or(0);
+    let inputs = manifest
+        .as_ref()
+        .and_then(|manifest| manifest["object_chunk_inputs"].as_object())
+        .cloned()
+        .unwrap_or_default();
+    if !database_path.is_file() {
+        ensure!(
+            listed == 0 && inputs.is_empty(),
+            "lod-manifest.json lists {listed} object chunks but the pack has no skyrim_world.db"
+        );
+        return Ok(());
+    }
+    let connection =
+        Connection::open_with_flags(&database_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .wrap_err("failed to open the world database to check object LOD")?;
+    let has_table: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lod_object_chunks')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_table {
+        ensure!(
+            listed == 0 && inputs.is_empty(),
+            "lod-manifest.json lists {listed} object chunks but the database has no lod_object_chunks table"
+        );
+        return Ok(());
+    }
+    let rows: u64 = connection.query_row("SELECT count(*) FROM lod_object_chunks", [], |row| {
+        row.get(0)
+    })?;
+    if rows == 0 && listed == 0 && inputs.is_empty() {
+        return Ok(());
+    }
+    ensure!(
+        manifest.is_some(),
+        "the database lists {rows} object chunks but lod-manifest.json is missing"
+    );
+    ensure!(
+        listed == rows && inputs.len() as u64 == rows,
+        "object LOD disagrees: lod-manifest.json lists {listed} chunks and {} input proofs, the database has {rows} rows",
+        inputs.len()
+    );
+    ensure!(
+        manifest
+            .as_ref()
+            .and_then(|manifest| manifest["objects_compiler_version"].as_u64())
+            .is_some_and(|version| version > 0),
+        "lod-manifest.json has no objects_compiler_version for its object chunks"
+    );
+    let spatial: u64 = connection
+        .query_row(
+            "SELECT count(*) FROM lod_object_chunks_spatial",
+            [],
+            |row| row.get(0),
+        )
+        .wrap_err("the database has object chunks but no spatial index for them")?;
+    ensure!(
+        spatial == rows,
+        "the object chunk spatial index has {spatial} entries for {rows} chunks"
+    );
+    let mut statement = connection.prepare(
+        "SELECT worldspace_id, tier, anchor_x, anchor_y, payload_path, content_hash          FROM lod_object_chunks ORDER BY worldspace_id, tier, anchor_x, anchor_y",
+    )?;
+    let listed_rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, i32>(1)?,
+                row.get::<_, i32>(2)?,
+                row.get::<_, i32>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (worldspace, tier, anchor_x, anchor_y, path, hash) in listed_rows {
+        let tier = LodTier::from_side_cells(tier)
+            .ok_or_else(|| color_eyre::eyre::eyre!("object chunk row {path} has tier {tier}"))?;
+        let key = ChunkKey::new(
+            worldspace,
+            tier,
+            shared::lod::ChunkAnchor::new(anchor_x, anchor_y),
+        );
+        ensure!(
+            path == object_chunk_payload_path(key),
+            "object chunk row {path} is not the canonical path of its key"
+        );
+        ensure!(
+            inputs.contains_key(&path),
+            "object chunk {path} has no input proof in lod-manifest.json"
+        );
+        let bytes = std::fs::read(root.join(&path))
+            .wrap_err_with(|| format!("listed object chunk {path} is missing or unreadable"))?;
+        ensure!(
+            crate::cache::hash_bytes(&bytes) == hash,
+            "listed object chunk {path} does not match its recorded SHA-256"
+        );
+        validate_object_glb(&bytes)
+            .wrap_err_with(|| format!("listed object chunk {path} is damaged"))?;
+    }
     Ok(())
 }
 
@@ -542,6 +889,25 @@ mod tests {
     use shared::lod::ChunkAnchor;
     use std::collections::BTreeMap;
 
+    /// A valid sRGB KTX2 atlas, encoded once by the texture stage from a tiny generated DDS.
+    fn atlas() -> Vec<u8> {
+        static ATLAS: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+        ATLAS
+            .get_or_init(|| {
+                let dds = dummy_content::dds::generate(
+                    &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 8, 8),
+                    &mut dummy_content::rng::Rng::new(0),
+                )
+                .unwrap();
+                crate::texture::TextureConverter::convert(
+                    &dds,
+                    crate::texture::TextureEncoding::ColorSrgb,
+                )
+                .unwrap()
+            })
+            .clone()
+    }
+
     const ORIGIN: LodOrigin = LodOrigin::new(-96, -96);
     /// Anchor (6, 5) from origin -96 is the block whose south-west cell is (0, -16).
     fn key() -> ChunkKey {
@@ -562,6 +928,7 @@ mod tests {
     fn shape(block_index: usize, extra: [f32; 3]) -> ObjectLodShape {
         ObjectLodShape {
             block_index,
+            flags: 0,
             translation: [0.0 + extra[0], -16.0 * 4096.0 + extra[1], extra[2]],
             rotation_columns: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             scale: 4.0,
@@ -609,8 +976,8 @@ mod tests {
 
     #[test]
     fn a_level_16_block_compiles_to_a_chunk_local_glb() {
-        let chunk =
-            compile_object_chunk(key(), ORIGIN, &block(vec![shape(3, [0.0; 3])]), b"KTX2").unwrap();
+        let chunk = compile_object_chunk(key(), ORIGIN, &block(vec![shape(3, [0.0; 3])]), &atlas())
+            .unwrap();
         validate_object_glb(&chunk.glb).unwrap();
         assert_eq!(chunk.triangles, 1);
         assert_eq!(chunk.cells.len(), 256);
@@ -630,7 +997,7 @@ mod tests {
     #[test]
     fn the_shape_translation_beyond_the_block_origin_is_kept() {
         let moved = shape(1, [4096.0, 8192.0, 100.0]);
-        let chunk = compile_object_chunk(key(), ORIGIN, &block(vec![moved]), b"KTX2").unwrap();
+        let chunk = compile_object_chunk(key(), ORIGIN, &block(vec![moved]), &atlas()).unwrap();
         let positions = floats(&binary(&chunk.glb)[..12]);
         assert_eq!(positions, vec![4096.0, 8192.0, 100.0]);
     }
@@ -641,7 +1008,7 @@ mod tests {
             key(),
             ORIGIN,
             &block(vec![shape(1, [0.0; 3]), shape(5, [4096.0, 0.0, 0.0])]),
-            b"KTX2",
+            &atlas(),
         )
         .unwrap();
         validate_object_glb(&chunk.glb).unwrap();
@@ -662,22 +1029,22 @@ mod tests {
     fn what_this_slice_does_not_understand_is_refused_not_guessed() {
         let good = block(vec![shape(1, [0.0; 3])]);
         let tier8 = ChunkKey::new(60, LodTier::Tier8, ChunkAnchor::new(12, 10));
-        assert!(compile_object_chunk(tier8, ORIGIN, &good, b"KTX2").is_err());
-        assert!(compile_object_chunk(key(), ORIGIN, &block(Vec::new()), b"KTX2").is_err());
+        assert!(compile_object_chunk(tier8, ORIGIN, &good, &atlas()).is_err());
+        assert!(compile_object_chunk(key(), ORIGIN, &block(Vec::new()), &atlas()).is_err());
         assert!(compile_object_chunk(key(), ORIGIN, &good, b"").is_err());
         let mut two_segments = shape(1, [0.0; 3]);
         two_segments.segments.push(two_segments.segments[0]);
-        assert!(compile_object_chunk(key(), ORIGIN, &block(vec![two_segments]), b"KTX2").is_err());
+        assert!(compile_object_chunk(key(), ORIGIN, &block(vec![two_segments]), &atlas()).is_err());
         let mut marked = good.clone();
         marked.large_ref_blocks.push(OpaqueBlock {
             block_index: 0,
             block_type: "BSDistantObjectLargeRefExtraData".into(),
             bytes: vec![1],
         });
-        assert!(compile_object_chunk(key(), ORIGIN, &marked, b"KTX2").is_err());
+        assert!(compile_object_chunk(key(), ORIGIN, &marked, &atlas()).is_err());
         let mut nan = shape(1, [0.0; 3]);
         nan.vertices[0].position[0] = f32::NAN;
-        assert!(compile_object_chunk(key(), ORIGIN, &block(vec![nan]), b"KTX2").is_err());
+        assert!(compile_object_chunk(key(), ORIGIN, &block(vec![nan]), &atlas()).is_err());
     }
 
     #[test]
@@ -699,8 +1066,8 @@ mod tests {
 
     #[test]
     fn publishing_writes_the_file_and_the_rows_and_replaces_on_repeat() {
-        let chunk =
-            compile_object_chunk(key(), ORIGIN, &block(vec![shape(1, [0.0; 3])]), b"KTX2").unwrap();
+        let chunk = compile_object_chunk(key(), ORIGIN, &block(vec![shape(1, [0.0; 3])]), &atlas())
+            .unwrap();
         let connection = Connection::open_in_memory().unwrap();
         let staging = tempfile::tempdir().unwrap();
         for _ in 0..2 {
@@ -747,8 +1114,8 @@ mod tests {
 
     #[test]
     fn a_damaged_payload_fails_validation() {
-        let chunk =
-            compile_object_chunk(key(), ORIGIN, &block(vec![shape(1, [0.0; 3])]), b"KTX2").unwrap();
+        let chunk = compile_object_chunk(key(), ORIGIN, &block(vec![shape(1, [0.0; 3])]), &atlas())
+            .unwrap();
         assert!(validate_object_glb(&chunk.glb[..20]).is_err());
         assert!(validate_object_glb(b"not a glb at all, really").is_err());
         // A terrain-shaped GLB has no `objects` group.
@@ -760,5 +1127,161 @@ mod tests {
             .unwrap();
         renamed[at + 1..at + 8].copy_from_slice(b"terrain");
         assert!(validate_object_glb(&renamed).is_err());
+    }
+
+    fn json_of(glb: &[u8]) -> serde_json::Value {
+        crate::mesh::glb_json_from_bytes(glb).unwrap()
+    }
+
+    #[test]
+    fn the_material_is_an_alpha_cutout_and_culling_follows_the_node_flags() {
+        let mut flagged = shape(2, [0.0; 3]);
+        flagged.flags = 0x108;
+        let mut other = shape(3, [0.0; 3]);
+        other.flags = 0x1; // hidden bit only: no 0x108 bit, so it stays single-sided
+        let chunk = compile_object_chunk(
+            key(),
+            ORIGIN,
+            &block(vec![shape(1, [0.0; 3]), flagged, other]),
+            &atlas(),
+        )
+        .unwrap();
+        validate_object_glb(&chunk.glb).unwrap();
+        let document = json_of(&chunk.glb);
+        let materials = document["materials"].as_array().unwrap();
+        assert_eq!(materials.len(), 2);
+        for material in materials {
+            assert_eq!(material["alphaMode"], "MASK");
+            assert_eq!(material["alphaCutoff"].as_f64(), Some(128.0 / 255.0));
+        }
+        assert_eq!(materials[0]["doubleSided"], false);
+        assert_eq!(materials[1]["doubleSided"], true);
+        let used: Vec<_> = document["meshes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|mesh| mesh["primitives"][0]["material"].as_u64().unwrap())
+            .collect();
+        assert_eq!(used, vec![0, 1, 0]);
+    }
+
+    /// Patches `from` to `to` (same length) in the JSON chunk of a GLB.
+    fn patch(glb: &[u8], from: &str, to: &str) -> Vec<u8> {
+        assert_eq!(from.len(), to.len());
+        let mut out = glb.to_vec();
+        let at = out
+            .windows(from.len())
+            .position(|window| window == from.as_bytes())
+            .unwrap();
+        out[at..at + from.len()].copy_from_slice(to.as_bytes());
+        out
+    }
+
+    #[test]
+    fn every_kind_of_damage_is_refused_with_a_valid_atlas_as_baseline() {
+        let good = compile_object_chunk(key(), ORIGIN, &block(vec![shape(1, [0.0; 3])]), &atlas())
+            .unwrap();
+        validate_object_glb(&good.glb).unwrap();
+        // A stream that points outside its buffer view.
+        assert!(validate_object_glb(&patch(&good.glb, "\"count\":3", "\"count\":9")).is_err());
+        // An atlas that is not a KTX2 file.
+        let fake =
+            compile_object_chunk(key(), ORIGIN, &block(vec![shape(1, [0.0; 3])]), b"KTX2").unwrap();
+        assert!(validate_object_glb(&fake.glb).is_err());
+        // A truncated file (the declared length no longer matches).
+        assert!(validate_object_glb(&good.glb[..good.glb.len() - 4]).is_err());
+        // An index past the vertices: overwrite the first index word.
+        let json_length = u32::from_le_bytes(good.glb[12..16].try_into().unwrap()) as usize;
+        let binary_start = 20 + json_length + 8;
+        let index_at = binary_start + 3 * 12 * 2 + 3 * 8 + 3 * 16; // after P, N, UV, colour
+        let mut bad_index = good.glb.clone();
+        bad_index[index_at..index_at + 4].copy_from_slice(&99u32.to_le_bytes());
+        assert!(validate_object_glb(&bad_index).is_err());
+        // A non-finite vertex.
+        let mut nan = good.glb.clone();
+        nan[binary_start..binary_start + 4].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert!(validate_object_glb(&nan).is_err());
+        // An opaque or blended material is not the retail cutout.
+        for mode in ["OPAQ", "BLEN"] {
+            assert!(
+                validate_object_glb(&patch(&good.glb, "\"MASK\"", &format!("\"{mode}\""))).is_err()
+            );
+        }
+    }
+
+    /// A pack root with a database, `lod-manifest.json` and one published object chunk.
+    fn published_pack(root: &Path) -> (ObjectChunk, String) {
+        let connection = Connection::open(root.join("skyrim_world.db")).unwrap();
+        let chunk = compile_object_chunk(key(), ORIGIN, &block(vec![shape(1, [0.0; 3])]), &atlas())
+            .unwrap();
+        publish_object_chunk(&connection, root, &chunk).unwrap();
+        let path = object_chunk_payload_path(chunk.key);
+        let manifest = serde_json::json!({
+            "object_chunks": 1,
+            "objects_compiler_version": OBJECT_COMPILER_VERSION,
+            "object_chunk_inputs": { path.clone(): "proof" },
+        });
+        std::fs::write(root.join("lod-manifest.json"), manifest.to_string()).unwrap();
+        (chunk, path)
+    }
+
+    #[test]
+    fn the_package_check_fails_a_missing_damaged_or_unlisted_object_chunk() {
+        // A pack without object LOD passes and reads nothing else.
+        let plain = tempfile::tempdir().unwrap();
+        validate_object_lod_package(plain.path()).unwrap();
+
+        let root = tempfile::tempdir().unwrap();
+        let (chunk, path) = published_pack(root.path());
+        validate_object_lod_package(root.path()).unwrap();
+
+        // Damaged: a flipped byte changes the hash.
+        let file = root.path().join(&path);
+        let mut bytes = std::fs::read(&file).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xff;
+        std::fs::write(&file, &bytes).unwrap();
+        assert!(
+            format!(
+                "{:#}",
+                validate_object_lod_package(root.path()).unwrap_err()
+            )
+            .contains("SHA-256")
+        );
+        // Missing.
+        std::fs::remove_file(&file).unwrap();
+        assert!(
+            format!(
+                "{:#}",
+                validate_object_lod_package(root.path()).unwrap_err()
+            )
+            .contains("missing")
+        );
+        // Restored, then a manifest that does not list it.
+        std::fs::write(&file, &chunk.glb).unwrap();
+        validate_object_lod_package(root.path()).unwrap();
+        std::fs::write(root.path().join("lod-manifest.json"), "{}").unwrap();
+        assert!(validate_object_lod_package(root.path()).is_err());
+    }
+
+    #[test]
+    fn the_input_hash_depends_on_every_input() {
+        let base = object_chunk_input_hash(key(), ORIGIN, "a", "b").unwrap();
+        assert_eq!(
+            base,
+            object_chunk_input_hash(key(), ORIGIN, "a", "b").unwrap()
+        );
+        assert_ne!(
+            base,
+            object_chunk_input_hash(key(), ORIGIN, "c", "b").unwrap()
+        );
+        assert_ne!(
+            base,
+            object_chunk_input_hash(key(), ORIGIN, "a", "c").unwrap()
+        );
+        assert_ne!(
+            base,
+            object_chunk_input_hash(key(), LodOrigin::new(-95, -96), "a", "b").unwrap()
+        );
     }
 }
