@@ -7,7 +7,8 @@ use crate::{
         RecordConversion,
         cell_cache::validate_inhouse_land,
         exporter::{
-            export_inhouse_record_archive_to_db, export_inhouse_to_db, validate_inhouse_record,
+            InhouseExportContext, export_inhouse_record_archive_to_db, export_inhouse_to_db,
+            validate_inhouse_record,
         },
         load_order::LoadOrder,
         records::RawRecord,
@@ -1133,7 +1134,7 @@ fn convert_plugins_with_text_sources_report_impl(
                             .is_some_and(|table| table.malformed_ids.contains(id));
                         if malformed
                             && record.record_type == *b"PERK"
-                            && field.signature == *b"EPFD"
+                            && matches!(&field.signature, b"EPFD" | b"EPF2")
                             && let Some(effect_index) = current_perk_effect
                         {
                             malformed_perk_effects.insert(effect_index);
@@ -1196,7 +1197,10 @@ fn convert_plugins_with_text_sources_report_impl(
                 &record.rejected_fields,
                 record.payload_complete,
             );
-            sections.effect_indices.extend(malformed_perk_effects);
+            for canonical_index in malformed_perk_effects {
+                let effect_index = sections.effect_index_for_canonical(canonical_index);
+                sections.effect_indices.insert(effect_index);
+            }
             sections
         })
         .filter(|rejected| !rejected.is_empty());
@@ -1321,10 +1325,12 @@ fn convert_plugins_with_text_sources_report_impl(
             &master,
             &order,
             plugin_paths,
-            &unresolved_fields,
-            &terrain_offsets,
-            &perk_rejections,
-            &decoded,
+            InhouseExportContext {
+                unresolved_fields: &unresolved_fields,
+                terrain_offsets: &terrain_offsets,
+                perk_rejections: &perk_rejections,
+                decoded: &decoded,
+            },
         )?;
     } else {
         export_inhouse_record_archive_to_db(

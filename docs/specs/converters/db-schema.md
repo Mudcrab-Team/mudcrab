@@ -2195,6 +2195,7 @@ CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, 
 | `occluder_unusable_links` | PlaneMarker with a malformed `XORD` or unresolved target leaves its cell incomplete | data loss |
 | `lighting_template_unusable_data` | `LGTM` with missing or unsupported-size `DATA`: DATA lighting columns NULL, other fields retained | data loss |
 | `race_unreadable_authoring` | `RACE` with unreadable animation model slots: no `race_animation_sources` row | data loss |
+| `perk_effect_undecoded` | `PERK` top-level `CTDA` or `PRKE`..`PRKF` effect with unreadable/missing required fields: section omitted | data loss |
 | `emittance_target_absent` | `XEMI` target not in the load order, or deleted: no `emittance` row | fallback |
 | `emittance_light_unusable_data` | `XEMI` target `LIGH` without a usable `DATA`: no `emittance` row | fallback |
 | `emittance_region_no_weather` | `XEMI` target `REGN` whose `RDWT` names no weather: no `emittance` row | fallback |
@@ -2339,16 +2340,20 @@ CREATE INDEX IF NOT EXISTS idx_record_conditions_owner ON record_conditions(owne
 ```
 
 Top-level `PERK` `CTDA` conditions (even on perks with zero effects) and effects (`PRKE`..`PRKF`)
-whose `PRKE`, effect `DATA`, `EPFT`, `EPF3`, `EPFD`, or `CTDA` payload cannot be decoded (or whose
-required numeric/link/text `EPFD` parameter is missing/rejected) are counted in
-`projection_omission_stats` under `perk_effect_undecoded` (`severity = 'data_loss'`) with bounded
-FormID samples in `projection_omission_samples`. On `record_conditions`, unresolved or wrong-type
-`form_id`-typed `param1`/`param2` words are cleared to `0` (`param*_form_id = NULL`).
+whose `PRKE`, effect `DATA`, `EPFT`, `EPF2`, `EPF3`, `EPFD`, `PRKF`, or `CTDA` payload cannot be
+decoded (including missing or non-empty `PRKF`, or missing/rejected required numeric/link/text
+`EPFD` parameters) are counted in `projection_omission_stats` under `perk_effect_undecoded`
+(`severity = 'data_loss'`) with bounded FormID samples in `projection_omission_samples`. Genuine
+absent `EPFD` on `EPFT = 5` (`select_spell`) and label/flag-backed `EPFT = 4`
+(`add_activate_choice`) stay nullable (`target_form_id = NULL`) without an omission. On
+`record_conditions`, unresolved or wrong-type `form_id`-typed `param1`/`param2` words are warned
+and cleared to `0` (`param*_form_id = NULL`).
 
 For `parameter_type = 2` (`actor_value_multiplier` on entry-point functions `5`, `12`, `13`, `14`),
-retail Skyrim SE stores an IEEE-754 `f32` bit-pattern in the first four bytes of `EPFD` while
-`crates/converter/src/records/families/perks.json` types `actor_value` as `u32`; `perk_entry_points.actor_value`
-preserves that decoded `u32` verbatim.
+retail Skyrim SE stores an IEEE-754 `f32` in the first four bytes of `EPFD` (e.g., `145.0f32` for
+actor value `145`); `perk_entry_points.actor_value` decodes that `f32` and rounds it to the
+semantic integer actor-value ID (matching xEdit's `wbEPFDActorValueToStr`), while typed record
+output in `crates/converter/src/records/families/perks.json` continues to retain raw `u32` bits.
 
 ## Optional terrain default metadata
 

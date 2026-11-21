@@ -652,10 +652,21 @@ pub(crate) fn decode_with_prepared(
     context: &Context<'_>,
     diagnostics: &mut PluginDiagnostics,
 ) -> Result<DecodedRecord, String> {
-    decode_with_identity(scanned, schema, prepared, context, diagnostics, &mut |_| {})
+    decode_with_identity(
+        scanned,
+        schema,
+        prepared,
+        context,
+        diagnostics,
+        &mut |_| {},
+        &|_| true,
+    )
 }
 
 /// Observe only a successfully decoded GMST EDID, even if a later field rejects the record.
+/// `has_prior_winner` lets first-definition `PERK` records recover valid sibling effects when an
+/// individual `PRKE`/`DATA` effect block is unreadable, while broken overrides still fall back to
+/// their earlier winner.
 pub(crate) fn decode_with_identity(
     scanned: ScannedRecord,
     schema: &Schema,
@@ -663,9 +674,17 @@ pub(crate) fn decode_with_identity(
     context: &Context<'_>,
     diagnostics: &mut PluginDiagnostics,
     identity: &mut impl FnMut(&str),
+    has_prior_winner: &dyn Fn(u32) -> bool,
 ) -> Result<DecodedRecord, String> {
-    let decoded =
-        decode_with_identity_inner(scanned, schema, prepared, context, diagnostics, identity);
+    let decoded = decode_with_identity_inner(
+        scanned,
+        schema,
+        prepared,
+        context,
+        diagnostics,
+        identity,
+        has_prior_winner,
+    );
     diagnostics.deferred_contexts.clear();
     diagnostics.deferred_link_events = None;
     decoded
@@ -679,6 +698,7 @@ fn decode_with_identity_inner(
     context: &Context<'_>,
     diagnostics: &mut PluginDiagnostics,
     identity: &mut impl FnMut(&str),
+    has_prior_winner: &dyn Fn(u32) -> bool,
 ) -> Result<DecodedRecord, String> {
     let initial_counts = DiagnosticCounts::read(diagnostics);
     diagnostics.deferred_contexts.clear();
@@ -786,6 +806,8 @@ fn decode_with_identity_inner(
     let mut rejected_condition_strings = false;
     // Response members must not move beneath an earlier surviving TRDT.
     let mut rejected_info_response: Option<(usize, usize)> = None;
+    // First-definition PERK effect members must not attach to an earlier surviving PRKE.
+    let mut rejected_perk_effect: Option<(usize, usize)> = None;
     // Weights belong to their physical layer anchor, including an anchor that was rejected.
     let mut rejected_land_layer: Option<(usize, usize)> = None;
     diagnostics.set_field("payload_framing".into());
@@ -1129,6 +1151,23 @@ fn decode_with_identity_inner(
             // A new response anchor or matched field outside this group ends it.
             rejected_info_response = None;
         }
+        if let Some((start, end)) = rejected_perk_effect {
+            if index > start && index < end {
+                if !rejected_fields.contains(&signature) {
+                    rejected_fields.push(signature);
+                }
+                diagnostics.note("field", || {
+                    format!(
+                        "{} {id:08X} {}: member belongs to rejected PERK effect",
+                        String::from_utf8_lossy(&scanned.record_type),
+                        String::from_utf8_lossy(&signature)
+                    )
+                });
+                continue;
+            }
+            // A new PRKE anchor or matched field outside this effect group ends it.
+            rejected_perk_effect = None;
+        }
         if capture_ownership {
             source_interpreted[position] = true;
         }
@@ -1198,7 +1237,26 @@ fn decode_with_identity_inner(
                         .find(|range| range.start == index)
                         .map(|range| (range.start, range.end));
                 }
-                if field_schema.reject_record_on_error && scanned.flags & 0x20 == 0 {
+                let recover_first_def_perk_effect = scanned.record_type == *b"PERK"
+                    && matches!(field_schema.name.as_str(), "effect_header" | "effect_data")
+                    && !has_prior_winner(id);
+                if recover_first_def_perk_effect {
+                    rejected_perk_effect = record_schema.entries[index]
+                        .repeat_ranges
+                        .iter()
+                        .find(|range| {
+                            record_schema.entries[range.start]
+                                .field
+                                .signature
+                                .as_deref()
+                                == Some("PRKE")
+                        })
+                        .map(|range| (range.start, range.end));
+                }
+                if field_schema.reject_record_on_error
+                    && scanned.flags & 0x20 == 0
+                    && !recover_first_def_perk_effect
+                {
                     return Err(format!(
                         "{} {id:08X} mandatory {}: {error}",
                         String::from_utf8_lossy(&scanned.record_type),

@@ -273,7 +273,7 @@ fn build_fixture(root: &Path) -> Vec<std::path::PathBuf> {
     // Also a condition referencing TargetMaster's global (local 0x01000A00 -> slot 2 0x02000A00).
     let mut loc_cond = sub(b"PRKE", &[2, 2, 1]);
     loc_cond.extend(sub(b"DATA", &[0, 3, 1]));
-    loc_cond.extend(sub(b"PRKC", &[-1i8 as u8]));
+    loc_cond.extend(sub(b"PRKC", &(-1i8).to_le_bytes()));
     loc_cond.extend(sub(
         b"CTDA",
         &cond::condition(4, 0x0100_0A00, 53, 0x14, 0, 2, 0x14),
@@ -410,8 +410,8 @@ fn both_readers_publish_identical_perk_entry_points_and_conditions() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(av, i64::from(24.0f32.to_bits()));
-    assert_eq!(av_mult, 1.5);
+    assert_eq!(av, 24);
+    assert_eq!(av_mult.to_bits(), 1.5f64.to_bits());
 
     let cp1252_epfd_text: String = inhouse
         .query_row(
@@ -1019,6 +1019,7 @@ fn truncated_trailing_prke_records_omission_without_surviving_effect_block() {
         &canonical,
         &canonical,
         Some(&sections),
+        false,
         &mut omissions,
     )
     .unwrap();
@@ -1163,4 +1164,400 @@ fn subset_export_skips_perk_projection_when_optional_perk_tables_are_absent() {
         )
         .unwrap();
     assert_eq!(canonical_count, 1);
+}
+
+#[test]
+fn select_spell_without_epfd_and_float_actor_value_ids_publish_cleanly_on_both_readers() {
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut skyrim = esm::plugin(&esm::Plugin {
+            author: layout::GENERATED_AUTHOR,
+            worldspace: layout::GENERATED_WORLDSPACE,
+            cells: &[esm::PRESET_EXTERIOR_CELL],
+            model_path: layout::GENERATED_MODEL_PATH,
+            diffuse: layout::GENERATED_DIFFUSE_PATH,
+            normal_texture: layout::GENERATED_NORMAL_PATH,
+        })
+        .unwrap();
+        skyrim.extend(perks::targets());
+        // Retail Gray Cowl shape (PERK 0x810 effect 0): DATA 45 0A 01, EPFT 05, empty PRKF, no EPFD.
+        let mut perk = perks::prefix(12);
+        perk.extend(sub(b"PRKE", &[2, 0, 0]));
+        perk.extend(sub(b"DATA", &[0x45, 0x0A, 0x01]));
+        perk.extend(sub(b"EPFT", &[5]));
+        perk.extend(sub(b"PRKF", &[]));
+        // Retail actor_value_multiplier (fn=12, AV 145.0f32 -> 145, mult 0.25).
+        perk.extend(perks::entry_effect(
+            66,
+            12,
+            2,
+            Some(&[145.0f32.to_le_bytes(), 0.25f32.to_le_bytes()].concat()),
+            None,
+        ));
+        // Invalid negative float AV (-1.0f32) must still produce perk_effect_undecoded.
+        perk.extend(perks::entry_effect(
+            66,
+            12,
+            2,
+            Some(&[(-1.0f32).to_le_bytes(), 0.5f32.to_le_bytes()].concat()),
+            None,
+        ));
+        // Malformed 2-byte EPFD under EPFT=5 must stay distinct from genuinely absent EPFD.
+        perk.extend(perks::entry_effect(0x45, 0x0A, 5, Some(&[1, 2]), None));
+        skyrim.extend(top(
+            b"PERK",
+            &record_with_flags(b"PERK", perks::FIRST_ID, 0, &perk),
+        ));
+        let skyrim_path = dir.path().join("Skyrim.esm");
+        fs::write(&skyrim_path, skyrim).unwrap();
+        let db = dir.path().join("skyrim_world.db");
+
+        EsmParser::convert_plugins_with_reader(&[skyrim_path], &db, reader, dir.path()).unwrap();
+        let conn = Connection::open(db).unwrap();
+
+        type EntryPointCheck = (i64, i64, i64, Option<i64>, Option<u32>, Option<f64>);
+        let rows: Vec<EntryPointCheck> = conn
+            .prepare(
+                "SELECT effect_index, entry_point, function, actor_value, target_form_id, value_float_1
+                 FROM perk_entry_points WHERE perk_id = ?1 ORDER BY effect_index",
+            )
+            .unwrap()
+            .query_map([perks::FIRST_ID], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (0, 0x45, 0x0A, None, None, None),
+                (1, 66, 12, Some(145), None, Some(0.25)),
+            ],
+            "{reader:?}"
+        );
+        let omissions = ProjectionOmissions::read(&conn).unwrap();
+        assert_eq!(
+            omissions.categories[OmissionCategory::PerkEffectUndecoded.name()].count,
+            2,
+            "{reader:?}: {omissions:?}"
+        );
+    }
+}
+
+#[test]
+fn first_definition_bad_prke_or_effect_data_keeps_intact_sibling_on_both_readers() {
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut skyrim = esm::plugin(&esm::Plugin {
+            author: layout::GENERATED_AUTHOR,
+            worldspace: layout::GENERATED_WORLDSPACE,
+            cells: &[esm::PRESET_EXTERIOR_CELL],
+            model_path: layout::GENERATED_MODEL_PATH,
+            diffuse: layout::GENERATED_DIFFUSE_PATH,
+            normal_texture: layout::GENERATED_NORMAL_PATH,
+        })
+        .unwrap();
+        skyrim.extend(perks::targets());
+        // First-definition PERK A: short 2-byte PRKE in effect 0 + intact entry point in effect 1.
+        let mut short_prke = perks::prefix(10);
+        short_prke.extend(sub(b"PRKE", &[2, 0]));
+        short_prke.extend(sub(b"DATA", &[0, 3, 0]));
+        short_prke.extend(sub(b"EPFT", &[1]));
+        short_prke.extend(sub(b"EPFD", &1.5f32.to_le_bytes()));
+        short_prke.extend(sub(b"PRKF", &[]));
+        short_prke.extend(perks::entry_effect(
+            0,
+            3,
+            1,
+            Some(&2.5f32.to_le_bytes()),
+            None,
+        ));
+        // First-definition PERK B: short 7-byte quest effect DATA in effect 0 + intact ability in effect 1.
+        let mut short_data = perks::prefix(20);
+        short_data.extend(sub(b"PRKE", &[0, 0, 0]));
+        short_data.extend(sub(b"DATA", &[0xA7; 7]));
+        short_data.extend(sub(b"PRKF", &[]));
+        short_data.extend(perks::ability_effect(perks::SPELL_ID));
+        skyrim.extend(top(
+            b"PERK",
+            &[
+                record_with_flags(b"PERK", perks::FIRST_ID, 0, &short_prke),
+                record_with_flags(b"PERK", perks::FIRST_ID + 1, 0, &short_data),
+            ]
+            .concat(),
+        ));
+        let skyrim_path = dir.path().join("Skyrim.esm");
+        fs::write(&skyrim_path, skyrim).unwrap();
+        let db = dir.path().join("skyrim_world.db");
+
+        EsmParser::convert_plugins_with_reader(&[skyrim_path], &db, reader, dir.path()).unwrap();
+        let conn = Connection::open(db).unwrap();
+
+        let survived_a: Vec<(i64, f64)> = conn
+            .prepare(
+                "SELECT effect_index, value_float_1 FROM perk_entry_points
+                 WHERE perk_id = ?1 ORDER BY effect_index",
+            )
+            .unwrap()
+            .query_map([perks::FIRST_ID], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(survived_a, vec![(1, 2.5)], "{reader:?}");
+
+        let survived_b: Vec<(i64, Option<u32>)> = conn
+            .prepare(
+                "SELECT effect_index, ability_spell_id FROM perk_effects
+                 WHERE perk_id = ?1 ORDER BY effect_index",
+            )
+            .unwrap()
+            .query_map([perks::FIRST_ID + 1], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(survived_b, vec![(1, Some(perks::SPELL_ID))], "{reader:?}");
+
+        let omissions = ProjectionOmissions::read(&conn).unwrap();
+        assert_eq!(
+            omissions.categories[OmissionCategory::PerkEffectUndecoded.name()].count,
+            2,
+            "{reader:?}: {omissions:?}"
+        );
+    }
+}
+
+#[test]
+fn missing_prkf_and_malformed_localized_epf2_omit_only_broken_effect_on_both_readers() {
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut perk = sub(b"EDID", &perks::text("MissingPrkfAndBadEpf2"));
+        perk.extend(sub(b"FULL", &101u32.to_le_bytes()));
+        perk.extend(sub(b"DESC", &202u32.to_le_bytes()));
+        perk.extend(sub(b"DATA", &[0, 10, 1, 1, 0]));
+        // Effect 0: missing PRKF completely -> omitted on both readers.
+        perk.extend(sub(b"PRKE", &[2, 0, 0]));
+        perk.extend(sub(b"DATA", &[0, 3, 0]));
+        perk.extend(sub(b"EPFT", &[1]));
+        perk.extend(sub(b"EPFD", &1.75f32.to_le_bytes()));
+        // Effect 1: wrong-width 2-byte localized EPF2 -> omitted on both readers.
+        perk.extend(perks::entry_effect(
+            14,
+            9,
+            4,
+            Some(&0u32.to_le_bytes()),
+            Some(&[1, 2]),
+        ));
+        // Effect 2: 4-byte localized EPF2 pointing at malformed bank entry 555 -> omitted on both readers.
+        perk.extend(perks::entry_effect(
+            14,
+            9,
+            4,
+            Some(&0u32.to_le_bytes()),
+            Some(&555u32.to_le_bytes()),
+        ));
+        // Effect 3: valid entry point -> survives cleanly.
+        perk.extend(perks::entry_effect(
+            0,
+            3,
+            1,
+            Some(&3.25f32.to_le_bytes()),
+            None,
+        ));
+        let skyrim = [
+            header(0x80, &[]),
+            top(
+                b"PERK",
+                &record_with_flags(b"PERK", perks::FIRST_ID, 0, &perk),
+            ),
+        ]
+        .concat();
+
+        let mut dir_bytes = Vec::new();
+        let mut blob: Vec<u8> = Vec::new();
+        dir_bytes.extend(101u32.to_le_bytes());
+        dir_bytes.extend(0u32.to_le_bytes());
+        blob.extend_from_slice(b"Perk Name\0");
+        dir_bytes.extend(555u32.to_le_bytes());
+        dir_bytes.extend(u32::try_from(blob.len()).unwrap().to_le_bytes());
+        blob.extend_from_slice(b"UnterminatedLabel");
+        let mut strings_bytes = Vec::new();
+        strings_bytes.extend(2u32.to_le_bytes());
+        strings_bytes.extend(u32::try_from(blob.len()).unwrap().to_le_bytes());
+        strings_bytes.extend(dir_bytes);
+        strings_bytes.extend(blob);
+        let strings_path = dir.path().join("Strings/Skyrim_English.STRINGS");
+        fs::create_dir_all(strings_path.parent().unwrap()).unwrap();
+        fs::write(&strings_path, strings_bytes).unwrap();
+        write_string_table(
+            &dir.path().join("Strings/Skyrim_English.DLSTRINGS"),
+            &[(202, "Perk Description")],
+            true,
+        );
+        let skyrim_path = dir.path().join("Skyrim.esm");
+        fs::write(&skyrim_path, skyrim).unwrap();
+        let db = dir.path().join("skyrim_world.db");
+
+        EsmParser::convert_plugins_with_reader(&[skyrim_path], &db, reader, dir.path()).unwrap();
+        let conn = Connection::open(db).unwrap();
+
+        let surviving: Vec<(i64, Option<f64>)> = conn
+            .prepare(
+                "SELECT effect_index, value_float_1 FROM perk_entry_points
+                 WHERE perk_id = ?1 ORDER BY effect_index",
+            )
+            .unwrap()
+            .query_map([perks::FIRST_ID], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(surviving, vec![(3, Some(3.25))], "{reader:?}");
+
+        let omissions = ProjectionOmissions::read(&conn).unwrap();
+        assert_eq!(
+            omissions.categories[OmissionCategory::PerkEffectUndecoded.name()].count,
+            3,
+            "{reader:?}: {omissions:?}"
+        );
+    }
+}
+
+#[test]
+fn subset_export_retains_existing_sqlite_next_perk_target() {
+    let conn = Connection::open_in_memory().unwrap();
+    super::exporter::create_tables(&conn).unwrap();
+    let perk_b_id = perks::FIRST_ID + 1;
+    let perk_b = super::records::RawRecord {
+        form_id: perk_b_id,
+        record_type: *b"PERK",
+        flags: 0,
+        subrecords: vec![
+            (b"EDID".to_vec(), perks::text("TargetPerkB")),
+            (b"DATA".to_vec(), vec![0, 20, 1, 1, 0]),
+        ],
+        cell_form_id: None,
+        worldspace_form_id: None,
+        load_order: 0,
+    };
+    let perk_a = super::records::RawRecord {
+        form_id: perks::FIRST_ID,
+        record_type: *b"PERK",
+        flags: 0,
+        subrecords: vec![
+            (b"EDID".to_vec(), perks::text("SourcePerkA")),
+            (b"DATA".to_vec(), vec![0, 10, 1, 1, 0]),
+            (b"NNAM".to_vec(), perk_b_id.to_le_bytes().to_vec()),
+        ],
+        cell_form_id: None,
+        worldspace_form_id: None,
+        load_order: 0,
+    };
+    // Initial export writes both A -> B.
+    let both =
+        std::collections::HashMap::from([(perk_a.form_id, perk_a.clone()), (perk_b_id, perk_b)]);
+    super::exporter::export_to_db(&conn, &both).unwrap();
+    // Re-exporting only A must keep next_perk_id = Some(B) because B exists in SQLite `perks`.
+    let only_a = std::collections::HashMap::from([(perk_a.form_id, perk_a.clone())]);
+    super::exporter::export_to_db(&conn, &only_a).unwrap();
+    let next_id: Option<u32> = conn
+        .query_row(
+            "SELECT next_perk_id FROM perks WHERE id = ?1",
+            [perks::FIRST_ID],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(next_id, Some(perk_b_id));
+
+    // Deleting B in a subset alongside A must clear A's next_perk_id to NULL.
+    let deleted_b = super::records::RawRecord {
+        form_id: perk_b_id,
+        record_type: *b"PERK",
+        flags: 0x20,
+        subrecords: Vec::new(),
+        cell_form_id: None,
+        worldspace_form_id: None,
+        load_order: 0,
+    };
+    let with_deleted_b =
+        std::collections::HashMap::from([(perk_a.form_id, perk_a), (perk_b_id, deleted_b)]);
+    super::exporter::export_to_db(&conn, &with_deleted_b).unwrap();
+    let cleared: Option<u32> = conn
+        .query_row(
+            "SELECT next_perk_id FROM perks WHERE id = ?1",
+            [perks::FIRST_ID],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(cleared, None);
+}
+
+#[test]
+fn wrong_type_condition_target_warns_and_clears_on_both_readers() {
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut skyrim = esm::plugin(&esm::Plugin {
+            author: layout::GENERATED_AUTHOR,
+            worldspace: layout::GENERATED_WORLDSPACE,
+            cells: &[esm::PRESET_EXTERIOR_CELL],
+            model_path: layout::GENERATED_MODEL_PATH,
+            diffuse: layout::GENERATED_DIFFUSE_PATH,
+            normal_texture: layout::GENERATED_NORMAL_PATH,
+        })
+        .unwrap();
+        skyrim.extend(perks::targets());
+        let mut perk = perks::prefix(10);
+        // HasKeyword (560) pointing at a SPEL instead of a KYWD.
+        perk.extend(sub(
+            b"CTDA",
+            &cond::condition(0, 1.0f32.to_bits(), 560, perks::SPELL_ID, 0, 0, 0),
+        ));
+        skyrim.extend(top(
+            b"PERK",
+            &record_with_flags(b"PERK", perks::FIRST_ID, 0, &perk),
+        ));
+        let skyrim_path = dir.path().join("Skyrim.esm");
+        fs::write(&skyrim_path, skyrim).unwrap();
+        let db = dir.path().join("skyrim_world.db");
+
+        let conversion = EsmParser::convert_plugins_with_reader_and_schemas(
+            &[skyrim_path],
+            &db,
+            reader,
+            dir.path(),
+            "english",
+            None,
+        )
+        .unwrap();
+        assert!(
+            conversion
+                .warnings
+                .iter()
+                .chain(&conversion.notices)
+                .any(|diagnostic| {
+                    diagnostic.contains("CTDA")
+                        || diagnostic.contains("disallowed target")
+                        || diagnostic.contains(&format!("{:08X}", perks::SPELL_ID))
+                }),
+            "{reader:?}: expected diagnostic for wrong-type CTDA target, got warnings={:?} notices={:?}",
+            conversion.warnings,
+            conversion.notices
+        );
+        let conn = Connection::open(db).unwrap();
+        let row: (i64, Option<u32>) = conn
+            .query_row(
+                "SELECT param1_raw, param1_form_id FROM record_conditions
+                 WHERE owner_id = ?1 AND owner_kind = 'PERK' AND position = 0",
+                [perks::FIRST_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (0, None), "{reader:?}");
+    }
 }

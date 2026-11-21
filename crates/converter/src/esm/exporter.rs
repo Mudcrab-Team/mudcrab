@@ -596,31 +596,36 @@ pub(super) fn export_plugins_to_db(
     )
 }
 
+/// Auxiliary in-house projection tables and diagnostics passed to `export_inhouse_to_db`.
+pub(crate) struct InhouseExportContext<'a> {
+    pub(crate) unresolved_fields: &'a HashMap<u32, BTreeSet<usize>>,
+    pub(crate) terrain_offsets: &'a HashMap<u32, u64>,
+    pub(crate) perk_rejections: &'a HashMap<u32, crate::esm::perks::PerkRejectedSections>,
+    pub(crate) decoded: &'a ReadResult,
+}
+
 /// Export canonical decoded fields with Skyrim's texture slots and byte-wide XESP flags.
 pub(crate) fn export_inhouse_to_db(
     conn: &Connection,
     master: &HashMap<u32, RawRecord>,
     order: &LoadOrder,
     plugin_paths: &[PathBuf],
-    unresolved_fields: &HashMap<u32, BTreeSet<usize>>,
-    terrain_offsets: &HashMap<u32, u64>,
-    perk_rejections: &HashMap<u32, crate::esm::perks::PerkRejectedSections>,
-    decoded: &ReadResult,
+    context: InhouseExportContext<'_>,
 ) -> Result<()> {
     export_records(
         conn,
         master,
         Some(order),
         Some(plugin_paths),
-        Some(unresolved_fields),
-        Some(terrain_offsets),
+        Some(context.unresolved_fields),
+        Some(context.terrain_offsets),
         ExportOptions {
             runtime_views: true,
             scalar_scripts: true,
-            perk_rejections: Some(perk_rejections),
+            perk_rejections: Some(context.perk_rejections),
             trusted_portal_nulls: false,
-            deleted_ids: Some(&decoded.deleted_ids),
-            room_link_sources: Some(RoomLinkSources::Typed(decoded)),
+            deleted_ids: Some(&context.decoded.deleted_ids),
+            room_link_sources: Some(RoomLinkSources::Typed(context.decoded)),
             subset_sources: None,
             damaged_placement_cells: None,
         },
@@ -1106,6 +1111,7 @@ fn export_records(
                     record,
                     canonical_record,
                     perk_rejections.and_then(|map| map.get(&form_id)),
+                    order.is_none(),
                     &mut omissions,
                 )?;
             }
@@ -3845,10 +3851,12 @@ mod tests {
             &master,
             &order,
             &paths,
-            &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            &ReadResult::default(),
+            InhouseExportContext {
+                unresolved_fields: &HashMap::new(),
+                terrain_offsets: &HashMap::new(),
+                perk_rejections: &HashMap::new(),
+                decoded: &ReadResult::default(),
+            },
         )
         .unwrap();
         let expected = rooms::RoomGraphReport::read(&conn).unwrap();
@@ -3935,10 +3943,12 @@ mod tests {
             &master,
             &order,
             &paths,
-            &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            &ReadResult::default(),
+            InhouseExportContext {
+                unresolved_fields: &HashMap::new(),
+                terrain_offsets: &HashMap::new(),
+                perk_rejections: &HashMap::new(),
+                decoded: &ReadResult::default(),
+            },
         )
         .unwrap();
         assert_eq!(rooms::RoomGraphReport::read(&conn).unwrap(), expected);
@@ -4971,10 +4981,12 @@ mod tests {
                 &master,
                 &order,
                 &paths,
-                &HashMap::new(),
-                &HashMap::new(),
-                &HashMap::new(),
-                &ReadResult::default(),
+                InhouseExportContext {
+                    unresolved_fields: &HashMap::new(),
+                    terrain_offsets: &HashMap::new(),
+                    perk_rejections: &HashMap::new(),
+                    decoded: &ReadResult::default(),
+                },
             )
             .unwrap()
         };

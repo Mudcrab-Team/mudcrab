@@ -330,6 +330,7 @@ impl EsmParser {
                 plugin_paths,
                 &order,
                 string_sources,
+                &mut merged.perk_rejections,
             );
         let conn = Connection::open(db_path)?;
         exporter::export_plugins_to_db(&conn, &merged, &order, plugin_paths, &unresolved)?;
@@ -618,6 +619,7 @@ impl EsmParser {
             order,
             &warnings,
         );
+        sanitize_legacy_perk_condition_links(&mut merged, order, &warnings);
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
         damaged_placements.unknown_scope |= unknown_discarded_scope;
@@ -634,6 +636,61 @@ impl EsmParser {
             room_link_layouts,
             perk_rejections,
         })
+    }
+}
+
+fn sanitize_legacy_perk_condition_links(
+    merged: &mut HashMap<u32, RawRecord>,
+    order: &load_order::LoadOrder,
+    warnings: &RemapWarnings,
+) {
+    let mut perk_ids: Vec<u32> = merged
+        .iter()
+        .filter(|(_, record)| record.record_type == *b"PERK" && !record.is_deleted())
+        .map(|(&id, _)| id)
+        .collect();
+    perk_ids.sort_unstable();
+    let mut invalid_offsets: Vec<(u32, usize, usize)> = Vec::new();
+    {
+        let links = gameplay_common::Links { master: merged };
+        for &perk_id in &perk_ids {
+            let Some(record) = merged.get(&perk_id) else {
+                continue;
+            };
+            let plugin = order
+                .names
+                .get(record.load_order as usize)
+                .map(String::as_str)
+                .unwrap_or("<unknown>");
+            for (sub_index, (tag, data)) in record.subrecords.iter().enumerate() {
+                if tag.as_slice() != b"CTDA" || data.len() != 32 {
+                    continue;
+                }
+                for (offset, slot, targets) in gameplay_common::condition_link_slots(data) {
+                    let raw = u32::from_le_bytes([
+                        data[offset],
+                        data[offset + 1],
+                        data[offset + 2],
+                        data[offset + 3],
+                    ]);
+                    if let Some(reason) = links.mismatch_reason(raw, targets) {
+                        warnings.skipped_optional(
+                            plugin,
+                            format!("PERK {perk_id:08X} CTDA {slot} target {raw:08X} {reason}"),
+                        );
+                        invalid_offsets.push((perk_id, sub_index, offset));
+                    }
+                }
+            }
+        }
+    }
+    for (perk_id, sub_index, offset) in invalid_offsets {
+        if let Some(record) = merged.get_mut(&perk_id)
+            && let Some((_, data)) = record.subrecords.get_mut(sub_index)
+            && data.len() >= offset + 4
+        {
+            data[offset..offset + 4].fill(0);
+        }
     }
 }
 

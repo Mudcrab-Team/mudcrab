@@ -56,9 +56,26 @@ impl Links<'_> {
                 })
         })
     }
+    /// Explain why a non-zero FormID failed `resolve`, for bounded warning diagnostics.
+    pub(crate) fn mismatch_reason(&self, id: u32, targets: &[&[u8; 4]]) -> Option<String> {
+        if id == 0 || self.resolve(Some(id), targets).is_some() {
+            return None;
+        }
+        Some(match self.master.get(&id) {
+            Some(record) if record.is_deleted() => "references a deleted record".to_owned(),
+            Some(record) => format!(
+                "has wrong record type {} (expected {})",
+                String::from_utf8_lossy(&record.record_type),
+                targets
+                    .iter()
+                    .map(|tag| String::from_utf8_lossy(*tag))
+                    .collect::<Vec<_>>()
+                    .join("|")
+            ),
+            None => "references an absent record".to_owned(),
+        })
+    }
 }
-
-/// Decode a NUL-terminated subrecord text string cleanly on both frontends.
 ///
 /// The in-house frontend stores UTF-8 in `canonical_bytes`, whereas the legacy frontend leaves
 /// Windows-1252 bytes in non-localized subrecords (`EDID`, `EPFD` text, `CIS1`, `CIS2`).
@@ -170,26 +187,41 @@ pub(crate) fn condition_param_kinds(ctda: &[u8]) -> (&'static str, &'static str)
     parameter_kinds(ctda)
 }
 
-/// Byte offsets of FormID fields inside a 32-byte `CTDA` subrecord, for legacy remapping parity.
-pub(crate) fn condition_link_offsets(ctda: &[u8]) -> Vec<usize> {
+/// Byte offsets, labels, and allowed target record types for FormID fields inside a 32-byte `CTDA`.
+pub(crate) fn condition_link_slots(
+    ctda: &[u8],
+) -> Vec<(usize, &'static str, &'static [&'static [u8; 4]])> {
+    const GLOB: &[&[u8; 4]] = &[b"GLOB"];
+    const REFR: &[&[u8; 4]] = &[
+        b"PLYR", b"ACHR", b"REFR", b"PGRE", b"PHZD", b"PMIS", b"PARW", b"PBAR", b"PBEA", b"PCON",
+        b"PFLA",
+    ];
     if ctda.len() != 32 {
         return Vec::new();
     }
-    let mut offsets = Vec::new();
+    let mut slots = Vec::new();
     if ctda[0] & 0x04 != 0 {
-        offsets.push(4);
+        slots.push((4, "comparison_global", GLOB));
     }
     let (first, second) = condition_param_kinds(ctda);
-    if condition_param_targets(first).is_some() {
-        offsets.push(12);
+    if let Some(targets) = condition_param_targets(first) {
+        slots.push((12, "param1", targets));
     }
-    if condition_param_targets(second).is_some() {
-        offsets.push(16);
+    if let Some(targets) = condition_param_targets(second) {
+        slots.push((16, "param2", targets));
     }
     if u32::from_le_bytes([ctda[20], ctda[21], ctda[22], ctda[23]]) == 2 {
-        offsets.push(24);
+        slots.push((24, "reference", REFR));
     }
-    offsets
+    slots
+}
+
+/// Byte offsets of FormID fields inside a 32-byte `CTDA` subrecord, for legacy remapping parity.
+pub(crate) fn condition_link_offsets(ctda: &[u8]) -> Vec<usize> {
+    condition_link_slots(ctda)
+        .into_iter()
+        .map(|(offset, _, _)| offset)
+        .collect()
 }
 
 /// A decoded condition paired with its optional `PRKC` tab and `CIS1`/`CIS2` strings.
@@ -200,14 +232,38 @@ pub(crate) struct ConditionEntry<'a> {
     pub(crate) param2_string: Option<String>,
 }
 
-fn resolve_condition_param(links: &Links<'_>, raw: u32, kind: &str) -> (u32, Option<u32>) {
+fn resolve_condition_param(
+    links: &Links<'_>,
+    owner_kind: &str,
+    owner_id: u32,
+    position: usize,
+    slot: &str,
+    raw: u32,
+    kind: &str,
+) -> (u32, Option<u32>) {
     match condition_param_targets(kind) {
         Some(targets) => {
             let resolved = links.resolve(Some(raw), targets);
+            if resolved.is_none()
+                && let Some(reason) = links.mismatch_reason(raw, targets)
+            {
+                eprintln!(
+                    "warning: {owner_kind} {owner_id:08X} CTDA[{position}] {slot} target {raw:08X} {reason}; cleared to 0/NULL"
+                );
+            }
             (resolved.unwrap_or(0), resolved)
         }
         None => (raw, None),
     }
+}
+
+/// Convert a `usize` ordinal into a SQLite `INTEGER` without lossy wrapping.
+pub(crate) fn sql_index(index: usize) -> Result<i64> {
+    i64::try_from(index).map_err(|_| {
+        rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(
+            "index exceeds SQLite INTEGER range",
+        )))
+    })
 }
 
 /// Write a slice of decoded conditions into `record_conditions`.
@@ -242,7 +298,15 @@ pub(crate) fn insert_conditions(
         let flags = raw_flags & 0x1F;
         let comparison_word = u32::from_le_bytes([ctda[4], ctda[5], ctda[6], ctda[7]]);
         let (comparison_value, comparison_global_id) = if flags & 0x04 != 0 {
-            (None, links.resolve(Some(comparison_word), &[b"GLOB"]))
+            let resolved = links.resolve(Some(comparison_word), &[b"GLOB"]);
+            if resolved.is_none()
+                && let Some(reason) = links.mismatch_reason(comparison_word, &[b"GLOB"])
+            {
+                eprintln!(
+                    "warning: {owner_kind} {owner_id:08X} CTDA[{position}] comparison_global target {comparison_word:08X} {reason}; cleared to NULL"
+                );
+            }
+            (None, resolved)
         } else {
             let value = f32::from_bits(comparison_word);
             (value.is_finite().then_some(f64::from(value)), None)
@@ -251,24 +315,38 @@ pub(crate) fn insert_conditions(
         let (first_kind, second_kind) = condition_param_kinds(ctda);
         let (param1_raw, param1_form_id) = resolve_condition_param(
             links,
+            owner_kind,
+            owner_id,
+            position,
+            "param1",
             u32::from_le_bytes([ctda[12], ctda[13], ctda[14], ctda[15]]),
             first_kind,
         );
         let (param2_raw, param2_form_id) = resolve_condition_param(
             links,
+            owner_kind,
+            owner_id,
+            position,
+            "param2",
             u32::from_le_bytes([ctda[16], ctda[17], ctda[18], ctda[19]]),
             second_kind,
         );
         let run_on = u32::from_le_bytes([ctda[20], ctda[21], ctda[22], ctda[23]]);
         let reference_raw = u32::from_le_bytes([ctda[24], ctda[25], ctda[26], ctda[27]]);
         let reference_id = if run_on == 2 {
-            links.resolve(
-                Some(reference_raw),
-                &[
-                    b"PLYR", b"ACHR", b"REFR", b"PGRE", b"PHZD", b"PMIS", b"PARW", b"PBAR",
-                    b"PBEA", b"PCON", b"PFLA",
-                ],
-            )
+            const REFR_TARGETS: &[&[u8; 4]] = &[
+                b"PLYR", b"ACHR", b"REFR", b"PGRE", b"PHZD", b"PMIS", b"PARW", b"PBAR", b"PBEA",
+                b"PCON", b"PFLA",
+            ];
+            let resolved = links.resolve(Some(reference_raw), REFR_TARGETS);
+            if resolved.is_none()
+                && let Some(reason) = links.mismatch_reason(reference_raw, REFR_TARGETS)
+            {
+                eprintln!(
+                    "warning: {owner_kind} {owner_id:08X} CTDA[{position}] reference target {reference_raw:08X} {reason}; cleared to NULL"
+                );
+            }
+            resolved
         } else {
             None
         };
@@ -278,7 +356,7 @@ pub(crate) fn insert_conditions(
             owner_kind,
             parent_index,
             i64::from(entry.condition_tab),
-            position as i64,
+            sql_index(position)?,
             i64::from(operator),
             i64::from(flags),
             comparison_value,

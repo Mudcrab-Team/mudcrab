@@ -6,11 +6,11 @@
 
 use super::{
     extractors::SubrecordView,
-    gameplay_common::{ConditionEntry, Links, decode_subrecord_text, insert_conditions},
+    gameplay_common::{ConditionEntry, Links, decode_subrecord_text, insert_conditions, sql_index},
     projection_omissions::{OmissionCategory, ProjectionOmissions},
     records::RawRecord,
 };
-use rusqlite::{Result, Transaction, params};
+use rusqlite::{OptionalExtension, Result, Transaction, params};
 
 /// Tables owned by this module. A complete export drops and recreates them.
 pub(crate) const PERK_TABLES: [&str; 3] = ["perks", "perk_effects", "perk_entry_points"];
@@ -65,19 +65,33 @@ CREATE INDEX IF NOT EXISTS idx_perk_entry_points_entry_point ON perk_entry_point
 
 fn u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes(
-        bytes.get(offset..offset + 4)?.try_into().ok()?,
+        *bytes.get(offset..offset + 4)?.first_chunk::<4>()?,
     ))
 }
 
 fn u16_at(bytes: &[u8], offset: usize) -> Option<u16> {
     Some(u16::from_le_bytes(
-        bytes.get(offset..offset + 2)?.try_into().ok()?,
+        *bytes.get(offset..offset + 2)?.first_chunk::<2>()?,
     ))
 }
 
 fn f32_at(bytes: &[u8], offset: usize) -> Option<f32> {
-    let value = f32::from_le_bytes(bytes.get(offset..offset + 4)?.try_into().ok()?);
+    let value = f32::from_le_bytes(*bytes.get(offset..offset + 4)?.first_chunk::<4>()?);
     value.is_finite().then_some(value)
+}
+
+/// Decode Skyrim's `EPFD[0..4]` actor-value `f32` into its semantic integer actor-value ID
+/// (matching xEdit's `wbEPFDActorValueToStr` rounding of a Single to the actor-value enum).
+fn actor_value_id_from_f32(value: f32) -> Option<i64> {
+    let rounded = f64::from(value.round());
+    if !(rounded.is_finite() && rounded >= 0.0 && rounded <= f64::from(i32::MAX)) {
+        return None;
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "rounded finite f32 is already bounds-checked to 0..=i32::MAX"
+    )]
+    Some(rounded as i64)
 }
 
 type Subrecord = (Vec<u8>, Vec<u8>);
@@ -88,13 +102,25 @@ type PerkSections<'a> = (&'a [Subrecord], Vec<&'a [Subrecord]>);
 pub(crate) struct PerkRejectedSections {
     /// True if top-level condition fields before the first `PRKE` were rejected.
     pub(crate) top_level: bool,
-    /// `effect_index` values whose effect subrecords had a reader-level rejection.
+    /// Source `effect_index` values whose effect subrecords had a reader-level rejection.
     pub(crate) effect_indices: std::collections::BTreeSet<usize>,
+    /// Source `effect_index` for each surviving canonical `PRKE` block when an earlier invalid
+    /// `PRKE` header was omitted by the in-house decoder.
+    pub(crate) canonical_effect_indices: Vec<usize>,
 }
 
 impl PerkRejectedSections {
     pub(crate) fn is_empty(&self) -> bool {
-        !self.top_level && self.effect_indices.is_empty()
+        !self.top_level
+            && self.effect_indices.is_empty()
+            && self.canonical_effect_indices.is_empty()
+    }
+
+    pub(crate) fn effect_index_for_canonical(&self, canonical_index: usize) -> usize {
+        self.canonical_effect_indices
+            .get(canonical_index)
+            .copied()
+            .unwrap_or(canonical_index)
     }
 }
 
@@ -156,19 +182,23 @@ fn extract_raw_subrecords(payload: &[u8]) -> (Vec<RawSubrecord<'_>>, Option<[u8;
             payload[pos + 2],
             payload[pos + 3],
         ];
-        let short = u16::from_le_bytes([payload[pos + 4], payload[pos + 5]]) as usize;
+        let short = usize::from(u16::from_le_bytes([payload[pos + 4], payload[pos + 5]]));
         pos += 6;
         if tag == *b"XXXX" {
             if short != 4 || payload.len() - pos < 4 || extended.is_some() {
                 complete = false;
                 break;
             }
-            extended = Some(u32::from_le_bytes([
+            let Ok(size) = usize::try_from(u32::from_le_bytes([
                 payload[pos],
                 payload[pos + 1],
                 payload[pos + 2],
                 payload[pos + 3],
-            ]) as usize);
+            ])) else {
+                complete = false;
+                break;
+            };
+            extended = Some(size);
             pos += 4;
             continue;
         }
@@ -246,8 +276,19 @@ pub(crate) fn inhouse_rejected_sections(
             && count_raw_tag(raw_top, tag) > count_subrecord_tag(canon_top, tag)
     }) || (raw_blocks.is_empty()
         && matches!(truncated_tag, Some(tag) if matches!(&tag, b"CTDA" | b"CIS1" | b"CIS2")));
+    let mut canon_cursor = 0usize;
+    let mut aligned_indices = Vec::with_capacity(canon_blocks.len());
     for (effect_index, raw_block) in raw_blocks.iter().enumerate() {
-        let canon_block = canon_blocks.get(effect_index).copied().unwrap_or(&[]);
+        let valid_prke = raw_block
+            .first()
+            .is_some_and(|(tag, bytes)| tag == b"PRKE" && bytes.len() == 3 && bytes[0] <= 2);
+        let Some(&canon_block) = valid_prke.then(|| canon_blocks.get(canon_cursor)).flatten()
+        else {
+            sections.effect_indices.insert(effect_index);
+            continue;
+        };
+        aligned_indices.push(effect_index);
+        canon_cursor += 1;
         if rejected_fields
             .iter()
             .any(|tag| count_raw_tag(raw_block, tag) > count_subrecord_tag(canon_block, tag))
@@ -274,8 +315,17 @@ pub(crate) fn inhouse_rejected_sections(
             }
         }
     }
-    for effect_index in raw_blocks.len()..canon_blocks.len() {
-        sections.effect_indices.insert(effect_index);
+    for extra in canon_cursor..canon_blocks.len() {
+        let index = raw_blocks.len() + (extra - canon_cursor);
+        aligned_indices.push(index);
+        sections.effect_indices.insert(index);
+    }
+    if aligned_indices
+        .iter()
+        .enumerate()
+        .any(|(canon_idx, &source_idx)| canon_idx != source_idx)
+    {
+        sections.canonical_effect_indices = aligned_indices;
     }
     if !payload_complete || !raw_complete || truncated_tag.is_some() {
         if truncated_tag == Some(*b"PRKE") {
@@ -363,7 +413,7 @@ fn collect_conditions<'a>(
                 if data.len() != 1 {
                     return Err(format!("PRKC has {} bytes, expected 1", data.len()));
                 }
-                current_tab = data[0] as i8;
+                current_tab = i8::from_le_bytes([data[0]]);
                 active_condition = false;
             }
             b"CTDA" => {
@@ -420,6 +470,7 @@ pub(crate) fn insert_record(
     record: &RawRecord,
     canonical: &RawRecord,
     rejected: Option<&PerkRejectedSections>,
+    subset_export: bool,
     omissions: &mut ProjectionOmissions,
 ) -> Result<()> {
     let perk_id = record.form_id;
@@ -446,7 +497,18 @@ pub(crate) fn insert_record(
     let rank_count = data.map(|bytes| i64::from(bytes[2]));
     let playable = data.map(|bytes| i64::from(bytes[3]));
     let hidden = data.map(|bytes| i64::from(bytes[4]));
-    let next_perk_id = links.resolve(top_view.get_form_id(b"NNAM"), &[b"PERK"]);
+    let raw_next_perk = top_view.get_form_id(b"NNAM");
+    let next_perk_id = match links.resolve(raw_next_perk, &[b"PERK"]) {
+        Some(id) => Some(id),
+        None if subset_export => match raw_next_perk {
+            Some(id) if id != 0 && !links.master.contains_key(&id) => tx
+                .prepare_cached("SELECT 1 FROM perks WHERE id=?1")?
+                .query_row([id], |_| Ok(id))
+                .optional()?,
+            _ => None,
+        },
+        None => None,
+    };
 
     tx.prepare_cached(
         "INSERT OR REPLACE INTO perks(
@@ -490,10 +552,14 @@ pub(crate) fn insert_record(
         }
     }
 
-    for (effect_index, block) in effect_blocks.iter().enumerate() {
+    let mut seen_effect_indices = std::collections::BTreeSet::new();
+    for (canon_index, block) in effect_blocks.iter().enumerate() {
         let Some((_, prke)) = block.first().filter(|(tag, _)| tag.as_slice() == b"PRKE") else {
             continue;
         };
+        let effect_index =
+            rejected.map_or(canon_index, |r| r.effect_index_for_canonical(canon_index));
+        seen_effect_indices.insert(effect_index);
         if rejected.is_some_and(|r| r.effect_indices.contains(&effect_index)) {
             omissions.record(
                 OmissionCategory::PerkEffectUndecoded,
@@ -522,19 +588,31 @@ pub(crate) fn insert_record(
         let mut epf2: Option<&[u8]> = None;
         let mut epf3: Option<&[u8]> = None;
         let mut epfd: Option<&[u8]> = None;
+        let mut saw_prkf = false;
         let mut bad_prkf: Option<usize> = None;
         for (tag, payload) in &block[1..] {
             match tag.as_slice() {
                 b"DATA" if effect_data.is_none() => effect_data = Some(payload.as_slice()),
-                b"EPFT" if epfd.is_none() => epft = Some(payload.as_slice()),
+                b"EPFT" if epft.is_none() => epft = Some(payload.as_slice()),
                 b"EPF2" if epf2.is_none() => epf2 = Some(payload.as_slice()),
                 b"EPF3" if epf3.is_none() => epf3 = Some(payload.as_slice()),
                 b"EPFD" if epfd.is_none() => epfd = Some(payload.as_slice()),
-                b"PRKF" if !payload.is_empty() && bad_prkf.is_none() => {
-                    bad_prkf = Some(payload.len());
+                b"PRKF" => {
+                    saw_prkf = true;
+                    if !payload.is_empty() && bad_prkf.is_none() {
+                        bad_prkf = Some(payload.len());
+                    }
                 }
                 _ => {}
             }
+        }
+        if !saw_prkf {
+            omissions.record(
+                OmissionCategory::PerkEffectUndecoded,
+                perk_id,
+                format!("PERK {perk_id:08X} effect {effect_index}: missing PRKF terminator"),
+            );
+            continue;
         }
         if let Some(len) = bad_prkf {
             omissions.record(
@@ -599,7 +677,7 @@ pub(crate) fn insert_record(
                 )?
                 .execute(params![
                     perk_id,
-                    effect_index as i64,
+                    sql_index(effect_index)?,
                     i64::from(effect_type),
                     i64::from(rank),
                     i64::from(priority),
@@ -612,7 +690,7 @@ pub(crate) fn insert_record(
                     links,
                     perk_id,
                     "PERK_EFFECT",
-                    effect_index as i64,
+                    sql_index(effect_index)?,
                     &conditions,
                 )?;
             }
@@ -669,7 +747,7 @@ pub(crate) fn insert_record(
                 let mut target_form_id: Option<u32> = None;
                 let mut value_text: Option<String> = None;
 
-                let canonical_block = canonical_blocks.get(effect_index).copied();
+                let canonical_block = canonical_blocks.get(canon_index).copied();
                 let canonical_epf2 =
                     canonical_block.and_then(|block| first_block_subrecord(block, b"EPF2"));
                 let canonical_epfd =
@@ -682,6 +760,10 @@ pub(crate) fn insert_record(
                         (None, None) | (Some(0), _) => true,
                         // `add_activate_choice` (fn=9, EPFT=4) uses button label/flags in vanilla plugins with no spell (`None` or null FormID `0`).
                         (Some(4), None) => activate_choice_spell_optional,
+                        // `select_spell` (EPFT=5) can legitimately omit `EPFD` in official plugins
+                        // (e.g. Gray Cowl `PERK` `0x810` effect 0). Reader-rejected `EPFD` payloads
+                        // are caught earlier via `PerkRejectedSections`.
+                        (Some(5), None) => true,
                         // Intentionally unresolved EPFT=7 localized text is stripped by runtime_projection
                         // while remaining non-empty on the canonical winning record.
                         (Some(7), None) => canonical_epfd.is_some_and(|b| !b.is_empty()),
@@ -696,8 +778,10 @@ pub(crate) fn insert_record(
                         }
                         (Some(2), Some(b)) if b.len() == 8 => {
                             if matches!(function, 5 | 12 | 13 | 14) {
-                                if let (Some(av), Some(mult)) = (u32_at(b, 0), f32_at(b, 4)) {
-                                    actor_value = Some(i64::from(av));
+                                if let (Some(av_float), Some(mult)) = (f32_at(b, 0), f32_at(b, 4))
+                                    && let Some(av) = actor_value_id_from_f32(av_float)
+                                {
+                                    actor_value = Some(av);
                                     value_float_1 = Some(f64::from(mult));
                                     true
                                 } else {
@@ -769,7 +853,7 @@ pub(crate) fn insert_record(
                 )?
                 .execute(params![
                     perk_id,
-                    effect_index as i64,
+                    sql_index(effect_index)?,
                     i64::from(effect_type),
                     i64::from(rank),
                     i64::from(priority),
@@ -785,7 +869,7 @@ pub(crate) fn insert_record(
                 )?
                 .execute(params![
                     perk_id,
-                    effect_index as i64,
+                    sql_index(effect_index)?,
                     i64::from(entry_point),
                     i64::from(function),
                     i64::from(condition_tab_count),
@@ -805,7 +889,7 @@ pub(crate) fn insert_record(
                     links,
                     perk_id,
                     "PERK_EFFECT",
-                    effect_index as i64,
+                    sql_index(effect_index)?,
                     &conditions,
                 )?;
             }
@@ -824,7 +908,7 @@ pub(crate) fn insert_record(
         for &effect_index in rejected
             .effect_indices
             .iter()
-            .filter(|&&index| index >= effect_blocks.len())
+            .filter(|index| !seen_effect_indices.contains(index))
         {
             omissions.record(
                 OmissionCategory::PerkEffectUndecoded,
