@@ -67,8 +67,8 @@ impl ScanDamage {
             self.frames.insert(scope);
         } else if let Some(placement) = TruncatedPlacement::from_prefix(bytes) {
             self.truncated_placements.push((offset as u64, placement));
-        } else if let Some((_, cell)) = crate::esm::binary::cell_header_prefix(bytes) {
-            self.frames.insert(DiscardedFrameScope::Cell(cell));
+        } else if let Some(scope) = DiscardedFrameScope::from_cell_prefix(bytes) {
+            self.frames.insert(scope);
         }
     }
 }
@@ -221,7 +221,6 @@ fn scan_bytes_observed(
             &bytes[start..position]
         } else {
             let start = position + 24;
-            damage.note_prefix(&bytes[start..end], start);
             damage
                 .frames
                 .insert(DiscardedFrameScope::unread_tail(cell, end - start));
