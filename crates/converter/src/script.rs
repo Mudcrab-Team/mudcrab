@@ -2,7 +2,6 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, bail, ensure, eyre},
 };
-use memmap2::Mmap;
 use std::{
     cell::RefCell,
     collections::BTreeSet,
@@ -139,18 +138,17 @@ pub struct FunctionIr {
 pub struct ScriptConverter;
 
 impl ScriptConverter {
+    /// Convert a checked PEX view, verifying its source before publishing generated output.
     pub fn convert_pex_to_luau(input: &Path, output: &Path) -> Result<()> {
         let bytes =
             File::open(input).wrap_err_with(|| format!("failed to open {}", input.display()))?;
 
-        // SAFETY: read-only mapping of a script input this process does not write while it is mapped.
-        // An outside truncation or in-place rewrite would fault reads of the map; that
-        // risk is accepted here (#633).
-        let mmap = unsafe { Mmap::map(&bytes) }
-            .wrap_err_with(|| format!("failed to memory-map {}", input.display()))?;
+        let mmap = crate::source_input::map_input(&bytes, input)
+            .wrap_err_with(|| format!("failed to read {}", input.display()))?;
 
         let pex = Self::parse(&mmap)?;
         Self::verify(&pex)?;
+        mmap.verify(&bytes, input)?;
 
         // Use thread-local reusable scratch string buffer
         THREAD_STRING_BUF.with(|buf_cell| -> Result<()> {

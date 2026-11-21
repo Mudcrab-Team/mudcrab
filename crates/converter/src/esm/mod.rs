@@ -1,5 +1,5 @@
 use crate::esm::{
-    binary::{ParsedRecord, parse_plugin_file_with_warnings},
+    binary::{ParsedRecord, parse_admitted_plugin_file_with_warnings},
     exporter::{create_tables, validate_inhouse_record},
     records::RawRecord,
 };
@@ -7,10 +7,11 @@ use crate::records::DiscardedFrameScope;
 use color_eyre::{Result, eyre::WrapErr};
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::fs::File;
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap, HashSet},
-    fs::File,
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io::Read,
     path::{Path, PathBuf},
 };
@@ -54,6 +55,8 @@ mod environment_parity_tests;
 #[cfg(test)]
 mod form_key_contract_tests;
 #[cfg(test)]
+mod input_snapshot_recovery_tests;
+#[cfg(test)]
 mod light_details_parity_tests;
 #[cfg(test)]
 mod plugin_table_tests;
@@ -64,14 +67,139 @@ mod report_warnings_official_tests;
 
 pub struct EsmParser;
 
+#[cfg(test)]
+thread_local! {
+    /// A deterministic source change after slots are admitted, before records are opened.
+    pub(crate) static AFTER_PLUGIN_ADMISSION: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn after_plugin_admission_for_test() {
+    let hook = AFTER_PLUGIN_ADMISSION.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A deterministic source change after records are decoded, before export bookkeeping.
+    pub(crate) static AFTER_PLUGIN_DECODE: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn after_plugin_decode_for_test() {
+    let hook = AFTER_PLUGIN_DECODE.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+// Integration tests compile this crate without `cfg(test)`, so the `cfg(test)` hooks above are
+// out of reach there. This debug-build-only seam gives them one deterministic source edit at the
+// start of decoded-plugin work, after the source package was authenticated and before any record
+// is read. Release builds have no hook and no callback.
+#[cfg(debug_assertions)]
+thread_local! {
+    /// A deterministic source edit after source authentication and before plugin decoding.
+    static AFTER_SOURCE_MATCHED: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+}
+
+/// Clears [`after_source_matched_for_test`] if the hook never ran (debug builds only).
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+#[must_use = "the hook is cleared when this guard drops"]
+pub struct AfterSourceMatchedGuard;
+
+#[cfg(debug_assertions)]
+impl Drop for AfterSourceMatchedGuard {
+    fn drop(&mut self) {
+        AFTER_SOURCE_MATCHED.with(|slot| *slot.borrow_mut() = None);
+    }
+}
+
+/// Run one debug-build edit between source authentication and plugin decoding.
+///
+/// Metadata rebuild tests use this to replace a plugin after `matched_plugins` verified generation
+/// A and before the reader decodes generation B, without depending on task scheduling.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn after_source_matched_for_test(hook: impl FnOnce() + 'static) -> AfterSourceMatchedGuard {
+    AFTER_SOURCE_MATCHED.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    AfterSourceMatchedGuard
+}
+
+#[cfg(debug_assertions)]
+fn after_source_matched() {
+    let hook = AFTER_SOURCE_MATCHED.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 /// Winning records with bounded data-loss warnings and faithful-outcome notices.
 #[derive(Debug)]
 pub(crate) struct RecordConversion {
+    /// Preserve admission identities even when a later source read fails.
+    pub(crate) load_order: load_order::LoadOrder,
+    pub(crate) skipped_inputs: BTreeSet<usize>,
+    /// Skipped inputs whose records were retained, with the proof their decode view still gives.
+    pub(crate) unverified_inputs: BTreeMap<usize, crate::records::UnverifiedInput>,
     pub(crate) records: HashMap<u32, RawRecord>,
     pub(crate) warnings: Vec<String>,
     pub(crate) notices: Vec<String>,
+    /// Digest of the exact bytes each plugin's records were decoded from; empty when unverified.
+    pub(crate) plugin_checksums: Vec<Vec<u8>>,
     /// In-house stage seconds for the database profile; legacy exports record none.
     pub(crate) phases: std::collections::BTreeMap<String, f64>,
+}
+
+/// Prepared plugin rows never reopen a source that reader recovery already skipped.
+#[derive(Clone, Copy)]
+pub(super) struct PluginRows<'a> {
+    paths: &'a [PathBuf],
+    checksums: &'a [Vec<u8>],
+}
+
+/// Exporter-only fixtures without source admission still exercise streaming row insertion.
+#[cfg(test)]
+fn prepare_plugin_checksums_for_test(
+    paths: &[PathBuf],
+    skipped: &mut BTreeSet<usize>,
+    warnings: &mut Vec<String>,
+) -> Vec<Vec<u8>> {
+    prepare_plugin_checksum_rows(paths, skipped, warnings, |_, path| {
+        let mut file = File::open(path)?;
+        let stamp = crate::source_input::SourceStamp::capture(&file)?;
+        let checksum = plugin_checksum(&mut file)?;
+        stamp.verify(&file, path)?;
+        Ok(checksum)
+    })
+}
+
+/// Missing checksum proof is local to its admitted slot, not a publication failure.
+#[cfg(test)]
+fn prepare_plugin_checksum_rows(
+    paths: &[PathBuf],
+    skipped: &mut BTreeSet<usize>,
+    warnings: &mut Vec<String>,
+    mut proof: impl FnMut(usize, &Path) -> Result<[u8; 32]>,
+) -> Vec<Vec<u8>> {
+    paths.iter().enumerate().map(|(index, path)| {
+        if skipped.contains(&index) {
+            return Vec::new();
+        }
+        match proof(index, path) {
+            Ok(checksum) => checksum.to_vec(),
+            Err(error) => {
+                skipped.insert(index);
+                let message = format!("warning: {}: plugin checksum unavailable; retained admitted slot and decoded records: {error:#}", path.display());
+                eprintln!("{message}");
+                warnings.push(message);
+                Vec::new()
+            }
+        }
+    }).collect()
 }
 
 struct LegacyPluginMerge {
@@ -178,16 +306,19 @@ impl PlacementDamage {
     }
 }
 
-/// Populate the common plugin metadata contract without allocating each complete input.
-fn insert_plugins(conn: &Connection, plugin_paths: &[PathBuf]) -> Result<()> {
+/// Populate the common plugin metadata contract without allocating each complete input;
+/// an empty BLOB means unavailable source proof, and id/name/priority retain admission order.
+fn insert_plugins(conn: &Connection, plugins: PluginRows<'_>) -> rusqlite::Result<()> {
+    if plugins.paths.len() != plugins.checksums.len() {
+        return Err(rusqlite::Error::InvalidParameterCount(
+            plugins.checksums.len(),
+            plugins.paths.len(),
+        ));
+    }
     let mut statement = conn.prepare_cached(
         "INSERT OR REPLACE INTO plugins (id, name, priority, checksum) VALUES (?1, ?2, ?3, ?4)",
     )?;
-    for (priority, path) in plugin_paths.iter().enumerate() {
-        let mut file = File::open(path)
-            .wrap_err_with(|| format!("failed to open {} for plugin checksum", path.display()))?;
-        let checksum = plugin_checksum(&mut file)
-            .wrap_err_with(|| format!("failed to hash plugin {}", path.display()))?;
+    for (priority, (path, checksum)) in plugins.paths.iter().zip(plugins.checksums).enumerate() {
         statement.execute(params![
             priority as i64,
             path.file_name().unwrap_or_default().to_string_lossy(),
@@ -224,19 +355,23 @@ impl EsmParser {
         reader: crate::config::RecordReader,
         strings_root: &Path,
     ) -> Result<HashMap<u32, RawRecord>> {
-        Self::convert_plugins_with_reader_and_schemas(
+        let order = load_order::LoadOrder::read(plugin_paths)?;
+        Self::convert_plugins_with_admitted_order_and_string_sources(
             plugin_paths,
             db_path,
             reader,
-            strings_root,
-            crate::config::DEFAULT_LANGUAGE,
+            inhouse::StringSources::default_language(inhouse::StringRoots::PluginLooseFirst(
+                strings_root,
+            )),
             None,
+            order,
         )
         .map(|conversion| conversion.records)
     }
 
-    /// Publish with one immutable schema batch and retain summaries for the pipeline report.
+    /// Test convenience for admitting a fresh order with one immutable schema batch.
     /// Localized names come from `strings_root`'s tables in `language`.
+    #[cfg(test)]
     pub(crate) fn convert_plugins_with_reader_and_schemas(
         plugin_paths: &[PathBuf],
         db_path: &Path,
@@ -257,7 +392,8 @@ impl EsmParser {
         )
     }
 
-    /// Select loose string inputs independently of the physical parent and collect reader summaries.
+    /// Test convenience for fresh admission with independently selected loose string inputs.
+    #[cfg(test)]
     pub(crate) fn convert_plugins_with_reader_and_schemas_with_string_sources(
         plugin_paths: &[PathBuf],
         db_path: &Path,
@@ -265,16 +401,44 @@ impl EsmParser {
         string_sources: inhouse::StringSources<'_>,
         schemas: Option<&crate::records::addons::RuntimeSchemas>,
     ) -> Result<RecordConversion> {
+        let order = load_order::LoadOrder::read(plugin_paths)?;
+        Self::convert_plugins_with_admitted_order_and_string_sources(
+            plugin_paths,
+            db_path,
+            reader,
+            string_sources,
+            schemas,
+            order,
+        )
+    }
+
+    /// Reuse the admitted identities after archive/asset work rather than reopening headers.
+    pub(crate) fn convert_plugins_with_admitted_order_and_string_sources(
+        plugin_paths: &[PathBuf],
+        db_path: &Path,
+        reader: crate::config::RecordReader,
+        string_sources: inhouse::StringSources<'_>,
+        schemas: Option<&crate::records::addons::RuntimeSchemas>,
+        order: load_order::LoadOrder,
+    ) -> Result<RecordConversion> {
+        // The admitted order authenticated the source package before this decode. Rebuild tests
+        // edit the source here to prove the decoded generation is re-authenticated.
+        #[cfg(debug_assertions)]
+        after_source_matched();
         match reader {
-            crate::config::RecordReader::Legacy => {
-                Self::convert_legacy_plugins_report(plugin_paths, db_path, string_sources)
-            }
+            crate::config::RecordReader::Legacy => Self::convert_legacy_plugins_with_order_report(
+                plugin_paths,
+                db_path,
+                string_sources,
+                order,
+            ),
             crate::config::RecordReader::Inhouse => {
-                inhouse::convert_plugins_with_string_sources_report(
+                inhouse::convert_plugins_with_admitted_order_report(
                     plugin_paths,
                     db_path,
                     string_sources,
                     schemas,
+                    order,
                 )
             }
         }
@@ -318,7 +482,20 @@ impl EsmParser {
         string_sources: inhouse::StringSources<'_>,
     ) -> Result<RecordConversion> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
+        Self::convert_legacy_plugins_with_order_report(plugin_paths, db_path, string_sources, order)
+    }
+
+    fn convert_legacy_plugins_with_order_report(
+        plugin_paths: &[PathBuf],
+        db_path: &Path,
+        string_sources: inhouse::StringSources<'_>,
+        order: load_order::LoadOrder,
+    ) -> Result<RecordConversion> {
+        #[cfg(test)]
+        after_plugin_admission_for_test();
         let mut merged = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
+        #[cfg(test)]
+        after_plugin_decode_for_test();
         let (unresolved, localization_warnings, localization_notices) =
             legacy_text::resolve_localized_fields(
                 &mut merged.conversion.records,
@@ -328,7 +505,16 @@ impl EsmParser {
             );
         let conn = Connection::open(db_path)?;
         create_tables(&conn)?;
-        exporter::export_plugins_to_db(&conn, &merged, &order, plugin_paths, &unresolved)?;
+        exporter::export_plugins_to_db(
+            &conn,
+            &merged,
+            &order,
+            PluginRows {
+                paths: plugin_paths,
+                checksums: &merged.conversion.plugin_checksums,
+            },
+            &unresolved,
+        )?;
 
         for diagnostic in localization_warnings.iter().chain(&localization_notices) {
             eprintln!("{diagnostic}");
@@ -347,6 +533,7 @@ impl EsmParser {
     }
 
     /// Use one load-order mapping for merge/export and retain all printed reader summaries.
+    /// An input that becomes unusable after admission is skipped without changing neighboring slots.
     fn merge_plugins_with_load_order(
         plugin_paths: &[PathBuf],
         order: &load_order::LoadOrder,
@@ -359,6 +546,9 @@ impl EsmParser {
         let mut placement_candidates = BTreeMap::new();
         let mut deleted_ids = crate::records::DeletedBases::default();
         let mut summaries = Vec::new();
+        let mut skipped_inputs = BTreeSet::new();
+        // The checksum is the digest of the exact view each plugin's records were decoded from.
+        let mut plugin_checksums = vec![Vec::new(); plugin_paths.len()];
         // Unlike ordinary forms, game settings override by EditorID. Retain
         // the first definition's key/owner while taking the last setting value.
         // Keep keys through deletions so a later restoration has the same ID.
@@ -369,7 +559,23 @@ impl EsmParser {
             // Final ID -> (source ID, whether its master index was out of range). Two different
             // source IDs that resolve to one final ID would silently replace each other.
             let mut sources: HashMap<u32, (u32, bool)> = HashMap::new();
-            let (records, parser_summaries) = parse_plugin_file_with_warnings(path)?;
+            let (records, parser_summaries) =
+                match parse_admitted_plugin_file_with_warnings(path, &order.metadata[priority]) {
+                    Ok((records, summaries, checksum)) => {
+                        plugin_checksums[priority] = checksum.to_vec();
+                        (records, summaries)
+                    }
+                    Err(error) => {
+                        let message = format!(
+                            "warning: {}: skipped unusable plugin input: {error:#}",
+                            order.names[priority]
+                        );
+                        eprintln!("{message}");
+                        summaries.push(message);
+                        skipped_inputs.insert(priority);
+                        continue;
+                    }
+                };
             summaries.extend(parser_summaries);
             for candidate in records {
                 let candidate = match candidate {
@@ -612,9 +818,13 @@ impl EsmParser {
         Ok(LegacyPluginMerge {
             deleted_ids: deleted_ids.absent_from(&merged),
             conversion: RecordConversion {
+                load_order: order.clone(),
+                skipped_inputs,
+                unverified_inputs: BTreeMap::new(),
                 records: merged,
                 warnings: summaries,
                 notices,
+                plugin_checksums,
                 phases: BTreeMap::new(),
             },
             damaged_cells,

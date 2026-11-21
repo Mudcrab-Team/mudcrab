@@ -422,6 +422,32 @@
         }
       ]
     },
+    "plugins.checksum": {
+      "evidence": [
+        {
+          "anchor": "fn prepare_plugin_checksum_rows(",
+          "path": "crates/converter/src/esm/mod.rs"
+        },
+        {
+          "anchor": "expected.len() == 32",
+          "path": "crates/converter/src/records/history.rs"
+        }
+      ],
+      "owner": "converter record readers (#746)",
+      "reason": "The readers publish a SHA-256 for sources with verified bytes. An empty BLOB marks an unavailable checksum while the admitted plugin keeps its slot. In-house history requires the 32-byte checksum before decoding a source version.",
+      "roles": [
+        "provenance",
+        "validation"
+      ],
+      "states": {
+        "decoded": "unknown",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
     "race_movement_links.run_movt_id": {
       "evidence": [
         {
@@ -682,6 +708,16 @@
       ],
       "key": "terrain unresolved_texture_ids JSON",
       "reason": "Owned legacy snapshot replaced by scalar diagnostic rows, not a second runtime store."
+    },
+    {
+      "evidence": [
+        {
+          "anchor": "pub(crate) fn stored_order(",
+          "path": "crates/converter/src/records/history.rs"
+        }
+      ],
+      "key": "in-house history before inhouse_plugin_inputs",
+      "reason": "Retained in-house packs rebuild admitted slots from TES4 history and the stored master order. Current packs use explicit admission rows so replay can recover a slot even when its TES4 history is missing."
     }
   ],
   "limitations": [
@@ -783,6 +819,11 @@
       "classification": "provenance",
       "owner": "Mudcrab maintainers (#298; publication #269)",
       "reason": "Preserves string ID, selected bank, source load order and resolution status for localized occurrences. A schema or selector error during bank selection keeps the existing signature-default fallback and records a decoder diagnostic."
+    },
+    "inhouse_plugin_inputs": {
+      "classification": "provenance",
+      "owner": "converter in-house record history (#746)",
+      "reason": "Stores admission flags and the source path by plugin slot, including inputs skipped after admission. History combines these facts with the ordered master list to reconstruct the original slots."
     },
     "inhouse_plugin_masters": {
       "classification": "provenance",

@@ -7,8 +7,8 @@ use crate::{
         RecordConversion,
         cell_cache::validate_inhouse_land,
         exporter::{
-            create_tables, export_inhouse_record_archive_to_db, export_inhouse_to_db,
-            validate_inhouse_record,
+            create_tables, export_inhouse_record_archive_with_plugins_to_db,
+            export_inhouse_with_plugins_to_db, validate_inhouse_record,
         },
         load_order::LoadOrder,
         records::RawRecord,
@@ -409,7 +409,7 @@ fn write_record_archive_scope(output: &Path, complete: bool, signatures: &[[u8; 
             "runtime_views_materialized": false,
             "preserved_sql_tables": ["schema_info", "plugins", "records", "formid_map", "subset_nonplacement_deletions",
                 "inhouse_source_records", "inhouse_localized_fields", "inhouse_terrain_source_order",
-                "inhouse_terrain_layers", "inhouse_unresolved_terrain_textures", "record_overrides", "inhouse_plugin_masters", "inhouse_schema_addons", "record_diagnostics"],
+                "inhouse_terrain_layers", "inhouse_unresolved_terrain_textures", "record_overrides", "inhouse_plugin_inputs", "inhouse_plugin_masters", "inhouse_schema_addons", "record_diagnostics"],
         "deferred_runtime_tables": DEFERRED_RUNTIME_TABLES,
         "unchanged_auxiliary_tables": ["conversion_cache", "lod", "lod_chunks", "lod_build",
             "lod_chunks_spatial", "lod_chunks_spatial_node", "lod_chunks_spatial_parent", "lod_chunks_spatial_rowid"],
@@ -778,11 +778,12 @@ pub(crate) fn convert_plugins(
 
 /// Publish usable records with bounded recovery warnings and compatibility notices.
 /// One authoritative text-source policy applies to candidate admission and publication.
-pub(crate) fn convert_plugins_with_string_sources_report(
+pub(crate) fn convert_plugins_with_admitted_order_report(
     plugin_paths: &[PathBuf],
     db_path: &Path,
     string_sources: StringSources<'_>,
     schemas: Option<&records::addons::RuntimeSchemas>,
+    order: LoadOrder,
 ) -> Result<RecordConversion> {
     convert_plugins_with_text_sources_report_impl(
         plugin_paths,
@@ -790,7 +791,7 @@ pub(crate) fn convert_plugins_with_string_sources_report(
         string_sources,
         None,
         RecordBundleMode::Full,
-        schemas,
+        (schemas, Some(order)),
         #[cfg(test)]
         None,
     )
@@ -866,7 +867,7 @@ fn convert_plugins_with_text_sources_impl(
         string_sources,
         dump,
         mode,
-        schemas,
+        (schemas, None),
         #[cfg(test)]
         test_schema,
     )
@@ -880,9 +881,10 @@ fn convert_plugins_with_text_sources_report_impl(
     string_sources: StringSources<'_>,
     dump: Option<(&Path, &[[u8; 4]])>,
     mode: RecordBundleMode,
-    schemas: Option<&records::addons::RuntimeSchemas>,
+    runtime: (Option<&records::addons::RuntimeSchemas>, Option<LoadOrder>),
     #[cfg(test)] test_schema: Option<&records::schema_format::Schema>,
 ) -> Result<RecordConversion> {
+    let (schemas, admitted_order) = runtime;
     let builtin;
     let schemas = match schemas {
         Some(schemas) => schemas,
@@ -895,7 +897,12 @@ fn convert_plugins_with_text_sources_report_impl(
     let total_started = Instant::now();
     let mut phases = BTreeMap::<String, f64>::new();
     let order_stage = records::profile::ProfileStage::start("read_load_order");
-    let order = LoadOrder::read(plugin_paths)?;
+    let order = match admitted_order {
+        Some(order) => order,
+        None => LoadOrder::read(plugin_paths)?,
+    };
+    #[cfg(test)]
+    super::after_plugin_admission_for_test();
     order_stage.finish(plugin_paths.len());
     let mut warnings = Warnings::default();
     let prepared = records::prepare_runtime_schema(schemas);
@@ -984,6 +991,8 @@ fn convert_plugins_with_text_sources_report_impl(
         validate,
         preserve,
     )?;
+    #[cfg(test)]
+    super::after_plugin_decode_for_test();
     // Winner validation and the observer have finished; physical history and
     // winning source payloads stay alive for the established provenance SQL pass.
     release_reader_metadata(&mut decoded);
@@ -1271,22 +1280,26 @@ fn convert_plugins_with_text_sources_report_impl(
     } else {
         "canonical_record_database_export"
     });
+    let plugin_rows = super::PluginRows {
+        paths: plugin_paths,
+        checksums: &decoded.plugin_checksums,
+    };
     if mode == RecordBundleMode::Full {
-        export_inhouse_to_db(
+        export_inhouse_with_plugins_to_db(
             &conn,
             &master,
             &order,
-            plugin_paths,
+            plugin_rows,
             &unresolved_fields,
             &terrain_offsets,
             &decoded,
         )?;
     } else {
-        export_inhouse_record_archive_to_db(
+        export_inhouse_record_archive_with_plugins_to_db(
             &conn,
             &master,
             &order,
-            plugin_paths,
+            plugin_rows,
             &decoded.deleted_ids,
         )?;
     }
@@ -1456,6 +1469,9 @@ fn convert_plugins_with_text_sources_report_impl(
         .flat_map(|(name, diagnostics)| diagnostics.notice_summary_lines(name))
         .collect::<Vec<_>>();
     let release_stage = records::profile::ProfileStage::start("decoded_release");
+    let skipped_inputs = std::mem::take(&mut decoded.skipped_inputs);
+    let unverified_inputs = std::mem::take(&mut decoded.unverified_inputs);
+    let plugin_checksums = std::mem::take(&mut decoded.plugin_checksums);
     drop(decoded);
     release_stage.finish(master.len());
     report_warnings.extend(warnings.report());
@@ -1466,10 +1482,14 @@ fn convert_plugins_with_text_sources_report_impl(
     );
     phases.insert("total_reader".into(), total_started.elapsed().as_secs_f64());
     Ok(RecordConversion {
+        load_order: order,
+        skipped_inputs,
+        unverified_inputs,
         phases,
         records: master,
         warnings: report_warnings,
         notices: report_notices,
+        plugin_checksums,
     })
 }
 
@@ -3017,6 +3037,7 @@ mod runtime_move_tests {
             editor_id: Some("authored identity".into()),
         };
         let mut decoded = records::ReadResult {
+            skipped_inputs: std::collections::BTreeSet::from([1]),
             records: HashMap::from([(id, winner.clone())]),
             headers: vec![winner],
             overrides: HashMap::from([(
@@ -3047,6 +3068,10 @@ mod runtime_move_tests {
         let diagnostics_before = serde_json::to_vec(&decoded.diagnostics).unwrap();
         assert!(decoded.headers.capacity() > 0 && decoded.overrides.capacity() > 0);
         release_reader_metadata(&mut decoded);
+        assert_eq!(
+            decoded.skipped_inputs,
+            std::collections::BTreeSet::from([1])
+        );
         assert_eq!(decoded.headers.capacity(), 0);
         assert_eq!(decoded.overrides.capacity(), 0);
         assert!(decoded.headers.is_empty() && decoded.overrides.is_empty());

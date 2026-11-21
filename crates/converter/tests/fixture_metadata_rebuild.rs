@@ -1842,7 +1842,12 @@ async fn metadata_rebuild_rejects_changed_plugins_and_assets_without_publication
         generate(&data);
         convert(&data, &source).await;
         if corrupt_plugin {
-            fs::write(data.join("Skyrim.esm"), b"different plugin").unwrap();
+            // A readable plugin with the same header but different bytes reaches the checksum check.
+            let plugin = data.join("Skyrim.esm");
+            let mut bytes = fs::read(&plugin).unwrap();
+            let last = bytes.len() - 1;
+            bytes[last] ^= 0xFF;
+            fs::write(&plugin, bytes).unwrap();
         } else {
             let manifest =
                 ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
@@ -1868,6 +1873,89 @@ async fn metadata_rebuild_rejects_changed_plugins_and_assets_without_publication
                 .contains("staging")
         }));
     }
+}
+
+#[cfg(debug_assertions)] // The deterministic replacement hook is a debug-build seam.
+#[tokio::test]
+async fn metadata_rebuild_rejects_readable_replacement_after_source_matching() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("derived");
+    generate(&data);
+    convert(&data, &source).await;
+    let plugin = data.join("Skyrim.esm");
+    // A readable replacement keeps the TES4 header facts but changes exported records.
+    let mut replacement = fs::read(&plugin).unwrap();
+    let payload = b"EDID\x05\x00Edit\0";
+    replacement.extend(b"STAT");
+    replacement.extend(u32::try_from(payload.len()).unwrap().to_le_bytes());
+    replacement.extend(0u32.to_le_bytes());
+    replacement.extend(0x0000_0F99u32.to_le_bytes());
+    replacement.extend(0u32.to_le_bytes());
+    replacement.extend(44u16.to_le_bytes());
+    replacement.extend(0u16.to_le_bytes());
+    replacement.extend(payload);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<converter::ProgressEvent>(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    // Replace the plugin after `matched_plugins` authenticated it and before the reader decodes
+    // it. A debug-build hook keeps this deterministic instead of racing a progress event.
+    let _replace = converter::esm::after_source_matched_for_test(move || {
+        fs::write(&plugin, &replacement).unwrap();
+    });
+    let error =
+        AssetPipeline::rebuild_metadata_async(common::cpu_lod_config(&data, &output), &source, tx)
+            .await
+            .unwrap_err()
+            .to_string();
+    drain.await.unwrap();
+    assert!(
+        error.contains("decoded bytes differ from the authenticated source package"),
+        "a readable replacement must be refused at decode authentication: {error}"
+    );
+    assert!(!output.exists());
+}
+
+#[cfg(debug_assertions)] // The deterministic temporary-replacement seam is a debug-build hook.
+#[tokio::test]
+async fn metadata_rebuild_refuses_a_header_flip_seen_only_by_the_slot_read() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("derived");
+    generate(&data);
+    // A later full plugin keeps a slot of its own, so moving its predecessor into the light
+    // namespace would shift this plugin's exported FormIDs without changing its bytes.
+    let mut neighbor = b"TES4".to_vec();
+    neighbor.extend(0u32.to_le_bytes());
+    neighbor.extend(0u32.to_le_bytes());
+    neighbor.extend(0u32.to_le_bytes());
+    neighbor.extend(0u32.to_le_bytes());
+    neighbor.extend(44u16.to_le_bytes());
+    neighbor.extend(0u16.to_le_bytes());
+    fs::write(data.join("ZNeighbor.esp"), &neighbor).unwrap();
+    convert(&data, &source).await;
+    let plugin = data.join("Skyrim.esm");
+    let original = fs::read(&plugin).unwrap();
+    let mut temporary = original.clone();
+    let flags = u32::from_le_bytes(temporary[8..12].try_into().unwrap()) | 0x200;
+    temporary[8..12].copy_from_slice(&flags.to_le_bytes());
+    let restore = plugin.clone();
+    // Flag the plugin as ESL only while the rebuild reads headers for slot assignment, then
+    // give the authenticated bytes back before decoding.
+    let _edit = converter::esm::load_order::load_order_read_edit_for_test(
+        move || fs::write(&plugin, &temporary).unwrap(),
+        move || fs::write(&restore, &original).unwrap(),
+    );
+    let error = rebuild(&data, &source, &output)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("differs from the checksum-authenticated source package"),
+        "a header flip seen only by the slot read must be refused: {error}"
+    );
+    assert!(!output.exists());
 }
 
 #[tokio::test]

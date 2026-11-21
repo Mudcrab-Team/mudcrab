@@ -1,7 +1,7 @@
 //! Durable archive batches. Packs are the canonical cache; ordinary blobs and
 //! VFS files can be recreated after an interrupted write or a power loss.
-//! The mapped source inode must remain immutable during extraction. Source
-//! replacement is detected before accepting either success or a partial run.
+//! Small cold inputs are snapshotted only after reuse is ruled out. Large inputs
+//! are mapped directly; source checks precede accepting success or a partial run.
 
 use super::{
     ArchiveSelection, ExtractOptions, ExtractedFile, ExtractionOutcome, ExtractionProgressCallback,
@@ -110,6 +110,60 @@ struct Pending<'a> {
     path: PathBuf,
     bytes: usize,
     payload: Payload<'a>,
+}
+
+/// Validate the entire namespace and collect selected payloads from the current view.
+/// The completed directory inventory is published before payloads are decoded, so a
+/// recoverable payload error keeps its counts.
+fn selected_entries<'a>(
+    bytes: &'a [u8],
+    archive_path: &Path,
+    options: &ExtractOptions,
+    ignored_inputs_by_extension: &mut BTreeMap<String, u64>,
+) -> Result<Vec<Pending<'a>>> {
+    let raw: Vec<(String, Payload<'a>)> = match bytes.get(..4) {
+        Some(b"BSA\0") => bsa::iter_raw_entries(bytes)?
+            .into_iter()
+            .map(|entry| (entry.name.clone(), Payload::Bsa(entry)))
+            .collect(),
+        Some(b"BTDX") => ba2::iter_raw_entries(bytes)?
+            .into_iter()
+            .map(|entry| (entry.entry.name.clone(), Payload::Ba2(entry)))
+            .collect(),
+        _ => bail!("unsupported archive magic in {}", archive_path.display()),
+    };
+    let mut seen = BTreeMap::new();
+    let mut chosen = Vec::new();
+    let mut inventory = BTreeMap::new();
+    for (name, payload) in raw {
+        let authoring = crate::asset_path::is_authoring_source_name(&name);
+        if authoring && options.selection != ArchiveSelection::All {
+            continue;
+        }
+        let path = super::normalize_archive_path(&name, authoring)?;
+        // Validate the runtime namespace before filtering: unsupported files do
+        // not conceal traversal or case-folded collisions.
+        detect_archive_collision(&mut seen, &path, &name)?;
+        if options.selection.includes(&path) {
+            chosen.push((path, payload));
+        } else if !crate::controls::owns_input(&path) {
+            crate::input_inventory::record_ignored(&mut inventory, &path);
+        }
+    }
+    // Hand the completed directory inventory to the caller before payloads are
+    // decoded, so a recoverable payload error keeps these counts. A directory
+    // validation error returns without publishing partial counts.
+    *ignored_inputs_by_extension = inventory;
+    let mut selected = Vec::new();
+    for (path, payload) in chosen {
+        let bytes = payload.decoded_size()?;
+        selected.push(Pending {
+            path,
+            bytes,
+            payload,
+        });
+    }
+    Ok(selected)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,6 +323,7 @@ pub(super) fn extract(
     )
 }
 
+/// Extract one checked archive view while preserving batch checkpoints and warm reuse.
 /// Inventory source paths once, count recipe exclusions and recover durable selected batches.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn extract_with_session(
@@ -291,59 +346,15 @@ pub(super) fn extract_with_session(
     check_stop(stop)?;
     let hash_started = std::time::Instant::now();
     let file = File::open(archive_path)?;
-    // SAFETY: read-only mapping of archive input that this process only reads, for this scoped
-    // extraction. An outside truncation or in-place rewrite would fault reads of the map; that
-    // risk is accepted here (#633).
-    let bytes = unsafe { Mmap::map(&file) }?;
-    // Hash the exact inode decoded below; a path can be replaced between opens.
+    // Warm runs need an inventory/hash, not a private copy of an archive or its packs.
+    let mut bytes = crate::source_input::map_for_reuse(&file, archive_path)?;
     let source_hash = hash_bytes(&bytes);
     let reader_version = archive_reader_version(&bytes);
     let mut timings = ExtractionTimings {
         source_hash_seconds: hash_started.elapsed().as_secs_f64(),
         ..ExtractionTimings::default()
     };
-    let raw: Vec<(String, Payload<'_>)> = match bytes.get(..4) {
-        Some(b"BSA\0") => bsa::iter_raw_entries(&bytes)?
-            .into_iter()
-            .map(|entry| (entry.name.clone(), Payload::Bsa(entry)))
-            .collect(),
-        Some(b"BTDX") => ba2::iter_raw_entries(&bytes)?
-            .into_iter()
-            .map(|entry| (entry.entry.name.clone(), Payload::Ba2(entry)))
-            .collect(),
-        _ => bail!("unsupported archive magic in {}", archive_path.display()),
-    };
-    let mut seen = BTreeMap::new();
-    let mut chosen = Vec::new();
-    let mut inventory = BTreeMap::new();
-    for (name, payload) in raw {
-        let authoring = crate::asset_path::is_authoring_source_name(&name);
-        if authoring && options.selection != ArchiveSelection::All {
-            continue;
-        }
-        let path = super::normalize_archive_path(&name, authoring)?;
-        // Validate the runtime namespace before filtering: unsupported files do
-        // not conceal traversal or case-folded collisions.
-        detect_archive_collision(&mut seen, &path, &name)?;
-        if options.selection.includes(&path) {
-            chosen.push((path, payload));
-        } else if !crate::controls::owns_input(&path) {
-            crate::input_inventory::record_ignored(&mut inventory, &path);
-        }
-    }
-    // Hand the completed directory inventory to the caller before payloads are
-    // decoded, so a recoverable payload error keeps these counts. A directory
-    // validation error returns without publishing partial counts.
-    *ignored_inputs_by_extension = inventory;
-    let mut selected = Vec::new();
-    for (path, payload) in chosen {
-        let bytes = payload.decoded_size()?;
-        selected.push(Pending {
-            path,
-            bytes,
-            payload,
-        });
-    }
+    let selected = selected_entries(&bytes, archive_path, options, ignored_inputs_by_extension)?;
     let total_bytes = selected.iter().map(|entry| entry.bytes as u64).sum();
     let reporter = progress
         .map(|callback| ProgressReporter::new(callback, selected.len() as u64, total_bytes));
@@ -418,7 +429,14 @@ pub(super) fn extract_with_session(
                 options.io_jobs,
             )
         })? {
-            verify_checkpoint_source(archive_path, &source_hash, &BTreeSet::new(), options)?;
+            verify_checkpoint_source(
+                archive_path,
+                &file,
+                &bytes,
+                &source_hash,
+                &BTreeSet::new(),
+                options,
+            )?;
             timings.cache_restore_seconds = restore_started.elapsed().as_secs_f64();
             timings.selected_files = files.len() as u64;
             timings.selected_bytes = files.iter().map(|file| file.bytes_written).sum();
@@ -439,6 +457,19 @@ pub(super) fn extract_with_session(
         }
     }
     timings.cache_restore_seconds = restore_started.elapsed().as_secs_f64();
+    // A cold small archive gets isolated only after the sealed inventory failed reuse.
+    // Drop borrowed payloads before replacing the direct inspection mapping.
+    drop(selected);
+    bytes.verify(&file, archive_path)?;
+    if bytes.len() as u64 <= crate::source_input::MEMORY_SNAPSHOT_LIMIT {
+        bytes = crate::source_input::map_input(&file, archive_path)?;
+        ensure!(
+            hash_bytes(&bytes) == source_hash,
+            "archive inputs changed before extraction"
+        );
+    }
+    // The inventory already published above covers this identical view.
+    let selected = selected_entries(&bytes, archive_path, options, &mut BTreeMap::new())?;
     if let Some(reporter) = &reporter {
         reporter.announce();
     }
@@ -587,6 +618,8 @@ pub(super) fn extract_with_session(
     // Verify their source generation on worker failure or cancellation too.
     if let Err(source_error) = verify_checkpoint_source(
         archive_path,
+        &file,
+        &bytes,
         &source_hash,
         &created_packs.into_inner().unwrap(),
         options,
@@ -646,18 +679,23 @@ pub(super) fn extract_with_session(
     })
 }
 
+/// Reject changed source generations and invalidate only packs sealed during this attempt.
 fn verify_checkpoint_source(
     archive: &Path,
+    file: &File,
+    view: &crate::source_input::InputMap,
     source_hash: &str,
     created_packs: &BTreeSet<PathBuf>,
     options: &ExtractOptions,
 ) -> Result<()> {
-    let source_error = match hash_file(archive) {
+    let source_error = match view.verify(file, archive).and_then(|()| hash_file(archive)) {
         Ok(actual) if actual == source_hash => return Ok(()),
         Ok(_) => color_eyre::eyre::eyre!(
             "archive inputs changed during extraction; refusing a mixed checkpoint generation"
         ),
-        Err(error) => error.wrap_err("cannot verify archive checkpoint source after extraction"),
+        Err(error) => error.wrap_err(
+            "archive inputs changed: cannot verify archive checkpoint source after extraction",
+        ),
     };
     let mut directories = BTreeSet::new();
     for pack in created_packs {
@@ -1086,6 +1124,7 @@ fn validate_pack_layout(
     Ok(layout)
 }
 
+/// Validate and restore an immutable converter-owned sealed pack without copying it.
 fn read_pack(
     path: &Path,
     source_hash: &str,
@@ -1098,9 +1137,7 @@ fn read_pack(
         (16..=(MAX_FILE_BYTES + MAX_INDEX_BYTES + 16) as u64).contains(&file_len),
         "archive pack size exceeds limit"
     );
-    // SAFETY: read-only mapping of a pack file this process does not write while it is mapped.
-    // An outside truncation or in-place rewrite would fault reads of the map; that
-    // risk is accepted here (#633).
+    // SAFETY: sealed packs are converter-owned and atomically published, never truncated in place.
     let bytes = unsafe { Mmap::map(&file) }?;
     ensure!(
         bytes.len() <= MAX_FILE_BYTES + MAX_INDEX_BYTES + 16,
@@ -1222,36 +1259,40 @@ pub(crate) fn prune_stale_reader_packs(
     Ok(())
 }
 
+/// Inspect only the bounded header/index of an immutable converter-owned pack.
 fn pack_reader_version(path: &Path, source_hash: &str, recipe: &str) -> Option<u32> {
-    let file = File::open(path).ok()?;
-    let file_len = file.metadata().ok()?.len();
-    if !(16..=(MAX_FILE_BYTES + MAX_INDEX_BYTES + 16) as u64).contains(&file_len) {
-        return None;
-    }
-    // SAFETY: read-only mapping of a pack file this process does not write while it is mapped.
-    // An outside truncation or in-place rewrite would fault reads of the map; that
-    // risk is accepted here (#633).
-    let bytes = unsafe { Mmap::map(&file) }.ok()?;
-    if bytes.len() < 16
-        || bytes.len() > MAX_FILE_BYTES + MAX_INDEX_BYTES + 16
-        || &bytes[..8] != PACK_MAGIC
-    {
-        return None;
-    }
-    let length = usize::try_from(u64::from_le_bytes(bytes[8..16].try_into().ok()?)).ok()?;
-    if length > MAX_INDEX_BYTES || length > bytes.len() - 16 {
-        return None;
-    }
-    let index: PackIndex = serde_json::from_slice(&bytes[16..16 + length]).ok()?;
-    if !matches!(index.version, 1 | PACK_VERSION)
-        || index.source_hash != source_hash
-        || index.recipe != recipe
-    {
-        return None;
-    }
+    // silent-ok: an unreadable or mismatched pack is not reusable; the caller rebuilds it.
+    checked_pack_reader_version(path, source_hash, recipe).ok()
+}
+
+/// The bounded header/index checks behind `pack_reader_version`, with the reason for each refusal.
+fn checked_pack_reader_version(path: &Path, source_hash: &str, recipe: &str) -> Result<u32> {
+    let mut file = File::open(path)?;
+    let file_len = file.metadata()?.len();
+    ensure!(
+        (16..=(MAX_FILE_BYTES + MAX_INDEX_BYTES + 16) as u64).contains(&file_len),
+        "pack size {file_len} is outside the accepted range"
+    );
+    let mut header = [0; 16];
+    file.read_exact(&mut header)?;
+    ensure!(&header[..8] == PACK_MAGIC, "pack magic mismatch");
+    let length = usize::try_from(u64::from_le_bytes(header[8..16].try_into()?))?;
+    ensure!(
+        length <= MAX_INDEX_BYTES && length as u64 <= file_len - 16,
+        "pack index length {length} is out of range"
+    );
+    let mut bytes = vec![0; length];
+    file.read_exact(&mut bytes)?;
+    let index: PackIndex = serde_json::from_slice(&bytes)?;
+    ensure!(
+        matches!(index.version, 1 | PACK_VERSION)
+            && index.source_hash == source_hash
+            && index.recipe == recipe,
+        "pack version, source or recipe does not match"
+    );
     let base = 16 + length;
-    validate_pack_layout(&index, base, bytes.len()).ok()?;
-    Some(index.reader_version)
+    validate_pack_layout(&index, base, usize::try_from(file_len)?)?;
+    Ok(index.reader_version)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2036,8 +2077,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn source_replacement_invalidates_only_new_or_repaired_checkpoint_packs() {
-        // Atomic replacement keeps the mapped inode immutable. In-place writes
-        // to the source would violate Mmap's safety contract and are not tested.
+        // Atomic replacement keeps the captured source bytes unchanged while
+        // final source verification rejects the changed pathname.
         for existing in ["missing", "verified", "corrupt"] {
             let directory = tempfile::tempdir().unwrap();
             let archive = fixture(
@@ -3116,5 +3157,106 @@ mod tests {
             }
             fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
         }
+    }
+
+    /// Warm Windows reuse retains its direct inspection map instead of copying even a small input.
+    #[test]
+    #[cfg(windows)]
+    fn warm_archive_reuse_does_not_snapshot_the_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = fixture(
+            directory.path(),
+            "WarmMod.bsa",
+            &[("scripts/a.pex", b"original")],
+        );
+        let cache = directory.path().join("cache");
+        let cold = extract(
+            &archive,
+            &directory.path().join("cold-vfs"),
+            Path::new("unused"),
+            &cache,
+            None,
+            &options(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let attempted = AtomicBool::new(false);
+        let truncated = AtomicBool::new(false);
+        let progress = |progress: super::super::ExtractionProgress| {
+            if progress.completed_files > 0 && !attempted.swap(true, Ordering::AcqRel) {
+                // The open must succeed, so only set_len(0) can be blocked by the live map.
+                let result = File::options()
+                    .write(true)
+                    .open(&archive)
+                    .expect("open warm source for write")
+                    .set_len(0);
+                truncated.store(result.is_ok(), Ordering::Release);
+            }
+        };
+        let warm = extract(
+            &archive,
+            &directory.path().join("warm-vfs"),
+            &cache,
+            &cache,
+            Some(&cold.cache_entry),
+            &options(),
+            Some(&progress),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(attempted.load(Ordering::Acquire));
+        assert!(
+            !truncated.load(Ordering::Acquire),
+            "warm reuse must keep Windows's mapped-source truncation protection"
+        );
+        assert!(warm.cache_hit);
+        assert_eq!(
+            fs::read(directory.path().join("warm-vfs/scripts/a.pex")).unwrap(),
+            b"original"
+        );
+    }
+
+    /// A cold small archive keeps its private snapshot and rejects the changed source generation.
+    #[test]
+    #[cfg(windows)]
+    fn archive_snapshot_allows_external_truncation_then_rejects_changed_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = fixture(
+            directory.path(),
+            "MutableMod.bsa",
+            &[("scripts/a.pex", b"original")],
+        );
+        let cache = directory.path().join("cache");
+        let attempted = AtomicBool::new(false);
+        let truncated = AtomicBool::new(false);
+        let observer = |event| {
+            if matches!(event, WriterEvent::Sealed) && !attempted.swap(true, Ordering::AcqRel) {
+                let result = File::options()
+                    .write(true)
+                    .open(&archive)
+                    .unwrap()
+                    .set_len(0);
+                truncated.store(result.is_ok(), Ordering::Release);
+            }
+        };
+        let result = extract(
+            &archive,
+            &directory.path().join("vfs"),
+            Path::new("unused"),
+            &cache,
+            None,
+            &options(),
+            None,
+            None,
+            Some(&observer),
+        );
+        assert!(attempted.load(Ordering::Acquire));
+        assert!(truncated.load(Ordering::Acquire), "source is still mapped");
+        let error = result.unwrap_err();
+        assert!(format!("{error:#}").contains("archive inputs changed"));
+        assert!(packs(&cache).is_empty());
     }
 }
