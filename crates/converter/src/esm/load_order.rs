@@ -486,6 +486,21 @@ pub struct StableId {
     pub local_id: u32,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// A deterministic source change after the order is read, before its value is used.
+    pub(crate) static AFTER_LOAD_ORDER_READ: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn after_load_order_read_for_test() {
+    let hook = AFTER_LOAD_ORDER_READ.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 /// Validated plugin order with forward mappings and constant-time ownership lookup.
 #[derive(Clone, Debug)]
 pub struct LoadOrder {
@@ -502,7 +517,7 @@ impl LoadOrder {
     /// This strict API keeps metadata aligned with every supplied path; callers must
     /// remove cyclic, inverted and overflow plugins and their dependents before reading it.
     pub fn read(paths: &[PathBuf]) -> Result<Self> {
-        Self::from_metadata_readers(paths.iter().map(|path| {
+        let order = Self::from_metadata_readers(paths.iter().map(|path| {
             let name = normalize_plugin_name(
                 &path
                     .file_name()
@@ -510,7 +525,10 @@ impl LoadOrder {
                     .to_string_lossy(),
             );
             Ok((name, move || parse_plugin_metadata(path)))
-        }))
+        }))?;
+        #[cfg(test)]
+        after_load_order_read_for_test();
+        Ok(order)
     }
 
     /// Rebuild the same validated slot/master authority from immutable stored header facts.
