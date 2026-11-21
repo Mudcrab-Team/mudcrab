@@ -77,3 +77,20 @@ fn g7_layout_rejects_prior_and_lower_layer_producers() {
         assert!(validate_archived_cache(archived).is_err());
     }
 }
+
+/// Producer 14 changes what zero and negative Position Range rules mean, so producer-13 caches
+/// must rebuild instead of keeping placeholder slots for negative ranges.
+#[test]
+fn retail_range_policy_rejects_v13_and_accepts_v14() {
+    for (version, accepted) in [(13, false), (14, true)] {
+        let cache = GrassCache {
+            version,
+            types: vec![],
+            cells: vec![],
+        };
+        let bytes = rkyv::to_bytes::<Error>(&cache).unwrap();
+        let archived = rkyv::access::<ArchivedGrassCache, Error>(&bytes).unwrap();
+        assert_eq!(validate_archived_cache(archived).is_ok(), accepted);
+    }
+    assert_eq!(GRASS_CACHE_VERSION, 14);
+}

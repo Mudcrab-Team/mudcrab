@@ -107,15 +107,16 @@ pub fn water_allowed(height: f32, water: Option<f32>, distance: u16, mode: u32) 
     }
 }
 
-/// The authored range bounds grid spacing; zero range uses the configured minimum safely.
+/// Retail rule (RF-GRASS-012): no candidates for a zero range, spacing cap for a negative one.
 fn grid_side(position_range: f32, minimum: f32) -> usize {
-    if position_range < 0.0 {
-        return 0;
-    }
     let authored = if position_range > 0.0 {
         (256.0 / position_range) as usize
-    } else {
+    } else if position_range < 0.0 {
+        // RF-GRASS-012: the unsigned compare treats a negative range as unbounded, so the spacing cap wins.
         usize::MAX
+    } else {
+        // RF-GRASS-012: 256/0 truncates out of range to zero, so a zero range places nothing.
+        0
     };
     authored.min((256.0 / minimum) as usize)
 }

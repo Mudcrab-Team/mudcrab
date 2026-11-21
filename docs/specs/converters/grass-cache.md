@@ -58,7 +58,7 @@ Incomplete grass rules and missing model paths retain non-emitting species slots
 unresolved/deleted species links are silently filtered. Empty model paths mark these
 placeholders. Decodable rule fields retain the reference's conditional random draws;
 missing DATA fields use zero defaults, and nonfinite fields are cleared safely.
-Negative spacing produces no grid. Placeholders count toward the per-texture and
+Placeholders count toward the per-texture and
 per-spot limits and never publish instances. Raw database records remain available for diagnostics.
 Incomplete or invalid rules that have a model, and invalid terrain cells, produce
 bounded report warnings and mark the published run incomplete. Healthy neighboring
@@ -298,9 +298,11 @@ converted-world path. Producer 10 rejects producer-9 masks even when their other
 inputs happen to match. Mesh, texture and terrain cache identities are unchanged by
 this grass policy change.
 
-The current producer (`shared::grass::GRASS_CACHE_VERSION`, 13) combines MODS-aware obstruction masks with reference-order
-placement, retained non-emitting species slots and item-local LAND recovery. It
-rejects prior G7 producer-11 artifacts and the lower layers' producer-12 layout.
+The current producer (`shared::grass::GRASS_CACHE_VERSION`, 14) combines MODS-aware obstruction masks with reference-order
+placement, retained non-emitting species slots and item-local LAND recovery. Producer 14 adopts
+retail rule (RF-GRASS-012): a zero Position Range places no candidates and a negative one uses the
+minimum-spacing limit, so it rejects producer-13 caches. It also rejects prior G7 producer-11 artifacts and the lower layers'
+producer-12 layout.
 G2 through G6 use `GRASS_CACHE_VERSION` 12 to restore model-less selection slots. Mesh, texture and terrain cache
 identities remain independently versioned.
 

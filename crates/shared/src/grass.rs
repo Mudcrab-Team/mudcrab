@@ -2,8 +2,9 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// Version thirteen combines reference-order slots and LAND recovery with restored lower-layer slots.
-pub const GRASS_CACHE_VERSION: u32 = 13;
+/// Version fourteen retains a negative position range; retail rule (RF-GRASS-012) places it on the
+/// spacing-capped grid.
+pub const GRASS_CACHE_VERSION: u32 = 14;
 pub const GRASS_BLEND_SIDE: usize = 17;
 /// Mask samples per quadrant side (32 Creation units each). An engineering approximation, not a retail value.
 pub const GRASS_EXCLUSION_SIDE: usize = 64;
@@ -103,8 +104,7 @@ pub fn validate_archived_cache(cache: &ArchivedGrassCache) -> Result<(), &'stati
             return Err("grass types must have sorted unique nonzero IDs");
         }
         previous = Some(id);
-        if (rule.position_range < 0.0 && !rule.model_path.is_empty())
-            || rule.water_comparison > 7
+        if rule.water_comparison > 7
             || [
                 rule.position_range,
                 rule.height_range,
