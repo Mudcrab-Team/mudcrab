@@ -676,6 +676,11 @@ door transitions involving it, and related room rows. Room graph publication exc
 unusable placements before projecting markers or memberships; it cannot recreate an origin
 from their canonical bytes. Incoming authored links may still name the retained canonical record.
 
+The typed record reader can retain a first definition without `NAME` as a target for
+package and faction links. Runtime plugin export requires exactly one nonzero base `NAME`.
+It omits the record, its `references` and `exterior_spatial` rows, and resolves incoming
+typed links as it would for an absent target.
+
 The reference flag and enable-parent columns preserve winning raw-record
 metadata for initial spawn filtering (#165) and later object LOD (#106).
 The engine resolves parent chains before spawning. With no parent, header bit
@@ -792,6 +797,9 @@ Rules:
   sources with no detail row. The first restoration on an older pack builds the index in
   its edit transaction. Later edits reread changed sources and look up incoming slots by
   target ID. Unrelated columns, including owner rank, retain their values.
+  `reference_authored_changes(reference_id INTEGER PRIMARY KEY)` queues source IDs for
+  reindexing. Placement updates add IDs explicitly or through the trigger on updates to
+  `references.data`. The refresh clears the queue in the same transaction.
   Placement layers also refresh affected links in the same transaction.
   For an unedited in-house source, the converter uses the original plugin payload and master
   list to recover authored IDs that full conversion cleared. A slot stays NULL if surviving
