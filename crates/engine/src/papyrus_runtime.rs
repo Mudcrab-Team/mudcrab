@@ -93,8 +93,8 @@ impl ExecutionBudget {
     }
 }
 
-/// Production defaults. These are engineering guards, not retail values: the private retail
-/// registry has no Papyrus rows, and the third-party VM notes only describe time slicing.
+/// Production defaults. These are engineering guards, not retail values, because the private
+/// retail registry has no Papyrus rows and the third-party VM notes only describe time slicing.
 /// The whole VM may hold 64 MiB; one script entry may use 2,000,000 interrupts; all entries
 /// in one frame may use 10,000,000. They are named here so tests and the engine do not
 /// scatter the numbers.

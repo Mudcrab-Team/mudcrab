@@ -10,9 +10,9 @@
 //! animation graph for `PlayAnimation`, and placing a reference that was never spawned.
 //! Each gap logs when a script reaches it.
 //!
-//! Where retail differs: events fire when the reference spawns, before its model has loaded
-//! (retail sends `OnLoad` once the 3D is loaded), and the E key reaches every scripted
-//! reference whose model the ray hits (retail shows an activation prompt only for
+//! Where retail differs (unverified): events fire when the reference spawns, before its model
+//! has loaded (retail sends `OnLoad` once the 3D is loaded), and the E key reaches every
+//! scripted reference whose model the ray hits (retail shows an activation prompt only for
 //! activatable references). `docs/specs/engine/papyrus-host.md` lists the rest.
 
 use crate::{

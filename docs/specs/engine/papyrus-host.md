@@ -63,13 +63,14 @@ A script fault (a call on `None`, a missing method or class) logs once per disti
 returns `None`; the script carries on. A script error ends only that entry. Nothing a script does
 reaches the engine as a panic or a returned error.
 
-Three guards bound the work. They are engineering guards, not retail values (the retail registry
-has no Papyrus rows): 2,000,000 interrupts for one entry, 10,000,000 for all entries in one frame,
-and 64 MiB for the VM. An entry that runs out fails and logs; an entry that starts after the frame
-total is spent fails the same way.
+Three guards bound the work. They are engineering guards, not retail values, because the retail
+registry has no Papyrus rows: 2,000,000 interrupts for one entry, 10,000,000 for all entries in
+one frame, and 64 MiB for the VM. An entry that runs out fails and logs; an entry that starts
+after the frame total is spent fails the same way.
 
-## 4. Where Mudcrab differs from retail
+## 4. Differences from the original game
 
+These points are unverified: the repository holds no captured source that records them.
 - Retail runs scripts in short time slices on the game thread. Mudcrab runs each entry to the end
   inside its budget.
 - Retail sends `OnLoad` when the reference's 3D is loaded. Mudcrab sends it at spawn, before the
