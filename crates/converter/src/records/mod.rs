@@ -855,6 +855,7 @@ fn read_plugins_with_prepared(
     let mut unknown_cell_scope = false;
     let mut unreadable_refs = HashMap::new();
     let mut linked_marker_candidates = HashMap::new();
+    let mut unresolved_linked_markers = HashSet::new();
     let mut recovery = decoder::RecoveryCandidates::default();
     let mut gmst_ids: HashMap<String, u32> = HashMap::new();
     let mut gmst_aliases: HashMap<u32, u32> = HashMap::new();
@@ -926,7 +927,17 @@ fn read_plugins_with_prepared(
                     let id = history.borrow().last().and_then(|entry| entry.form_id);
                     unreadable_refs.insert(id.filter(|&id| id != 0), position);
                 } else if has_authored_occluder_links(&record, index, order) {
-                    linked_marker_candidates.insert(record.form_id, position);
+                    let identity = source_identity::resolve(
+                        &record.record_type,
+                        record.source_form_id,
+                        index,
+                        order,
+                    );
+                    if identity.state == source_identity::SourceIdentityState::Resolved {
+                        linked_marker_candidates.insert(record.form_id, (position, identity));
+                    } else {
+                        unresolved_linked_markers.insert(position);
+                    }
                 }
             }
             if record.record_type == *b"TES4" {
@@ -1259,7 +1270,10 @@ fn read_plugins_with_prepared(
     }
     // Only a later admitted record (including a tombstone) with proven native
     // ownership settles the identity of an unread replacement.
-    if !unreadable_refs.is_empty() || !linked_marker_candidates.is_empty() {
+    if !unreadable_refs.is_empty()
+        || !linked_marker_candidates.is_empty()
+        || !unresolved_linked_markers.is_empty()
+    {
         for entry in result.history.iter().filter(|entry| entry.accepted) {
             let Some(id) = entry.form_id else { continue };
             let position = (entry.plugin_index, entry.source_record_offset);
@@ -1275,16 +1289,27 @@ fn read_plugins_with_prepared(
             {
                 unreadable_refs.remove(&Some(id));
             }
-            // The accepted marker itself accounts for its fully read XORD.
+            // An admitted occurrence accounts for its own XORD even without native ownership.
+            unresolved_linked_markers.remove(&position);
             if linked_marker_candidates
                 .get(&id)
-                .is_some_and(|&candidate| candidate <= position)
+                .is_some_and(|(candidate, identity)| {
+                    *candidate <= position
+                        && *identity
+                            == source_identity::resolve(
+                                &entry.record_type,
+                                entry.source_form_id,
+                                entry.plugin_index as usize,
+                                order,
+                            )
+                })
             {
                 linked_marker_candidates.remove(&id);
             }
         }
-        result.unverified_occluder_links |=
-            !unreadable_refs.is_empty() || !linked_marker_candidates.is_empty();
+        result.unverified_occluder_links |= !unreadable_refs.is_empty()
+            || !linked_marker_candidates.is_empty()
+            || !unresolved_linked_markers.is_empty();
     }
     if unknown_cell_scope {
         result.damaged_cell_groups.extend(
