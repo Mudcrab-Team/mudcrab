@@ -333,7 +333,12 @@ pub(super) fn refresh_incoming(
     tx: &Transaction<'_>,
     unavailable: &[u32],
     available: &HashSet<u32>,
+    changed_sources: &[u32],
 ) -> Result<()> {
+    let indexed = has_table(tx, "reference_authored_targets")?;
+    if indexed || !available.is_empty() {
+        index_authored_targets(tx, changed_sources, !indexed)?;
+    }
     if unavailable.is_empty() && available.is_empty() {
         return Ok(());
     }
@@ -383,10 +388,127 @@ pub(super) fn refresh_incoming(
     if kinds.is_empty() {
         return Ok(());
     }
-    let restored_target = |value: Option<u32>, allowed: &[&[u8; 4]]| {
-        value.filter(|id| kinds.get(id).is_some_and(|kind| allowed.contains(&kind)))
-    };
+    let targets = serde_json::json!(kinds.keys().collect::<Vec<_>>()).to_string();
+    let mut entries = tx.prepare_cached(
+        "SELECT reference_id, position, slot, target_id FROM reference_authored_targets
+         WHERE target_id IN (SELECT value FROM json_each(?1))",
+    )?;
+    let mut linked = tx.prepare_cached(
+        "UPDATE reference_linked_refs SET linked_ref_id=?3
+         WHERE reference_id=?1 AND position=?2 AND linked_ref_id IS NULL",
+    )?;
+    let mut keyword = tx.prepare_cached(
+        "UPDATE reference_linked_refs SET keyword_id=?3
+         WHERE reference_id=?1 AND position=?2 AND keyword_id IS NULL",
+    )?;
+    let mut parent = tx.prepare_cached(
+        "UPDATE reference_activate_parents SET parent_ref_id=?3
+         WHERE reference_id=?1 AND position=?2 AND parent_ref_id IS NULL",
+    )?;
+    let mut attached = tx.prepare_cached(
+        "INSERT INTO reference_details(reference_id,attached_ref_id) VALUES(?1,?2)
+         ON CONFLICT(reference_id) DO UPDATE SET attached_ref_id=excluded.attached_ref_id
+         WHERE reference_details.attached_ref_id IS NULL",
+    )?;
+    let mut owner = tx.prepare_cached(
+        "INSERT INTO reference_details(reference_id,owner_id) VALUES(?1,?2)
+         ON CONFLICT(reference_id) DO UPDATE SET owner_id=excluded.owner_id
+         WHERE reference_details.owner_id IS NULL",
+    )?;
+    let mut rows = entries.query([targets])?;
+    while let Some(row) = rows.next()? {
+        let id: u32 = row.get(0)?;
+        let position: i64 = row.get(1)?;
+        let slot: String = row.get(2)?;
+        let target: u32 = row.get(3)?;
+        let kind = &kinds[&target];
+        match slot.as_str() {
+            "XLKR.ref" if LINKED_REFERENCE.contains(&kind) => {
+                linked.execute(params![id, position, target])?
+            }
+            "XLKR.keyword" if LINKED_KEYWORD.contains(&kind) => {
+                keyword.execute(params![id, position, target])?
+            }
+            "XAPR" if LINKED_REFERENCE.contains(&kind) => {
+                parent.execute(params![id, position, target])?
+            }
+            "XATR" if ATTACHED_REFERENCE.contains(&kind) => {
+                attached.execute(params![id, target])?
+            }
+            "XOWN" if OWNER.contains(&kind) => owner.execute(params![id, target])?,
+            _ => continue,
+        };
+    }
+    Ok(())
+}
 
+pub(super) fn create_authored_index(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE reference_authored_targets (
+            reference_id INTEGER NOT NULL, slot TEXT NOT NULL, position INTEGER NOT NULL,
+            target_id INTEGER NOT NULL, PRIMARY KEY(reference_id,slot,position)
+        );
+        CREATE INDEX idx_reference_authored_target ON reference_authored_targets(target_id);
+        CREATE TABLE reference_authored_changes (reference_id INTEGER PRIMARY KEY);
+        CREATE TRIGGER changed_authored_placement AFTER UPDATE OF data ON [references] BEGIN
+            INSERT OR IGNORE INTO reference_authored_changes VALUES(NEW.id);
+        END;",
+    )
+}
+
+fn index_slots<'a>(
+    tx: &Transaction<'_>,
+    id: u32,
+    links: impl Iterator<Item = &'a [u8]>,
+    parents: impl Iterator<Item = &'a [u8]>,
+    owner: Option<u32>,
+    attached: Option<u32>,
+) -> Result<()> {
+    let index = |slot: &str, position: usize, target: Option<u32>| -> Result<()> {
+        if let Some(target) = target.filter(|&target| target != 0) {
+            tx.prepare_cached("INSERT INTO reference_authored_targets(reference_id,slot,position,target_id) VALUES(?1,?2,?3,?4)")?
+                .execute(params![id, slot, position as i64, target])?;
+        }
+        Ok(())
+    };
+    for (position, (key, target)) in linked_refs(links).enumerate() {
+        index("XLKR.keyword", position, key)?;
+        index("XLKR.ref", position, target)?;
+    }
+    for (position, field) in activate_parents(parents).enumerate() {
+        index("XAPR", position, u32_at(field, 0))?;
+    }
+    index("XOWN", 0, owner)?;
+    index("XATR", 0, attached)
+}
+
+/// Older snapshots can recover typed links only after their plugin provenance is installed.
+/// Backfill once, in the first edit transaction that needs recovery. Later edits replace
+/// index entries only for the sources they changed.
+fn index_authored_targets(tx: &Transaction<'_>, changed: &[u32], backfill: bool) -> Result<()> {
+    if backfill {
+        create_authored_index(tx)?;
+    } else {
+        // Placement writers can update their archived bytes independently of the canonical record.
+        tx.prepare_cached(
+            "INSERT OR IGNORE INTO reference_authored_changes SELECT value FROM json_each(?1)",
+        )?
+        .execute([serde_json::json!(changed).to_string()])?;
+        let empty: bool = tx.query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM reference_authored_changes)",
+            [],
+            |row| row.get(0),
+        )?;
+        if empty {
+            return Ok(());
+        }
+        tx.execute("DELETE FROM reference_authored_targets WHERE reference_id IN reference_authored_changes", [])?;
+    }
+    let source_filter = if backfill {
+        ""
+    } else {
+        "WHERE r.id IN reference_authored_changes"
+    };
     let layered = if has_table(tx, "room_placement_edits")? {
         "EXISTS(SELECT 1 FROM room_placement_edits WHERE form_id=r.id)"
     } else {
@@ -416,57 +538,18 @@ pub(super) fn refresh_incoming(
     } else {
         (String::new(), "NULL, NULL, NULL, NULL")
     };
-    // A source with only an unresolved detail can have no detail row.
-    // Materialize the candidate IDs before updating these same tables.
     let mut sources = tx.prepare(&format!(
-        "WITH candidates(id) AS MATERIALIZED (
-             SELECT reference_id FROM reference_linked_refs WHERE ?1 AND linked_ref_id IS NULL
-             UNION SELECT reference_id FROM reference_linked_refs WHERE ?2 AND keyword_id IS NULL
-             UNION SELECT reference_id FROM reference_activate_parents WHERE ?1 AND parent_ref_id IS NULL
-             UNION SELECT reference_id FROM reference_details
-                   WHERE (?3 AND attached_ref_id IS NULL) OR (?4 AND owner_id IS NULL)
-             UNION SELECT id FROM [references] r WHERE (?3 OR ?4)
-                   AND NOT EXISTS(SELECT 1 FROM reference_details WHERE reference_id=r.id)
-         )
-         SELECT r.id,
+        "SELECT r.id,
                 CASE WHEN subset.form_id IS NOT NULL THEN coalesce(subset.data,r.data,raw.data)
                      WHEN {layered} THEN r.data ELSE coalesce(raw.data,r.data) END,
                 {native_data},
                 CASE WHEN subset.data IS NOT NULL THEN coalesce(r.data,raw.data) END
-         FROM candidates JOIN [references] r ON r.id=candidates.id
+         FROM [references] r
          LEFT JOIN records raw ON raw.form_id=r.id
          LEFT JOIN reference_link_subset_sources subset ON subset.form_id=r.id
-         {native_join}"
+         {native_join} {source_filter}"
     ))?;
-    let mut linked = tx.prepare_cached(
-        "UPDATE reference_linked_refs SET linked_ref_id=?3
-         WHERE reference_id=?1 AND position=?2 AND linked_ref_id IS NULL",
-    )?;
-    let mut keyword = tx.prepare_cached(
-        "UPDATE reference_linked_refs SET keyword_id=?3
-         WHERE reference_id=?1 AND position=?2 AND keyword_id IS NULL",
-    )?;
-    let mut parent = tx.prepare_cached(
-        "UPDATE reference_activate_parents SET parent_ref_id=?3
-         WHERE reference_id=?1 AND position=?2 AND parent_ref_id IS NULL",
-    )?;
-    let mut attached = tx.prepare_cached(
-        "INSERT INTO reference_details(reference_id,attached_ref_id) VALUES(?1,?2)
-         ON CONFLICT(reference_id) DO UPDATE SET attached_ref_id=excluded.attached_ref_id
-         WHERE reference_details.attached_ref_id IS NULL",
-    )?;
-    let mut owner = tx.prepare_cached(
-        "INSERT INTO reference_details(reference_id,owner_id) VALUES(?1,?2)
-         ON CONFLICT(reference_id) DO UPDATE SET owner_id=excluded.owner_id
-         WHERE reference_details.owner_id IS NULL",
-    )?;
-    let can_restore = |allowed: &[&[u8; 4]]| kinds.values().any(|kind| allowed.contains(&kind));
-    let mut sources = sources.query(params![
-        can_restore(LINKED_REFERENCE),
-        can_restore(LINKED_KEYWORD),
-        can_restore(ATTACHED_REFERENCE),
-        can_restore(OWNER),
-    ])?;
+    let mut sources = sources.query([])?;
     while let Some(row) = sources.next()? {
         let id: u32 = row.get(0)?;
         let Some(blob): Option<Vec<u8>> = row.get(1)? else {
@@ -515,19 +598,6 @@ pub(super) fn refresh_incoming(
                 .filter_map(move |(sig, data)| (sig == tag && use_canonical).then_some(data));
             recovered.chain(effective)
         };
-        for (position, (key, target)) in linked_refs(fields(*b"XLKR")).enumerate() {
-            if let Some(value) = restored_target(key, LINKED_KEYWORD) {
-                keyword.execute(params![id, position as i64, value])?;
-            }
-            if let Some(value) = restored_target(target, LINKED_REFERENCE) {
-                linked.execute(params![id, position as i64, value])?;
-            }
-        }
-        for (position, field) in activate_parents(fields(*b"XAPR")).enumerate() {
-            if let Some(value) = restored_target(u32_at(field, 0), LINKED_REFERENCE) {
-                parent.execute(params![id, position as i64, value])?;
-            }
-        }
         // Older typed subset blobs contain only XLKR and XAPR. Recover XOWN and
         // XATR from their placement payload when the auxiliary blob lacks them.
         let placement = row
@@ -552,14 +622,16 @@ pub(super) fn refresh_incoming(
             });
             sized(data, &[4]).and_then(|field| u32_at(field, 0))
         };
-        if let Some(value) = restored_target(form_id(*b"XOWN"), OWNER) {
-            owner.execute(params![id, value])?;
-        }
-        let attachment = form_id(*b"XATR");
-        if let Some(value) = restored_target(attachment, ATTACHED_REFERENCE) {
-            attached.execute(params![id, value])?;
-        }
+        index_slots(
+            tx,
+            id,
+            fields(*b"XLKR"),
+            fields(*b"XAPR"),
+            form_id(*b"XOWN"),
+            form_id(*b"XATR"),
+        )?;
     }
+    tx.execute("DELETE FROM reference_authored_changes", [])?;
     Ok(())
 }
 
@@ -572,6 +644,16 @@ pub(crate) fn insert(
 ) -> Result<()> {
     let id = record.form_id;
     let view = SubrecordView::new(&record.subrecords);
+    let source = source.filter(|(source, order)| {
+        let supplier = source.load_order as usize;
+        supplier < order.names.len()
+            && source_identity::header_runtime_id(
+                &source.record_type,
+                source.source_form_id,
+                supplier,
+                order,
+            ) == Some(id)
+    });
     let recovered = source.map(|(source, order)| {
         let fields = record.subrecords.iter().filter_map(|(tag, bytes)| {
             // silent-ok: Only four-byte tags can identify authored link fields.
@@ -594,7 +676,19 @@ pub(crate) fn insert(
         )?
         .execute(params![id, data])?;
     }
-    let link_fields = SubrecordView::new(recovered.as_deref().unwrap_or(&record.subrecords));
+    let authored = SubrecordView::new(recovered.as_deref().unwrap_or(&record.subrecords));
+    if !context.subset {
+        let id_field = |tag| sized(authored.find(tag), &[4]).and_then(|data| u32_at(data, 0));
+        index_slots(
+            tx,
+            id,
+            authored.find_all(b"XLKR"),
+            authored.find_all(b"XAPR"),
+            id_field(b"XOWN"),
+            id_field(b"XATR"),
+        )?;
+    }
+    let link_fields = if context.subset { &authored } else { &view };
     for table in REFERENCE_LINK_TABLES {
         tx.prepare_cached(&format!("DELETE FROM {table} WHERE reference_id=?1"))?
             .execute([id])?;
@@ -635,7 +729,7 @@ pub(crate) fn insert(
             targets,
         )
     };
-    let owner = link(&link_fields, b"XOWN", OWNER)?;
+    let owner = link(link_fields, b"XOWN", OWNER)?;
     let owner_rank = sized(view.find(b"XRNK"), &[4]).and_then(|bytes| u32_at(bytes, 0));
     let activate_parent_flags = sized(view.find(b"XAPD"), &[1]).map(|bytes| bytes[0]);
     // XLOC: level byte, three unused, key FormID, flags byte (0x04 leveled lock), padding. It is
@@ -657,7 +751,7 @@ pub(crate) fn insert(
     let location = link(&view, b"XLCN", &[b"LCTN"])?;
     let location_ref_type = link(&view, b"XLRL", &[b"LCRT", b"LCTN"])?;
     let encounter_zone = link(&view, b"XEZN", &[b"ECZN"])?;
-    let attached = link(&link_fields, b"XATR", ATTACHED_REFERENCE)?;
+    let attached = link(link_fields, b"XATR", ATTACHED_REFERENCE)?;
     // A later target-only edit can fill an authored slot on a subset source.
     // Complete snapshots retain their sparse projection for invalid detail links.
     let pending_detail = context.subset

@@ -7904,6 +7904,22 @@ fn first_placement_with_nonfinite_transform_keeps_valid_neighbors() {
         record(b"REFR", 0x850, 0x20, Vec::new()),
     );
     for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let base_only = data.join(format!("{reader:?}-base.db"));
+        EsmParser::convert_plugins_with_reader(
+            std::slice::from_ref(&base),
+            &base_only,
+            reader,
+            data,
+        )
+        .unwrap();
+        let db = rusqlite::Connection::open(base_only).unwrap();
+        for (id, expected_cell) in [(0x850, Some(0x900)), (0x851, None), (0x852, Some(0x900))] {
+            assert_eq!(
+                placement_winner_cell(&db, id),
+                expected_cell,
+                "{reader:?} {id:#x}"
+            );
+        }
         let output = data.join(format!("{reader:?}.db"));
         let records = EsmParser::convert_plugins_with_reader(
             &[base.clone(), deletion.clone()],
@@ -9152,7 +9168,9 @@ async fn deleted_base_notices_follow_usable_shadows_and_live_intervals() {
             "Shadows.esp",
             [
                 dependent(0x830, 0x888),
+                deleted(0x830),
                 dependent(0x831, 0x1f),
+                deleted(0x831),
                 deleted(0x832),
             ]
             .concat(),

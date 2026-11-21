@@ -787,8 +787,11 @@ Rules:
   contiguous positions among accepted-length entries, even when a target resolves to NULL. This
   makes legacy projection match the in-house reader's invalid-link clearing behavior.
 - Subset exports refresh incoming `XLKR`, `XAPR`, `XATR` and `XOWN` links when a target is
-  added, deleted, restored or changes record type. The exporter reads each surviving source's
-  effective payload to refill compatible links and preserves unrelated columns, including owner rank.
+  added, deleted, restored or changes record type. Full runtime exports index authored
+  target IDs, source IDs and slot positions in `reference_authored_targets`, including
+  sources with no detail row. The first restoration on an older pack builds the index in
+  its edit transaction. Later edits reread changed sources and look up incoming slots by
+  target ID. Unrelated columns, including owner rank, retain their values.
   Placement layers also refresh affected links in the same transaction.
   For an unedited in-house source, the converter uses the original plugin payload and master
   list to recover authored IDs that full conversion cleared. A slot stays NULL if surviving

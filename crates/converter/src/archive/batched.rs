@@ -317,8 +317,13 @@ pub(super) fn extract_with_session(
     let mut chosen = Vec::new();
     let mut inventory = BTreeMap::new();
     for (name, payload) in raw {
+        if options.selection != ArchiveSelection::All
+            && crate::asset_path::is_authoring_source_name(&name)
+        {
+            continue;
+        }
         let path = safe_relative_path(&name)?;
-        // Validate the whole namespace before filtering: unsupported files do
+        // Validate the runtime namespace before filtering: unsupported files do
         // not conceal traversal or case-folded collisions.
         detect_archive_collision(&mut seen, &path, &name)?;
         if options.selection.includes(&path) {
@@ -382,6 +387,9 @@ pub(super) fn extract_with_session(
     // Missing/corrupt derived blobs fall through to reconstruction from packs.
     if observer.is_none()
         && expected.len() == selected.len()
+        && selected
+            .iter()
+            .all(|entry| expected.contains_key(&entry.path))
         && reusable.is_some()
         && expected.iter().all(|(path, file)| {
             packed.get(path).is_some_and(|packed| {
@@ -1490,6 +1498,35 @@ mod tests {
             fs::read(output.join("meshes/actors/character/animations/mt_idle.hkx")).unwrap(),
             b"clip"
         );
+    }
+
+    #[test]
+    fn filtered_archive_overlay_ignores_encoded_authoring_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("vfs");
+        let cache = dir.path().join("cache");
+        let path = "meshes/test.nif";
+        let options = ExtractOptions {
+            selection: ArchiveSelection::ConverterInputsV1,
+            ..options()
+        };
+        for (name, source, payload, expected) in [
+            ("initial.bsa", path, "first", "first"),
+            (
+                "authoring.bsa",
+                "%43alienteTools/Meshes/Test.NIF",
+                "author",
+                "first",
+            ),
+            ("winner.bsa", path, "last", "last"),
+        ] {
+            let archive = fixture(dir.path(), name, &[(source, payload.as_bytes())]);
+            extract(
+                &archive, &output, &cache, &cache, None, &options, None, None, None,
+            )
+            .unwrap();
+            assert_eq!(fs::read(output.join(path)).unwrap(), expected.as_bytes());
+        }
     }
 
     #[test]

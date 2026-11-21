@@ -3011,6 +3011,7 @@ fn target_allowed(id: u32, kind: Option<[u8; 4]>, field: &FieldSchema) -> bool {
 #[derive(Default)]
 pub(crate) struct DeletedBases(HashMap<u32, Vec<BaseDeletion>>);
 
+#[derive(Clone)]
 struct BaseDeletion {
     priority: u32,
     prior_kind: Option<[u8; 4]>,
@@ -3304,8 +3305,9 @@ impl RecoveryCandidates {
         chain: impl Iterator<Item = &'a DecodedRecord>,
         catalogue: &PlacementCatalogue<'_>,
         validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+        mut deletions: Option<&mut DeletedBases>,
     ) -> (Option<&'a DecodedRecord>, Option<GroupedPlacement>) {
-        let mut previous = None;
+        let mut previous: Option<&DecodedRecord> = None;
         let mut grouped = None;
         for primary in chain {
             for candidate in
@@ -3320,6 +3322,18 @@ impl RecoveryCandidates {
                 ) else {
                     continue;
                 };
+                if let Some(deletions) = deletions.as_deref_mut() {
+                    if candidate.flags & 0x20 != 0 {
+                        deletions.record(
+                            candidate.form_id,
+                            candidate.load_order,
+                            candidate.record_type,
+                            previous.map(|prior| prior.record_type),
+                        );
+                    } else {
+                        deletions.restored(candidate.form_id, candidate.load_order);
+                    }
+                }
                 previous = (candidate.flags & 0x20 == 0).then_some(candidate);
                 grouped = grouped_owner(&resolved, grouped);
                 break;
@@ -3339,28 +3353,55 @@ impl RecoveryCandidates {
     ) {
         let id = tombstone.form_id;
         let previous = records.get(&id);
-        let chain = self.predecessor_chain(id);
-        let prior_kind = previous.and_then(|prior| {
-            if crate::esm::is_placed_record_type(&prior.record_type)
-                || record_contains_deferred(prior)
-            {
-                let catalogue = PlacementCatalogue {
-                    order,
-                    schema,
-                    prepared,
-                    kinds: records,
-                };
-                self.effective_predecessor(chain.iter().chain([prior]), &catalogue, validate)
-                    .0
-                    .map(|record| record.record_type)
-            } else {
-                Some(prior.record_type)
-            }
-        });
+        if previous.is_some_and(|prior| {
+            crate::esm::is_placed_record_type(&prior.record_type) || record_contains_deferred(prior)
+        }) || self.has_queued_predecessor(self.predecessor_chain(id))
+        {
+            let catalogue = PlacementCatalogue {
+                order,
+                schema,
+                prepared,
+                kinds: records,
+            };
+            self.record_replayed_deletion(tombstone, previous, &catalogue, validate);
+        } else {
+            self.deleted.record(
+                id,
+                tombstone.load_order,
+                tombstone.record_type,
+                previous.map(|record| record.record_type),
+            );
+        }
         let previous = records.remove(&id);
-        self.deleted
-            .record(id, tombstone.load_order, tombstone.record_type, prior_kind);
         self.end_predecessor_chain(id, previous);
+    }
+
+    fn record_replayed_deletion(
+        &mut self,
+        tombstone: &DecodedRecord,
+        latest: Option<&DecodedRecord>,
+        catalogue: &PlacementCatalogue<'_>,
+        validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
+    ) {
+        let id = tombstone.form_id;
+        // Validate against the same catalogue while rebuilding this ID's deletion intervals.
+        let mut history = DeletedBases::default();
+        if let Some(events) = self.deleted.0.get(&id) {
+            history.0.insert(id, events.clone());
+        }
+        let (previous, _) = self.effective_predecessor(
+            self.predecessor_chain(id).iter().chain(latest),
+            catalogue,
+            validate,
+            Some(&mut history),
+        );
+        history.record(
+            id,
+            tombstone.load_order,
+            tombstone.record_type,
+            previous.map(|record| record.record_type),
+        );
+        self.deleted.0.extend(history.0);
     }
 
     pub(super) fn end_predecessor_chain(&mut self, id: u32, previous: Option<DecodedRecord>) {
@@ -3437,7 +3478,7 @@ impl RecoveryCandidates {
                         let prior = if next.payload_complete {
                             chain.last()
                         } else {
-                            self.effective_predecessor(chain.iter(), catalogue, validate)
+                            self.effective_predecessor(chain.iter(), catalogue, validate, None)
                                 .0
                         };
                         let failure = if require_complete
@@ -3460,19 +3501,7 @@ impl RecoveryCandidates {
                     }
                     self.record_default_object(&next);
                     if deleted {
-                        let previous = self
-                            .effective_predecessor(
-                                self.predecessor_chain(id).iter(),
-                                catalogue,
-                                validate,
-                            )
-                            .0;
-                        self.deleted.record(
-                            id,
-                            next.load_order,
-                            next.record_type,
-                            previous.map(|record| record.record_type),
-                        );
+                        self.record_replayed_deletion(&next, None, catalogue, validate);
                         self.end_predecessor_chain(id, None);
                         return None;
                     }
@@ -3970,6 +3999,7 @@ pub(crate) fn resolve_deferred(
                                     chain.iter(),
                                     &catalogue,
                                     &mut **validate_candidate.borrow_mut(),
+                                    None,
                                 )
                                 .1
                                 .into_iter()

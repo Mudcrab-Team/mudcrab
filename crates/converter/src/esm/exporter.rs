@@ -680,6 +680,8 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
         DROP TABLE IF EXISTS formid_map;
         DROP TABLE IF EXISTS subset_placement_deletions;
         DROP TABLE IF EXISTS reference_link_subset_sources;
+        DROP TABLE IF EXISTS reference_authored_targets;
+        DROP TABLE IF EXISTS reference_authored_changes;
         DROP TABLE IF EXISTS lod_chunks_spatial;
         DROP TABLE IF EXISTS lod_chunks;
         DROP TABLE IF EXISTS lod_build;
@@ -781,6 +783,9 @@ fn export_records(
     let mut omissions = ProjectionOmissions::default();
     if order.is_some() {
         replace_complete_snapshot(&tx)?;
+        if runtime_views {
+            super::reference_links::create_authored_index(&tx)?;
+        }
         if let Some(paths) = plugin_paths {
             tx.execute("DELETE FROM plugins", [])?;
             super::insert_plugins(&tx, paths).map_err(|error| {
@@ -1131,7 +1136,13 @@ fn export_records(
                         available_link_targets.insert(form_id);
                     }
                 } else {
-                    super::reference_links::insert(&tx, &link_context, record, None)?;
+                    let typed = match (&room_link_sources, order) {
+                        (Some(RoomLinkSources::Typed(decoded)), Some(order)) => {
+                            decoded.records.get(&form_id).map(|source| (source, order))
+                        }
+                        _ => None,
+                    };
+                    super::reference_links::insert(&tx, &link_context, record, typed)?;
                 }
             }
             "LAND" => {
@@ -1336,11 +1347,14 @@ fn export_records(
             .and_then(|(records, order)| Some((records.get(&source.form_id)?, order)));
         super::reference_links::insert(&tx, &link_context, projected, typed)?;
     }
-    super::reference_links::refresh_incoming(
-        &tx,
-        &unavailable_link_targets,
-        &available_link_targets,
-    )?;
+    if order.is_none() {
+        super::reference_links::refresh_incoming(
+            &tx,
+            &unavailable_link_targets,
+            &available_link_targets,
+            &master.keys().copied().collect::<Vec<_>>(),
+        )?;
+    }
     // Derived snapshots like the actor model catalog and the grass tables: only a full load-order
     // export owns them, so the movement annotator's subset export leaves them alone, and
     // diagnostic archives defer them. The emittance pass holds every reference and the records
@@ -4528,9 +4542,13 @@ mod tests {
             .unwrap()
         };
         assert!(details().is_empty());
-
+        // A pack made before the index existed must backfill sparse sources on first use.
+        db.execute_batch("DROP TRIGGER changed_authored_placement; DROP TABLE reference_authored_targets; DROP TABLE reference_authored_changes;").unwrap();
         export_to_db(&db, &[(attachment, placed(attachment))].into()).unwrap();
         assert_eq!(details(), [(0x880, Some(attachment), None, false, false)]);
+        // After the one-time backfill, restoring the owner must not decode an unrelated source.
+        db.execute("UPDATE records SET data=x'01' WHERE form_id=0x882", [])
+            .unwrap();
         export_to_db(
             &db,
             &[(owner, record(owner, b"FACT", None, None, Vec::new()))].into(),
