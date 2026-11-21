@@ -3,12 +3,12 @@
 use rkyv::{Archive, Deserialize, Serialize};
 
 /// Not retail: MudCrab cache format version thirteen, combining reference-order slots and LAND
-/// recovery with restored lower-layer slots.
+/// recovery with restored lower-layer slots, so that the offline bake keeps reference-order slots.
 pub const GRASS_CACHE_VERSION: u32 = 13;
 /// Retail value (RF-GRASS-026): a 17 by 17 blend grid per layer (289 samples).
 pub const GRASS_BLEND_SIDE: usize = 17;
-/// Not retail: MudCrab obstruction mask, 64 by 64 bits at 32 Creation units per bit
-/// (an engineering approximation; retail has no obstruction mask).
+/// Not retail: MudCrab obstruction mask, 64 by 64 bits at 32 Creation units per bit, because this
+/// is an engineering approximation; retail has no obstruction mask (unverified).
 pub const GRASS_EXCLUSION_SIDE: usize = 64;
 /// Retail value (RF-GRASS-026): 4096-unit cells, split into 2048-unit quadrants.
 pub const GRASS_CELL_SIZE: f32 = 4096.0;

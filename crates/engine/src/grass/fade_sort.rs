@@ -1,4 +1,5 @@
-//! Not retail: MudCrab's 18-bit spatial fade ranks; retail fades per vertex through the alpha test.
+//! Not retail: MudCrab uses 18-bit spatial fade ranks instead, so that equal ranks keep a stable
+//! order; retail fades per vertex through the alpha test.
 //! Stable ordering for the renderer's 18-bit spatial fade ranks.
 use super::GrassInstance;
 

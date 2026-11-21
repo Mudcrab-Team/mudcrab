@@ -360,7 +360,7 @@ exact Skyrim placement, variation, animation or visual parity.
 
 ## Normal maps and authored wind weight
 
-Retail grass lighting does not sample a normal map, so this frame does not
+Retail grass lighting does not sample a normal map (unverified), so this frame does not
 enter the lighting sum; it is kept for the authored data and the shadow bias.
 
 Static grass keeps authored positions, normals and UVs. The renderer accepts

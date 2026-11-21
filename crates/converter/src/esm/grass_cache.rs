@@ -968,7 +968,8 @@ pub fn write_grass_cache_with_cancel(
         let span = (i64::from(last_x) - i64::from(first_x) + 1)
             .saturating_mul(i64::from(last_y) - i64::from(first_y) + 1);
         // Not retail: MudCrab span guard. A reference spanning more than 1,024 cells is matched by
-        // scanning the existing cells instead of walking its whole grid.
+        // scanning the existing cells instead of walking its whole grid, because very large valid
+        // modded bounds must not allocate an unbounded grid.
         if span <= 1024 {
             for y in first_y..=last_y {
                 for x in first_x..=last_x {
@@ -3237,7 +3238,7 @@ mod tests {
             max: [31.0, 19.0, 11.0],
         };
         // Unit-test fixture: this asymmetric rotation triple and the 1.7 scale are not retail
-        // placement values.
+        // placement values, because the test only checks the coordinate contract.
         let angles: [f32; 3] = [0.31, -0.57, 0.83];
         let position = [140.0, -53.0, 28.0];
         let mut min = [f32::INFINITY; 3];

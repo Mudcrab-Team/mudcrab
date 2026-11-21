@@ -1,7 +1,7 @@
 //! Typed grass defaults and provenance. The engine's shared Skyrim INI reader
 //! supplies imported values; this module does not read files.
 //!
-//! Every default is retail data. The field comments record
+//! Every default is retail data (RF-GRASS-007). The field comments record
 //! the default stored in each INI setting. The shipped INI files (`Skyrim_Default.ini`, `SkyrimPrefs.ini`)
 //! omit most of these keys. A local `Skyrim.ini` with other values (`iMinGrassSize=40`,
 //! `fGrassFadeRange=1766`, `bEnableGrassFade=0`) differs from the retail defaults; the retail

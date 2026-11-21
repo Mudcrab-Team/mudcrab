@@ -2,15 +2,16 @@
 //!
 //! Registry sources: RF-SHADER-001 and RF-SHADER-004 (both high confidence). The shared global
 //! holds `1 / FramebufferRange`; its static value is 0.8333333 (range 1.2). The console command
-//! `SetFramebufferRange` stores `1 / argument` into it. The Lighting, Water, Sky, Effect,
-//! DistantTree, Particle and image-space shader setups read the same global, and the grass pixel
-//! shader multiplies its output by it. When the current fog object's near and far distances are
-//! both 0, the grass constant is 1.0 instead. This module is the single source for the value;
-//! other passes must use it and not a copy.
+//! `SetFramebufferRange` stores `1 / argument` into it. Retail water and the grass pixel shader
+//! read the global; whether the Lighting, Sky, Effect, DistantTree, Particle and image-space
+//! shader setups also read it is unverified. The grass pixel shader multiplies its output by it.
+//! When the current fog object's near and far distances are both 0, the grass constant is 1.0
+//! instead. This module is the single source for the value; other passes must use it and not a
+//! copy.
 //!
 //! Engine status: only grass applies the scale. Terrain, sky and water do not, so grass is 0.8333
-//! of terrain strength relative to retail if retail applies it to those passes too (unverified,
-//! open question). The retail fog condition is replaced by a proxy: a `DistanceFog` component
+//! of terrain strength relative to retail if retail applies it to those passes too (unverified).
+//! The retail fog condition is replaced by a proxy: a `DistanceFog` component
 //! on the camera (exterior cell, Fog setting on). The proxy is unverified. Turning the Fog
 //! setting off makes grass about 20 percent brighter (1.0 against 0.8333) while terrain does
 //! not change.

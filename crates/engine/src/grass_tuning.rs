@@ -58,7 +58,7 @@ impl Default for GrassTuning {
             shadow_strength: 1.0,
             shadow_floor: SHADOW_CLAMP_VALUE,
             backlight: 0.0,
-            // Not retail: specular is off by default; retail grass has no specular term.
+            // Not retail: specular is off by default because retail grass has no specular term.
             specular_strength: 0.0,
             specular_roughness: 0.5,
             saturation: 1.0,
@@ -128,7 +128,7 @@ impl GrassTuning {
         let mut warnings = Vec::new();
         for (key, item) in document.iter() {
             // Not retail: MudCrab editor bounds (brightness and strengths 8, saturation 4,
-            // roughness floor 0.089).
+            // roughness floor 0.089), because the editor needs a wider range than retail.
             let (target, min, max) = match key {
                 "mode" => continue,
                 "brightness" => (&mut values.brightness, 0.0, 8.0),

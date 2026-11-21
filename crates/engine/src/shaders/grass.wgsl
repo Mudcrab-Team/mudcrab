@@ -97,7 +97,7 @@ fn tuning_finish(color:vec3<f32>, root_fraction:f32, light:vec4<f32>, tint:vec4<
     let luminance = dot(color,vec3(0.2126,0.7152,0.0722));
     return max(mix(vec3(luminance),color,tint.x),vec3(0.0)) * light.x * (1.0-tint.w*root_fraction);
 }
-// Not retail: Bevy GGX specular; retail grass has no specular term. Dielectric F0=.04;
+// Not retail: Bevy GGX specular because retail grass has no specular term. Dielectric F0=.04;
 // perceptual roughness squared to alpha, clamped at 0.007921.
 fn tuning_ggx(ndh:f32, ndv:f32, ndl:f32, vdh:f32, perceptual_roughness:f32) -> f32 {
     let roughness = max(perceptual_roughness*perceptual_roughness,0.007921);
@@ -216,7 +216,8 @@ fn coverage(alpha:f32,sample_index:u32) -> u32 {
     return 1u;
 #else
     // Evaluate derivatives before branching; opaque materials ignore all alpha inputs.
-    // Not retail: MudCrab's fwidth antialiasing band; retail uses a plain test and discard.
+    // Not retail: MudCrab's fwidth antialiasing band, because a plain test aliases on thin
+    // blades; retail uses a plain test and discard.
     let width = fwidth(alpha);
     if grass.height_wind.w < 0.0 { return (1u << #{SAMPLES}u) - 1u; }
     let edge = clamp((alpha-grass.height_wind.w)/max(width,0.0001)+0.5,0.0,1.0);
