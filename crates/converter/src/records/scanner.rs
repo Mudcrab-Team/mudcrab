@@ -55,11 +55,20 @@ pub(crate) struct ScanDamage {
 }
 
 impl ScanDamage {
+    fn failed_record(&mut self, header: &ObservedHeader) {
+        if header.record_type == *b"CELL" {
+            self.frames
+                .insert(DiscardedFrameScope::Cell(header.source_form_id));
+        }
+    }
+
     fn note_prefix(&mut self, bytes: &[u8], offset: usize) {
         if let Some(scope) = DiscardedFrameScope::from_group_prefix(bytes) {
             self.frames.insert(scope);
         } else if let Some(placement) = TruncatedPlacement::from_prefix(bytes) {
             self.truncated_placements.push((offset as u64, placement));
+        } else if let Some((_, cell)) = crate::esm::binary::cell_header_prefix(bytes) {
+            self.frames.insert(DiscardedFrameScope::Cell(cell));
         }
     }
 }
@@ -227,6 +236,7 @@ fn scan_bytes_observed(
             if flags & 0x20 == 0 {
                 observed.failure =
                     Some("truncated record payload; containing group remainder skipped".into());
+                damage.failed_record(&observed);
                 observe(observed);
                 continue;
             }
@@ -241,6 +251,7 @@ fn scan_bytes_observed(
                 Err(_) if flags & 0x20 != 0 => Vec::new(),
                 Err(error) => {
                     observed.failure = Some(error.clone());
+                    damage.failed_record(&observed);
                     observe(observed);
                     diagnostics.note("record", || {
                         format!(

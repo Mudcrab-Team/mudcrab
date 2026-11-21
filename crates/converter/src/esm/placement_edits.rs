@@ -294,6 +294,7 @@ struct Edit {
     record: RawRecord,
     owns_new_id: bool,
     room_links: Option<RoomLinkLayout>,
+    inherit_room_master: bool,
 }
 
 struct PreviousPlacement {
@@ -388,12 +389,20 @@ fn plugin_edits(
             }
         };
         let source_id = record.form_id;
-        let remapped =
+        let Some(remapped) =
             source_identity::header_runtime_id(&record.record_type, source_id, priority, &order)
                 .filter(|&id| id != 0)
-                .ok_or_else(|| {
-                    color_eyre::eyre::eyre!("{name}: invalid record FormID {source_id:08X}")
-                })?;
+        else {
+            ensure!(
+                record.record_type == REFR,
+                "{name}: invalid record FormID {source_id:08X}"
+            );
+            eprintln!(
+                "warning: {name}: skipped placement {source_id:08X} with invalid record FormID"
+            );
+            record_damage(&mut damage_after, &mut import, &record, priority, &order);
+            continue;
+        };
         let owns_new_id = (source_id >> 24) as usize == metadata.masters.len();
         ensure!(
             !owns_new_id || source_id & 0x00ff_ffff != 0,
@@ -423,6 +432,11 @@ fn plugin_edits(
                 .is_some_and(|id| damaged_new_cells.contains(&id));
             let rejection = if missing_parent {
                 Some("because its new CELL is damaged")
+            } else if record.cell_form_id.is_some_and(|cell| {
+                DiscardedFrameScope::Cell(cell).resolve(priority, &order)
+                    == DiscardedFrameScope::Unknown
+            }) {
+                Some("with invalid parent CELL")
             } else {
                 validate_room_field_tags(&record.subrecords)?;
                 if base
@@ -478,6 +492,7 @@ fn plugin_edits(
             record,
             room_links,
             owns_new_id,
+            inherit_room_master: false,
         });
     }
     warnings.report();
@@ -720,7 +735,13 @@ fn apply_edit(
         (Some((kind, _, _)), _) if kind != "REFR" => bail!("FormID belongs to a {kind} record"),
         (_, Some(previous)) => (Some(previous.cell), Some(previous.data.as_slice())),
         (Some((_, cell, data)), None) if !previously_edited => (*cell, Some(data.as_slice())),
-        (_, None) => (None, None),
+        (_, None) => {
+            ensure!(
+                is_plugin || !previously_edited || record.is_deleted(),
+                "native replacement requires an existing runtime enable state"
+            );
+            (None, None)
+        }
     };
     if let Some(cell) = old_cell {
         require_interior(tx, cell)?;
@@ -740,7 +761,8 @@ fn apply_edit(
                     "native replacement requires an existing runtime enable state"
                 )
             })?;
-            let parent = SubrecordView::new(&subrecords)
+            let old_view = SubrecordView::new(&subrecords);
+            let parent = old_view
                 .find(b"XESP")
                 .and_then(SubrecordXESP::parse)
                 .map(|parent| (parent.parent_ref, parent.flags))
@@ -750,6 +772,25 @@ fn apply_edit(
                 "native replacement cannot preserve existing enable-parent data"
             );
             record.flags |= previous.flags & INITIALLY_DISABLED;
+            if edit.inherit_room_master
+                && old_view.unique_form_id(b"NAME") == Some(ROOM_MARKER_BASE)
+            {
+                let mut headers = old_view.find_all(b"XRMR");
+                if let Some([_, _, master, _]) = headers.next()
+                    && headers.next().is_none()
+                {
+                    let master_byte = record
+                        .subrecords
+                        .iter_mut()
+                        .find(|(tag, _)| tag == b"XRMR")
+                        .and_then(|(_, header)| header.get_mut(2))
+                        .ok_or_else(|| {
+                            color_eyre::eyre::eyre!("native room edit has no XRMR master byte")
+                        })?;
+                    *master_byte = *master;
+                    edit.room_links = Some(RoomLinkLayout::from_raw(record));
+                }
+            }
             record
                 .subrecords
                 .extend(subrecords.into_iter().filter(|(tag, _)| tag == b"XESP"));
@@ -982,6 +1023,7 @@ enum NativeEdit {
         #[serde(default)]
         rotation: [f32; 3],
         half_extents: [f32; 3],
+        master: Option<bool>,
         #[serde(default)]
         links: Vec<u32>,
     },
@@ -1013,6 +1055,7 @@ enum NativeOwnership {
 impl NativeEdit {
     fn into_edit(self, geometric_ownership: bool) -> Result<Edit> {
         let mut room_links = None;
+        let mut inherit_room_master = false;
         let record = match self {
             Self::Put {
                 id,
@@ -1056,6 +1099,7 @@ impl NativeEdit {
                 position,
                 rotation,
                 half_extents,
+                master,
                 links,
             } => {
                 ensure!(
@@ -1069,8 +1113,12 @@ impl NativeEdit {
                     .subrecords
                     .push(native_primitive(half_extents, SHAPE_BOX));
                 ensure!(links.len() <= 0x3fff, "room has too many links");
-                let count = (links.len() as u32).to_le_bytes();
-                record.subrecords.push((b"XRMR".to_vec(), count.to_vec()));
+                inherit_room_master = master.is_none();
+                let [low, high] = (links.len() as u16).to_le_bytes();
+                record.subrecords.push((
+                    b"XRMR".to_vec(),
+                    vec![low, high, u8::from(master.unwrap_or(false)), 0],
+                ));
                 record.subrecords.extend(
                     links
                         .into_iter()
@@ -1117,6 +1165,7 @@ impl NativeEdit {
             record,
             room_links,
             owns_new_id: id >= NATIVE_FORM_START,
+            inherit_room_master,
         })
     }
 }

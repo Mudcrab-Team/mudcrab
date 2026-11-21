@@ -244,6 +244,18 @@ pub(super) enum ParsedRecord {
     TruncatedPlacement(TruncatedPlacement),
 }
 
+/// A CELL's flags and source FormID are complete after 16 header bytes.
+pub(crate) fn cell_header_prefix(bytes: &[u8]) -> Option<(u32, u32)> {
+    let (flags, rest) = bytes
+        .strip_prefix(b"CELL")?
+        .get(4..)?
+        .split_first_chunk::<4>()?;
+    Some((
+        u32::from_le_bytes(*flags),
+        u32::from_le_bytes(*rest.first_chunk()?),
+    ))
+}
+
 /// Recover identity only from the start of a discarded record or child frame.
 fn discarded_prefix(
     bytes: &[u8],
@@ -256,15 +268,11 @@ fn discarded_prefix(
     if let Some(placement) = TruncatedPlacement::from_prefix(bytes) {
         return Some(ParsedRecord::TruncatedPlacement(placement));
     }
-    // A CELL's flags and source FormID are complete after 16 header bytes.
-    let (flags, rest) = bytes
-        .strip_prefix(b"CELL")?
-        .get(4..)?
-        .split_first_chunk::<4>()?;
+    let (flags, form_id) = cell_header_prefix(bytes)?;
     Some(ParsedRecord::DamagedRecord(RawRecord {
         record_type: *b"CELL",
-        flags: u32::from_le_bytes(*flags),
-        form_id: u32::from_le_bytes(*rest.first_chunk()?),
+        flags,
+        form_id,
         cell_form_id,
         worldspace_form_id,
         subrecords: Vec::new(),

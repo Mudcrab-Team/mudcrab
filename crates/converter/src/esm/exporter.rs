@@ -787,12 +787,13 @@ fn export_records(
     let mut available_link_targets = HashSet::new();
     let mut edited_references = HashSet::new();
     for (&form_id, record) in ordered {
-        let link_target = order.is_none()
+        let link_target =
+            form_id != 0 && super::reference_links::accepts_link_target(&record.record_type);
+        let target_changed = order.is_none()
             && runtime_views
             && form_id != 0
-            && super::is_placed_record_type(&record.record_type)
-            && super::reference_links::accepts_placement_target(&record.record_type);
-        let was_link_target = link_target && super::reference_links::has_live_target(&tx, form_id)?;
+            && !record.is_deleted()
+            && super::reference_links::target_kind_changed(&tx, form_id, &record.record_type)?;
         let type_str = from_utf8(&record.record_type).unwrap_or("UNKN");
         let blob = serialize_subrecords(&record.subrecords);
         let insert = records_insert.as_mut().expect("nonempty record loop");
@@ -807,14 +808,14 @@ fn export_records(
         )?;
         if order.is_none() {
             if !record.is_deleted() {
-                let restored = tx
-                    .prepare_cached("DELETE FROM subset_nonplacement_deletions WHERE form_id=?1")?
+                tx.prepare_cached("DELETE FROM subset_nonplacement_deletions WHERE form_id=?1")?
                     .execute([form_id])?;
-                if restored != 0
-                    && runtime_views
-                    && matches!(&record.record_type, b"KYWD" | b"PLYR")
-                {
-                    available_link_targets.insert(form_id);
+                if target_changed && !super::is_placed_record_type(&record.record_type) {
+                    if link_target {
+                        available_link_targets.insert(form_id);
+                    } else {
+                        unavailable_link_targets.push(form_id);
+                    }
                 }
             } else if !super::is_placed_record_type(&record.record_type) {
                 if runtime_views {
@@ -958,7 +959,7 @@ fn export_records(
                     subset_link_sources.push(canonical_record);
                     if !link_target {
                         unavailable_link_targets.push(form_id);
-                    } else if !was_link_target {
+                    } else if target_changed {
                         available_link_targets.insert(form_id);
                     }
                 } else {
@@ -3813,6 +3814,20 @@ mod tests {
             db.execute_batch("DROP TRIGGER reject_links").unwrap();
         };
 
+        export_to_db(
+            &db,
+            &[
+                (target, placed(target)),
+                (live_keyword, keyword_record(live_keyword)),
+                (source_id, source.clone()),
+            ]
+            .into(),
+        )
+        .unwrap();
+        assert_links(&db, None);
+        export_to_db(&db, &[(keyword, keyword_record(keyword))].into()).unwrap();
+        assert_links(&db, Some(keyword));
+
         let snapshot = [
             (target, placed(target)),
             (keyword, keyword_record(keyword)),
@@ -3889,10 +3904,20 @@ mod tests {
             &[(target, placed(target)), (source.form_id, source)].into(),
         )
         .unwrap();
+        let player = record(target, b"PLYR", None, None, Vec::new());
         let mut deleted = placed(target);
         deleted.flags = 0x20;
+        export_to_db(&db, &[(target, deleted.clone())].into()).unwrap();
+        export_to_db(&db, &[(target, player)].into()).unwrap();
+        check(Some(target), Some(target), None);
+        export_to_db(&db, &[(target, placed(target))].into()).unwrap();
+        check(Some(target), Some(target), Some(target));
         let mut actor = placed(target);
         actor.record_type = *b"ACHR";
+        export_to_db(&db, &[(target, actor.clone())].into()).unwrap();
+        check(Some(target), Some(target), None);
+        export_to_db(&db, &[(target, placed(target))].into()).unwrap();
+        check(Some(target), Some(target), Some(target));
         for replacement in [actor, placed(target)] {
             export_to_db(&db, &[(target, deleted.clone())].into()).unwrap();
             check(None, None, None);
@@ -3901,6 +3926,89 @@ mod tests {
             export_to_db(&db, &[(target, replacement)].into()).unwrap();
             check(Some(target), Some(target), attached);
         }
+    }
+
+    #[test]
+    fn subset_attachment_only_source_survives_target_deletion_and_reexport() {
+        let db = Connection::open_in_memory().unwrap();
+        create_tables(&db).unwrap();
+        let placed = |id| reference(id, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        let target = 0x880;
+        let mut source = placed(0x881);
+        source.subrecords.push((b"XATR".to_vec(), word(target)));
+        let mut malformed = placed(0x882);
+        malformed.subrecords.push((b"XATR".to_vec(), vec![1]));
+        let read = || {
+            db.prepare(
+                "SELECT reference_id,attached_ref_id FROM reference_details ORDER BY reference_id",
+            )
+            .unwrap()
+            .query_map([], |r| {
+                Ok((r.get::<_, u32>(0)?, r.get::<_, Option<u32>>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap()
+        };
+        export_to_db(
+            &db,
+            &[
+                (target, placed(target)),
+                (0x881, source.clone()),
+                (0x882, malformed),
+                (0x883, placed(0x883)),
+            ]
+            .into(),
+        )
+        .unwrap();
+        assert_eq!(read(), [(0x881, Some(target))]);
+        let mut deleted = placed(target);
+        deleted.flags = 0x20;
+        export_to_db(&db, &[(target, deleted)].into()).unwrap();
+        export_to_db(&db, &[(0x881, source)].into()).unwrap();
+        assert_eq!(read(), [(0x881, None)]);
+        export_to_db(&db, &[(target, placed(target))].into()).unwrap();
+        assert_eq!(read(), [(0x881, Some(target))]);
+    }
+
+    #[test]
+    fn subset_owner_deletion_preserves_rank_and_flags() {
+        let db = Connection::open_in_memory().unwrap();
+        create_tables(&db).unwrap();
+        let owner = 0x880;
+        let mut source = reference(0x881, 0x100, 0x500, [0.0; 3], [0.0; 3]);
+        source.subrecords.extend([
+            (b"XOWN".to_vec(), word(owner)),
+            (b"XRNK".to_vec(), word(7)),
+            (b"XAPD".to_vec(), vec![3]),
+        ]);
+        let mut faction = record(owner, b"FACT", None, None, Vec::new());
+        let details = || {
+            db.query_row(
+                "SELECT owner_id, owner_rank, activate_parent_flags
+                 FROM reference_details WHERE reference_id=0x881",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<u32>>(0)?,
+                        r.get::<_, i32>(1)?,
+                        r.get::<_, u8>(2)?,
+                    ))
+                },
+            )
+            .unwrap()
+        };
+        export_to_db(&db, &[(owner, faction.clone()), (0x881, source)].into()).unwrap();
+        assert_eq!(details(), (Some(owner), 7, 3));
+        faction.flags = 0x20;
+        export_to_db(&db, &[(owner, faction)].into()).unwrap();
+        assert_eq!(details(), (None, 7, 3));
+        export_to_db(
+            &db,
+            &[(owner, record(owner, b"FACT", None, None, Vec::new()))].into(),
+        )
+        .unwrap();
+        assert_eq!(details(), (Some(owner), 7, 3));
     }
 
     #[test]
