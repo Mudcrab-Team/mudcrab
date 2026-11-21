@@ -8298,6 +8298,15 @@ fn check_discarded_occluder_override(import: bool) {
     let invalid_transform =
         || placement_group(0x900, placement_marker_at(0x801, 0x17, f32::NAN, xord()));
     let linked_markers = [
+        (
+            "unknown-record-id",
+            [
+                placement_group(0x900, placement_marker(0, 0x17, xord())),
+                placement_group(0x900, restored.clone()),
+            ]
+            .concat(),
+            0,
+        ),
         ("single-marker-invalid-transform", invalid_transform(), 0),
         (
             "single-marker-restored",
@@ -8326,15 +8335,6 @@ fn check_discarded_occluder_override(import: bool) {
             [
                 wrong_parent(),
                 placement_group(0x900, placement(0x803, 0x810, 0, 0.0, Vec::new())),
-            ]
-            .concat(),
-            0,
-        ),
-        (
-            "unknown-record-id",
-            [
-                placement_group(0x900, placement_marker(0, 0x17, xord())),
-                placement_group(0x900, restored.clone()),
             ]
             .concat(),
             0,
@@ -8595,13 +8595,27 @@ fn placement_layers_refresh_incoming_links_for_changed_targets() {
     ];
     assert_links(absent);
 
-    let restore = native_put("restore.json", existing);
+    let native_restore = native_put("restore.json", existing);
+    let error = apply(&assets, PlacementSource::NativeJson(&native_restore)).unwrap_err();
+    assert!(format!("{error:#}").contains("existing runtime enable state"));
+    assert_links(absent);
+
+    let restore = plugin(
+        root,
+        "Restore.esp",
+        &["Skyrim.esm"],
+        0,
+        placement_group(
+            PLACEMENT_CELL_A,
+            placement(existing, PLACEMENT_STAT, 0, 16.0, Vec::new()),
+        ),
+    );
     db.execute_batch(
         "CREATE TRIGGER reject_incoming BEFORE UPDATE OF parent_ref_id ON reference_activate_parents
          WHEN NEW.parent_ref_id=0x802 BEGIN SELECT RAISE(ABORT, 'reject incoming link'); END;",
     )
     .unwrap();
-    let error = apply(&assets, PlacementSource::NativeJson(&restore)).unwrap_err();
+    let error = apply(&assets, PlacementSource::SkyrimPlugin(&restore)).unwrap_err();
     assert!(
         error.to_string().contains("reject incoming link"),
         "{error}"
@@ -8610,7 +8624,7 @@ fn placement_layers_refresh_incoming_links_for_changed_targets() {
     assert_eq!(
         db.query_row(
             "SELECT EXISTS(SELECT 1 FROM [references] WHERE id=?1),
-                    EXISTS(SELECT 1 FROM room_placement_layers WHERE name='restore.json')",
+                    EXISTS(SELECT 1 FROM room_placement_layers WHERE lower(name) IN ('restore.json','restore.esp'))",
             [existing],
             |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
         )
@@ -8618,7 +8632,7 @@ fn placement_layers_refresh_incoming_links_for_changed_targets() {
         (false, false),
     );
     db.execute_batch("DROP TRIGGER reject_incoming").unwrap();
-    apply(&assets, PlacementSource::NativeJson(&restore)).unwrap();
+    apply(&assets, PlacementSource::SkyrimPlugin(&restore)).unwrap();
     let mut restored = absent;
     restored[0] = Some(existing);
     assert_links(restored);
